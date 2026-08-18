@@ -6,10 +6,13 @@
 
 #![allow(dead_code)] // Materialization remains capability-gated.
 
+mod families;
 mod invocation;
 mod policy;
 mod snapshot;
 
+#[cfg(test)]
+mod github_tests;
 #[cfg(test)]
 mod invocation_tests;
 #[cfg(test)]

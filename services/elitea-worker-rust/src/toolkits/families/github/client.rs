@@ -1,0 +1,647 @@
+use std::fmt;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use adk_rust::{AdkError, ErrorCategory, ErrorComponent, RetryHint};
+use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HeaderMap, HeaderValue, RETRY_AFTER};
+use reqwest::{Method, StatusCode, Url};
+use ring::rand::SystemRandom;
+use ring::signature::{RSA_PKCS1_SHA256, RsaKeyPair};
+use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
+
+use super::config::{GitHubAuthKind, GitHubToolkitConfig};
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_IDLE_PER_HOST: usize = 8;
+const MAX_RESPONSE_BYTES: usize = 512 * 1_024;
+const MAX_BRANCHES: usize = 100;
+const GITHUB_ACCEPT: &str = "application/vnd.github+json";
+const GITHUB_API_VERSION: &str = "2022-11-28";
+const USER_AGENT: &str = "elitea-worker-rust/0.1";
+
+/// Stable, data-free failure categories for GitHub transport and response use.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitHubClientErrorCode {
+    InvalidConfiguration,
+    UnsupportedAuthentication,
+    Authentication,
+    Authorization,
+    NotFound,
+    RateLimited,
+    Timeout,
+    DependencyUnavailable,
+    InvalidResponse,
+    ResourceExhausted,
+}
+
+/// A safe GitHub client failure.
+///
+/// Upstream bodies, URLs, repositories and credential material are never
+/// retained as error sources or rendered through Debug/Display.
+pub(crate) struct GitHubClientError {
+    code: GitHubClientErrorCode,
+}
+
+impl GitHubClientError {
+    #[must_use]
+    pub(crate) const fn code(&self) -> GitHubClientErrorCode {
+        self.code
+    }
+
+    #[must_use]
+    pub(crate) const fn retryable(&self) -> bool {
+        matches!(
+            self.code,
+            GitHubClientErrorCode::RateLimited
+                | GitHubClientErrorCode::Timeout
+                | GitHubClientErrorCode::DependencyUnavailable
+        )
+    }
+
+    pub(crate) fn into_adk(self) -> AdkError {
+        let (category, code, message) = match self.code {
+            GitHubClientErrorCode::InvalidConfiguration => (
+                ErrorCategory::InvalidInput,
+                "github.configuration.invalid",
+                "the GitHub toolkit configuration is invalid",
+            ),
+            GitHubClientErrorCode::UnsupportedAuthentication => (
+                ErrorCategory::Unsupported,
+                "github.authentication.unsupported",
+                "this GitHub authentication mode is not available for the requested operation",
+            ),
+            GitHubClientErrorCode::Authentication => (
+                ErrorCategory::Unauthorized,
+                "github.authentication.failed",
+                "GitHub authentication failed",
+            ),
+            GitHubClientErrorCode::Authorization => (
+                ErrorCategory::Forbidden,
+                "github.authorization.failed",
+                "GitHub did not authorize the requested operation",
+            ),
+            GitHubClientErrorCode::NotFound => (
+                ErrorCategory::NotFound,
+                "github.resource.not_found",
+                "the requested GitHub resource was not found",
+            ),
+            GitHubClientErrorCode::RateLimited => (
+                ErrorCategory::RateLimited,
+                "github.rate_limited",
+                "GitHub rate limited the request",
+            ),
+            GitHubClientErrorCode::Timeout => (
+                ErrorCategory::Timeout,
+                "github.timeout",
+                "the GitHub request timed out",
+            ),
+            GitHubClientErrorCode::DependencyUnavailable => (
+                ErrorCategory::Unavailable,
+                "github.unavailable",
+                "GitHub is unavailable",
+            ),
+            GitHubClientErrorCode::InvalidResponse => (
+                ErrorCategory::Internal,
+                "github.response.invalid",
+                "GitHub returned an invalid response",
+            ),
+            GitHubClientErrorCode::ResourceExhausted => (
+                ErrorCategory::InvalidInput,
+                "github.response.resource_exhausted",
+                "the GitHub response exceeds the approved limit",
+            ),
+        };
+        AdkError::new(ErrorComponent::Tool, category, code, message).with_retry(RetryHint {
+            should_retry: self.retryable(),
+            retry_after_ms: None,
+            max_attempts: None,
+        })
+    }
+}
+
+impl fmt::Debug for GitHubClientError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GitHubClientError")
+            .field("code", &self.code)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for GitHubClientError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self.code {
+            GitHubClientErrorCode::InvalidConfiguration => {
+                "the GitHub client configuration is invalid"
+            }
+            GitHubClientErrorCode::UnsupportedAuthentication => {
+                "the GitHub authentication mode is not supported for this operation"
+            }
+            GitHubClientErrorCode::Authentication => "GitHub authentication failed",
+            GitHubClientErrorCode::Authorization => "GitHub authorization failed",
+            GitHubClientErrorCode::NotFound => "the GitHub resource was not found",
+            GitHubClientErrorCode::RateLimited => "GitHub rate limited the request",
+            GitHubClientErrorCode::Timeout => "the GitHub request timed out",
+            GitHubClientErrorCode::DependencyUnavailable => "GitHub is unavailable",
+            GitHubClientErrorCode::InvalidResponse => "GitHub returned an invalid response",
+            GitHubClientErrorCode::ResourceExhausted => {
+                "the GitHub response exceeds its approved limit"
+            }
+        })
+    }
+}
+
+impl std::error::Error for GitHubClientError {}
+
+/// Operations used by the first ordinary read-only GitHub tool subset.
+#[async_trait]
+pub(crate) trait GitHubApi: Send + Sync {
+    async fn get_authenticated_user(&self) -> Result<Value, GitHubClientError>;
+
+    async fn list_branches(&self, max_count: usize) -> Result<Value, GitHubClientError>;
+}
+
+/// One invocation-scoped, pooled and origin-bound GitHub client.
+///
+/// The `reqwest::Client` is pooled across calls from the same toolkit but is
+/// never placed in a process-global credential registry. Redirects are
+/// disabled and request paths are appended to the admitted base URL, so tool
+/// arguments cannot select another origin.
+pub(crate) struct GitHubClient {
+    http: reqwest::Client,
+    config: GitHubToolkitConfig,
+}
+
+impl GitHubClient {
+    pub(crate) fn new(config: GitHubToolkitConfig) -> Result<Self, GitHubClientError> {
+        if config.auth_kind() == GitHubAuthKind::App {
+            let (_, key) = config.auth().app().ok_or_else(invalid_configuration)?;
+            let _ = parse_rsa_key(key)?;
+        }
+        let http = reqwest::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .pool_idle_timeout(POOL_IDLE_TIMEOUT)
+            .pool_max_idle_per_host(MAX_IDLE_PER_HOST)
+            .user_agent(USER_AGENT)
+            .build()
+            .map_err(|_| invalid_configuration())?;
+        Ok(Self { http, config })
+    }
+
+    /// Perform the current SDK connection probe through this family client.
+    ///
+    /// Anonymous configuration remains a validation-only success, matching the
+    /// current SDK. Token/basic credentials use `/user`; GitHub App credentials
+    /// use `/app` and deliberately do not require an installation.
+    pub(crate) async fn probe(&self) -> Result<(), GitHubClientError> {
+        if self.config.auth_kind() == GitHubAuthKind::Anonymous {
+            return Ok(());
+        }
+        let request = self.build_request_at(
+            GitHubRequestKind::Probe,
+            &[],
+            &[],
+            PROBE_TIMEOUT,
+            SystemTime::now(),
+        )?;
+        let response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(|source| map_reqwest_error(&source))?;
+        map_status(response.status(), response.headers())
+    }
+
+    fn build_request_at(
+        &self,
+        kind: GitHubRequestKind,
+        path: &[&str],
+        query: &[(&str, String)],
+        timeout: Duration,
+        now: SystemTime,
+    ) -> Result<reqwest::Request, GitHubClientError> {
+        let endpoint = match kind {
+            GitHubRequestKind::Probe if self.config.auth_kind() == GitHubAuthKind::App => {
+                self.endpoint(&["app"])?
+            }
+            GitHubRequestKind::Probe | GitHubRequestKind::AuthenticatedUser => {
+                self.endpoint(&["user"])?
+            }
+            GitHubRequestKind::Repository => self.endpoint(path)?,
+        };
+        let mut endpoint = endpoint;
+        if !query.is_empty() {
+            endpoint
+                .query_pairs_mut()
+                .extend_pairs(query.iter().map(|(key, value)| (*key, value.as_str())));
+        }
+        let mut builder = self
+            .http
+            .request(Method::GET, endpoint)
+            .header(ACCEPT, GITHUB_ACCEPT)
+            .header("x-github-api-version", GITHUB_API_VERSION)
+            .timeout(timeout);
+        if let Some(authorization) = self.authorization(kind, now)? {
+            builder = builder.header(AUTHORIZATION, authorization);
+        }
+        builder.build().map_err(|_| invalid_configuration())
+    }
+
+    fn endpoint(&self, path: &[&str]) -> Result<Url, GitHubClientError> {
+        let mut endpoint = self.config.base_url().clone();
+        endpoint
+            .path_segments_mut()
+            .map_err(|()| invalid_configuration())?
+            .pop_if_empty()
+            .extend(path.iter().copied());
+        Ok(endpoint)
+    }
+
+    fn authorization(
+        &self,
+        kind: GitHubRequestKind,
+        now: SystemTime,
+    ) -> Result<Option<HeaderValue>, GitHubClientError> {
+        if let Some(token) = self.config.auth().token() {
+            return secret_header("token ", token).map(Some);
+        }
+        if let Some((username, password)) = self.config.auth().basic() {
+            let mut plaintext = Zeroizing::new(String::with_capacity(
+                username
+                    .len()
+                    .saturating_add(password.len())
+                    .saturating_add(1),
+            ));
+            plaintext.push_str(username);
+            plaintext.push(':');
+            plaintext.push_str(password);
+            let encoded = Zeroizing::new(STANDARD.encode(plaintext.as_bytes()));
+            return secret_header("Basic ", &encoded).map(Some);
+        }
+        if let Some((app_id, private_key)) = self.config.auth().app() {
+            if kind != GitHubRequestKind::Probe {
+                return Err(unsupported_authentication());
+            }
+            let jwt = github_app_jwt(app_id, private_key, now)?;
+            return secret_header("Bearer ", &jwt).map(Some);
+        }
+        Ok(None)
+    }
+
+    async fn get_json(
+        &self,
+        kind: GitHubRequestKind,
+        path: &[&str],
+        query: &[(&str, String)],
+    ) -> Result<Value, GitHubClientError> {
+        let request =
+            self.build_request_at(kind, path, query, REQUEST_TIMEOUT, SystemTime::now())?;
+        let mut response = self
+            .http
+            .execute(request)
+            .await
+            .map_err(|source| map_reqwest_error(&source))?;
+        map_status(response.status(), response.headers())?;
+        if response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+        {
+            return Err(resource_exhausted());
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|source| map_reqwest_error(&source))?
+        {
+            let next = body
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(resource_exhausted)?;
+            if next > MAX_RESPONSE_BYTES {
+                return Err(resource_exhausted());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&body).map_err(|_| invalid_response())
+    }
+}
+
+#[async_trait]
+impl GitHubApi for GitHubClient {
+    async fn get_authenticated_user(&self) -> Result<Value, GitHubClientError> {
+        let response = self
+            .get_json(GitHubRequestKind::AuthenticatedUser, &[], &[])
+            .await?;
+        project_authenticated_user(&response)
+    }
+
+    async fn list_branches(&self, max_count: usize) -> Result<Value, GitHubClientError> {
+        if max_count == 0 || max_count > MAX_BRANCHES {
+            return Err(invalid_configuration());
+        }
+        let (owner, repository) = self
+            .config
+            .repository()
+            .split_once('/')
+            .ok_or_else(invalid_configuration)?;
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "branches"],
+                &[("per_page", max_count.to_string())],
+            )
+            .await?;
+        project_branches(&response, max_count)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::toolkits) enum GitHubRequestKind {
+    Probe,
+    AuthenticatedUser,
+    Repository,
+}
+
+fn project_authenticated_user(value: &Value) -> Result<Value, GitHubClientError> {
+    const FIELDS: &[&str] = &[
+        "login",
+        "id",
+        "name",
+        "email",
+        "bio",
+        "company",
+        "location",
+        "blog",
+        "twitter_username",
+        "public_repos",
+        "public_gists",
+        "followers",
+        "following",
+        "created_at",
+        "updated_at",
+        "html_url",
+        "avatar_url",
+        "type",
+        "hireable",
+        "private_gists",
+        "total_private_repos",
+        "owned_private_repos",
+    ];
+    let object = value.as_object().ok_or_else(invalid_response)?;
+    if !object
+        .get("login")
+        .and_then(Value::as_str)
+        .is_some_and(|login| !login.is_empty() && login.len() <= 256)
+    {
+        return Err(invalid_response());
+    }
+    let mut projected = Map::new();
+    for field in FIELDS {
+        if let Some(value) = object.get(*field).filter(|value| !value.is_null()) {
+            projected.insert((*field).to_owned(), value.clone());
+        }
+    }
+    Ok(Value::Object(projected))
+}
+
+fn project_branches(value: &Value, max_count: usize) -> Result<Value, GitHubClientError> {
+    let branches = value.as_array().ok_or_else(invalid_response)?;
+    if branches.len() > max_count || branches.len() > MAX_BRANCHES {
+        return Err(resource_exhausted());
+    }
+    let mut projected = Vec::with_capacity(branches.len());
+    for branch in branches {
+        let branch = branch.as_object().ok_or_else(invalid_response)?;
+        let name = branch
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= 1_024
+                    && !name.chars().any(|character| character.is_ascii_control())
+            })
+            .ok_or_else(invalid_response)?;
+        let protected_flag = branch
+            .get("protected")
+            .and_then(Value::as_bool)
+            .ok_or_else(invalid_response)?;
+        projected.push(json!({"name": name, "protected": protected_flag}));
+    }
+    Ok(Value::Array(projected))
+}
+
+fn map_status(status: StatusCode, headers: &HeaderMap) -> Result<(), GitHubClientError> {
+    match status {
+        StatusCode::OK => Ok(()),
+        StatusCode::UNAUTHORIZED => Err(error(GitHubClientErrorCode::Authentication)),
+        StatusCode::FORBIDDEN if github_rate_limited(headers) => {
+            Err(error(GitHubClientErrorCode::RateLimited))
+        }
+        StatusCode::FORBIDDEN => Err(error(GitHubClientErrorCode::Authorization)),
+        StatusCode::NOT_FOUND => Err(error(GitHubClientErrorCode::NotFound)),
+        StatusCode::TOO_MANY_REQUESTS => Err(error(GitHubClientErrorCode::RateLimited)),
+        status if status.is_server_error() => {
+            Err(error(GitHubClientErrorCode::DependencyUnavailable))
+        }
+        _ => Err(invalid_response()),
+    }
+}
+
+fn github_rate_limited(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim() == "0")
+        || headers.contains_key(RETRY_AFTER)
+}
+
+fn map_reqwest_error(source: &reqwest::Error) -> GitHubClientError {
+    if source.is_timeout() {
+        return error_code(GitHubClientErrorCode::Timeout);
+    }
+    if source.is_connect() || source.is_request() || source.is_body() {
+        return error_code(GitHubClientErrorCode::DependencyUnavailable);
+    }
+    invalid_response()
+}
+
+fn github_app_jwt(
+    app_id: &str,
+    private_key: &str,
+    now: SystemTime,
+) -> Result<Zeroizing<String>, GitHubClientError> {
+    let issued_at = now
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| invalid_configuration())?
+        .as_secs();
+    let expires_at = issued_at
+        .checked_add(600)
+        .ok_or_else(invalid_configuration)?;
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);
+    let payload = Zeroizing::new(
+        serde_json::to_vec(&json!({"iat": issued_at, "exp": expires_at, "iss": app_id}))
+            .map_err(|_| invalid_configuration())?,
+    );
+    let encoded_payload = Zeroizing::new(URL_SAFE_NO_PAD.encode(payload.as_slice()));
+    let mut signing_input = Zeroizing::new(format!("{header}.{}", encoded_payload.as_str()));
+    let key_pair = parse_rsa_key(private_key)?;
+    let random = SystemRandom::new();
+    let mut signature = Zeroizing::new(vec![0_u8; key_pair.public().modulus_len()]);
+    key_pair
+        .sign(
+            &RSA_PKCS1_SHA256,
+            &random,
+            signing_input.as_bytes(),
+            &mut signature,
+        )
+        .map_err(|_| invalid_configuration())?;
+    let encoded_signature = Zeroizing::new(URL_SAFE_NO_PAD.encode(signature.as_slice()));
+    signing_input.push('.');
+    signing_input.push_str(&encoded_signature);
+    Ok(signing_input)
+}
+
+// The decoded DER and all JWT buffers are zeroized by this module. `ring` does
+// not promise zeroization of `RsaKeyPair`'s internal key schedule, so complete
+// erasure remains a process-isolation and process-termination property.
+fn parse_rsa_key(private_key: &str) -> Result<RsaKeyPair, GitHubClientError> {
+    const PKCS1_BEGIN: &str = "-----BEGIN RSA PRIVATE KEY-----";
+    const PKCS1_END: &str = "-----END RSA PRIVATE KEY-----";
+    const PKCS8_BEGIN: &str = "-----BEGIN PRIVATE KEY-----";
+    const PKCS8_END: &str = "-----END PRIVATE KEY-----";
+
+    let (kind, body) = if private_key.contains(PKCS1_BEGIN) {
+        (
+            PemKind::Pkcs1,
+            remove_pem_markers(private_key, PKCS1_BEGIN, PKCS1_END)?,
+        )
+    } else if private_key.contains(PKCS8_BEGIN) {
+        (
+            PemKind::Pkcs8,
+            remove_pem_markers(private_key, PKCS8_BEGIN, PKCS8_END)?,
+        )
+    } else if private_key.contains(PKCS1_END) || private_key.contains(PKCS8_END) {
+        return Err(invalid_configuration());
+    } else {
+        (PemKind::Pkcs1, private_key)
+    };
+    let compact = Zeroizing::new(
+        body.chars()
+            .filter(|character| !character.is_ascii_whitespace())
+            .collect::<String>(),
+    );
+    if compact.is_empty() || compact.len() > 128 * 1_024 {
+        return Err(invalid_configuration());
+    }
+    let der = Zeroizing::new(
+        STANDARD
+            .decode(compact.as_bytes())
+            .map_err(|_| invalid_configuration())?,
+    );
+    match kind {
+        PemKind::Pkcs1 => RsaKeyPair::from_der(&der),
+        PemKind::Pkcs8 => RsaKeyPair::from_pkcs8(&der),
+    }
+    .map_err(|_| invalid_configuration())
+}
+
+fn remove_pem_markers<'a>(
+    value: &'a str,
+    begin: &str,
+    end: &str,
+) -> Result<&'a str, GitHubClientError> {
+    let (_, after_begin) = value.split_once(begin).ok_or_else(invalid_configuration)?;
+    let (body, after_end) = after_begin
+        .split_once(end)
+        .ok_or_else(invalid_configuration)?;
+    if !after_end.trim().is_empty() {
+        return Err(invalid_configuration());
+    }
+    Ok(body)
+}
+
+#[derive(Clone, Copy)]
+enum PemKind {
+    Pkcs1,
+    Pkcs8,
+}
+
+fn secret_header(prefix: &str, secret: &str) -> Result<HeaderValue, GitHubClientError> {
+    let mut value = Zeroizing::new(String::with_capacity(
+        prefix.len().saturating_add(secret.len()),
+    ));
+    value.push_str(prefix);
+    value.push_str(secret);
+    HeaderValue::from_str(&value).map_err(|_| invalid_configuration())
+}
+
+const fn error(code: GitHubClientErrorCode) -> GitHubClientError {
+    GitHubClientError { code }
+}
+
+const fn error_code(code: GitHubClientErrorCode) -> GitHubClientError {
+    error(code)
+}
+
+const fn invalid_configuration() -> GitHubClientError {
+    error(GitHubClientErrorCode::InvalidConfiguration)
+}
+
+const fn unsupported_authentication() -> GitHubClientError {
+    error(GitHubClientErrorCode::UnsupportedAuthentication)
+}
+
+const fn invalid_response() -> GitHubClientError {
+    error(GitHubClientErrorCode::InvalidResponse)
+}
+
+const fn resource_exhausted() -> GitHubClientError {
+    error(GitHubClientErrorCode::ResourceExhausted)
+}
+
+#[cfg(test)]
+impl GitHubClient {
+    pub(in crate::toolkits) fn test_request(
+        &self,
+        kind: GitHubRequestKind,
+        path: &[&str],
+        query: &[(&str, String)],
+        now: SystemTime,
+    ) -> Result<reqwest::Request, GitHubClientError> {
+        self.build_request_at(kind, path, query, REQUEST_TIMEOUT, now)
+    }
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_user(value: &Value) -> Result<Value, GitHubClientError> {
+    project_authenticated_user(value)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_branches(
+    value: &Value,
+    max_count: usize,
+) -> Result<Value, GitHubClientError> {
+    project_branches(value, max_count)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_map_status(
+    status: StatusCode,
+    headers: &HeaderMap,
+) -> Result<(), GitHubClientError> {
+    map_status(status, headers)
+}

@@ -8,10 +8,15 @@ toolkit tests and ADK agent execution.
 
 Target convention:
 
-- configuration: `src/configurations/families/<family>.rs`
+- public configuration descriptor/registry: `src/configurations/families/<family>.rs`
+- claim-materialized runtime configuration: co-located as
+  `src/toolkits/families/<family>/config.rs` when it exists only to construct
+  that family's client
 - toolset: `src/toolkits/families/<family>/{mod.rs,client.rs,tools.rs}`
-- tests: `tests/configurations/<family>.rs` and
-  `tests/toolkits/<family>_{catalog,materialization,invocation}.rs`
+- tests: co-located capability-gated unit contracts first, followed by
+  `tests/configurations/<family>.rs` and
+  `tests/toolkits/<family>_{catalog,materialization,invocation}.rs` when the
+  public registry and cross-process composition land
 
 ## Frozen agent-tool snapshot boundary
 
@@ -106,7 +111,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `configurations/families/github.rs`; `toolkits/families/github/` | Planned; anonymous/PAT/basic/App auth and all tools required |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus explicit `get_me` and `list_branches_in_repo`; the other 42 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -147,6 +152,73 @@ Their authority source and admission policy must be explicit before live porting
 The SDK also defines `EmbeddingConfiguration`, but it is not one of the 32
 registered configuration families. Rust will model it as a referenced model
 contract rather than silently registering a 33rd family.
+
+### GitHub reference-family foundation
+
+GitHub is the first concrete family and fixes the ownership convention without
+claiming the full 44-tool SDK catalog. Main still freezes the selected toolkit
+and configuration identity in
+`internal/application/agentexecution/tools.go`. During claim-scoped input
+materialization,
+`internal/infra/storage/configurations_materializer.go::materializeAgentExecution`
+resolves the frozen configuration settings and unsecrets the nested owned
+configuration into the bounded input document. The future authorized Rust
+assembler will parse that sealed materialized shape only after
+`AUTHORIZED_NOW`; it will not perform another configuration lookup or persist a
+second plaintext copy.
+
+`src/toolkits/families/github/config.rs` validates the current nested
+`github_configuration` shape, GitHub Enterprise API base, repository, branch
+and selected-tool bounds. It preserves the SDK authentication precedence:
+access token, username/password, GitHub App, then anonymous. Secret strings are
+non-`Clone`, non-`Debug` and zeroized on ordinary drop. The decoded GitHub App
+key/JWT buffers are also zeroized; `ring` does not guarantee erasure of its
+internal RSA key schedule, so complete key-schedule erasure remains a worker
+process-isolation and termination property rather than an overclaimed local
+guarantee.
+
+`src/toolkits/families/github/client.rs` creates one bounded `reqwest::Client`
+per materialized toolkit invocation. Its pool is reused by that toolkit's
+calls, never stored in a process-global credential registry. HTTPS-only
+requests are origin-bound to the frozen API base, redirects are disabled,
+timeouts and response bodies are capped, and diagnostics retain no URL,
+repository, credential or upstream body. GitHub primary/secondary rate-limit
+`403` responses remain retryable and distinct from ordinary authorization
+failures. The probe matches the current SDK behavior: anonymous is a
+validation-only success, token/basic call `/user`, and App JWT calls `/app`.
+App-backed tool execution is still rejected because an installation-token
+exchange has not been implemented.
+
+`src/toolkits/families/github/tools.rs` exposes only an explicitly selected
+`get_me` and/or `list_branches_in_repo` through ADK-Rust 2.0.0's native
+`Tool`/`BasicToolset` boundary and the shared immutable blocklist. Empty
+selection still means all 44 SDK tools, so the partial Rust family rejects it
+instead of silently shrinking functionality. The current tests prove auth
+precedence and malformed pairs, Enterprise/repository normalization and
+bounds, origin/header binding, PKCS8 App JWT shape, bounded response projection,
+rate-limit classification, native ADK selection/policy/argument behavior, and
+fail-closed empty or unported selection.
+
+Connection checking remains a Main API responsibility. Main owns caller and
+project authorization, configuration/revision selection, request bounds,
+audit, and the public single/batch response contract. Its current
+`internal/api/v2/configurations/handler.go::{CheckConnection,BatchCheckConnections}`
+handlers return unconditional success, whereas Python worker
+`agents/sdk_adapter.py::EliteaSdkConfigurationAdapter.check_connection`, legacy
+indexer worker `methods/indexer_check_connection.py`, and SDK
+`configurations/github.py::GithubConfiguration.check_connection` perform the
+real family probe. The target Main composition dispatches a typed bounded
+validation operation to the same Rust GitHub client rather than adding a second
+Go GitHub implementation. If a family later remains entirely inside a
+Main-owned connector with the same credential and egress boundary, Main may
+keep its probe there; the invariant is one family client per execution plane,
+not one prescribed language.
+
+Production registration remains disabled. Before this family can execute live
+agent work it still needs the authorized materializer connection, platform
+egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
+GitHub App installation-token support, the remaining ordinary SDK operations,
+direct sensitive-tool/HITL fencing, and the six indexing-only operations.
 
 ## Special runtime toolsets
 
@@ -198,12 +270,9 @@ model-actionable business failures remain bounded structured tool results;
 The SDK toolkit families are still product functionality and will be ported,
 not replaced by configuration descriptors. Main retains the public
 `check_connection` routes, project authorization, configuration revision and
-audit/result contract. Its current handlers return unconditional success, while
-the Python `EliteaSdkConfigurationAdapter.check_connection` still performs the
-real family probe. The target route therefore delegates a bounded probe to the
-same claim-scoped family client used for execution instead of duplicating every
-vendor client in Go. If a future Main-owned connector uses the identical
-credential and egress boundary, that family can remain entirely in Main.
+audit/result contract. The target route delegates its actual bounded probe to
+the same family client used for execution instead of duplicating every vendor
+client in Go; the GitHub section above is the first concrete example.
 
 Each Rust family owns configuration parsing needed by its client, claim-scoped
 materialization, the actual probe operation when delegated, and its concrete
