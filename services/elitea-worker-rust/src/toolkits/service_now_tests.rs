@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use adk_rust::tool::SimpleToolContext;
-use adk_rust::{ReadonlyContext, Toolset};
+use adk_rust::{ReadonlyContext, Tool, Toolset};
 use async_trait::async_trait;
 use reqwest::{Request, StatusCode};
 use serde_json::{Map, Value, json};
@@ -384,17 +384,7 @@ fn request_validation_rejects_query_injection_bad_ids_and_oversize() {
     );
 }
 
-#[tokio::test]
-async fn tools_preserve_catalog_groups_defaults_json_strings_and_policy() {
-    let api = Arc::new(FixtureApi::new());
-    let api_trait: Arc<dyn ServiceNowApi> = api.clone();
-    let toolset = test_build_with_api("ITSM", &[], &policy(), &api_trait)
-        .expect("complete fixture toolset builds");
-    let readonly: Arc<dyn ReadonlyContext> = context();
-    let tools = toolset
-        .tools(readonly)
-        .await
-        .expect("fixture ServiceNow tools resolve");
+fn assert_service_now_model_contract(tools: &[Arc<dyn Tool>]) {
     assert_eq!(
         tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
         ["get_incidents", "create_incident", "update_incident"]
@@ -426,38 +416,72 @@ async fn tools_preserve_catalog_groups_defaults_json_strings_and_policy() {
         schemas[0]["properties"]["data"]["examples"][0],
         json!({"description":"Network issue", "category":"network"})
     );
+    assert_eq!(
+        schemas[0]["properties"]["data"]["anyOf"][0]["additionalProperties"],
+        json!(false)
+    );
+    assert_eq!(
+        schemas[0]["properties"]["data"]["anyOf"][0]["properties"]["number_of_entries"]["maximum"],
+        json!(100)
+    );
+    assert_eq!(schemas[0]["additionalProperties"], json!(false));
     assert!(
         schemas[1]["properties"]["data"]["description"]
             .as_str()
             .expect("create data description is text")
             .contains("short_description")
     );
+    assert!(
+        schemas[1]["properties"]["data"]["description"]
+            .as_str()
+            .expect("create data description is text")
+            .contains("null-valued fields are omitted")
+    );
     assert_eq!(
         schemas[1]["properties"]["data"]["anyOf"][0]["additionalProperties"],
-        json!({"type":"string"})
+        json!(true)
     );
     assert_eq!(schemas[2]["required"], json!(["sys_id", "update_fields"]));
+    assert_eq!(
+        schemas[2]["properties"]["sys_id"]["pattern"],
+        json!("^[A-Za-z0-9]{32}$")
+    );
+    assert_eq!(
+        schemas[2]["properties"]["update_fields"]["maxLength"],
+        json!(65_536)
+    );
     assert!(
         schemas[2]["properties"]["update_fields"]["description"]
             .as_str()
             .expect("update_fields description is text")
             .contains("JSON object encoded as a string")
     );
+}
 
-    tools[1]
-        .execute(context(), json!({"data":{"impact":2}}))
+#[tokio::test]
+async fn tools_preserve_catalog_groups_defaults_json_strings_and_policy() {
+    let api = Arc::new(FixtureApi::new());
+    let api_trait: Arc<dyn ServiceNowApi> = api.clone();
+    let toolset = test_build_with_api("ITSM", &[], &policy(), &api_trait)
+        .expect("complete fixture toolset builds");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset
+        .tools(readonly)
         .await
-        .expect_err("create rejects non-string provider fields before the client");
-    assert!(api.calls().is_empty());
+        .expect("fixture ServiceNow tools resolve");
+    assert_service_now_model_contract(&tools);
 
     let get = tools[0]
         .execute(context(), json!({"data": null}))
         .await
         .expect("get executes");
     let create = tools[1]
-        .execute(context(), json!({}))
+        .execute(
+            context(),
+            json!({"data":{"impact":2,"metadata":{"source":"monitor"}}}),
+        )
         .await
-        .expect("create executes");
+        .expect("create accepts the SDK's arbitrary JSON field values");
     let update = tools[2]
         .execute(
             context(),
@@ -481,7 +505,10 @@ async fn tools_preserve_catalog_groups_defaults_json_strings_and_policy() {
         api.calls(),
         [
             json!({"operation":"get", "filters":{}, "limit":100}),
-            json!({"operation":"create", "fields":{}}),
+            json!({
+                "operation":"create",
+                "fields":{"impact":2,"metadata":{"source":"monitor"}}
+            }),
             json!({
                 "operation":"update",
                 "sys_id":"0123456789abcdef0123456789abcdef",

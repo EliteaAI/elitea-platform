@@ -566,6 +566,25 @@ async fn native_tools_preserve_order_defaults_read_classification_and_policy() {
     assert_eq!(tools[1].name(), "get_document");
     assert!(tools.iter().all(|tool| tool.is_read_only()));
     assert!(tools.iter().all(|tool| tool.is_concurrency_safe()));
+    let search_schema = tools[0]
+        .parameters_schema()
+        .expect("text search has an argument schema");
+    assert!(
+        search_schema["properties"]["search_text"]["description"]
+            .as_str()
+            .expect("search text description is text")
+            .contains("empty string to match all")
+    );
+    let ordering = search_schema["properties"]["order_by"]["description"]
+        .as_str()
+        .expect("order description is text");
+    assert!(ordering.contains("rating desc"));
+    assert!(ordering.contains("search.score() desc"));
+    let selected = search_schema["properties"]["selected_fields"]["description"]
+        .as_str()
+        .expect("selected fields description is text");
+    assert!(selected.contains("address/city"));
+    assert!(selected.contains("`*`"));
 
     tools[0]
         .execute(

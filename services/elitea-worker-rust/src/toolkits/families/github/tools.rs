@@ -308,7 +308,7 @@ impl GitHubReadTool {
                 "Compare two refs with bounded commit and changed-file summaries."
             }
             GitHubReadToolKind::SearchCode => {
-                "Search GitHub code through one bounded provider page without per-result fetches."
+                "Search GitHub code with native qualifiers through one bounded provider page without per-result content fetches."
             }
             GitHubReadToolKind::GetWorkflowStatus => {
                 "Inspect one GitHub Actions run and its first bounded page of job status details."
@@ -788,7 +788,7 @@ fn search_code_schema() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 4096,
-                "description": "GitHub code-search query. A configured repository scope is added when no repo, org, or user scope is present."
+                "description": "GitHub code-search query using qualifiers such as `language:rust`, `path:src`, `filename:Cargo.toml`, `extension:rs`, or an explicit `repo:owner/name`, `org:name`, or `user:name` scope. The configured repository scope is added only when no explicit scope is present."
             },
             "sort": {
                 "type": ["string", "null"],
@@ -800,21 +800,21 @@ fn search_code_schema() -> Value {
                 "type": ["string", "null"],
                 "enum": ["asc", "desc", null],
                 "default": null,
-                "description": "Optional result order."
+                "description": "Optional result order. Omit it for GitHub's default descending order."
             },
             "per_page": {
                 "type": ["integer", "null"],
                 "minimum": 1,
                 "maximum": 100,
                 "default": 30,
-                "description": "Results requested from one provider page."
+                "description": "Results requested from one provider page. Together with page, the requested window must end at or before GitHub's first 1,000 accessible results: (page - 1) * per_page + per_page <= 1000."
             },
             "page": {
                 "type": ["integer", "null"],
                 "minimum": 1,
                 "maximum": 1000,
                 "default": 1,
-                "description": "One-indexed provider page inside GitHub's first 1,000 accessible results."
+                "description": "One-indexed provider page. Together with per_page, the requested window must end at or before GitHub's first 1,000 accessible results: (page - 1) * per_page + per_page <= 1000."
             }
         },
         "required": ["query"],

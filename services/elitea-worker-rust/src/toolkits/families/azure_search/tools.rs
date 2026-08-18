@@ -275,7 +275,7 @@ fn text_search_schema() -> Value {
             "search_text": {
                 "type": "string",
                 "maxLength": MAX_SEARCH_TEXT_BYTES,
-                "description": "Full-text query for the configured index."
+                "description": "Full-text query for the configured index. Use an empty string to match all documents."
             },
             "limit": {
                 "anyOf": [
@@ -291,7 +291,7 @@ fn text_search_schema() -> Value {
                 "items": {"type": "string", "minLength": 1, "maxLength": MAX_ORDER_BY_BYTES},
                 "maxItems": MAX_ORDER_BY,
                 "default": null,
-                "description": "Bounded Azure Search OData ordering expressions."
+                "description": "Bounded Azure Search OData ordering expressions, for example `rating desc`, `search.score() desc`, or `geo.distance(location, geography'POINT(-122.1 47.6)') asc`."
             },
             "selected_fields": selected_fields_schema()
         },
@@ -328,7 +328,7 @@ fn selected_fields_schema() -> Value {
         },
         "maxItems": MAX_SELECTED_FIELDS,
         "default": null,
-        "description": "Fields to retrieve; omit or use an empty list for the provider default."
+        "description": "Fields to retrieve; use field paths such as `title` or `address/city`, or `*` for all retrievable fields. Omit or use an empty list for the provider default."
     })
 }
 

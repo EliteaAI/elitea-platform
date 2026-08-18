@@ -271,7 +271,6 @@ impl Tool for ServiceNowTool {
             ServiceNowToolKind::CreateIncident => {
                 reject_unknown_keys(arguments, &["data"])?;
                 let data = optional_object(arguments, "data")?;
-                validate_create_fields(data)?;
                 self.client.create_incident(data).await
             }
             ServiceNowToolKind::UpdateIncident => {
@@ -298,12 +297,24 @@ fn get_incidents_schema() -> Value {
         "type": "object",
         "properties": {
             "data": {
-                "anyOf": [{"type": "object", "additionalProperties": true}, {"type": "null"}],
+                "anyOf": [{
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string"},
+                        "description": {"type": "string"},
+                        "number_of_entries": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
+                        "creation_date": {"type": "string", "description": "Creation date in YYYY-MM-DD form."},
+                        "sys_id": {"type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[A-Za-z0-9]{32}$"},
+                        "number": {"type": "string"}
+                    },
+                    "additionalProperties": false
+                }, {"type": "null"}],
                 "default": {},
                 "description": "Filters used to retrieve incidents. Supported keys are category, description, number_of_entries (an integer from 1 through 100), creation_date (YYYY-MM-DD), sys_id, and number. An empty object retrieves the bounded first page.",
                 "examples": [{"description": "Network issue", "category": "network"}]
             }
-        }
+        },
+        "additionalProperties": false
     })
 }
 
@@ -313,11 +324,12 @@ fn create_incident_schema() -> Value {
         "type": "object",
         "properties": {
             "data": {
-                "anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "null"}],
+                "anyOf": [{"type": "object", "additionalProperties": true}, {"type": "null"}],
                 "default": {},
-                "description": format!("Fields used to create the incident. Common fields are {INCIDENT_FIELD_GUIDANCE}. An empty object creates a default incident.")
+                "description": format!("Bounded JSON fields used to create the incident; non-null values may be strings, numbers, booleans, arrays, or objects, while null-valued fields are omitted before the request. Common fields are {INCIDENT_FIELD_GUIDANCE}. An empty object creates a default incident.")
             }
-        }
+        },
+        "additionalProperties": false
     })
 }
 
@@ -326,10 +338,21 @@ fn update_incident_schema() -> Value {
         "title": "updateIncident",
         "type": "object",
         "properties": {
-            "sys_id": {"type": "string", "description": "The 32-character sys_id of the incident to update."},
-            "update_fields": {"type": "string", "description": format!("A JSON object encoded as a string containing fields to update. Common fields are {INCIDENT_FIELD_GUIDANCE}.")}
+            "sys_id": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 32,
+                "pattern": "^[A-Za-z0-9]{32}$",
+                "description": "The 32-character alphanumeric sys_id of the incident to update."
+            },
+            "update_fields": {
+                "type": "string",
+                "maxLength": MAX_ARGUMENT_STRING_BYTES,
+                "description": format!("A JSON object encoded as a string containing fields to update. Common fields are {INCIDENT_FIELD_GUIDANCE}.")
+            }
         },
-        "required": ["sys_id", "update_fields"]
+        "required": ["sys_id", "update_fields"],
+        "additionalProperties": false
     })
 }
 
@@ -372,14 +395,6 @@ fn parse_update_fields(raw: &str) -> adk_rust::Result<Map<String, Value>> {
     let value: Value = serde_json::from_str(raw).map_err(|_| invalid_arguments())?;
     validate_json(&value)?;
     value.as_object().cloned().ok_or_else(invalid_arguments)
-}
-
-fn validate_create_fields(fields: &Map<String, Value>) -> adk_rust::Result<()> {
-    if fields.values().all(Value::is_string) {
-        Ok(())
-    } else {
-        Err(invalid_arguments())
-    }
 }
 
 fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {

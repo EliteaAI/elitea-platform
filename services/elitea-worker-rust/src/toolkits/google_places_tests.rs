@@ -531,11 +531,20 @@ async fn native_tools_preserve_current_schema_defaults_selection_and_policy() {
     let tools = toolset.tools(readonly).await.expect("Google Places tools");
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name(), "places");
+    assert!(tools[0].description().contains("free-text place query"));
+    assert!(!tools[0].description().contains("location details"));
     assert_eq!(
         tools[0]
             .parameters_schema()
             .and_then(|schema| schema.pointer("/properties/query/maxLength").cloned()),
         Some(json!(4_096))
+    );
+    assert!(
+        tools[0]
+            .parameters_schema()
+            .and_then(|schema| schema.pointer("/properties/query/description").cloned())
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .is_some_and(|description| description.contains("coffee near Kyiv"))
     );
     tools[0]
         .execute(context(), json!({"query": "coffee"}))
@@ -562,6 +571,15 @@ async fn native_tools_preserve_current_schema_defaults_selection_and_policy() {
         .iter()
         .find(|tool| tool.name() == "find_near")
         .expect("find_near tool");
+    assert!(near.description().contains("Results may fall outside"));
+    let near_schema = near
+        .parameters_schema()
+        .expect("find_near has an argument schema");
+    let target = near_schema["properties"]["target"]["description"]
+        .as_str()
+        .expect("target description is text");
+    assert!(target.contains("free-text place or category query"));
+    assert!(target.contains("EV charging"));
     near.execute(
         context(),
         json!({

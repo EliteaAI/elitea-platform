@@ -183,10 +183,10 @@ impl GooglePlacesTool {
     ) -> Self {
         let action = match kind {
             GooglePlacesToolKind::Places => {
-                "Search Google Places and return bounded details for each selected place."
+                "Search Google Places from a free-text place query and return bounded identity, address, contact, and website details."
             }
             GooglePlacesToolKind::FindNear => {
-                "Geocode a starting location and find places using a bounded radius bias."
+                "Geocode a starting address or location description, then find places from a free-text target query using a bounded radius bias. Results may fall outside the circle."
             }
         };
         let description = format!("Toolkit: {toolkit_name}\n{action}");
@@ -264,7 +264,7 @@ fn places_schema() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": MAX_QUERY_BYTES,
-                "description": "Text describing the places to find."
+                "description": "Free-text place query, for example `coffee near Kyiv` or `pharmacy open now in Boston`."
             }
         },
         "required": ["query"],
@@ -286,7 +286,7 @@ fn find_near_schema() -> Value {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": MAX_QUERY_BYTES,
-                "description": "Place keyword near the starting location."
+                "description": "A free-text place or category query near the starting location, for example `coffee`, `EV charging`, or `pharmacy open now`."
             },
             "radius": {
                 "type": ["integer", "null"],

@@ -1737,6 +1737,39 @@ fn assert_commit_tool_schemas(tools: &[Arc<dyn Tool>]) {
     );
 }
 
+fn assert_code_search_model_contract(search: &dyn Tool) {
+    assert_eq!(
+        search
+            .parameters_schema()
+            .and_then(|schema| schema.get("required").cloned()),
+        Some(json!(["query"]))
+    );
+    assert!(search.description().contains("native qualifiers"));
+    let schema = search
+        .parameters_schema()
+        .expect("code search has an argument schema");
+    let query_description = schema["properties"]["query"]["description"]
+        .as_str()
+        .expect("query description is text");
+    assert!(query_description.contains("language:rust"));
+    assert!(query_description.contains("path:src"));
+    assert!(query_description.contains("repo:owner/name"));
+    assert!(
+        schema["properties"]["order"]["description"]
+            .as_str()
+            .expect("order description is text")
+            .contains("default descending order")
+    );
+    for property in ["page", "per_page"] {
+        assert!(
+            schema["properties"][property]["description"]
+                .as_str()
+                .expect("window description is text")
+                .contains("(page - 1) * per_page + per_page <= 1000")
+        );
+    }
+}
+
 #[tokio::test]
 async fn native_code_search_preserves_scopes_defaults_and_one_page_window() {
     let client = Arc::new(FixtureGitHubApi::default());
@@ -1797,12 +1830,7 @@ async fn native_code_search_preserves_scopes_defaults_and_one_page_window() {
             "fn main:none:none:30:1".to_owned(),
         ]
     );
-    assert_eq!(
-        search
-            .parameters_schema()
-            .and_then(|schema| schema.get("required").cloned()),
-        Some(json!(["query"]))
-    );
+    assert_code_search_model_contract(search.as_ref());
 
     let calls_before = client
         .code_search_calls

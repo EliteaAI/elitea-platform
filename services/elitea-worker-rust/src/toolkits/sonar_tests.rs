@@ -448,6 +448,16 @@ async fn native_tool_preserves_schema_empty_selection_and_policy() {
             .and_then(|schema| schema.pointer("/properties/relative_url/enum/0").cloned()),
         Some(json!("/api/issues/search"))
     );
+    let schema = tools[0]
+        .parameters_schema()
+        .expect("Sonar tool has an argument schema");
+    let params_description = schema["properties"]["params"]["description"]
+        .as_str()
+        .expect("Sonar params description is text");
+    assert!(params_description.contains("encoded as a JSON object string"));
+    assert!(params_description.contains("severities"));
+    assert!(params_description.contains("\"p\":1"));
+    assert!(params_description.contains("bounded raw Sonar issue-search object"));
     tools[0]
         .execute(
             context(),

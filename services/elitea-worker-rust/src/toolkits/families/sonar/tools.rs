@@ -222,7 +222,7 @@ fn parameters_schema() -> Value {
                 "type": ["string", "null"],
                 "maxLength": MAX_PARAMS_BYTES,
                 "default": null,
-                "description": "Optional bounded JSON object of Sonar issue-search query parameters. The configured project always overrides componentKeys."
+                "description": "Optional Sonar issue-search query parameters encoded as a JSON object string. Common allowlisted filters include severities, statuses, types, tags, assignees, p, and ps; for example {\"severities\":[\"CRITICAL\"],\"p\":1,\"ps\":100}. The configured project always overrides componentKeys, and the result is one bounded raw Sonar issue-search object."
             }
         },
         "required": ["relative_url"],

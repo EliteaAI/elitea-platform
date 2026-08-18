@@ -534,8 +534,9 @@ SDK `tools/servicenow/api_wrapper.py::ServiceNowAPIWrapper` registers all three
 incident operations in this exact order:
 
 1. `get_incidents` (`read`) accepts an optional filter object;
-2. `create_incident` (`write`) accepts an optional string-valued field object,
-   including an intentional empty default incident;
+2. `create_incident` (`write`) accepts an optional bounded JSON field object,
+   including numeric or nested provider values and an intentional empty
+   default incident;
 3. `update_incident` (`write`) accepts a required `sys_id` and a JSON-object
    string of fields to update.
 
