@@ -42,7 +42,18 @@ is_allowlisted() {
 }
 
 fail=0
+scanned=0
+# Floor on the scan itself (issue #426). `set -euo pipefail` does NOT cover a
+# process substitution, so the old `done < <(git ls-tree -r HEAD)` form turned a
+# failed listing into zero iterations, fail=0 and "== no-binaries-check passed
+# ==". The listing is now read into a variable, where a git failure does abort
+# the script, and the count is asserted below. This repository tracks more than
+# six thousand files; 100 is far under any plausible tree and far over zero.
+MIN_SCANNED="${MIN_SCANNED:-100}"
+
 echo "== no-binaries-check: scanning tracked files (max ${MAX_BYTES} bytes) =="
+
+tree_listing="$(git ls-tree -r HEAD)"
 
 # Iterate real blobs only (skip submodules mode 160000 and symlinks 120000).
 # `git ls-tree -r HEAD` prints "<mode> <type> <object>\t<path>"; default IFS
@@ -52,6 +63,7 @@ while read -r mode _ _ path; do
   [[ "$mode" == "100644" || "$mode" == "100755" ]] || continue
   [[ -f "$path" ]] || continue
   is_allowlisted "$path" && continue
+  scanned=$((scanned+1))
 
   # BINARY: reuse git's own text/binary heuristic. `git grep -I` prints nothing
   # for binary blobs; if a search for "any byte" finds no text line, it's binary.
@@ -72,11 +84,19 @@ while read -r mode _ _ path; do
       "$path" "$sz" "$MAX_BYTES"
     fail=$((fail+1))
   fi
-done < <(git ls-tree -r HEAD)
+done <<<"$tree_listing"
+
+if (( scanned < MIN_SCANNED )); then
+  echo "FAIL: scanned only $scanned tracked files, under the floor of $MIN_SCANNED."
+  echo "   The listing stopped matching, so a clean result here proves nothing."
+  echo "   Check that 'git ls-tree -r HEAD' still prints the tree, and that the"
+  echo "   allowlist $ALLOW does not now cover the whole repository."
+  exit 1
+fi
 
 if (( fail > 0 )); then
   echo "== no-binaries-check FAILED: $fail violation(s). Untrack the file (git rm --cached),"
   echo "   add a .gitignore rule, or if it is a legitimate asset add it to $ALLOW. =="
   exit 1
 fi
-echo "== no-binaries-check passed =="
+echo "== no-binaries-check passed ($scanned files scanned) =="

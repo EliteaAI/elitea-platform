@@ -384,8 +384,10 @@
     // knip to get the ground-truth "still genuinely unused" list, rather
     // than guessing from the truncated config-hints output) after removing
     // the 16 entries below that already have real consumers.
+    // @lhci/cli is gone (issue #426). It was pinned for a "Bundle budget" step
+    // that never had a lighthouserc.json to run, so nothing ever invoked it.
+    // scripts/check-bundle-budget.mjs measures the built output instead.
     "@axe-core/playwright",
-    "@lhci/cli",
     "@swc/core",
     "dependency-cruiser",
     // Consumed by scripts/mutate-spotcheck.mjs via createRequire() (CommonJS
