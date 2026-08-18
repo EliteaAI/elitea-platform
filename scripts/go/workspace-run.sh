@@ -315,12 +315,14 @@ done
 # ledger and, under ELITEA_REQUIRE_DECLARED_SKIPS=1, fails on a skip that
 # scripts/go/declared-skips.txt does not explain.
 #
-# `vet` produces no test events, so it uses neither.
+# `vet` and `lint` produce no test events, so they use neither. The test is
+# positive, not a list of what to leave out: a mode added later that runs no
+# test must not be made to show a ledger it cannot fill.
 skip_ledger=""
 skip_filter=""
 skip_gate=""
 declared_skips="$repo_root/scripts/go/declared-skips.txt"
-if [ "$mode" != "vet" ]; then
+if [ "$mode" = "test" ] || [ "$mode" = "coverage" ]; then
     skip_filter="$script_dir/skip-ledger.py"
     skip_gate="$script_dir/skip-gate.py"
     for helper in "$skip_filter" "$skip_gate"; do
