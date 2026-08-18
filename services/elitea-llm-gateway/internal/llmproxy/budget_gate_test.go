@@ -77,7 +77,7 @@ func (f *fakeBudgetChecker) CheckBudget(_ context.Context, projectID int, _, _ s
 	return f.checkVerdict, f.checkErr
 }
 
-func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, _, _, _ string, costNano, _, _ int64) error {
+func (f *fakeBudgetChecker) UpdateUsage(_ context.Context, projectID int, scope, _, _ string, costNano, _, _ int64, dims *failmode.UsageDimensions) error {
 	f.updateCalls.Add(1)
 	f.mu.Lock()
 	f.lastUpdateProjectID = projectID
@@ -116,7 +116,7 @@ func (b *blockingBudgetChecker) CheckBudget(_ context.Context, _ int, _, _ strin
 	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
 }
 
-func (b *blockingBudgetChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, _, _, _ int64) error {
+func (b *blockingBudgetChecker) UpdateUsage(_ context.Context, _ int, _, _, _ string, _, _, _ int64, _ *failmode.UsageDimensions) error {
 	b.updateCalls.Add(1)
 	b.once.Do(func() { close(b.updated) })
 	return nil
@@ -482,7 +482,7 @@ func (d *deadlineCapturingBudgetChecker) CheckBudget(ctx context.Context, _ int,
 	return failmode.Decision{Verdict: failmode.Allow, State: failmode.StateNATSHealthy}, nil
 }
 
-func (d *deadlineCapturingBudgetChecker) UpdateUsage(ctx context.Context, _ int, _, _, _ string, _, _, _ int64) error {
+func (d *deadlineCapturingBudgetChecker) UpdateUsage(ctx context.Context, _ int, _, _, _ string, _, _, _ int64, _ *failmode.UsageDimensions) error {
 	dl, _ := ctx.Deadline()
 	d.mu.Lock()
 	d.updateUsageDeadline = dl
@@ -1175,13 +1175,13 @@ type slowFakeBudgetChecker struct {
 	proceed chan struct{}
 }
 
-func (s *slowFakeBudgetChecker) UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano, periodStart, periodEnd int64) error {
+func (s *slowFakeBudgetChecker) UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano, periodStart, periodEnd int64, dims *failmode.UsageDimensions) error {
 	// Block until the test says to continue (simulates a slow NATS round-trip).
 	select {
 	case <-s.proceed:
 	case <-ctx.Done():
 	}
-	return s.fakeBudgetChecker.UpdateUsage(ctx, projectID, scope, scopeID, eventID, costNano, periodStart, periodEnd)
+	return s.fakeBudgetChecker.UpdateUsage(ctx, projectID, scope, scopeID, eventID, costNano, periodStart, periodEnd, dims)
 }
 
 // TestDrainBilling_WaitsForInFlightGoroutine is the Fix round-3 #3 integration

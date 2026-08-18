@@ -310,10 +310,16 @@ components:
             enforced:
               type: boolean
               description: |
-                FALSE for as long as the gateway admits and bills by project
-                scope alone. A per-member limit is stored and read back
-                faithfully, but nothing blocks a call on it — render it as
-                authored-but-inactive rather than as a live ceiling.
+                TRUE since issue #321: the gateway reads this limit on every
+                LLM call that carries a member id, refuses an over-cap member
+                with 402 `member_budget_exceeded`, and bills a member-scoped
+                accumulator alongside the project one.
+
+                It stays a field rather than a constant so a client renders
+                what is true of the deployment it is talking to. A call that
+                carries no resolvable member — a token-authenticated
+                integration, a service account — has no member cap to apply and
+                remains bounded by the project ceiling alone.
         - $ref: '#/components/schemas/BudgetState'
 
     BudgetWrite:
@@ -405,7 +411,7 @@ components:
                 type: string
             enforced:
               type: boolean
-              description: See MemberBudget.enforced — always false today.
+              description: See MemberBudget.enforced.
         - $ref: '#/components/schemas/BudgetState'
 
     MemberBudgetListing:
@@ -445,7 +451,109 @@ components:
               type: string
               enum: [monthly]
               description: Present for scope=project only.
+        - $ref: '#/components/schemas/UsageDimensions'
         - $ref: '#/components/schemas/BudgetState'
+
+    UsageDimensions:
+      type: object
+      required: [usage_events_available]
+      description: |
+        The per-model, per-day and per-token views, from the per-request usage
+        ledger (issue #320). Before that ledger existed the platform kept one
+        accumulated figure per scope and period, and these views could not be
+        populated at all.
+
+        Every field except `usage_events_available` is ABSENT when the ledger
+        holds no row for the scope in this period. Read the flag first.
+      properties:
+        usage_events_available:
+          type: boolean
+          description: |
+            Whether the ledger holds any row for this scope in this period.
+            FALSE means no data, which is NOT the same claim as no calls — the
+            accumulated `spend` may still be non-zero for a period that began
+            before the ledger did.
+        prompt_tokens:
+          type: integer
+          format: int64
+          description: Provider-reported prompt tokens for the period. Never estimated.
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
+          description: Billed requests in the period.
+        daily:
+          type: array
+          description: |
+            One entry per day that had at least one call. Days with no calls are
+            omitted rather than zero-filled: the period runs to the end of the
+            calendar month, and a zero for a day nobody could have used yet is a
+            claim about the future.
+          items:
+            $ref: '#/components/schemas/UsageDailyEntry'
+        models:
+          type: array
+          description: One entry per (provider, model) billed in the period, ordered by spend.
+          items:
+            $ref: '#/components/schemas/UsageModelEntry'
+
+    UsageDailyEntry:
+      type: object
+      required: [date, total_tokens, api_requests, prompt_tokens, completion_tokens]
+      properties:
+        date:
+          type: string
+          format: date
+          description: The UTC calendar day, the zone billing periods are computed in.
+        spend:
+          type: number
+          nullable: true
+          description: |
+            USD for the day. REMOVED for a caller who may not see amounts, like
+            every other money field.
+        prompt_tokens:
+          type: integer
+          format: int64
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
+
+    UsageModelEntry:
+      type: object
+      required: [provider, model, total_tokens, api_requests, prompt_tokens, completion_tokens]
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        spend:
+          type: number
+          nullable: true
+          description: |
+            USD for the model. REMOVED for a caller who may not see amounts.
+        prompt_tokens:
+          type: integer
+          format: int64
+        completion_tokens:
+          type: integer
+          format: int64
+        total_tokens:
+          type: integer
+          format: int64
+        api_requests:
+          type: integer
+          format: int64
 
     AnalyticsCostBreakdown:
       type: object
@@ -7034,16 +7142,24 @@ paths:
         date range is accepted.
 
         `scope=project` reports the whole project; `scope=user` reports only the
-        calling member's own budget within it — which is NOT enforced (see
-        `enforced`) and reports no spend of its own, because the billing path
-        accrues by project.
+        calling member's own budget within it.
+
+        The dimensional views — `daily`, `models` and the token totals — come
+        from the per-request usage ledger added by issue #320. They are ABSENT,
+        not empty, when the ledger holds no row for the scope in this period:
+        an empty series reads as "no calls were made", which is a different and
+        wrong claim about a deployment upgraded part-way through a period.
+        `usage_events_available` says which case the payload is in, exactly as
+        `spend_available` distinguishes "no spend yet" from "no data".
 
         A member who may not see platform cost figures receives the same payload
         with `monthly_limit`, `effective_limit`, `spend`, `remaining` and
-        `currency` REMOVED and `can_see_amounts: false`; percentages, the
-        warning threshold and the period are still present, so the usage bar
-        still renders. Project admins, and the owner of a personal project, see
-        the amounts.
+        `currency` REMOVED and `can_see_amounts: false`; the `spend` inside each
+        `daily` and `models` row is removed too, because leaving the same money
+        in a per-day series would make the control decorative. Percentages, the
+        warning threshold, the period and the token counts are still present, so
+        the usage bar and the charts still render. Project admins, and the owner
+        of a personal project, see the amounts.
       tags: [budgets]
       parameters:
         - name: scope

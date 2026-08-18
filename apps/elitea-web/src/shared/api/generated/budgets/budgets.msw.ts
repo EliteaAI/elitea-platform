@@ -666,6 +666,57 @@ export const getGetProjectUsageResponseMock = (): UsageReport => ({
     ]),
   },
   ...{
+    usage_events_available: faker.datatype.boolean(),
+    prompt_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
+    completion_tokens: faker.helpers.arrayElement([
+      faker.number.int(),
+      undefined,
+    ]),
+    total_tokens: faker.helpers.arrayElement([faker.number.int(), undefined]),
+    api_requests: faker.helpers.arrayElement([faker.number.int(), undefined]),
+    daily: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        date: faker.date.past().toISOString().slice(0, 10),
+        spend: faker.helpers.arrayElement([
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
+        ]),
+        prompt_tokens: faker.number.int(),
+        completion_tokens: faker.number.int(),
+        total_tokens: faker.number.int(),
+        api_requests: faker.number.int(),
+      })),
+      undefined,
+    ]),
+    models: faker.helpers.arrayElement([
+      Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        provider: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        model: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        spend: faker.helpers.arrayElement([
+          faker.helpers.arrayElement([
+            faker.number.float({ fractionDigits: 2 }),
+            null,
+          ]),
+          undefined,
+        ]),
+        prompt_tokens: faker.number.int(),
+        completion_tokens: faker.number.int(),
+        total_tokens: faker.number.int(),
+        api_requests: faker.number.int(),
+      })),
+      undefined,
+    ]),
+  },
+  ...{
     ...{
       period: faker.string.alpha({ length: { min: 10, max: 20 } }),
       period_start: faker.string.alpha({ length: { min: 10, max: 20 } }),

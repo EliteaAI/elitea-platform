@@ -1025,8 +1025,12 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// is platform-wide rather than project-scoped. The permission
 				// string does not change.
 				// shared/0082_admin_panel_permissions.sql grants it.
+				// The store is built over the shared pool because the config it
+				// holds is global and durable (issue #322). It used to be a
+				// process-local struct, which made a PUT a per-replica opinion
+				// that a restart discarded.
 				if cfg.BudgetAlertStore == nil {
-					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
+					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore(cfg.Pool)
 				}
 				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
 				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)

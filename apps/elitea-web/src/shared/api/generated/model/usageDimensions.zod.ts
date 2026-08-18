@@ -40,25 +40,44 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { BudgetState } from "./budgetState.zod";
-import { UsageDimensions } from "./usageDimensions.zod";
+import { UsageDailyEntry } from "./usageDailyEntry.zod";
+import { UsageModelEntry } from "./usageModelEntry.zod";
 
-export const UsageReport = zod
+export const UsageDimensions = zod
   .object({
-    project_id: zod.int(),
-    user_id: zod.int().nullable().describe("Null for scope=project."),
-    scope: zod.enum(["project", "user"]),
-    enforced: zod
+    usage_events_available: zod
       .boolean()
+      .describe(
+        "Whether the ledger holds any row for this scope in this period.\nFALSE means no data, which is NOT the same claim as no calls — the\naccumulated `spend` may still be non-zero for a period that began\nbefore the ledger did.\n",
+      ),
+    prompt_tokens: zod
+      .int()
       .optional()
-      .describe("Present for scope=user only. See MemberBudget.enforced."),
-    budget_period: zod
-      .enum(["monthly"])
+      .describe(
+        "Provider-reported prompt tokens for the period. Never estimated.",
+      ),
+    completion_tokens: zod.int().optional(),
+    total_tokens: zod.int().optional(),
+    api_requests: zod
+      .int()
       .optional()
-      .describe("Present for scope=project only."),
+      .describe("Billed requests in the period."),
+    daily: zod
+      .array(UsageDailyEntry)
+      .optional()
+      .describe(
+        "One entry per day that had at least one call. Days with no calls are\nomitted rather than zero-filled: the period runs to the end of the\ncalendar month, and a zero for a day nobody could have used yet is a\nclaim about the future.\n",
+      ),
+    models: zod
+      .array(UsageModelEntry)
+      .optional()
+      .describe(
+        "One entry per (provider, model) billed in the period, ordered by spend.",
+      ),
   })
-  .and(UsageDimensions)
-  .and(BudgetState);
+  .describe(
+    "The per-model, per-day and per-token views, from the per-request usage\nledger (issue #320). Before that ledger existed the platform kept one\naccumulated figure per scope and period, and these views could not be\npopulated at all.\n\nEvery field except `usage_events_available` is ABSENT when the ledger\nholds no row for the scope in this period. Read the flag first.\n",
+  );
 
-export type UsageReport = zod.input<typeof UsageReport>;
-export type UsageReportOutput = zod.output<typeof UsageReport>;
+export type UsageDimensions = zod.input<typeof UsageDimensions>;
+export type UsageDimensionsOutput = zod.output<typeof UsageDimensions>;

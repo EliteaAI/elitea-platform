@@ -40,25 +40,24 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { BudgetState } from "./budgetState.zod";
-import { UsageDimensions } from "./usageDimensions.zod";
 
-export const UsageReport = zod
-  .object({
-    project_id: zod.int(),
-    user_id: zod.int().nullable().describe("Null for scope=project."),
-    scope: zod.enum(["project", "user"]),
-    enforced: zod
-      .boolean()
-      .optional()
-      .describe("Present for scope=user only. See MemberBudget.enforced."),
-    budget_period: zod
-      .enum(["monthly"])
-      .optional()
-      .describe("Present for scope=project only."),
-  })
-  .and(UsageDimensions)
-  .and(BudgetState);
+export const UsageDailyEntry = zod.object({
+  date: zod.iso
+    .date()
+    .describe(
+      "The UTC calendar day, the zone billing periods are computed in.",
+    ),
+  spend: zod
+    .number()
+    .nullish()
+    .describe(
+      "USD for the day. REMOVED for a caller who may not see amounts, like\nevery other money field.\n",
+    ),
+  prompt_tokens: zod.int(),
+  completion_tokens: zod.int(),
+  total_tokens: zod.int(),
+  api_requests: zod.int(),
+});
 
-export type UsageReport = zod.input<typeof UsageReport>;
-export type UsageReportOutput = zod.output<typeof UsageReport>;
+export type UsageDailyEntry = zod.input<typeof UsageDailyEntry>;
+export type UsageDailyEntryOutput = zod.output<typeof UsageDailyEntry>;

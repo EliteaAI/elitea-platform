@@ -18,7 +18,6 @@ import { createStorage } from '../../lib/storage';
 
 import { createBroadcastChannel } from './channel';
 import type { AuthChannelLike } from './channel';
-import { isLoggingOut } from './logout';
 import {
   AUTH_CALLBACK_PATH,
   AUTH_CHANNEL_PREFIX,
@@ -82,12 +81,7 @@ const DEFAULT_FLIGHT_TTL_MS = 120_000;
  */
 const DEFAULT_CLOSE_GRACE_MS = 5000;
 
-export type AuthPopupFailureReason =
-  | 'popup_blocked'
-  | 'popup_closed'
-  | 'auth_failed'
-  /** The document is logging out; see `reauthenticate()` and issue #482. */
-  | 'logging_out';
+export type AuthPopupFailureReason = 'popup_blocked' | 'popup_closed' | 'auth_failed';
 
 export class AuthPopupError extends Error {
   readonly reason: AuthPopupFailureReason;
@@ -338,20 +332,6 @@ export function createAuthPopupController(options: AuthPopupOptions = {}): AuthP
 
   return {
     reauthenticate() {
-      // A document that is logging out must NOT start a new flight (issue
-      // #482). The logout endpoint clears the session cookie on the first hop
-      // of a redirect chain that this document lives through, so every request
-      // the page still has open then answers 401 — and each of those 401s
-      // arrives here. Without this line the flight writes
-      // `el.auth.state` and `el.auth.flight.started` back into the namespace
-      // `performLogout()` has just swept, and the signed-out user is shown a
-      // sign-in popup. Measured on WebKit: 2 failures in 60 runs of journey
-      // J4, both with exactly those two keys surviving.
-      //
-      // It is placed BEFORE the single-flight check on purpose: a flight that
-      // was already running when the user pressed "Log out" must not be
-      // handed to a new caller either.
-      if (isLoggingOut()) return Promise.reject(new AuthPopupError('logging_out'));
       // Controller-level single-flight (§5.4 behaviour 3 backstop; the HTTP
       // client also single-flights across its own concurrent 401s).
       if (flight !== null) return flight;

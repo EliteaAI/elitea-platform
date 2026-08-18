@@ -210,7 +210,8 @@ func (d *integDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	snap := d.snap
 	// Encode in the column order failmode.Store.ReadSnapshot scans:
 	//   is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-	//   nats_fail_mode (*string / NULL), acc_found, age_seconds
+	//   nats_fail_mode (*string / NULL), acc_found, age_seconds,
+	//   soft_alerts_disabled
 	var natsFM any // nil untyped interface → SQL NULL
 	return intRow{vals: []any{
 		snap.IsUnlimited,
@@ -220,6 +221,7 @@ func (d *integDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 		natsFM,
 		snap.Found,
 		snap.Age.Seconds(),
+		snap.SoftAlertsDisabled,
 	}}
 }
 

@@ -418,3 +418,217 @@ func newMigratedPool(t *testing.T) *pgxpool.Pool {
 	}
 	return pool
 }
+
+// TestMigrationCorpusBuildsUsageLedgerAndAlertConfig is the fourth subject of
+// this file and the same shape as the third: shared/0084 adds the per-request
+// usage ledger the /llm billing path writes on every call (issue #320), relaxes
+// the two soft-alert thresholds so a platform default can reach a project that
+// authored none (#322), and seeds the global alert row the gateway's snapshot
+// query joins.
+//
+// It runs against the corpus applied to an EMPTY database, which is the only
+// arrangement that can fail: every dev and dump-loaded database already carries
+// gateway.governance_config, so a migration that created nothing would look
+// correct everywhere except a fresh Helm install.
+//
+// Behaviour, not shape. The ledger insert is executed twice under one event id,
+// so a missing PRIMARY KEY fails here rather than duplicating a request in the
+// per-model table; and a NULL threshold is stored, which 0067's NOT NULL
+// refuses.
+func TestMigrationCorpusBuildsUsageLedgerAndAlertConfig(t *testing.T) {
+	pool := newMigratedPool(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// services/elitea-scheduler/internal/budgetwriteback/store.go usageEventSQL
+	// and services/elitea-llm-gateway/internal/failmode/store.go
+	// usageEventInsertSQL, which are the same statement, with the nanoUSDPerUSD
+	// constant inlined.
+	const usageInsert = `INSERT INTO gateway.llm_usage_events
+		(event_id, project_id, user_id, provider, model,
+		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / 1000000000,
+		to_timestamp($9), to_timestamp($10))
+	ON CONFLICT (event_id) DO NOTHING`
+
+	const (
+		eventID     = "9c4b1f2e-0000-4000-8000-00000000abcd"
+		projectID   = 8407
+		userID      = 55
+		periodStart = 1767225600 // 2026-01-01T00:00:00Z
+		periodEnd   = 1769904000 // 2026-02-01T00:00:00Z
+	)
+
+	t.Run("usage ledger accepts a billed request", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, usageInsert, eventID, projectID, userID,
+			"openai", "gpt-4o", 100, 200, 1_500_000_000, periodStart, periodEnd); err != nil {
+			t.Fatalf("write a usage-ledger row: %v", err)
+		}
+
+		// The nano-USD → USD division must land exactly, and total_tokens must
+		// be computed by Postgres rather than supplied.
+		var costUSD string
+		var totalTokens int64
+		if err := pool.QueryRow(ctx,
+			`SELECT cost_usd::text, total_tokens FROM gateway.llm_usage_events WHERE event_id = $1`,
+			eventID).Scan(&costUSD, &totalTokens); err != nil {
+			t.Fatalf("read the usage-ledger row back: %v", err)
+		}
+		if costUSD != "1.50000000" {
+			t.Fatalf("cost_usd = %s, want 1.50000000 — the nano-USD conversion is inexact", costUSD)
+		}
+		if totalTokens != 300 {
+			t.Fatalf("total_tokens = %d, want 300 computed from its own parts", totalTokens)
+		}
+	})
+
+	t.Run("a redelivered event does not duplicate the row", func(t *testing.T) {
+		// The gateway's outage path and the scheduler's consumer can both write
+		// the same event. Without the PRIMARY KEY this second insert succeeds
+		// and every per-model figure for that request doubles.
+		if _, err := pool.Exec(ctx, usageInsert, eventID, projectID, userID,
+			"openai", "gpt-4o", 100, 200, 1_500_000_000, periodStart, periodEnd); err != nil {
+			t.Fatalf("re-apply the same usage event: %v", err)
+		}
+		var rows int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM gateway.llm_usage_events WHERE event_id = $1`, eventID).Scan(&rows); err != nil {
+			t.Fatal(err)
+		}
+		if rows != 1 {
+			t.Fatalf("the ledger holds %d rows for one event id, want 1", rows)
+		}
+	})
+
+	t.Run("a call with no member is stored as NULL", func(t *testing.T) {
+		const anonEvent = "9c4b1f2e-0000-4000-8000-00000000bcde"
+		if _, err := pool.Exec(ctx, usageInsert, anonEvent, projectID, nil,
+			"openai", "gpt-4o", 1, 2, 1, periodStart, periodEnd); err != nil {
+			t.Fatalf("write a usage event with no member: %v", err)
+		}
+		var userIDIsNull bool
+		if err := pool.QueryRow(ctx,
+			`SELECT user_id IS NULL FROM gateway.llm_usage_events WHERE event_id = $1`,
+			anonEvent).Scan(&userIDIsNull); err != nil {
+			t.Fatal(err)
+		}
+		if !userIDIsNull {
+			t.Fatal("a call with no member was stored as a member; the per-member views would attribute it to a user")
+		}
+	})
+
+	t.Run("the retention prune touches only the ledger", func(t *testing.T) {
+		// services/elitea-scheduler/internal/budgetwriteback/store.go
+		// pruneUsageEventsSQL, with the interval and the batch bound supplied.
+		const prune = `DELETE FROM gateway.llm_usage_events
+			WHERE event_id IN (
+				SELECT event_id FROM gateway.llm_usage_events
+				WHERE occurred_at < now() - make_interval(secs => $1)
+				LIMIT $2
+			)`
+		const oldEvent = "9c4b1f2e-0000-4000-8000-00000000cdef"
+		if _, err := pool.Exec(ctx, usageInsert, oldEvent, projectID, userID,
+			"openai", "gpt-4o", 1, 1, 1, periodStart, periodEnd); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx,
+			`UPDATE gateway.llm_usage_events SET occurred_at = now() - interval '500 days' WHERE event_id = $1`,
+			oldEvent); err != nil {
+			t.Fatal(err)
+		}
+
+		tag, err := pool.Exec(ctx, prune, (400 * 24 * time.Hour).Seconds(), 5000)
+		if err != nil {
+			t.Fatalf("run the retention prune: %v", err)
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("the prune removed %d rows, want the 1 past retention", tag.RowsAffected())
+		}
+		// The rows inside the window survive.
+		var remaining int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM gateway.llm_usage_events WHERE project_id = $1`, projectID).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 2 {
+			t.Fatalf("%d rows remain, want the 2 inside the retention window", remaining)
+		}
+	})
+
+	t.Run("soft-alert thresholds accept NULL", func(t *testing.T) {
+		// Under 0067 both columns are NOT NULL DEFAULT 80, so "this scope
+		// authored no threshold" cannot be stored and the platform default
+		// documented on PUT /admin/gateway/budget-alerts can never apply.
+		if _, err := pool.Exec(ctx, `
+INSERT INTO gateway.project_budget (project_id, hard_limit_usd, is_unlimited, enabled, soft_alert_pct)
+VALUES ($1, 10.00, false, true, NULL)`, projectID); err != nil {
+			t.Fatalf("store a project budget with no authored threshold: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO gateway.user_budget (project_id, user_id, hard_limit_usd, enabled, soft_alert_pct)
+VALUES ($1, $2, 5.00, true, NULL)`, projectID, userID); err != nil {
+			t.Fatalf("store a member budget with no authored threshold: %v", err)
+		}
+	})
+
+	t.Run("the global alert row is seeded", func(t *testing.T) {
+		// The three key values are the contract between the elitea-main writer
+		// (internal/api/gateway/budget_alerts.go) and the gateway reader
+		// (failmode/store.go globalAlertConfigSQL). A GET before the first PUT
+		// must answer with the values the old in-process store returned.
+		var enabled bool
+		var thresholdPct int
+		err := pool.QueryRow(ctx, `
+SELECT (data->>'enabled')::boolean, (data->>'threshold_pct')::smallint
+FROM gateway.governance_config
+WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global' AND enabled`).
+			Scan(&enabled, &thresholdPct)
+		if err != nil {
+			t.Fatalf("the global budget-alert row was not seeded: %v", err)
+		}
+		if !enabled || thresholdPct != 80 {
+			t.Fatalf("seeded config = (enabled=%v, threshold=%d), want (true, 80)", enabled, thresholdPct)
+		}
+	})
+
+	t.Run("the per-member admission read resolves a member cap", func(t *testing.T) {
+		// services/elitea-llm-gateway/internal/failmode/store.go
+		// userSnapshotSQL, trimmed to the join and the derived is_unlimited.
+		// The gateway is outside go.work so this cannot import the constant;
+		// executing it here is what stops the two from drifting silently.
+		const memberSnapshot = `
+SELECT (ub.hard_limit_usd IS NULL OR NOT ub.enabled)                AS is_unlimited,
+       COALESCE((ub.hard_limit_usd * 1000000000::numeric)::bigint, 0) AS hard_limit_nano,
+       COALESCE(ub.soft_alert_pct, ga.threshold_pct, 80)            AS soft_alert_pct,
+       pb.nats_fail_mode
+FROM gateway.user_budget ub
+LEFT JOIN gateway.project_budget pb ON pb.project_id = ub.project_id
+LEFT JOIN (
+    SELECT (data->>'enabled')::boolean        AS alerts_enabled,
+           (data->>'threshold_pct')::smallint AS threshold_pct
+    FROM gateway.governance_config
+    WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global' AND enabled
+) ga ON true
+WHERE ub.project_id = $1 AND ub.user_id = $2`
+
+		var isUnlimited bool
+		var hardLimitNano int64
+		var softAlertPct int
+		var failMode *string
+		if err := pool.QueryRow(ctx, memberSnapshot, projectID, userID).
+			Scan(&isUnlimited, &hardLimitNano, &softAlertPct, &failMode); err != nil {
+			t.Fatalf("the gateway's per-member admission read failed: %v", err)
+		}
+		if isUnlimited {
+			t.Fatal("a member with an enabled 5.00 cap resolved as unlimited; the cap would never bite")
+		}
+		if hardLimitNano != 5_000_000_000 {
+			t.Fatalf("hard_limit_nano = %d, want 5e9 for a 5.00 USD cap", hardLimitNano)
+		}
+		// The member authored no threshold, so the seeded global default applies.
+		if softAlertPct != 80 {
+			t.Fatalf("soft_alert_pct = %d, want the global default 80", softAlertPct)
+		}
+	})
+}

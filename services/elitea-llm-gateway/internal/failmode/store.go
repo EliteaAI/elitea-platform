@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,15 +27,97 @@ const snapshotSQL = `SELECT
 		pb.is_unlimited,
 		COALESCE((pb.hard_limit_usd * $5::numeric)::bigint, 0)      AS hard_limit_nano,
 		COALESCE((acc.accumulated_cost * $5::numeric)::bigint, 0)   AS accumulated_nano,
-		pb.soft_alert_pct,
+		COALESCE(pb.soft_alert_pct, ga.threshold_pct, ` + defaultSoftAlertPctSQL + `) AS soft_alert_pct,
 		pb.nats_fail_mode,
 		acc.id IS NOT NULL                                          AS acc_found,
-		COALESCE(EXTRACT(EPOCH FROM (now() - acc.last_updated)), 0) AS age_seconds
+		COALESCE(EXTRACT(EPOCH FROM (now() - acc.last_updated)), 0) AS age_seconds,
+		NOT COALESCE(ga.alerts_enabled, true)                       AS soft_alerts_disabled
 	FROM gateway.project_budget pb
 	LEFT JOIN gateway.llm_budget_accumulators acc
 		ON acc.scope = $2 AND acc.scope_id = $3
 		AND acc.period_start = to_timestamp($4)
+	LEFT JOIN ` + globalAlertConfigSQL + ` ga ON true
 	WHERE pb.project_id = $1`
+
+// defaultSoftAlertPctSQL is the last-resort threshold, used when neither the
+// project nor the persisted global config names one. It matches
+// fsm.Decide's own 0-or-out-of-range fallback, so the two cannot disagree.
+const defaultSoftAlertPctSQL = `80`
+
+// globalAlertConfigSQL is the platform soft-alert config (issue #322): the one
+// global gateway.governance_config row that PUT /admin/gateway/budget-alerts
+// writes. It is joined into every snapshot read rather than cached in-process,
+// because the whole defect being fixed is a value that diverged per replica.
+// The lookup is a single-row unique-key probe on a table the gateway already
+// opens a pool against, in the same round trip as the budget read.
+//
+// It is uncorrelated, so it is a plain subquery join, not LATERAL. Both fields
+// are read as NULL-able: a deployment whose migration seeded no row, or an
+// operator who saved only one of the two keys, falls back to the shipped
+// defaults rather than to a zero that would read as "alerts off, threshold 0".
+//
+// BOTH CASTS ARE GUARDED, and the guard is the difference between one bad row
+// and a platform outage. This subquery runs inside the snapshot read on EVERY
+// /llm call, and a bare `(data->>'threshold_pct')::smallint` over a value that
+// is not a number raises 22P02 — which fails the snapshot, which fails closed,
+// which 503s every request for every project until somebody finds the row. The
+// authoring API validates 1..100, but this JSONB column is reachable by direct
+// SQL and by any future writer, so the hot path does not depend on that
+// validation. A value that fails the guard reads as NULL and falls back to the
+// shipped default, exactly as a missing key does.
+//
+// The `{1,3}` length bound is part of the guard, not decoration: '99999'
+// matches `^[0-9]+$` and then overflows smallint, raising 22003 from the same
+// place.
+const globalAlertConfigSQL = `(
+		SELECT CASE WHEN data->>'enabled' IN ('true','false')
+		            THEN (data->>'enabled')::boolean END       AS alerts_enabled,
+		       CASE WHEN data->>'threshold_pct' ~ '^[0-9]{1,3}$'
+		             AND (data->>'threshold_pct')::int BETWEEN 1 AND 100
+		            THEN (data->>'threshold_pct')::smallint END AS threshold_pct
+		FROM gateway.governance_config
+		WHERE section = 'governance' AND type = 'budget_alert' AND name = 'global'
+		  AND enabled
+	)`
+
+// userSnapshotSQL is the per-member counterpart of snapshotSQL (issue #321).
+// It answers the same question against gateway.user_budget, so the FSM's whole
+// tiered-hybrid state table — including the acc_found / age_seconds durable
+// tier — applies unchanged to a member cap.
+//
+// Three columns are derived rather than stored, because gateway.user_budget
+// carries neither:
+//
+//   - is_unlimited: (hard_limit_usd IS NULL OR NOT enabled), the same rule the
+//     elitea-main member read derives it with (budgets/user_budgets.go
+//     userLimitJoin). Deriving it in both places from the same expression is
+//     what keeps the API's `enforced` flag and the gateway's admission from
+//     disagreeing about whether a member cap bites.
+//   - nats_fail_mode: taken from the OWNING PROJECT's row. A member cap sits
+//     inside a project, so it must degrade the way that project degrades; a
+//     member cap that fails closed inside a fail_open project would block calls
+//     the project's own policy says to admit.
+//   - soft_alert_pct: the member's own value, then the global default.
+//
+// $1 project_id, $2 scope, $3 scope_id, $4 period_start (unix seconds),
+// $5 nano-USD scale, $6 user_id.
+const userSnapshotSQL = `SELECT
+		(ub.hard_limit_usd IS NULL OR NOT ub.enabled)                AS is_unlimited,
+		COALESCE((ub.hard_limit_usd * $5::numeric)::bigint, 0)       AS hard_limit_nano,
+		COALESCE((acc.accumulated_cost * $5::numeric)::bigint, 0)    AS accumulated_nano,
+		COALESCE(ub.soft_alert_pct, ga.threshold_pct, ` + defaultSoftAlertPctSQL + `) AS soft_alert_pct,
+		pb.nats_fail_mode,
+		acc.id IS NOT NULL                                           AS acc_found,
+		COALESCE(EXTRACT(EPOCH FROM (now() - acc.last_updated)), 0)  AS age_seconds,
+		NOT COALESCE(ga.alerts_enabled, true)                        AS soft_alerts_disabled
+	FROM gateway.user_budget ub
+	LEFT JOIN gateway.project_budget pb
+		ON pb.project_id = ub.project_id
+	LEFT JOIN gateway.llm_budget_accumulators acc
+		ON acc.scope = $2 AND acc.scope_id = $3
+		AND acc.period_start = to_timestamp($4)
+	LEFT JOIN ` + globalAlertConfigSQL + ` ga ON true
+	WHERE ub.project_id = $1 AND ub.user_id = $6`
 
 // outageUpsertSQL is the delta-accumulating outage-window UPSERT (design §8.5).
 // It writes outage_mode=true so the write-back consumer (§8.6) skips the row
@@ -58,10 +142,58 @@ var outageUpsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_budget_accumulators A
 		reconciliation_in_progress = false,
 		last_updated = now()`, NanoUSD)
 
-// ErrNoBudgetRow is returned by ReadSnapshot when the project has no
-// project_budget config row at all. The caller treats a project with no budget
-// config as unlimited (there is nothing to enforce).
-var ErrNoBudgetRow = errors.New("failmode: no project_budget row")
+// ErrNoBudgetRow is returned by ReadSnapshot when the scope has no budget
+// config row at all. The caller treats a scope with no budget config as
+// unlimited (there is nothing to enforce).
+var ErrNoBudgetRow = errors.New("failmode: no budget row")
+
+// The two budget scopes the gateway admits and bills against. They are the
+// `scope` column of gateway.llm_budget_accumulators, and they must stay spelled
+// exactly as elitea-main's budgets API spells them (internal/api/v2/budgets:
+// budgetScopeProject / budgetScopeUser) — that API reads the accumulator rows
+// this gateway writes, and a different spelling would report zero spend against
+// a real limit.
+const (
+	// ScopeProject bills the whole project. Its scope_id is the numeric project
+	// id as text.
+	ScopeProject = "project"
+	// ScopeUser bills one member within one project (issue #321). Its scope_id
+	// is "{project_id}:{user_id}" — see UserScopeID.
+	ScopeUser = "user"
+)
+
+// UserScopeID builds the accumulator scope_id for a member within a project.
+// The "{project_id}:{user_id}" shape is fixed by elitea-main's member reads
+// (budgets/user_budgets.go userBudgetPageSQL joins on
+// `$1::text || ':' || member.id::text`), which have been asking for these rows
+// since #246 and reading spend_available=false because nothing wrote them.
+func UserScopeID(projectID, userID int) string {
+	return strconv.Itoa(projectID) + ":" + strconv.Itoa(userID)
+}
+
+// UserIDFromScopeID recovers the member id from a user-scope scope_id. It
+// reports false for anything that is not "{project_id}:{user_id}" with a
+// positive member id, so a malformed key becomes an error rather than a lookup
+// of member 0.
+func UserIDFromScopeID(scopeID string) (int, bool) {
+	head, rest, found := strings.Cut(scopeID, ":")
+	if !found {
+		return 0, false
+	}
+	// Both halves are validated even though only the member id is returned. The
+	// caller already knows the project; checking it here is what makes this
+	// function a test of "is this a well-formed member key" rather than "does
+	// this string end in a number", so a truncated or mis-joined key is caught
+	// instead of resolving to a real member of the wrong project.
+	if projectID, err := strconv.Atoi(head); err != nil || projectID <= 0 {
+		return 0, false
+	}
+	userID, err := strconv.Atoi(rest)
+	if err != nil || userID <= 0 {
+		return 0, false
+	}
+	return userID, true
+}
 
 // Store reads budget snapshots and persists outage-window deltas against the
 // durable accumulator tier. It is the FSM's Postgres side.
@@ -75,8 +207,27 @@ func NewStore(db DB) *Store { return &Store{db: db} }
 // ReadSnapshot point-reads the applicable budget scope for a project/period.
 // It runs off a transaction (a single hot-path read must not hold a tx) and is
 // intended to be wrapped in the caller's OpTimeout-bounded context.
+//
+// The scope selects the limit table (issue #321): ScopeProject reads
+// gateway.project_budget, ScopeUser reads gateway.user_budget for the member
+// named in scopeID. Everything downstream — the accumulator join, the FSM, the
+// write-back and the outage recovery — is already keyed by (scope, scope_id)
+// and needs no per-scope branch.
 func (s *Store) ReadSnapshot(ctx context.Context, projectID int, scope, scopeID string, periodStartUnix int64) (Snapshot, error) {
-	row := s.db.QueryRow(ctx, snapshotSQL, projectID, scope, scopeID, periodStartUnix, NanoUSD)
+	var row Row
+	switch scope {
+	case ScopeUser:
+		userID, ok := UserIDFromScopeID(scopeID)
+		if !ok {
+			// A user-scoped read whose scope_id is not "{project}:{member}"
+			// cannot name a row. Reporting "no budget row" (⇒ unlimited) would
+			// silently admit a capped member, so this is an error.
+			return Snapshot{}, fmt.Errorf("failmode: malformed user scope_id %q", scopeID)
+		}
+		row = s.db.QueryRow(ctx, userSnapshotSQL, projectID, scope, scopeID, periodStartUnix, NanoUSD, userID)
+	default:
+		row = s.db.QueryRow(ctx, snapshotSQL, projectID, scope, scopeID, periodStartUnix, NanoUSD)
+	}
 
 	var (
 		isUnlimited   bool
@@ -86,8 +237,9 @@ func (s *Store) ReadSnapshot(ctx context.Context, projectID int, scope, scopeID 
 		natsFailMode  *string
 		accFound      bool
 		ageSeconds    float64
+		alertsOff     bool
 	)
-	if err := row.Scan(&isUnlimited, &hardLimitNano, &accumNano, &softAlertPct, &natsFailMode, &accFound, &ageSeconds); err != nil {
+	if err := row.Scan(&isUnlimited, &hardLimitNano, &accumNano, &softAlertPct, &natsFailMode, &accFound, &ageSeconds, &alertsOff); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return Snapshot{}, ErrNoBudgetRow
 		}
@@ -95,11 +247,12 @@ func (s *Store) ReadSnapshot(ctx context.Context, projectID int, scope, scopeID 
 	}
 
 	snap := Snapshot{
-		IsUnlimited:     isUnlimited,
-		HardLimitNano:   hardLimitNano,
-		AccumulatedNano: accumNano,
-		SoftAlertPct:    softAlertPct,
-		Found:           accFound,
+		IsUnlimited:        isUnlimited,
+		HardLimitNano:      hardLimitNano,
+		AccumulatedNano:    accumNano,
+		SoftAlertPct:       softAlertPct,
+		Found:              accFound,
+		SoftAlertsDisabled: alertsOff,
 	}
 	// A missing accumulator row (no spend yet this period) is a fresh zero
 	// snapshot; age is only meaningful when the row exists.
@@ -159,10 +312,82 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 	); err != nil {
 		return fmt.Errorf("failmode: persist outage delta: %w", err)
 	}
+	// The usage ledger row rides the SAME transaction as the accumulator write
+	// (issue #320). While NATS is down the write-behind delta cannot be
+	// published, so the scheduler's consumer — the ledger's normal writer —
+	// never sees this request. Without this branch every request billed during
+	// an outage would be money the accumulator has and the Usage page cannot
+	// account for, and the gap would be invisible: the daily chart would simply
+	// be short, with no field saying so.
+	if d.Usage != nil {
+		if _, err := tx.ExecAffected(ctx, usageEventInsertSQL,
+			d.EventID, d.ProjectID, d.Usage.UserID, d.Usage.Provider, d.Usage.Model,
+			d.Usage.PromptTokens, d.Usage.CompletionTokens,
+			d.DeltaNanoUSD, d.PeriodStart, d.PeriodEnd, d.Usage.OccurredAtUnix,
+		); err != nil {
+			return fmt.Errorf("failmode: persist outage usage event: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failmode: commit outage delta: %w", err)
 	}
 	return nil
+}
+
+// usageEventInsertSQL appends one billed request to the per-request usage
+// ledger (issue #320). It is written here and, on the healthy path, by the
+// scheduler's write-back consumer; both use this same shape.
+//
+// ON CONFLICT (event_id) DO NOTHING is what lets the two writers overlap. The
+// event_id is the billing event's own id, so a delta that is both persisted
+// here during an outage AND later redelivered to the consumer produces one
+// ledger row, and the outage-window direct write is at-least-once by design.
+//
+// The nano-USD → USD conversion is the same exact NUMERIC division the
+// accumulator UPSERT uses. This row is a REPORT of the same money the
+// accumulator holds, never a second source of it: no budget decision reads it.
+var usageEventInsertSQL = fmt.Sprintf(`INSERT INTO gateway.llm_usage_events
+		(event_id, project_id, user_id, provider, model,
+		 prompt_tokens, completion_tokens, cost_usd, period_start, period_end,
+		 occurred_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8::numeric / %d,
+		to_timestamp($9), to_timestamp($10), to_timestamp($11))
+	ON CONFLICT (event_id) DO NOTHING`, NanoUSD)
+
+// UsageDimensions are the reporting dimensions of one billed request: who made
+// it, against which provider and model, and how many tokens it consumed
+// (issue #320).
+//
+// They are deliberately NOT part of the budget decision. The accumulator holds
+// money per (scope, scope_id, period) and that is what admission reads; these
+// fields exist so the Usage page can draw the per-day series and the per-model
+// table that the LiteLLM tag ledger used to supply.
+type UsageDimensions struct {
+	// UserID is the member the call is attributed to, nil when the caller
+	// carried no resolvable member id. Nil rather than 0: "no member" and
+	// "member 0" are different claims and the per-member views must be able to
+	// tell them apart.
+	UserID *int
+	// Provider and Model are the resolved upstream, as billed.
+	Provider string
+	Model    string
+	// PromptTokens / CompletionTokens are the provider-REPORTED counts. A
+	// response that carries no usage field yields zeros, which is what the
+	// billing path already assumes; no count is ever estimated here (#79).
+	PromptTokens     int64
+	CompletionTokens int64
+	// OccurredAtUnix is when the GATEWAY billed the request, not when a writer
+	// stored the row.
+	//
+	// It has to travel, because the two are not the same instant and the
+	// difference lands on a date. The write-back consumer runs behind the
+	// stream, and an outage-deferred group is redelivered for as long as the
+	// accumulator row stays outage-owned. A `now()` column default would put a
+	// request billed at 23:59 on the last of the month into the NEXT month's
+	// day bucket, while its money went to the previous period — the per-day
+	// chart would then show a day the period does not contain. Issue #214 is
+	// this platform's record of that class.
+	OccurredAtUnix int64
 }
 
 // OutageDelta is a billed increment persisted to the durable tier while NATS is
@@ -170,19 +395,31 @@ func (s *Store) PersistOutageDelta(ctx context.Context, d OutageDelta) error {
 // accumulator row is targeted; the write-back guard keeps the two writers off
 // each other's rows.
 type OutageDelta struct {
-	ProjectID    int
-	OrgID        *int
-	Scope        string
-	ScopeID      string
+	ProjectID int
+	OrgID     *int
+	Scope     string
+	ScopeID   string
+	// EventID is the billing event id. It is required only when Usage is set,
+	// where it is the usage ledger's primary key and the reason a redelivery
+	// cannot duplicate the row.
+	EventID      string
 	PeriodStart  int64
 	PeriodEnd    int64
 	DeltaNanoUSD int64
+	// Usage carries the reporting dimensions for the ledger row written in the
+	// same transaction (issue #320). Nil means "do not append to the ledger" —
+	// which is correct for the member-scope delta of a request whose dimensions
+	// the project-scope delta already recorded. Recording both would double the
+	// token counts and the request count on every per-model row.
+	Usage *UsageDimensions
 }
 
 func (d OutageDelta) validate() error {
 	switch {
 	case d.ProjectID < 1:
 		return fmt.Errorf("failmode: non-positive project_id %d", d.ProjectID)
+	case d.Usage != nil && d.EventID == "":
+		return errors.New("failmode: usage dimensions without event_id")
 	case d.Scope == "":
 		return errors.New("failmode: empty scope")
 	case d.ScopeID == "":

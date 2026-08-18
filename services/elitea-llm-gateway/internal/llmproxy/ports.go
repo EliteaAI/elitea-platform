@@ -34,7 +34,12 @@ type BudgetChecker interface {
 	// UpdateUsage records a billed completion onto the authoritative counter
 	// and publishes a write-behind delta. eventID must be unique per billed
 	// completion (UUID or similar) to guarantee idempotent increments.
-	UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano int64, periodStartUnix, periodEndUnix int64) error
+	//
+	// dims carries the request's reporting dimensions for the usage ledger
+	// (issue #320) and may be nil. It never influences the counter. A request
+	// billed against two scopes passes dims on ONE of them, so the ledger holds
+	// one row per request.
+	UpdateUsage(ctx context.Context, projectID int, scope, scopeID, eventID string, costNano int64, periodStartUnix, periodEndUnix int64, dims *failmode.UsageDimensions) error
 
 	// TryAlertCooldown checks and claims the soft-alert cooldown for the
 	// given scope/scopeID/period. Returns true when the soft-alert should

@@ -94,11 +94,12 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 
 	shared, err := LoadManifest(platformmigrations.Files, ScopeShared)
 	require.NoError(t, err)
-	// 83: shared/0083_viewer_secret_list_and_own_avatar.sql, the two role
-	// splits #402 corrects. It follows the nine per-surface permission grants
-	// #386 adds, which run 0074 to 0082 after
-	// shared/0073_mcp_tool_registry.sql.
-	require.EqualValues(t, 83, Head(shared))
+	// 84: shared/0084_budget_usage_dimensions.sql, the per-request usage ledger
+	// and the nullable soft-alert thresholds that issues #320, #321 and #322
+	// need. It follows shared/0083_viewer_secret_list_and_own_avatar.sql, the
+	// two role splits #402 corrects, which itself follows the nine per-surface
+	// permission grants #386 adds in 0074 to 0082.
+	require.EqualValues(t, 84, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

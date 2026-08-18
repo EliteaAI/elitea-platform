@@ -488,7 +488,8 @@ func fakeAssign(dest, v any) error {
 // Column order MUST match failmode.Store.ReadSnapshot's Scan call:
 //
 //	is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-//	nats_fail_mode (*string/NULL), acc_found, age_seconds
+//	nats_fail_mode (*string/NULL), acc_found, age_seconds,
+//	soft_alerts_disabled
 func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	if d.SnapErr != nil {
 		return fakeRow{err: d.SnapErr}
@@ -503,6 +504,7 @@ func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 		natsFM,
 		snap.Found,
 		snap.Age.Seconds(),
+		snap.SoftAlertsDisabled,
 	}}
 }
 
