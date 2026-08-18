@@ -1,6 +1,6 @@
 package migrations_test
 
-// The two ADMINISTRATION-mode grants shared/0084 adds, measured against a CLEAN
+// The two ADMINISTRATION-mode grants shared/0085 adds, measured against a CLEAN
 // database (#313).
 //
 // # What breaks without them
@@ -14,7 +14,7 @@ package migrations_test
 // Both routes are gated in the ADMINISTRATION mode, because a default-mode gate
 // resolves purely from membership of the named project and refuses every
 // operator by construction. No migration granted either string in that mode. So
-// gating the routes without 0084 answers 403 to every caller, which reads as a
+// gating the routes without 0085 answers 403 to every caller, which reads as a
 // broken dialog rather than as a missing grant. That is the shape of #354 and
 // #359, and it is why the grant and the gate land together.
 //
@@ -22,7 +22,7 @@ package migrations_test
 //
 // That file's adminPanelGrants table carries one claim this surface breaks:
 // TestAnAdministrationViewerIsRefusedEveryAdminPanelGate asserts the
-// administration viewer resolves NONE of its strings. 0084 gives the viewer
+// administration viewer resolves NONE of its strings. 0085 gives the viewer
 // `configuration.roles.roles.view`, because the legacy matrix does. Folding
 // these two rows into that table would force that claim to be weakened for
 // every string in it. The split this surface has is real and narrow, so it is
@@ -45,7 +45,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// projectListingGrants are shared/0084's two strings, with the role names
+// projectListingGrants are shared/0085's two strings, with the role names
 // testdata/postgres/legacy-rbac-matrix.json gives them in the ADMINISTRATION
 // mode.
 //
@@ -94,7 +94,7 @@ func TestCleanDatabaseGrantsBothProjectListingsInAdministrationMode(t *testing.T
 // An administration-mode admin resolves BOTH listings.
 //
 // This is the operator's own path, and the one the member dialog needs. Remove
-// shared/0084 and this test fails.
+// shared/0085 and this test fails.
 func TestAnAdministrationAdminPassesBothProjectListingGates(t *testing.T) {
 	pool := newMigratedPool(t)
 	seedAdministrationRole(t, pool, 3131, "admin")
@@ -119,7 +119,7 @@ func TestAnAdministrationAdminPassesBothProjectListingGates(t *testing.T) {
 // widen what a viewer may read; a migration that granted neither would pass a
 // refusal-only check and would leave the role listing dead.
 //
-// The asymmetry costs no caller a screen, which is why 0084 transcribes it
+// The asymmetry costs no caller a screen, which is why 0085 transcribes it
 // rather than correcting it the way #402 corrected two other splits: the dialog
 // that reads these listings sits behind the admin Projects page, and the matrix
 // withholds `projects.projects.projects.view` from the administration viewer AND

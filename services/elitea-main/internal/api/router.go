@@ -992,7 +992,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// not carry, so without a static GET here the admin panel's read
 				// would land on the default-mode gate and break.
 				//
-				// migrations/shared/0084 grants the administration-mode holders.
+				// migrations/shared/0085 grants the administration-mode holders.
 				// The default-mode ones are already 0068's.
 				//
 				// The two default-mode reads take `projectPermission`, not the
@@ -1056,7 +1056,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// The two role listings do NOT get the same holders. The legacy
 				// matrix gives the administration-mode viewer
 				// `configuration.roles.roles.view` and withholds
-				// `configuration.users.users.view` from that same role. 0084
+				// `configuration.users.users.view` from that same role. 0085
 				// transcribes that difference rather than levelling it.
 				r.With(projectPermission("configuration.roles.roles.view")).
 					Get("/roles/{mode}/{projectID}", coreHandler.Roles)

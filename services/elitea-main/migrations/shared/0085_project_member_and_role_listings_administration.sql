@@ -1,4 +1,4 @@
--- 0084_project_member_and_role_listings_administration.sql — the
+-- 0085_project_member_and_role_listings_administration.sql — the
 -- ADMINISTRATION-mode grants for the project member listing and the project
 -- role listing (#313).
 --
@@ -82,7 +82,7 @@ BEGIN
 
 IF to_regclass('public.auth_core__role') IS NULL
    OR to_regclass('public.auth_core__role_permission') IS NULL THEN
-    RAISE NOTICE '0084: auth_core tables absent, nothing to grant';
+    RAISE NOTICE '0085: auth_core tables absent, nothing to grant';
     RETURN;
 END IF;
 
