@@ -90,12 +90,11 @@ import ListItemText from '@mui/material/ListItemText';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { ConfigurationSectionForm } from './ConfigurationSectionForm';
 import { useAdminConfigurationPage, type AdminConfigurationPageState } from './useAdminConfigurationPage';
 
-const { DrawerPage } = drawerPage;
 
 function SectionBody({ state }: { readonly state: AdminConfigurationPageState }) {
   if (state.activeSection === undefined) {

@@ -7,7 +7,7 @@
  */
 import { useCallback, useEffect } from 'react';
 
-import { readPersistedProject, writePersistedProject } from '../lib/selectedProjectPersistence';
+import { readPersistedProject, writePersistedProject } from '@/shared/lib/selectedProjectPersistence';
 import { useSelectedProjectStore, type SelectedProject } from './selectedProject.store';
 
 export interface UseSelectedProjectResult {

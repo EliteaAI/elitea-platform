@@ -43,7 +43,7 @@ import { resetConfigForTests } from '@/shared/config/get-config';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { server } from '../../../test/setup';
-import { CreatePersonalTokenPage } from './create-personal-token';
+import { CreatePersonalTokenPage } from '@/routes/-pages/CreatePersonalToken';
 
 const BASE = '/api/v2';
 const PUBLIC_PROJECT_ID = '1';

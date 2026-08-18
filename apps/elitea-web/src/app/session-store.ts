@@ -21,7 +21,7 @@ import { create, type StoreApi, type UseBoundStore } from 'zustand';
 
 import { createHttpClient } from '@/shared/api/http';
 import { getConfig } from '@/shared/config';
-import { readPersistedProject } from '@/widgets/app-shell';
+import { readPersistedProject } from '@/shared/lib/selectedProjectPersistence';
 
 import type { AuthContext, AuthUser } from './router-context';
 

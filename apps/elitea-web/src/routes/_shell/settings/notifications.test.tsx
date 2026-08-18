@@ -53,7 +53,7 @@ import { AppProviders } from '@/app/providers/AppProviders';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 
 import { server } from '../../../test/setup';
-import { NotificationsPage } from './notifications';
+import { NotificationsPage } from '@/routes/-pages/Notifications';
 
 const BASE = '/api/v2';
 const LIST_PATH = `${BASE}/notifications/notifications/prompt_lib/:projectId`;
