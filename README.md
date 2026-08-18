@@ -73,11 +73,19 @@ self-contained recipe for the **target** architecture: Go `elitea-main` +
 deploy/scripts/standalone-stack.sh certs   # once — local mTLS material (deploy/certs/, gitignored)
 deploy/scripts/standalone-stack.sh up
 deploy/scripts/standalone-stack.sh seed
+deploy/scripts/standalone-stack.sh seed-runtime
 OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # optional: a real provider credential
-deploy/scripts/standalone-stack.sh check   # gateway reachable over mTLS
+deploy/scripts/standalone-stack.sh check   # asserts the stack; read its last line
 
 open http://localhost:8084/app/
 ```
+
+`check` prints one line for each assertion. Its last line reports how many
+passed, how many failed, how many were skipped, and how many of the expected
+assertions reported a result at all. A skipped assertion exits non-zero unless
+you pass `--allow-skips`, and a run that reports fewer results than expected
+exits non-zero even with that flag. Read that line rather than the exit status
+alone.
 
 Or via Task: `task standalone:up` / `task standalone:down`.
 
