@@ -293,7 +293,37 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "${python}" "${SCRIPT_DIR}/fixture_server.py" --describe >/dev/null
-"${python}" -m unittest discover -s "${SCRIPT_DIR}" -p 'test_*.py' -v
+
+# -- Assert the test count before the run (issue #486) ------------------------
+#
+# `python3 -m unittest discover` exits 0 when it discovers NOTHING. A renamed
+# directory, or a changed pattern, turned this line into a green no-op.
+#
+# `.github/workflows/ci-go.yml` corrects exactly this, for exactly this
+# directory, and names #409. The two callers of one suite disagreed: the
+# workflow asserted the count, and the script did not. This is the same guard,
+# so both callers now make the same statement about the same suite.
+#
+# The count alone is not enough. `discover` turns an unimportable module into
+# one _FailedTest case, which counts. The runner result decides the status.
+"${python}" - "${SCRIPT_DIR}" <<'RELIABILITY_DISCOVERY'
+import sys
+import unittest
+
+start = sys.argv[1]
+suite = unittest.defaultTestLoader.discover(
+    start, pattern="test_*.py", top_level_dir=start
+)
+count = suite.countTestCases()
+print(f"discovered {count} test(s) in {start}")
+if count == 0:
+    sys.exit(
+        f"no test discovered in {start}; "
+        "the gate would pass without running anything"
+    )
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+sys.exit(0 if result.wasSuccessful() else 1)
+RELIABILITY_DISCOVERY
 
 export ELITEA_INDEX_5681_SYSTEM_TEST=1
 export ELITEA_INDEX_5681_DEDICATED=1

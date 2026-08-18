@@ -37,7 +37,23 @@ set -- --server "${URL}" --description "elitea-llm-gateway JetStream (BF0.2b)"
 echo "[nats-context] saving context 'gateway' -> ${URL}"
 nats context save gateway "$@" --select
 
+# -- The last step must be able to fail (issue #486) --------------------------
+#
+# This step was `nats ... || { echo WARNING >&2; }`. The script sets `set -eu`,
+# the `||` caught the failure, and the block's `echo` returned 0. The step is
+# the LAST one and its name is "verifying JetStream reachability", so a context
+# that resolved to nothing reported a successful install.
+#
+# The save above is what this script installs, and it has already happened when
+# this line runs. The message says so, because "the context was not saved" and
+# "the context was saved and points at nothing" need different repairs.
 echo "[nats-context] verifying JetStream reachability"
-nats --context gateway server check jetstream || {
-  echo "[nats-context] WARNING: JetStream not reachable yet — is NATS up / port-forwarded?" >&2
-}
+if ! nats --context gateway server check jetstream; then
+  echo "[nats-context] ERROR: context 'gateway' is saved and points at ${URL}, and JetStream does NOT answer there." >&2
+  echo "[nats-context] The BF0.2b validator reads this context, so it would report a fault of the cluster." >&2
+  echo "[nats-context] Start NATS, or port-forward it:" >&2
+  echo "[nats-context]   kubectl -n elitea-gateway port-forward svc/nats 4222:4222 &" >&2
+  exit 1
+fi
+
+echo "[nats-context] OK — context 'gateway' resolves and JetStream answers at ${URL}"

@@ -116,19 +116,44 @@ jobs:
         # installs it. The E2E/visual-regression jobs already do their own
         # `playwright install`; this is the same fix for the job that was
         # missing it.
+        #
+        # Issue #483. The `if [ -d .storybook ]` shape was written before unit
+        # S1 landed the directory. The directory is in the tree now, so the
+        # silent-skip arm can only fire when somebody moves it — and then this
+        # step installs no browser and the step below prints a pass.
         run: |
-          if [ -d .storybook ]; then
-            npx playwright install --with-deps chromium
-          fi
+          set -euo pipefail
+          test -d .storybook || {
+            echo "::error::apps/elitea-web/.storybook is missing, so the Storybook suite cannot run. Restore the directory under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          npx playwright install --with-deps chromium
       - name: Storybook tests
-        # The storybook vitest project is stub-commented in vitest.config.ts
-        # exactly as §6.3 shows; unit S1 lands .storybook/ and uncomments it.
+        # Issue #483, the fourth gate of the same shape. This step read
+        # `if [ -d .storybook ] … else echo "storybook project pending"`. The
+        # comment describing the stub outlived the stub: `.storybook/` and the
+        # vitest `storybook` project both exist, so the else arm was a green
+        # tick waiting for a rename.
+        #
+        # The directory is not the subject. The STORIES are: addon-vitest turns
+        # each story into a test, so a `stories` glob in .storybook/main.ts that
+        # stops matching leaves the directory in place and the suite empty. The
+        # count comes from that glob's own root, and it is printed. `vitest run`
+        # leaves `passWithNoTests` at false, which is a second line of defence
+        # rather than the measurement.
         run: |
-          if [ -d .storybook ]; then
-            npm run test:storybook
-          else
-            echo "storybook project pending (unit S1) — stub per §6.3"
+          set -euo pipefail
+          test -d .storybook || {
+            echo "::error::apps/elitea-web/.storybook is missing, so the Storybook suite cannot run. Restore the directory under its old name, or point this job at the new one. Do not let the job pass."
+            exit 1
+          }
+          stories=$(find src/shared/ui -name '*.stories.ts' -o -name '*.stories.tsx' | grep -c '' || true)
+          echo "${stories} story file(s) under src/shared/ui — the .storybook/main.ts glob root"
+          if [ "${stories}" -eq 0 ]; then
+            echo "::error::no *.stories.ts(x) file under apps/elitea-web/src/shared/ui, so the Storybook suite would run nothing. Move the glob in .storybook/main.ts with the stories. Do not let the job pass."
+            exit 1
           fi
+          npm run test:storybook
 
   unit-tests:
     name: Unit tests (sharded + coverage)

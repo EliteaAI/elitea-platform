@@ -84,6 +84,26 @@ if [ -n "$MANIFEST_VERSION" ] && [ "$VERIFY_ONLY" = "false" ]; then
     fi
 fi
 
+# ── The manifest must hold entries (issue #484) ──────────────────────────────
+#
+# `jq '.models | length'` prints 0 for a null. A manifest that spells the key
+# `model`, or `files`, or that holds an empty array, passes the JSON check
+# above and used to reach a branch that logged "nothing to do" and exited 0.
+# The container then reported a synchronised cache while the cache held
+# nothing, the pod started, and the first model load failed at run time.
+#
+# Absence is not success. This script reads the top-level key `models`, and a
+# manifest without a non-empty `models` array is a manifest it cannot act on.
+# The error names the key it wanted and the keys the file actually holds,
+# because a mis-keyed manifest and an empty one need different repairs.
+MANIFEST_KEYS=$(jq -r '
+    if type == "object" then (keys_unsorted | join(", "))
+    else ("<top level is a " + type + ">") end' "$MANIFEST_PATH")
+
+if ! jq -e '.models | type == "array"' "$MANIFEST_PATH" >/dev/null 2>&1; then
+    die "Manifest $MANIFEST_PATH holds no 'models' array. This script reads the top-level key 'models'. The manifest holds: ${MANIFEST_KEYS}"
+fi
+
 TOTAL=$(jq '.models | length' "$MANIFEST_PATH")
 DOWNLOADED=0
 SKIPPED=0
@@ -91,15 +111,13 @@ FAILED=0
 VALID=0
 INVALID=0
 
+if [ "$TOTAL" -eq 0 ]; then
+    die "Manifest $MANIFEST_PATH holds an EMPTY 'models' array. This run would cache no file and report success. An empty cache is not a synchronised cache."
+fi
+
 log "Starting model cache sync: $TOTAL files to process"
 log "Cache directory: $CACHE_DIR"
 log "Verify only: $VERIFY_ONLY"
-
-if [ "$TOTAL" -eq 0 ]; then
-    log "No models in manifest, nothing to do"
-    log "Model cache sync complete"
-    exit 0
-fi
 
 for i in $(seq 0 $((TOTAL - 1))); do
     NAME=$(jq -r ".models[$i].name" "$MANIFEST_PATH")
@@ -219,8 +237,40 @@ done
 log "---"
 if [ "$VERIFY_ONLY" = "true" ]; then
     log "Verification summary: total=$TOTAL valid=$VALID invalid=$INVALID missing=$((FAILED - INVALID))"
+    RESULTS=$((VALID + FAILED))
 else
     log "Summary: total=$TOTAL downloaded=$DOWNLOADED skipped=$SKIPPED failed=$FAILED"
+    RESULTS=$((DOWNLOADED + SKIPPED + FAILED))
+fi
+
+# ── Every entry must have reported a result (issue #484) ─────────────────────
+#
+# Each counter above is incremented in exactly ONE terminal branch of the loop,
+# so the sum is the number of entries that reported an outcome. A shortfall
+# means an entry reached no branch at all: a new early `continue`, a deleted
+# block, or one guard standing in for many. A counter sees only the entries
+# that REACH it, so the floor is stated against $TOTAL rather than left to the
+# counters to agree among themselves.
+#
+# Read this line, not the exit status alone.
+log "Entries that reported a result: $RESULTS of $TOTAL"
+if [ "$RESULTS" -ne "$TOTAL" ]; then
+    die "Only $RESULTS of $TOTAL manifest entries reported a result. An entry that reports nothing is not a cached entry."
+fi
+
+# ── --verify-only must prove every entry (issue #484) ────────────────────────
+#
+# This mode exists to prove the cache is full, and its old verdict was
+# `FAILED -gt 0`. With no file to look at, FAILED stayed 0, so the mode
+# reported success on a cache with nothing in it. The verdict is now a count
+# of what the run PROVED, against what the manifest holds. It comes before the
+# FAILED test, because "0 of 4 entries proved" names the fault and
+# "4 files missing or corrupt" describes a symptom.
+if [ "$VERIFY_ONLY" = "true" ]; then
+    log "Files proved present and intact: $VALID of $TOTAL"
+    if [ "$VALID" -ne "$TOTAL" ]; then
+        die "Verification proved $VALID of $TOTAL manifest entries in $CACHE_DIR (missing=$((FAILED - INVALID)) corrupt=$INVALID). An entry this run did not prove is not a cached entry."
+    fi
 fi
 
 if [ "$FAILED" -gt 0 ]; then
