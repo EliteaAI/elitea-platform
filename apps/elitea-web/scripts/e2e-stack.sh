@@ -525,6 +525,28 @@ CROSS JOIN (VALUES
     ('configuration.artifacts.buckets.view'),
     ('configuration.artifacts.buckets.edit'),
     ('configuration.artifacts.buckets.delete'),
+    -- #496 gated the whole /api/v2/configurations mount, which until then
+    -- applied no permission of any kind. Project 1 carries per-project rows,
+    -- so the central default-mode fallback shared/0072 seeds is SUPPRESSED
+    -- here and every string has to be listed explicitly.
+    --
+    -- Only `update` and `delete` were listed, and both were inert: the routes
+    -- they name checked nothing. The three below are what the browser actually
+    -- calls, and each one 403s without its row:
+    --
+    --   `configurations.configurationS.list` — the plural is the route's, not
+    --   a typo. It gates the credential LIST the AI-configuration page reads,
+    --   the model catalogue `GET /configurations/models/{id}` the chat picker
+    --   and the tokens page read, `GET /configurations/types/{id}`, and
+    --   `GET /configurations/tts_voices/{id}`.
+    --   `configurations.configuration.details` — the singular is a DIFFERENT
+    --   permission (one credential's row). useFormSeeding reads it to fill the
+    --   edit dialog.
+    --   `configurations.configuration.create` — the credential save, and the
+    --   pre-save "Test connection" probe beside it.
+    ('configurations.configurations.list'),
+    ('configurations.configuration.details'),
+    ('configurations.configuration.create'),
     ('configurations.configuration.update'),
     ('configurations.configuration.delete'),
     -- `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` resolves
@@ -732,6 +754,20 @@ CROSS JOIN (VALUES
     -- details), and granting only that leaves the picker empty behind a 403.
     ('configurations.configurations.list'),
     ('configurations.configuration.details'),
+    -- The three configuration WRITES, for the same reason as the two reads
+    -- above and for one more that is specific to this project (#496).
+    --
+    -- deploy/scripts/standalone-stack.sh reuses this seeder verbatim, and its
+    -- own `#457` check writes a credential and two model rows through the
+    -- product route — POST /api/v2/configurations/configurations/{projectID} —
+    -- as THIS persona, in THIS project, then deletes them again through the
+    -- product's delete route. That mount applied no permission at all until
+    -- #496, so the write needed no grant. It does now, and without these three
+    -- rows the check reports "the credential write failed: insufficient
+    -- permissions" — measured.
+    ('configurations.configuration.create'),
+    ('configurations.configuration.update'),
+    ('configurations.configuration.delete'),
     -- #302/#313: the /elitea_core group no longer enforces membership alone —
     -- every route now resolves the permission its pylon module declares
     -- (services/elitea-main/internal/api/router.go). This project carries

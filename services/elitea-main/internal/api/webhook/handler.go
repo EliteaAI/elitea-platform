@@ -8,6 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -31,22 +33,110 @@ type Repository interface {
 	ListByEvent(ctx context.Context, projectID, eventType string) ([]Webhook, error)
 }
 
+// The permissions the five routes below are gated on (#496).
+//
+// THE LEGACY MATRIX HAS NO ENTRY FOR THIS SURFACE, so these are a proposal
+// rather than a transcription, and the reason is recorded here.
+//
+// There is no pylon `webhooks` plugin. The reference's only webhook module is
+// elitea_core's INBOUND pipeline trigger (api/v2/webhook.py, api/v2/
+// pipeline_trigger.py), which hangs a signature secret off an application
+// VERSION and gates on `models.applications.version.details` / `.update`. This
+// table is not that: `webhooks` is keyed on project_id alone and carries no
+// version, so naming the version strings would claim a relationship the schema
+// does not have.
+//
+// What the row IS, is a per-project integration record that holds a credential —
+// a destination url, an event selector and a shared `secret`. That is the same
+// thing a `p_{id}.configuration` row is, and the `configurations` plugin's five
+// strings are the platform's existing names for list, read, create, update and
+// delete of exactly that. Reusing them has three properties an invented name
+// would not:
+//
+//   - They are GRANTABLE today. migrations/shared/0072 grants all five in
+//     DEFAULT mode, so no route here answers 403 to every caller on a clean
+//     database. A new name would be granted by nothing, which is #354/#359/#402.
+//   - Their viewer/editor split is already decided by the legacy matrix: the two
+//     reads to admin, editor and viewer; the three writes to admin and editor.
+//   - The disclosure tier matches. The read returns `secret`, and the
+//     configurations read those strings normally gate returns `data`, which on
+//     this platform holds the provider api_key verbatim. Granting the webhook
+//     read to a role that already reads the other would be inconsistent in one
+//     direction, and withholding it would be inconsistent in the other.
+//
+// The listing still discloses the `secret` to every holder of the read string.
+// That is a redaction question about the response body, not an authorization
+// question about the route, and it is deliberately not answered here: #496 is
+// the missing gate, and the gate is what stops project A reading project B.
+const (
+	listPermission    = "configurations.configurations.list"
+	detailsPermission = "configurations.configuration.details"
+	createPermission  = "configurations.configuration.create"
+	updatePermission  = "configurations.configuration.update"
+	deletePermission  = "configurations.configuration.delete"
+)
+
 type Handler struct {
 	repo Repository
+	// permissionResolver gates every route in Routes(). nil answers 403 on all
+	// five — see require below.
+	permissionResolver auth.PermissionResolver
 }
 
-func NewHandler(repo Repository) *Handler {
-	return &Handler{repo: repo}
+// Option configures a Handler. Same shape as the other v2 packages'.
+type Option func(*Handler)
+
+// WithPermissionResolver supplies the resolver EVERY route is gated on. Without
+// it all five answer 403, which is the safe direction: the surface reads and
+// rotates another tenant's webhook secret.
+func WithPermissionResolver(resolver auth.PermissionResolver) Option {
+	return func(h *Handler) { h.permissionResolver = resolver }
 }
 
+func NewHandler(repo Repository, opts ...Option) *Handler {
+	h := &Handler{repo: repo}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
+}
+
+// Routes returns the webhook subrouter. router.go mounts it at
+// "/webhooks/prompt_lib/{projectID}", so `{projectID}` is a segment of the MOUNT
+// pattern and chi carries it into this subrouter's route context — which is what
+// lets require read it.
+//
+// It applied no gate at all until #496. Every handler below takes that path
+// segment straight to the repository, which filters `webhooks WHERE
+// project_id = $1`, so any authenticated caller could list another project's
+// webhook url and `secret`, replace the destination, or rotate the secret.
+//
+// The gate lives HERE rather than at the mount in router.go because the five
+// routes need four different strings and one mount can carry only one
+// middleware — the same reason /secrets gates inside its own package. Keeping it
+// in the package also means a future second mount of Routes() cannot be an
+// ungated one.
 func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
-	r.Get("/", h.List)
-	r.Post("/", h.Create)
-	r.Get("/{webhookID}", h.Get)
-	r.Put("/{webhookID}", h.Update)
-	r.Delete("/{webhookID}", h.Delete)
+	r.With(h.require(listPermission)).Get("/", h.List)
+	r.With(h.require(createPermission)).Post("/", h.Create)
+	r.With(h.require(detailsPermission)).Get("/{webhookID}", h.Get)
+	r.With(h.require(updatePermission)).Put("/{webhookID}", h.Update)
+	r.With(h.require(deletePermission)).Delete("/{webhookID}", h.Delete)
 	return r
+}
+
+// require gates one route on the named permission, resolved in DEFAULT mode
+// against the `{projectID}` the mount pattern supplies. Fail-closed by
+// construction: RequireResolvedPermissionsForProject answers 403 on a nil
+// resolver, and legacyrbac refuses a project id that is not a positive integer
+// before the handler runs.
+func (h *Handler) require(permission string) func(http.Handler) http.Handler {
+	return apimw.RequireResolvedPermissions(
+		h.permissionResolver,
+		auth.PermissionModeDefault,
+		permission,
+	)
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
