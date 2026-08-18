@@ -53,7 +53,7 @@ tools.
 | SDK `runtime/toolkits/tools.py::get_tools` | Sanitize references, first-ID-wins deduplication, family dispatch, blocked-tool policy, MCP smart-auth and nested applications | `src/toolkits/{snapshot,materialize,policy}.rs` | Deduplication/classification and immutable blocklist implemented; materialization, MCP and application execution remain capability-gated |
 
 Evidence was refreshed against the platform/Python worker commit
-`e69bb5b3ce5629ba95c3fd1ee50022e0b87cb65a`, SDK commit
+`23e652a355c1a9735855d17d8cc0b1ddddcbbd70`, SDK commit
 `c0443b175adb8437e89826c17150330e32074faf`, and legacy indexer-worker commit
 `b6c4ce83d997acbbbeb58fe040317a9e9352236f` on 2026-08-18. Later slices must
 refresh these pins because all three Python sources continue to evolve.
@@ -111,7 +111,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus explicit `get_me` and `list_branches_in_repo`; the other 42 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus explicit `get_me`, `list_branches_in_repo`, `read_file`, `read_multiple_files`, and `grep_file`; the other 39 tools, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -189,15 +189,32 @@ validation-only success, token/basic call `/user`, and App JWT calls `/app`.
 App-backed tool execution is still rejected because an installation-token
 exchange has not been implemented.
 
-`src/toolkits/families/github/tools.rs` exposes only an explicitly selected
-`get_me` and/or `list_branches_in_repo` through ADK-Rust 2.0.0's native
-`Tool`/`BasicToolset` boundary and the shared immutable blocklist. Empty
-selection still means all 44 SDK tools, so the partial Rust family rejects it
-instead of silently shrinking functionality. The current tests prove auth
-precedence and malformed pairs, Enterprise/repository normalization and
-bounds, origin/header binding, PKCS8 App JWT shape, bounded response projection,
-rate-limit classification, native ADK selection/policy/argument behavior, and
-fail-closed empty or unported selection.
+`src/toolkits/families/github/tools.rs` exposes five explicitly selected
+ordinary reads through ADK-Rust 2.0.0's native `Tool`/`BasicToolset` boundary
+and the shared immutable blocklist. Empty selection still means all 44 SDK
+tools, so the partial Rust family rejects it instead of silently shrinking
+functionality. The current tests prove auth precedence and malformed pairs,
+Enterprise/repository normalization and bounds, origin/header binding, PKCS8
+App JWT shape, bounded response projection, rate-limit classification, native
+ADK selection/policy/argument behavior, exact line slicing/large-file guidance,
+cumulative batch admission and bounded regex search.
+
+The first file group follows this source-to-Rust chain:
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main `internal/application/agentexecution/tools.go` and `internal/infra/storage/configurations_materializer.go::materializeAgentExecution` | Freeze the selected toolkit and resolve the exact repository, branch and owned configuration into the admitted request | `config.rs` consumes only that sealed materialized shape; it performs no configuration lookup and creates no second credential authority |
+| Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both agent kinds enter the same pinned SDK application/toolkit runtime | The future authorized Rust assembler will select this same family for both kinds; the capability remains disabled until that composition and the full selected catalog are available |
+| SDK `tools/github/github_client.py::{_read_file,read_file,read_multiple_files}` | GitHub Contents API, active-branch default, optional repository for a single read, 1-indexed inclusive line slicing, structured 200,000-character guidance, and cumulative batch skipping without fetching later files | `client.rs::GitHubApi::read_text_file` plus `tools.rs` preserve those results. Paths, UTF-8/base64 content, file bytes, batch count and output are bounded. Rust intentionally performs one asynchronous transport attempt; the lifecycle owns retry rather than copying the SDK's blocking `time.sleep` retry loop |
+| SDK `tools/elitea_base.py::BaseToolApiWrapper::search_file` and `tools/utils/text_operations.py::{apply_line_slice,search_in_content}` | `grep_file` is case-insensitive, supports regex or literal input, reports one match per line with before/after context, and uses Python-compatible line boundaries | `tools.rs` uses the non-backtracking Rust `regex` engine with explicit pattern/program/context/match/output limits. Invalid regex is a stable invalid-input error before network use instead of the SDK's warning plus ambiguous no-match result |
+| SDK `tools/utils/file_metadata.py::{guard_text_read,capped_read_multiple_files}` and `runtime/langchain/constants.py::DEFAULT_MAX_OUTPUT_CHARS` | Plain content below the cap; schema `1.0` `content_too_large` guidance above it; line-range honesty for an unchunkable single line; one cumulative 200,000-character batch budget | Rust emits the same machine discriminator, line instructions and skip notice. Per-file batch failures are data-free so upstream exception bodies, private repositories and credentials cannot enter model context or logs |
+
+The GitHub REST projection accepts only a `type=file`, exact base64-declared
+size and valid UTF-8 payload. Directories, symlinks, submodules, malformed
+encoding, binary content and responses above the one-MiB decoded ceiling fail
+closed. Repository and file arguments are encoded as URL path segments after
+rejecting absolute paths, empty segments and `.`/`..`; they cannot replace the
+admitted API origin.
 
 Connection checking remains a Main API responsibility. Main owns caller and
 project authorization, configuration/revision selection, request bounds,
@@ -217,8 +234,9 @@ not one prescribed language.
 Production registration remains disabled. Before this family can execute live
 agent work it still needs the authorized materializer connection, platform
 egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
-GitHub App installation-token support, the remaining ordinary SDK operations,
-direct sensitive-tool/HITL fencing, and the six indexing-only operations.
+GitHub App installation-token support, the remaining 39 SDK operations
+(including six indexing-only operations), and direct sensitive-tool/HITL
+fencing.
 
 ## Special runtime toolsets
 

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use adk_rust::tool::SimpleToolContext;
-use adk_rust::{ReadonlyContext, ToolContext, Toolset};
+use adk_rust::{ReadonlyContext, Tool, ToolContext, Toolset};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 
 use super::families::github::client::{
     GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubRequestKind,
-    test_map_status, test_project_branches, test_project_user,
+    test_map_status, test_project_branches, test_project_text_file, test_project_user,
+    test_validate_file_path,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
 use super::families::github::tools::{
@@ -249,6 +250,31 @@ fn response_projection_is_bounded_and_omits_unknown_or_null_fields() {
         ])
     );
     assert!(test_project_branches(&json!([{"name": "main", "protected": true}]), 0).is_err());
+
+    let content = base64::engine::general_purpose::STANDARD.encode("alpha\nbeta\n");
+    assert_eq!(
+        test_project_text_file(&json!({
+            "type": "file",
+            "encoding": "base64",
+            "size": 11,
+            "content": format!("{}\n", content)
+        }))
+        .expect("valid GitHub text file"),
+        "alpha\nbeta\n"
+    );
+    assert!(
+        test_project_text_file(&json!({
+            "type": "file",
+            "encoding": "base64",
+            "size": 2,
+            "content": "/w=="
+        }))
+        .is_err()
+    );
+    assert!(test_validate_file_path("src/lib.rs").is_ok());
+    for invalid_path in ["/etc/passwd", "../secret", "src/../secret", "src//lib.rs"] {
+        assert!(test_validate_file_path(invalid_path).is_err());
+    }
 }
 
 #[test]
@@ -319,6 +345,194 @@ async fn native_adk_tools_preserve_selection_policy_and_argument_contracts() {
     assert_eq!(invalid.code, "tool.execution.invalid_input");
 }
 
+async fn native_file_tools(client: &Arc<FixtureGitHubApi>) -> Vec<Arc<dyn Tool>> {
+    let selected = vec![
+        "read_file".to_owned(),
+        "read_multiple_files".to_owned(),
+        "grep_file".to_owned(),
+    ];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native GitHub file toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    toolset
+        .tools(readonly)
+        .await
+        .expect("native GitHub file tools")
+}
+
+fn insert_file(client: &FixtureGitHubApi, path: &str, content: String) {
+    client
+        .files
+        .lock()
+        .expect("file fixture lock")
+        .insert(path.to_owned(), content);
+}
+
+#[tokio::test]
+async fn native_read_file_preserves_python_line_slicing_and_guidance() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    insert_file(
+        &client,
+        "src/main.py",
+        "alpha\r\nbeta\u{2028}gamma\ndelta".to_owned(),
+    );
+    insert_file(&client, "large.py", "x\n".repeat(100_001));
+    let tools = native_file_tools(&client).await;
+
+    let read_file = tools
+        .iter()
+        .find(|tool| tool.name() == "read_file")
+        .expect("read_file tool");
+    assert_eq!(
+        read_file
+            .execute(
+                context(),
+                json!({
+                    "file_path": "src/main.py",
+                    "branch": "release/v2",
+                    "repo_name": "EliteaAI/other",
+                    "start_line": 2,
+                    "end_line": 3
+                }),
+            )
+            .await
+            .expect("bounded GitHub file read"),
+        Value::String("beta\u{2028}gamma\n".to_owned())
+    );
+    let guidance = read_file
+        .execute(context(), json!({"file_path": "large.py"}))
+        .await
+        .expect("large-file guidance");
+    assert_eq!(
+        guidance,
+        json!({
+            "__result_status__": "content_too_large",
+            "context": {
+                "actual_chars": 200_002,
+                "limit_chars": 200_000,
+                "requested": "full file read"
+            },
+            "extension": ".py",
+            "filename": "large.py",
+            "instruction_for_readFile": {
+                "extra_params": {},
+                "first_class_params": {
+                    "end_line": "integer (1-indexed, inclusive) — last line to read. Valid range 1..100001. Omit to read to the end.",
+                    "start_line": "integer (1-indexed, inclusive) — first line to read. Valid range 1..100001. Omit to read from the beginning."
+                },
+                "notes": "Use start_line/end_line together to read a bounded slice of a large file and keep tokens bounded."
+            },
+            "read_limits": {
+                "full_read_allowed": false,
+                "max_output_chars": 200_000
+            },
+            "schema_version": "1.0",
+            "total_lines": 100_001,
+            "type": "text/x-python",
+            "unit": "lines"
+        })
+    );
+    assert!(
+        client
+            .file_calls
+            .lock()
+            .expect("file call fixture lock")
+            .iter()
+            .any(|call| {
+                call == &(
+                    "src/main.py".to_owned(),
+                    Some("release/v2".to_owned()),
+                    Some("EliteaAI/other".to_owned()),
+                )
+            })
+    );
+}
+
+#[tokio::test]
+async fn native_grep_and_batch_reads_are_bounded_before_network_use() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    insert_file(
+        &client,
+        "search.rs",
+        "before\nfn Main() {}\nafter\nlast".to_owned(),
+    );
+    insert_file(&client, "budget.txt", "x".repeat(200_000));
+    insert_file(&client, "must-not-fetch.txt", "unreachable".to_owned());
+    let tools = native_file_tools(&client).await;
+    let grep = tools
+        .iter()
+        .find(|tool| tool.name() == "grep_file")
+        .expect("grep_file tool");
+    assert_eq!(
+        grep.execute(
+            context(),
+            json!({
+                "file_path": "search.rs",
+                "pattern": "fn main\\(\\)",
+                "is_regex": true,
+                "context_lines": 1
+            }),
+        )
+        .await
+        .expect("bounded regex search"),
+        Value::String(
+            "Found 1 match(es) for pattern 'fn main\\(\\)' in search.rs:\n\n\n--- Match 1 at line 2 ---\n  before\n> fn Main() {}\n  after"
+                .to_owned()
+        )
+    );
+    let calls_before_invalid_regex = client
+        .file_calls
+        .lock()
+        .expect("file call fixture lock")
+        .len();
+    assert!(
+        grep.execute(
+            context(),
+            json!({"file_path": "search.rs", "pattern": "[", "is_regex": true}),
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        client
+            .file_calls
+            .lock()
+            .expect("file call fixture lock")
+            .len(),
+        calls_before_invalid_regex
+    );
+
+    let read_multiple = tools
+        .iter()
+        .find(|tool| tool.name() == "read_multiple_files")
+        .expect("read_multiple_files tool");
+    assert_eq!(
+        read_multiple
+            .execute(
+                context(),
+                json!({"file_paths": ["budget.txt", "must-not-fetch.txt"]}),
+            )
+            .await
+            .expect("capped batch read"),
+        json!({
+            "budget.txt": "x".repeat(200_000),
+            "must-not-fetch.txt": "Skipped: the batch's cumulative 200000-character read limit was already reached by earlier files in this call. Read this file individually with read_file."
+        })
+    );
+    let calls = client.file_calls.lock().expect("file call fixture lock");
+    assert!(
+        !calls
+            .iter()
+            .any(|(path, _, _)| path == "must-not-fetch.txt")
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -341,7 +555,11 @@ fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
 #[derive(Default)]
 struct FixtureGitHubApi {
     branch_limits: Mutex<Vec<usize>>,
+    files: Mutex<BTreeMap<String, String>>,
+    file_calls: Mutex<Vec<FileCall>>,
 }
+
+type FileCall = (String, Option<String>, Option<String>);
 
 #[async_trait]
 impl GitHubApi for FixtureGitHubApi {
@@ -355,5 +573,28 @@ impl GitHubApi for FixtureGitHubApi {
             .expect("branch limit fixture lock")
             .push(max_count);
         Ok(json!([{"name": "main", "protected": true}]))
+    }
+
+    async fn read_text_file(
+        &self,
+        file_path: &str,
+        branch: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<String, GitHubClientError> {
+        self.file_calls
+            .lock()
+            .expect("file call fixture lock")
+            .push((
+                file_path.to_owned(),
+                branch.map(ToOwned::to_owned),
+                repository.map(ToOwned::to_owned),
+            ));
+        Ok(self
+            .files
+            .lock()
+            .expect("file fixture lock")
+            .get(file_path)
+            .cloned()
+            .unwrap_or_default())
     }
 }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use adk_rust::tool::BasicToolset;
 use adk_rust::{AdkError, ErrorCategory, ErrorComponent, Tool, ToolContext};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use regex::{Regex, RegexBuilder};
+use serde_json::{Map, Value, json};
 
 use crate::toolkits::invocation::{MaterializedToolsetError, admit_materialized_toolset};
 use crate::toolkits::policy::ToolAdmissionPolicy;
@@ -14,7 +15,17 @@ use super::config::{GitHubToolkitConfig, GitHubToolkitConfigError};
 
 const GET_ME: &str = "get_me";
 const LIST_BRANCHES: &str = "list_branches_in_repo";
+const READ_FILE: &str = "read_file";
+const READ_MULTIPLE_FILES: &str = "read_multiple_files";
+const GREP_FILE: &str = "grep_file";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
+const MAX_OUTPUT_CHARS: usize = 200_000;
+const MAX_BATCH_FILES: usize = 32;
+const MAX_PATTERN_BYTES: usize = 4 * 1_024;
+const MAX_CONTEXT_LINES: usize = 32;
+const MAX_GREP_MATCHES: usize = 2_000;
+const REGEX_SIZE_LIMIT: usize = 2 * 1_024 * 1_024;
+const REGEX_DFA_SIZE_LIMIT: usize = 2 * 1_024 * 1_024;
 
 /// Safe failure returned while constructing the first GitHub tool subset.
 pub(crate) struct GitHubToolsetError {
@@ -91,9 +102,9 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. An explicitly selected `get_me` and/or
-/// `list_branches_in_repo` can use this path. The production capability remains
-/// disabled until sensitive effects, all read operations, GitHub App
+/// until the full family is ported. Five explicitly selected ordinary read
+/// operations can use this path. The production capability remains disabled
+/// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
 pub(crate) fn build_github_read_only_toolset(
     toolkit_name: &str,
@@ -113,9 +124,12 @@ pub(crate) fn build_github_read_only_toolset(
 
 fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
     if selected.is_empty()
-        || selected
-            .iter()
-            .any(|name| !matches!(name.as_ref(), GET_ME | LIST_BRANCHES))
+        || selected.iter().any(|name| {
+            !matches!(
+                name.as_ref(),
+                GET_ME | LIST_BRANCHES | READ_FILE | READ_MULTIPLE_FILES | GREP_FILE
+            )
+        })
     {
         return Err(GitHubToolsetError {
             code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -136,6 +150,9 @@ fn build_with_api(
         let kind = match name.as_str() {
             GET_ME => GitHubReadToolKind::GetMe,
             LIST_BRANCHES => GitHubReadToolKind::ListBranches,
+            READ_FILE => GitHubReadToolKind::ReadFile,
+            READ_MULTIPLE_FILES => GitHubReadToolKind::ReadMultipleFiles,
+            GREP_FILE => GitHubReadToolKind::GrepFile,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -156,6 +173,9 @@ fn build_with_api(
 enum GitHubReadToolKind {
     GetMe,
     ListBranches,
+    ReadFile,
+    ReadMultipleFiles,
+    GrepFile,
 }
 
 struct GitHubReadTool {
@@ -178,6 +198,13 @@ impl GitHubReadTool {
             GitHubReadToolKind::ListBranches => {
                 "List up to 100 branches in the configured GitHub repository."
             }
+            GitHubReadToolKind::ReadFile => "Read a UTF-8 file or a bounded inclusive line range.",
+            GitHubReadToolKind::ReadMultipleFiles => {
+                "Read up to 32 UTF-8 files with one cumulative output budget."
+            }
+            GitHubReadToolKind::GrepFile => {
+                "Search one UTF-8 file with a bounded literal or regular expression."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -196,6 +223,9 @@ impl Tool for GitHubReadTool {
         match self.kind {
             GitHubReadToolKind::GetMe => GET_ME,
             GitHubReadToolKind::ListBranches => LIST_BRANCHES,
+            GitHubReadToolKind::ReadFile => READ_FILE,
+            GitHubReadToolKind::ReadMultipleFiles => READ_MULTIPLE_FILES,
+            GitHubReadToolKind::GrepFile => GREP_FILE,
         }
     }
 
@@ -213,24 +243,11 @@ impl Tool for GitHubReadTool {
 
     fn parameters_schema(&self) -> Option<Value> {
         Some(match self.kind {
-            GitHubReadToolKind::GetMe => json!({
-                "type": "object",
-                "properties": {},
-                "additionalProperties": false
-            }),
-            GitHubReadToolKind::ListBranches => json!({
-                "type": "object",
-                "properties": {
-                    "max_count": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 100,
-                        "default": 100,
-                        "description": "Maximum number of branches to return."
-                    }
-                },
-                "additionalProperties": false
-            }),
+            GitHubReadToolKind::GetMe => get_me_schema(),
+            GitHubReadToolKind::ListBranches => list_branches_schema(),
+            GitHubReadToolKind::ReadFile => read_file_schema(),
+            GitHubReadToolKind::ReadMultipleFiles => read_multiple_files_schema(),
+            GitHubReadToolKind::GrepFile => grep_file_schema(),
         })
     }
 
@@ -267,8 +284,644 @@ impl Tool for GitHubReadTool {
                     .await
                     .map_err(GitHubClientError::into_adk)
             }
+            GitHubReadToolKind::ReadFile => self.execute_read_file(arguments).await,
+            GitHubReadToolKind::ReadMultipleFiles => {
+                self.execute_read_multiple_files(arguments).await
+            }
+            GitHubReadToolKind::GrepFile => self.execute_grep_file(arguments).await,
         }
     }
+}
+
+fn get_me_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+    })
+}
+
+fn list_branches_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "max_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100,
+                "default": 100,
+                "description": "Maximum number of branches to return."
+            }
+        },
+        "additionalProperties": false
+    })
+}
+
+fn read_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "description": "Path to the file to read."
+            },
+            "branch": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Branch name. Defaults to the configured active branch."
+            },
+            "repo_name": {
+                "type": ["string", "null"],
+                "minLength": 3,
+                "maxLength": 512,
+                "description": "Optional repository in owner/name form."
+            },
+            "start_line": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "description": "First line to read, 1-indexed and inclusive."
+            },
+            "end_line": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "description": "Last line to read, 1-indexed and inclusive."
+            }
+        },
+        "required": ["file_path"],
+        "additionalProperties": false
+    })
+}
+
+fn read_multiple_files_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "file_paths": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": MAX_BATCH_FILES,
+                "items": {"type": "string", "minLength": 1, "maxLength": 4096},
+                "description": "File paths to read in order."
+            },
+            "branch": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Branch name. Defaults to the configured active branch."
+            },
+            "offset": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "description": "First line to read from every file, 1-indexed."
+            },
+            "limit": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "description": "Maximum number of lines to read from every file."
+            }
+        },
+        "required": ["file_paths"],
+        "additionalProperties": false
+    })
+}
+
+fn grep_file_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "description": "Path to the file whose contents are searched."
+            },
+            "pattern": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": MAX_PATTERN_BYTES,
+                "description": "Literal text or regular expression to find."
+            },
+            "branch": {
+                "type": ["string", "null"],
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Branch name. Defaults to the configured active branch."
+            },
+            "is_regex": {
+                "type": "boolean",
+                "default": true,
+                "description": "Treat pattern as a regular expression."
+            },
+            "context_lines": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": MAX_CONTEXT_LINES,
+                "default": 2,
+                "description": "Lines of context before and after each match."
+            }
+        },
+        "required": ["file_path", "pattern"],
+        "additionalProperties": false
+    })
+}
+
+impl GitHubReadTool {
+    async fn execute_read_file(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
+        reject_unknown_keys(
+            arguments,
+            &["file_path", "branch", "repo_name", "start_line", "end_line"],
+        )?;
+        let file_path = required_text(arguments, "file_path", 4 * 1_024)?;
+        let branch = optional_text(arguments, "branch", 1_024)?;
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        let start_line = optional_positive_usize(arguments, "start_line")?;
+        let end_line = optional_positive_usize(arguments, "end_line")?;
+        if start_line
+            .zip(end_line)
+            .is_some_and(|(start, end)| end < start)
+        {
+            return Err(invalid_arguments());
+        }
+        let full_content = self
+            .client
+            .read_text_file(file_path, branch, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)?;
+        let content = slice_lines(&full_content, start_line, end_line);
+        let requested = if start_line.is_some() || end_line.is_some() {
+            format!(
+                "start_line={}, end_line={}",
+                optional_number_label(start_line),
+                optional_number_label(end_line)
+            )
+        } else {
+            "full file read".to_owned()
+        };
+        Ok(guard_text_read(
+            content,
+            file_path,
+            &requested,
+            &full_content,
+        ))
+    }
+
+    async fn execute_read_multiple_files(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["file_paths", "branch", "offset", "limit"])?;
+        let file_paths = arguments
+            .get("file_paths")
+            .and_then(Value::as_array)
+            .filter(|paths| !paths.is_empty() && paths.len() <= MAX_BATCH_FILES)
+            .ok_or_else(invalid_arguments)?;
+        let mut validated_paths = Vec::with_capacity(file_paths.len());
+        for path in file_paths {
+            validated_paths.push(validate_text_value(path, 4 * 1_024)?);
+        }
+        let branch = optional_text(arguments, "branch", 1_024)?;
+        let offset = optional_positive_usize(arguments, "offset")?;
+        let limit = optional_positive_usize(arguments, "limit")?;
+        let end_line = match (offset, limit) {
+            (Some(start), Some(count)) => Some(
+                start
+                    .checked_add(count.saturating_sub(1))
+                    .ok_or_else(invalid_arguments)?,
+            ),
+            _ => None,
+        };
+        let mut results = Map::new();
+        let mut cumulative_chars = 0_usize;
+        for file_path in validated_paths {
+            if cumulative_chars >= MAX_OUTPUT_CHARS {
+                results.insert(file_path.to_owned(), Value::String(batch_skip_notice()));
+                continue;
+            }
+            let result = self
+                .client
+                .read_text_file(file_path, branch, None)
+                .await
+                .map(|full_content| {
+                    let content = slice_lines(&full_content, offset, end_line);
+                    let requested = if offset.is_some() || end_line.is_some() {
+                        format!(
+                            "start_line={}, end_line={}",
+                            optional_number_label(offset),
+                            optional_number_label(end_line)
+                        )
+                    } else {
+                        "full file read".to_owned()
+                    };
+                    guard_text_read(content, file_path, &requested, &full_content)
+                });
+            let (value, measured) = match result {
+                Ok(value) => (value, true),
+                Err(_) => (
+                    Value::String(
+                        "Error reading file: the GitHub file could not be read".to_owned(),
+                    ),
+                    false,
+                ),
+            };
+            if measured {
+                cumulative_chars = cumulative_chars.saturating_add(measure_result_chars(&value));
+            }
+            results.insert(file_path.to_owned(), value);
+        }
+        Ok(Value::Object(results))
+    }
+
+    async fn execute_grep_file(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
+        reject_unknown_keys(
+            arguments,
+            &[
+                "file_path",
+                "pattern",
+                "branch",
+                "is_regex",
+                "context_lines",
+            ],
+        )?;
+        let file_path = required_text(arguments, "file_path", 4 * 1_024)?;
+        let pattern = required_text(arguments, "pattern", MAX_PATTERN_BYTES)?;
+        let branch = optional_text(arguments, "branch", 1_024)?;
+        let is_regex = optional_bool(arguments, "is_regex")?.unwrap_or(true);
+        let context_lines = optional_nonnegative_usize(arguments, "context_lines")?.unwrap_or(2);
+        if context_lines > MAX_CONTEXT_LINES {
+            return Err(invalid_arguments());
+        }
+        let expression = compile_pattern(pattern, is_regex)?;
+        let content = self
+            .client
+            .read_text_file(file_path, branch, None)
+            .await
+            .map_err(GitHubClientError::into_adk)?;
+        Ok(Value::String(search_file_content(
+            &content,
+            file_path,
+            pattern,
+            &expression,
+            context_lines,
+        )?))
+    }
+}
+
+fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {
+    if arguments.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(invalid_arguments());
+    }
+    Ok(())
+}
+
+fn required_text<'a>(
+    arguments: &'a Map<String, Value>,
+    key: &str,
+    max_bytes: usize,
+) -> adk_rust::Result<&'a str> {
+    let value = arguments.get(key).ok_or_else(invalid_arguments)?;
+    validate_text_value(value, max_bytes)
+}
+
+fn optional_text<'a>(
+    arguments: &'a Map<String, Value>,
+    key: &str,
+    max_bytes: usize,
+) -> adk_rust::Result<Option<&'a str>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => validate_text_value(value, max_bytes).map(Some),
+    }
+}
+
+fn validate_text_value(value: &Value, max_bytes: usize) -> adk_rust::Result<&str> {
+    value
+        .as_str()
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= max_bytes
+                && !value.chars().any(|character| character.is_ascii_control())
+        })
+        .ok_or_else(invalid_arguments)
+}
+
+fn optional_positive_usize(
+    arguments: &Map<String, Value>,
+    key: &str,
+) -> adk_rust::Result<Option<usize>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Some)
+            .ok_or_else(invalid_arguments),
+    }
+}
+
+fn optional_nonnegative_usize(
+    arguments: &Map<String, Value>,
+    key: &str,
+) -> adk_rust::Result<Option<usize>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .and_then(|value| usize::try_from(value).ok())
+            .map(Some)
+            .ok_or_else(invalid_arguments),
+    }
+}
+
+fn optional_bool(arguments: &Map<String, Value>, key: &str) -> adk_rust::Result<Option<bool>> {
+    match arguments.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(invalid_arguments),
+    }
+}
+
+fn optional_number_label(value: Option<usize>) -> String {
+    value.map_or_else(|| "None".to_owned(), |value| value.to_string())
+}
+
+fn python_line_ranges(content: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0_usize;
+    let mut characters = content.char_indices().peekable();
+    while let Some((index, character)) = characters.next() {
+        let end = if character == '\r' {
+            if let Some((next_index, '\n')) = characters.peek().copied() {
+                let _ = characters.next();
+                Some(next_index.saturating_add('\n'.len_utf8()))
+            } else {
+                Some(index.saturating_add(character.len_utf8()))
+            }
+        } else if is_python_line_break(character) {
+            Some(index.saturating_add(character.len_utf8()))
+        } else {
+            None
+        };
+        if let Some(end) = end {
+            ranges.push((start, end));
+            start = end;
+        }
+    }
+    if start < content.len() {
+        ranges.push((start, content.len()));
+    }
+    ranges
+}
+
+fn is_python_line_break(character: char) -> bool {
+    matches!(
+        character,
+        '\n' | '\r'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{001C}'
+            | '\u{001D}'
+            | '\u{001E}'
+            | '\u{0085}'
+            | '\u{2028}'
+            | '\u{2029}'
+    )
+}
+
+fn slice_lines(content: &str, start_line: Option<usize>, end_line: Option<usize>) -> &str {
+    if start_line.is_none() && end_line.is_none() {
+        return content;
+    }
+    let ranges = python_line_ranges(content);
+    let first = start_line.unwrap_or(1).saturating_sub(1);
+    if first >= ranges.len() {
+        return "";
+    }
+    let last_exclusive = end_line.unwrap_or(ranges.len()).min(ranges.len());
+    if first >= last_exclusive {
+        return "";
+    }
+    &content[ranges[first].0..ranges[last_exclusive - 1].1]
+}
+
+fn guard_text_read(content: &str, file_path: &str, requested: &str, full_content: &str) -> Value {
+    let actual_chars = content.chars().count();
+    if actual_chars <= MAX_OUTPUT_CHARS {
+        return Value::String(content.to_owned());
+    }
+    let total_lines = python_line_ranges(full_content).len();
+    let extension = file_extension(file_path);
+    let file_type = mime_type(extension);
+    let (first_class_params, notes, full_read_allowed) = if total_lines <= 1 {
+        (
+            Map::new(),
+            format!(
+                "This file has no usable line breaks ({actual_chars} characters on a single line) and exceeds the {MAX_OUTPUT_CHARS}-character read limit. Line slicing would return the whole file, so a bounded read is not possible — the full read is refused."
+            ),
+            false,
+        )
+    } else {
+        let mut params = Map::new();
+        params.insert(
+            "start_line".to_owned(),
+            Value::String(format!(
+                "integer (1-indexed, inclusive) — first line to read. Valid range 1..{total_lines}. Omit to read from the beginning."
+            )),
+        );
+        params.insert(
+            "end_line".to_owned(),
+            Value::String(format!(
+                "integer (1-indexed, inclusive) — last line to read. Valid range 1..{total_lines}. Omit to read to the end."
+            )),
+        );
+        (
+            params,
+            "Use start_line/end_line together to read a bounded slice of a large file and keep tokens bounded."
+                .to_owned(),
+            full_content.chars().count() <= MAX_OUTPUT_CHARS,
+        )
+    };
+    json!({
+        "__result_status__": "content_too_large",
+        "context": {
+            "actual_chars": actual_chars,
+            "limit_chars": MAX_OUTPUT_CHARS,
+            "requested": requested
+        },
+        "extension": extension,
+        "filename": file_path,
+        "instruction_for_readFile": {
+            "extra_params": {},
+            "first_class_params": first_class_params,
+            "notes": notes
+        },
+        "read_limits": {
+            "full_read_allowed": full_read_allowed,
+            "max_output_chars": MAX_OUTPUT_CHARS
+        },
+        "schema_version": "1.0",
+        "total_lines": total_lines,
+        "type": file_type,
+        "unit": "lines"
+    })
+}
+
+fn file_extension(file_path: &str) -> &str {
+    let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+    filename
+        .rfind('.')
+        .filter(|index| *index > 0)
+        .map_or("", |index| &filename[index..])
+}
+
+fn mime_type(extension: &str) -> &'static str {
+    match extension.to_ascii_lowercase().as_str() {
+        ".py" => "text/x-python",
+        ".rs" => "text/x-rust",
+        ".js" => "text/javascript",
+        ".ts" => "text/typescript",
+        ".json" => "application/json",
+        ".md" => "text/markdown",
+        ".yaml" | ".yml" => "application/yaml",
+        ".html" => "text/html",
+        ".css" => "text/css",
+        ".csv" => "text/csv",
+        ".txt" | ".log" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn measure_result_chars(value: &Value) -> usize {
+    match value {
+        Value::String(value) => value.chars().count(),
+        _ => serde_json::to_string(value).map_or(MAX_OUTPUT_CHARS, |value| value.chars().count()),
+    }
+}
+
+fn batch_skip_notice() -> String {
+    format!(
+        "Skipped: the batch's cumulative {MAX_OUTPUT_CHARS}-character read limit was already reached by earlier files in this call. Read this file individually with read_file."
+    )
+}
+
+fn compile_pattern(pattern: &str, is_regex: bool) -> adk_rust::Result<Regex> {
+    let source = if is_regex {
+        pattern.to_owned()
+    } else {
+        regex::escape(pattern)
+    };
+    RegexBuilder::new(&source)
+        .case_insensitive(true)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
+        .build()
+        .map_err(|_| invalid_arguments())
+}
+
+fn search_file_content(
+    content: &str,
+    file_path: &str,
+    pattern: &str,
+    expression: &Regex,
+    context_lines: usize,
+) -> adk_rust::Result<String> {
+    let ranges = python_line_ranges(content);
+    let lines = ranges
+        .iter()
+        .map(|(start, end)| content[*start..*end].trim_end_matches(is_python_line_break))
+        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if expression.is_match(line) {
+            if matches.len() >= MAX_GREP_MATCHES {
+                return Err(output_resource_exhausted());
+            }
+            matches.push(index);
+        }
+    }
+    if matches.is_empty() {
+        return Ok(format!(
+            "No matches found for pattern '{pattern}' in {file_path}"
+        ));
+    }
+    let mut output = format!(
+        "Found {} match(es) for pattern '{pattern}' in {file_path}:\n",
+        matches.len()
+    );
+    let mut output_chars = output.chars().count();
+    if output_chars > MAX_OUTPUT_CHARS {
+        return Err(output_resource_exhausted());
+    }
+    for (match_number, line_index) in matches.into_iter().enumerate() {
+        push_bounded(
+            &mut output,
+            &mut output_chars,
+            &format!(
+                "\n\n--- Match {} at line {} ---",
+                match_number + 1,
+                line_index + 1
+            ),
+        )?;
+        let context_start = line_index.saturating_sub(context_lines);
+        for line in &lines[context_start..line_index] {
+            push_prefixed_line(&mut output, &mut output_chars, "\n  ", line)?;
+        }
+        push_prefixed_line(&mut output, &mut output_chars, "\n> ", lines[line_index])?;
+        let context_end = line_index
+            .saturating_add(context_lines)
+            .saturating_add(1)
+            .min(lines.len());
+        for line in &lines[line_index.saturating_add(1)..context_end] {
+            push_prefixed_line(&mut output, &mut output_chars, "\n  ", line)?;
+        }
+    }
+    Ok(output)
+}
+
+fn push_bounded(
+    output: &mut String,
+    output_chars: &mut usize,
+    value: &str,
+) -> adk_rust::Result<()> {
+    let next = output_chars
+        .checked_add(value.chars().count())
+        .ok_or_else(output_resource_exhausted)?;
+    if next > MAX_OUTPUT_CHARS {
+        return Err(output_resource_exhausted());
+    }
+    output.push_str(value);
+    *output_chars = next;
+    Ok(())
+}
+
+fn push_prefixed_line(
+    output: &mut String,
+    output_chars: &mut usize,
+    prefix: &str,
+    line: &str,
+) -> adk_rust::Result<()> {
+    let next = output_chars
+        .checked_add(prefix.chars().count())
+        .and_then(|value| value.checked_add(line.chars().count()))
+        .ok_or_else(output_resource_exhausted)?;
+    if next > MAX_OUTPUT_CHARS {
+        return Err(output_resource_exhausted());
+    }
+    output.push_str(prefix);
+    output.push_str(line);
+    *output_chars = next;
+    Ok(())
+}
+
+fn output_resource_exhausted() -> AdkError {
+    AdkError::new(
+        ErrorComponent::Tool,
+        ErrorCategory::InvalidInput,
+        "github.output.resource_exhausted",
+        "the GitHub tool output exceeds the approved limit",
+    )
 }
 
 fn bounded_description(value: &str) -> Box<str> {

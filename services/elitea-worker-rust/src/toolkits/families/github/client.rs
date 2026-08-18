@@ -20,7 +20,12 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IDLE_PER_HOST: usize = 8;
 const MAX_RESPONSE_BYTES: usize = 512 * 1_024;
+const MAX_FILE_RESPONSE_BYTES: usize = 2 * 1_024 * 1_024;
+const MAX_FILE_BYTES: usize = 1_024 * 1_024;
 const MAX_BRANCHES: usize = 100;
+const MAX_BRANCH_BYTES: usize = 1_024;
+const MAX_FILE_PATH_BYTES: usize = 4 * 1_024;
+const MAX_FILE_PATH_SEGMENTS: usize = 128;
 const GITHUB_ACCEPT: &str = "application/vnd.github+json";
 const GITHUB_API_VERSION: &str = "2022-11-28";
 const USER_AGENT: &str = "elitea-worker-rust/0.1";
@@ -165,6 +170,13 @@ pub(crate) trait GitHubApi: Send + Sync {
     async fn get_authenticated_user(&self) -> Result<Value, GitHubClientError>;
 
     async fn list_branches(&self, max_count: usize) -> Result<Value, GitHubClientError>;
+
+    async fn read_text_file(
+        &self,
+        file_path: &str,
+        branch: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<String, GitHubClientError>;
 }
 
 /// One invocation-scoped, pooled and origin-bound GitHub client.
@@ -302,6 +314,7 @@ impl GitHubClient {
         kind: GitHubRequestKind,
         path: &[&str],
         query: &[(&str, String)],
+        max_response_bytes: usize,
     ) -> Result<Value, GitHubClientError> {
         let request =
             self.build_request_at(kind, path, query, REQUEST_TIMEOUT, SystemTime::now())?;
@@ -316,7 +329,7 @@ impl GitHubClient {
             .get(CONTENT_LENGTH)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.parse::<usize>().ok())
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES)
+            .is_some_and(|length| length > max_response_bytes)
         {
             return Err(resource_exhausted());
         }
@@ -330,7 +343,7 @@ impl GitHubClient {
                 .len()
                 .checked_add(chunk.len())
                 .ok_or_else(resource_exhausted)?;
-            if next > MAX_RESPONSE_BYTES {
+            if next > max_response_bytes {
                 return Err(resource_exhausted());
             }
             body.extend_from_slice(&chunk);
@@ -343,7 +356,12 @@ impl GitHubClient {
 impl GitHubApi for GitHubClient {
     async fn get_authenticated_user(&self) -> Result<Value, GitHubClientError> {
         let response = self
-            .get_json(GitHubRequestKind::AuthenticatedUser, &[], &[])
+            .get_json(
+                GitHubRequestKind::AuthenticatedUser,
+                &[],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
             .await?;
         project_authenticated_user(&response)
     }
@@ -362,9 +380,35 @@ impl GitHubApi for GitHubClient {
                 GitHubRequestKind::Repository,
                 &["repos", owner, repository, "branches"],
                 &[("per_page", max_count.to_string())],
+                MAX_RESPONSE_BYTES,
             )
             .await?;
         project_branches(&response, max_count)
+    }
+
+    async fn read_text_file(
+        &self,
+        file_path: &str,
+        branch: Option<&str>,
+        repository: Option<&str>,
+    ) -> Result<String, GitHubClientError> {
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository_name) = validate_repository(repository)?;
+        let branch = branch.unwrap_or_else(|| self.config.active_branch());
+        validate_runtime_text(branch, MAX_BRANCH_BYTES)?;
+        let file_segments = validate_file_path(file_path)?;
+        let mut path = Vec::with_capacity(file_segments.len().saturating_add(4));
+        path.extend(["repos", owner, repository_name, "contents"]);
+        path.extend(file_segments);
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &path,
+                &[("ref", branch.to_owned())],
+                MAX_FILE_RESPONSE_BYTES,
+            )
+            .await?;
+        project_text_file(&response)
     }
 }
 
@@ -441,6 +485,95 @@ fn project_branches(value: &Value, max_count: usize) -> Result<Value, GitHubClie
         projected.push(json!({"name": name, "protected": protected_flag}));
     }
     Ok(Value::Array(projected))
+}
+
+fn project_text_file(value: &Value) -> Result<String, GitHubClientError> {
+    let object = value.as_object().ok_or_else(invalid_response)?;
+    if object.get("type").and_then(Value::as_str) != Some("file")
+        || object.get("encoding").and_then(Value::as_str) != Some("base64")
+    {
+        return Err(invalid_response());
+    }
+    let declared_size = object
+        .get("size")
+        .and_then(Value::as_u64)
+        .and_then(|size| usize::try_from(size).ok())
+        .ok_or_else(invalid_response)?;
+    if declared_size > MAX_FILE_BYTES {
+        return Err(resource_exhausted());
+    }
+    let encoded = object
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_response)?;
+    if encoded.len() > MAX_FILE_RESPONSE_BYTES {
+        return Err(resource_exhausted());
+    }
+    let compact = encoded
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect::<Vec<_>>();
+    let decoded = STANDARD.decode(compact).map_err(|_| invalid_response())?;
+    if decoded.len() > MAX_FILE_BYTES {
+        return Err(resource_exhausted());
+    }
+    if decoded.len() != declared_size {
+        return Err(invalid_response());
+    }
+    String::from_utf8(decoded).map_err(|_| invalid_response())
+}
+
+fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
+    let (owner, repository) = value.split_once('/').ok_or_else(invalid_configuration)?;
+    if repository.contains('/')
+        || !valid_repository_segment(owner)
+        || !valid_repository_segment(repository)
+    {
+        return Err(invalid_configuration());
+    }
+    Ok((owner, repository))
+}
+
+fn valid_repository_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn validate_runtime_text(value: &str, max_bytes: usize) -> Result<(), GitHubClientError> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || value.chars().any(|character| character.is_ascii_control())
+    {
+        return Err(if value.len() > max_bytes {
+            resource_exhausted()
+        } else {
+            invalid_configuration()
+        });
+    }
+    Ok(())
+}
+
+fn validate_file_path(value: &str) -> Result<Vec<&str>, GitHubClientError> {
+    validate_runtime_text(value, MAX_FILE_PATH_BYTES)?;
+    if value.starts_with('/') || value.ends_with('/') {
+        return Err(invalid_configuration());
+    }
+    let segments = value.split('/').collect::<Vec<_>>();
+    if segments.len() > MAX_FILE_PATH_SEGMENTS
+        || segments
+            .iter()
+            .any(|segment| segment.is_empty() || matches!(*segment, "." | ".."))
+    {
+        return Err(if segments.len() > MAX_FILE_PATH_SEGMENTS {
+            resource_exhausted()
+        } else {
+            invalid_configuration()
+        });
+    }
+    Ok(segments)
 }
 
 fn map_status(status: StatusCode, headers: &HeaderMap) -> Result<(), GitHubClientError> {
@@ -636,6 +769,18 @@ pub(in crate::toolkits) fn test_project_branches(
     max_count: usize,
 ) -> Result<Value, GitHubClientError> {
     project_branches(value, max_count)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_text_file(
+    value: &Value,
+) -> Result<String, GitHubClientError> {
+    project_text_file(value)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_validate_file_path(value: &str) -> Result<(), GitHubClientError> {
+    validate_file_path(value).map(|_| ())
 }
 
 #[cfg(test)]
