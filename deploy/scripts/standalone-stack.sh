@@ -16,7 +16,10 @@
 #                embedding model row only when no row exists yet, so it can
 #                never overwrite the name seed-llm wrote (#468)
 #   check        verify the gateway mTLS hop, the runtime plane and the chat
-#                critical path (delegates the last to chat-smoke.py)
+#                critical path (delegates the last to chat-smoke.py). It counts
+#                passes, failures AND skips, and a skipped assertion exits
+#                non-zero: add --allow-skips to accept an unmeasured
+#                precondition on purpose (#429)
 #   down         tear down (add -v yourself to drop volumes)
 #
 # Typical first run:
@@ -780,12 +783,37 @@ SQL
     curl -sS -o /dev/null -w '  HTTP %{http_code} (401/403 = elitea-main answering under auth)\n' \
          "http://localhost:${PORT}/api/v2/llm/v1/models" || true
 
+    # ── Result accounting (issue #429) ───────────────────────────────────────
+    #
+    # Three counters, not one. "Nothing failed" and "something was measured" are
+    # different statements, and only the second one is a pass.
+    #
+    # Every skip arm below used to print `~ SKIPPED`, raise nothing and leave
+    # the exit status alone. So a stack with no PAT, one user and no index
+    # toolkit printed six skips and reported the runtime plane healthy. Each
+    # skip names a precondition the operator was told to seed, so an absent one
+    # is a failure of this check, not a soft result.
+    #
+    # `--allow-skips` restores the old soft behaviour for a caller that wants
+    # it. The count and the reasons are printed either way.
+    ALLOW_SKIPS=0
+    for check_arg in "${@:2}"; do
+      case "$check_arg" in
+        --allow-skips) ALLOW_SKIPS=1 ;;
+        *) echo "ERROR: unknown option for check: ${check_arg} (only --allow-skips)" >&2; exit 1 ;;
+      esac
+    done
+
     # ── Runtime plane (issue #281) ───────────────────────────────────────────
     # Each assertion below distinguishes "provisioned" from "process happens to
     # be running". A healthy elitea-main proves nothing on its own: with the
     # runtime flag off it is equally healthy and every route here 404s.
     runtime_failures=0
+    runtime_passes=0
+    runtime_skips=0
+    ok()   { echo "  ✓ $1"; runtime_passes=$((runtime_passes + 1)); }
     fail() { echo "  ✗ $1" >&2; runtime_failures=$((runtime_failures + 1)); }
+    skip() { echo "  ~ SKIPPED: $1" >&2; runtime_skips=$((runtime_skips + 1)); }
 
     # ── Edge identity-header strip (#326) ────────────────────────────────────
     # elitea-main accepts X-Auth-Type + X-Auth-Id as a finished identity from
@@ -813,7 +841,7 @@ SQL
         "SELECT user_id FROM public.auth_core__token
           WHERE uuid = '${spoof_uuid}'" 2>/dev/null | tr -d '[:space:]')"
     if [ -z "$spoof_uuid" ] || [ -z "$spoof_user" ]; then
-      echo "  ~ SKIPPED: no PAT to contrast the spoof against (run: $0 seed-runtime)"
+      skip "no PAT to contrast the spoof against (run: $0 seed-runtime)"
     else
       # Spelled out rather than $RUNTIME_CERTS: that variable is assigned below
       # this block, and under `set -u` reading it here aborts the whole check.
@@ -834,13 +862,13 @@ PY
       code="$(curl -s -o /dev/null -w '%{http_code}' \
                 -H 'X-Auth-Type: user' -H "X-Auth-ID: ${spoof_user}" "$spoof_route" || true)"
       case "$code" in
-        401|403) echo "  ✓ forged X-Auth-ID alone is rejected (HTTP ${code})" ;;
+        401|403) ok "forged X-Auth-ID alone is rejected (HTTP ${code})" ;;
         *) fail "forged X-Auth-ID alone got HTTP ${code} — the edge is forwarding client identity headers (#326)" ;;
       esac
 
       body="$(curl -s -H "Authorization: Bearer ${spoof_jwt}" "$spoof_route" || true)"
       case "$body" in
-        *"\"id\":\"${spoof_user}\""*) echo "  ✓ a real PAT still authenticates through the middleware" ;;
+        *"\"id\":\"${spoof_user}\""*) ok "a real PAT still authenticates through the middleware" ;;
         *) fail "PAT ${spoof_user} did not authenticate through the edge — the strip broke the legitimate path" ;;
       esac
 
@@ -856,12 +884,12 @@ PY
           "SELECT id FROM public.auth_core__user
             WHERE id <> ${spoof_user} ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
       if [ -z "$spoof_other" ]; then
-        echo "  ~ SKIPPED: only one user exists, so there is nobody to impersonate"
+        skip "only one user exists, so there is nobody to impersonate"
       else
         body="$(curl -s -H "Authorization: Bearer ${spoof_jwt}" \
                   -H 'X-Auth-Type: user' -H "X-Auth-ID: ${spoof_other}" "$spoof_route" || true)"
         case "$body" in
-          *"\"id\":\"${spoof_user}\""*) echo "  ✓ a forged X-Auth-ID cannot override a genuine bearer" ;;
+          *"\"id\":\"${spoof_user}\""*) ok "a forged X-Auth-ID cannot override a genuine bearer" ;;
           *) fail "PAT ${spoof_user} + forged X-Auth-ID: ${spoof_other} did not resolve to ${spoof_user} — the header still overrides the credential (#326)" ;;
         esac
       fi
@@ -891,7 +919,7 @@ PY
       out="$(probe "openssl s_client -connect elitea-main:${port} -CAfile /m/runtime-ca.crt -tls1_3 </dev/null")"
       case "$out" in
         *"certificate required"*|*"peer did not return a certificate"*|*"Verify return code: 0"*)
-          echo "  ✓ ${name} :${port} — TLS 1.3 listener up, client cert required" ;;
+          ok "${name} :${port} — TLS 1.3 listener up, client cert required" ;;
         *) fail "${name} :${port} — no mTLS listener (runtime disabled or PKI wrong)" ;;
       esac
     done
@@ -908,7 +936,7 @@ PY
                    --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
                    --no-auth-warning XINFO GROUPS '${STREAM}'" 2>&1 || true)"
     case "$groups" in
-      *"$GROUP"*) echo "  ✓ ${STREAM} has consumer group ${GROUP}" ;;
+      *"$GROUP"*) ok "${STREAM} has consumer group ${GROUP}" ;;
       *) fail "${STREAM} has no ${GROUP} group — runtime-bootstrap did not run" ;;
     esac
 
@@ -940,7 +968,7 @@ PY
     case "$MAIN_LOGS" in
       "") fail "elitea-main container not found in project ${PROJECT}" ;;
       *'"runtime_enabled":true'*)
-        echo "  ✓ elitea-main started with runtime_enabled=true" ;;
+        ok "elitea-main started with runtime_enabled=true" ;;
       *) fail "elitea-main did not log runtime_enabled=true — the flag or its env block is incomplete" ;;
     esac
 
@@ -950,7 +978,7 @@ PY
               "SELECT count(*) FROM elitea_runtime.workload_sessions
                 WHERE revoked_at IS NULL AND expires_at > clock_timestamp()" 2>/dev/null || echo 0)"
     if [ "${rows:-0}" -ge 1 ]; then
-      echo "  ✓ ${rows} active workload session(s)"
+      ok "${rows} active workload session(s)"
     else
       fail "no active workload session — run: $0 seed-runtime"
     fi
@@ -968,7 +996,7 @@ PY
                      --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
                      --no-auth-warning XINFO CONSUMERS '${STREAM}' '${GROUP}'" 2>&1 || true)"
     case "$consumers" in
-      *standalone-agent-worker*) echo "  ✓ worker joined ${GROUP}" ;;
+      *standalone-agent-worker*) ok "worker joined ${GROUP}" ;;
       *) fail "no consumer on ${GROUP} — the worker never reached Redis (check its logs)" ;;
     esac
 
@@ -977,7 +1005,7 @@ PY
     # connect would pass against any TLS listener, so verify the chain.
     edge="$(probe "openssl s_client -connect elitea-platform-edge:443 -CAfile /m/runtime-ca.crt -servername elitea-platform-edge </dev/null")"
     case "$edge" in
-      *"Verify return code: 0"*) echo "  ✓ platform-edge TLS verifies against the runtime CA" ;;
+      *"Verify return code: 0"*) ok "platform-edge TLS verifies against the runtime CA" ;;
       *) fail "platform-edge did not present a runtime-CA certificate for elitea-platform-edge" ;;
     esac
 
@@ -990,7 +1018,7 @@ PY
                 WHERE uuid IS NOT NULL
                   AND (expires IS NULL OR expires > (clock_timestamp() AT TIME ZONE 'UTC'))" 2>/dev/null || echo 0)"
     if [ "${pats:-0}" -ge 1 ]; then
-      echo "  ✓ ${pats} active PAT(s)"
+      ok "${pats} active PAT(s)"
     else
       fail "no active PAT — run: $0 seed-runtime (executions fail at actor_pat_issuance)"
     fi
@@ -1005,9 +1033,11 @@ PY
     # with, rather than reusing a browser session: the /llm mount takes bearer
     # tokens and this avoids driving an OIDC login from a shell script.
     #
-    # `project_not_resolved` is reported as SKIPPED, not FAILED: it means the
-    # caller has no personal project, which is a seeding state (`$0 seed`), not
-    # a broken LLM path. Only an attempted-and-failed hop fails the check.
+    # `project_not_resolved` is reported as SKIPPED rather than FAILED because
+    # it names a different cause: the caller has no personal project, which is a
+    # seeding state (`$0 seed`), not a broken LLM path. It is still counted, and
+    # a skip still exits non-zero (#429) — the distinction is in the message the
+    # operator reads, not in whether the run passes.
     # The caller must OWN a personal project, because that is what the /llm
     # route resolves the provider credential from. A bare `LIMIT 1` picks
     # dev@elitea.ai, who has none, and the hop then reports
@@ -1026,7 +1056,7 @@ PY
     LLM_PROBE="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $1}')"
     LLM_PROJECT="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $2}')"
     if [ -z "$LLM_PROBE" ]; then
-      echo "  ~ SKIPPED: no PAT to authenticate with (run: $0 seed-runtime)"
+      skip "no PAT to authenticate with (run: $0 seed-runtime)"
     else
       LLM_JWT="$(python3 - "$LLM_PROBE" "${RUNTIME_CERTS}/auth-pat-signing-key" <<'PY'
 import base64, hashlib, hmac, json, pathlib, sys
@@ -1067,7 +1097,7 @@ PY
           psql -U elitea -d elitea -tAc \
           "SELECT id FROM centry.project WHERE name = 'project_user_${WRITE_USER}'" 2>/dev/null | tr -d '[:space:]')"
       if [ -z "$WRITE_PROJECT" ]; then
-        echo "  ~ SKIPPED: the probe caller owns no personal project (run: $0 seed)"
+        skip "the probe caller owns no personal project (run: $0 seed)"
       else
         WRITE_CRED="api-created-credential"
         WRITE_MODEL="vllm/API-CREATED-MODEL"
@@ -1092,7 +1122,7 @@ PY
         # type vllm, a literal api_key and the mock's compose address.
         CRED_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_CRED}\",\"type\":\"vllm\",\"section\":\"ai_credentials\",\"data\":{\"api_key\":\"mock-key-not-used\",\"api_base\":\"http://llm-mock:8090\"}}")"
         case "$CRED_OUT" in
-          *'"status_ok":true'*) echo "  ✓ a credential saved through the API is usable" ;;
+          *'"status_ok":true'*) ok "a credential saved through the API is usable" ;;
           *'"status_ok":false'*)
             fail "the API stored the credential with status_ok = false (#457).
        The gateway admits only status_ok = true, so this credential is
@@ -1115,7 +1145,7 @@ PY
         # costs nothing here.
         MODEL_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_MODEL}\",\"label\":\"${WRITE_MODEL}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"${WRITE_MODEL}\",\"ai_credentials\":{\"elitea_title\":\"${WRITE_CRED}\"}}}")"
         case "$MODEL_OUT" in
-          *'"status_ok":true'*) echo "  ✓ a model saved through the API is usable" ;;
+          *'"status_ok":true'*) ok "a model saved through the API is usable" ;;
           *) fail "the API stored the model as unusable (#457): $(printf '%s' "$MODEL_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
         esac
 
@@ -1124,7 +1154,7 @@ PY
         # `true` for everything would also pass step 2.
         DANGLING_OUT="$(write_configuration "{\"elitea_title\":\"${WRITE_DANGLING}\",\"label\":\"${WRITE_DANGLING}\",\"type\":\"llm_model\",\"section\":\"llm\",\"data\":{\"name\":\"${WRITE_DANGLING}\",\"ai_credentials\":{\"elitea_title\":\"no-such-credential\"}}}")"
         case "$DANGLING_OUT" in
-          *'"status_ok":false'*) echo "  ✓ a model whose credential does not resolve stays refused" ;;
+          *'"status_ok":false'*) ok "a model whose credential does not resolve stays refused" ;;
           *) fail "an unresolvable model was stored as usable: $(printf '%s' "$DANGLING_OUT" | tr '\n' ' ' | cut -c1-200)" ;;
         esac
 
@@ -1168,7 +1198,7 @@ except Exception as error:
         done
         case "$WRITE_LLM_OUT" in
           *'OK'*'api-created credential check'*)
-            echo "  ✓ a completion ran on a credential and a model the API created" ;;
+            ok "a completion ran on a credential and a model the API created" ;;
           *model_not_found*)
             fail "the gateway does not serve the API-created model (#457).
        The row exists, so its status_ok is false or the gateway cannot read it.
@@ -1255,8 +1285,8 @@ except Exception as error:
       # fail on every stack that was not the mock.
       case "$LLM_OUT" in
         *'LEN 0'*)                 fail "completion hop returned an empty answer: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
-        *'LEN '[1-9]*)             echo "  ✓ completion returned an answer from '${CHAT_MODEL_NAME}'" ;;
-        *project_not_resolved*)    echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
+        *'LEN '[1-9]*)             ok "completion returned an answer from '${CHAT_MODEL_NAME}'" ;;
+        *project_not_resolved*)    skip "caller has no personal project (run: $0 seed)" ;;
         *'HTTPERR 502'*)           fail "gateway could not reach llm-mock — is GATEWAY_EGRESS_ALLOWLIST set? (see the compose comment)" ;;
         *)                         fail "completion hop failed: $(printf '%s' "$LLM_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
       esac
@@ -1293,8 +1323,8 @@ except Exception as error:
 ")"
       case "$EMB_OUT" in
         *'DIM 0'*)              fail "embedding hop returned no vector: $(printf '%s' "$EMB_OUT" | tr '\n' ' ' | cut -c1-160)" ;;
-        *'DIM '[1-9]*)          echo "  ✓ embedding hop returned a vector ($(printf '%s' "$EMB_OUT" | tr -dc '0-9 ' | awk '{print $1}') dimensions)" ;;
-        *project_not_resolved*) echo "  ~ SKIPPED: caller has no personal project (run: $0 seed)" ;;
+        *'DIM '[1-9]*)          ok "embedding hop returned a vector ($(printf '%s' "$EMB_OUT" | tr -dc '0-9 ' | awk '{print $1}') dimensions)" ;;
+        *project_not_resolved*) skip "caller has no personal project (run: $0 seed)" ;;
         *model_not_found*)
           # Name the cause (#380). A bare 404 sent people to the gateway's
           # routing when the catalogue simply held no embedding row, or held
@@ -1346,7 +1376,7 @@ except Exception as error:
         *"${CHAT_MODEL_TITLE}"*)
           case "$MODELS_OUT" in
             *'standalone-embedding'*)
-              echo "  ✓ GET /llm/v1/models lists the chat model and the embedding model" ;;
+              ok "GET /llm/v1/models lists the chat model and the embedding model" ;;
             *)
               fail "GET /llm/v1/models omits the embedding model (#398).
        The resolver reads every pair in addressableModelSections, so the
@@ -1364,14 +1394,17 @@ except Exception as error:
       # worker with a 404, so a static comparison here is worth more than the
       # live hop above.
       #
-      # SKIPPED, not failed, when no toolkit row exists: `seed-index` is a
-      # separate step and the `chat-stream` job never runs it.
+      # SKIPPED rather than failed when no toolkit row exists: `seed-index` is a
+      # separate step and the `chat-stream` job never runs it. It is counted,
+      # and a counted skip still exits non-zero unless the caller passes
+      # --allow-skips (#429). A caller that deliberately skips seed-index says
+      # so on the command line.
       TOOLKIT_EMBEDDING="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
           psql -U elitea -d elitea -tAc \
           "SELECT settings->>'embedding_model' FROM p_${LLM_PROJECT}.elitea_tools
             WHERE name = 'standalone-artifact-index'" 2>/dev/null | tr -d '[:space:]')"
       if [ -z "$TOOLKIT_EMBEDDING" ]; then
-        echo "  ~ SKIPPED: project ${LLM_PROJECT} holds no index toolkit (run: $0 seed-index)"
+        skip "project ${LLM_PROJECT} holds no index toolkit (run: $0 seed-index)"
       elif [ "$TOOLKIT_EMBEDDING" != "$EMB_MODEL_NAME" ]; then
         fail "the index toolkit and the catalogue name two different embedding models (#468).
        p_${LLM_PROJECT}.configuration data->>'name'           = ${EMB_MODEL_NAME}
@@ -1380,7 +1413,7 @@ except Exception as error:
        durable, and then fails in the worker with a 404.
        Re-run: $0 seed-llm && $0 seed-index"
       else
-        echo "  ✓ the index toolkit and the catalogue name one embedding model ('${EMB_MODEL_NAME}')"
+        ok "the index toolkit and the catalogue name one embedding model ('${EMB_MODEL_NAME}')"
       fi
     fi
 
@@ -1424,17 +1457,23 @@ except Exception as error:
            FROM (VALUES ('chat_messages_text'),('chat_messages_context'),('chat_message_trace_step')) AS missing(name)
           WHERE to_regclass('p_${CHAT_PROJECT}.' || missing.name) IS NULL" 2>/dev/null | tr -d '[:space:]')"
     if [ -n "$MISSING_CHAT_TABLES" ]; then
-      # Reported, not counted: this is a filed product gap, not a broken stack,
-      # and folding it into the failure count would make `check` permanently red
-      # and useless as a gate for everything else. It is printed on every run so
-      # it cannot be quietly forgotten.
+      # Counted as a SKIP, not reported and forgotten (#429). #287 is a filed
+      # product gap, and the gap is real — but the statement this check makes is
+      # "the chat critical path was not measured", and that is a skip whatever
+      # its cause. It was previously printed and NOT counted, which let a run
+      # that never drove a single chat turn report the runtime plane healthy.
+      #
+      # An operator who knows about #287 and wants the rest of the check as a
+      # gate passes --allow-skips. That is a decision the caller states, not one
+      # this script makes on the caller's behalf.
       echo "  ! BLOCKED by #287 — p_${CHAT_PROJECT} is missing tenant chat tables; agent turns 500 here"
       echo "    (missing: $MISSING_CHAT_TABLES)"
+      skip "the chat critical path did not run — see the #287 line above"
     else
       CHAT_PAT="$(printf '%s' "$CHAT_ROW" | awk '{print $1}')"
       CHAT_USER="$(printf '%s' "$CHAT_ROW" | awk '{print $2}')"
       if [ -z "$CHAT_PAT" ] || [ -z "$CHAT_USER" ]; then
-        echo "  ~ SKIPPED: no PAT to drive the turn (run: $0 seed-runtime)"
+        skip "no PAT to drive the turn (run: $0 seed-runtime)"
       else
         # Run INSIDE the compose network, not from the host: the events stream
         # is only reachable through platform-edge (#289), and the edge's
@@ -1456,19 +1495,36 @@ except Exception as error:
           --project "$CHAT_PROJECT"
         smoke_status=$?
         set -e
+        # chat-smoke.py's exit codes, counted rather than swallowed (#429).
+        # 2 and 3 both mean the turn did not run, and a turn that did not run
+        # is not a turn that worked.
         case "$smoke_status" in
-          0) ;;
-          2) ;;  # SKIPPED — the script prints the missing precondition
-          3) ;;  # BLOCKED by a filed platform gap; printed, not counted, for
-                 # the same reason as the #287 guard above
-          *) fail "chat smoke failed" ;;
+          0) ok "the chat critical path ran end to end" ;;
+          2) skip "chat smoke reported a missing precondition (exit 2) — read its own lines above" ;;
+          3) skip "chat smoke is blocked by a filed platform gap (exit 3) — read its own lines above" ;;
+          *) fail "chat smoke failed (exit ${smoke_status})" ;;
         esac
       fi
     fi
 
+    # The count line. Read it, not the exit status alone: it separates "nothing
+    # failed" from "something was measured". The embedding path check reports
+    # its own 13 assertions on its own line above; these are this script's.
+    echo "→ runtime plane: ${runtime_passes} assertion(s) passed, ${runtime_failures} failed, ${runtime_skips} skipped."
+
     if [ "$runtime_failures" -ne 0 ]; then
       echo "→ ${runtime_failures} runtime-plane check(s) failed." >&2
       exit 1
+    fi
+    if [ "$runtime_skips" -ne 0 ]; then
+      if [ "$ALLOW_SKIPS" -eq 1 ]; then
+        echo "→ ${runtime_skips} check(s) did not run. --allow-skips was given, so they do not fail this run." >&2
+      else
+        echo "→ FAILED: ${runtime_skips} check(s) did not run. A skipped check is not a passed check." >&2
+        echo "   Seed the preconditions the SKIPPED lines name, or state the choice:" >&2
+        echo "     $0 check --allow-skips" >&2
+        exit 1
+      fi
     fi
     echo "→ runtime plane OK."
     ;;

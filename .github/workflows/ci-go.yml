@@ -160,6 +160,17 @@ jobs:
             --config api/openapi/oapi-codegen.yaml api/openapi/v2.yaml
           git diff --exit-code -- internal/api/generated/api.gen.go
 
+      # The response SHAPE each listed handler writes, against what the SPA
+      # reads. It parses Go source and starts no server, so it costs a second.
+      #
+      # It ran in no workflow until #428. That mattered twice over: the script
+      # also turned every unreadable assertion into a warning and exited 0, so
+      # even a manual run reported success after measuring nothing. It now fails
+      # on a skipped assertion and prints how many of the 17 ran. #424 tracks the
+      # other gates that still have no caller.
+      - name: Static API contract (handler response shapes)
+        run: bash services/elitea-main/scripts/validate_contract_static.sh
+
       # One aggregation for CI and for `task vet`. The inline loop that used to
       # live here reported the status of its LAST module only (#409).
       - name: Go vet (workspace)

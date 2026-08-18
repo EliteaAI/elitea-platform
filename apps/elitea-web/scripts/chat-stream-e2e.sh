@@ -113,7 +113,17 @@ echo "→ Asserting the stack (gateway mTLS, runtime plane, #326 edge strip)…"
 # short form works on one platform and fails on the other. This repository has
 # already been bitten by that difference.
 CHECK_LOG="$(mktemp "${TMPDIR:-/tmp}/chat-stream-check.XXXXXX")"
-if ! run_stack check 2>&1 | tee "$CHECK_LOG"; then
+# `--allow-skips` is a STATED choice, and it is stated here rather than assumed
+# inside `check` (#429). This journey seeds the chat plane and not the index
+# plane, so `check`'s index-toolkit assertion cannot run. Since #429 an
+# unmeasured assertion exits non-zero by default, which is right for an operator
+# and wrong for this caller alone.
+#
+# The flag accepts a SKIP. It does not accept a FAILURE: `check` still exits
+# non-zero on any failed assertion, and the loop below still requires the three
+# #326 lines by name. Do not add `--allow-skips` anywhere the caller has not
+# written down which assertion it gives up, and why.
+if ! run_stack check --allow-skips 2>&1 | tee "$CHECK_LOG"; then
   echo "ERROR: the standalone stack failed its own check; see the output above" >&2
   exit 1
 fi
