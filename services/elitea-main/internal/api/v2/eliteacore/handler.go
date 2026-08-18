@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -2097,20 +2098,64 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	s := fmt.Sprintf("p_%s", projectID)
 
-	// Body can be either a flat array (import_wizard) or a map with "applications" key
-	bodyBytes, _ := io.ReadAll(r.Body)
-	var entities []any
-	if len(bodyBytes) > 0 && bodyBytes[0] == '[' {
-		_ = json.Unmarshal(bodyBytes, &entities) // request body; malformed means empty entities
-	} else {
-		var bodyMap map[string]any
-		_ = json.Unmarshal(bodyBytes, &bodyMap) // request body; malformed means empty map
-		if apps, ok := bodyMap["applications"].([]any); ok {
-			entities = apps
-		}
+	ctx := r.Context()
+
+	// Checked before the body, because it is the handler's own precondition
+	// and not the caller's fault. It shared a branch with an empty entity list
+	// and answered 201, so an import that could reach no database at all
+	// reported that it had imported everything (#505).
+	if h.pool == nil {
+		slog.ErrorContext(ctx, "import: "+importWriteFailed, "schema", s)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
 	}
 
-	if len(entities) == 0 || h.pool == nil {
+	// Body can be either a flat array (import_wizard) or a map with an
+	// "applications" key. Three faults lived in the ten lines this replaces,
+	// and all three ended at the same 201 with an empty result:
+	//
+	//   - the io.ReadAll error was discarded, so a body that was cut off part
+	//     way through was imported as far as it got, which is nothing;
+	//   - both json.Unmarshal errors were discarded under a comment that said
+	//     "malformed means empty entities", so a corrupt export file was a
+	//     successful import of no entities;
+	//   - the array branch tested bodyBytes[0], so a body with any leading
+	//     whitespace — a newline from a text editor is enough — went to the map
+	//     branch, failed to decode as a map, and took the same silent exit.
+	//
+	// bytes.TrimSpace removes the third. The other two are reported.
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.ErrorContext(ctx, "import: unable to read the request body", "schema", s, "error", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unable to read the request body"})
+		return
+	}
+	trimmed := bytes.TrimSpace(bodyBytes)
+	var entities []any
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &entities); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+			return
+		}
+	} else {
+		var bodyMap map[string]any
+		if err := json.Unmarshal(trimmed, &bodyMap); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+			return
+		}
+		// A body that carries no `applications` array names nothing to import.
+		// It used to answer 201 with an empty result, which the wizard reads as
+		// a completed import. An `applications` key that IS an array and IS
+		// empty keeps that answer: it asks for nothing and gets nothing.
+		apps, ok := bodyMap["applications"].([]any)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the request body must carry an applications array"})
+			return
+		}
+		entities = apps
+	}
+
+	if len(entities) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"result": map[string]any{"agents": []any{}},
 			"errors": map[string]any{"agents": []any{}},
@@ -2118,12 +2163,16 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	user, _ := auth.UserFromContext(ctx)
-	userID := 1
-	if user.ID != "" {
-		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
+	userID, ok := importPrincipalUserID(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "an authenticated principal is required to import"})
+		return
 	}
+
+	resultAgents := make([]map[string]any, 0)
+	errorAgents := make([]any, 0)
+	resultToolkits := make([]map[string]any, 0)
+	errorToolkits := make([]any, 0)
 
 	// Separate entities by type, preserving original indices for error reporting
 	type toolkitEntry struct {
@@ -2138,9 +2187,19 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	var agentEntries []agentEntry
 	var toolkitEntries []toolkitEntry
 
+	// An entry that is not a JSON object was dropped by a bare `continue`, so
+	// the wizard showed it neither in the result nor in the errors and the
+	// import still answered 201. It is reported on the agents channel because
+	// nothing in an entry the handler cannot read says which channel it belongs
+	// to, and the wizard maps an error entry by its index, not by its channel
+	// (apps/elitea-ui, getErrorImportUUID).
 	for i, raw := range entities {
 		ent, ok := raw.(map[string]any)
 		if !ok {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": i, "name": "",
+				"msg": "Import function has been failed: the entry is not a JSON object",
+			})
 			continue
 		}
 		entity, _ := ent["entity"].(string)
@@ -2151,11 +2210,6 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			agentEntries = append(agentEntries, agentEntry{entityIdx: i, raw: ent})
 		}
 	}
-
-	resultAgents := make([]map[string]any, 0)
-	errorAgents := make([]any, 0)
-	resultToolkits := make([]map[string]any, 0)
-	errorToolkits := make([]any, 0)
 
 	validAgentTypes := map[string]bool{"openai": true, "react": true, "dial": true, "pipeline": true, "": true}
 
@@ -2213,6 +2267,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
 			if !ok {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: a version entry is not a JSON object",
+				})
 				continue
 			}
 			vName, _ := v["name"].(string)
@@ -2225,23 +2284,22 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 			instructions, _ := v["instructions"].(string)
 			welcomeMsg, _ := v["welcome_message"].(string)
-			llmJSON := "{}"
-			if llm, ok := v["llm_settings"].(map[string]any); ok {
-				if b, e := json.Marshal(llm); e == nil {
-					llmJSON = string(b)
-				}
-			}
-			startersJSON := "[]"
-			if cs, ok := v["conversation_starters"].([]any); ok {
-				if b, e := json.Marshal(cs); e == nil {
-					startersJSON = string(b)
-				}
-			}
-			metaJSON := "{}"
-			if m, ok := v["meta"].(map[string]any); ok {
-				if b, e := json.Marshal(m); e == nil {
-					metaJSON = string(b)
-				}
+
+			// Three jsonb columns, one rule. A key that is absent, or null,
+			// keeps the column default. A key of the wrong JSON type, or one
+			// that cannot be encoded, is reported. It used to take the same
+			// empty default as an absent key, so a file whose llm_settings was
+			// not an object imported an agent with no model, and answered 201.
+			llmJSON, llmErr := importedJSONObject(v, "llm_settings")
+			startersJSON, startersErr := importedJSONArray(v, "conversation_starters")
+			metaJSON, metaErr := importedJSONObject(v, "meta")
+			if columnErr := errors.Join(llmErr, startersErr, metaErr); columnErr != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: unable to import version " + vName + ": " + columnErr.Error(),
+				})
+				continue
 			}
 
 			var vID int
@@ -2335,8 +2393,20 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			tkType = "custom"
 		}
 
-		settings, _ := tk.raw["settings"].(map[string]any)
-		if settings == nil {
+		// A toolkit's settings hold its URL, its repository and everything else
+		// the toolkit needs to reach its service. A `settings` key of the wrong
+		// JSON type was replaced with an empty object, so the toolkit imported,
+		// answered 201 and could reach nothing.
+		settings, hasSettings := tk.raw["settings"].(map[string]any)
+		if !hasSettings {
+			if raw, present := tk.raw["settings"]; present && raw != nil {
+				errorToolkits = append(errorToolkits, map[string]any{
+					"index": tk.entityIdx, "name": tkName,
+					"msg": "Import function has been failed: settings must be a JSON object",
+				})
+				failedToolkitImportUUIDs[tk.importUUID] = true
+				continue
+			}
 			settings = map[string]any{}
 		}
 
@@ -2363,9 +2433,14 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		settingsJSON := "{}"
-		if b, e := json.Marshal(settings); e == nil {
-			settingsJSON = string(b)
+		settingsJSON, settingsErr := importedJSONEncode("settings", settings)
+		if settingsErr != nil {
+			errorToolkits = append(errorToolkits, map[string]any{
+				"index": tk.entityIdx, "name": tkName,
+				"msg": "Import function has been failed: " + settingsErr.Error(),
+			})
+			failedToolkitImportUUIDs[tk.importUUID] = true
+			continue
 		}
 
 		tkDesc, _ := tk.raw["description"].(string)
@@ -2418,6 +2493,10 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 			vIDStr, _ := createdVersions[vIdx]["id"].(string)
 			var vID int
+			// This reads back a value phase 1 wrote with fmt.Sprintf("%d", vID)
+			// on the line that created the entry, so it cannot fail. It is not
+			// the class of substitution #505 repairs, which read a value that
+			// came from the request.
 			_, _ = fmt.Sscanf(vIDStr, "%d", &vID)
 
 			for _, toolRef := range toolRefs {
@@ -2430,11 +2509,25 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if toolID, found := importUUIDToToolID[refUUID]; found {
-					selToolsJSON := "{}"
-					if st, ok := toolRef["selected_tools"].(map[string]any); ok {
-						if b, e := json.Marshal(st); e == nil {
-							selToolsJSON = string(b)
-						}
+					// THE DATA LOSS (#505). This read `selected_tools` as
+					// `map[string]any` and wrote `{}` when the assertion
+					// failed. The column holds a JSON ARRAY: `[]` is its own
+					// default (001_initial.sql), the route the tool menu drives
+					// writes an array of tool names (internal/api/v2/toolkits,
+					// selectedToolsPayload), and the chat read only counts an
+					// array (internal/db/queries/agent_chat.sql). The export
+					// writes the column out as the database holds it. So every
+					// selection a user had actually made failed the assertion,
+					// became `{}` on import, and an export followed by an import
+					// silently unchecked every tool of every toolkit.
+					//
+					// The value is now kept whatever its JSON type, so the
+					// import reproduces the file it was given.
+					selToolsJSON, selErr := importedJSONValue(toolRef, "selected_tools", "[]")
+					if selErr != nil {
+						linkInsertFailures = append(linkInsertFailures,
+							"Import function has been failed: unable to link toolkit "+strconv.Itoa(toolID)+": "+selErr.Error())
+						continue
 					}
 					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
@@ -2503,9 +2596,45 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Fork copies one or more published applications into the caller's project.
+//
+// # It now has a route
+//
+// It had none. `POST /elitea_core/fork/prompt_lib/{projectID}` was registered
+// on `ExportImportPost`, so this function was code with no caller and the fork
+// button ran the import instead (#505). The two are not interchangeable. The
+// export the fork button reads is fetched with `?fork=true`, which adds
+// `owner_id`, `original_exported` and the shared-origin keys, and only this
+// function reads them. Serving the route with the import meant that a forked
+// agent:
+//
+//   - kept `llm_settings.model_project_id` pointing at the SOURCE project, so
+//     the model the copy runs on belongs to a project the caller may not be a
+//     member of. Only this function rewrites it to the destination;
+//   - carried no `meta.parent_entity_id`, so nothing recorded where it came
+//     from and the read path reported `is_forked: false` on a fork;
+//   - lost every version variable and every tag, which the import never reads.
+//
+// The registration is the repair. This function keeps the errors channel and
+// the status rule the import uses, because the same wizard reads both.
+//
+// # Why every error entry carries an index
+//
+// `getErrorImportUUID` in `apps/elitea-ui` reads `selectedData[item.index]`
+// with no guard. The entries this function used to build carried `name` and
+// `error` and no index, so the first fork failure would have thrown a
+// TypeError inside the wizard and stopped it. They now carry `index` and `msg`,
+// which is the shape the import already writes and the wizard already maps.
 func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	if h.pool == nil {
+		slog.ErrorContext(ctx, "fork: "+importWriteFailed, "schema", s)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
+	}
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -2513,8 +2642,16 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apps, _ := body["applications"].([]any)
-	if len(apps) == 0 || h.pool == nil {
+	// A body with no `applications` array named nothing to fork and answered
+	// 201 with an empty result, which the wizard reads as a completed fork.
+	// An `applications` key that IS an array and IS empty keeps that answer:
+	// it asks for nothing and gets nothing.
+	apps, hasApps := body["applications"].([]any)
+	if !hasApps {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the request body must carry an applications array"})
+		return
+	}
+	if len(apps) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"result": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
 			"errors": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
@@ -2522,19 +2659,22 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	user, _ := auth.UserFromContext(ctx)
-	userID := 1
-	if user.ID != "" {
-		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
+	userID, ok := importPrincipalUserID(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "an authenticated principal is required to fork"})
+		return
 	}
 
 	resultAgents := make([]map[string]any, 0)
 	errorAgents := make([]any, 0)
 
-	for _, appRaw := range apps {
+	for entityIdx, appRaw := range apps {
 		app, ok := appRaw.(map[string]any)
 		if !ok {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": entityIdx, "name": "",
+				"msg": "Fork function has been failed: the entry is not a JSON object",
+			})
 			continue
 		}
 		name, _ := app["name"].(string)
@@ -2546,7 +2686,11 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			VALUES ($1, $2, $3) RETURNING id`, s),
 			name, desc, userID).Scan(&appID)
 		if err != nil {
-			errorAgents = append(errorAgents, map[string]any{"name": name, "error": err.Error()})
+			slog.ErrorContext(ctx, "fork: application insert failed", "schema", s, "name", name, "error", err)
+			errorAgents = append(errorAgents, map[string]any{
+				"index": entityIdx, "name": name,
+				"msg": "Fork function has been failed: " + err.Error(),
+			})
 			continue
 		}
 
@@ -2558,6 +2702,10 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
 			if !ok {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: a version entry is not a JSON object",
+				})
 				continue
 			}
 			vName, _ := v["name"].(string)
@@ -2570,27 +2718,47 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			}
 			instructions, _ := v["instructions"].(string)
 			welcomeMsg, _ := v["welcome_message"].(string)
-			llmSettings, _ := v["llm_settings"].(map[string]any)
-			if llmSettings == nil {
+			llmSettings, hasLLM := v["llm_settings"].(map[string]any)
+			if !hasLLM {
+				if raw, present := v["llm_settings"]; present && raw != nil {
+					errorAgents = append(errorAgents, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: unable to fork version " + vName + ": llm_settings must be a JSON object",
+					})
+					continue
+				}
 				llmSettings = map[string]any{}
 			}
 			// Override model_project_id to target project
 			llmSettings["model_project_id"] = projectID
 
-			llmJSON := "{}"
-			if b, e := json.Marshal(llmSettings); e == nil {
-				llmJSON = string(b)
+			llmJSON, err := importedJSONEncode("llm_settings", llmSettings)
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
-			startersJSON := "[]"
-			if cs, ok := v["conversation_starters"].([]any); ok {
-				if b, e := json.Marshal(cs); e == nil {
-					startersJSON = string(b)
-				}
+			startersJSON, err := importedJSONArray(v, "conversation_starters")
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
 
 			// Build meta with fork info
-			metaIn, _ := v["meta"].(map[string]any)
-			if metaIn == nil {
+			metaIn, hasMeta := v["meta"].(map[string]any)
+			if !hasMeta {
+				if raw, present := v["meta"]; present && raw != nil {
+					errorAgents = append(errorAgents, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: unable to fork version " + vName + ": meta must be a JSON object",
+					})
+					continue
+				}
 				metaIn = map[string]any{}
 			}
 			forkMeta := map[string]any{}
@@ -2610,22 +2778,38 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 				forkMeta["step_limit"] = nil
 			}
 
-			metaJSON := "{}"
-			if b, e := json.Marshal(forkMeta); e == nil {
-				metaJSON = string(b)
+			metaJSON, err := importedJSONEncode("meta", forkMeta)
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
 
 			var vID int
-			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+			// The bare `continue` this replaces dropped the version and told
+			// nobody. The application row was already written, so a fork whose
+			// every version failed answered 201 and produced an agent with no
+			// version at all.
+			if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
-				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
-			if err != nil {
+				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID); err != nil {
+				slog.ErrorContext(ctx, "fork: application version insert failed",
+					"schema", s, "application_id", appID, "version_name", vName, "error", err)
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
 				continue
 			}
 			createdVersionID = vID
 
-			// Insert variables
+			// Insert variables. A variable is a value the agent needs to run,
+			// and these two statements were written `_, _ = h.pool.Exec(...)`
+			// under the words "best-effort insert". A lost variable left a fork
+			// that answers 201 and an agent that fails on its first turn.
 			if vars, ok := v["variables"].([]any); ok {
 				for _, varRaw := range vars {
 					varMap, _ := varRaw.(map[string]any)
@@ -2634,9 +2818,16 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					}
 					varName, _ := varMap["name"].(string)
 					varValue, _ := varMap["value"].(string)
-					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
-						vID, varName, varValue) // best-effort insert
+						vID, varName, varValue); err != nil {
+						slog.ErrorContext(ctx, "fork: application variable insert failed",
+							"schema", s, "version_id", vID, "variable", varName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork variable " + varName + ": " + err.Error(),
+						})
+					}
 				}
 			}
 
@@ -2648,22 +2839,37 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					tagName, _ := tagMap["name"].(string)
-					tagDataJSON := "{}"
-					if td, ok := tagMap["data"]; ok {
-						if b, e := json.Marshal(td); e == nil {
-							tagDataJSON = string(b)
-						}
+					tagDataJSON, err := importedJSONValue(tagMap, "data", "{}")
+					if err != nil {
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
+						continue
 					}
 					var tagID int
 					// Upsert tag
-					err2 := h.pool.QueryRow(ctx, fmt.Sprintf(`
+					if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 						INSERT INTO %q.tags (name, data) VALUES ($1, $2::jsonb)
 						ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data
-						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID)
-					if err2 == nil {
-						_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
-							INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
-							ON CONFLICT DO NOTHING`, s), vID, tagID) // best-effort insert
+						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID); err != nil {
+						slog.ErrorContext(ctx, "fork: tag upsert failed",
+							"schema", s, "version_id", vID, "tag", tagName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
+						continue
+					}
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+						ON CONFLICT DO NOTHING`, s), vID, tagID); err != nil {
+						slog.ErrorContext(ctx, "fork: tag association insert failed",
+							"schema", s, "version_id", vID, "tag", tagName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
 					}
 				}
 			}
@@ -2733,21 +2939,38 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		resultAgents = append(resultAgents, agentResult)
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	// The status rule the import already uses, for the same reason and for the
+	// same reader: 400 when nothing was forked, 207 when part of it was, 201
+	// when all of it was. The wizard reads a 2xx body and a 400 body through
+	// the same branch, so an error entry reaches the user either way.
+	forkStatus := http.StatusCreated
+	if len(errorAgents) > 0 {
+		if len(resultAgents) == 0 {
+			forkStatus = http.StatusBadRequest
+		} else {
+			forkStatus = http.StatusMultiStatus
+		}
+	}
+
+	writeJSON(w, forkStatus, map[string]any{
 		"result": map[string]any{"agents": resultAgents},
 		"errors": map[string]any{"agents": errorAgents},
 	})
 }
 
 func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// A handler with no pool cannot read anything. It answered
+	// 200 {"ok": true}, which is a document with no `applications` key at all,
+	// and the export button saved it as the agent's backup file (#505).
 	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		slog.ErrorContext(ctx, "export: "+exportReadFailed, "reason", "the handler holds no database pool")
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
 		return
 	}
 
 	projectID := chi.URLParam(r, "projectID")
 	entityID := chi.URLParam(r, "entityID")
-	ctx := r.Context()
 	s := fmt.Sprintf("p_%s", projectID)
 
 	var name, desc, appUUID string
@@ -2761,184 +2984,42 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine app type from its versions
+	// Determine app type from its versions. A lost read used to leave
+	// hasPipeline false under a comment that called that safe. It is not: the
+	// file then says a pipeline is an agent, and the import that reads the file
+	// builds the wrong kind of entity.
 	appType := "agent"
 	var hasPipeline bool
-	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), entityID).Scan(&hasPipeline) // failure leaves hasPipeline=false, safe
+	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s),
+		entityID).Scan(&hasPipeline); err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "application type", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
+	}
 	if hasPipeline {
 		appType = "pipeline"
 	}
 
-	// Fetch toolkits and build import_uuid map (toolID -> uuid)
-	toolkitMap := map[int]string{} // tool_id -> import_uuid
-	toolkits := make([]map[string]any, 0)
-	toolkitRows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT DISTINCT t.id, t.name, t.type, COALESCE(t.settings::text, '{}')
-		FROM %q.entity_tool_mapping etm
-		JOIN %q.elitea_tools t ON t.id = etm.tool_id
-		JOIN %q.application_versions av ON av.id = etm.entity_version_id
-		WHERE av.application_id = $1`, s, s, s), entityID)
-	if err == nil {
-		defer toolkitRows.Close()
-		for toolkitRows.Next() {
-			var tID int
-			var tName, tType, configStr string
-			if toolkitRows.Scan(&tID, &tName, &tType, &configStr) != nil {
-				continue
-			}
-			tUUID := fmt.Sprintf("tool-%d", tID)
-			var config map[string]any
-			_ = json.Unmarshal([]byte(configStr), &config) // DB jsonb column; malformed means empty config
-			if config == nil {
-				config = map[string]any{}
-			}
-			// Strip sensitive settings for export
-			settings := map[string]any{}
-			for k, v := range config {
-				settings[k] = v
-			}
-			for _, sk := range []string{"api_key", "access_token", "token", "api_key_type",
-				"client_secret", "gitlab_personal_access_token", "private_token",
-				"sonar_token", "qtest_api_token", "client_id",
-				"password", "secret", "app_id"} {
-				delete(settings, sk)
-			}
-			toolkitMap[tID] = tUUID
-			toolkits = append(toolkits, map[string]any{
-				"id": tID, "name": tName, "type": tType,
-				"import_uuid": tUUID, "settings": settings,
-			})
-		}
+	// The toolkits, and the versions with their tools, variables and tags. Each
+	// read used to run under `if err == nil`, drop a row it could not scan, and
+	// never read rows.Err() — the three-part pattern #439 repaired elsewhere.
+	// An export that lost a version answered 200 and served the rest, so the
+	// operator kept a backup file with a version missing from it.
+	toolkits, toolkitMap, err := h.exportedToolkits(ctx, s, entityID)
+	if err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "toolkits", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
 	}
-
-	// Fetch versions with full data and tools
-	versions := make([]map[string]any, 0)
-	vRows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, status, COALESCE(agent_type, 'openai'),
-			COALESCE(instructions, ''), COALESCE(welcome_message, ''),
-			COALESCE(llm_settings::text, '{}'), COALESCE(conversation_starters::text, '[]'),
-			COALESCE(meta::text, '{}'), COALESCE(uuid::text, ''), application_id, COALESCE(author_id, 0)
-		FROM %q.application_versions WHERE application_id = $1
-		ORDER BY created_at`, s), entityID)
-	if err == nil {
-		defer vRows.Close()
-		for vRows.Next() {
-			var vID, vAppID, vAuthorID int
-			var vName, vStatus, agentType, instructions, welcomeMsg string
-			var llmStr, startersStr, metaStr, vUUID string
-			if vRows.Scan(&vID, &vName, &vStatus, &agentType, &instructions, &welcomeMsg, &llmStr, &startersStr, &metaStr, &vUUID, &vAppID, &vAuthorID) != nil {
-				continue
-			}
-			var llm, starters, meta any
-			_ = json.Unmarshal([]byte(llmStr), &llm)       // DB jsonb columns
-			_ = json.Unmarshal([]byte(startersStr), &starters) // DB jsonb columns
-			_ = json.Unmarshal([]byte(metaStr), &meta)      // DB jsonb columns
-
-			// Ensure meta has icon_meta
-			if metaMap, ok := meta.(map[string]any); ok {
-				if _, hasIcon := metaMap["icon_meta"]; !hasIcon {
-					metaMap["icon_meta"] = map[string]any{}
-				}
-			} else {
-				meta = map[string]any{"icon_meta": map[string]any{}}
-			}
-
-			// Ensure llm_settings.model_project_id is a string
-			if llmMap, ok := llm.(map[string]any); ok {
-				if mpid, exists := llmMap["model_project_id"]; exists {
-					switch v := mpid.(type) {
-					case float64:
-						llmMap["model_project_id"] = fmt.Sprintf("%d", int(v))
-					}
-				}
-			}
-
-			// Fetch tool references for this version
-			vTools := make([]map[string]any, 0)
-			tRows, tErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT tool_id, COALESCE(selected_tools::text, '{}')
-				FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), vID)
-			if tErr == nil {
-				for tRows.Next() {
-					var toolID int
-					var selToolsStr string
-					if tRows.Scan(&toolID, &selToolsStr) != nil {
-						continue
-					}
-					var selTools any
-					_ = json.Unmarshal([]byte(selToolsStr), &selTools) // DB jsonb column
-					importUUID := toolkitMap[toolID]
-					vTools = append(vTools, map[string]any{
-						"import_uuid":    importUUID,
-						"selected_tools": selTools,
-					})
-				}
-				tRows.Close()
-			}
-
-			// Fetch variables for this version
-			variables := make([]map[string]any, 0)
-			varRows, varErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT name, COALESCE(value, '') FROM %q.application_variables
-				WHERE application_version_id = $1 ORDER BY id`, s), vID)
-			if varErr == nil {
-				for varRows.Next() {
-					var varName, varValue string
-					if varRows.Scan(&varName, &varValue) != nil {
-						continue
-					}
-					variables = append(variables, map[string]any{"name": varName, "value": varValue})
-				}
-				varRows.Close()
-			}
-
-			// Fetch tags for this version
-			tags := make([]map[string]any, 0)
-			tagRows, tagErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT t.name, COALESCE(t.data::text, '{}')
-				FROM %q.application_version_tag_association vta
-				JOIN %q.tags t ON t.id = vta.tag_id
-				WHERE vta.version_id = $1`, s, s), vID)
-			if tagErr == nil {
-				for tagRows.Next() {
-					var tagName, tagDataStr string
-					if tagRows.Scan(&tagName, &tagDataStr) != nil {
-						continue
-					}
-					var tagData any
-					_ = json.Unmarshal([]byte(tagDataStr), &tagData) // DB jsonb column
-					if tagData == nil {
-						tagData = map[string]any{}
-					}
-					tags = append(tags, map[string]any{"name": tagName, "data": tagData})
-				}
-				tagRows.Close()
-			}
-
-			// Determine is_forked from meta containing parent_entity_id
-			isForked := false
-			if metaMap, ok := meta.(map[string]any); ok {
-				if _, has := metaMap["parent_entity_id"]; has {
-					isForked = true
-				}
-			}
-
-			vEntry := map[string]any{
-				"id": fmt.Sprintf("%d", vID), "name": vName, "status": vStatus,
-				"application_id": fmt.Sprintf("%d", vAppID),
-				"author_id":      fmt.Sprintf("%d", vAuthorID),
-				"agent_type":     agentType, "instructions": instructions,
-				"welcome_message": welcomeMsg, "llm_settings": llm,
-				"conversation_starters": starters, "meta": meta,
-				"tools": vTools, "variables": variables, "tags": tags,
-				"is_forked": isForked,
-			}
-			if vUUID != "" {
-				vEntry["import_version_uuid"] = vUUID
-			}
-			versions = append(versions, vEntry)
-		}
+	versions, err := h.exportedVersions(ctx, s, entityID, toolkitMap)
+	if err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "versions", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
 	}
 
 	isFork := strings.EqualFold(r.URL.Query().Get("fork"), "true")

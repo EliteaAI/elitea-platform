@@ -1712,8 +1712,16 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// catalogue.
 				requirePublish := projectPermission("models.applications.publish.post")
 				requireVersionValidate := projectPermission("models.applications.version_validator.check")
+				// The fork route runs the FORK handler (#505). It was registered
+				// on ExportImportPost, so `Handler.Fork` had no caller and a fork
+				// ran the import. The import does not read the keys `?fork=true`
+				// adds to the export the wizard sends it: it leaves
+				// llm_settings.model_project_id pointing at the SOURCE project,
+				// writes no meta.parent_entity_id, and drops every version variable
+				// and tag. api/openapi/v2.yaml already describes this path as the
+				// Fork handler.
 				r.With(projectPermission("models.applications.fork.post")).
-					Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)
+					Post("/fork/prompt_lib/{projectID}", coreHandler.Fork)
 				r.With(requirePublish).Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
 				r.With(projectPermission("models.applications.unpublish.post")).
 					Post("/unpublish/prompt_lib/{projectID}/{versionID}", coreHandler.Unpublish)

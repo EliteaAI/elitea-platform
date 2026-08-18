@@ -46,10 +46,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/eliteacore"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
@@ -192,6 +194,46 @@ FROM p_1.entity_tool_mapping`).
 
 	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.entity_tool_mapping`); count != 1 {
 		t.Errorf("tool link rows = %d, want 1", count)
+	}
+
+	// The rows carry the caller, not user 1 (#505).
+	var applicationOwner, versionAuthor, toolkitAuthor int
+	if err := pool.QueryRow(ctx, `
+SELECT a.owner_id, v.author_id, t.author_id
+FROM p_1.applications a
+JOIN p_1.application_versions v ON v.application_id = a.id
+CROSS JOIN p_1.elitea_tools t`).Scan(&applicationOwner, &versionAuthor, &toolkitAuthor); err != nil {
+		t.Fatalf("read the imported owners: %v", err)
+	}
+	for _, owner := range []struct {
+		column string
+		value  int
+	}{
+		{"applications.owner_id", applicationOwner},
+		{"application_versions.author_id", versionAuthor},
+		{"elitea_tools.author_id", toolkitAuthor},
+	} {
+		if owner.value != importLinkPrincipal {
+			t.Errorf("%s = %d, want the caller %d", owner.column, owner.value, importLinkPrincipal)
+		}
+	}
+}
+
+// TestImportRefusesWithNoPrincipal proves the other half of the same repair.
+// With no principal the import used to write every row as user 1 and answer
+// 201. It must now write nothing and say why.
+func TestImportRefusesWithNoPrincipal(t *testing.T) {
+	pool := newImportLinkPool(t)
+	router := importLinkRouterWithoutPrincipal(eliteacore.NewHandler(pool))
+
+	recorder := importLinkDo(t, router, importLinkBody([]map[string]any{importLinkToolRef()}, "latest"))
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("import status = %d, want %d, body = %s", recorder.Code, http.StatusUnauthorized, recorder.Body.String())
+	}
+	for _, table := range []string{"applications", "application_versions", "elitea_tools", "entity_tool_mapping"} {
+		if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.`+table); count != 0 {
+			t.Errorf("%s rows = %d, want 0 — a refused import must write nothing", table, count)
+		}
 	}
 }
 
@@ -337,7 +379,31 @@ ALTER TABLE p_1.application_versions ADD CONSTRAINT version_must_fail CHECK (nam
 
 /* ── helpers ───────────────────────────────────────────────────────────── */
 
+// importLinkPrincipal is the user every request in this file is made by.
+//
+// It is not user 1. The import used to read the principal with
+// `fmt.Sscanf(user.ID, "%d", &userID)` over a `userID := 1` default, so an
+// unauthenticated request and a request whose identifier could not be read both
+// wrote rows owned by user 1 (#505). These cases used to send no principal at
+// all and could not have seen that. They now send one, and
+// TestImportWritesToolLinkRows reads the owner column back.
+const importLinkPrincipal = 4242
+
 func importLinkRouter(handler *eliteacore.Handler) chi.Router {
+	router := chi.NewRouter()
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			user := auth.User{ID: strconv.Itoa(importLinkPrincipal)}
+			next.ServeHTTP(w, request.WithContext(auth.ContextWithUser(request.Context(), user)))
+		})
+	})
+	router.Post("/elitea_core/import_wizard/prompt_lib/{projectID}", handler.ExportImportPost)
+	return router
+}
+
+// importLinkRouterWithoutPrincipal serves the same route with no principal in
+// the request context.
+func importLinkRouterWithoutPrincipal(handler *eliteacore.Handler) chi.Router {
 	router := chi.NewRouter()
 	router.Post("/elitea_core/import_wizard/prompt_lib/{projectID}", handler.ExportImportPost)
 	return router
