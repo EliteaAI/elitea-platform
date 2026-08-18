@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 
 use super::families::github::client::{
     GitHubApi, GitHubClient, GitHubClientError, GitHubClientErrorCode, GitHubFileScope,
-    GitHubRequestKind, test_map_status, test_project_branches, test_project_text_file,
+    GitHubRequestKind, test_map_status, test_project_branches, test_project_issue_detail,
+    test_project_issue_list, test_project_issue_search, test_project_text_file,
     test_project_tree_files, test_project_tree_sha, test_project_user, test_validate_file_path,
 };
 use super::families::github::config::{GitHubAuthKind, GitHubToolkitConfig};
@@ -297,6 +298,93 @@ fn response_projection_is_bounded_and_omits_unknown_or_null_fields() {
         }))
         .expect("branch tree SHA"),
         "a".repeat(40)
+    );
+}
+
+#[test]
+fn issue_projection_matches_the_current_sdk_fields_and_is_bounded() {
+    let issue = json!({
+        "number": 42,
+        "title": "Bound the worker",
+        "body": "Issue body",
+        "state": "open",
+        "html_url": "https://github.example.test/EliteaAI/elitea-platform/issues/42",
+        "created_at": "2026-08-18T10:00:00Z",
+        "updated_at": "2026-08-18T11:00:00Z",
+        "comments": 3,
+        "labels": [{"name": "rust"}],
+        "assignees": [{"login": "octocat"}],
+        "raw_secret_field": "must not project"
+    });
+    assert_eq!(
+        test_project_issue_detail(&issue).expect("bounded issue detail"),
+        json!({
+            "number": 42,
+            "title": "Bound the worker",
+            "body": "Issue body",
+            "state": "open",
+            "url": "https://github.example.test/EliteaAI/elitea-platform/issues/42",
+            "created_at": "2026-08-18T10:00:00+00:00",
+            "updated_at": "2026-08-18T11:00:00+00:00",
+            "comments": 3,
+            "labels": ["rust"],
+            "assignees": ["octocat"]
+        })
+    );
+    assert_eq!(
+        test_project_issue_list(&json!([issue.clone()])).expect("bounded issue list"),
+        json!([{
+            "number": 42,
+            "title": "Bound the worker",
+            "state": "open",
+            "created_at": "2026-08-18T10:00:00+00:00",
+            "updated_at": "2026-08-18T11:00:00+00:00",
+            "url": "https://github.example.test/EliteaAI/elitea-platform/issues/42",
+            "labels": ["rust"],
+            "assignees": ["octocat"]
+        }])
+    );
+    assert_eq!(
+        test_project_issue_search(
+            &json!({"total_count": 1, "items": [{
+                "number": 42,
+                "title": "Bound the worker",
+                "body": null,
+                "state": "open",
+                "html_url": "https://github.example.test/EliteaAI/elitea-platform/pull/42",
+                "pull_request": {"url": "ignored"}
+            }]}),
+            30,
+        )
+        .expect("bounded issue search"),
+        json!([{
+            "id": 42,
+            "title": "Bound the worker",
+            "description": null,
+            "status": "open",
+            "url": "https://github.example.test/EliteaAI/elitea-platform/pull/42",
+            "entity_type": "PR"
+        }])
+    );
+    assert_eq!(
+        test_project_issue_search(&json!({"total_count": 0, "items": []}), 30)
+            .expect("empty issue search"),
+        Value::String("No issues or PRs found matching your query.".to_owned())
+    );
+    assert!(
+        test_project_issue_detail(&json!({
+            "number": 1,
+            "title": "x",
+            "body": "x".repeat(128 * 1_024 + 1),
+            "state": "open",
+            "html_url": "https://github.example.test/issue/1",
+            "created_at": "2026-08-18T10:00:00Z",
+            "updated_at": "2026-08-18T10:00:00Z",
+            "comments": 0,
+            "labels": [],
+            "assignees": []
+        }))
+        .is_err()
     );
 }
 
@@ -611,6 +699,84 @@ async fn native_repository_navigation_uses_the_admitted_base_and_active_scopes()
     );
 }
 
+#[tokio::test]
+async fn native_issue_reads_preserve_the_current_sdk_schemas_and_bounds() {
+    let client = Arc::new(FixtureGitHubApi::default());
+    let selected = vec![
+        "get_issues".to_owned(),
+        "get_issue".to_owned(),
+        "search_issues".to_owned(),
+    ];
+    let toolset = test_build_with_api(
+        "team-github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &(client.clone() as Arc<dyn GitHubApi>),
+    )
+    .expect("native GitHub issue toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("issue tools");
+
+    for (name, arguments) in [
+        ("get_issues", json!({})),
+        (
+            "get_issue",
+            json!({"issue_number": 42, "repo_name": "EliteaAI/other"}),
+        ),
+        (
+            "search_issues",
+            json!({
+                "search_query": "is:open label:rust",
+                "repo_name": "EliteaAI/other",
+                "max_count": 17
+            }),
+        ),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .expect("selected issue tool");
+        assert!(tool.execute(context(), arguments).await.is_ok());
+    }
+    assert_eq!(
+        client
+            .issue_calls
+            .lock()
+            .expect("issue calls fixture lock")
+            .as_slice(),
+        &[
+            "list".to_owned(),
+            "get:42:EliteaAI/other".to_owned(),
+            "search:is:open label:rust:EliteaAI/other:17".to_owned(),
+        ]
+    );
+
+    let search = tools
+        .iter()
+        .find(|tool| tool.name() == "search_issues")
+        .expect("search issues tool");
+    let calls_before = client
+        .issue_calls
+        .lock()
+        .expect("issue calls fixture lock")
+        .len();
+    assert!(
+        search
+            .execute(context(), json!({"search_query": "<script>alert(1)"}))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        client
+            .issue_calls
+            .lock()
+            .expect("issue calls fixture lock")
+            .len(),
+        calls_before
+    );
+}
+
 #[test]
 fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
@@ -636,6 +802,7 @@ struct FixtureGitHubApi {
     files: Mutex<BTreeMap<String, String>>,
     file_calls: Mutex<Vec<FileCall>>,
     file_list_calls: Mutex<Vec<FileListCall>>,
+    issue_calls: Mutex<Vec<String>>,
 }
 
 type FileCall = (String, Option<String>, Option<String>);
@@ -688,5 +855,44 @@ impl GitHubApi for FixtureGitHubApi {
             .expect("file list call fixture lock")
             .push((scope, directory_path.map(ToOwned::to_owned)));
         Ok(json!(["src/lib.rs", "src/nested/mod.rs"]))
+    }
+
+    async fn list_open_issues(&self) -> Result<Value, GitHubClientError> {
+        self.issue_calls
+            .lock()
+            .expect("issue calls fixture lock")
+            .push("list".to_owned());
+        Ok(json!([]))
+    }
+
+    async fn get_issue(
+        &self,
+        issue_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        self.issue_calls
+            .lock()
+            .expect("issue calls fixture lock")
+            .push(format!(
+                "get:{issue_number}:{}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!({"number": issue_number}))
+    }
+
+    async fn search_issues(
+        &self,
+        search_query: &str,
+        repository: Option<&str>,
+        max_count: usize,
+    ) -> Result<Value, GitHubClientError> {
+        self.issue_calls
+            .lock()
+            .expect("issue calls fixture lock")
+            .push(format!(
+                "search:{search_query}:{}:{max_count}",
+                repository.unwrap_or("default")
+            ));
+        Ok(json!([]))
     }
 }

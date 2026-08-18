@@ -5,6 +5,7 @@ use adk_rust::{AdkError, ErrorCategory, ErrorComponent, RetryHint};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use chrono::{DateTime, SecondsFormat};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, HeaderMap, HeaderValue, RETRY_AFTER};
 use reqwest::{Method, StatusCode, Url};
 use ring::rand::SystemRandom;
@@ -26,6 +27,14 @@ const MAX_TREE_RESPONSE_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_TREE_ENTRIES: usize = 100_000;
 const MAX_PROJECTED_FILES: usize = 10_000;
 const MAX_PROJECTED_FILE_CHARS: usize = 200_000;
+const MAX_ISSUES: usize = 100;
+const MAX_ISSUE_OUTPUT_CHARS: usize = 200_000;
+const MAX_ISSUE_TITLE_BYTES: usize = 16 * 1_024;
+const MAX_ISSUE_BODY_BYTES: usize = 128 * 1_024;
+const MAX_ISSUE_URL_BYTES: usize = 4 * 1_024;
+const MAX_ISSUE_METADATA_BYTES: usize = 1_024;
+const MAX_ISSUE_COLLECTION_ITEMS: usize = 100;
+const MAX_SEARCH_QUERY_BYTES: usize = 4 * 1_024;
 const MAX_BRANCHES: usize = 100;
 const MAX_BRANCH_BYTES: usize = 1_024;
 const MAX_FILE_PATH_BYTES: usize = 4 * 1_024;
@@ -186,6 +195,21 @@ pub(crate) trait GitHubApi: Send + Sync {
         &self,
         scope: GitHubFileScope,
         directory_path: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
+
+    async fn list_open_issues(&self) -> Result<Value, GitHubClientError>;
+
+    async fn get_issue(
+        &self,
+        issue_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError>;
+
+    async fn search_issues(
+        &self,
+        search_query: &str,
+        repository: Option<&str>,
+        max_count: usize,
     ) -> Result<Value, GitHubClientError>;
 }
 
@@ -480,6 +504,72 @@ impl GitHubApi for GitHubClient {
             .await?;
         project_tree_files(&response, directory)
     }
+
+    async fn list_open_issues(&self) -> Result<Value, GitHubClientError> {
+        let (owner, repository) = validate_repository(self.config.repository())?;
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "issues"],
+                &[
+                    ("state", "open".to_owned()),
+                    ("per_page", MAX_ISSUES.to_string()),
+                ],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_issue_list(&response)
+    }
+
+    async fn get_issue(
+        &self,
+        issue_number: u64,
+        repository: Option<&str>,
+    ) -> Result<Value, GitHubClientError> {
+        if issue_number == 0 || i64::try_from(issue_number).is_err() {
+            return Err(invalid_configuration());
+        }
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let issue_number = issue_number.to_string();
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["repos", owner, repository, "issues", &issue_number],
+                &[],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_issue_detail(&response)
+    }
+
+    async fn search_issues(
+        &self,
+        search_query: &str,
+        repository: Option<&str>,
+        max_count: usize,
+    ) -> Result<Value, GitHubClientError> {
+        if max_count == 0 || max_count > MAX_ISSUES {
+            return Err(invalid_configuration());
+        }
+        validate_runtime_text(search_query, MAX_SEARCH_QUERY_BYTES)?;
+        let repository = repository.unwrap_or_else(|| self.config.repository());
+        let (owner, repository) = validate_repository(repository)?;
+        let query = format!("repo:{owner}/{repository} {search_query}");
+        let response = self
+            .get_json(
+                GitHubRequestKind::Repository,
+                &["search", "issues"],
+                &[
+                    ("q", query),
+                    ("per_page", max_count.to_string()),
+                    ("page", "1".to_owned()),
+                ],
+                MAX_RESPONSE_BYTES,
+            )
+            .await?;
+        project_issue_search(&response, max_count)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -659,6 +749,229 @@ fn project_tree_files(value: &Value, directory: &str) -> Result<Value, GitHubCli
         }
     }
     Ok(Value::Array(files))
+}
+
+fn project_issue_detail(value: &Value) -> Result<Value, GitHubClientError> {
+    let issue = value.as_object().ok_or_else(invalid_response)?;
+    let mut projected = Map::new();
+    projected.insert("number".to_owned(), Value::from(issue_number(issue)?));
+    projected.insert(
+        "title".to_owned(),
+        Value::String(required_issue_text(issue, "title", MAX_ISSUE_TITLE_BYTES)?.to_owned()),
+    );
+    projected.insert("body".to_owned(), issue_body(issue)?);
+    projected.insert(
+        "state".to_owned(),
+        Value::String(issue_state(issue)?.to_owned()),
+    );
+    projected.insert(
+        "url".to_owned(),
+        Value::String(required_issue_text(issue, "html_url", MAX_ISSUE_URL_BYTES)?.to_owned()),
+    );
+    project_issue_timestamps(issue, &mut projected)?;
+    projected.insert(
+        "comments".to_owned(),
+        Value::from(
+            issue
+                .get("comments")
+                .and_then(Value::as_u64)
+                .filter(|comments| i64::try_from(*comments).is_ok())
+                .ok_or_else(invalid_response)?,
+        ),
+    );
+    project_issue_people(issue, &mut projected)?;
+    bounded_issue_output(Value::Object(projected))
+}
+
+fn project_issue_list(value: &Value) -> Result<Value, GitHubClientError> {
+    let issues = value.as_array().ok_or_else(invalid_response)?;
+    if issues.len() > MAX_ISSUES {
+        return Err(resource_exhausted());
+    }
+    let projected = issues
+        .iter()
+        .map(project_issue_summary)
+        .collect::<Result<Vec<_>, _>>()?;
+    bounded_issue_output(Value::Array(projected))
+}
+
+fn project_issue_summary(value: &Value) -> Result<Value, GitHubClientError> {
+    let issue = value.as_object().ok_or_else(invalid_response)?;
+    let mut projected = Map::new();
+    projected.insert("number".to_owned(), Value::from(issue_number(issue)?));
+    projected.insert(
+        "title".to_owned(),
+        Value::String(required_issue_text(issue, "title", MAX_ISSUE_TITLE_BYTES)?.to_owned()),
+    );
+    projected.insert(
+        "state".to_owned(),
+        Value::String(issue_state(issue)?.to_owned()),
+    );
+    projected.insert(
+        "url".to_owned(),
+        Value::String(required_issue_text(issue, "html_url", MAX_ISSUE_URL_BYTES)?.to_owned()),
+    );
+    project_issue_timestamps(issue, &mut projected)?;
+    project_issue_people(issue, &mut projected)?;
+    Ok(Value::Object(projected))
+}
+
+fn project_issue_search(value: &Value, max_count: usize) -> Result<Value, GitHubClientError> {
+    if max_count == 0 || max_count > MAX_ISSUES {
+        return Err(invalid_configuration());
+    }
+    let result = value.as_object().ok_or_else(invalid_response)?;
+    let total_count = result
+        .get("total_count")
+        .and_then(Value::as_u64)
+        .ok_or_else(invalid_response)?;
+    if total_count == 0 {
+        return Ok(Value::String(
+            "No issues or PRs found matching your query.".to_owned(),
+        ));
+    }
+    let items = result
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_response)?;
+    let count = max_count.min(usize::try_from(total_count).unwrap_or(usize::MAX));
+    let projected = items
+        .iter()
+        .take(count)
+        .map(project_issue_search_item)
+        .collect::<Result<Vec<_>, _>>()?;
+    bounded_issue_output(Value::Array(projected))
+}
+
+fn project_issue_search_item(value: &Value) -> Result<Value, GitHubClientError> {
+    let issue = value.as_object().ok_or_else(invalid_response)?;
+    let entity_type = match issue.get("pull_request") {
+        None | Some(Value::Null) => "Issue",
+        Some(Value::Object(_)) => "PR",
+        Some(_) => return Err(invalid_response()),
+    };
+    Ok(json!({
+        "id": issue_number(issue)?,
+        "title": required_issue_text(issue, "title", MAX_ISSUE_TITLE_BYTES)?,
+        "description": issue_body(issue)?,
+        "status": issue_state(issue)?,
+        "url": required_issue_text(issue, "html_url", MAX_ISSUE_URL_BYTES)?,
+        "entity_type": entity_type,
+    }))
+}
+
+fn issue_number(issue: &Map<String, Value>) -> Result<u64, GitHubClientError> {
+    issue
+        .get("number")
+        .and_then(Value::as_u64)
+        .filter(|number| *number > 0 && i64::try_from(*number).is_ok())
+        .ok_or_else(invalid_response)
+}
+
+fn issue_state(issue: &Map<String, Value>) -> Result<&str, GitHubClientError> {
+    required_issue_text(issue, "state", MAX_ISSUE_METADATA_BYTES).and_then(|state| {
+        matches!(state, "open" | "closed")
+            .then_some(state)
+            .ok_or_else(invalid_response)
+    })
+}
+
+fn issue_body(issue: &Map<String, Value>) -> Result<Value, GitHubClientError> {
+    match issue.get("body") {
+        Some(Value::Null) => Ok(Value::Null),
+        Some(Value::String(body)) if body.len() <= MAX_ISSUE_BODY_BYTES => {
+            Ok(Value::String(body.clone()))
+        }
+        _ => Err(
+            if issue
+                .get("body")
+                .and_then(Value::as_str)
+                .is_some_and(|body| body.len() > MAX_ISSUE_BODY_BYTES)
+            {
+                resource_exhausted()
+            } else {
+                invalid_response()
+            },
+        ),
+    }
+}
+
+fn project_issue_timestamps(
+    issue: &Map<String, Value>,
+    projected: &mut Map<String, Value>,
+) -> Result<(), GitHubClientError> {
+    for field in ["created_at", "updated_at"] {
+        let value = required_issue_text(issue, field, MAX_ISSUE_METADATA_BYTES)?;
+        let timestamp = DateTime::parse_from_rfc3339(value)
+            .map_err(|_| invalid_response())?
+            .to_rfc3339_opts(SecondsFormat::AutoSi, false);
+        projected.insert(field.to_owned(), Value::String(timestamp));
+    }
+    Ok(())
+}
+
+fn project_issue_people(
+    issue: &Map<String, Value>,
+    projected: &mut Map<String, Value>,
+) -> Result<(), GitHubClientError> {
+    projected.insert(
+        "labels".to_owned(),
+        project_issue_names(issue, "labels", "name")?,
+    );
+    projected.insert(
+        "assignees".to_owned(),
+        project_issue_names(issue, "assignees", "login")?,
+    );
+    Ok(())
+}
+
+fn project_issue_names(
+    issue: &Map<String, Value>,
+    collection: &str,
+    field: &str,
+) -> Result<Value, GitHubClientError> {
+    let values = issue
+        .get(collection)
+        .and_then(Value::as_array)
+        .ok_or_else(invalid_response)?;
+    if values.len() > MAX_ISSUE_COLLECTION_ITEMS {
+        return Err(resource_exhausted());
+    }
+    values
+        .iter()
+        .map(|value| {
+            let object = value.as_object().ok_or_else(invalid_response)?;
+            required_issue_text(object, field, MAX_ISSUE_METADATA_BYTES)
+                .map(|value| Value::String(value.to_owned()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+fn required_issue_text<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    max_bytes: usize,
+) -> Result<&'a str, GitHubClientError> {
+    let value = object
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(invalid_response)?;
+    if value.len() > max_bytes {
+        return Err(resource_exhausted());
+    }
+    Ok(value)
+}
+
+fn bounded_issue_output(value: Value) -> Result<Value, GitHubClientError> {
+    let characters = serde_json::to_string(&value)
+        .map_err(|_| invalid_response())?
+        .chars()
+        .count();
+    if characters > MAX_ISSUE_OUTPUT_CHARS {
+        return Err(resource_exhausted());
+    }
+    Ok(value)
 }
 
 fn validate_repository(value: &str) -> Result<(&str, &str), GitHubClientError> {
@@ -953,6 +1266,28 @@ pub(in crate::toolkits) fn test_project_tree_sha(
     value: &Value,
 ) -> Result<String, GitHubClientError> {
     project_tree_sha(value)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_issue_detail(
+    value: &Value,
+) -> Result<Value, GitHubClientError> {
+    project_issue_detail(value)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_issue_list(
+    value: &Value,
+) -> Result<Value, GitHubClientError> {
+    project_issue_list(value)
+}
+
+#[cfg(test)]
+pub(in crate::toolkits) fn test_project_issue_search(
+    value: &Value,
+    max_count: usize,
+) -> Result<Value, GitHubClientError> {
+    project_issue_search(value, max_count)
 }
 
 #[cfg(test)]

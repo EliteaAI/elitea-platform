@@ -21,6 +21,9 @@ const GREP_FILE: &str = "grep_file";
 const LIST_MAIN_FILES: &str = "list_files_in_main_branch";
 const LIST_ACTIVE_FILES: &str = "list_files_in_bot_branch";
 const LIST_DIRECTORY_FILES: &str = "get_files_from_directory";
+const LIST_ISSUES: &str = "get_issues";
+const GET_ISSUE: &str = "get_issue";
+const SEARCH_ISSUES: &str = "search_issues";
 const MAX_DESCRIPTION_BYTES: usize = 1_000;
 const MAX_OUTPUT_CHARS: usize = 200_000;
 const MAX_BATCH_FILES: usize = 32;
@@ -105,7 +108,7 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
 /// Build the capability-disabled first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Eight explicitly selected ordinary read
+/// until the full family is ported. Eleven explicitly selected ordinary read
 /// operations can use this path. The production capability remains disabled
 /// until sensitive effects, the rest of the read catalog, GitHub App
 /// installation auth and cross-process TLS integration are complete.
@@ -138,6 +141,9 @@ fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
                     | LIST_MAIN_FILES
                     | LIST_ACTIVE_FILES
                     | LIST_DIRECTORY_FILES
+                    | LIST_ISSUES
+                    | GET_ISSUE
+                    | SEARCH_ISSUES
             )
         })
     {
@@ -166,6 +172,9 @@ fn build_with_api(
             LIST_MAIN_FILES => GitHubReadToolKind::ListMainFiles,
             LIST_ACTIVE_FILES => GitHubReadToolKind::ListActiveFiles,
             LIST_DIRECTORY_FILES => GitHubReadToolKind::ListDirectoryFiles,
+            LIST_ISSUES => GitHubReadToolKind::ListIssues,
+            GET_ISSUE => GitHubReadToolKind::GetIssue,
+            SEARCH_ISSUES => GitHubReadToolKind::SearchIssues,
             _ => {
                 return Err(GitHubToolsetError {
                     code: GitHubToolsetErrorCode::UnsupportedSelection,
@@ -192,6 +201,9 @@ enum GitHubReadToolKind {
     ListMainFiles,
     ListActiveFiles,
     ListDirectoryFiles,
+    ListIssues,
+    GetIssue,
+    SearchIssues,
 }
 
 struct GitHubReadTool {
@@ -230,6 +242,13 @@ impl GitHubReadTool {
             GitHubReadToolKind::ListDirectoryFiles => {
                 "Recursively list bounded file paths below one active-branch directory."
             }
+            GitHubReadToolKind::ListIssues => {
+                "List up to 100 open issues and pull requests in the configured repository."
+            }
+            GitHubReadToolKind::GetIssue => "Get one issue or pull request with bounded metadata.",
+            GitHubReadToolKind::SearchIssues => {
+                "Search issues and pull requests with bounded GitHub query syntax."
+            }
         };
         let description = bounded_description(&format!(
             "Toolkit: {toolkit_name}\nRepository: {repository}\n{action}"
@@ -254,6 +273,9 @@ impl Tool for GitHubReadTool {
             GitHubReadToolKind::ListMainFiles => LIST_MAIN_FILES,
             GitHubReadToolKind::ListActiveFiles => LIST_ACTIVE_FILES,
             GitHubReadToolKind::ListDirectoryFiles => LIST_DIRECTORY_FILES,
+            GitHubReadToolKind::ListIssues => LIST_ISSUES,
+            GitHubReadToolKind::GetIssue => GET_ISSUE,
+            GitHubReadToolKind::SearchIssues => SEARCH_ISSUES,
         }
     }
 
@@ -271,7 +293,7 @@ impl Tool for GitHubReadTool {
 
     fn parameters_schema(&self) -> Option<Value> {
         Some(match self.kind {
-            GitHubReadToolKind::GetMe => get_me_schema(),
+            GitHubReadToolKind::GetMe | GitHubReadToolKind::ListIssues => get_me_schema(),
             GitHubReadToolKind::ListBranches => list_branches_schema(),
             GitHubReadToolKind::ReadFile => read_file_schema(),
             GitHubReadToolKind::ReadMultipleFiles => read_multiple_files_schema(),
@@ -280,6 +302,8 @@ impl Tool for GitHubReadTool {
                 get_me_schema()
             }
             GitHubReadToolKind::ListDirectoryFiles => list_directory_files_schema(),
+            GitHubReadToolKind::GetIssue => get_issue_schema(),
+            GitHubReadToolKind::SearchIssues => search_issues_schema(),
         })
     }
 
@@ -335,6 +359,17 @@ impl Tool for GitHubReadTool {
                 self.execute_list_files(arguments, GitHubFileScope::ActiveBranch, Some(directory))
                     .await
             }
+            GitHubReadToolKind::ListIssues => {
+                if !arguments.is_empty() {
+                    return Err(invalid_arguments());
+                }
+                self.client
+                    .list_open_issues()
+                    .await
+                    .map_err(GitHubClientError::into_adk)
+            }
+            GitHubReadToolKind::GetIssue => self.execute_get_issue(arguments).await,
+            GitHubReadToolKind::SearchIssues => self.execute_search_issues(arguments).await,
         }
     }
 }
@@ -485,6 +520,57 @@ fn list_directory_files_schema() -> Value {
             }
         },
         "required": ["directory_path"],
+        "additionalProperties": false
+    })
+}
+
+fn get_issue_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "issue_number": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": i64::MAX,
+                "description": "Issue or pull-request number."
+            },
+            "repo_name": {
+                "type": ["string", "null"],
+                "minLength": 3,
+                "maxLength": 512,
+                "description": "Optional repository in owner/name form."
+            }
+        },
+        "required": ["issue_number"],
+        "additionalProperties": false
+    })
+}
+
+fn search_issues_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "search_query": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096,
+                "description": "GitHub issue-search query, for example is:open label:bug."
+            },
+            "repo_name": {
+                "type": ["string", "null"],
+                "minLength": 3,
+                "maxLength": 512,
+                "description": "Optional repository in owner/name form."
+            },
+            "max_count": {
+                "type": ["integer", "null"],
+                "minimum": 1,
+                "maximum": 100,
+                "default": 30,
+                "description": "Maximum number of matches to return."
+            }
+        },
+        "required": ["search_query"],
         "additionalProperties": false
     })
 }
@@ -643,6 +729,36 @@ impl GitHubReadTool {
             .await
             .map_err(GitHubClientError::into_adk)
     }
+
+    async fn execute_get_issue(&self, arguments: &Map<String, Value>) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["issue_number", "repo_name"])?;
+        let issue_number = required_positive_u64(arguments, "issue_number")?;
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        self.client
+            .get_issue(issue_number, repository)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
+
+    async fn execute_search_issues(
+        &self,
+        arguments: &Map<String, Value>,
+    ) -> adk_rust::Result<Value> {
+        reject_unknown_keys(arguments, &["search_query", "repo_name", "max_count"])?;
+        let search_query = required_text(arguments, "search_query", 4 * 1_024)?;
+        if !valid_issue_search_query(search_query) {
+            return Err(invalid_arguments());
+        }
+        let repository = optional_text(arguments, "repo_name", 512)?;
+        let max_count = optional_positive_usize(arguments, "max_count")?.unwrap_or(30);
+        if max_count > 100 {
+            return Err(invalid_arguments());
+        }
+        self.client
+            .search_issues(search_query, repository, max_count)
+            .await
+            .map_err(GitHubClientError::into_adk)
+    }
 }
 
 fn reject_unknown_keys(arguments: &Map<String, Value>, allowed: &[&str]) -> adk_rust::Result<()> {
@@ -709,6 +825,28 @@ fn optional_positive_usize(
             .map(Some)
             .ok_or_else(invalid_arguments),
     }
+}
+
+fn required_positive_u64(arguments: &Map<String, Value>, key: &str) -> adk_rust::Result<u64> {
+    arguments
+        .get(key)
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0 && i64::try_from(*value).is_ok())
+        .ok_or_else(invalid_arguments)
+}
+
+fn valid_issue_search_query(query: &str) -> bool {
+    const DANGEROUS: &[&str] = &[
+        "<script",
+        "javascript:",
+        "onerror=",
+        "onclick=",
+        "data:text/html",
+        "alert(",
+        "eval(",
+    ];
+    let normalized = query.to_ascii_lowercase();
+    !query.trim().is_empty() && !DANGEROUS.iter().any(|pattern| normalized.contains(pattern))
 }
 
 fn optional_nonnegative_usize(
