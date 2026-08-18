@@ -14,6 +14,8 @@ mod snapshot;
 #[cfg(test)]
 mod github_tests;
 #[cfg(test)]
+mod google_places_tests;
+#[cfg(test)]
 mod invocation_tests;
 #[cfg(test)]
 mod policy_tests;

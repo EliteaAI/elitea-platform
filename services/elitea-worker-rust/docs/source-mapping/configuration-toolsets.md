@@ -133,7 +133,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `rally` | `configurations/rally.py::RallyConfiguration` | `tools/rally::RallyToolkit` | 8 | No | corresponding family paths | Planned; source has no focused family tests |
 | `sonar` | `configurations/sonar.py::SonarConfiguration` | `tools/code/sonar::SonarToolkit` | 1 | No | corresponding family paths | Planned |
 | `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | corresponding family paths | Planned; dialect/driver and query policy required |
-| `google_places` | `GooglePlacesConfiguration` | `GooglePlacesToolkit` | 2 | No | corresponding family paths | Planned; source has no focused family tests |
+| `google_places` | `configurations/google_places.py::GooglePlacesConfiguration` | `tools/google_places::GooglePlacesToolkit` | 2 | No | `toolkits/families/google_places/{config,client,tools}.rs` | Capability-disabled complete read family: supported Places API (New) projection for `places` and `find_near`; attribution/persisted-result policy, authorized materialization and live provider proof remain gates |
 | `salesforce` | `SalesforceConfiguration` | `SalesforceToolkit` | 6 | No | corresponding family paths | Planned; source has no focused family tests |
 | `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; delegated/app-only auth and content limits |
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
@@ -252,6 +252,77 @@ GitHub App installation-token support, the remaining 24 SDK operations
 (including six indexing-only operations), and direct sensitive-tool/HITL
 fencing.
 
+### Google Places complete read family
+
+Google Places is the first complete fixed-tool family after the GitHub
+reference kernel. The current source baseline is SDK
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, Python worker's pinned SDK
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, and legacy indexer worker
+`62656d2b3bd51ded513693a1bd9b2f3a303ce09c`. Main freezes `results_count`,
+the selected tools and the owned Google Places configuration through
+`internal/application/agentexecution/tools.go`, then
+`internal/infra/storage/configurations_materializer.go` resolves the nested
+`api_key` into the claim-scoped input. Application and ad-hoc execution both
+carry that same snapshot through
+`elitea_worker/agents/sdk_adapter.py::EliteaSdkAgentAdapter`; Rust therefore
+uses one family and does not fork the business lifecycle by agent kind.
+
+The SDK source is
+`elitea_sdk/tools/google_places/{__init__,api_wrapper}.py` with
+`googlemaps==4.10.0`. It exposes exactly two read tools: `places(query)` and
+`find_near(current_location_query,target,radius=3000)`. Empty selection means
+both. The Python implementation uses legacy Text Search, per-place Details,
+Geocoding and Nearby Search endpoints. Its `places` list comprehension calls
+Details twice for every successful result, so one page can cause 41 requests;
+its validator also stores the client in class-shared state, allowing one
+wrapper's key to replace another's. Those are implementation defects, not
+business contracts, and are not reproduced.
+
+`src/toolkits/families/google_places/config.rs` accepts only the
+claim-materialized nested credential, zeroizes the invocation-scoped key, and
+keeps secret-bearing values non-`Clone` and non-`Debug`. Null or zero
+`results_count` means the provider first-page maximum of 20, positive larger
+values clamp to 20 like the current first-page behavior, and negative or
+malformed values fail before client creation. `tools.rs` exposes both native
+ADK-Rust read-only tools through the shared materialization policy. It makes
+`target` truthfully required: the SDK schema calls it nullable, but its null
+normalization removes the positional argument and the implementation then
+fails before a provider call. Radius null still becomes 3,000 meters and the
+admitted range is Google's documented 1 through 50,000 meters.
+
+`client.rs` intentionally projects the same user-visible operation over the
+supported Places API (New), rather than copying a legacy wire API that Google
+has frozen. `places` performs one
+`POST https://places.googleapis.com/v1/places:searchText` with a fixed field
+mask and sensitive API-key header, returns the current numbered name/address/
+place-ID/phone/website text, and preserves the exact no-result message.
+`find_near` performs one bounded Geocoding request and one location-biased Text
+Search New request because Nearby Search New does not accept the SDK's free
+text target. It returns bounded typed JSON instead of Python's unstable list
+`repr`. Both paths use one invocation-scoped pooled HTTPS-only client, disable
+redirects, cap request/response/result sizes, perform one asynchronous attempt,
+and retain no query, location, key, URL or provider body in errors. Main and the
+authorized lifecycle remain the retry and deadline owners.
+
+| Current business source | Preserved behavior | Rust owner / deliberate hardening |
+| --- | --- | --- |
+| Main `internal/application/agentexecution/tools.go` and `internal/infra/storage/configurations_materializer.go` | Freeze the selected family and claim-materialize its owned API key for application and ad-hoc execution | `config.rs` parses only that sealed shape; no environment fallback, lookup, global client or second credential authority |
+| Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both agent kinds delegate the same selected toolkit snapshot to the SDK | Future authorized Rust assembly selects this same native family for both kinds; current capability registration stays empty |
+| SDK `tools/google_places/api_wrapper.py::{places,fetch_place_details,format_place_details}` | Text query, first-page result count, numbered visible fields and no-result message | `client.rs::GooglePlacesApi::places` uses one Places New request with a fixed field mask; it removes duplicate detail fan-out and class-shared credentials while preserving the callable result |
+| SDK `tools/google_places/api_wrapper.py::find_near` | Geocode a starting location, search a target with a radius bias, return the first bounded provider page | `client.rs::GooglePlacesApi::find_near` uses Geocoding plus location-biased Text Search New, validates target/radius before transport and returns stable typed JSON; neither the legacy nor new API promises strict containment |
+| SDK `tools/google_places/__init__.py::GooglePlacesToolkit` and `tools/base/tool.py::BaseAction` | Empty/subset selected-tool semantics, top-level null normalization and read grouping | `tools.rs` plus the shared invocation/policy kernel expose exactly `places` and `find_near`, default null radius to 3,000, and reject the misleading missing/null target before provider use |
+
+The current configuration catalog declares no Google Places connection check,
+so Rust does not invent one. Main retains the public check-connection/auth/
+revision/audit boundary. Production registration additionally waits for an
+authorized toolkit assembler, restricted billing-key component proof, and a
+product/legal decision on Google Maps attribution and persistence/caching of
+Places content in tool results and checkpoints. A passing capability-disabled
+unit suite is not that policy approval. The tools are safe to call concurrently,
+but the future authorized assembler must still apply the invocation-wide
+bounded ADK tool-concurrency policy; reqwest's idle-pool setting is not an
+execution-concurrency limit.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -267,12 +338,15 @@ fencing.
 
 ## Safe implementation ownership
 
-Parallel family work starts only after the shared schema, HTTP, credential,
-policy, invocation-event, cancellation and ADK `Toolset` kernel is frozen.
+The shared schema, bounded HTTP, credential, policy, invocation-event,
+cancellation and ADK `Toolset` kernel is now stable enough for independent
+read-only REST families; Google Places is the first complete example after the
+partial GitHub reference family. Parallel family work still must not share
+mutable files or weaken the capability gate.
 Non-overlapping batches are:
 
-1. GitHub completion as the first full reference family.
-2. Independent simple REST families.
+1. GitHub completion as the broad reference family, including its gated effects.
+2. Independent simple REST families using the Google Places ownership pattern.
 3. GitLab plus GitLab Org, Bitbucket and LocalGit with separate owners.
 4. All four ADO toolsets under one owner.
 5. Jira and Confluence after one shared Atlassian normalizer.
@@ -308,8 +382,9 @@ client in Go; the GitHub section above is the first concrete example.
 
 Each Rust family owns configuration parsing needed by its client, claim-scoped
 materialization, the actual probe operation when delegated, and its concrete
-ADK tools. The first full family is the reference implementation before
-independent families are split into separate work. Sensitive-tool confirmation,
+ADK tools. GitHub provides the broad reference and Google Places the first
+complete fixed read family before independent families are split into separate
+work. Sensitive-tool confirmation,
 MCP smart authorization, nested applications, code execution and indexing
 overlays remain separate capabilities because their durable authority and
 isolation rules differ from an ordinary function call.
