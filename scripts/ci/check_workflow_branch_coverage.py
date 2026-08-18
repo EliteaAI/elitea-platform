@@ -9,6 +9,11 @@ the size of the hole: `actions/runs?branch=claude/issue-248-c5b380&event=push`
 returned `total_count: 0` for EVERY workflow in this repository. Not one push
 run has ever started on the staging branch.
 
+The same audit found a second shape of the same defect. Four workflows named
+their OWN file in the pull_request paths and not in the push paths, so a push
+that edited only the gate could not start the gate it edited. This check holds
+that too.
+
 The gate is not the wiring. `helm-lint.yml` was correct in its own file, and it
 could not start where it was needed. So this check holds the wiring, and it
 reads two artifacts:
@@ -77,6 +82,10 @@ BRANCHES_BLOCK = re.compile(
     re.MULTILINE,
 )
 BRANCH_ITEM = re.compile(r'^      - "?(?P<name>[^"\n#]+?)"?\s*$', re.MULTILINE)
+PATHS_BLOCK = re.compile(
+    r"^    paths:\n(?P<body>(?:(?:      .*)?\n)*?)(?=^    \S|\Z)",
+    re.MULTILINE,
+)
 
 
 def read_staging_branch() -> str:
@@ -100,6 +109,24 @@ def push_branches(text: str) -> list[str] | None:
     return [
         item.group("name").strip()
         for item in BRANCH_ITEM.finditer(branches_match.group("body"))
+    ]
+
+
+def push_paths(text: str) -> list[str] | None:
+    """Return the path filters of the push arm, or None when there are none.
+
+    None means the arm selects every file, which is the strongest state and
+    needs no self-reference.
+    """
+    push_match = PUSH_BLOCK.search(text)
+    if push_match is None:
+        return None
+    paths_match = PATHS_BLOCK.search(push_match.group("body"))
+    if paths_match is None:
+        return None
+    return [
+        item.group("name").strip()
+        for item in BRANCH_ITEM.finditer(paths_match.group("body"))
     ]
 
 
@@ -186,6 +213,20 @@ def main() -> int:
                 f"{staging_branch or '(nothing)'}. Remove the stale name or "
                 "correct the file."
             )
+
+        paths = push_paths(text)
+        if paths is not None:
+            if not paths:
+                failures.append(
+                    f"{name} has a `paths:` key on its push arm and this check "
+                    "read no path out of it. The reader stopped reading."
+                )
+            elif f".github/workflows/{name}" not in paths:
+                failures.append(
+                    f"{name} filters its push arm by path and does not name "
+                    f".github/workflows/{name}. A push that edits only the gate "
+                    "then cannot start the gate it edited."
+                )
 
         if name in EXEMPT_WORKFLOWS:
             if staging_branch and staging_branch in branches:
