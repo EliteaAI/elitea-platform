@@ -54,6 +54,8 @@ async function main() {
     coverageMap.merge(raw);
   }
 
+  assertSomethingWasMeasured(coverageMap, shardFiles);
+
   printUncoveredInfo(coverageMap);
 
   await fs.rm(outputDir, { recursive: true, force: true });
@@ -244,6 +246,44 @@ async function findCoverageFiles() {
   }
 
   return files;
+}
+
+// The floor on the CONTENTS, not on the file count (issue #483, item 3).
+//
+// The shard-count check above proves a file arrived. It does not prove the
+// file holds numbers. A `coverage-final.json` of `{}` satisfies it, and every
+// gate downstream then reads zeros as a pass:
+//
+//   • assertInstrumentationNotBroken() is gated on `totalStatements > 0`, so a
+//     total of 0 skips it;
+//   • istanbul's own `percent()` returns 100 when the total is 0, so every
+//     threshold in checkThreshold() is met by an empty summary.
+//
+// So the one call in this repository that enforces the coverage thresholds
+// reported them as met over no numbers at all. The counts are printed here,
+// because a reader must be able to see WHAT was measured, not only that
+// something was.
+function assertSomethingWasMeasured(coverageMap, shardFiles) {
+  const files = coverageMap.files();
+  const summary = getSummary(coverageMap.getCoverageSummary());
+  const totalStatements = summary.statements?.total ?? 0;
+
+  console.log(
+    `Merged ${shardFiles.length} shard file(s): ${files.length} source file(s), ${totalStatements} statement(s).`,
+  );
+
+  if (files.length === 0 || totalStatements === 0) {
+    console.error(
+      `MEASURED NOTHING: the merged coverage map holds ${files.length} file(s) and`
+        + ` ${totalStatements} statement(s), from ${shardFiles.length} shard file(s):`
+        + ` ${shardFiles.join(', ')}.`,
+    );
+    console.error(
+      'An empty coverage map meets every threshold, because a percentage over a'
+        + ' total of zero is 100. Refusing to report success with nothing measured.',
+    );
+    process.exit(1);
+  }
 }
 
 function assertInstrumentationNotBroken(coverageMap) {

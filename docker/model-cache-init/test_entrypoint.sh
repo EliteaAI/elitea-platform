@@ -22,27 +22,10 @@ teardown() {
     [ -n "$TEST_DIR" ] && rm -rf "$TEST_DIR"
 }
 
-assert_exit() {
-    local expected=$1
-    shift
-    local output
-    output=$("$@" 2>&1) || true
-    local actual=$?
-    # Re-run to capture exit code correctly
-    set +e
-    "$@" >/dev/null 2>&1
-    actual=$?
-    set -e
-    if [ "$actual" -ne "$expected" ]; then
-        FAIL=$((FAIL + 1))
-        echo "FAIL: expected exit=$expected got exit=$actual"
-        echo "  CMD: $*"
-        echo "  OUT: $output"
-        return 1
-    fi
-    PASS=$((PASS + 1))
-    return 0
-}
+# NOTE: an `assert_exit` helper used to sit here. Nothing called it, and its
+# first `local actual=$?` read the status of `|| true` rather than of the
+# command, so it had to run every command twice to get an answer. A broken
+# helper that nothing calls is an invitation to call it. Removed with #484.
 
 assert_contains() {
     local needle="$1"
@@ -73,6 +56,24 @@ assert_file_not_exists() {
         FAIL=$((FAIL + 1))
         echo "FAIL: file should not exist: $1"
     fi
+}
+
+# A Prometheus gauge must carry a NUMBER. `du -sb ... | awk ... || echo 0`
+# bound the fallback to awk, and awk succeeds on empty input, so the line was
+# written as `model_cache_size_bytes ` with nothing after the space (#484).
+# `assert_contains "model_cache_size_bytes"` could not see that, because the
+# metric NAME was still there. This looks at the value.
+assert_metric_is_numeric() {
+    local metric="$1"
+    local haystack="$2"
+    if echo "$haystack" | grep -qE "^${metric} [0-9]+\$"; then
+        PASS=$((PASS + 1))
+        return 0
+    fi
+    FAIL=$((FAIL + 1))
+    echo "FAIL: metric '${metric}' carries no numeric value"
+    echo "  GOT: $(echo "$haystack" | grep -E "^${metric}( |\$)" || echo '<the metric is absent>')"
+    return 0
 }
 
 # ---------- Test: Missing manifest ----------
@@ -416,7 +417,11 @@ EOF
     teardown
 }
 
-# ---------- Test: Empty models array is a success ----------
+# ---------- Test: Empty models array is a FAILURE (issue #484) ----------
+# This test read "expected exit 0 (empty models)" and asserted
+# "Model cache sync complete". It stated the defect as the contract: a manifest
+# with no entry produced an empty cache and a success. The container then
+# started the pod, and the first model load failed at run time.
 test_empty_models() {
     echo "--- test_empty_models ---"
     setup
@@ -432,14 +437,136 @@ EOF
     rc=$?
     set -e
 
-    if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 0 ]; then
         FAIL=$((FAIL + 1))
-        echo "FAIL: expected exit 0 (empty models), got $rc"
+        echo "FAIL: an empty 'models' array exited 0, so an empty cache reports success"
+        echo "  OUT: $output"
     else
         PASS=$((PASS + 1))
     fi
-    assert_contains "0 files to process" "$output"
-    assert_contains "Model cache sync complete" "$output"
+    assert_contains "EMPTY 'models' array" "$output"
+    teardown
+}
+
+# ---------- Test: A mis-keyed manifest is a FAILURE (issue #484) ----------
+# `jq '.models | length'` prints 0 for a null, so a manifest that spells the
+# key `model` passed the JSON check and reported a full cache.
+test_mis_keyed_manifest() {
+    echo "--- test_mis_keyed_manifest ---"
+    setup
+
+    cat > "$MANIFEST_PATH" <<EOF
+{
+  "version": "1.0.0",
+  "model": [
+    {
+      "name": "one",
+      "url": "s3://bucket/one.bin",
+      "path": "one.bin",
+      "md5": null,
+      "size_mb": 1
+    }
+  ]
+}
+EOF
+
+    set +e
+    output=$("$ENTRYPOINT" 2>&1)
+    rc=$?
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: a manifest keyed 'model' exited 0"
+        echo "  OUT: $output"
+    else
+        PASS=$((PASS + 1))
+    fi
+    # The message must name the key the script wanted AND the keys it found,
+    # because a mis-keyed manifest and an empty one need different repairs.
+    assert_contains "no 'models' array" "$output"
+    assert_contains "version, model" "$output"
+    teardown
+}
+
+# ---------- Test: --verify-only over an empty cache FAILS (issue #484) ----------
+# The verify verdict used to be `FAILED -gt 0`. It now counts what the run
+# proved against what the manifest holds, and prints that count.
+test_verify_only_empty_cache() {
+    echo "--- test_verify_only_empty_cache ---"
+    setup
+
+    cat > "$MANIFEST_PATH" <<EOF
+{
+  "models": [
+    {
+      "name": "one",
+      "url": "s3://bucket/one.bin",
+      "path": "one.bin",
+      "md5": null,
+      "size_mb": 1
+    },
+    {
+      "name": "two",
+      "url": "s3://bucket/two.bin",
+      "path": "two.bin",
+      "md5": null,
+      "size_mb": 1
+    }
+  ]
+}
+EOF
+
+    set +e
+    output=$("$ENTRYPOINT" --verify-only 2>&1)
+    rc=$?
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: --verify-only exited 0 over an empty cache"
+        echo "  OUT: $output"
+    else
+        PASS=$((PASS + 1))
+    fi
+    assert_contains "Files proved present and intact: 0 of 2" "$output"
+    assert_contains "proved 0 of 2 manifest entries" "$output"
+    teardown
+}
+
+# ---------- Test: every entry reports a result (issue #484) ----------
+# The counters see only the entries that REACH them. This asserts the line
+# that states the count, so a loop body that stops recording an outcome for
+# some entry is visible in the output rather than only in an exit status.
+test_result_count_reported() {
+    echo "--- test_result_count_reported ---"
+    setup
+
+    echo -n "alpha" > "$CACHE_DIR/a.bin"
+    echo -n "beta" > "$CACHE_DIR/b.bin"
+
+    cat > "$MANIFEST_PATH" <<EOF
+{
+  "models": [
+    { "name": "a", "url": "s3://bucket/a.bin", "path": "a.bin", "md5": null, "size_mb": 1 },
+    { "name": "b", "url": "s3://bucket/b.bin", "path": "b.bin", "md5": null, "size_mb": 1 }
+  ]
+}
+EOF
+
+    set +e
+    output=$("$ENTRYPOINT" 2>&1)
+    rc=$?
+    set -e
+
+    if [ "$rc" -ne 0 ]; then
+        FAIL=$((FAIL + 1))
+        echo "FAIL: expected exit 0, got $rc"
+        echo "  OUT: $output"
+    else
+        PASS=$((PASS + 1))
+    fi
+    assert_contains "Entries that reported a result: 2 of 2" "$output"
     teardown
 }
 
@@ -882,6 +1009,17 @@ test_metrics_standalone() {
     assert_contains "model_cache_manifest_files_total 9" "$metrics_content"
     # Should count 2 actual files (excludes .metrics)
     assert_contains "model_cache_files_total 2" "$metrics_content"
+
+    # ── Issue #484 ───────────────────────────────────────────────────────────
+    # Every gauge must carry a number, and each measurement must say whether it
+    # ran. `du -sb` is absent on BSD and on plain BusyBox, so the size gauge is
+    # unmeasured on such a host and measured inside the alpine image, which
+    # installs coreutils. The value that must NEVER appear is an empty one.
+    assert_metric_is_numeric "model_cache_size_bytes" "$metrics_content"
+    assert_metric_is_numeric "model_cache_size_bytes_measured" "$metrics_content"
+    assert_metric_is_numeric "model_cache_files_total_measured" "$metrics_content"
+    # The file count needs no external tool, so it is measured on every host.
+    assert_contains "model_cache_files_total_measured 1" "$metrics_content"
     teardown
 }
 
@@ -921,6 +1059,22 @@ EOF
 }
 
 # --- Run all tests ---
+#
+# ── The floor (issue #484) ───────────────────────────────────────────────────
+#
+# This runner used to end at `if [ "$FAIL" -gt 0 ]`. Delete every call below
+# and the suite exits 0 with `0 passed, 0 failed`, which is the same shape as
+# the defect it tests for. EXPECTED_ASSERTIONS states the number of assertions
+# this file makes, and a shortfall turns the run red.
+#
+# A counter sees only the assertions that REACH it. A test function that
+# returns early — every `teardown; return` path below does exactly that —
+# raises fewer results than it declares, and only a stated floor catches it.
+#
+# Move this number when you add or remove an assertion. Do not lower it to
+# make a run agree.
+EXPECTED_ASSERTIONS=92
+
 echo "=== Running entrypoint.sh tests ==="
 echo ""
 
@@ -935,6 +1089,9 @@ test_null_md5_skipped
 test_verify_only_env_var
 test_log_includes_filename
 test_empty_models
+test_mis_keyed_manifest
+test_verify_only_empty_cache
+test_result_count_reported
 test_version_match_incremental
 test_version_mismatch_clears_cache
 test_no_version_file_full_download
@@ -947,8 +1104,18 @@ test_metrics_prometheus_format
 test_metrics_standalone
 test_metrics_not_on_failure
 
+RAN=$((PASS + FAIL))
+
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+echo "=== Results: $PASS passed, $FAIL failed; $RAN of $EXPECTED_ASSERTIONS expected assertions reported a result ==="
+
+if [ "$RAN" -ne "$EXPECTED_ASSERTIONS" ]; then
+    echo "FAILED: $RAN assertion(s) reported a result, and $EXPECTED_ASSERTIONS were expected." >&2
+    echo "  An assertion that reports nothing is not a passed assertion. A test that" >&2
+    echo "  returned early, or a deleted call, takes its assertions with it." >&2
+    echo "  If you added or removed an assertion, move EXPECTED_ASSERTIONS with it." >&2
+    exit 1
+fi
 
 if [ "$FAIL" -gt 0 ]; then
     exit 1
