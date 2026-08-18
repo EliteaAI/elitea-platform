@@ -12,6 +12,9 @@ on:
       # deploy/helm/ never runs the gate that exists to catch it — the same
       # false green as a workflow that never triggers at all (#429).
       - "services/elitea-main/internal/runtimecomposition/**"
+      # The LLM-path gate below compares the charts with the standalone compose
+      # file. A change to that file alone must run the gate that reads it.
+      - "deploy/docker-compose.standalone-full.yml"
   push:
     branches:
       - main
@@ -19,6 +22,7 @@ on:
       - "deploy/helm/**"
       - "deploy/argocd/**"
       - "services/elitea-main/internal/runtimecomposition/**"
+      - "deploy/docker-compose.standalone-full.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,6 +34,8 @@ permissions:
 
 env:
   KUBECONFORM_VERSION: v0.6.7
+  # Read by the LLM-path gate below. Pinned, not "latest".
+  YQ_VERSION: v4.44.6
   # CRD schemas (argoproj.io Application, cert-manager Certificate) come from
   # the datreeio catalog. PINNED to a release tag, not `main`: an unpinned
   # third-party branch is a hard dependency of every deploy PR, so a rename
@@ -89,6 +95,30 @@ jobs:
       # a newly required name fails here until the chart renders it.
       - name: Capability flags reach the container environment
         run: bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
+      # The runner image ships yq, so this usually downloads nothing. The
+      # version is PINNED for the same reason as KUBECONFORM_VERSION and
+      # CRD_SCHEMAS above: an unpinned third-party download is a hard
+      # dependency of every deploy pull request.
+      - name: Install yq
+        run: |
+          if ! command -v yq >/dev/null 2>&1; then
+            sudo wget -qO /usr/local/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      # The LLM-path gate (#463, #467, #458, #464). It asserts both directions:
+      # the charts render the LLM path ON, and the gateway chart REFUSES an
+      # empty guard variable.
+      #
+      # #473 wrote this script and no job ran it. So the refusal that the
+      # template job below now satisfies had no test that it still fires. Delete
+      # the guard and every gate in this file stays green; only this step goes
+      # red (#497).
+      - name: The charts do not ship the LLM path off, and the guards refuse
+        run: bash deploy/helm/tests/render-llm-path.sh
 
       # `helm lint` covers every chart. The `template` job below covers only the
       # charts its matrix names, and a chart in neither list is never rendered
@@ -150,9 +180,23 @@ jobs:
             # Ingress path uses kubeconform's built-in kubernetes-version
             # schema, no CRD needed.
             toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
+          # This chart REFUSES to render until the operator states two postures
+          # (#467, #473): the self-referential-credential origins, and the
+          # egress posture. Neither can have a chart default, because both name
+          # addresses that only the operator knows. So this gate must supply
+          # them, exactly as an operator does. A chart that renders on an empty
+          # guard is the defect the refusal exists to stop (#497).
+          #
+          # These are RENDER-ONLY values. `.invalid` is reserved by RFC 2606 and
+          # never resolves, and the label says what the value is for, so no
+          # reader can mistake either one for a shipped default.
           - chart: elitea-llm-gateway
-            values: ""
-            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]'
+            values: --set-string env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1 --set-string egressPosture=public-unrestricted
+            # The last --set of a key wins, so the two lines below move this
+            # pass to the OTHER egress posture. The allowlist posture is the
+            # only one that renders a non-empty GATEWAY_EGRESS_ALLOWLIST, so a
+            # break in it is invisible in the default pass above.
+            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]' --set-string egressPosture=allowlist --set-string env.GATEWAY_EGRESS_ALLOWLIST=ci-render-only.example.invalid:8000
           - chart: elitea-scheduler
             values: ""
             toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
