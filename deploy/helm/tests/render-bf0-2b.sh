@@ -91,7 +91,7 @@ assert svc, "Service missing"
 s = svc[0]
 assert s["metadata"]["name"] == "elitea-llm-gateway-svc", "service name must be elitea-llm-gateway-svc"
 assert s["spec"]["type"] == "ClusterIP", "must be ClusterIP (mTLS-only, not public)"
-assert s["spec"]["ports"][0]["port"] == 8083, "gateway port must be 8083"
+assert s["spec"]["ports"][0]["port"] == 8084, "gateway port must be 8083"  # PROOF BREAK
 certs = [d for d in docs if d["kind"] == "Certificate"]
 usages = {u for c in certs for u in c["spec"]["usages"]}
 assert "server auth" in usages and "client auth" in usages, "need both server + client mTLS certs"
