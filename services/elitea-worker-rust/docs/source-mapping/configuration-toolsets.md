@@ -139,6 +139,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
 | `keycloak` | None; authority and service-account credentials are inline toolkit settings | `tools/keycloak::KeycloakToolkit` | 1 | No | `toolkits/families/keycloak/{config,client,tools}.rs` | Capability-disabled complete family: one generic Admin REST execute surface retains reads, writes, deletes and actions inside one frozen HTTPS realm; exact-interrupt HITL, effect reconciliation, approved egress and live provider proof remain gates |
 | `azure` | None; subscription and service-principal credentials are inline toolkit settings | `tools/cloud/azure::AzureToolkit` | 2 | No | `toolkits/families/azure/{config,client,tools}.rs` | Capability-disabled complete family: one generic ARM execute surface plus its resource-group health read inside the frozen public-cloud subscription; exact-interrupt HITL, effect reconciliation, approved egress and live Azure role proof remain gates |
+| `gcp` | None; the service-account JSON is an inline sealed toolkit setting | `tools/cloud/gcp::GcpToolkit` | 1 | No | `toolkits/families/gcp/{config,client,tools}.rs` | Capability-disabled complete family: one generic scoped Google REST surface retains reads, writes, deletes and actions on approved `googleapis.com` origins; exact-interrupt HITL, effect reconciliation, DNS/IP egress and live service-account role proof remain gates |
 | `kubernetes` | None; cluster origin and Bearer token are inline toolkit settings | `tools/cloud/k8s::KubernetesToolkit` | 2 | No | `toolkits/families/kubernetes/{config,client,tools}.rs` | Capability-disabled complete family: one generic Kubernetes REST execute surface plus its `/version` health read on an exact verified-TLS origin; exact-interrupt HITL, effect reconciliation, approved DNS/IP egress, CA policy and live RBAC proof remain gates |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
@@ -183,8 +184,8 @@ fixtures, not guessed provider effects.
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure Resource Manager (2), GCP (1), Kubernetes
 (2), Keycloak (1), Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Keycloak,
-Azure Resource Manager and Kubernetes are now implemented completely behind
-capability gates from inline claim-materialized settings. LocalGit
+Azure Resource Manager, GCP and Kubernetes are now implemented completely
+behind capability gates from inline claim-materialized settings. LocalGit
 (13) is intentionally deferred: its local-filesystem/process isolation boundary
 is outside the remote toolkit migration priority. The remaining families still
 require an explicit authority source and admission policy before live porting.
@@ -1602,6 +1603,80 @@ enforces the approved public-cloud Entra and ARM DNS/IP destinations; and live
 Azure service-principal roles prove both application and ad-hoc materialization.
 Health and generic read requests may also be independently sensitive because
 ARM responses contain tenant resource metadata.
+
+### GCP complete scoped REST family
+
+GCP is a complete one-tool family over inline toolkit settings rather than a
+separately registered configuration. Current SDK `9bba9da` and worker-pinned
+SDK `b5113a1` expose the same `execute_request` operation and schema; current
+adds only `execute` group metadata. Main's frozen toolkit catalog marks the
+`api_key` string as secret. Despite that legacy name, its value is the complete
+Google service-account JSON document. There is no public connection check or
+indexing behavior.
+
+The Python wrapper eagerly parses and refreshes Google credentials while the
+toolkit is being constructed, accepts caller-selected scopes, arbitrary URLs
+and arbitrary `requests` keyword arguments, follows redirects and returns raw
+provider failures. Its execution path also passes a Pydantic `SecretStr` where
+Google Auth expects the decoded service-account object. Rust intentionally
+repairs that unusable and over-broad boundary without dropping the generic
+operation or any bounded RFC HTTP method token.
+
+One invocation-owned, non-debuggable client parses only a claim-materialized
+`type=service_account` document whose token URI is exactly
+`https://oauth2.googleapis.com/token`. It retains the PKCS#8 RSA private key in
+a zeroizing buffer, requires at least a 2048-bit modulus, signs one one-hour
+RS256 JWT bearer assertion and exchanges it with one form POST. The claims bind
+the service-account email, one to thirty-two exact unique
+`https://www.googleapis.com/auth/...` scopes, the fixed token audience, and one
+captured issue time. Construction performs no network access and no ambient
+credential or environment fallback exists.
+
+The API URL must use verified HTTPS at `googleapis.com` or one of its
+subdomains. Userinfo, custom ports, fragments, repeated path separators,
+traversal, decoded separators, malformed or double percent escapes, redirects
+and alternate origins are rejected. `optional_args` accepts only bounded
+`params`, `headers`, `json`, and `data`: query values are scalars or repeated
+scalar arrays; headers cannot replace Authorization, Host, length, proxy or
+hop-by-hop transport fields; `json` is serialized as JSON; and `data` is a
+literal UTF-8 body or form object. Filesystem paths, artifacts, client objects,
+certificate overrides, proxy controls, redirect controls and retry controls are
+not part of the public contract. The complete argument stays below the shared
+256 KiB boundary, the request body below 240 KiB and serialized JSON output
+below 512 KiB.
+
+The client performs exactly one OAuth exchange and one API request, with native
+root verification, no proxy inheritance, no redirect and no automatic retry.
+Successful JSON is returned as its native value; an empty 2xx preserves the
+source success string. GET, HEAD and OPTIONS are reads; all other methods are
+effects. Once an effect request is dispatched, timeout, transport loss,
+redirect, 408, 429, 5xx, oversized response or post-accept projection failure
+becomes a nonretryable unknown outcome. Read failures use stable data-free
+authentication, authorization, not-found, rate-limit, timeout, unavailable,
+invalid-response and resource-limit errors.
+
+The tool and parameter descriptions are tested model-selection contracts. They
+state the exact scope and Google-origin forms, option shapes, method-to-effect
+split, 512 KiB result ceiling, confidential-read risk, one-attempt behavior,
+202 Accepted semantics and reconciliation requirement. The generic tool is
+always non-read-only and non-concurrency-safe because its arguments determine
+the effect; its `execute` group remains metadata and grants no authority.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/cloud/gcp/__init__.py::{GcpToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline sealed service-account JSON, selected-tool materialization and source group | `config.rs` validates the official service-account fields, retains the RSA key in zeroizing memory and performs no construction I/O |
+| `tools/cloud/gcp/api_wrapper.py::{GcpApiWrapper.execute_request,ExecuteRequest}` | One generic method/scope/URL/options schema and authenticated request | `tools.rs` exposes the complete bounded model contract; `client.rs` owns JWT signing, OAuth exchange, Google authority and stable result/error projection |
+| Google service-account OAuth JWT bearer contract | RS256 assertion, fixed token form and scoped Bearer use | deterministic fixtures decode header/claims/form and prove one token plus one API request |
+| Main application/ad-hoc freezer and claim materializer | Service-account JSON remains sealed until accepted execution | focused Rust fixtures cover inline parsing and redaction; full application/ad-hoc live-provider proof remains an activation gate |
+
+Production registration remains disabled until the shared direct-sensitive-tool
+wrapper authorizes the exact invocation by durable `interrupt_id`; a durable
+effect intent/receipt owner binds method, scopes, URL, headers and canonical
+body and reconciles unknown outcomes across cancellation or restart; external
+egress enforces the approved OAuth and Google API DNS/IP destinations; and live
+service-account roles prove both application and ad-hoc claim materialization.
+Reads may independently be marked sensitive because Google API responses can
+contain tenant data, IAM policy and infrastructure metadata.
 
 ### Kubernetes complete REST family
 

@@ -243,6 +243,22 @@ durable effect intent/receipt reconciliation, claim-only secret redemption,
 public-cloud DNS/IP egress enforcement and live Azure role proof are composed.
 The `execute`/`read` groups remain metadata and grant no authority.
 
+The complete capability-disabled `GCP` family adds the current SDK's one
+generic `execute_request` operation from inline claim-materialized
+service-account JSON. One invocation-owned client validates and zeroizes the
+PKCS#8 key, signs a one-hour RS256 JWT for one to thirty-two explicit official
+Google OAuth scopes, exchanges it at the fixed token endpoint, and sends one
+bounded Bearer request only to `googleapis.com` or a subdomain. It inherits no
+ambient credential, proxy or redirect authority and performs no automatic
+retry. Every bounded HTTP method token remains available, so reads, writes,
+deletes and action endpoints are not omitted. Tested descriptions explain the
+scope/origin contract, option shapes, confidential-read risk, 512 KiB result
+ceiling, 202 semantics, one-attempt behavior and reconciliation. Production
+composition remains closed until exact-`interrupt_id` approval, durable effect
+intent/receipt reconciliation, claim-only key redemption, Google OAuth/API
+DNS/IP egress enforcement and live service-account role proof are composed.
+The `execute` group remains metadata and grants no authority.
+
 The complete capability-disabled `Kubernetes` family adds both current SDK
 cloud operations in source order: generic `execute_kubernetes` and the
 read-only `/version` health tool. One invocation-owned client requires the
