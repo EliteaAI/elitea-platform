@@ -322,12 +322,19 @@ Stated plainly, because the gap between compose and Helm is where deploys break:
   2. replicate the Secret into `elitea` (reflector/kubed, external-secrets, or
      a second `Certificate` in `elitea` from the same `elitea-internal-ca`
      ClusterIssuer — the issuer is cluster-scoped, so this works), or
-  3. leave the hop on plain HTTP inside the cluster and accept it.
-  Note this hop is **not** wired end-to-end today regardless of namespace:
-  elitea-main reads `LLM_GATEWAY_CLIENT_CERT` as a *file path*
-  (`cmd/elitea-main/main.go:876` → `llmproxy.Config.ClientCertFile`), while its
-  chart injects that variable as Secret *contents* via `secretKeyRef` and
-  mounts no volume. Fixing that is elitea-main chart work, out of scope here.
+  3. there is no third option: plain HTTP is **not** one.
+     `internal/llmproxy/proxy.go` builds an mTLS transport whenever
+     `Config.Transport` is nil, and nothing binds that field to an environment
+     variable, so an `http://` gateway URL still loads a client keypair and
+     still fails at boot without one.
+  The mount itself is no longer missing. `LLM_GATEWAY_CLIENT_CERT` and its two
+  siblings are *file paths* (`llmproxy.Config.ClientCertFile`), and issue #463
+  moved them out of the `secrets:` block — where a `secretKeyRef` had been
+  setting each variable to a PEM block instead of a path — without mounting
+  anything at them, so every Kubernetes install with a gateway URL exited at
+  boot. `fileConfig.llmGatewayClientMaterial` now mounts a Secret at the
+  directory those paths live in, and the chart refuses, while it renders, a
+  gateway URL with no material and a path the mount does not serve.
 - **No secrets.** Every chart sources sensitive values from Kubernetes Secrets
   that must be provisioned out-of-band. `elitea-main`'s and the gateway's
   `GATEWAY_IDENTITY_SECRET` are `optional: false` — pods do not start without

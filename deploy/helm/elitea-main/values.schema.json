@@ -5,6 +5,18 @@
   "additionalProperties": true,
   "properties": {
     "replicaCount": { "type": "integer", "minimum": 0 },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "LocalObjectReference list for a registry that needs credentials. Required for ghcr.io/eliteaai/elitea-main, which is a private package: without it the Deployment and the migration Job both stop at ImagePullBackOff.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": true,
@@ -99,6 +111,29 @@
               "material": { "required": ["mountPath"] }
             },
             "required": ["material"]
+          }
+        },
+        "llmGatewayClientMaterial": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The mTLS client material for the /llm hop. Issue #463 turned the three LLM_GATEWAY_* variables into file paths but mounted nothing at them, so no Kubernetes install could compose the proxy. Nothing here passes through internal/security/securefile — internal/llmproxy/proxy.go calls tls.LoadX509KeyPair / os.ReadFile — so a plain Secret volume is enough and no init container copy is needed. secretName and volume are mutually exclusive.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "defaultMode": {
+              "type": "integer"
+            },
+            "volume": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         },
         "brandPack": {

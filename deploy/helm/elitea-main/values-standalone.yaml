@@ -85,6 +85,13 @@
 # planes read it from two directories, because each material install container
 # removes anything in its own directory that its own Secret does not carry.
 fileConfig:
+  # The /llm hop's client material. The three LLM_GATEWAY_* paths below are
+  # under /run/certs, so a volume has to serve that directory — compose
+  # bind-mounts it, and in Kubernetes this block is what does the same job.
+  llmGatewayClientMaterial:
+    enabled: true
+    secretName: elitea-main-gateway-client-tls
+    mountPath: /run/certs
   authConfig:
     enabled: true
 
@@ -210,8 +217,8 @@ env:
   # `helm template` time (issue #463). Mount the material at this directory; the
   # names match what deploy/scripts/gen-gateway-certs.sh writes.
   LLM_GATEWAY_URL: "https://elitea-llm-gateway:8083"
-  LLM_GATEWAY_CLIENT_CERT: "/run/certs/client.crt"
-  LLM_GATEWAY_CLIENT_KEY: "/run/certs/client.key"
+  LLM_GATEWAY_CLIENT_CERT: "/run/certs/tls.crt"
+  LLM_GATEWAY_CLIENT_KEY: "/run/certs/tls.key"
   LLM_GATEWAY_CA_FILE: "/run/certs/ca.crt"
 
   # Circular-routing guard #1 at upsert time (issue #467). DEPLOYMENT_URL alone

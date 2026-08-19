@@ -353,6 +353,8 @@ the /llm path. That state is no longer silent: with no URL the router answers
 */}}
 {{- define "elitea-main.validateLLMGateway" -}}
 {{- $env := .Values.env | default dict -}}
+{{- $clientMaterial := .Values.fileConfig.llmGatewayClientMaterial | default dict -}}
+{{- $mountPath := $clientMaterial.mountPath | default "" | toString -}}
 {{- $url := get $env "LLM_GATEWAY_URL" | toString -}}
 {{- $material := dict
   "LLM_GATEWAY_CLIENT_CERT" (get $env "LLM_GATEWAY_CLIENT_CERT" | toString)
@@ -369,6 +371,15 @@ the /llm path. That state is no longer silent: with no URL the router answers
 {{- if not (hasPrefix "/" $value) -}}
 {{- fail (printf "env.%s must be an absolute file path, not certificate text. Got %q. internal/llmproxy/proxy.go passes it to tls.LoadX509KeyPair / os.ReadFile." $name $value) -}}
 {{- end -}}
+{{- if and $clientMaterial.enabled (not (hasPrefix $mountPath $value)) -}}
+{{- fail (printf "env.%s is %q, which fileConfig.llmGatewayClientMaterial does not serve: its mountPath is %q. A path outside the mounted directory is a file that does not exist in the container, and the pod exits at boot with \"compose llm gateway proxy\"." $name $value $mountPath) -}}
+{{- end -}}
+{{- end -}}
+{{- if not $clientMaterial.enabled -}}
+{{- fail "env.LLM_GATEWAY_URL is set, so fileConfig.llmGatewayClientMaterial.enabled must be true. Issue #463 moved the three material variables from secretKeyRef entries to file paths but mounted nothing at them, so the paths named files that no volume served and the pod exited at boot. Set fileConfig.llmGatewayClientMaterial.secretName (a cert-manager Certificate issued INTO THIS namespace gives tls.crt / tls.key / ca.crt), or fileConfig.llmGatewayClientMaterial.volume for material that already exists as files." -}}
+{{- end -}}
+{{- if and $clientMaterial.secretName $clientMaterial.volume -}}
+{{- fail "fileConfig.llmGatewayClientMaterial.secretName and .volume are mutually exclusive: one Deployment volume cannot have two sources. Use secretName for a Kubernetes Secret, or volume for a CSI secret driver." -}}
 {{- end -}}
 {{- else -}}
 {{- range $name, $value := $material -}}

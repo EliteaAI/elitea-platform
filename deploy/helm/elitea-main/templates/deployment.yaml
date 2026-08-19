@@ -21,6 +21,10 @@ spec:
       labels:
         {{- include "elitea-main.selectorLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
@@ -231,6 +235,17 @@ spec:
               mountPath: {{ .Values.fileConfig.authConfig.material.mountPath }}
               readOnly: true
             {{- end }}
+            {{- if .Values.fileConfig.llmGatewayClientMaterial.enabled }}
+            # The /llm hop's client material. A whole-directory mount, not
+            # subPath: internal/llmproxy/proxy.go reads these with
+            # tls.LoadX509KeyPair / os.ReadFile and applies no permission or
+            # symlink contract, so the Secret volume's `..data` symlink farm is
+            # fine here — unlike the runtime and authentication material, which
+            # securefile refuses in exactly that shape.
+            - name: llm-gateway-client-material
+              mountPath: {{ .Values.fileConfig.llmGatewayClientMaterial.mountPath }}
+              readOnly: true
+            {{- end }}
             {{- if .Values.fileConfig.brandPack.enabled }}
             # BRAND_PACK_PATH is "one pack file per deployment" (branding
             # package doc), read with os.ReadFile — a subPath mount, same as
@@ -319,6 +334,16 @@ spec:
             # With podSecurityContext.fsGroup set, 0440 is enough.
             defaultMode: {{ .Values.fileConfig.authConfig.material.secretDefaultMode }}
         {{- end }}
+        {{- end }}
+        {{- if .Values.fileConfig.llmGatewayClientMaterial.enabled }}
+        - name: llm-gateway-client-material
+          {{- with .Values.fileConfig.llmGatewayClientMaterial.volume }}
+          {{- toYaml . | nindent 10 }}
+          {{- else }}
+          secret:
+            secretName: {{ required "fileConfig.llmGatewayClientMaterial.enabled=true needs secretName or volume" .Values.fileConfig.llmGatewayClientMaterial.secretName }}
+            defaultMode: {{ .Values.fileConfig.llmGatewayClientMaterial.defaultMode }}
+          {{- end }}
         {{- end }}
         {{- if .Values.fileConfig.brandPack.enabled }}
         - name: brand-pack
