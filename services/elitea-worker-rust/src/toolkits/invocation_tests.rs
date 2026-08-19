@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::pending;
+use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +11,9 @@ use adk_rust::{
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::sync::Notify;
+use tracing::instrument::WithSubscriber as _;
+use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 use super::invocation::{MaterializedToolsetErrorCode, admit_materialized_toolset};
 use super::policy::ToolAdmissionPolicy;
@@ -165,6 +169,44 @@ async fn delegated_failures_keep_category_and_retry_without_secret_diagnostics()
     let diagnostics = format!("{error:?} {error}");
     assert!(!diagnostics.contains(secret));
     assert!(std::error::Error::source(&error).is_none());
+}
+
+#[tokio::test]
+async fn tool_trace_contains_only_safe_correlation_and_outcome_fields() {
+    let capture = CapturedOutput::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_writer(capture.clone())
+        .finish();
+    let action = Arc::new(FixtureTool::new("read_issue"));
+    let toolset = admit_materialized_toolset("github-19", "github", &policy(&[]), vec![action])
+        .expect("admitted native toolset");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tool = toolset
+        .tools(readonly)
+        .await
+        .expect("native ADK tools")
+        .pop()
+        .expect("fixture action");
+
+    tool.execute(
+        context(),
+        json!({"issue": 7, "body": "do-not-log-this-argument"}),
+    )
+    .with_subscriber(subscriber)
+    .await
+    .expect("traced tool call");
+
+    let output = capture.text();
+    assert!(output.contains("agent.tool.invoke"));
+    assert!(output.contains("toolkit_type=github"));
+    assert!(output.contains("tool_name=read_issue"));
+    assert!(output.contains("function_call_id=call-1"));
+    assert!(output.contains("outcome=\"succeeded\""));
+    assert!(!output.contains("do-not-log-this-argument"));
 }
 
 #[tokio::test]
@@ -342,4 +384,44 @@ fn fixture_schema() -> Value {
         "type": "object",
         "properties": {"issue": {"type": "integer"}}
     })
+}
+
+#[derive(Clone, Default)]
+struct CapturedOutput {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CapturedOutput {
+    fn text(&self) -> String {
+        String::from_utf8(self.bytes.lock().expect("captured tracing lock").clone())
+            .expect("captured tracing UTF-8")
+    }
+}
+
+struct CapturedWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for CapturedWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes
+            .lock()
+            .map_err(|_| io::Error::other("captured tracing lock failed"))?
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedOutput {
+    type Writer = CapturedWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CapturedWriter {
+            bytes: Arc::clone(&self.bytes),
+        }
+    }
 }

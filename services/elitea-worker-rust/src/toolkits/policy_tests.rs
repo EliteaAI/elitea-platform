@@ -141,6 +141,86 @@ fn configuration_growth_is_bounded_and_diagnostics_are_data_free() {
     );
 }
 
+#[test]
+fn runtime_admin_dictionary_drives_blocked_and_sensitive_membership() {
+    let runtime = json!({
+        "toolkit_security": {
+            "blocked_toolkits": ["Shell"],
+            "blocked_tools": {"GitHub": ["delete-file"]},
+            "sensitive_tools": {
+                "GitHub": ["create_file"],
+                "release automation": ["publish-release"],
+                "*": ["read_secret"]
+            },
+            "sensitive_action_company_name": "Example Corp",
+            "sensitive_action_message_template":
+                "{company_name} must approve {toolkit_name}.{tool_name}."
+        }
+    });
+    let policy = ToolAdmissionPolicy::from_runtime_config(
+        runtime.as_object().expect("runtime configuration object"),
+    )
+    .expect("runtime toolkit security dictionary");
+
+    assert_eq!(
+        policy.toolkit_decision("s-h-e-l-l"),
+        ToolAdmissionDecision::BlockedToolkit
+    );
+    assert_eq!(
+        policy.tool_decision("github", "github___DeleteFile"),
+        ToolAdmissionDecision::BlockedTool
+    );
+    let by_type = policy
+        .sensitive_tool("github", "Source Control", "github:create-file")
+        .expect("toolkit type match");
+    assert_eq!(by_type.toolkit_label(), "Source Control");
+    assert_eq!(by_type.action_name(), "Source Control.github:create-file");
+    assert_eq!(
+        by_type.policy_message(),
+        "Example Corp must approve Source Control.github:create-file."
+    );
+    assert!(
+        policy
+            .sensitive_tool("custom", "Release-Automation", "publish_release")
+            .is_some(),
+        "toolkit display/name aliases are independent policy identifiers"
+    );
+    assert!(
+        policy
+            .sensitive_tool("anything", "instance", "vendor___read-secret")
+            .is_some(),
+        "the sensitive dictionary alone supports the SDK wildcard"
+    );
+    assert!(
+        policy
+            .sensitive_tool("github", "Source Control", "get_issue")
+            .is_none()
+    );
+}
+
+#[test]
+fn malformed_runtime_security_dictionary_fails_without_echoing_values() {
+    let secret = "should-not-appear";
+    for runtime in [
+        json!({"toolkit_security": []}),
+        json!({"toolkit_security": {"blocked_toolkits": [secret, 7]}}),
+        json!({"toolkit_security": {"blocked_tools": {"github": secret}}}),
+        json!({"toolkit_security": {"sensitive_tools": []}}),
+        json!({"toolkit_security": {"sensitive_action_company_name": 7}}),
+    ] {
+        let error = ToolAdmissionPolicy::from_runtime_config(
+            runtime.as_object().expect("runtime configuration object"),
+        )
+        .err()
+        .expect("malformed runtime policy must fail");
+        assert_eq!(
+            error.code(),
+            ToolAdmissionPolicyErrorCode::InvalidConfiguration
+        );
+        assert!(!format!("{error:?} {error}").contains(secret));
+    }
+}
+
 fn configured_tool(id: u64, tool_type: &str, toolkit_name: &str) -> Value {
     json!({
         "id": id,

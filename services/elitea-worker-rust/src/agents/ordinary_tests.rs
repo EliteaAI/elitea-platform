@@ -1,7 +1,11 @@
+use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adk_rust::tool::BasicToolset;
+use adk_rust::{Tool, ToolContext, Toolset};
 use async_trait::async_trait;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode, Version};
@@ -12,50 +16,75 @@ use super::assembly_tests::{current_text_history, ordinary_request};
 use super::ordinary::OrdinaryNativeAgentAssembler;
 use super::request::AgentExecutionKind;
 use super::runtime::{
-    AuthorizedNativeAssembly, NativeAgentAssembler, NativeAgentCompletionSelector,
+    AuthorizedNativeAssembly, NativeAgentAssembler, NativeAgentAssemblyErrorCode,
+    NativeAgentCompletionSelector,
 };
 use super::session::AuthorizedNativeCommandBinding;
 use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::node_event::encode_current_node_event_json;
-use crate::transport::model_gateway::{
-    TestModelGatewayOutcome, test_model_gateway_client, test_model_gateway_config,
-    test_model_gateway_response,
+use crate::toolkits::{
+    McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
 };
+use crate::transport::model_facade::ModelFacade;
+use crate::transport::model_gateway::{
+    CapturedModelRequest, TestModelGatewayOutcome, test_model_gateway_client,
+    test_model_gateway_config, test_model_gateway_response,
+};
+use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::{
     RuntimeContextClient, RuntimeContextConfig, RuntimeContextRpc, RuntimeContextTransportError,
 };
 
 const TOKEN: &str = "ephemeral-ordinary-fixture-token";
 
+fn empty_tool_policy() -> Arc<ToolAdmissionPolicy> {
+    Arc::new(ToolAdmissionPolicy::new(&[], &BTreeMap::new()).expect("empty toolkit policy"))
+}
+
+fn platform_client(runtime_context: RuntimeContextClient) -> Arc<PlatformClient> {
+    Arc::new(PlatformClient::new(Arc::new(runtime_context)))
+}
+
 struct RuntimeContextFixture {
-    response: Mutex<Option<Response<Body>>>,
+    responses: Mutex<VecDeque<Response<Body>>>,
     calls: Arc<AtomicUsize>,
+    paths: Arc<Mutex<Vec<String>>>,
 }
 
 #[async_trait]
 impl RuntimeContextRpc for RuntimeContextFixture {
     async fn post(
         &self,
-        _request: Request<Body>,
+        request: Request<Body>,
     ) -> Result<Response<Body>, RuntimeContextTransportError> {
         self.calls.fetch_add(1, Ordering::AcqRel);
-        self.response
+        self.paths
             .lock()
             .map_err(|_| RuntimeContextTransportError::Unavailable)?
-            .take()
+            .push(request.uri().path().to_owned());
+        self.responses
+            .lock()
+            .map_err(|_| RuntimeContextTransportError::Unavailable)?
+            .pop_front()
             .ok_or(RuntimeContextTransportError::Unavailable)
     }
 }
 
 fn runtime_context_client() -> (RuntimeContextClient, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
-    let raw = serde_json::json!({
+    let response = runtime_context_response(&serde_json::json!({
         "schema_version": "elitea.runtime.elitea-client-token.v1",
         "project_id": 17,
         "token": TOKEN,
-    })
-    .to_string();
-    let response = Response::builder()
+    }));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let client = runtime_context_client_from(VecDeque::from([response]), Arc::clone(&calls), paths);
+    (client, calls)
+}
+
+fn runtime_context_response(value: &serde_json::Value) -> Response<Body> {
+    let raw = value.to_string();
+    Response::builder()
         .status(StatusCode::OK)
         .version(Version::HTTP_2)
         .header("content-type", "application/json")
@@ -63,20 +92,83 @@ fn runtime_context_client() -> (RuntimeContextClient, Arc<AtomicUsize>) {
         .header("pragma", "no-cache")
         .header("content-length", raw.len())
         .body(Body::new(Full::new(Bytes::from(raw))))
-        .expect("runtime-context fixture response");
-    let client = RuntimeContextClient::with_rpc(
+        .expect("runtime-context fixture response")
+}
+
+fn runtime_context_client_from(
+    responses: VecDeque<Response<Body>>,
+    calls: Arc<AtomicUsize>,
+    paths: Arc<Mutex<Vec<String>>>,
+) -> RuntimeContextClient {
+    RuntimeContextClient::with_rpc(
         RuntimeContextFixture {
-            response: Mutex::new(Some(response)),
-            calls: Arc::clone(&calls),
+            responses: Mutex::new(responses),
+            calls,
+            paths,
         },
         RuntimeContextConfig {
             origin: "https://content.internal".to_owned(),
             deadline: Duration::from_secs(1),
             max_response_bytes: 32 * 1_024,
+            max_application_response_bytes: 1_024 * 1_024,
         },
     )
-    .expect("runtime-context fixture client");
-    (client, calls)
+    .expect("runtime-context fixture client")
+}
+
+fn runtime_context_with_child() -> (
+    RuntimeContextClient,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let token = runtime_context_response(&serde_json::json!({
+        "schema_version": "elitea.runtime.elitea-client-token.v1",
+        "project_id": 17,
+        "token": TOKEN,
+    }));
+    let child = application_version_response(
+        31,
+        41,
+        serde_json::json!({
+            "agent_type": "agent",
+            "instructions": "Answer only the delegated task.",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": {
+                "model_name": "child-model",
+                "model_project_id": 23,
+                "max_tokens": 2048,
+                "reasoning_effort": null,
+                "temperature": 0.2,
+                "openai_compatible": true
+            }
+        }),
+    );
+    let client = runtime_context_client_from(
+        VecDeque::from([token, child]),
+        Arc::clone(&calls),
+        Arc::clone(&paths),
+    );
+    (client, calls, paths)
+}
+
+fn application_version_response(
+    application_id: u64,
+    version_id: u64,
+    version_details: serde_json::Value,
+) -> Response<Body> {
+    let mut response = serde_json::json!({
+        "schema_version": "elitea.runtime.application-version.v1",
+        "project_id": 17,
+        "application_id": application_id,
+        "version_id": version_id,
+        "version_details": null
+    });
+    response["version_details"] = version_details;
+    runtime_context_response(&response)
 }
 
 fn model_response() -> Response<Body> {
@@ -88,6 +180,316 @@ fn model_response() -> Response<Body> {
         "data: [DONE]\n\n",
     );
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn tool_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_branch\",\"type\":\"function\",\"function\":{\"name\":\"set_active_branch\",\"arguments\":\"{\\\"branch\\\":\\\"release/1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn mcp_tool_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn nested_agent_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_child\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_31_v_41\",\"arguments\":\"{\\\"task\\\":\\\"Summarize release risk\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn text_response(text: &str) -> Response<Body> {
+    let raw = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":{text:?}}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn attach_local_gitlab_tool(request: &mut super::request::AgentExecutionRequest) {
+    let tool = serde_json::json!({
+        "id": 91,
+        "type": "gitlab_org",
+        "toolkit_name": "release_repository",
+        "settings": {
+            "gitlab_configuration": {
+                "url": "https://gitlab.example.invalid",
+                "private_token": "claim-materialized-token"
+            },
+            "repositories": "group/project",
+            "branch": "main",
+            "selected_tools": ["set_active_branch"]
+        }
+    });
+    match request.kind {
+        AgentExecutionKind::Application => request
+            .payload
+            .application
+            .get_mut("version_details")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("application version")
+            .insert("tools".to_owned(), serde_json::json!([tool])),
+        AgentExecutionKind::Adhoc => {
+            request.payload.tools.push(tool);
+            None
+        }
+    };
+}
+
+fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
+    let tool = serde_json::json!({
+        "id": 92,
+        "type": "mcp",
+        "toolkit_name": "release intelligence",
+        "settings": {
+            "url": "https://mcp.example.invalid/v1/mcp",
+            "headers": null,
+            "client_id": null,
+            "client_secret": null,
+            "scopes": null,
+            "timeout": 30,
+            "selected_tools": ["lookup_release"],
+            "enable_caching": true,
+            "cache_ttl": 300,
+            "ssl_verify": true
+        }
+    });
+    match request.kind {
+        AgentExecutionKind::Application => request
+            .payload
+            .application
+            .get_mut("version_details")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("application version")
+            .insert("tools".to_owned(), serde_json::json!([tool])),
+        AgentExecutionKind::Adhoc => {
+            request.payload.tools.push(tool);
+            None
+        }
+    };
+}
+
+struct AgentMcpConnector {
+    calls: AtomicUsize,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpConnector for AgentMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(config.endpoint(), "https://mcp.example.invalid/v1/mcp");
+        Ok(Arc::new(BasicToolset::new(
+            "fixture_mcp",
+            vec![Arc::new(AgentMcpTool {
+                calls: self.tool_calls.clone(),
+            })],
+        )))
+    }
+}
+
+struct AgentMcpTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for AgentMcpTool {
+    fn name(&self) -> &'static str {
+        "lookup_release"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read release evidence for one release identifier."
+    }
+
+    fn parameters_schema(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "properties": {"release": {"type": "string"}},
+            "required": ["release"],
+            "additionalProperties": false
+        }))
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: serde_json::Value,
+    ) -> adk_rust::Result<serde_json::Value> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(serde_json::json!({
+            "release": arguments["release"],
+            "risk": "low"
+        }))
+    }
+}
+
+fn stored_application_reference(
+    tool_id: u64,
+    application_id: u64,
+    version_id: u64,
+    name: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": tool_id,
+        "type": "application",
+        "name": name,
+        "description": "Evaluates release readiness and summarizes concrete risks.",
+        "author_id": 11,
+        "settings": {
+            "application_id": application_id,
+            "application_version_id": version_id
+        },
+        "meta": {},
+        "created_at": "2026-08-19T10:00:00Z",
+        "toolkit_name": name,
+        "author": null,
+        "agent_type": "agent",
+        "online": null,
+        "icon_meta": null,
+        "variables": [],
+        "is_pinned": false,
+        "indexes_count": null
+    })
+}
+
+fn adhoc_application_reference(
+    application_id: u64,
+    version_id: u64,
+    project_id: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": null,
+        "type": "application",
+        "name": "cross-project-agent",
+        "description": "A participant-bound saved agent.",
+        "author_id": 11,
+        "settings": {
+            "application_id": application_id,
+            "application_version_id": version_id,
+            "variables": [],
+            "selected_tools": []
+        },
+        "created_at": "2026-08-19T10:00:00Z",
+        "toolkit_name": "cross-project-agent",
+        "agent_type": "agent",
+        "participant_id": 71,
+        "project_id": project_id
+    })
+}
+
+fn attach_application_tools(
+    request: &mut super::request::AgentExecutionRequest,
+    tools: Vec<serde_json::Value>,
+) {
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("application version")
+        .insert("tools".to_owned(), serde_json::Value::Array(tools));
+}
+
+fn attach_nested_agent(request: &mut super::request::AgentExecutionRequest) {
+    attach_application_tools(
+        request,
+        vec![stored_application_reference(
+            44,
+            31,
+            41,
+            "release-risk-agent",
+        )],
+    );
+}
+
+fn nested_agent_version(
+    instructions: &str,
+    model_name: &str,
+    model_project_id: u64,
+    tools: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let mut version = serde_json::json!({
+        "agent_type": "agent",
+        "instructions": instructions,
+        "meta": {},
+        "variables": [],
+        "tools": [],
+        "llm_settings": {
+            "model_name": model_name,
+            "model_project_id": model_project_id,
+            "max_tokens": 2048,
+            "reasoning_effort": null,
+            "temperature": 0.2,
+            "openai_compatible": true
+        }
+    });
+    version["tools"] = serde_json::Value::Array(tools);
+    version
+}
+
+fn assert_nested_agent_model_requests(captured: &[CapturedModelRequest]) {
+    assert_eq!(captured.len(), 3);
+    assert_eq!(captured[0].headers["openai-organization"], "17");
+    assert_eq!(captured[1].headers["openai-organization"], "23");
+    assert_eq!(captured[2].headers["openai-organization"], "17");
+    let root_first: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("root tool request");
+    assert_eq!(
+        root_first["tools"][0]["function"]["name"],
+        "elitea_agent_31_v_41"
+    );
+    let declaration = &root_first["tools"][0]["function"];
+    assert!(
+        declaration["description"]
+            .as_str()
+            .is_some_and(|text| text.contains("release readiness"))
+    );
+    assert_eq!(
+        declaration["parameters"]["required"],
+        serde_json::json!(["task"])
+    );
+    let child: serde_json::Value =
+        serde_json::from_slice(&captured[1].body).expect("child model request");
+    assert_eq!(child["model"], "child-model");
+    assert_eq!(
+        child["messages"][0]["content"],
+        "Answer only the delegated task."
+    );
+    assert_eq!(child["messages"][1]["content"], "Summarize release risk");
+    let root_second: serde_json::Value =
+        serde_json::from_slice(&captured[2].body).expect("root final request");
+    assert_eq!(root_second["messages"][3]["role"], "tool");
+    assert_eq!(root_second["messages"][3]["tool_call_id"], "call_child");
+    assert!(
+        root_second["messages"][3]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("child release risk"))
+    );
 }
 
 fn anthropic_response() -> Response<Body> {
@@ -156,8 +558,11 @@ async fn application_and_adhoc_share_authorized_redemption_model_session_and_pro
             test_model_gateway_config(),
         )
         .expect("model gateway fixture client");
-        let assembler =
-            OrdinaryNativeAgentAssembler::new(Arc::new(runtime_context), Arc::new(model_gateway));
+        let assembler = OrdinaryNativeAgentAssembler::new(
+            platform_client(runtime_context),
+            Arc::new(ModelFacade::from_gateway(model_gateway)),
+            empty_tool_policy(),
+        );
         let assembly = AuthorizedNativeAssembly::new(
             &request,
             test_runtime_context_authority(),
@@ -230,8 +635,11 @@ async fn application_and_adhoc_select_native_anthropic_without_changing_the_life
             test_model_gateway_config(),
         )
         .expect("model gateway fixture client");
-        let assembler =
-            OrdinaryNativeAgentAssembler::new(Arc::new(runtime_context), Arc::new(model_gateway));
+        let assembler = OrdinaryNativeAgentAssembler::new(
+            platform_client(runtime_context),
+            Arc::new(ModelFacade::from_gateway(model_gateway)),
+            empty_tool_policy(),
+        );
         let assembly = AuthorizedNativeAssembly::new(
             &request,
             test_runtime_context_authority(),
@@ -289,6 +697,417 @@ async fn application_and_adhoc_select_native_anthropic_without_changing_the_life
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_execute_materialized_tools_in_the_direct_adk_loop() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let mut request = ordinary_request(kind);
+        attach_local_gitlab_tool(&mut request);
+        let (runtime_context, context_calls) = runtime_context_client();
+        let (model_gateway, captured) = test_model_gateway_client(
+            vec![
+                TestModelGatewayOutcome::Response(tool_call_response()),
+                TestModelGatewayOutcome::Response(model_response()),
+            ],
+            test_model_gateway_config(),
+        )
+        .expect("model gateway fixture client");
+        let assembler = OrdinaryNativeAgentAssembler::new(
+            platform_client(runtime_context),
+            Arc::new(ModelFacade::from_gateway(model_gateway)),
+            empty_tool_policy(),
+        );
+        let assembly = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        );
+        let mut invocation = assembler
+            .assemble(assembly)
+            .await
+            .expect("authorized direct agent assembly");
+        assert_eq!(context_calls.load(Ordering::Acquire), 1);
+        let _ = invocation
+            .project_start(chrono::Utc::now())
+            .expect("agent start");
+
+        let (mut native, mut projector, completion) = invocation.start().expect("native start");
+        let mut event_types = Vec::new();
+        while let Some(event) = native.next_event().await.expect("native event") {
+            event_types.extend(
+                projector
+                    .project(&event)
+                    .expect("projected tool-loop event")
+                    .into_iter()
+                    .map(|event| event.r#type),
+            );
+        }
+        let completed = completion.select().await.expect("selected completion");
+        let finish = projector
+            .finish_after_eos(completed, chrono::Utc::now())
+            .expect("finished browser output");
+        assert!(event_types.iter().any(|event| event == "agent_tool_start"));
+        assert!(event_types.iter().any(|event| event == "agent_tool_end"));
+        assert_eq!(finish.into_iter().count(), 3);
+
+        let captured = captured.lock().expect("captured model requests");
+        assert_eq!(captured.len(), 2);
+        let first: serde_json::Value =
+            serde_json::from_slice(&captured[0].body).expect("first model request");
+        assert_eq!(first["tools"][0]["function"]["name"], "set_active_branch");
+        let second: serde_json::Value =
+            serde_json::from_slice(&captured[1].body).expect("second model request");
+        assert_eq!(second["messages"].as_array().map(Vec::len), Some(4));
+        assert_eq!(second["messages"][2]["role"], "assistant");
+        assert_eq!(second["messages"][3]["role"], "tool");
+        assert_eq!(second["messages"][3]["tool_call_id"], "call_branch");
+        assert_eq!(
+            second["messages"][3]["content"],
+            "\"Active branch set to release/1.2\""
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_execute_adk_mcp_tools_in_the_direct_llm_loop() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        let mut request = ordinary_request(kind);
+        attach_remote_mcp_tool(&mut request);
+        let (runtime_context, context_calls) = runtime_context_client();
+        let (model_gateway, captured) = test_model_gateway_client(
+            vec![
+                TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+                TestModelGatewayOutcome::Response(model_response()),
+            ],
+            test_model_gateway_config(),
+        )
+        .expect("model gateway fixture client");
+        let tool_calls = Arc::new(AtomicUsize::new(0));
+        let connector = Arc::new(AgentMcpConnector {
+            calls: AtomicUsize::new(0),
+            tool_calls: tool_calls.clone(),
+        });
+        let assembler = OrdinaryNativeAgentAssembler::new(
+            platform_client(runtime_context),
+            Arc::new(ModelFacade::from_gateway(model_gateway)),
+            empty_tool_policy(),
+        )
+        .with_mcp_connector(connector.clone());
+        let assembly = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        );
+        let mut invocation = assembler
+            .assemble(assembly)
+            .await
+            .expect("authorized MCP agent assembly");
+        assert_eq!(context_calls.load(Ordering::Acquire), 1);
+        assert_eq!(connector.calls.load(Ordering::Acquire), 1);
+        let _ = invocation
+            .project_start(chrono::Utc::now())
+            .expect("agent start");
+
+        let (mut native, mut projector, completion) = invocation.start().expect("native start");
+        while let Some(event) = native.next_event().await.expect("native MCP event") {
+            let _batch = projector.project(&event).expect("projected MCP event");
+        }
+        let completed = completion.select().await.expect("selected completion");
+        let _finish = projector
+            .finish_after_eos(completed, chrono::Utc::now())
+            .expect("finished MCP browser output");
+
+        assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+        let captured = captured.lock().expect("captured model requests");
+        assert_eq!(captured.len(), 2);
+        let first: serde_json::Value =
+            serde_json::from_slice(&captured[0].body).expect("first model request");
+        assert_eq!(first["tools"][0]["function"]["name"], "lookup_release");
+        assert!(
+            first["tools"][0]["function"]["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("release intelligence"))
+        );
+        assert!(
+            !captured[0]
+                .body
+                .windows("mcp.example.invalid".len())
+                .any(|window| window == b"mcp.example.invalid")
+        );
+        let second: serde_json::Value =
+            serde_json::from_slice(&captured[1].body).expect("second model request");
+        assert_eq!(second["messages"][3]["role"], "tool");
+        assert_eq!(second["messages"][3]["tool_call_id"], "call_mcp");
+        assert_eq!(
+            second["messages"][3]["content"],
+            r#"{"release":"1.2","risk":"low"}"#
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let (runtime_context, context_calls, context_paths) = runtime_context_with_child();
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(nested_agent_call_response()),
+            TestModelGatewayOutcome::Response(text_response("child release risk")),
+            TestModelGatewayOutcome::Response(text_response("parent final answer")),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("root plus nested agent assembly");
+
+    assert_eq!(context_calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        *context_paths.lock().expect("runtime-context paths"),
+        [
+            "/executions/execution%2Fone/generations/2/runtime-context/elitea-client-token",
+            "/executions/execution%2Fone/generations/2/runtime-context/applications/31/versions/41",
+        ]
+    );
+    let _ = invocation
+        .project_start(chrono::Utc::now())
+        .expect("agent start");
+    let (mut native, mut projector, completion) = invocation.start().expect("native start");
+    let mut event_types = Vec::new();
+    while let Some(event) = native.next_event().await.expect("native event") {
+        event_types.extend(
+            projector
+                .project(&event)
+                .expect("projected nested-agent event")
+                .into_iter()
+                .map(|event| event.r#type),
+        );
+    }
+    let completed = completion.select().await.expect("selected root completion");
+    let finish = projector
+        .finish_after_eos(completed, chrono::Utc::now())
+        .expect("finished browser output");
+    let final_output = finish
+        .into_iter()
+        .find(|event| event.r#type == "full_message")
+        .expect("root full message");
+    let final_json: serde_json::Value = serde_json::from_slice(
+        &encode_current_node_event_json(&final_output).expect("canonical browser event"),
+    )
+    .expect("browser JSON");
+    assert_eq!(final_json["content"], "parent final answer");
+    assert!(event_types.iter().any(|event| event == "agent_tool_start"));
+    assert!(event_types.iter().any(|event| event == "agent_tool_end"));
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_nested_agent_model_requests(&captured);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_agent_cycle_fails_after_one_exact_resolution_and_before_model_dispatch() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let responses = VecDeque::from([
+        runtime_context_response(&serde_json::json!({
+            "schema_version": "elitea.runtime.elitea-client-token.v1",
+            "project_id": 17,
+            "token": TOKEN,
+        })),
+        application_version_response(
+            31,
+            41,
+            nested_agent_version(
+                "Cycle fixture.",
+                "child-model",
+                23,
+                vec![stored_application_reference(
+                    45,
+                    31,
+                    41,
+                    "release-risk-agent",
+                )],
+            ),
+        ),
+    ]);
+    let runtime_context =
+        runtime_context_client_from(responses, Arc::clone(&calls), Arc::clone(&paths));
+    let (model_gateway, captured) =
+        test_model_gateway_client(Vec::new(), test_model_gateway_config())
+            .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+
+    let Err(error) = assembler.assemble(assembly).await else {
+        panic!("cycle must fail during nested-agent assembly")
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::InvalidConfiguration
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_eq!(paths.lock().expect("runtime-context paths").len(), 2);
+    assert!(captured.lock().expect("captured model requests").is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nested_agent_tier_limit_fails_before_fetching_the_fourth_tier() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let agent_b = stored_application_reference(45, 32, 42, "agent-b");
+    let agent_c = stored_application_reference(46, 33, 43, "agent-c");
+    let responses = VecDeque::from([
+        runtime_context_response(&serde_json::json!({
+            "schema_version": "elitea.runtime.elitea-client-token.v1",
+            "project_id": 17,
+            "token": TOKEN,
+        })),
+        application_version_response(
+            31,
+            41,
+            nested_agent_version("Agent A.", "model-a", 23, vec![agent_b]),
+        ),
+        application_version_response(
+            32,
+            42,
+            nested_agent_version("Agent B.", "model-b", 23, vec![agent_c]),
+        ),
+    ]);
+    let runtime_context =
+        runtime_context_client_from(responses, Arc::clone(&calls), Arc::clone(&paths));
+    let (model_gateway, captured) =
+        test_model_gateway_client(Vec::new(), test_model_gateway_config())
+            .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+
+    let Err(error) = assembler.assemble(assembly).await else {
+        panic!("fourth agent tier must fail before resolution")
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::ResourceExhausted
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 3);
+    let paths = paths.lock().expect("runtime-context paths");
+    assert!(paths.iter().all(|path| !path.contains("/applications/33/")));
+    assert!(captured.lock().expect("captured model requests").is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn participant_project_mismatch_fails_before_child_resolution() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_application_tools(&mut request, vec![adhoc_application_reference(31, 41, 99)]);
+    let (runtime_context, calls) = runtime_context_client();
+    let (model_gateway, captured) =
+        test_model_gateway_client(Vec::new(), test_model_gateway_config())
+            .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+
+    let Err(error) = assembler.assemble(assembly).await else {
+        panic!("cross-project nested agent must fail before resolution")
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::InvalidConfiguration
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert!(captured.lock().expect("captured model requests").is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn duplicate_exact_application_identity_resolves_and_declares_once() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_application_tools(
+        &mut request,
+        vec![
+            stored_application_reference(44, 31, 41, "release-risk-agent"),
+            stored_application_reference(45, 31, 41, "release-risk-agent"),
+        ],
+    );
+    let (runtime_context, calls, _) = runtime_context_with_child();
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(text_response(
+            "root answer",
+        ))],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("deduplicated nested-agent assembly");
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    let _ = invocation
+        .project_start(chrono::Utc::now())
+        .expect("agent start");
+    let (mut native, mut projector, completion) = invocation.start().expect("native start");
+    while let Some(event) = native.next_event().await.expect("native event") {
+        let _ = projector.project(&event).expect("projected event");
+    }
+    let completed = completion.select().await.expect("selected completion");
+    let _ = projector
+        .finish_after_eos(completed, chrono::Utc::now())
+        .expect("finished browser output");
+
+    let captured = captured.lock().expect("captured model request");
+    assert_eq!(captured.len(), 1);
+    let body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("model request JSON");
+    assert_eq!(body["tools"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["tools"][0]["function"]["name"], "elitea_agent_31_v_41");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn unsupported_profile_fails_before_pat_redemption_or_model_request() {
     let mut request = ordinary_request(AgentExecutionKind::Application);
     request
@@ -299,8 +1118,11 @@ async fn unsupported_profile_fails_before_pat_redemption_or_model_request() {
     let (model_gateway, captured) =
         test_model_gateway_client(Vec::new(), test_model_gateway_config())
             .expect("model gateway fixture client");
-    let assembler =
-        OrdinaryNativeAgentAssembler::new(Arc::new(runtime_context), Arc::new(model_gateway));
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
     let assembly = AuthorizedNativeAssembly::new(
         &request,
         test_runtime_context_authority(),

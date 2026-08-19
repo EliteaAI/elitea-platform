@@ -1,6 +1,8 @@
 //! Contract tests for the native Anthropic adapter on the Elitea channel.
 
-use adk_rust::{ErrorCategory, GenerateContentConfig, LlmRequest, Part};
+use adk_rust::{
+    Content, ErrorCategory, FunctionResponseData, GenerateContentConfig, LlmRequest, Part,
+};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use http::{HeaderValue, Version};
@@ -24,6 +26,7 @@ fn invocation(model: &str, effort: Option<ModelReasoningEffort>) -> ModelGateway
         max_tokens: 4_000,
         reasoning_effort: effort,
         temperature: effort.is_none().then_some(0.7),
+        max_model_turns: 25,
     }
 }
 
@@ -71,6 +74,44 @@ fn native_sse(model: &str) -> String {
     )
 }
 
+fn tool_sse(model: &str) -> String {
+    format!(
+        concat!(
+            "event: message_start\n",
+            "data: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_tool\",\"content\":[],\"model\":\"{}\",\"role\":\"assistant\",\"type\":\"message\",\"usage\":{{\"input_tokens\":5,\"output_tokens\":0}}}}}}\n\n",
+            "event: content_block_start\n",
+            "data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"tool_1\",\"name\":\"double\",\"input\":{{}}}}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{\\\"value\\\":21}}\"}}}}\n\n",
+            "event: content_block_stop\n",
+            "data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n",
+            "event: message_delta\n",
+            "data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":2}}}}\n\n",
+            "event: message_stop\n",
+            "data: {{\"type\":\"message_stop\"}}\n\n",
+        ),
+        model
+    )
+}
+
+fn tool_request(contents: Vec<Content>) -> LlmRequest {
+    let mut value = request(MODEL, Some(0.7));
+    value.contents = contents;
+    value.tools.insert(
+        "double".to_owned(),
+        serde_json::json!({
+            "name": "double",
+            "description": "Double one integer.",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"]
+            }
+        }),
+    );
+    value
+}
+
 async fn drain(
     mut stream: adk_rust::LlmResponseStream,
 ) -> Result<Vec<adk_rust::LlmResponse>, adk_rust::AdkError> {
@@ -92,7 +133,8 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
     .expect("model gateway client");
     let bound = client
         .bind_anthropic_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            23,
             invocation(MODEL, Some(ModelReasoningEffort::Medium)),
         )
         .expect("native Anthropic model");
@@ -141,7 +183,7 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
         request.headers.get(CONTENT_TYPE),
         Some(&HeaderValue::from_static("application/json"))
     );
-    assert_eq!(request.headers["openai-organization"], "17");
+    assert_eq!(request.headers["openai-organization"], "23");
     assert_eq!(request.headers["anthropic-version"], "2023-06-01");
     assert_eq!(
         request.headers["anthropic-beta"],
@@ -166,6 +208,100 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
     assert_eq!(body["temperature"], 1.0);
     assert_eq!(body["max_tokens"], 8_096);
     assert!(body.get("model_project_id").is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_tools_calls_and_results_round_trip_across_model_turns() {
+    let (client, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(test_model_gateway_response(Body::new(Full::new(
+                Bytes::from(tool_sse(MODEL)),
+            )))),
+            TestModelGatewayOutcome::Response(test_model_gateway_response(Body::new(Full::new(
+                Bytes::from(native_sse(MODEL)),
+            )))),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let bound = client
+        .bind_anthropic_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation(MODEL, None),
+        )
+        .expect("native model");
+    let user = Content::new("user").with_text("double 21");
+    let first = drain(
+        bound
+            .generate_for_test(tool_request(vec![user.clone()]))
+            .await
+            .expect("tool stream"),
+    )
+    .await
+    .expect("tool response");
+    let call = first
+        .last()
+        .and_then(|response| response.content.as_ref())
+        .and_then(|content| content.parts.first())
+        .cloned()
+        .expect("function call");
+    assert!(matches!(
+        &call,
+        Part::FunctionCall { name, args, id, .. }
+            if name == "double" && args["value"] == 21 && id.as_deref() == Some("tool_1")
+    ));
+    let result = Content {
+        role: "function".to_owned(),
+        parts: vec![Part::FunctionResponse {
+            function_response: FunctionResponseData::new(
+                "double",
+                serde_json::json!({"value": 42}),
+            ),
+            id: Some("tool_1".to_owned()),
+            annotations: None,
+        }],
+    };
+    drain(
+        bound
+            .generate_for_test(tool_request(vec![
+                user,
+                Content {
+                    role: "model".to_owned(),
+                    parts: vec![call],
+                },
+                result,
+            ]))
+            .await
+            .expect("final stream"),
+    )
+    .await
+    .expect("final response");
+    assert_eq!(
+        bound.take_completion_for_test().expect("completion"),
+        "native response"
+    );
+
+    let captured = captured.lock().expect("captured requests");
+    assert_eq!(captured.len(), 2);
+    let first_body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("first body");
+    assert_eq!(first_body["tools"][0]["name"], "double");
+    assert_eq!(
+        first_body["tools"][0]["input_schema"]["required"][0],
+        "value"
+    );
+    let second_body: serde_json::Value =
+        serde_json::from_slice(&captured[1].body).expect("second body");
+    assert_eq!(second_body["messages"][1]["content"][0]["type"], "tool_use");
+    assert_eq!(
+        second_body["messages"][2]["content"][0]["type"],
+        "tool_result"
+    );
+    assert_eq!(
+        second_body["messages"][2]["content"][0]["tool_use_id"],
+        "tool_1"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -212,7 +348,7 @@ async fn adaptive_and_legacy_reasoning_match_the_pinned_sdk_profiles() {
         let mut settings = invocation(model, effort);
         settings.temperature = temperature;
         let bound = client
-            .bind_anthropic_ordinary(ClaimScopedEliteaContext::fixture(17, TOKEN), settings)
+            .bind_anthropic_ordinary(&ClaimScopedEliteaContext::fixture(17, TOKEN), 17, settings)
             .expect("native model");
         drain(
             bound
@@ -274,7 +410,8 @@ async fn event_name_order_tool_and_citation_surfaces_fail_closed() {
         .expect("model gateway client");
         let bound = client
             .bind_anthropic_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 invocation(MODEL, None),
             )
             .expect("bound native model");
@@ -312,7 +449,8 @@ async fn terminal_is_withheld_until_message_stop_and_clean_body_end() {
         .expect("model gateway client");
         let bound = client
             .bind_anthropic_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 invocation(MODEL, None),
             )
             .expect("bound native model");
@@ -340,11 +478,10 @@ async fn native_credential_and_completion_are_single_use() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
+    let mut one_turn = invocation(MODEL, None);
+    one_turn.max_model_turns = 1;
     let bound = client
-        .bind_anthropic_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
-            invocation(MODEL, None),
-        )
+        .bind_anthropic_ordinary(&ClaimScopedEliteaContext::fixture(17, TOKEN), 17, one_turn)
         .expect("bound native model");
     drain(
         bound
@@ -357,7 +494,7 @@ async fn native_credential_and_completion_are_single_use() {
     let Err(error) = bound.generate_for_test(request(MODEL, Some(0.7))).await else {
         panic!("one credential cannot make two calls")
     };
-    assert_eq!(error.code, "anthropic_gateway.reused");
+    assert_eq!(error.code, "anthropic_gateway.turn_limit");
     assert_eq!(captured.lock().expect("captured requests").len(), 1);
     assert_eq!(
         bound.take_completion_for_test().expect("completion once"),

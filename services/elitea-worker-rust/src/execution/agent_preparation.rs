@@ -418,6 +418,31 @@ impl AuthorizedAgentRun {
         self.request.kind
     }
 
+    #[must_use]
+    pub(super) fn trace_tenant_id(&self) -> &str {
+        &self.verified.command().tenant_id
+    }
+
+    #[must_use]
+    pub(super) fn trace_resource_project_id(&self) -> &str {
+        &self.verified.command().resource_project_id
+    }
+
+    #[must_use]
+    pub(super) fn trace_execution_id(&self) -> &str {
+        &self.verified.command().execution_id
+    }
+
+    #[must_use]
+    pub(super) const fn trace_generation(&self) -> u64 {
+        self.verified.command().generation
+    }
+
+    #[must_use]
+    pub(super) fn trace_command_id(&self) -> &str {
+        &self.verified.command().command_id
+    }
+
     pub(super) async fn close_no_ack(
         self,
         code: &'static str,
@@ -602,13 +627,13 @@ where
             .await
     }
 
-    pub(super) async fn publish_full_message(
+    pub(super) async fn publish_result_event(
         &mut self,
         event: crate::protocol::elitea::runtime::v1::NodeEventV1,
         occurred_at_unix_millis: i64,
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
         self.run
-            .publish_full_message(event, occurred_at_unix_millis)
+            .publish_result_event(event, occurred_at_unix_millis)
             .await
     }
 
@@ -868,6 +893,16 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
         self.publisher
             .publish_full_message(&self.verified, event, occurred_at_unix_millis)
+            .await
+    }
+
+    pub(crate) async fn publish_result_event(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.publisher
+            .publish_result_event(&self.verified, event, occurred_at_unix_millis)
             .await
     }
 

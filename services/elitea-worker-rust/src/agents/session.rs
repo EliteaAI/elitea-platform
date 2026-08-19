@@ -17,7 +17,7 @@ use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::session::{
     AppendEventRequest, CreateRequest, InMemorySessionService, SessionService,
 };
-use adk_rust::{Content, Event, GenerateContentConfig, Llm, SessionId, UserId};
+use adk_rust::{Content, Event, GenerateContentConfig, Llm, SessionId, Toolset, UserId};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -25,6 +25,7 @@ use ring::digest;
 use serde_json::{Map, Value};
 
 use super::assembly::OrdinaryNoToolProfile;
+use super::context_management::ContextManagementPlan;
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
     AgentEventProjector, CompletedAgentBrowserOutput, OrdinaryProjectionInput,
@@ -34,6 +35,7 @@ use super::runtime::{
     AssembledNativeAgentInvocation, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
     NativeAgentCompletionSelector, NativeAgentInvocation,
 };
+use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::elitea::runtime::v1::{AgentExecutionCommandV1, worker_command_v1};
 
@@ -113,9 +115,11 @@ pub(crate) struct OrdinaryNativeAgentPlan {
     session_id: SessionId,
     user_content: Content,
     generation_config: GenerateContentConfig,
+    max_iterations: u32,
     projection: AgentEventProjectionContext,
     thread_id: String,
     chat_history: Vec<Content>,
+    context_management: ContextManagementPlan,
 }
 
 impl OrdinaryNativeAgentPlan {
@@ -177,9 +181,11 @@ impl OrdinaryNativeAgentPlan {
                 max_output_tokens: i32::try_from(profile.max_tokens()).ok(),
                 ..GenerateContentConfig::default()
             },
+            max_iterations: profile.step_limit(),
             projection,
             thread_id,
             chat_history: profile.chat_history().to_vec(),
+            context_management: profile.context_management(),
         })
     }
 
@@ -218,10 +224,12 @@ where
     }
 }
 
-/// Build one fresh ADK session, no-tool agent, and exclusive Runner.
+/// Build one fresh ADK session, direct `LlmAgent`, and exclusive Runner.
 pub(crate) async fn assemble_ordinary_native<M>(
     model: M,
     plan: OrdinaryNativeAgentPlan,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
 ) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
 where
     M: BoundOrdinaryAgentModel,
@@ -231,19 +239,27 @@ where
         session_id,
         user_content,
         generation_config,
+        max_iterations,
         projection,
         thread_id,
         chat_history,
+        context_management,
     } = plan;
+    context_management.prepare_runner_composition();
     let adk_model = model.adk_model();
-    let agent = LlmAgentBuilder::new(ROOT_AGENT_NAME)
+    let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
         .model(adk_model)
         .generate_content_config(generation_config)
-        .max_iterations(1)
+        .max_iterations(max_iterations)
         .disallow_transfer_to_parent(true)
-        .disallow_transfer_to_peers(true)
-        .build()
-        .map_err(|_| invalid_configuration())?;
+        .disallow_transfer_to_peers(true);
+    for toolset in toolsets {
+        builder = builder.toolset(toolset);
+    }
+    for tool_name in sensitive_tools.tool_names() {
+        builder = builder.require_tool_confirmation(tool_name);
+    }
+    let agent = builder.build().map_err(|_| invalid_configuration())?;
     let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
     let session = sessions
         .create(CreateRequest {
@@ -279,7 +295,8 @@ where
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::new(projection).map_err(projection_configuration)?;
+    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
+        .map_err(projection_configuration)?;
     Ok(AssembledNativeAgentInvocation::new(
         NativeAgentInvocation::new(runner, user_id, session_id, user_content),
         projector,

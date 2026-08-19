@@ -1,6 +1,8 @@
 //! Language-neutral agent execution contracts.
 
+pub(crate) mod application_tools;
 pub(crate) mod assembly;
+pub(crate) mod context_management;
 pub(crate) mod events;
 pub mod graph;
 pub(crate) mod ordinary;
@@ -8,6 +10,7 @@ pub mod protocol;
 pub mod request;
 pub mod result;
 pub(crate) mod runtime;
+pub(crate) mod sensitive_tools;
 pub(crate) mod session;
 
 #[cfg(test)]

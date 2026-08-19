@@ -10,7 +10,7 @@
 #![allow(dead_code)] // The production assembler lands after this transport proof.
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +43,12 @@ const MAX_SSE_EVENT_BYTES: usize = 256 * 1_024;
 const MAX_STREAM_BYTES: usize = 8 * 1_024 * 1_024;
 const MAX_COMPLETION_BYTES: usize = 60 * 1_024;
 const MAX_SSE_EVENTS: usize = 4_096;
+const MAX_MODEL_TURNS: u32 = 1_024;
+const MAX_TOOL_CALLS_PER_TURN: usize = 16;
+const MAX_TOOL_NAME_BYTES: usize = 256;
+const MAX_TOOL_CALL_ID_BYTES: usize = 512;
+const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1_024;
+const MAX_TOOL_DECLARATIONS: usize = 1_024;
 const MAX_TIMEOUT: Duration = Duration::from_mins(5);
 const OPENAI_ORGANIZATION: HeaderName = HeaderName::from_static("openai-organization");
 
@@ -87,6 +93,7 @@ pub(crate) struct ModelGatewayInvocation {
     pub(crate) max_tokens: u32,
     pub(crate) reasoning_effort: Option<ModelReasoningEffort>,
     pub(crate) temperature: Option<f32>,
+    pub(crate) max_model_turns: u32,
 }
 
 /// OpenAI-compatible reasoning control preserved from the frozen SDK input.
@@ -247,12 +254,13 @@ impl ModelGatewayClient {
     /// Consume one ephemeral claim credential into one single-use ADK model.
     pub(crate) fn bind_ordinary(
         &self,
-        context: ClaimScopedEliteaContext,
+        context: &ClaimScopedEliteaContext,
+        model_project_id: u32,
         invocation: ModelGatewayInvocation,
     ) -> Result<BoundModelGateway, ModelGatewayError> {
         validate_invocation(&invocation)?;
-        let (project_id, token) = context.into_model_gateway_parts();
-        if project_id == 0 || i64::try_from(project_id).is_err() || token.is_empty() {
+        let token = context.model_facade_token();
+        if model_project_id == 0 || token.is_empty() {
             return Err(ModelGatewayError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(CompletionState::default()));
@@ -260,10 +268,10 @@ impl ModelGatewayClient {
             transport: self.transport.clone(),
             config: self.config.clone(),
             invocation,
-            project_id,
+            project_id: u64::from(model_project_id),
             token,
             completion: completion.clone(),
-            called: AtomicBool::new(false),
+            calls: AtomicU32::new(0),
         });
         Ok(BoundModelGateway {
             model,
@@ -351,7 +359,7 @@ struct EliteaOpenAiCompatibleModel {
     project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<CompletionState>>,
-    called: AtomicBool,
+    calls: AtomicU32,
 }
 
 #[async_trait]
@@ -365,13 +373,20 @@ impl Llm for EliteaOpenAiCompatibleModel {
         request: LlmRequest,
         stream: bool,
     ) -> Result<LlmResponseStream, AdkError> {
-        if self.called.swap(true, Ordering::AcqRel) {
+        if self
+            .calls
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.invocation.max_model_turns).then_some(current + 1)
+            })
+            .is_err()
+        {
             return Err(model_error(
                 ErrorCategory::InvalidInput,
-                "model_gateway.reused",
-                "the claim-scoped model invocation was already consumed",
+                "model_gateway.turn_limit",
+                "the claim-scoped model invocation exceeded its approved turn limit",
             ));
         }
+        let allowed_tools = request.tools.keys().cloned().collect();
         let body = build_request_body(&request, stream, &self.invocation, &self.config)?;
         let request = build_http_request(body, self.project_id, self.token.as_str())?;
         let response = timeout(
@@ -400,6 +415,7 @@ impl Llm for EliteaOpenAiCompatibleModel {
             self.config.max_sse_event_bytes,
             self.config.max_stream_bytes,
             self.config.max_sse_events,
+            allowed_tools,
             self.completion.clone(),
         ))
     }
@@ -413,6 +429,8 @@ pub(super) fn validate_invocation(
         || invocation.system_instruction.len() > MAX_INSTRUCTION_BYTES
         || invocation.system_instruction.contains('\0')
         || invocation.max_tokens == 0
+        || invocation.max_model_turns == 0
+        || invocation.max_model_turns > MAX_MODEL_TURNS
         || i32::try_from(invocation.max_tokens).is_err()
         || (invocation
             .reasoning_effort
@@ -445,30 +463,16 @@ fn build_request_body(
         "content": invocation.system_instruction,
     }));
     for (index, content) in contents.iter().enumerate() {
-        let role = if content.role == "user" {
-            "user"
-        } else {
-            "assistant"
-        };
-        let content_value = if index + 1 == contents.len() {
-            let Part::Text { text } = &content.parts[0] else {
-                return Err(invalid_llm_request());
-            };
-            serde_json::Value::String(text.clone())
-        } else {
-            let parts = content
-                .parts
-                .iter()
-                .map(|part| match part {
-                    Part::Text { text } => Ok(serde_json::json!({"type": "text", "text": text})),
-                    _ => Err(invalid_llm_request()),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            serde_json::Value::Array(parts)
-        };
-        messages.push(serde_json::json!({"role": role, "content": content_value}));
+        append_openai_messages(content, index + 1 == contents.len(), &mut messages)?;
     }
     body.insert("messages".to_owned(), serde_json::Value::Array(messages));
+    if !request.tools.is_empty() {
+        body.insert("tools".to_owned(), openai_tools(&request.tools)?);
+        body.insert(
+            "tool_choice".to_owned(),
+            serde_json::Value::String("auto".to_owned()),
+        );
+    }
     body.insert("stream".to_owned(), serde_json::Value::Bool(true));
     body.insert(
         "stream_options".to_owned(),
@@ -515,7 +519,7 @@ pub(super) fn validate_llm_request<'a>(
     let config = request.config.as_ref().ok_or_else(invalid_llm_request)?;
     if !stream
         || request.model != invocation.model_name
-        || !request.tools.is_empty()
+        || request.tools.len() > MAX_TOOL_DECLARATIONS
         || request.previous_response_id.is_some()
         || request.contents.is_empty()
         || !generation_config_matches(config, invocation)
@@ -525,20 +529,243 @@ pub(super) fn validate_llm_request<'a>(
     let Some(current) = request.contents.last() else {
         return Err(invalid_llm_request());
     };
-    if current.role != "user" || current.parts.len() != 1 {
+    if !matches!(current.role.as_str(), "user" | "function" | "tool") {
         return Err(invalid_llm_request());
     }
     for content in &request.contents {
-        if !matches!(content.role.as_str(), "user" | "model")
-            || content.parts.is_empty()
-            || content.parts.iter().any(|part| {
-                !matches!(part, Part::Text { text } if !text.is_empty() && !text.contains('\0'))
-            })
-        {
-            return Err(invalid_llm_request());
-        }
+        validate_openai_content(content, &request.tools)?;
+    }
+    for (name, declaration) in &request.tools {
+        validate_tool_declaration(name, declaration)?;
     }
     Ok(&request.contents)
+}
+
+fn validate_openai_content(
+    content: &Content,
+    tools: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<(), AdkError> {
+    if content.parts.is_empty() {
+        return Err(invalid_llm_request());
+    }
+    match content.role.as_str() {
+        "user" => content.parts.iter().try_for_each(|part| match part {
+            Part::Text { text } if valid_part_text(text) => Ok(()),
+            _ => Err(invalid_llm_request()),
+        }),
+        "model" | "assistant" => content.parts.iter().try_for_each(|part| match part {
+            Part::Text { text } | Part::Thinking { thinking: text, .. }
+                if valid_part_text(text) =>
+            {
+                Ok(())
+            }
+            Part::FunctionCall { name, args, id, .. }
+                if tools.contains_key(name)
+                    && valid_tool_name(name)
+                    && id.as_deref().is_some_and(valid_tool_call_id)
+                    && args.is_object()
+                    && serde_json::to_vec(args)
+                        .is_ok_and(|encoded| encoded.len() <= MAX_TOOL_ARGUMENT_BYTES) =>
+            {
+                Ok(())
+            }
+            _ => Err(invalid_llm_request()),
+        }),
+        "function" | "tool" => content.parts.iter().try_for_each(|part| match part {
+            Part::FunctionResponse {
+                function_response,
+                id: Some(id),
+                ..
+            } if tools.contains_key(&function_response.name)
+                && valid_tool_call_id(id)
+                && serde_json::to_vec(&function_response.response)
+                    .is_ok_and(|encoded| encoded.len() <= MAX_TOOL_ARGUMENT_BYTES) =>
+            {
+                Ok(())
+            }
+            _ => Err(invalid_llm_request()),
+        }),
+        _ => Err(invalid_llm_request()),
+    }
+}
+
+fn valid_part_text(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_COMPLETION_BYTES && !value.contains('\0')
+}
+
+fn validate_tool_declaration(name: &str, declaration: &serde_json::Value) -> Result<(), AdkError> {
+    if !valid_tool_name(name) {
+        return Err(invalid_llm_request());
+    }
+    let object = declaration.as_object().ok_or_else(invalid_llm_request)?;
+    if object.len() > 4
+        || object.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "name" | "description" | "parameters" | "response"
+            )
+        })
+        || object
+            .get("name")
+            .is_some_and(|value| value.as_str() != Some(name))
+        || object
+            .get("description")
+            .is_some_and(|value| value.as_str().is_none_or(|text| !valid_part_text(text)))
+        || object
+            .get("parameters")
+            .is_some_and(|value| !value.is_object())
+        || object
+            .get("response")
+            .is_some_and(|value| !value.is_object())
+    {
+        return Err(invalid_llm_request());
+    }
+    Ok(())
+}
+
+fn append_openai_messages(
+    content: &Content,
+    is_last: bool,
+    messages: &mut Vec<serde_json::Value>,
+) -> Result<(), AdkError> {
+    match content.role.as_str() {
+        "user" => {
+            let value = if is_last && content.parts.len() == 1 {
+                let Part::Text { text } = &content.parts[0] else {
+                    return Err(invalid_llm_request());
+                };
+                serde_json::Value::String(text.clone())
+            } else {
+                serde_json::Value::Array(
+                    content
+                        .parts
+                        .iter()
+                        .map(|part| match part {
+                            Part::Text { text } => {
+                                Ok(serde_json::json!({"type": "text", "text": text}))
+                            }
+                            _ => Err(invalid_llm_request()),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            };
+            messages.push(serde_json::json!({"role": "user", "content": value}));
+        }
+        "model" | "assistant" => messages.push(openai_assistant_message(content)?),
+        "function" | "tool" => {
+            for part in &content.parts {
+                let Part::FunctionResponse {
+                    function_response,
+                    id: Some(id),
+                    ..
+                } = part
+                else {
+                    return Err(invalid_llm_request());
+                };
+                let result = serde_json::to_string(&function_response.response)
+                    .map_err(|_| invalid_llm_request())?;
+                messages.push(serde_json::json!({
+                    "role": "tool",
+                    "tool_call_id": id,
+                    "content": result,
+                }));
+            }
+        }
+        _ => return Err(invalid_llm_request()),
+    }
+    Ok(())
+}
+
+fn openai_assistant_message(content: &Content) -> Result<serde_json::Value, AdkError> {
+    let mut text = String::new();
+    let mut text_blocks = Vec::new();
+    let mut reasoning = String::new();
+    let mut calls = Vec::new();
+    for part in &content.parts {
+        match part {
+            Part::Text { text: value } => {
+                text.push_str(value);
+                text_blocks.push(serde_json::json!({"type": "text", "text": value}));
+            }
+            Part::Thinking {
+                thinking: value, ..
+            } => reasoning.push_str(value),
+            Part::FunctionCall {
+                name,
+                args,
+                id: Some(id),
+                ..
+            } => calls.push(serde_json::json!({
+                "id": id,
+                "type": "function",
+                "function": {"name": name, "arguments": serde_json::to_string(args).map_err(|_| invalid_llm_request())?},
+            })),
+            _ => return Err(invalid_llm_request()),
+        }
+    }
+    let mut message = serde_json::Map::new();
+    message.insert(
+        "role".to_owned(),
+        serde_json::Value::String("assistant".to_owned()),
+    );
+    message.insert(
+        "content".to_owned(),
+        if calls.is_empty() && reasoning.is_empty() && !text_blocks.is_empty() {
+            serde_json::Value::Array(text_blocks)
+        } else if text.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(text)
+        },
+    );
+    if !reasoning.is_empty() {
+        message.insert(
+            "reasoning_content".to_owned(),
+            serde_json::Value::String(reasoning),
+        );
+    }
+    if !calls.is_empty() {
+        message.insert("tool_calls".to_owned(), serde_json::Value::Array(calls));
+    }
+    Ok(serde_json::Value::Object(message))
+}
+
+fn openai_tools(
+    tools: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, AdkError> {
+    let mut names = tools.keys().collect::<Vec<_>>();
+    names.sort_unstable();
+    let values = names
+        .into_iter()
+        .map(|name| {
+            let declaration = tools
+                .get(name)
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(invalid_llm_request)?;
+            let mut function = serde_json::Map::new();
+            function.insert("name".to_owned(), serde_json::Value::String(name.clone()));
+            if let Some(description) = declaration.get("description") {
+                function.insert("description".to_owned(), description.clone());
+            }
+            function.insert(
+                "parameters".to_owned(),
+                declaration
+                    .get("parameters")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+            );
+            Ok(serde_json::json!({"type": "function", "function": function}))
+        })
+        .collect::<Result<Vec<_>, AdkError>>()?;
+    Ok(serde_json::Value::Array(values))
+}
+
+pub(super) fn valid_tool_name(value: &str) -> bool {
+    bounded_header_text(value, MAX_TOOL_NAME_BYTES)
+}
+
+pub(super) fn valid_tool_call_id(value: &str) -> bool {
+    bounded_header_text(value, MAX_TOOL_CALL_ID_BYTES)
 }
 
 fn instruction_role(model_name: &str) -> &'static str {
@@ -722,13 +949,12 @@ fn model_response_stream(
     max_event_bytes: usize,
     max_stream_bytes: usize,
     max_events: usize,
+    allowed_tools: std::collections::HashSet<String>,
     completion: Arc<Mutex<CompletionState>>,
 ) -> LlmResponseStream {
     Box::pin(try_stream! {
         let mut parser = SseParser::new(max_event_bytes, max_stream_bytes, max_events);
-        let mut accumulated = String::new();
-        let mut semantic_bytes = 0_usize;
-        let mut terminal = None;
+        let mut state = OpenAiStreamState::new(allowed_tools);
         let mut saw_done = false;
         loop {
             let chunk = next_response_chunk(&mut response, idle_timeout).await?;
@@ -743,27 +969,20 @@ fn model_response_stream(
                     Err(invalid_sse())?;
                 }
                 match parse_sse_event(&event.data)? {
-                    ParsedSseEvent::Response(model_response) => {
-                        if saw_done || terminal.is_some() {
+                    ParsedSseEvent::Delta(delta) => {
+                        if saw_done || state.is_terminal() {
                             Err(model_error(
                                 ErrorCategory::Unavailable,
                                 "model_gateway.event_after_completion",
                                 "the model gateway emitted an event after completion",
                             ))?;
                         }
-                        record_response(
-                            &model_response,
-                            &mut accumulated,
-                            &mut semantic_bytes,
-                        )?;
-                        if model_response.turn_complete {
-                            terminal = Some(model_response);
-                        } else {
-                            yield *model_response;
+                        if let Some(model_response) = state.apply(delta)? {
+                            yield model_response;
                         }
                     }
                     ParsedSseEvent::Done => {
-                        if saw_done || terminal.is_none() {
+                        if saw_done || !state.is_terminal() {
                             Err(model_error(
                                 ErrorCategory::Unavailable,
                                 "model_gateway.done_before_completion",
@@ -784,15 +1003,18 @@ fn model_response_stream(
                 break;
             }
         }
-        let terminal = terminal.filter(|_| saw_done).ok_or_else(|| {
-            model_error(
+        if !saw_done {
+            Err(model_error(
                 ErrorCategory::Unavailable,
                 "model_gateway.incomplete_stream",
                 "the model gateway stream ended before completion",
-            )
-        })?;
-        record_completion(&mut accumulated, &completion)?;
-        yield *terminal;
+            ))?;
+        }
+        let (terminal, completed_text) = state.finish()?;
+        if let Some(mut completed_text) = completed_text {
+            record_completion(&mut completed_text, &completion)?;
+        }
+        yield terminal;
     })
 }
 
@@ -1036,9 +1258,32 @@ impl SseParser {
 }
 
 enum ParsedSseEvent {
-    Response(Box<LlmResponse>),
+    Delta(OpenAiDelta),
     Usage,
     Done,
+}
+
+struct OpenAiDelta {
+    content: Option<String>,
+    reasoning: Option<String>,
+    tool_calls: Vec<OpenAiToolDelta>,
+    finish: Option<OpenAiFinish>,
+}
+
+struct OpenAiToolDelta {
+    index: usize,
+    id: Option<String>,
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum OpenAiFinish {
+    Stop,
+    MaxTokens,
+    Safety,
+    ToolCalls,
+    Other,
 }
 
 fn parse_sse_event(bytes: &[u8]) -> Result<ParsedSseEvent, AdkError> {
@@ -1073,53 +1318,79 @@ fn parse_sse_event(bytes: &[u8]) -> Result<ParsedSseEvent, AdkError> {
         .get("delta")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(invalid_sse)?;
-    if delta.get("tool_calls").is_some_and(|value| {
-        !value.is_null() && value.as_array().is_none_or(|calls| !calls.is_empty())
-    }) || delta
-        .get("function_call")
-        .is_some_and(|value| !value.is_null())
-    {
-        return Err(model_error(
-            ErrorCategory::Unsupported,
-            "model_gateway.tool_call",
-            "the model returned a tool call outside the admitted profile",
-        ));
-    }
-    let content = optional_string(delta.get("content"))?;
+    let content = optional_string(delta.get("content"))?.map(str::to_owned);
     let reasoning_content = optional_string(delta.get("reasoning_content"))?;
     let reasoning = optional_string(delta.get("reasoning"))?;
     if reasoning_content.is_some() && reasoning.is_some() {
         return Err(invalid_sse());
     }
-    let reasoning = reasoning_content.or(reasoning);
+    let reasoning = reasoning_content.or(reasoning).map(str::to_owned);
+    let tool_calls = parse_tool_deltas(delta)?;
     let finish_reason = optional_string(choice.get("finish_reason"))?;
-    if finish_reason.is_none() && content.is_none() && reasoning.is_none() {
+    if finish_reason.is_none() && content.is_none() && reasoning.is_none() && tool_calls.is_empty()
+    {
         return Ok(ParsedSseEvent::Usage);
     }
-    let mut parts = Vec::with_capacity(2);
-    if let Some(reasoning) = reasoning.filter(|value| !value.is_empty()) {
-        parts.push(Part::Thinking {
-            thinking: reasoning.to_owned(),
-            signature: None,
-        });
-    }
-    if let Some(content) = content.filter(|value| !value.is_empty()) {
-        parts.push(Part::Text {
-            text: content.to_owned(),
-        });
-    }
     let finish_reason = finish_reason.map(parse_finish_reason).transpose()?;
-    let turn_complete = finish_reason.is_some();
-    Ok(ParsedSseEvent::Response(Box::new(LlmResponse {
-        content: (!parts.is_empty()).then_some(Content {
-            role: "model".to_owned(),
-            parts,
-        }),
-        finish_reason,
-        partial: !turn_complete,
-        turn_complete,
-        ..LlmResponse::default()
-    })))
+    Ok(ParsedSseEvent::Delta(OpenAiDelta {
+        content,
+        reasoning,
+        tool_calls,
+        finish: finish_reason,
+    }))
+}
+
+fn parse_tool_deltas(
+    delta: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<OpenAiToolDelta>, AdkError> {
+    if delta
+        .get("function_call")
+        .is_some_and(|value| !value.is_null())
+    {
+        return Err(model_error(
+            ErrorCategory::Unsupported,
+            "model_gateway.legacy_function_call",
+            "the model returned an unsupported legacy function call",
+        ));
+    }
+    let Some(value) = delta.get("tool_calls") else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let calls = value.as_array().ok_or_else(invalid_sse)?;
+    if calls.len() > MAX_TOOL_CALLS_PER_TURN {
+        return Err(model_output_too_large());
+    }
+    calls
+        .iter()
+        .map(|call| {
+            let call = call.as_object().ok_or_else(invalid_sse)?;
+            let index = call
+                .get("index")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value < MAX_TOOL_CALLS_PER_TURN)
+                .ok_or_else(invalid_sse)?;
+            if call
+                .get("type")
+                .is_some_and(|value| value.as_str() != Some("function"))
+            {
+                return Err(invalid_sse());
+            }
+            let function = call
+                .get("function")
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(invalid_sse)?;
+            Ok(OpenAiToolDelta {
+                index,
+                id: optional_string(call.get("id"))?.map(str::to_owned),
+                name: optional_string(function.get("name"))?.map(str::to_owned),
+                arguments: optional_string(function.get("arguments"))?.map(str::to_owned),
+            })
+        })
+        .collect()
 }
 
 fn optional_string(value: Option<&serde_json::Value>) -> Result<Option<&str>, AdkError> {
@@ -1130,17 +1401,199 @@ fn optional_string(value: Option<&serde_json::Value>) -> Result<Option<&str>, Ad
     }
 }
 
-fn parse_finish_reason(value: &str) -> Result<FinishReason, AdkError> {
+fn parse_finish_reason(value: &str) -> Result<OpenAiFinish, AdkError> {
     match value {
-        "stop" => Ok(FinishReason::Stop),
-        "length" => Ok(FinishReason::MaxTokens),
-        "content_filter" => Ok(FinishReason::Safety),
-        "tool_calls" | "function_call" => Err(model_error(
+        "stop" => Ok(OpenAiFinish::Stop),
+        "length" => Ok(OpenAiFinish::MaxTokens),
+        "content_filter" => Ok(OpenAiFinish::Safety),
+        "tool_calls" => Ok(OpenAiFinish::ToolCalls),
+        "function_call" => Err(model_error(
             ErrorCategory::Unsupported,
-            "model_gateway.tool_finish",
-            "the model requested a tool outside the admitted profile",
+            "model_gateway.legacy_function_call",
+            "the model returned an unsupported legacy function call",
         )),
-        _ => Ok(FinishReason::Other),
+        _ => Ok(OpenAiFinish::Other),
+    }
+}
+
+#[derive(Default)]
+struct OpenAiToolCallBuilder {
+    id: Option<String>,
+    name: String,
+    arguments: String,
+}
+
+struct OpenAiStreamState {
+    allowed_tools: std::collections::HashSet<String>,
+    tool_calls: Vec<Option<OpenAiToolCallBuilder>>,
+    accumulated_text: String,
+    semantic_bytes: usize,
+    terminal: Option<LlmResponse>,
+    completed_text: Option<String>,
+}
+
+impl OpenAiStreamState {
+    fn new(allowed_tools: std::collections::HashSet<String>) -> Self {
+        Self {
+            allowed_tools,
+            tool_calls: Vec::new(),
+            accumulated_text: String::new(),
+            semantic_bytes: 0,
+            terminal: None,
+            completed_text: None,
+        }
+    }
+
+    const fn is_terminal(&self) -> bool {
+        self.terminal.is_some()
+    }
+
+    fn apply(&mut self, delta: OpenAiDelta) -> Result<Option<LlmResponse>, AdkError> {
+        if self.terminal.is_some() {
+            return Err(invalid_sse());
+        }
+        let mut parts = Vec::with_capacity(delta.tool_calls.len().saturating_add(2));
+        if let Some(reasoning) = delta.reasoning.filter(|value| !value.is_empty()) {
+            self.add_semantic_bytes(reasoning.len())?;
+            parts.push(Part::Thinking {
+                thinking: reasoning,
+                signature: None,
+            });
+        }
+        if let Some(content) = delta.content.filter(|value| !value.is_empty()) {
+            self.add_semantic_bytes(content.len())?;
+            self.accumulated_text.push_str(&content);
+            parts.push(Part::Text { text: content });
+        }
+        for call in delta.tool_calls {
+            self.apply_tool_delta(call)?;
+        }
+        let Some(finish) = delta.finish else {
+            return Ok((!parts.is_empty()).then(|| LlmResponse {
+                content: Some(Content {
+                    role: "model".to_owned(),
+                    parts,
+                }),
+                partial: true,
+                ..LlmResponse::default()
+            }));
+        };
+
+        let has_tool_calls = matches!(finish, OpenAiFinish::ToolCalls);
+        if has_tool_calls {
+            parts.extend(self.finish_tool_calls()?);
+        } else if self.tool_calls.iter().any(Option::is_some) {
+            return Err(invalid_sse());
+        }
+        let finish_reason = match finish {
+            OpenAiFinish::Stop | OpenAiFinish::ToolCalls => FinishReason::Stop,
+            OpenAiFinish::MaxTokens => FinishReason::MaxTokens,
+            OpenAiFinish::Safety => FinishReason::Safety,
+            OpenAiFinish::Other => FinishReason::Other,
+        };
+        self.completed_text = (!has_tool_calls).then(|| std::mem::take(&mut self.accumulated_text));
+        self.terminal = Some(LlmResponse {
+            content: (!parts.is_empty()).then_some(Content {
+                role: "model".to_owned(),
+                parts,
+            }),
+            finish_reason: Some(finish_reason),
+            partial: false,
+            turn_complete: true,
+            ..LlmResponse::default()
+        });
+        Ok(None)
+    }
+
+    fn add_semantic_bytes(&mut self, bytes: usize) -> Result<(), AdkError> {
+        self.semantic_bytes = self
+            .semantic_bytes
+            .checked_add(bytes)
+            .ok_or_else(model_output_too_large)?;
+        if self.semantic_bytes > MAX_COMPLETION_BYTES {
+            return Err(model_output_too_large());
+        }
+        Ok(())
+    }
+
+    fn apply_tool_delta(&mut self, delta: OpenAiToolDelta) -> Result<(), AdkError> {
+        if delta.index >= MAX_TOOL_CALLS_PER_TURN {
+            return Err(model_output_too_large());
+        }
+        if self.tool_calls.len() <= delta.index {
+            self.tool_calls.resize_with(delta.index + 1, || None);
+        }
+        let builder = self.tool_calls[delta.index].get_or_insert_with(Default::default);
+        if let Some(id) = delta.id {
+            if !valid_tool_call_id(&id)
+                || builder.id.as_ref().is_some_and(|existing| existing != &id)
+            {
+                return Err(invalid_sse());
+            }
+            builder.id = Some(id);
+        }
+        if let Some(name) = delta.name {
+            builder.name.push_str(&name);
+            if !valid_tool_name(&builder.name) {
+                return Err(invalid_sse());
+            }
+        }
+        if let Some(arguments) = delta.arguments {
+            if builder.arguments.len().saturating_add(arguments.len()) > MAX_TOOL_ARGUMENT_BYTES {
+                return Err(model_output_too_large());
+            }
+            builder.arguments.push_str(&arguments);
+        }
+        Ok(())
+    }
+
+    fn finish_tool_calls(&mut self) -> Result<Vec<Part>, AdkError> {
+        if self.tool_calls.is_empty()
+            || self.tool_calls.len() > MAX_TOOL_CALLS_PER_TURN
+            || self.tool_calls.iter().any(Option::is_none)
+        {
+            return Err(invalid_sse());
+        }
+        let mut ids = std::collections::HashSet::with_capacity(self.tool_calls.len());
+        self.tool_calls
+            .iter_mut()
+            .map(|builder| {
+                let builder = builder.take().ok_or_else(invalid_sse)?;
+                let id = builder
+                    .id
+                    .filter(|id| ids.insert(id.clone()))
+                    .ok_or_else(invalid_sse)?;
+                if !self.allowed_tools.contains(&builder.name) {
+                    return Err(model_error(
+                        ErrorCategory::Unsupported,
+                        "model_gateway.tool_call",
+                        "the model requested a tool outside the admitted toolset",
+                    ));
+                }
+                let args: serde_json::Value =
+                    serde_json::from_str(&builder.arguments).map_err(|_| invalid_sse())?;
+                if !args.is_object() {
+                    return Err(invalid_sse());
+                }
+                Ok(Part::FunctionCall {
+                    name: builder.name,
+                    args,
+                    id: Some(id),
+                    thought_signature: None,
+                })
+            })
+            .collect()
+    }
+
+    fn finish(mut self) -> Result<(LlmResponse, Option<String>), AdkError> {
+        let terminal = self.terminal.take().ok_or_else(|| {
+            model_error(
+                ErrorCategory::Unavailable,
+                "model_gateway.incomplete_stream",
+                "the model gateway stream ended before completion",
+            )
+        })?;
+        Ok((terminal, self.completed_text.take()))
     }
 }
 
@@ -1331,6 +1784,7 @@ pub(super) fn test_model_gateway_invocation() -> ModelGatewayInvocation {
         max_tokens: 4_000,
         reasoning_effort: Some(ModelReasoningEffort::Medium),
         temperature: None,
+        max_model_turns: 25,
     }
 }
 

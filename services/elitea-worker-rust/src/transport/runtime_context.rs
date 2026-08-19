@@ -21,6 +21,7 @@ use http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Response, Status
 use http_body_util::BodyExt as _;
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Deserializer};
+use serde_json::{Map, Value};
 use tokio::time::timeout;
 use tonic::body::Body;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
@@ -32,9 +33,11 @@ use crate::protocol::control::{
 };
 
 const TOKEN_CONTEXT_SCHEMA: &str = "elitea.runtime.elitea-client-token.v1";
+const APPLICATION_VERSION_SCHEMA: &str = "elitea.runtime.application-version.v1";
 const MAX_SAFE_TEXT_BYTES: usize = 256;
 const MAX_ORIGIN_BYTES: usize = 2_048;
 const MAX_TOKEN_CONTEXT_BYTES: usize = 32 * 1_024;
+const MAX_APPLICATION_VERSION_BYTES: usize = 1_024 * 1_024;
 const MAX_TOKEN_BYTES: usize = 16 * 1_024;
 const MAX_RUNTIME_CONTEXT_DEADLINE: Duration = Duration::from_mins(5);
 const CLAIM_HEADER: HeaderName = HeaderName::from_static("x-elitea-claim-id");
@@ -77,6 +80,7 @@ pub(crate) struct RuntimeContextConfig {
     pub(crate) origin: String,
     pub(crate) deadline: Duration,
     pub(crate) max_response_bytes: usize,
+    pub(crate) max_application_response_bytes: usize,
 }
 
 impl RuntimeContextConfig {
@@ -86,6 +90,8 @@ impl RuntimeContextConfig {
             || self.deadline > MAX_RUNTIME_CONTEXT_DEADLINE
             || self.max_response_bytes == 0
             || self.max_response_bytes > MAX_TOKEN_CONTEXT_BYTES
+            || self.max_application_response_bytes == 0
+            || self.max_application_response_bytes > MAX_APPLICATION_VERSION_BYTES
         {
             return Err(RuntimeContextError::InvalidConfiguration(
                 "the runtime context configuration is malformed",
@@ -189,7 +195,7 @@ impl std::error::Error for RuntimeContextTransportError {
     }
 }
 
-/// One ephemeral SDK/model credential scoped to the accepted resource project.
+/// One ephemeral SDK/model credential scoped to the accepted actor.
 ///
 /// The PAT is erased on drop. The value deliberately exposes no formatting,
 /// serialization or cloning surface; the future model-gateway adapter will
@@ -200,8 +206,18 @@ pub(crate) struct ClaimScopedEliteaContext {
 }
 
 impl ClaimScopedEliteaContext {
-    pub(super) fn into_model_gateway_parts(self) -> (u64, Zeroizing<String>) {
-        (self.project_id, self.token)
+    /// Mint one bounded model-request credential from this invocation owner.
+    ///
+    /// Parent and nested agents share the same accepted actor, but each ADK
+    /// model instance owns its own zeroizing header value and turn budget. The
+    /// authority itself remains non-cloneable and cannot outlive assembly.
+    pub(super) fn model_facade_token(&self) -> Zeroizing<String> {
+        Zeroizing::new(self.token.to_string())
+    }
+
+    #[must_use]
+    pub(crate) const fn resource_project_id(&self) -> u64 {
+        self.project_id
     }
 
     #[cfg(test)]
@@ -298,7 +314,7 @@ impl RuntimeContextClient {
     /// Redeem one ephemeral actor PAT from the exact authorized claim.
     pub(crate) async fn redeem(
         &self,
-        authority: ClaimBoundRuntimeContextAuthority,
+        authority: &ClaimBoundRuntimeContextAuthority,
     ) -> Result<ClaimScopedEliteaContext, RuntimeContextError> {
         let binding = authority.redemption_binding();
         validate_binding(&binding)?;
@@ -307,6 +323,71 @@ impl RuntimeContextClient {
         timeout(self.config.deadline, operation)
             .await
             .map_err(|_| RuntimeContextError::Timeout("the runtime context request timed out"))?
+    }
+
+    /// Load one exact child definition through the same live claim and fence.
+    ///
+    /// Main does not expose this route yet. Keeping the client contract here
+    /// makes that missing server boundary explicit and prevents Rust from
+    /// falling back to the mutable public version endpoint or the legacy
+    /// `X-SECRET` expansion path.
+    pub(crate) async fn load_application_version(
+        &self,
+        authority: &ClaimBoundRuntimeContextAuthority,
+        application_id: u64,
+        version_id: u64,
+    ) -> Result<RuntimeApplicationVersion, RuntimeContextError> {
+        if application_id == 0
+            || version_id == 0
+            || i64::try_from(application_id).is_err()
+            || i64::try_from(version_id).is_err()
+        {
+            return Err(RuntimeContextError::InvalidConfiguration(
+                "the nested application identity is malformed",
+            ));
+        }
+        let binding = authority.redemption_binding();
+        validate_binding(&binding)?;
+        let request = build_application_request(&binding, application_id, version_id)?;
+        let operation = load_application_response(
+            self.rpc.as_ref(),
+            request,
+            &binding,
+            application_id,
+            version_id,
+            &self.config,
+        );
+        timeout(self.config.deadline, operation)
+            .await
+            .map_err(|_| RuntimeContextError::Timeout("the nested application request timed out"))?
+    }
+}
+
+/// One claim-bound, already-frozen and claim-materialized child definition.
+///
+/// The document deliberately has no `Debug` or `Clone`: nested settings may
+/// contain redeemed credentials. The loader returns it once to the recursive
+/// ADK assembler, which retains it for that invocation and never re-fetches it
+/// after a pause or model retry.
+pub(crate) struct RuntimeApplicationVersion {
+    application_id: u64,
+    version_id: u64,
+    version_details: Map<String, Value>,
+}
+
+impl RuntimeApplicationVersion {
+    #[must_use]
+    pub(crate) const fn application_id(&self) -> u64 {
+        self.application_id
+    }
+
+    #[must_use]
+    pub(crate) const fn version_id(&self) -> u64 {
+        self.version_id
+    }
+
+    pub(crate) fn into_version_details(self) -> Map<String, Value> {
+        self.version_details
     }
 }
 
@@ -364,6 +445,52 @@ fn build_request(
     Ok(request)
 }
 
+fn build_application_request(
+    binding: &RuntimeContextRedemptionBinding<'_>,
+    application_id: u64,
+    version_id: u64,
+) -> Result<Request<Body>, RuntimeContextError> {
+    let execution = utf8_percent_encode(binding.execution_id, PATH_SEGMENT);
+    let path = format!(
+        "/executions/{execution}/generations/{}/runtime-context/applications/{application_id}/versions/{version_id}",
+        binding.generation
+    );
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .body(Body::empty())
+        .map_err(|_| {
+            RuntimeContextError::AuthorizationFailed(
+                "the nested application request authority is malformed",
+            )
+        })?;
+    insert_claim_headers(&mut request, binding)?;
+    Ok(request)
+}
+
+fn insert_claim_headers(
+    request: &mut Request<Body>,
+    binding: &RuntimeContextRedemptionBinding<'_>,
+) -> Result<(), RuntimeContextError> {
+    request.headers_mut().insert(
+        CLAIM_HEADER,
+        HeaderValue::from_str(binding.claim_id).map_err(|_| {
+            RuntimeContextError::AuthorizationFailed(
+                "the runtime context request authority is malformed",
+            )
+        })?,
+    );
+    request.headers_mut().insert(
+        FENCE_HEADER,
+        HeaderValue::from_str(&URL_SAFE_NO_PAD.encode(binding.fence_token)).map_err(|_| {
+            RuntimeContextError::AuthorizationFailed(
+                "the runtime context request authority is malformed",
+            )
+        })?,
+    );
+    Ok(())
+}
+
 async fn redeem_response(
     rpc: &dyn RuntimeContextRpc,
     request: Request<Body>,
@@ -401,9 +528,57 @@ async fn redeem_response(
     })
 }
 
+async fn load_application_response(
+    rpc: &dyn RuntimeContextRpc,
+    request: Request<Body>,
+    binding: &RuntimeContextRedemptionBinding<'_>,
+    application_id: u64,
+    version_id: u64,
+    config: &RuntimeContextConfig,
+) -> Result<RuntimeApplicationVersion, RuntimeContextError> {
+    let response = rpc
+        .post(request)
+        .await
+        .map_err(RuntimeContextError::Transport)?;
+    let declared_length =
+        validate_response_head_with_limit(&response, config.max_application_response_bytes)?;
+    let body = collect_body(
+        response,
+        declared_length,
+        config.max_application_response_bytes,
+    )
+    .await?;
+    let decoded: ApplicationVersionResponse = serde_json::from_slice(&body).map_err(|_| {
+        RuntimeContextError::InvalidResponse("the nested application response is malformed")
+    })?;
+    if decoded.schema_version != APPLICATION_VERSION_SCHEMA
+        || decoded.project_id == 0
+        || decoded.project_id.to_string() != binding.resource_project_id
+        || decoded.application_id != application_id
+        || decoded.version_id != version_id
+        || decoded.version_details.is_empty()
+    {
+        return Err(RuntimeContextError::AuthorizationFailed(
+            "the nested application response does not match the accepted execution",
+        ));
+    }
+    Ok(RuntimeApplicationVersion {
+        application_id,
+        version_id,
+        version_details: decoded.version_details,
+    })
+}
+
 fn validate_response_head(
     response: &Response<Body>,
     config: &RuntimeContextConfig,
+) -> Result<usize, RuntimeContextError> {
+    validate_response_head_with_limit(response, config.max_response_bytes)
+}
+
+fn validate_response_head_with_limit(
+    response: &Response<Body>,
+    max_response_bytes: usize,
 ) -> Result<usize, RuntimeContextError> {
     if response.version() != Version::HTTP_2 {
         return Err(RuntimeContextError::DependencyUnavailable(
@@ -449,7 +624,7 @@ fn validate_response_head(
     let declared = declared.parse::<usize>().map_err(|_| {
         RuntimeContextError::ResourceExhausted("the runtime context exceeds the approved limit")
     })?;
-    if declared == 0 || declared > config.max_response_bytes {
+    if declared == 0 || declared > max_response_bytes {
         return Err(RuntimeContextError::ResourceExhausted(
             "the runtime context exceeds the approved limit",
         ));
@@ -593,6 +768,16 @@ struct RuntimeContextResponse {
     schema_version: String,
     project_id: u64,
     token: SecretToken,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationVersionResponse {
+    schema_version: String,
+    project_id: u64,
+    application_id: u64,
+    version_id: u64,
+    version_details: Map<String, Value>,
 }
 
 struct SecretToken(Zeroizing<String>);

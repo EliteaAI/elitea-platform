@@ -6,6 +6,7 @@ use adk_rust::tool::BasicToolset;
 use adk_rust::{AdkError, ErrorCategory, ErrorComponent, RetryHint, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::Value;
+use tracing::Instrument as _;
 
 use super::policy::{ToolAdmissionDecision, ToolAdmissionPolicy};
 
@@ -218,30 +219,57 @@ impl Tool for PolicyBoundTool {
         context: Arc<dyn ToolContext>,
         arguments: Value,
     ) -> adk_rust::Result<Value> {
-        if self.policy.tool_decision(&self.toolkit_type, &self.name)
-            != ToolAdmissionDecision::Allowed
-        {
-            return Err(AdkError::new(
-                ErrorComponent::Guardrail,
-                ErrorCategory::Forbidden,
-                "tool.policy.blocked",
-                "tool execution is not permitted by deployment policy",
-            ));
+        let span = tracing::info_span!(
+            "agent.tool.invoke",
+            toolkit_type = %self.toolkit_type,
+            tool_name = %self.name,
+            invocation_id = %context.invocation_id(),
+            function_call_id = %context.function_call_id(),
+            read_only = self.read_only,
+            concurrency_safe = self.concurrency_safe,
+            outcome = tracing::field::Empty,
+            error_code = tracing::field::Empty,
+            retryable = tracing::field::Empty,
+        );
+        let result = async {
+            if self.policy.tool_decision(&self.toolkit_type, &self.name)
+                != ToolAdmissionDecision::Allowed
+            {
+                return Err(AdkError::new(
+                    ErrorComponent::Guardrail,
+                    ErrorCategory::Forbidden,
+                    "tool.policy.blocked",
+                    "tool execution is not permitted by deployment policy",
+                ));
+            }
+
+            validate_json(&arguments, MAX_TOOL_ARGUMENT_BYTES)
+                .map_err(|error| tool_argument_error(&error))?;
+            let Value::Object(mut arguments) = arguments else {
+                return Err(invalid_tool_arguments());
+            };
+            // Current BaseAction semantics omit explicit nulls for optional
+            // top-level fields before dispatch. Nested values remain untouched.
+            arguments.retain(|_, value| !value.is_null());
+
+            self.inner
+                .execute(context, Value::Object(arguments))
+                .await
+                .map_err(|error| sanitize_tool_error(&error))
         }
-
-        validate_json(&arguments, MAX_TOOL_ARGUMENT_BYTES)
-            .map_err(|error| tool_argument_error(&error))?;
-        let Value::Object(mut arguments) = arguments else {
-            return Err(invalid_tool_arguments());
-        };
-        // Current BaseAction semantics omit explicit nulls for optional top-level
-        // fields before dispatch. Nested values remain untouched.
-        arguments.retain(|_, value| !value.is_null());
-
-        self.inner
-            .execute(context, Value::Object(arguments))
-            .await
-            .map_err(|error| sanitize_tool_error(&error))
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "succeeded");
+            }
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error_code", error.code);
+                span.record("retryable", error.is_retryable());
+            }
+        }
+        result
     }
 }
 

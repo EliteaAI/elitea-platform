@@ -5,11 +5,13 @@ pub mod control_grpc;
 pub mod input_content;
 #[cfg(test)]
 mod input_content_tests;
+pub(crate) mod model_facade;
 pub(crate) mod model_gateway;
 #[cfg(test)]
 mod model_gateway_tests;
 pub mod output_grpc;
 mod output_session;
+pub(crate) mod platform_client;
 pub mod redis_commands;
 pub(crate) mod redis_generation;
 #[cfg(test)]

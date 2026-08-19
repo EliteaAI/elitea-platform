@@ -94,6 +94,11 @@ where
         let span = tracing::info_span!(
             "agent.native_lifecycle",
             execution_kind = ?execution_kind,
+            tenant_id = %run.trace_tenant_id(),
+            resource_project_id = %run.trace_resource_project_id(),
+            execution_id = %run.trace_execution_id(),
+            generation = run.trace_generation(),
+            command_id = %run.trace_command_id(),
             outcome = tracing::field::Empty,
             error_code = tracing::field::Empty,
             retryable = tracing::field::Empty,
@@ -325,8 +330,13 @@ where
         clock.as_ref(),
     ))
     .await;
+    let mut successful_terminal = FreshAgentTerminalSelection::Completed;
     let mut failure = match stream {
         NativeStreamOutcome::Eos => None,
+        NativeStreamOutcome::PausedHitl => {
+            successful_terminal = FreshAgentTerminalSelection::PausedHitl;
+            None
+        }
         NativeStreamOutcome::Failure(failure) => Some(failure),
         NativeStreamOutcome::RecoveryRequired { code, retryable } => {
             return Box::pin(run.close_no_ack(code, retryable)).await;
@@ -336,7 +346,7 @@ where
         }
     };
 
-    if failure.is_none() {
+    if failure.is_none() && matches!(successful_terminal, FreshAgentTerminalSelection::Completed) {
         let (next_run, completion_result) =
             Box::pin(run.select_native_completion(completion_selector)).await;
         run = next_run;
@@ -351,6 +361,7 @@ where
                 return Box::pin(finish_after_stream(
                     run,
                     failure,
+                    FreshAgentTerminalSelection::Completed,
                     control,
                     retirer,
                     clock,
@@ -388,6 +399,7 @@ where
                 return Box::pin(finish_after_stream(
                     run,
                     failure,
+                    FreshAgentTerminalSelection::Completed,
                     control,
                     retirer,
                     clock,
@@ -410,6 +422,7 @@ where
     Box::pin(finish_after_stream(
         run,
         failure,
+        successful_terminal,
         control,
         retirer,
         clock,
@@ -420,6 +433,7 @@ where
 
 enum NativeStreamOutcome {
     Eos,
+    PausedHitl,
     Failure(RuntimeFailureKind),
     RecoveryRequired { code: &'static str, retryable: bool },
     FatalLease(ClaimLeaseError),
@@ -457,7 +471,14 @@ where
                 let event = match event {
                     Ok(Some(event)) => event,
                     Ok(None) => {
-                        return failure.map_or(NativeStreamOutcome::Eos, NativeStreamOutcome::Failure);
+                        if let Some(failure) = failure {
+                            return NativeStreamOutcome::Failure(failure);
+                        }
+                        return if projector.is_paused() {
+                            NativeStreamOutcome::PausedHitl
+                        } else {
+                            NativeStreamOutcome::Eos
+                        };
                     }
                     Err(error) => {
                         tracing::warn!(
@@ -546,9 +567,12 @@ where
                 retryable: false,
             };
         }
-        let is_full_message = event.r#type == "full_message";
-        let result = if is_full_message {
-            run.publish_full_message(event, occurred_at_unix_millis)
+        let is_result = matches!(
+            event.r#type.as_str(),
+            "full_message" | "agent_hitl_interrupt" | "mcp_authorization_required"
+        );
+        let result = if is_result {
+            run.publish_result_event(event, occurred_at_unix_millis)
                 .await
         } else {
             run.publish_progress(event, occurred_at_unix_millis).await
@@ -596,9 +620,12 @@ where
                 retryable: false,
             };
         }
-        let is_full_message = event.r#type == "full_message";
-        let result = if is_full_message {
-            run.publish_full_message(event, occurred_at_unix_millis)
+        let is_result = matches!(
+            event.r#type.as_str(),
+            "full_message" | "agent_hitl_interrupt" | "mcp_authorization_required"
+        );
+        let result = if is_result {
+            run.publish_result_event(event, occurred_at_unix_millis)
                 .await
         } else {
             run.publish_progress(event, occurred_at_unix_millis).await
@@ -622,6 +649,7 @@ where
 async fn finish_after_stream<C, R, RC, K>(
     run: CursorBoundAuthorizedAgentRun<C>,
     mut failure: Option<RuntimeFailureKind>,
+    successful_terminal: FreshAgentTerminalSelection,
     control: Arc<AgentControlClient<R>>,
     retirer: Arc<RedisCommandRetirer<RC>>,
     clock: Arc<K>,
@@ -652,10 +680,7 @@ where
     {
         failure = Some(RuntimeFailureKind::DeadlineExceeded);
     }
-    let selection = failure.map_or(
-        FreshAgentTerminalSelection::Completed,
-        FreshAgentTerminalSelection::Failure,
-    );
+    let selection = failure.map_or(successful_terminal, FreshAgentTerminalSelection::Failure);
     Box::pin(run.finish_terminal(
         selection,
         occurred_at_unix_millis,
@@ -716,6 +741,7 @@ where
     finish_after_stream(
         run,
         Some(failure),
+        FreshAgentTerminalSelection::Completed,
         control,
         retirer,
         clock,

@@ -1,21 +1,24 @@
-//! Strict production assembly admission before credential redemption.
+//! Strict production `LlmAgent` assembly admission before credential redemption.
 //!
-//! This first profile intentionally admits only ordinary text application and
-//! ad-hoc turns without tools, skills, MCP, HITL, attachments or checkpoint
-//! continuation. Those current Python/SDK capabilities remain mandatory later
-//! slices; rejecting them is safer than silently assembling a weaker agent.
+//! Application `agent_type=agent` and ad-hoc turns share this direct ADK-Rust
+//! `LlmAgent` profile. Pipelines use the graph compiler, while toolsets, MCP,
+//! HITL, sessions and browser projection are composed around both runtimes by
+//! Elitea-owned boundaries.
 
 #![allow(dead_code)] // Production provider/session assembly remains disabled.
 
 use adk_rust::Content;
 use serde_json::{Map, Value};
 
+use super::context_management::ContextManagementPlan;
 use super::request::{AgentExecutionKind, AgentExecutionRequest, UserInput};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_USER_INPUT_BYTES: usize = 512 * 1_024;
 const MAX_CHAT_HISTORY_MESSAGES: usize = 999;
+const DEFAULT_AGENT_STEP_LIMIT: u32 = 25;
+const MAX_AGENT_STEP_LIMIT: u32 = 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReasoningEffort {
@@ -33,7 +36,7 @@ pub(crate) enum OrdinaryModelProvider {
 }
 
 /// Frozen model, history, and execution controls for the strict no-tool profile.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct OrdinaryNoToolProfile {
     kind: AgentExecutionKind,
     instructions: String,
@@ -43,7 +46,9 @@ pub(crate) struct OrdinaryNoToolProfile {
     max_tokens: u32,
     reasoning_effort: Option<ReasoningEffort>,
     temperature: Option<f32>,
+    step_limit: u32,
     chat_history: Vec<Content>,
+    context_management: ContextManagementPlan,
 }
 
 impl OrdinaryNoToolProfile {
@@ -51,7 +56,7 @@ impl OrdinaryNoToolProfile {
     pub(crate) fn validate(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        let chat_history = validate_common_profile(request)?;
+        let common = validate_common_profile(request)?;
         let model = match request.kind {
             AgentExecutionKind::Application => application_model(request)?,
             AgentExecutionKind::Adhoc => adhoc_model(request)?,
@@ -65,7 +70,85 @@ impl OrdinaryNoToolProfile {
             max_tokens: model.max_tokens,
             reasoning_effort: model.reasoning_effort,
             temperature: model.temperature,
-            chat_history,
+            step_limit: validate_step_limit(request.payload.steps_limit)?,
+            chat_history: common.chat_history,
+            context_management: common.context_management,
+        })
+    }
+
+    /// Validate one nested direct agent from Main's claim-materialized version.
+    ///
+    /// The current SDK falls back to the parent's model when an embedded child
+    /// has null model settings. Rust preserves that behavior while giving the
+    /// child a fresh provider invocation for every `AgentTool` call.
+    pub(crate) fn from_nested_version(
+        version: &Map<String, Value>,
+        fallback: &Self,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        match version.get("agent_type") {
+            None => {}
+            Some(Value::String(value)) if value == "agent" => {}
+            Some(Value::String(_)) => return Err(unsupported_profile()),
+            Some(_) => return Err(invalid_profile()),
+        }
+        validate_feature_array(version.get("tools"), true)?;
+        validate_empty_feature_array(version.get("internal_tools"), false)?;
+        validate_empty_feature_array(version.get("skills"), false)?;
+        validate_application_meta(version.get("meta"))?;
+        if version
+            .get("variables")
+            .and_then(Value::as_array)
+            .is_some_and(|variables| !variables.is_empty())
+        {
+            return Err(unsupported_profile());
+        }
+        let instructions = version
+            .get("instructions")
+            .and_then(Value::as_str)
+            .filter(|value| bounded_instruction(value))
+            .ok_or_else(invalid_profile)?;
+        if ["{{", "{%", "{#"]
+            .iter()
+            .any(|marker| instructions.contains(marker))
+        {
+            return Err(unsupported_profile());
+        }
+        let model = match version.get("llm_settings") {
+            None | Some(Value::Null) => ValidatedModel {
+                instructions: instructions.to_owned(),
+                model_name: fallback.model_name.clone(),
+                model_provider: fallback.model_provider,
+                model_project_id: fallback.model_project_id,
+                max_tokens: fallback.max_tokens,
+                reasoning_effort: fallback.reasoning_effort,
+                temperature: fallback.temperature,
+            },
+            Some(Value::Object(settings)) if settings.is_empty() => ValidatedModel {
+                instructions: instructions.to_owned(),
+                model_name: fallback.model_name.clone(),
+                model_provider: fallback.model_provider,
+                model_project_id: fallback.model_project_id,
+                max_tokens: fallback.max_tokens,
+                reasoning_effort: fallback.reasoning_effort,
+                temperature: fallback.temperature,
+            },
+            Some(Value::Object(settings)) => {
+                validate_model(settings, ModelFieldNames::APPLICATION, None, instructions)?
+            }
+            Some(_) => return Err(invalid_profile()),
+        };
+        Ok(Self {
+            kind: AgentExecutionKind::Application,
+            instructions: model.instructions,
+            model_name: model.model_name,
+            model_provider: model.model_provider,
+            model_project_id: model.model_project_id,
+            max_tokens: model.max_tokens,
+            reasoning_effort: model.reasoning_effort,
+            temperature: model.temperature,
+            step_limit: fallback.step_limit,
+            chat_history: Vec::new(),
+            context_management: ContextManagementPlan::Disabled,
         })
     }
 
@@ -110,14 +193,29 @@ impl OrdinaryNoToolProfile {
     }
 
     #[must_use]
+    pub(crate) const fn step_limit(&self) -> u32 {
+        self.step_limit
+    }
+
+    #[must_use]
     pub(crate) fn chat_history(&self) -> &[Content] {
         &self.chat_history
     }
+
+    #[must_use]
+    pub(crate) const fn context_management(&self) -> ContextManagementPlan {
+        self.context_management
+    }
+}
+
+struct CommonProfile {
+    chat_history: Vec<Content>,
+    context_management: ContextManagementPlan,
 }
 
 fn validate_common_profile(
     request: &AgentExecutionRequest,
-) -> Result<Vec<Content>, NativeAgentAssemblyError> {
+) -> Result<CommonProfile, NativeAgentAssemblyError> {
     let payload = &request.payload;
     match &payload.user_input {
         UserInput::ContentBlocks(_) => return Err(unsupported_profile()),
@@ -130,8 +228,11 @@ fn validate_common_profile(
         UserInput::Text(_) => {}
     }
     let chat_history = current_text_history(&payload.chat_history)?;
-    if !payload.tools.is_empty()
-        || !payload.internal_tools.is_empty()
+    let context_management = ContextManagementPlan::admit_current(
+        &payload.context_settings,
+        payload.conversation_id.as_deref(),
+    )?;
+    if !payload.internal_tools.is_empty()
         || !payload.mcp_tokens.is_empty()
         || !payload.ignored_mcp_servers.is_empty()
         || !payload.user_declined_mcp_servers.is_empty()
@@ -156,8 +257,6 @@ fn validate_common_profile(
         || payload.next_input_suggestion.enabled
         || payload.debug
         || !payload.meta.is_empty()
-        || !payload.context_settings.is_empty()
-        || payload.steps_limit.is_some()
         || payload.persona != "generic"
     {
         return Err(unsupported_profile());
@@ -177,7 +276,18 @@ fn validate_common_profile(
     {
         return Err(invalid_profile());
     }
-    Ok(chat_history)
+    Ok(CommonProfile {
+        chat_history,
+        context_management,
+    })
+}
+
+fn validate_step_limit(value: Option<u32>) -> Result<u32, NativeAgentAssemblyError> {
+    match value {
+        None => Ok(DEFAULT_AGENT_STEP_LIMIT),
+        Some(value) if (1..=MAX_AGENT_STEP_LIMIT).contains(&value) => Ok(value),
+        Some(_) => Err(invalid_profile()),
+    }
 }
 
 fn current_text_history(history: &[Value]) -> Result<Vec<Content>, NativeAgentAssemblyError> {
@@ -253,7 +363,7 @@ fn application_model(
         Some(Value::String(_)) => return Err(unsupported_profile()),
         Some(_) => return Err(invalid_profile()),
     }
-    validate_empty_feature_array(version.get("tools"), true)?;
+    validate_feature_array(version.get("tools"), true)?;
     validate_empty_feature_array(version.get("internal_tools"), false)?;
     validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;
@@ -311,6 +421,20 @@ fn validate_empty_feature_array(
     } else {
         Err(unsupported_profile())
     }
+}
+
+fn validate_feature_array(
+    value: Option<&Value>,
+    required: bool,
+) -> Result<(), NativeAgentAssemblyError> {
+    let Some(value) = value else {
+        return if required {
+            Err(invalid_profile())
+        } else {
+            Ok(())
+        };
+    };
+    value.as_array().map(|_| ()).ok_or_else(invalid_profile)
 }
 
 fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAssemblyError> {

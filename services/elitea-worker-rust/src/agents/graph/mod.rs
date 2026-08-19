@@ -4,6 +4,10 @@
 //! tenant-safe integrations and durability that are not part of the upstream
 //! `Checkpoint` model.
 
+mod agent;
+mod hitl;
+#[cfg(test)]
+mod hitl_tests;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;

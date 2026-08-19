@@ -25,9 +25,9 @@ use super::events::{
 use super::request::AgentExecutionRequest;
 use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
-use crate::transport::runtime_context::{
-    ClaimScopedEliteaContext, RuntimeContextClient, RuntimeContextError,
-};
+use crate::toolkits::{AdmittedToolSnapshot, FrozenToolSnapshot, ToolAdmissionPolicy};
+use crate::transport::platform_client::PlatformClient;
+use crate::transport::runtime_context::{ClaimScopedEliteaContext, RuntimeContextError};
 
 /// Stable native assembly and result-selection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,16 +164,21 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 
     /// Validate the first production assembly profile before credential
     /// redemption becomes reachable.
-    pub(crate) fn admit_ordinary_no_tool(
+    pub(crate) fn admit_llm_agent(
         self,
+        policy: &ToolAdmissionPolicy,
     ) -> Result<AdmittedOrdinaryNativeAssembly<'a>, NativeAgentAssemblyError> {
         let profile = OrdinaryNoToolProfile::validate(self.request)?;
         let plan = OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?;
+        let toolsets = FrozenToolSnapshot::from_request(self.request)
+            .map_err(tool_snapshot_error)?
+            .apply_policy(policy);
         Ok(AdmittedOrdinaryNativeAssembly {
             request: self.request,
             runtime_context: self.runtime_context,
             profile,
             plan,
+            toolsets,
         })
     }
 }
@@ -184,9 +189,10 @@ pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     runtime_context: ClaimBoundRuntimeContextAuthority,
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
+    toolsets: AdmittedToolSnapshot<'a>,
 }
 
-impl AdmittedOrdinaryNativeAssembly<'_> {
+impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
     #[must_use]
     pub(crate) const fn request(&self) -> &AgentExecutionRequest {
         self.request
@@ -204,40 +210,67 @@ impl AdmittedOrdinaryNativeAssembly<'_> {
     /// assembly phase.
     pub(crate) async fn redeem_runtime_context(
         self,
-        client: &RuntimeContextClient,
-    ) -> Result<RedeemedOrdinaryNativeAssembly, RuntimeContextError> {
+        client: &PlatformClient,
+    ) -> Result<RedeemedOrdinaryNativeAssembly<'a>, RuntimeContextError> {
         let Self {
             runtime_context,
             profile,
             plan,
+            toolsets,
             ..
         } = self;
-        let context = client.redeem(runtime_context).await?;
+        let context = client.redeem_elitea_context(&runtime_context).await?;
         Ok(RedeemedOrdinaryNativeAssembly {
             profile,
             plan,
+            toolsets,
             context,
+            runtime_context,
         })
     }
 }
 
 /// Admitted ordinary assembly after its sole claim-scoped PAT redemption.
-pub(crate) struct RedeemedOrdinaryNativeAssembly {
+pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
+    toolsets: AdmittedToolSnapshot<'a>,
     context: ClaimScopedEliteaContext,
+    runtime_context: ClaimBoundRuntimeContextAuthority,
 }
 
-impl RedeemedOrdinaryNativeAssembly {
+impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
     pub(super) fn into_parts(
         self,
     ) -> (
         OrdinaryNoToolProfile,
         OrdinaryNativeAgentPlan,
+        AdmittedToolSnapshot<'a>,
         ClaimScopedEliteaContext,
+        ClaimBoundRuntimeContextAuthority,
     ) {
-        (self.profile, self.plan, self.context)
+        (
+            self.profile,
+            self.plan,
+            self.toolsets,
+            self.context,
+            self.runtime_context,
+        )
     }
+}
+
+fn tool_snapshot_error(
+    error: crate::toolkits::FrozenToolSnapshotError,
+) -> NativeAgentAssemblyError {
+    let code = match error.code() {
+        crate::toolkits::FrozenToolSnapshotErrorCode::InvalidInput => {
+            NativeAgentAssemblyErrorCode::InvalidInput
+        }
+        crate::toolkits::FrozenToolSnapshotErrorCode::ResourceExhausted => {
+            NativeAgentAssemblyErrorCode::ResourceExhausted
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the frozen agent tool snapshot is malformed")
 }
 
 /// Trusted assembler for one validated, already-authorized request.

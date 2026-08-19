@@ -8,15 +8,17 @@
 
 #![allow(dead_code)] // Capability registration remains intentionally disabled.
 
+use std::collections::HashSet;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adk_anthropic::{
     CacheControlEphemeral, ContentBlock, ContentBlockDelta, ContentBlockDeltaEvent,
     ContentBlockStartEvent, ContentBlockStopEvent, EffortLevel, MessageCreateParams,
     MessageDeltaEvent, MessageParam, MessageRole, MessageStartEvent, MessageStreamEvent, Model,
-    OutputConfig, StopReason, SystemPrompt, TextBlock, ThinkingConfig, ThinkingDisplay,
+    OutputConfig, StopReason, SystemPrompt, TextBlock, ThinkingConfig, ThinkingDisplay, ToolParam,
+    ToolResultBlock, ToolResultBlockContent, ToolUnionParam, ToolUseBlock,
 };
 use adk_rust::model::anthropic::AnthropicSchemaAdapter;
 use adk_rust::{
@@ -35,8 +37,8 @@ use zeroize::Zeroizing;
 
 use super::model_gateway::{
     BoundedSseEvent, ModelGatewayClient, ModelGatewayError, ModelGatewayInvocation,
-    ModelReasoningEffort, SseParser, model_error, next_response_chunk, validate_invocation,
-    validate_llm_request, validate_response_head,
+    ModelReasoningEffort, SseParser, model_error, next_response_chunk, valid_tool_call_id,
+    valid_tool_name, validate_invocation, validate_llm_request, validate_response_head,
 };
 use super::runtime_context::ClaimScopedEliteaContext;
 use crate::agents::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
@@ -44,6 +46,9 @@ use crate::agents::session::BoundOrdinaryAgentModel;
 
 const ANTHROPIC_ROUTE: &str = "/llm/v1/messages";
 const MAX_COMPLETION_BYTES: usize = 60 * 1_024;
+const MAX_ANTHROPIC_TOOLS: usize = 100;
+const MAX_TOOL_CALLS_PER_TURN: usize = 16;
+const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1_024;
 const ANTHROPIC_VERSION: HeaderName = HeaderName::from_static("anthropic-version");
 const ANTHROPIC_BETA: HeaderName = HeaderName::from_static("anthropic-beta");
 const X_API_KEY: HeaderName = HeaderName::from_static("x-api-key");
@@ -54,12 +59,13 @@ impl ModelGatewayClient {
     /// retaining the same shared Elitea channel and connection limits.
     pub(crate) fn bind_anthropic_ordinary(
         &self,
-        context: ClaimScopedEliteaContext,
+        context: &ClaimScopedEliteaContext,
+        model_project_id: u32,
         invocation: ModelGatewayInvocation,
     ) -> Result<BoundAnthropicGateway, ModelGatewayError> {
         validate_invocation(&invocation)?;
-        let (project_id, token) = context.into_model_gateway_parts();
-        if project_id == 0 || i64::try_from(project_id).is_err() || token.is_empty() {
+        let token = context.model_facade_token();
+        if model_project_id == 0 || token.is_empty() {
             return Err(ModelGatewayError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(AnthropicCompletionState::default()));
@@ -67,10 +73,10 @@ impl ModelGatewayClient {
             transport: self.transport.clone(),
             config: self.config.clone(),
             invocation,
-            project_id,
+            project_id: u64::from(model_project_id),
             token,
             completion: completion.clone(),
-            called: AtomicBool::new(false),
+            calls: AtomicU32::new(0),
         });
         Ok(BoundAnthropicGateway {
             model,
@@ -158,7 +164,7 @@ struct EliteaAnthropicModel {
     project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<AnthropicCompletionState>>,
-    called: AtomicBool,
+    calls: AtomicU32,
 }
 
 #[async_trait]
@@ -177,13 +183,20 @@ impl Llm for EliteaAnthropicModel {
         request: LlmRequest,
         stream: bool,
     ) -> Result<LlmResponseStream, AdkError> {
-        if self.called.swap(true, Ordering::AcqRel) {
+        if self
+            .calls
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.invocation.max_model_turns).then_some(current + 1)
+            })
+            .is_err()
+        {
             return Err(anthropic_error(
                 ErrorCategory::InvalidInput,
-                "reused",
-                "the claim-scoped native Anthropic invocation was already consumed",
+                "turn_limit",
+                "the claim-scoped native Anthropic invocation exceeded its approved turn limit",
             ));
         }
+        let allowed_tools = request.tools.keys().cloned().collect();
         let body = build_anthropic_body(&request, stream, &self.invocation, &self.config)?;
         let request = build_anthropic_request(body, self.project_id, self.token.as_str())?;
         let response = timeout(
@@ -209,10 +222,13 @@ impl Llm for EliteaAnthropicModel {
         Ok(anthropic_response_stream(
             response,
             &self.invocation.model_name,
-            self.config.stream_idle_timeout,
-            self.config.max_sse_event_bytes,
-            self.config.max_stream_bytes,
-            self.config.max_sse_events,
+            AnthropicStreamLimits {
+                idle_timeout: self.config.stream_idle_timeout,
+                max_event_bytes: self.config.max_sse_event_bytes,
+                max_stream_bytes: self.config.max_stream_bytes,
+                max_events: self.config.max_sse_events,
+            },
+            allowed_tools,
             self.completion.clone(),
         ))
     }
@@ -229,29 +245,7 @@ fn build_anthropic_body(
     let messages = contents
         .iter()
         .enumerate()
-        .map(|(index, content)| {
-            let role = match content.role.as_str() {
-                "user" => MessageRole::User,
-                "model" => MessageRole::Assistant,
-                _ => return Err(invalid_anthropic_request()),
-            };
-            if index + 1 == contents.len() {
-                let Some(Part::Text { text }) = content.parts.first() else {
-                    return Err(invalid_anthropic_request());
-                };
-                Ok(MessageParam::new_with_string(text.clone(), role))
-            } else {
-                let blocks = content
-                    .parts
-                    .iter()
-                    .map(|part| match part {
-                        Part::Text { text } => Ok(ContentBlock::Text(TextBlock::new(text))),
-                        _ => Err(invalid_anthropic_request()),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(MessageParam::new_with_blocks(blocks, role))
-            }
-        })
+        .map(|(index, content)| anthropic_message(content, index + 1 == contents.len()))
         .collect::<Result<Vec<_>, _>>()?;
     let mut params = MessageCreateParams::new_streaming(
         generation.max_tokens,
@@ -265,6 +259,7 @@ fn build_anthropic_body(
     params.temperature = generation.temperature;
     params.thinking = generation.thinking;
     params.output_config = generation.output_config;
+    params.tools = anthropic_tools(&request.tools)?;
     params.validate().map_err(|_| invalid_anthropic_request())?;
     let encoded = serde_json::to_vec(&params).map_err(|_| invalid_anthropic_request())?;
     if encoded.len() > config.max_request_bytes {
@@ -275,6 +270,89 @@ fn build_anthropic_body(
         ));
     }
     Ok(Bytes::from(encoded))
+}
+
+fn anthropic_message(content: &Content, is_last: bool) -> Result<MessageParam, AdkError> {
+    let role = match content.role.as_str() {
+        "user" | "function" | "tool" => MessageRole::User,
+        "model" | "assistant" => MessageRole::Assistant,
+        _ => return Err(invalid_anthropic_request()),
+    };
+    if is_last && let [Part::Text { text }] = content.parts.as_slice() {
+        return Ok(MessageParam::new_with_string(text.clone(), role));
+    }
+    let blocks = content
+        .parts
+        .iter()
+        .map(|part| match part {
+            Part::Text { text } => Ok(ContentBlock::Text(TextBlock::new(text))),
+            Part::Thinking { thinking, .. } => Ok(ContentBlock::Text(TextBlock::new(thinking))),
+            Part::FunctionCall {
+                name,
+                args,
+                id: Some(id),
+                ..
+            } => Ok(ContentBlock::ToolUse(ToolUseBlock::new(
+                id,
+                name,
+                args.clone(),
+            ))),
+            Part::FunctionResponse {
+                function_response,
+                id: Some(id),
+                ..
+            } => {
+                let result = serde_json::to_string(&function_response.response)
+                    .map_err(|_| invalid_anthropic_request())?;
+                Ok(ContentBlock::ToolResult(ToolResultBlock {
+                    tool_use_id: id.clone(),
+                    cache_control: None,
+                    content: Some(ToolResultBlockContent::String(result)),
+                    is_error: None,
+                }))
+            }
+            _ => Err(invalid_anthropic_request()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if blocks.is_empty() {
+        return Err(invalid_anthropic_request());
+    }
+    Ok(MessageParam::new_with_blocks(blocks, role))
+}
+
+fn anthropic_tools(
+    declarations: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<Option<Vec<ToolUnionParam>>, AdkError> {
+    if declarations.is_empty() {
+        return Ok(None);
+    }
+    if declarations.len() > MAX_ANTHROPIC_TOOLS {
+        return Err(invalid_anthropic_request());
+    }
+    let mut names = declarations.keys().collect::<Vec<_>>();
+    names.sort_unstable();
+    names
+        .into_iter()
+        .map(|name| {
+            let declaration = declarations
+                .get(name)
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(invalid_anthropic_request)?;
+            let schema = declaration
+                .get("parameters")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
+            let mut tool = ToolParam::new(name.clone(), schema);
+            if let Some(description) = declaration
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+            {
+                tool = tool.with_description(description.to_owned());
+            }
+            Ok(ToolUnionParam::CustomTool(tool))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 struct NativeGeneration {
@@ -395,10 +473,15 @@ fn build_anthropic_request(
     Ok(request)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 enum ActiveBlock {
     Text,
     Thinking,
+    ToolUse {
+        id: String,
+        name: String,
+        arguments: String,
+    },
 }
 
 struct AnthropicStreamState {
@@ -409,12 +492,15 @@ struct AnthropicStreamState {
     input_tokens: i32,
     cache_read_tokens: Option<i32>,
     cache_creation_tokens: Option<i32>,
+    allowed_tools: HashSet<String>,
+    tool_calls: Vec<Part>,
+    tool_turn: bool,
     terminal: Option<Box<LlmResponse>>,
     stopped: bool,
 }
 
 impl AnthropicStreamState {
-    fn new(expected_model: &str) -> Self {
+    fn new(expected_model: &str, allowed_tools: HashSet<String>) -> Self {
         Self {
             expected_model: expected_model.to_owned(),
             started: false,
@@ -423,6 +509,9 @@ impl AnthropicStreamState {
             input_tokens: 0,
             cache_read_tokens: None,
             cache_creation_tokens: None,
+            allowed_tools,
+            tool_calls: Vec::new(),
+            tool_turn: false,
             terminal: None,
             stopped: false,
         }
@@ -500,17 +589,37 @@ impl AnthropicStreamState {
             ContentBlock::Text(_) | ContentBlock::Thinking(_) => {
                 return Err(invalid_anthropic_stream());
             }
+            ContentBlock::ToolUse(tool)
+                if valid_tool_call_id(&tool.id)
+                    && valid_tool_name(&tool.name)
+                    && self.allowed_tools.contains(&tool.name)
+                    && tool
+                        .input
+                        .as_object()
+                        .is_some_and(serde_json::Map::is_empty)
+                    && tool.cache_control.is_none()
+                    && self.tool_calls.len() < MAX_TOOL_CALLS_PER_TURN =>
+            {
+                ActiveBlock::ToolUse {
+                    id: tool.id,
+                    name: tool.name,
+                    arguments: String::new(),
+                }
+            }
             _ => return Err(unsupported_anthropic_output()),
         };
         self.active = Some((event.index, block));
         Ok(None)
     }
 
-    fn apply_delta(&self, event: ContentBlockDeltaEvent) -> Result<Option<LlmResponse>, AdkError> {
-        let Some((index, block)) = self.active else {
+    fn apply_delta(
+        &mut self,
+        event: ContentBlockDeltaEvent,
+    ) -> Result<Option<LlmResponse>, AdkError> {
+        let Some((index, block)) = self.active.as_mut() else {
             return Err(invalid_anthropic_stream());
         };
-        if event.index != index {
+        if event.index != *index {
             return Err(invalid_anthropic_stream());
         }
         match (block, event.delta) {
@@ -521,6 +630,15 @@ impl AnthropicStreamState {
                 Ok(partial_thinking(delta.thinking))
             }
             (ActiveBlock::Thinking, ContentBlockDelta::SignatureDelta(_)) => Ok(None),
+            (ActiveBlock::ToolUse { arguments, .. }, ContentBlockDelta::InputJsonDelta(delta)) => {
+                if arguments.len().saturating_add(delta.partial_json.len())
+                    > MAX_TOOL_ARGUMENT_BYTES
+                {
+                    return Err(anthropic_output_too_large());
+                }
+                arguments.push_str(&delta.partial_json);
+                Ok(None)
+            }
             (_, ContentBlockDelta::CitationsDelta(_)) => Err(unsupported_anthropic_citations()),
             _ => Err(unsupported_anthropic_output()),
         }
@@ -530,10 +648,39 @@ impl AnthropicStreamState {
         &mut self,
         event: ContentBlockStopEvent,
     ) -> Result<Option<LlmResponse>, AdkError> {
-        if self.active.map(|(index, _)| index) != Some(event.index) {
+        if self.active.as_ref().map(|(index, _)| *index) != Some(event.index) {
             return Err(invalid_anthropic_stream());
         }
-        self.active = None;
+        let active = self.active.take().ok_or_else(invalid_anthropic_stream)?;
+        if let (
+            _,
+            ActiveBlock::ToolUse {
+                id,
+                name,
+                arguments,
+            },
+        ) = active
+        {
+            if self.tool_calls.iter().any(
+                |part| matches!(part, Part::FunctionCall { id: Some(existing), .. } if existing == &id),
+            ) {
+                return Err(invalid_anthropic_stream());
+            }
+            let args = if arguments.trim().is_empty() {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
+                serde_json::from_str(&arguments).map_err(|_| invalid_anthropic_stream())?
+            };
+            if !args.is_object() {
+                return Err(invalid_anthropic_stream());
+            }
+            self.tool_calls.push(Part::FunctionCall {
+                name,
+                args,
+                id: Some(id),
+                thought_signature: None,
+            });
+        }
         self.next_block = self
             .next_block
             .checked_add(1)
@@ -566,7 +713,10 @@ impl AnthropicStreamState {
         {
             return Err(invalid_anthropic_stream());
         }
-        let finish_reason = finish_reason(stop)?;
+        let (finish_reason, tool_turn) = finish_reason(stop)?;
+        if tool_turn == self.tool_calls.is_empty() {
+            return Err(invalid_anthropic_stream());
+        }
         let input_tokens = event.usage.input_tokens.unwrap_or(self.input_tokens);
         let usage = UsageMetadata {
             prompt_token_count: input_tokens,
@@ -584,7 +734,12 @@ impl AnthropicStreamState {
                 .or(self.cache_creation_tokens),
             ..UsageMetadata::default()
         };
+        self.tool_turn = tool_turn;
         self.terminal = Some(Box::new(LlmResponse {
+            content: tool_turn.then(|| Content {
+                role: "model".to_owned(),
+                parts: std::mem::take(&mut self.tool_calls),
+            }),
             usage_metadata: Some(usage),
             finish_reason: Some(finish_reason),
             partial: false,
@@ -613,34 +768,45 @@ impl AnthropicStreamState {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<LlmResponse, AdkError> {
+    fn finish(mut self) -> Result<(LlmResponse, bool), AdkError> {
         if !self.stopped || self.active.is_some() {
             return Err(incomplete_anthropic_stream());
         }
         self.terminal
             .take()
             .map(|terminal| *terminal)
+            .map(|terminal| (terminal, !self.tool_turn))
             .ok_or_else(incomplete_anthropic_stream)
     }
+}
+
+#[derive(Clone, Copy)]
+struct AnthropicStreamLimits {
+    idle_timeout: std::time::Duration,
+    max_event_bytes: usize,
+    max_stream_bytes: usize,
+    max_events: usize,
 }
 
 fn anthropic_response_stream(
     mut response: http::Response<Body>,
     expected_model: &str,
-    idle_timeout: std::time::Duration,
-    max_event_bytes: usize,
-    max_stream_bytes: usize,
-    max_events: usize,
+    limits: AnthropicStreamLimits,
+    allowed_tools: HashSet<String>,
     completion: Arc<Mutex<AnthropicCompletionState>>,
 ) -> LlmResponseStream {
     let expected_model = expected_model.to_owned();
     Box::pin(try_stream! {
-        let mut parser = SseParser::new(max_event_bytes, max_stream_bytes, max_events);
-        let mut state = AnthropicStreamState::new(&expected_model);
+        let mut parser = SseParser::new(
+            limits.max_event_bytes,
+            limits.max_stream_bytes,
+            limits.max_events,
+        );
+        let mut state = AnthropicStreamState::new(&expected_model, allowed_tools);
         let mut accumulated = String::new();
         let mut semantic_bytes = 0_usize;
         loop {
-            let chunk = next_response_chunk(&mut response, idle_timeout).await?;
+            let chunk = next_response_chunk(&mut response, limits.idle_timeout).await?;
             let input_finished = chunk.is_none();
             if let Some(chunk) = chunk {
                 parser.push(&chunk)?;
@@ -658,8 +824,10 @@ fn anthropic_response_stream(
                 break;
             }
         }
-        let terminal = state.finish()?;
-        record_anthropic_completion(&mut accumulated, &completion)?;
+        let (terminal, completed_turn) = state.finish()?;
+        if completed_turn {
+            record_anthropic_completion(&mut accumulated, &completion)?;
+        }
         yield terminal;
     })
 }
@@ -700,16 +868,15 @@ fn partial_thinking(thinking: String) -> Option<LlmResponse> {
     })
 }
 
-fn finish_reason(reason: StopReason) -> Result<FinishReason, AdkError> {
+fn finish_reason(reason: StopReason) -> Result<(FinishReason, bool), AdkError> {
     match reason {
-        StopReason::EndTurn | StopReason::StopSequence => Ok(FinishReason::Stop),
+        StopReason::EndTurn | StopReason::StopSequence => Ok((FinishReason::Stop, false)),
         StopReason::MaxTokens | StopReason::ModelContextWindowExceeded => {
-            Ok(FinishReason::MaxTokens)
+            Ok((FinishReason::MaxTokens, false))
         }
-        StopReason::Refusal => Ok(FinishReason::Safety),
-        StopReason::ToolUse | StopReason::PauseTurn | StopReason::PauseRun => {
-            Err(unsupported_anthropic_output())
-        }
+        StopReason::Refusal => Ok((FinishReason::Safety, false)),
+        StopReason::ToolUse => Ok((FinishReason::Stop, true)),
+        StopReason::PauseTurn | StopReason::PauseRun => Err(unsupported_anthropic_output()),
     }
 }
 
@@ -816,7 +983,7 @@ fn anthropic_error(
     message: &'static str,
 ) -> AdkError {
     let code = match suffix {
-        "reused" => "anthropic_gateway.reused",
+        "turn_limit" => "anthropic_gateway.turn_limit",
         "response_header_timeout" => "anthropic_gateway.response_header_timeout",
         "transport" => "anthropic_gateway.transport",
         "request_too_large" => "anthropic_gateway.request_too_large",

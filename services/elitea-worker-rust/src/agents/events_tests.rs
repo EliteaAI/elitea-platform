@@ -1,3 +1,4 @@
+use adk_rust::graph::interrupt::{GraphInterruptPayload, INTERRUPT_METADATA_KEY};
 use adk_rust::{Content, Event, FinishReason, Part};
 use chrono::{TimeZone, Utc};
 use serde_json::{Value, json};
@@ -57,6 +58,31 @@ fn terminal_event_without_content(id: &str, second: u32) -> Event {
     event.llm_response.partial = false;
     event.llm_response.turn_complete = true;
     event.llm_response.finish_reason = Some(FinishReason::Stop);
+    event
+}
+
+fn pipeline_hitl_event(data: Value) -> Event {
+    let payload = GraphInterruptPayload {
+        kind: "dynamic".to_owned(),
+        node: None,
+        message: Some("Review the generated answer.".to_owned()),
+        data: Some(data),
+        thread_id: "thread-1".to_owned(),
+        checkpoint_id: "checkpoint-7".to_owned(),
+    };
+    let mut event = Event::with_id("graph-interrupt", "invocation-1");
+    event.timestamp = timestamp(1);
+    event.author = "root-agent".to_owned();
+    event.llm_response.content = Some(Content {
+        role: "assistant".to_owned(),
+        parts: vec![Part::Text {
+            text: "Dynamic interrupt: Review the generated answer.".to_owned(),
+        }],
+    });
+    event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        payload.to_metadata_value(),
+    );
     event
 }
 
@@ -236,7 +262,7 @@ fn delta_streaming_content_is_accumulated_without_assuming_cumulative_chunks() {
 }
 
 #[test]
-fn tool_and_provider_data_fail_closed_without_entering_operator_errors() {
+fn tool_calls_and_results_follow_the_current_browser_lifecycle() {
     let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
         .expect("projector");
     projector.start(timestamp(0)).expect("start");
@@ -246,19 +272,67 @@ fn tool_and_provider_data_fail_closed_without_entering_operator_errors() {
         false,
         true,
         vec![Part::FunctionCall {
-            name: "sensitive".to_owned(),
-            args: json!({"secret": "must-not-escape"}),
+            name: "lookup_issue".to_owned(),
+            args: json!({"issue_number": 42}),
             id: Some("call-1".to_owned()),
             thought_signature: None,
         }],
     );
-    let error = projection_error(projector.project(&tool));
+    let start = projector
+        .project(&tool)
+        .expect("tool start")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
     assert_eq!(
-        error.code(),
-        AgentEventProjectionErrorCode::UnsupportedCapability
+        start.iter().map(|event| &event["type"]).collect::<Vec<_>>(),
+        [
+            "agent_llm_start",
+            "agent_llm_end",
+            "partial_message",
+            "agent_tool_start",
+            "partial_message"
+        ]
     );
-    assert!(!error.to_string().contains("must-not-escape"));
-    assert!(!format!("{error:?}").contains("must-not-escape"));
+    assert_eq!(start[3]["response_metadata"]["tool_run_id"], "call-1");
+    assert_eq!(
+        start[3]["response_metadata"]["tool_inputs"]["issue_number"],
+        42
+    );
+
+    let mut result = Event::with_id("tool-result", "invocation-1");
+    result.timestamp = timestamp(2);
+    result.author = "root-agent".to_owned();
+    result.llm_response.content = Some(Content {
+        role: "function".to_owned(),
+        parts: vec![Part::FunctionResponse {
+            function_response: adk_rust::FunctionResponseData::new(
+                "lookup_issue",
+                json!({"title": "Bounded result"}),
+            ),
+            id: Some("call-1".to_owned()),
+            annotations: None,
+        }],
+    });
+    let finish = projector
+        .project(&result)
+        .expect("tool result")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(finish[0]["type"], "agent_tool_end");
+    assert_eq!(finish[0]["response_metadata"]["finish_reason"], "stop");
+    assert_eq!(
+        finish[0]["response_metadata"]["tool_output"],
+        "{\"title\":\"Bounded result\"}"
+    );
+}
+
+#[test]
+fn provider_failures_remain_data_free() {
+    let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+        .expect("projector");
+    projector.start(timestamp(0)).expect("start");
 
     let mut provider = event(
         "llm-provider",
@@ -373,4 +447,104 @@ fn artifact_delta_is_not_silently_accepted_as_browser_or_completion_state() {
         error.code(),
         AgentEventProjectionErrorCode::UnsupportedCapability
     );
+}
+
+#[test]
+fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
+    let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+        .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let event = pipeline_hitl_event(json!({
+        "schema_revision": "elitea.graph.hitl-interrupt.v1",
+        "type": "hitl",
+        "guardrail_type": "pipeline_hitl",
+        "node_name": "review",
+        "message": "Review the generated answer.",
+        "available_actions": ["approve", "reject", "edit"],
+        "routes": {
+            "approve": "publish",
+            "reject": "END",
+            "edit": "revise"
+        },
+        "edit_state_key": "answer",
+        "definition_digest": format!("sha256:{}", "1".repeat(64)),
+    }));
+    let projected = projector
+        .project(&event)
+        .expect("pipeline HITL projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0]["type"], "agent_hitl_interrupt");
+    assert_eq!(projected[0]["content"], "Review the generated answer.");
+    let metadata = &projected[0]["response_metadata"];
+    assert_eq!(metadata["thread_id"], "thread-1");
+    assert_eq!(
+        metadata["hitl_interrupts"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let pending = &metadata["hitl_interrupt"];
+    assert_eq!(pending, &metadata["hitl_interrupts"][0]);
+    assert_eq!(pending["guardrail_type"], "pipeline_hitl");
+    assert_eq!(pending["node_name"], "review");
+    assert_eq!(pending["routes"]["reject"], "END");
+    assert_eq!(pending["edit_state_key"], "answer");
+    assert!(
+        pending["interrupt_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("hitl_g1:"))
+    );
+    assert!(
+        pending["call_digest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(metadata.get("checkpoint_id").is_none());
+    assert!(metadata.get("definition_digest").is_none());
+    assert!(projector.is_paused());
+}
+
+#[test]
+fn malformed_graph_hitl_never_becomes_an_approval_card() {
+    let valid = json!({
+        "schema_revision": "elitea.graph.hitl-interrupt.v1",
+        "type": "hitl",
+        "guardrail_type": "pipeline_hitl",
+        "node_name": "review",
+        "message": "Review the generated answer.",
+        "available_actions": ["approve"],
+        "routes": {"approve": "publish"},
+        "edit_state_key": null,
+        "definition_digest": format!("sha256:{}", "2".repeat(64)),
+    });
+    for invalid in [
+        {
+            let mut data = valid.clone();
+            data["available_actions"] = json!(["continue"]);
+            data
+        },
+        {
+            let mut data = valid.clone();
+            data["routes"]["approve"] = json!("../escape");
+            data
+        },
+        {
+            let mut data = valid.clone();
+            data["message"] = json!("different message");
+            data
+        },
+        {
+            let mut data = valid.clone();
+            data["definition_digest"] = json!("sha256:stale");
+            data
+        },
+    ] {
+        let mut projector =
+            AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+                .expect("projector");
+        projector.start(timestamp(0)).expect("start");
+        let error = projection_error(projector.project(&pipeline_hitl_event(invalid)));
+        assert_eq!(error.code(), AgentEventProjectionErrorCode::InvalidState);
+    }
 }

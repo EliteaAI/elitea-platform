@@ -10,7 +10,8 @@ use adk_rust::futures::stream;
 use adk_rust::runner::Runner;
 use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
 use adk_rust::{
-    Agent, Content, Event, EventStream, FinishReason, InvocationContext, Part, SessionId, UserId,
+    Agent, Content, Event, EventStream, FinishReason, InvocationContext, Part, SessionId,
+    ToolConfirmationRequest, UserId,
 };
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
@@ -41,7 +42,6 @@ use super::output_delivery::{
     AgentTerminalRecoveryError, AgentTerminalReplay, FreshAgentProgressPublisher,
     publish_pre_invocation_terminal, recover_accepted_terminal,
 };
-use crate::agents::AgentExecutionKind;
 use crate::agents::events::{
     AgentEventProjectionContext, AgentEventProjector, CompletedAgentBrowserOutput,
 };
@@ -50,6 +50,8 @@ use crate::agents::runtime::{
     NativeAgentAssemblyError, NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector,
     NativeAgentInvocation,
 };
+use crate::agents::sensitive_tools::SensitiveToolCatalog;
+use crate::agents::{AgentExecutionKind, AgentTerminalState};
 use crate::protocol::command::{
     SignedCommandAuthenticator, TestOnlyConformanceHmacAuthenticator,
     parse_and_verify_agent_command,
@@ -59,19 +61,20 @@ use crate::protocol::control::{
     test_agent_output_authority_with_handoff, test_lease_monitored_input_execution,
 };
 use crate::protocol::elitea::runtime::v1::{
-    AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1, AuthorizeInvocationResponseV1,
-    BeginExecutionDispositionV1, BeginExecutionRequestV1, BeginExecutionResponseV1,
-    ClaimCommandRequestV1, ClaimCommandResponseV1, DesiredExecutionStateV1, DigestAlgorithmV1,
-    DigestV1, ExecutionFenceV1, ExecutionIdentityV1, ExecutionOutputEventTypeV1,
-    ExecutionOutputFrameV1, ObserveDesiredStateRequestV1, ObserveDesiredStateResponseV1,
-    PrepareSettlementRequestV1, PrepareSettlementResponseV1, RenewLeaseRequestV1,
-    RenewLeaseResponseV1, RuntimeErrorCodeV1, execution_output_frame_v1,
+    AgentExecutionTerminalStateV1, AuthorizeInvocationDispositionV1, AuthorizeInvocationRequestV1,
+    AuthorizeInvocationResponseV1, BeginExecutionDispositionV1, BeginExecutionRequestV1,
+    BeginExecutionResponseV1, ClaimCommandRequestV1, ClaimCommandResponseV1,
+    DesiredExecutionStateV1, DigestAlgorithmV1, DigestV1, ExecutionFenceV1, ExecutionIdentityV1,
+    ExecutionOutputEventTypeV1, ExecutionOutputFrameV1, ObserveDesiredStateRequestV1,
+    ObserveDesiredStateResponseV1, PrepareSettlementRequestV1, PrepareSettlementResponseV1,
+    RenewLeaseRequestV1, RenewLeaseResponseV1, RuntimeErrorCodeV1, execution_output_frame_v1,
 };
 use crate::protocol::node_event::decode_current_node_event_json;
 use crate::protocol::output::{
     OUTPUT_SCHEMA_REVISION, RuntimeFailureKind, restored_terminal_failure_kind,
 };
 use crate::spool::{SpoolError, SpoolLimits, SpoolMasterKey};
+use crate::toolkits::ToolAdmissionPolicy;
 use crate::transport::output_grpc::{
     ProgressRejectionWinner, ProgressReplayDecision, test_acknowledged_progress,
     test_acknowledged_terminal, test_rejected_progress,
@@ -1133,6 +1136,61 @@ impl Agent for ImmediateTextAgent {
     }
 }
 
+struct SensitiveInterruptAgent;
+
+#[async_trait]
+impl Agent for SensitiveInterruptAgent {
+    fn name(&self) -> &'static str {
+        "root-agent"
+    }
+
+    fn description(&self) -> &'static str {
+        "sensitive interrupt lifecycle fixture"
+    }
+
+    fn sub_agents(&self) -> &[Arc<dyn Agent>] {
+        &[]
+    }
+
+    async fn run(&self, context: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let invocation_id = context.invocation_id().to_owned();
+        let arguments = json!({"value": 21, "api_token": "never-publish"});
+        let mut call = Event::with_id("llm-sensitive", &invocation_id);
+        call.timestamp = Utc
+            .timestamp_millis_opt(NOW + 1)
+            .single()
+            .expect("valid fixture time");
+        call.author = self.name().to_owned();
+        call.llm_response.content = Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::FunctionCall {
+                name: "double".to_owned(),
+                args: arguments.clone(),
+                id: Some("call-sensitive".to_owned()),
+                thought_signature: None,
+            }],
+        });
+        call.llm_response.partial = false;
+        call.llm_response.turn_complete = true;
+        call.llm_response.finish_reason = Some(FinishReason::Stop);
+
+        let mut interrupt = Event::with_id("confirm-sensitive", invocation_id);
+        interrupt.timestamp = Utc
+            .timestamp_millis_opt(NOW + 2)
+            .single()
+            .expect("valid fixture time");
+        interrupt.author = self.name().to_owned();
+        interrupt.llm_response.interrupted = true;
+        interrupt.llm_response.turn_complete = true;
+        interrupt.actions.tool_confirmation = Some(ToolConfirmationRequest {
+            tool_name: "double".to_owned(),
+            function_call_id: Some("call-sensitive".to_owned()),
+            args: arguments,
+        });
+        Ok(Box::pin(stream::iter([Ok(call), Ok(interrupt)])))
+    }
+}
+
 struct GatedTextAgent {
     started: Arc<Notify>,
     release: Arc<Semaphore>,
@@ -1195,6 +1253,7 @@ impl NativeAgentCompletionSelector for FixedCompletion {
 struct TestNativeAssembler {
     trace: Arc<Mutex<Vec<&'static str>>>,
     agent: Arc<dyn Agent>,
+    sensitive: bool,
 }
 
 struct GatedNativeAssembler {
@@ -1273,20 +1332,42 @@ impl NativeAgentAssembler for TestNativeAssembler {
             AgentExecutionKind::Application => json!({"id": 11, "version_id": 22}),
             AgentExecutionKind::Adhoc => json!({}),
         };
-        let projector =
-            AgentEventProjector::new(AgentEventProjectionContext::fixture(application_details))
-                .map_err(|_| {
-                    NativeAgentAssemblyError::new(
-                        NativeAgentAssemblyErrorCode::InvalidConfiguration,
-                        "the test event projector is invalid",
-                    )
-                })?;
+        let projection = AgentEventProjectionContext::fixture(application_details);
+        let projector = if self.sensitive {
+            AgentEventProjector::with_sensitive_tools(projection, sensitive_catalog_fixture())
+        } else {
+            AgentEventProjector::new(projection)
+        }
+        .map_err(|_| {
+            NativeAgentAssemblyError::new(
+                NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                "the test event projector is invalid",
+            )
+        })?;
         Ok(AssembledNativeAgentInvocation::new(
             invocation,
             projector,
             FixedCompletion,
         ))
     }
+}
+
+fn sensitive_catalog_fixture() -> SensitiveToolCatalog {
+    let runtime = json!({"toolkit_security": {
+        "sensitive_tools": {"fixture": ["double"]},
+        "sensitive_action_company_name": "Example Org"
+    }});
+    let policy = ToolAdmissionPolicy::from_runtime_config(
+        runtime.as_object().expect("runtime security dictionary"),
+    )
+    .expect("runtime policy");
+    SensitiveToolCatalog::fixture(
+        "double",
+        policy
+            .sensitive_tool("fixture", "Fixture Tools", "double")
+            .expect("sensitive fixture policy"),
+    )
+    .expect("sensitive fixture catalog")
 }
 
 async fn fresh_progress_publisher(
@@ -1355,6 +1436,13 @@ fn browser_full_message(
 ) -> crate::protocol::elitea::runtime::v1::NodeEventV1 {
     let raw = format!(r#"{{"type":"full_message","content":"{content}"}}"#);
     decode_current_node_event_json(raw.as_bytes()).expect("valid full message event")
+}
+
+fn browser_hitl_interrupt() -> crate::protocol::elitea::runtime::v1::NodeEventV1 {
+    decode_current_node_event_json(
+        br#"{"type":"agent_hitl_interrupt","content":"approval required"}"#,
+    )
+    .expect("valid HITL interrupt event")
 }
 
 #[test]
@@ -1443,6 +1531,37 @@ async fn acked_full_message_binds_the_exact_canonical_browser_bytes() {
         artifact.immutable_version,
         format!("sha256:{}", hex_lower(expected_digest.as_ref()))
     );
+}
+
+#[tokio::test]
+async fn acked_sensitive_interrupt_mints_only_paused_hitl_result_authority() {
+    let state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+    let event = browser_hitl_interrupt();
+    let browser_json = crate::protocol::node_event::encode_current_node_event_json(&event)
+        .expect("canonical HITL JSON");
+
+    let outcome = publisher
+        .publish_result_event(&verified, event, NOW)
+        .await
+        .expect("durable HITL ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    let (terminal_state, artifact) = publisher
+        .into_test_acked_result()
+        .expect("ACKed HITL result proof");
+    assert_eq!(terminal_state, AgentTerminalState::PausedHitl);
+    assert_eq!(
+        artifact.artifact_id,
+        format!(
+            "node-event:{}:hitl-interrupt",
+            verified.command().execution_id
+        )
+    );
+    assert_eq!(artifact.byte_length, browser_json.len() as u64);
 }
 
 #[tokio::test]
@@ -2561,6 +2680,7 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
         Arc::new(TestNativeAssembler {
             trace: Arc::clone(&trace),
             agent: Arc::new(ImmediateTextAgent),
+            sensitive: false,
         }),
         connector.clone(),
         Arc::clone(&control),
@@ -2656,6 +2776,146 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
     drop(temporary);
 }
 
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // One end-to-end pause proof keeps authority ordering explicit.
+async fn sensitive_interrupt_is_the_acked_paused_hitl_terminal_and_skips_completion() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh())
+        .await
+        .expect("empty HITL lifecycle preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new HITL lifecycle spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let supervisor = InvocationSupervisor::new(admission.clone());
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind: AgentExecutionKind::Application,
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared HITL invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid HITL input must reach authorization");
+    };
+    let progress_state =
+        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 7), []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(SensitiveInterruptAgent),
+            sensitive: true,
+        }),
+        connector.clone(),
+        Arc::clone(&control),
+        Arc::clone(&retirer),
+        Arc::new(|| NOW + 3),
+        1,
+        recovery_config(1),
+    ));
+    let (reservation, job) = AgentAuthorizationJob::new(
+        *prepared,
+        control,
+        retirer,
+        Arc::new(connector),
+        Arc::new(|| NOW + 3),
+        recovery_config(1),
+        lifecycle,
+    );
+    let invocation = match supervisor.submit(reservation, job) {
+        Ok(invocation) => invocation,
+        Err(rejected) => panic!("HITL lifecycle supervision failed: {}", rejected.error()),
+    };
+    let completion = invocation.wait().await.expect("HITL lifecycle result");
+    let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
+        panic!("the HITL lifecycle must own the authorized outcome");
+    };
+    supervisor.close().await.expect("HITL lifecycle drain");
+
+    assert!(matches!(
+        completion.disposition(),
+        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 12, .. }
+    ));
+    let frames = progress_state.frames.lock().expect("HITL lifecycle frames");
+    assert_eq!(frames.len(), 8);
+    let event_types = frames[..7]
+        .iter()
+        .map(|frame| match frame.payload.as_ref() {
+            Some(execution_output_frame_v1::Payload::NodeEvent(event)) => event.r#type.as_str(),
+            _ => panic!("HITL progress frame must carry a NodeEvent"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_types,
+        [
+            "agent_start",
+            "agent_llm_start",
+            "agent_llm_end",
+            "partial_message",
+            "agent_tool_start",
+            "partial_message",
+            "agent_hitl_interrupt",
+        ]
+    );
+    let Some(execution_output_frame_v1::Payload::NodeEvent(interrupt)) = frames[6].payload.as_ref()
+    else {
+        panic!("HITL result frame must carry the interrupt");
+    };
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&interrupt.response_metadata).expect("HITL response metadata");
+    assert_eq!(
+        metadata["hitl_interrupts"][0]["tool_args"]["api_token"],
+        "***"
+    );
+    let encoded_interrupt = crate::protocol::node_event::encode_current_node_event_json(interrupt)
+        .expect("canonical HITL interrupt");
+    assert!(
+        !encoded_interrupt
+            .windows(b"never-publish".len())
+            .any(|window| window == b"never-publish")
+    );
+    let Some(execution_output_frame_v1::Payload::AgentExecution(result)) =
+        frames[7].payload.as_ref()
+    else {
+        panic!("HITL terminal must carry the bound agent result");
+    };
+    assert_eq!(
+        AgentExecutionTerminalStateV1::try_from(result.terminal_state),
+        Ok(AgentExecutionTerminalStateV1::PausedHitl)
+    );
+    assert!(
+        result
+            .result_artifact
+            .as_ref()
+            .is_some_and(|artifact| artifact.artifact_id.ends_with(":hitl-interrupt"))
+    );
+    assert_eq!(admission.available_capacity(), 1);
+    drop(frames);
+    drop(temporary);
+}
+
 #[tokio::test(start_paused = true)]
 async fn durable_stop_interrupts_only_the_owned_run_then_settles_cancelled() {
     Box::pin(run_durable_stop_case()).await;
@@ -2719,6 +2979,7 @@ async fn run_durable_stop_case() {
                 started: Arc::clone(&started),
                 release: Arc::clone(&release),
             }),
+            sensitive: false,
         }),
         connector.clone(),
         Arc::clone(&control),
@@ -2948,6 +3209,7 @@ async fn run_deadline_during_native_case() {
                 started: Arc::clone(&started),
                 release: Arc::clone(&release),
             }),
+            sensitive: false,
         }),
         connector.clone(),
         Arc::clone(&control),

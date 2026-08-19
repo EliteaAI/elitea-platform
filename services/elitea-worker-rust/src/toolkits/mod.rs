@@ -8,8 +8,25 @@
 
 mod families;
 mod invocation;
+mod materialize;
+mod mcp;
 mod policy;
 mod snapshot;
+
+pub(crate) use materialize::{
+    ToolsetMaterializationError, ToolsetMaterializationErrorCode, materialize_configured_toolsets,
+};
+#[cfg(test)]
+pub(crate) use mcp::RemoteMcpConfig;
+pub(crate) use mcp::{
+    AdkHttpMcpConnector, McpConnector, McpMaterializationError, McpMaterializationErrorCode,
+    materialize_mcp_toolsets,
+};
+pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionPolicy};
+pub(crate) use snapshot::{
+    AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotError,
+    FrozenToolSnapshotErrorCode,
+};
 
 #[cfg(test)]
 mod aha_tests;
@@ -33,6 +50,8 @@ mod invocation_tests;
 mod keycloak_tests;
 #[cfg(test)]
 mod kubernetes_tests;
+#[cfg(test)]
+mod mcp_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]

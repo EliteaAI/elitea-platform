@@ -22,7 +22,7 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AcceptedTerminalClaimRecovery, AgentControlClient, AgentControlError,
-    AgentExecutionOutputCursor, AgentProgressCommit,
+    AgentExecutionOutputCursor, AgentProgressCommit, ClaimBoundAgentTerminal,
 };
 use crate::protocol::elitea::runtime::v1::{ExecutionOutputFrameV1, NodeEventV1};
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -467,19 +467,32 @@ impl AgentProgressConnector for Channel {
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
-struct PendingFullMessageArtifact {
+struct PendingResultArtifact {
     artifact: AgentResultArtifact,
+    terminal_state: AgentTerminalState,
 }
 
 #[allow(dead_code)] // Retained for the capability-disabled supervised terminal transition.
-struct AckedFullMessageArtifact {
+struct AckedResultArtifact {
     artifact: AgentResultArtifact,
+    terminal_state: AgentTerminalState,
 }
 
 /// Terminal selected by the supervisor-owned native lifecycle.
 pub(super) enum FreshAgentTerminalSelection {
     Completed,
+    PausedHitl,
     Failure(RuntimeFailureKind),
+}
+
+impl FreshAgentTerminalSelection {
+    const fn result_state(&self) -> Option<AgentTerminalState> {
+        match self {
+            Self::Completed => Some(AgentTerminalState::Completed),
+            Self::PausedHitl => Some(AgentTerminalState::PausedHitl),
+            Self::Failure(_) => None,
+        }
+    }
 }
 
 /// Exact durable terminal ACK returned only to the owning lifecycle.
@@ -553,7 +566,7 @@ struct PendingAgentProgress {
     frame: ExecutionOutputFrameV1,
     attempts: usize,
     rejection: Option<FrameBoundProgressRejection>,
-    full_message: Option<PendingFullMessageArtifact>,
+    result: Option<PendingResultArtifact>,
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled progress publisher.
@@ -584,7 +597,7 @@ pub(crate) struct FreshAgentProgressPublisher<C: AgentProgressConnector> {
     replay: Option<C::Replay>,
     replay_result: Option<Result<ProgressReplayDecision, OutputGrpcError>>,
     pending: Option<PendingAgentProgress>,
-    acked_full_message: Option<AckedFullMessageArtifact>,
+    acked_result: Option<AckedResultArtifact>,
     failed_closed: bool,
     max_output_sessions: usize,
 }
@@ -609,7 +622,7 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             replay: None,
             replay_result: None,
             pending: None,
-            acked_full_message: None,
+            acked_result: None,
             failed_closed: false,
             max_output_sessions: config.max_output_sessions,
         }
@@ -638,9 +651,9 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
                 "the progress publisher already owns a pending frame",
             ));
         }
-        if event.r#type == "full_message" {
+        if terminal_state_for_result_event(&event.r#type).is_some() {
             return Err(AgentProgressPublishError::InvalidState(
-                "the full message requires the terminal artifact publication path",
+                "the result event requires the terminal artifact publication path",
             ));
         }
         self.publish_event(verified, event, occurred_at_unix_millis, None)
@@ -658,148 +671,21 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
         event: NodeEventV1,
         occurred_at_unix_millis: i64,
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
-        if self.failed_closed {
-            return Err(AgentProgressPublishError::InvalidState(
-                "the progress publisher failed closed after a nonretryable outcome",
-            ));
-        }
-        if self.pending.is_some() {
-            return Err(AgentProgressPublishError::InvalidState(
-                "the progress publisher already owns a pending frame",
-            ));
-        }
-        if self.acked_full_message.is_some() {
-            return Err(AgentProgressPublishError::InvalidState(
-                "the durably acknowledged full message must remain the last progress event",
-            ));
-        }
         if event.r#type != "full_message" {
             return Err(AgentProgressPublishError::InvalidState(
-                "the terminal artifact path requires a full_message event",
+                "the full-message path requires a full_message event",
             ));
         }
-        let artifact = result_artifact_for_event(verified, &event)
-            .map_err(AgentProgressPublishError::InvalidFrame)?;
-        self.publish_event(
-            verified,
-            event,
-            occurred_at_unix_millis,
-            Some(PendingFullMessageArtifact { artifact }),
-        )
-        .await
+        self.publish_result_event(verified, event, occurred_at_unix_millis)
+            .await
     }
 
-    /// Consume the complete progress owner into one exact terminal ACK.
-    ///
-    /// This method is called only from the process-supervised native lifecycle;
-    /// it never returns a prepared terminal or the full-message artifact. A
-    /// pending frame without Main's bound rejection remains recovery-required
-    /// and cannot be replaced locally.
-    pub(super) async fn finish_terminal(
-        mut self,
-        verified: &VerifiedAgentCommand,
-        selection: FreshAgentTerminalSelection,
-        occurred_at_unix_millis: i64,
-        recovery_config: AgentTerminalRecoveryConfig,
-    ) -> Result<FreshAgentTerminalAck, FreshAgentTerminalError>
-    where
-        C: AgentTerminalReplay,
-    {
-        self.close_live().await;
-        if self.replay.is_some() || self.replay_result.is_some() {
-            return Err(FreshAgentTerminalError::RecoveryRequired(
-                "restored progress remains unresolved before terminal publication",
-            ));
-        }
-
-        let pending = self.pending.take();
-        let (terminal, replaced_progress) = match (selection, pending) {
-            (_, Some(pending)) if pending.rejection.is_none() => {
-                return Err(FreshAgentTerminalError::RecoveryRequired(
-                    "progress remains unacknowledged before terminal publication",
-                ));
-            }
-            (FreshAgentTerminalSelection::Completed, Some(_)) => {
-                return Err(FreshAgentTerminalError::InvalidState(
-                    "a rejected progress frame cannot become a completed terminal",
-                ));
-            }
-            (FreshAgentTerminalSelection::Completed, None) => {
-                let artifact = self
-                    .acked_full_message
-                    .take()
-                    .ok_or(FreshAgentTerminalError::InvalidState(
-                        "the completed terminal requires an acknowledged full message",
-                    ))?
-                    .artifact;
-                let result = self
-                    .result_binding
-                    .bind_artifact(AgentTerminalState::Completed, artifact)
-                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
-                let terminal = self
-                    .cursor
-                    .bind_result_terminal(verified, result, occurred_at_unix_millis)
-                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
-                (terminal, None)
-            }
-            (FreshAgentTerminalSelection::Failure(failure), None) => {
-                let terminal = self
-                    .cursor
-                    .bind_failure_terminal(verified, failure, occurred_at_unix_millis)
-                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
-                (terminal, None)
-            }
-            (FreshAgentTerminalSelection::Failure(_), Some(pending)) => {
-                let rejection = pending
-                    .rejection
-                    .ok_or(FreshAgentTerminalError::InvalidState(
-                        "the rejected progress proof is unavailable",
-                    ))?;
-                let terminal = self
-                    .cursor
-                    .bind_rejected_progress_terminal(verified, rejection, occurred_at_unix_millis)
-                    .map_err(FreshAgentTerminalError::InvalidFrame)?;
-                (terminal, Some(pending.frame))
-            }
-        };
-        let terminal = terminal.into_frame();
-        let connector = self.connector;
-        let (prepared, reopener) = prepare_fresh_terminal_spool(
-            self.first.take(),
-            self.factory,
-            &terminal,
-            replaced_progress,
-        )
-        .await?;
-
-        let (acknowledged, frame) = replay_terminal_with_replacement(
-            &connector,
-            verified,
-            terminal,
-            prepared,
-            reopener,
-            recovery_config.max_output_sessions,
-        )
-        .await
-        .map_err(|error| match error {
-            ExactTerminalReplayError::InvalidDurableState(error) => {
-                FreshAgentTerminalError::InvalidFrame(error)
-            }
-            ExactTerminalReplayError::Preflight(error) => FreshAgentTerminalError::Preflight(error),
-            ExactTerminalReplayError::Output(error) => FreshAgentTerminalError::Output(error),
-        })?;
-        Ok(FreshAgentTerminalAck {
-            acknowledged,
-            frame,
-        })
-    }
-
-    async fn publish_event(
+    /// Publish one result-bearing completed or paused browser event.
+    pub(super) async fn publish_result_event(
         &mut self,
         verified: &VerifiedAgentCommand,
         event: NodeEventV1,
         occurred_at_unix_millis: i64,
-        full_message: Option<PendingFullMessageArtifact>,
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
         if self.failed_closed {
             return Err(AgentProgressPublishError::InvalidState(
@@ -811,9 +697,118 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
                 "the progress publisher already owns a pending frame",
             ));
         }
-        if self.acked_full_message.is_some() {
+        if self.acked_result.is_some() {
             return Err(AgentProgressPublishError::InvalidState(
-                "the durably acknowledged full message must remain the last progress event",
+                "the durably acknowledged result must remain the last progress event",
+            ));
+        }
+        let terminal_state = terminal_state_for_result_event(&event.r#type).ok_or(
+            AgentProgressPublishError::InvalidState(
+                "the terminal artifact path requires a result-bearing event",
+            ),
+        )?;
+        let artifact = result_artifact_for_event(verified, &event)
+            .map_err(AgentProgressPublishError::InvalidFrame)?;
+        self.publish_event(
+            verified,
+            event,
+            occurred_at_unix_millis,
+            Some(PendingResultArtifact {
+                artifact,
+                terminal_state,
+            }),
+        )
+        .await
+    }
+
+    /// Consume the complete progress owner into one exact terminal ACK.
+    ///
+    /// This method is called only from the process-supervised native lifecycle;
+    /// it never returns a prepared terminal or the full-message artifact. A
+    /// pending frame without Main's bound rejection remains recovery-required
+    /// and cannot be replaced locally.
+    pub(super) fn finish_terminal<'a>(
+        mut self,
+        verified: &'a VerifiedAgentCommand,
+        selection: FreshAgentTerminalSelection,
+        occurred_at_unix_millis: i64,
+        recovery_config: AgentTerminalRecoveryConfig,
+    ) -> TerminalFuture<'a, Result<FreshAgentTerminalAck, FreshAgentTerminalError>>
+    where
+        C: AgentTerminalReplay + 'a,
+    {
+        Box::pin(async move {
+            self.close_live().await;
+            if self.replay.is_some() || self.replay_result.is_some() {
+                return Err(FreshAgentTerminalError::RecoveryRequired(
+                    "restored progress remains unresolved before terminal publication",
+                ));
+            }
+
+            let (terminal, replaced_progress) = bind_selected_terminal(
+                self.cursor,
+                &self.result_binding,
+                self.acked_result.take(),
+                selection,
+                self.pending.take(),
+                verified,
+                occurred_at_unix_millis,
+            )?;
+            let terminal = terminal.into_frame();
+            let connector = self.connector;
+            let (prepared, reopener) = prepare_fresh_terminal_spool(
+                self.first.take(),
+                self.factory,
+                &terminal,
+                replaced_progress,
+            )
+            .await?;
+
+            let (acknowledged, frame) = replay_terminal_with_replacement(
+                &connector,
+                verified,
+                terminal,
+                prepared,
+                reopener,
+                recovery_config.max_output_sessions,
+            )
+            .await
+            .map_err(|error| match error {
+                ExactTerminalReplayError::InvalidDurableState(error) => {
+                    FreshAgentTerminalError::InvalidFrame(error)
+                }
+                ExactTerminalReplayError::Preflight(error) => {
+                    FreshAgentTerminalError::Preflight(error)
+                }
+                ExactTerminalReplayError::Output(error) => FreshAgentTerminalError::Output(error),
+            })?;
+            Ok(FreshAgentTerminalAck {
+                acknowledged,
+                frame,
+            })
+        })
+    }
+
+    async fn publish_event(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+        result: Option<PendingResultArtifact>,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher already owns a pending frame",
+            ));
+        }
+        if self.acked_result.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the durably acknowledged result must remain the last progress event",
             ));
         }
         let progress = self
@@ -824,7 +819,7 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             frame: progress.into_frame(),
             attempts: 0,
             rejection: None,
-            full_message,
+            result,
         });
         self.drive_retained_progress().await
     }
@@ -1112,12 +1107,10 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
                                 .ok_or(AgentProgressPublishError::InvalidState(
                                     "the progress publisher lost its acknowledged frame",
                                 ))?;
-                        self.acked_full_message =
-                            pending
-                                .full_message
-                                .map(|pending| AckedFullMessageArtifact {
-                                    artifact: pending.artifact,
-                                });
+                        self.acked_result = pending.result.map(|pending| AckedResultArtifact {
+                            artifact: pending.artifact,
+                            terminal_state: pending.terminal_state,
+                        });
                         Ok(AgentProgressPublishOutcome::Acknowledged { sequence })
                     }
                     Ok(AgentProgressCommit::Exhausted(error)) => {
@@ -1182,7 +1175,78 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
 
     #[cfg(test)]
     pub(super) fn into_test_acked_full_message(self) -> Option<AgentResultArtifact> {
-        self.acked_full_message.map(|proof| proof.artifact)
+        self.acked_result
+            .filter(|proof| proof.terminal_state == AgentTerminalState::Completed)
+            .map(|proof| proof.artifact)
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_test_acked_result(
+        self,
+    ) -> Option<(AgentTerminalState, AgentResultArtifact)> {
+        self.acked_result
+            .map(|proof| (proof.terminal_state, proof.artifact))
+    }
+}
+
+fn bind_selected_terminal(
+    cursor: AgentExecutionOutputCursor,
+    result_binding: &AgentResultBinding,
+    acked_result: Option<AckedResultArtifact>,
+    selection: FreshAgentTerminalSelection,
+    pending: Option<PendingAgentProgress>,
+    verified: &VerifiedAgentCommand,
+    occurred_at_unix_millis: i64,
+) -> Result<(ClaimBoundAgentTerminal, Option<ExecutionOutputFrameV1>), FreshAgentTerminalError> {
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.rejection.is_none())
+    {
+        return Err(FreshAgentTerminalError::RecoveryRequired(
+            "progress remains unacknowledged before terminal publication",
+        ));
+    }
+    if let Some(expected_state) = selection.result_state() {
+        if pending.is_some() {
+            return Err(FreshAgentTerminalError::InvalidState(
+                "a rejected progress frame cannot become a result terminal",
+            ));
+        }
+        let result = acked_result.ok_or(FreshAgentTerminalError::InvalidState(
+            "the result terminal requires an acknowledged result event",
+        ))?;
+        if result.terminal_state != expected_state {
+            return Err(FreshAgentTerminalError::InvalidState(
+                "the acknowledged result event does not match the selected terminal",
+            ));
+        }
+        let result = result_binding
+            .bind_artifact(expected_state, result.artifact)
+            .map_err(FreshAgentTerminalError::InvalidFrame)?;
+        let terminal = cursor
+            .bind_result_terminal(verified, result, occurred_at_unix_millis)
+            .map_err(FreshAgentTerminalError::InvalidFrame)?;
+        return Ok((terminal, None));
+    }
+    match (selection, pending) {
+        (FreshAgentTerminalSelection::Failure(failure), None) => cursor
+            .bind_failure_terminal(verified, failure, occurred_at_unix_millis)
+            .map(|terminal| (terminal, None))
+            .map_err(FreshAgentTerminalError::InvalidFrame),
+        (FreshAgentTerminalSelection::Failure(_), Some(pending)) => {
+            let rejection = pending
+                .rejection
+                .ok_or(FreshAgentTerminalError::InvalidState(
+                    "the rejected progress proof is unavailable",
+                ))?;
+            cursor
+                .bind_rejected_progress_terminal(verified, rejection, occurred_at_unix_millis)
+                .map(|terminal| (terminal, Some(pending.frame)))
+                .map_err(FreshAgentTerminalError::InvalidFrame)
+        }
+        _ => Err(FreshAgentTerminalError::InvalidState(
+            "the selected terminal state is malformed",
+        )),
     }
 }
 
@@ -1247,9 +1311,9 @@ fn result_artifact_for_event(
     verified: &VerifiedAgentCommand,
     event: &NodeEventV1,
 ) -> Result<AgentResultArtifact, ProtocolError> {
-    if event.r#type != "full_message" {
+    if terminal_state_for_result_event(&event.r#type).is_none() {
         return Err(ProtocolError::InvalidInput(
-            "the result artifact requires a full_message event",
+            "the result artifact requires a result-bearing event",
         ));
     }
     let browser_json = encode_current_node_event_json(event)?;
@@ -1257,17 +1321,36 @@ fn result_artifact_for_event(
     let mut sha256 = [0_u8; 32];
     sha256.copy_from_slice(value.as_ref());
     let byte_length = u64::try_from(browser_json.len()).map_err(|_| {
-        ProtocolError::ResourceExhausted("the full message exceeds the artifact length limit")
+        ProtocolError::ResourceExhausted("the result event exceeds the artifact length limit")
     })?;
+    let event_suffix = match event.r#type.as_str() {
+        "full_message" => "full-message",
+        "agent_hitl_interrupt" => "hitl-interrupt",
+        "mcp_authorization_required" => "mcp-authorization",
+        _ => {
+            return Err(ProtocolError::InvalidInput(
+                "the result artifact requires a result-bearing event",
+            ));
+        }
+    };
     Ok(AgentResultArtifact {
         artifact_id: format!(
-            "node-event:{}:full-message",
-            verified.command().execution_id
+            "node-event:{}:{event_suffix}",
+            verified.command().execution_id,
         ),
         immutable_version: sha256_version(&sha256),
         byte_length,
         digest: sha256,
     })
+}
+
+fn terminal_state_for_result_event(event_type: &str) -> Option<AgentTerminalState> {
+    match event_type {
+        "full_message" => Some(AgentTerminalState::Completed),
+        "agent_hitl_interrupt" => Some(AgentTerminalState::PausedHitl),
+        "mcp_authorization_required" => Some(AgentTerminalState::PausedMcpAuth),
+        _ => None,
+    }
 }
 
 fn sha256_version(digest: &[u8; 32]) -> String {

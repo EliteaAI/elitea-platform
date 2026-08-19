@@ -82,6 +82,7 @@ fn config(deadline: Duration, max_response_bytes: usize) -> RuntimeContextConfig
         origin: "https://CONTENT.internal:443".to_owned(),
         deadline,
         max_response_bytes,
+        max_application_response_bytes: 1024 * 1024,
     }
 }
 
@@ -90,6 +91,22 @@ fn body(project_id: u64, token: &str) -> String {
         "schema_version": "elitea.runtime.elitea-client-token.v1",
         "project_id": project_id,
         "token": token,
+    })
+    .to_string()
+}
+
+fn application_body(project_id: u64, application_id: u64, version_id: u64) -> String {
+    serde_json::json!({
+        "schema_version": "elitea.runtime.application-version.v1",
+        "project_id": project_id,
+        "application_id": application_id,
+        "version_id": version_id,
+        "version_details": {
+            "agent_type": "agent",
+            "instructions": "Use the configured tools.",
+            "llm_settings": {"model_name": "gpt-4o-mini"},
+            "tools": []
+        }
     })
     .to_string()
 }
@@ -134,7 +151,7 @@ async fn authorized_claim_redeems_exact_python_and_go_route() {
     );
 
     let context = client
-        .redeem(test_runtime_context_authority())
+        .redeem(&test_runtime_context_authority())
         .await
         .expect("claim-scoped runtime context");
 
@@ -151,6 +168,82 @@ async fn authorized_claim_redeems_exact_python_and_go_route() {
             body_length: 0,
         }]
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn exact_child_identity_uses_the_claim_bound_platform_route_once() {
+    let raw = application_body(17, 31, 41);
+    let (client, captured) = fake_client(
+        Ok(response(&raw, StatusCode::OK, Version::HTTP_2)),
+        Duration::from_secs(1),
+        32 * 1_024,
+    );
+    let authority = test_runtime_context_authority();
+
+    let resolved = client
+        .load_application_version(&authority, 31, 41)
+        .await
+        .expect("claim-bound child version");
+
+    assert_eq!(resolved.application_id(), 31);
+    assert_eq!(resolved.version_id(), 41);
+    assert_eq!(
+        resolved
+            .into_version_details()
+            .get("agent_type")
+            .and_then(serde_json::Value::as_str),
+        Some("agent")
+    );
+    assert_eq!(
+        *captured.lock().expect("captured request"),
+        [CapturedRequest {
+            method: "POST".to_owned(),
+            path: "/executions/execution%2Fone/generations/2/runtime-context/applications/31/versions/41"
+                .to_owned(),
+            claim: "claim-1".to_owned(),
+            fence: "ZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmZmY".to_owned(),
+            body_length: 0,
+        }]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn child_identity_and_materialized_response_are_exact_and_bounded() {
+    let authority = test_runtime_context_authority();
+    let raw = application_body(17, 31, 41);
+    for (application_id, version_id) in [(0, 41), (31, 0)] {
+        let (client, captured) = fake_client(
+            Ok(response(&raw, StatusCode::OK, Version::HTTP_2)),
+            Duration::from_secs(1),
+            32 * 1_024,
+        );
+        assert!(
+            client
+                .load_application_version(&authority, application_id, version_id)
+                .await
+                .is_err()
+        );
+        assert!(captured.lock().expect("captured request").is_empty());
+    }
+
+    for raw in [
+        application_body(18, 31, 41),
+        application_body(17, 32, 41),
+        application_body(17, 31, 42),
+        r#"{"schema_version":"elitea.runtime.application-version.v1","project_id":17,"application_id":31,"version_id":41,"version_details":{},"extra":true}"#.to_owned(),
+    ] {
+        let (client, _) = fake_client(
+            Ok(response(&raw, StatusCode::OK, Version::HTTP_2)),
+            Duration::from_secs(1),
+            32 * 1_024,
+        );
+        assert!(
+            client
+                .load_application_version(&authority, 31, 41)
+                .await
+                .is_err()
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -179,7 +272,7 @@ async fn status_protocol_cache_and_length_fail_closed() {
         ),
     ] {
         let (client, _) = fake_client(Ok(candidate), Duration::from_secs(1), 32 * 1_024);
-        let Err(error) = client.redeem(test_runtime_context_authority()).await else {
+        let Err(error) = client.redeem(&test_runtime_context_authority()).await else {
             panic!("invalid runtime-context response must fail")
         };
         assert_eq!(error.code(), expected_code);
@@ -193,7 +286,7 @@ async fn status_protocol_cache_and_length_fail_closed() {
     );
     let (client, _) = fake_client(Ok(wrong_cache), Duration::from_secs(1), 32 * 1_024);
     assert!(matches!(
-        client.redeem(test_runtime_context_authority()).await,
+        client.redeem(&test_runtime_context_authority()).await,
         Err(RuntimeContextError::InvalidResponse(_))
     ));
 
@@ -204,7 +297,7 @@ async fn status_protocol_cache_and_length_fail_closed() {
     );
     let (client, _) = fake_client(Ok(wrong_length), Duration::from_secs(1), 32 * 1_024);
     assert!(matches!(
-        client.redeem(test_runtime_context_authority()).await,
+        client.redeem(&test_runtime_context_authority()).await,
         Err(RuntimeContextError::InvalidResponse(_))
     ));
 
@@ -214,7 +307,7 @@ async fn status_protocol_cache_and_length_fail_closed() {
         raw.len() - 1,
     );
     assert!(matches!(
-        client.redeem(test_runtime_context_authority()).await,
+        client.redeem(&test_runtime_context_authority()).await,
         Err(RuntimeContextError::ResourceExhausted(_))
     ));
 }
@@ -235,7 +328,7 @@ async fn unique_schema_project_and_secret_shape_are_authoritative() {
         );
         assert!(
             client
-                .redeem(test_runtime_context_authority())
+                .redeem(&test_runtime_context_authority())
                 .await
                 .is_err()
         );
@@ -254,7 +347,7 @@ async fn timeout_transport_and_errors_are_bounded_and_redacted() {
         config(Duration::from_millis(1), 32 * 1_024),
     )
     .expect("runtime-context client");
-    let Err(error) = client.redeem(test_runtime_context_authority()).await else {
+    let Err(error) = client.redeem(&test_runtime_context_authority()).await else {
         panic!("stalled runtime context must time out")
     };
     assert_eq!(error.code(), "runtime_context.timeout");
@@ -265,7 +358,7 @@ async fn timeout_transport_and_errors_are_bounded_and_redacted() {
         Duration::from_secs(1),
         32 * 1_024,
     );
-    let Err(error) = client.redeem(test_runtime_context_authority()).await else {
+    let Err(error) = client.redeem(&test_runtime_context_authority()).await else {
         panic!("unavailable runtime context must fail")
     };
     assert_eq!(error.code(), "runtime_context.dependency_unavailable");
@@ -293,6 +386,7 @@ fn configuration_bounds_and_origin_canonicalization_match_worker_policy() {
                 origin: origin.to_owned(),
                 deadline: Duration::from_secs(1),
                 max_response_bytes: 32 * 1_024,
+                max_application_response_bytes: 1_024 * 1_024,
             },
         );
         assert!(matches!(

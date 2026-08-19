@@ -22,6 +22,7 @@ pub(crate) enum FrozenToolSnapshotErrorCode {
 ///
 /// Raw settings can contain secret references and endpoint metadata. Debug and
 /// display output therefore expose only a stable category and message.
+#[derive(Clone, Copy)]
 pub(crate) struct FrozenToolSnapshotError {
     code: FrozenToolSnapshotErrorCode,
     message: &'static str,
@@ -29,7 +30,7 @@ pub(crate) struct FrozenToolSnapshotError {
 
 impl FrozenToolSnapshotError {
     #[must_use]
-    pub(crate) const fn code(&self) -> FrozenToolSnapshotErrorCode {
+    pub(crate) const fn code(self) -> FrozenToolSnapshotErrorCode {
         self.code
     }
 }
@@ -89,6 +90,32 @@ impl<'a> FrozenToolSnapshot<'a> {
             return Err(resource_exhausted());
         }
 
+        let mut toolkit_ids = HashSet::with_capacity(source.len());
+        let mut references = Vec::with_capacity(source.len());
+        for value in source {
+            let reference = parse_reference(value)?;
+            if reference
+                .tool_id()
+                .is_some_and(|tool_id| !toolkit_ids.insert(tool_id))
+            {
+                continue;
+            }
+            references.push(reference);
+        }
+        Ok(Self { references })
+    }
+
+    /// Validate a nested application's already-frozen tool list.
+    pub(crate) fn from_version_details(
+        version: &'a Map<String, Value>,
+    ) -> Result<Self, FrozenToolSnapshotError> {
+        let source = version
+            .get("tools")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid_input)?;
+        if source.len() > MAX_FROZEN_TOOL_REFERENCES {
+            return Err(resource_exhausted());
+        }
         let mut toolkit_ids = HashSet::with_capacity(source.len());
         let mut references = Vec::with_capacity(source.len());
         for value in source {
@@ -188,11 +215,43 @@ impl FrozenToolReference<'_> {
     }
 
     #[must_use]
+    pub(crate) const fn settings(&self) -> Option<&Map<String, Value>> {
+        match self {
+            Self::Configured(reference) | Self::Mcp(reference) => Some(reference.settings),
+            Self::Application(_) => None,
+        }
+    }
+
+    #[must_use]
     pub(crate) const fn application_identity(&self) -> Option<(u64, u64)> {
         match self {
             Self::Application(reference) => {
                 Some((reference.application_id, reference.application_version_id))
             }
+            Self::Configured(_) | Self::Mcp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn application_description(&self) -> Option<&str> {
+        match self {
+            Self::Application(reference) => reference.description,
+            Self::Configured(_) | Self::Mcp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn application_agent_type(&self) -> Option<&str> {
+        match self {
+            Self::Application(reference) => Some(reference.agent_type),
+            Self::Configured(_) | Self::Mcp(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn application_project_id(&self) -> Option<u64> {
+        match self {
+            Self::Application(reference) => reference.project_id,
             Self::Configured(_) | Self::Mcp(_) => None,
         }
     }
@@ -208,6 +267,8 @@ pub(crate) struct FrozenConfiguredToolReference<'a> {
 pub(crate) struct FrozenApplicationReference<'a> {
     tool_id: Option<u64>,
     toolkit_name: &'a str,
+    description: Option<&'a str>,
+    agent_type: &'a str,
     application_id: u64,
     application_version_id: u64,
     participant_id: Option<u64>,
@@ -293,10 +354,11 @@ fn parse_stored_application_reference<'a>(
     let tool_id = positive_integer(Some(id)).ok_or_else(invalid_input)?;
     let name = required_identifier(tool, "name")?;
     let toolkit_name = required_identifier(tool, "toolkit_name")?;
+    let description = tool.get("description").and_then(Value::as_str);
+    let agent_type = required_identifier(tool, "agent_type")?;
     if name != toolkit_name
         || !optional_identifier(tool.get("description"))
         || positive_integer(tool.get("author_id")).is_none()
-        || required_identifier(tool, "agent_type").is_err()
         || required_identifier(tool, "created_at").is_err()
         || !tool.get("meta").is_some_and(Value::is_object)
         || !empty_array(tool.get("variables"))
@@ -320,6 +382,8 @@ fn parse_stored_application_reference<'a>(
     Ok(FrozenApplicationReference {
         tool_id: Some(tool_id),
         toolkit_name,
+        description,
+        agent_type,
         application_id,
         application_version_id,
         participant_id: None,
@@ -332,6 +396,8 @@ fn parse_adhoc_application_reference(
 ) -> Result<FrozenApplicationReference<'_>, FrozenToolSnapshotError> {
     let name = required_identifier(tool, "name")?;
     let toolkit_name = required_identifier(tool, "toolkit_name")?;
+    let description = tool.get("description").and_then(Value::as_str);
+    let agent_type = required_identifier(tool, "agent_type")?;
     let settings = tool
         .get("settings")
         .and_then(Value::as_object)
@@ -345,7 +411,6 @@ fn parse_adhoc_application_reference(
                 .is_some_and(|text| valid_identifier(text, true))
         })
         || positive_integer(tool.get("author_id")).is_none()
-        || required_identifier(tool, "agent_type").is_err()
         || required_identifier(tool, "created_at").is_err()
         || !empty_array(settings.get("variables"))
         || !empty_array(settings.get("selected_tools"))
@@ -361,6 +426,8 @@ fn parse_adhoc_application_reference(
     Ok(FrozenApplicationReference {
         tool_id: None,
         toolkit_name,
+        description,
+        agent_type,
         application_id,
         application_version_id,
         participant_id: Some(participant_id),

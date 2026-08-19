@@ -3,7 +3,9 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use adk_rust::{ErrorCategory, Part};
+use adk_rust::{
+    Content, ErrorCategory, FunctionResponseData, GenerateContentConfig, LlmRequest, Part,
+};
 use bytes::Bytes;
 use http::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE};
 use http::{HeaderValue, Response, StatusCode, Version};
@@ -41,6 +43,31 @@ fn ordinary_sse() -> Vec<u8> {
     .to_vec()
 }
 
+fn tool_request(contents: Vec<Content>) -> LlmRequest {
+    let mut tools = std::collections::HashMap::new();
+    tools.insert(
+        "double".to_owned(),
+        serde_json::json!({
+            "description": "Double one integer.",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"]
+            }
+        }),
+    );
+    LlmRequest {
+        model: "fixture-model".to_owned(),
+        contents,
+        config: Some(GenerateContentConfig {
+            max_output_tokens: Some(4_000),
+            ..GenerateContentConfig::default()
+        }),
+        tools,
+        previous_response_id: None,
+    }
+}
+
 async fn drain(
     mut stream: adk_rust::LlmResponseStream,
 ) -> Result<Vec<adk_rust::LlmResponse>, adk_rust::AdkError> {
@@ -72,8 +99,8 @@ fn assert_exact_captured_request(request: &CapturedModelRequest) {
         request
             .headers
             .get("openai-organization")
-            .expect("resource project header"),
-        "17"
+            .expect("model project header"),
+        "23"
     );
     assert_eq!(
         request
@@ -125,7 +152,8 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
     .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            23,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -168,6 +196,102 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn tool_declarations_calls_and_results_round_trip_across_model_turns() {
+    let tool_sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"double\",\"arguments\":\"{\\\"value\\\":\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"21}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let (client, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(test_model_gateway_response(Body::new(Full::new(
+                Bytes::from(tool_sse),
+            )))),
+            TestModelGatewayOutcome::Response(test_model_gateway_response(Body::new(Full::new(
+                Bytes::from(ordinary_sse()),
+            )))),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let bound = client
+        .bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            test_model_gateway_invocation(),
+        )
+        .expect("bound model");
+
+    let user = Content::new("user").with_text("double 21");
+    let first = drain(
+        bound
+            .generate_for_test(tool_request(vec![user.clone()]))
+            .await
+            .expect("tool-call stream"),
+    )
+    .await
+    .expect("tool-call response");
+    let call = first
+        .last()
+        .and_then(|response| response.content.as_ref())
+        .and_then(|content| content.parts.first())
+        .cloned()
+        .expect("function call");
+    assert!(matches!(
+        &call,
+        Part::FunctionCall { name, args, id, .. }
+            if name == "double" && args["value"] == 21 && id.as_deref() == Some("call_1")
+    ));
+
+    let result = Content {
+        role: "function".to_owned(),
+        parts: vec![Part::FunctionResponse {
+            function_response: FunctionResponseData::new(
+                "double",
+                serde_json::json!({"value": 42}),
+            ),
+            id: Some("call_1".to_owned()),
+            annotations: None,
+        }],
+    };
+    drain(
+        bound
+            .generate_for_test(tool_request(vec![
+                user,
+                Content {
+                    role: "model".to_owned(),
+                    parts: vec![call],
+                },
+                result,
+            ]))
+            .await
+            .expect("final stream"),
+    )
+    .await
+    .expect("final response");
+    assert_eq!(
+        bound.take_completion_for_test().expect("final completion"),
+        "Hello 🌍"
+    );
+
+    let captured = captured.lock().expect("captured requests");
+    assert_eq!(captured.len(), 2);
+    let first_body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("first body");
+    assert_eq!(first_body["tools"][0]["function"]["name"], "double");
+    assert_eq!(first_body["tool_choice"], "auto");
+    let second_body: serde_json::Value =
+        serde_json::from_slice(&captured[1].body).expect("second body");
+    assert_eq!(second_body["messages"][2]["role"], "assistant");
+    assert_eq!(second_body["messages"][2]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(second_body["messages"][3]["role"], "tool");
+    assert_eq!(second_body["messages"][3]["tool_call_id"], "call_1");
+    assert_eq!(second_body["messages"][3]["content"], "{\"value\":42}");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn model_credential_and_completion_are_single_use() {
     let response = test_model_gateway_response(Body::new(Full::new(Bytes::from(ordinary_sse()))));
     let (client, captured) = test_model_gateway_client(
@@ -178,10 +302,13 @@ async fn model_credential_and_completion_are_single_use() {
         test_model_gateway_config(),
     )
     .expect("model gateway client");
+    let mut invocation = test_model_gateway_invocation();
+    invocation.max_model_turns = 1;
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
-            test_model_gateway_invocation(),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
         )
         .expect("bound model");
     drain(
@@ -199,7 +326,7 @@ async fn model_credential_and_completion_are_single_use() {
     else {
         panic!("one claim credential cannot make a second model call")
     };
-    assert_eq!(error.code, "model_gateway.reused");
+    assert_eq!(error.code, "model_gateway.turn_limit");
     assert_eq!(error.category, ErrorCategory::InvalidInput);
     assert_eq!(captured.lock().expect("captured requests").len(), 1);
     assert_eq!(
@@ -218,7 +345,8 @@ async fn request_profile_and_local_bounds_fail_before_network() {
         .expect("model gateway client");
         let bound = client
             .bind_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 test_model_gateway_invocation(),
             )
             .expect("bound model");
@@ -226,9 +354,10 @@ async fn request_profile_and_local_bounds_fail_before_network() {
         match mutation {
             0 => request.model = "other-model".to_owned(),
             1 => {
-                request
-                    .tools
-                    .insert("forbidden".to_owned(), serde_json::json!({}));
+                request.tools.insert(
+                    "forbidden".to_owned(),
+                    serde_json::json!({"description": 7}),
+                );
             }
             2 => request
                 .contents
@@ -251,7 +380,8 @@ async fn request_profile_and_local_bounds_fail_before_network() {
             .expect("bounded model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -319,7 +449,8 @@ async fn status_metadata_and_transport_errors_are_stable_and_secret_safe() {
         .expect("model gateway client");
         let bound = client
             .bind_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 test_model_gateway_invocation(),
             )
             .expect("bound model");
@@ -343,7 +474,8 @@ async fn status_metadata_and_transport_errors_are_stable_and_secret_safe() {
     .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -383,7 +515,8 @@ async fn response_metadata_and_header_timeout_are_dependency_failures() {
         .expect("model gateway client");
         let bound = client
             .bind_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 test_model_gateway_invocation(),
             )
             .expect("bound model");
@@ -403,7 +536,8 @@ async fn response_metadata_and_header_timeout_are_dependency_failures() {
         .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -427,7 +561,7 @@ async fn sse_protocol_resource_and_tool_shapes_fail_closed() {
         (
             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{}]},\"finish_reason\":null}]}\n\n"
                 .to_owned(),
-            "model_gateway.tool_call",
+            "model_gateway.invalid_sse",
         ),
         (
             "data: {not-json}\n\n".to_owned(),
@@ -443,7 +577,8 @@ async fn sse_protocol_resource_and_tool_shapes_fail_closed() {
         .expect("model gateway client");
         let bound = client
             .bind_ordinary(
-                ClaimScopedEliteaContext::fixture(17, TOKEN),
+                &ClaimScopedEliteaContext::fixture(17, TOKEN),
+                17,
                 test_model_gateway_invocation(),
             )
             .expect("bound model");
@@ -474,7 +609,8 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
     .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -498,7 +634,8 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
     .expect("event-count client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -523,7 +660,8 @@ async fn sse_completion_event_count_and_stream_size_are_bounded() {
     .expect("stream-size client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -548,7 +686,8 @@ async fn idle_stream_and_trailers_fail_without_exposing_payloads() {
             .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -574,7 +713,8 @@ async fn idle_stream_and_trailers_fail_without_exposing_payloads() {
     .expect("model gateway client");
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             test_model_gateway_invocation(),
         )
         .expect("bound model");
@@ -598,7 +738,11 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
     let mut invocation = test_model_gateway_invocation();
     invocation.model_name = "o3-mini".to_owned();
     let bound = client
-        .bind_ordinary(ClaimScopedEliteaContext::fixture(17, TOKEN), invocation)
+        .bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
+        )
         .expect("o-series model");
     let mut request = test_model_gateway_request("request");
     request.model = "o3-mini".to_owned();
@@ -627,7 +771,8 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
     disabled_reasoning.temperature = Some(0.2);
     let bound = client
         .bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             disabled_reasoning,
         )
         .expect("disabled reasoning with temperature");
@@ -655,8 +800,17 @@ async fn o_series_role_and_configuration_boundaries_are_explicit() {
     invalid_invocation.temperature = Some(0.2);
     assert!(matches!(
         client.bind_ordinary(
-            ClaimScopedEliteaContext::fixture(17, TOKEN),
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
             invalid_invocation,
+        ),
+        Err(ModelGatewayError::InvalidInvocation)
+    ));
+    assert!(matches!(
+        client.bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            0,
+            test_model_gateway_invocation(),
         ),
         Err(ModelGatewayError::InvalidInvocation)
     ));

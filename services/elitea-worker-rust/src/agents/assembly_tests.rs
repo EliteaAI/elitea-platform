@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value, json};
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
+use super::context_management::ContextManagementPlan;
 use super::request::{
     AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
     NextInputSuggestionPolicy, UserInput,
@@ -8,6 +11,11 @@ use super::request::{
 use super::runtime::{AuthorizedNativeAssembly, NativeAgentAssemblyErrorCode};
 use super::session::AuthorizedNativeCommandBinding;
 use crate::protocol::control::test_runtime_context_authority;
+use crate::toolkits::ToolAdmissionPolicy;
+
+fn empty_tool_policy() -> ToolAdmissionPolicy {
+    ToolAdmissionPolicy::new(&[], &BTreeMap::new()).expect("empty toolkit policy")
+}
 
 fn object(value: Value) -> Map<String, Value> {
     let Value::Object(value) = value else {
@@ -183,11 +191,47 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
 }
 
 #[test]
+fn context_management_has_an_explicit_fail_closed_runner_seam() {
+    let mut disabled = ordinary_request(AgentExecutionKind::Application);
+    disabled
+        .payload
+        .context_settings
+        .insert("enabled".to_owned(), json!(false));
+    let profile = OrdinaryNoToolProfile::validate(&disabled)
+        .expect("the current SDK master switch disables context management");
+    assert_eq!(
+        profile.context_management(),
+        ContextManagementPlan::Disabled
+    );
+
+    let mut requested = ordinary_request(AgentExecutionKind::Application);
+    requested
+        .payload
+        .context_settings
+        .insert("enabled".to_owned(), json!(true));
+    let error = OrdinaryNoToolProfile::validate(&requested)
+        .expect_err("active context management remains capability-gated");
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+
+    let mut malformed = ordinary_request(AgentExecutionKind::Application);
+    malformed
+        .payload
+        .context_settings
+        .insert("enabled".to_owned(), json!("yes"));
+    let error = OrdinaryNoToolProfile::validate(&malformed)
+        .expect_err("a malformed master switch is not silently ignored");
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
+#[test]
 fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
     for mutation in 0..24 {
         let mut request = ordinary_request(AgentExecutionKind::Application);
         match mutation {
-            0 => request.payload.tools.push(json!({"type": "github"})),
+            0 => request.payload.ignored_mcp_servers.push(json!("server")),
             1 => {
                 request
                     .payload
@@ -217,7 +261,7 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
             11 => request.payload.return_chat_history = true,
             12 => request.payload.next_input_suggestion.enabled = true,
             13 => request.payload.debug_mode = Some(false),
-            14 => request.payload.steps_limit = Some(17),
+            14 => request.payload.should_continue = true,
             15 => {
                 request.payload.application.insert(
                     "variables".to_owned(),
@@ -379,7 +423,16 @@ fn pipeline_tools_templates_and_defaults_are_classified_before_redemption() {
         .and_then(Value::as_object_mut)
         .expect("application version")
         .insert("tools".to_owned(), json!([{"type": "github"}]));
-    assert!(OrdinaryNoToolProfile::validate(&configured_tool).is_err());
+    assert!(OrdinaryNoToolProfile::validate(&configured_tool).is_ok());
+    assert!(
+        AuthorizedNativeAssembly::new(
+            &configured_tool,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy())
+        .is_err()
+    );
 
     let mut application_override = ordinary_request(AgentExecutionKind::Application);
     application_override
@@ -544,7 +597,7 @@ fn credential_redemption_is_unreachable_until_the_profile_is_admitted() {
         test_runtime_context_authority(),
         AuthorizedNativeCommandBinding::fixture(),
     )
-    .admit_ordinary_no_tool()
+    .admit_llm_agent(&empty_tool_policy())
     .expect("admitted assembly");
     assert_eq!(admitted.request().kind, AgentExecutionKind::Application);
     assert_eq!(admitted.profile().model_project_id(), 17);
@@ -557,7 +610,7 @@ fn credential_redemption_is_unreachable_until_the_profile_is_admitted() {
             test_runtime_context_authority(),
             AuthorizedNativeCommandBinding::fixture(),
         )
-        .admit_ordinary_no_tool()
+        .admit_llm_agent(&empty_tool_policy())
         .is_err()
     );
 }

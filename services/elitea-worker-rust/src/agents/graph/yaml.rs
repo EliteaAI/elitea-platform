@@ -359,7 +359,7 @@ impl ParallelConfigurationError {
     }
 }
 
-fn valid_graph_id(value: &str) -> bool {
+pub(crate) fn valid_graph_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_NODE_ID_BYTES
         && value
@@ -368,7 +368,7 @@ fn valid_graph_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
 }
 
-fn valid_output_key(value: &str) -> bool {
+pub(crate) fn valid_output_key(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_OUTPUT_KEY_BYTES
         && !value

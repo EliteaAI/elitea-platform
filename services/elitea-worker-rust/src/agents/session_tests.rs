@@ -1,22 +1,32 @@
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use adk_rust::model::MockLlm;
-use adk_rust::{Content, Llm, LlmResponse};
+use adk_rust::tool::BasicToolset;
+use adk_rust::{
+    Content, FinishReason, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part, Tool,
+    ToolContext, Toolset,
+};
+use async_trait::async_trait;
 use chrono::Utc;
+use serde_json::{Value, json};
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::ordinary_request;
 use super::events::AgentEventProjectionErrorCode;
 use super::request::AgentExecutionKind;
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
+use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, OrdinaryNativeAgentPlan,
     assemble_ordinary_native,
 };
 use crate::protocol::node_event::encode_current_node_event_json;
+use crate::toolkits::ToolAdmissionPolicy;
 
 struct FixtureBoundModel {
-    model: Arc<MockLlm>,
+    model: Arc<dyn Llm>,
     completed: String,
 }
 
@@ -41,6 +51,106 @@ fn bound_model(response: &str) -> FixtureBoundModel {
     }
 }
 
+struct SequencedLlm {
+    responses: Mutex<VecDeque<LlmResponse>>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Llm for SequencedLlm {
+    fn name(&self) -> &'static str {
+        "fixture-model"
+    }
+
+    async fn generate_content(
+        &self,
+        _request: LlmRequest,
+        _stream: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let response = self
+            .responses
+            .lock()
+            .map_err(|_| adk_rust::AdkError::agent("fixture model lock failed"))?
+            .pop_front()
+            .ok_or_else(|| adk_rust::AdkError::agent("fixture model response missing"))?;
+        Ok(Box::pin(adk_rust::futures::stream::once(async move {
+            Ok(response)
+        })))
+    }
+}
+
+struct CountingTool {
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for CountingTool {
+    fn name(&self) -> &'static str {
+        "double"
+    }
+
+    fn description(&self) -> &'static str {
+        "Double one integer."
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let value = arguments
+            .get("value")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| adk_rust::AdkError::agent("fixture value missing"))?;
+        Ok(json!({"value": value * 2}))
+    }
+}
+
+fn tool_call_response() -> LlmResponse {
+    tool_call_response_with(json!({"value": 21}))
+}
+
+fn tool_call_response_with(args: Value) -> LlmResponse {
+    LlmResponse {
+        content: Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::FunctionCall {
+                name: "double".to_owned(),
+                args,
+                id: Some("call-1".to_owned()),
+                thought_signature: None,
+            }],
+        }),
+        finish_reason: Some(FinishReason::Stop),
+        turn_complete: true,
+        ..LlmResponse::default()
+    }
+}
+
+fn sensitive_catalog() -> SensitiveToolCatalog {
+    let runtime = json!({
+        "toolkit_security": {
+            "sensitive_tools": {"fixture": ["double"]},
+            "sensitive_action_company_name": "Example Org",
+            "sensitive_action_message_template":
+                "{company_name} must approve {action_name}."
+        }
+    });
+    let policy = ToolAdmissionPolicy::from_runtime_config(
+        runtime.as_object().expect("runtime configuration object"),
+    )
+    .expect("runtime policy");
+    SensitiveToolCatalog::fixture(
+        "double",
+        policy
+            .sensitive_tool("fixture", "Fixture Tools", "double")
+            .expect("sensitive double policy"),
+    )
+    .expect("sensitive catalog")
+}
+
 #[tokio::test]
 async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_completion() {
     let request = ordinary_request(AgentExecutionKind::Application);
@@ -51,9 +161,14 @@ async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_
         &AuthorizedNativeCommandBinding::fixture(),
     )
     .expect("native plan");
-    let mut assembled = assemble_ordinary_native(bound_model("native response"), plan)
-        .await
-        .expect("native assembly");
+    let mut assembled = assemble_ordinary_native(
+        bound_model("native response"),
+        plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+    )
+    .await
+    .expect("native assembly");
     let start = assembled
         .project_start(Utc::now())
         .expect("projected start");
@@ -96,6 +211,151 @@ async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_
             .code(),
         NativeAgentRuntimeErrorCode::InvalidState
     );
+}
+
+#[tokio::test]
+async fn direct_llm_agent_executes_a_bound_toolset_before_the_final_model_turn() {
+    let request = ordinary_request(AgentExecutionKind::Adhoc);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("agent profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("native plan");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let model = FixtureBoundModel {
+        model: Arc::new(SequencedLlm {
+            responses: Mutex::new(VecDeque::from([
+                tool_call_response(),
+                LlmResponse::new(Content::new("model").with_text("The answer is 42.")),
+            ])),
+            calls: Arc::clone(&model_calls),
+        }),
+        completed: "The answer is 42.".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&tool_calls),
+    });
+    let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
+    let assembled =
+        assemble_ordinary_native(model, plan, vec![toolset], SensitiveToolCatalog::default())
+            .await
+            .expect("native assembly");
+    let (mut native, _projector, completion) = assembled.start().expect("native start");
+
+    let mut saw_call = false;
+    let mut saw_result = false;
+    while let Some(event) = native.next_event().await.expect("native event") {
+        saw_call |= !event.tool_calls().is_empty();
+        saw_result |= !event.tool_results().is_empty();
+    }
+
+    assert!(saw_call);
+    assert!(saw_result);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+    let completion = completion.select().await.expect("selected completion");
+    let _ = completion;
+}
+
+#[tokio::test]
+async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_identity() {
+    let request = ordinary_request(AgentExecutionKind::Adhoc);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("agent profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("native plan");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let model = FixtureBoundModel {
+        model: Arc::new(SequencedLlm {
+            responses: Mutex::new(VecDeque::from([tool_call_response_with(json!({
+                "value": 21,
+                "api_token": "must-not-be-published"
+            }))])),
+            calls: Arc::clone(&model_calls),
+        }),
+        completed: "must not be selected".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&tool_calls),
+    });
+    let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
+    let mut assembled = assemble_ordinary_native(model, plan, vec![toolset], sensitive_catalog())
+        .await
+        .expect("native assembly");
+    assembled
+        .project_start(Utc::now())
+        .expect("projected start");
+    let (mut native, mut projector, _completion) = assembled.start().expect("native start");
+
+    let mut interrupt = None;
+    let mut public_events = Vec::new();
+    while let Some(event) = native.next_event().await.expect("native event") {
+        let confirmation = event.actions.tool_confirmation.as_ref();
+        let summary = format!(
+            "author={} interrupted={} complete={} calls={} confirmation={} confirmation_id={}",
+            event.author,
+            event.llm_response.interrupted,
+            event.llm_response.turn_complete,
+            event.tool_calls().len(),
+            confirmation.map_or("none", |value| value.tool_name.as_str()),
+            confirmation
+                .and_then(|value| value.function_call_id.as_deref())
+                .unwrap_or("none"),
+        );
+        for projected in projector
+            .project(&event)
+            .unwrap_or_else(|error| panic!("projected event failed ({summary}): {error}"))
+        {
+            let value: Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected).expect("canonical browser event"),
+            )
+            .expect("browser event JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                interrupt = Some(value.clone());
+            }
+            public_events.push(value);
+        }
+    }
+
+    let interrupt = interrupt.expect("sensitive-tool interrupt");
+    let pending = &interrupt["response_metadata"]["hitl_interrupts"][0];
+    assert_eq!(pending["guardrail_type"], "sensitive_tool");
+    assert_eq!(pending["tool_call_id"], "call-1");
+    assert_eq!(pending["toolkit_type"], "fixture");
+    assert_eq!(pending["toolkit_name"], "Fixture Tools");
+    assert_eq!(pending["tool_args"]["value"], 21);
+    assert_eq!(pending["tool_args"]["api_token"], "***");
+    assert!(pending.get("tool_args_raw").is_none());
+    let encoded_public_events = serde_json::to_string(&public_events).expect("public event JSON");
+    assert!(!encoded_public_events.contains("must-not-be-published"));
+    let tool_start = public_events
+        .iter()
+        .find(|event| event["type"] == "agent_tool_start")
+        .expect("sensitive tool start");
+    assert_eq!(
+        tool_start["response_metadata"]["tool_inputs"]["api_token"],
+        "***"
+    );
+    assert!(
+        pending["interrupt_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("hitl_e1:"))
+    );
+    assert!(
+        pending["call_digest"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+    assert!(projector.is_paused());
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

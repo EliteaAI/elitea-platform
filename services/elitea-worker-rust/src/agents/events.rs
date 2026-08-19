@@ -1,31 +1,45 @@
 //! Closed ADK-Rust 2.0.0 to current `NodeEventV1` projection.
 //!
-//! The first compatibility profile deliberately handles only ordinary
-//! root-agent text turns. Tool execution, transfers, citations, HITL, MCP
-//! authorization, pipeline custom events and multi-agent branches remain
-//! closed until their typed Elitea identities are available. Production cannot
-//! construct this projector yet; the authorized lifecycle will open that seam
-//! only after progress output is durably backpressured.
+//! The current compatibility profile handles bounded root-agent model/tool
+//! events, direct sensitive-tool confirmations and dynamic stored-pipeline
+//! HITL interrupts. Transfers, citations, MCP authorization, static graph
+//! breakpoints, pipeline custom events and multi-agent branches remain closed
+//! until their typed Elitea identities are available. Production construction
+//! remains capability-gated behind the authorized lifecycle and durable resume
+//! owner.
 
 #![allow(dead_code)] // Production construction waits for authorized progress delivery.
 
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
+use adk_rust::graph::interrupt::{GraphInterruptPayload, INTERRUPT_METADATA_KEY};
 use adk_rust::{Event, FinishReason, Part};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, SecondsFormat, Utc};
+use ring::digest;
+use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::{
     MAX_CURRENT_NODE_EVENT_JSON_BYTES, encode_current_node_event_json,
 };
 
-const MAX_PROJECTED_EVENTS_PER_ADK_EVENT: usize = 4;
+const MAX_TOOL_CALLS_PER_MODEL_TURN: usize = 16;
+const MAX_PROJECTED_EVENTS_PER_ADK_EVENT: usize = 3 + 2 * MAX_TOOL_CALLS_PER_MODEL_TURN;
 const MAX_ADK_EVENT_ID_BYTES: usize = 512;
 const MAX_ADK_PARTS_PER_EVENT: usize = 256;
 const MAX_CONTEXT_TEXT_BYTES: usize = 2_048;
 const MAX_COMPLETED_CONTENT_BYTES: usize = 60 * 1_024;
+const MAX_TOOL_EVENT_VALUE_BYTES: usize = 40 * 1_024;
+const HITL_DIGEST_DOMAIN: &[u8] = b"elitea.sensitive-tool-interrupt.v1\0";
+const PIPELINE_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-hitl-interrupt.v1\0";
+const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
+const MAX_PIPELINE_HITL_MESSAGE_BYTES: usize = 8 * 1024;
 
 /// Stable, low-cardinality event projection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,7 +187,9 @@ impl ProjectedAgentEventBatch {
 
 impl IntoIterator for ProjectedAgentEventBatch {
     type Item = NodeEventV1;
-    type IntoIter = std::iter::Flatten<std::array::IntoIter<Option<NodeEventV1>, 4>>;
+    type IntoIter = std::iter::Flatten<
+        std::array::IntoIter<Option<NodeEventV1>, MAX_PROJECTED_EVENTS_PER_ADK_EVENT>,
+    >;
 
     fn into_iter(self) -> Self::IntoIter {
         self.events.into_iter().flatten()
@@ -276,6 +292,17 @@ struct ActiveModelTurn {
 
 struct CompletedModelTurn;
 
+#[derive(Clone)]
+struct ActiveToolCall {
+    name: String,
+    /// Exact provider-produced arguments retained only for result correlation
+    /// and the private sensitive-call identity. Browser events must use
+    /// `public_arguments` instead.
+    arguments: Value,
+    public_arguments: Value,
+    timestamp_start: String,
+}
+
 /// Sanitized completion selected by the application/ad-hoc assembler.
 ///
 /// ADK stream EOS and a model final-response event are not sufficient to pick
@@ -340,6 +367,7 @@ enum ProjectionState {
     Started,
     Active(ActiveModelTurn),
     Complete(CompletedModelTurn),
+    Paused,
     Finished,
 }
 
@@ -348,17 +376,28 @@ pub(crate) struct AgentEventProjector {
     context: AgentEventProjectionContext,
     state: ProjectionState,
     invocation_id: Option<String>,
+    active_tools: BTreeMap<String, ActiveToolCall>,
+    sensitive_tools: SensitiveToolCatalog,
 }
 
 impl AgentEventProjector {
     pub(crate) fn new(
         context: AgentEventProjectionContext,
     ) -> Result<Self, AgentEventProjectionError> {
+        Self::with_sensitive_tools(context, SensitiveToolCatalog::default())
+    }
+
+    pub(crate) fn with_sensitive_tools(
+        context: AgentEventProjectionContext,
+        sensitive_tools: SensitiveToolCatalog,
+    ) -> Result<Self, AgentEventProjectionError> {
         validate_context(&context)?;
         Ok(Self {
             context,
             state: ProjectionState::Created,
             invocation_id: None,
+            active_tools: BTreeMap::new(),
+            sensitive_tools,
         })
     }
 
@@ -393,7 +432,6 @@ impl AgentEventProjector {
         &mut self,
         event: &Event,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
-        validate_adk_event(event, &self.context.root_agent_name)?;
         validate_event_id(&event.id)?;
         validate_invocation_id(&event.invocation_id)?;
         if self
@@ -403,13 +441,192 @@ impl AgentEventProjector {
         {
             return Err(AgentEventProjectionError::invalid_state());
         }
-        let Some(model_event) = ordinary_model_event(event)? else {
+        if event.actions.tool_confirmation.is_some() {
+            let batch = self.project_sensitive_confirmation(event)?;
+            self.bind_invocation_id(event);
+            return Ok(batch);
+        }
+        if event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY) {
+            let payload = GraphInterruptPayload::from_event(event)
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            let batch = self.project_pipeline_hitl(event, &payload)?;
+            self.bind_invocation_id(event);
+            return Ok(batch);
+        }
+        validate_adk_event(event, &self.context.root_agent_name)?;
+        let tool_calls = event.tool_calls();
+        let tool_results = event.tool_results();
+        if !tool_calls.is_empty() && !tool_results.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        if !tool_results.is_empty() {
+            let batch = self.project_tool_results(event, &tool_results)?;
+            self.bind_invocation_id(event);
+            return Ok(batch);
+        }
+        let Some(model_event) = ordinary_model_event(event, !tool_calls.is_empty())? else {
             self.bind_invocation_id(event);
             return Ok(ProjectedAgentEventBatch::new());
         };
-        let batch = self.project_model_event(event, model_event)?;
+        let mut batch = self.project_model_event(event, model_event)?;
+        if !tool_calls.is_empty() {
+            self.project_tool_starts(event, &tool_calls, &mut batch)?;
+        }
         self.bind_invocation_id(event);
         Ok(batch)
+    }
+
+    fn project_sensitive_confirmation(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        validate_confirmation_event(event, &self.context.root_agent_name)?;
+        if !matches!(self.state, ProjectionState::Complete(_)) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let request = event
+            .actions
+            .tool_confirmation
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_tool_identity(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if !valid_tool_identity(&request.tool_name) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_tool_event_value(&request.args)?;
+        let active = self
+            .active_tools
+            .get(call_id)
+            .filter(|active| active.name == request.tool_name && active.arguments == request.args)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let policy = self
+            .sensitive_tools
+            .policy_for(&request.tool_name)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let (interrupt_id, call_digest) = sensitive_call_identity(
+            &event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )?;
+        let tool_args = mask_sensitive_arguments(&active.arguments, 0)?;
+        let message = policy.policy_message().to_owned();
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "message": message.clone(),
+            "hitl_interrupt": true,
+            "hitl_interrupts": [{
+                "type": "hitl",
+                "interrupt_id": interrupt_id,
+                "call_digest": call_digest,
+                "guardrail_type": "sensitive_tool",
+                "node_name": "sensitive_tool_guard",
+                "message": policy.policy_message(),
+                "available_actions": ["approve", "reject", "block_with_comment"],
+                "routes": {},
+                "tool_call_id": call_id,
+                "tool_name": request.tool_name,
+                "toolkit_name": policy.toolkit_name(),
+                "toolkit_type": policy.toolkit_type(),
+                "action_label": policy.action_name(),
+                "tool_args": tool_args,
+                "policy_message": policy.policy_message(),
+            }],
+            "node_name": "sensitive_tool_guard",
+            "available_actions": ["approve", "reject", "block_with_comment"],
+            "routes": {},
+            "edit_state_key": Value::Null,
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "agent_hitl_interrupt",
+            &Value::String(message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    fn project_pipeline_hitl(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        validate_graph_interrupt_event(event, &self.context.root_agent_name)?;
+        if !matches!(
+            self.state,
+            ProjectionState::Started | ProjectionState::Complete(_)
+        ) || !self.active_tools.is_empty()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        if payload.kind != "dynamic"
+            || payload.node.is_some()
+            || payload.thread_id != self.context.thread_id
+            || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let message = payload
+            .message
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        validate_pipeline_hitl_message(message)?;
+        let data = serde_json::from_value::<PipelineHitlData>(
+            payload
+                .data
+                .clone()
+                .ok_or_else(AgentEventProjectionError::invalid_state)?,
+        )
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        data.validate(message)?;
+        let (interrupt_id, decision_digest) =
+            pipeline_hitl_identity(&event.invocation_id, payload, &data)?;
+        let pending = json!({
+            "type": "hitl",
+            "interrupt_id": interrupt_id,
+            "call_digest": decision_digest,
+            "guardrail_type": "pipeline_hitl",
+            "node_name": data.node_name,
+            "message": data.message,
+            "available_actions": data.available_actions,
+            "routes": data.routes,
+            "edit_state_key": data.edit_state_key,
+            "definition_digest": data.definition_digest,
+        });
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "message": message,
+            "hitl_interrupt": pending,
+            "hitl_interrupts": [pending],
+            "node_name": data.node_name,
+            "available_actions": data.available_actions,
+            "routes": data.routes,
+            "edit_state_key": data.edit_state_key,
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "agent_hitl_interrupt",
+            &Value::String(message.to_owned()),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_paused(&self) -> bool {
+        matches!(self.state, ProjectionState::Paused)
     }
 
     fn project_model_event(
@@ -422,6 +639,9 @@ impl AgentEventProjector {
             self.state,
             ProjectionState::Started | ProjectionState::Complete(_)
         );
+        if starts_turn && !self.active_tools.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
         let (event_id, timestamp_start, previous_content, previous_thinking) = match &self.state {
             ProjectionState::Started | ProjectionState::Complete(_) => {
                 (event.id.as_str(), timestamp.as_str(), "", "")
@@ -437,7 +657,7 @@ impl AgentEventProjector {
                     turn.thinking.as_str(),
                 )
             }
-            ProjectionState::Created | ProjectionState::Finished => {
+            ProjectionState::Created | ProjectionState::Paused | ProjectionState::Finished => {
                 return Err(AgentEventProjectionError::invalid_state());
             }
         };
@@ -515,6 +735,148 @@ impl AgentEventProjector {
         Ok(batch)
     }
 
+    fn project_tool_starts(
+        &mut self,
+        event: &Event,
+        calls: &[adk_rust::ToolCallView<'_>],
+        batch: &mut ProjectedAgentEventBatch,
+    ) -> Result<(), AgentEventProjectionError> {
+        if calls.len() > MAX_TOOL_CALLS_PER_MODEL_TURN || !self.active_tools.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let timestamp = event
+            .timestamp
+            .to_rfc3339_opts(SecondsFormat::AutoSi, false);
+        let mut ids = HashSet::with_capacity(calls.len());
+        let mut pending = Vec::with_capacity(calls.len());
+        for call in calls {
+            let id = call
+                .call_id
+                .filter(|value| valid_tool_identity(value))
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            if !ids.insert(id) || !valid_tool_identity(call.name) {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+            validate_tool_event_value(call.args)?;
+            let public_arguments = if self.sensitive_tools.policy_for(call.name).is_some() {
+                mask_sensitive_arguments(call.args, 0)?
+            } else {
+                call.args.clone()
+            };
+            let active = ActiveToolCall {
+                name: call.name.to_owned(),
+                arguments: call.args.clone(),
+                public_arguments,
+                timestamp_start: timestamp.clone(),
+            };
+            let entry = tool_entry(id, &active, None, None, None, None);
+            batch.push(self.event(
+                "agent_tool_start",
+                &Value::Null,
+                None,
+                &entry,
+                event.timestamp,
+            )?)?;
+            batch.push(self.tool_partial_event(id, &entry, event.timestamp)?)?;
+            pending.push((id.to_owned(), active));
+        }
+        self.active_tools.extend(pending);
+        Ok(())
+    }
+
+    fn project_tool_results(
+        &mut self,
+        event: &Event,
+        results: &[adk_rust::ToolResultView<'_>],
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if results.len() > MAX_TOOL_CALLS_PER_MODEL_TURN
+            || !matches!(self.state, ProjectionState::Complete(_))
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let timestamp_finish = event
+            .timestamp
+            .to_rfc3339_opts(SecondsFormat::AutoSi, false);
+        let mut completed = Vec::with_capacity(results.len());
+        let mut ids = HashSet::with_capacity(results.len());
+        let mut batch = ProjectedAgentEventBatch::new();
+        for result in results {
+            let id = result
+                .call_id
+                .filter(|value| valid_tool_identity(value))
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            if !ids.insert(id) {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+            let active = self
+                .active_tools
+                .get(id)
+                .filter(|active| active.name == result.name)
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            validate_tool_event_value(result.response)?;
+            let error = result
+                .response
+                .as_object()
+                .and_then(|value| value.get("error"))
+                .and_then(Value::as_str);
+            let output = error
+                .is_none()
+                .then(|| serde_json::to_string(result.response))
+                .transpose()
+                .map_err(|_| AgentEventProjectionError::invalid_state())?;
+            let finish_reason = if error.is_some() { "error" } else { "stop" };
+            let entry = tool_entry(
+                id,
+                active,
+                Some(timestamp_finish.as_str()),
+                Some(finish_reason),
+                output.as_deref(),
+                error,
+            );
+            batch.push(self.event(
+                if error.is_some() {
+                    "agent_tool_error"
+                } else {
+                    "agent_tool_end"
+                },
+                &error.map_or(Value::Null, |value| Value::String(value.to_owned())),
+                None,
+                &entry,
+                event.timestamp,
+            )?)?;
+            batch.push(self.tool_partial_event(id, &entry, event.timestamp)?)?;
+            completed.push(id.to_owned());
+        }
+        for id in completed {
+            self.active_tools.remove(&id);
+        }
+        Ok(batch)
+    }
+
+    fn tool_partial_event(
+        &self,
+        id: &str,
+        entry: &Value,
+        occurred_at: DateTime<Utc>,
+    ) -> Result<NodeEventV1, AgentEventProjectionError> {
+        let tool_calls = serde_json::Map::from_iter([(id.to_owned(), entry.clone())]);
+        self.event(
+            "partial_message",
+            &Value::Null,
+            None,
+            &json!({
+                "project_id": self.context.project_id,
+                "chat_project_id": self.context.chat_project_id,
+                "thread_id": self.context.thread_id,
+                "thinking_steps": [],
+                "tool_calls": tool_calls,
+                "additional_response_meta": {},
+                "invoked_skills": self.context.applied_skills,
+            }),
+            occurred_at,
+        )
+    }
+
     fn model_start_event(
         &self,
         event: &Event,
@@ -541,7 +903,7 @@ impl AgentEventProjector {
         completion: CompletedAgentBrowserOutput,
         occurred_at: DateTime<Utc>,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
-        if !matches!(self.state, ProjectionState::Complete(_)) {
+        if !matches!(self.state, ProjectionState::Complete(_)) || !self.active_tools.is_empty() {
             return Err(AgentEventProjectionError::invalid_state());
         }
         validate_public_text(&completion.thread_id)?;
@@ -706,8 +1068,346 @@ fn validate_adk_event(
     Ok(())
 }
 
+fn validate_confirmation_event(
+    event: &Event,
+    root_agent_name: &str,
+) -> Result<(), AgentEventProjectionError> {
+    if event.llm_response.error_code.is_some() || event.llm_response.error_message.is_some() {
+        return Err(AgentEventProjectionError::provider_failure());
+    }
+    if event.author != root_agent_name
+        || !event.branch.is_empty()
+        || !event.llm_response.interrupted
+        || !event.llm_response.turn_complete
+        || event.llm_response.citation_metadata.is_some()
+        || !event.long_running_tool_ids.is_empty()
+        || event.tool_progress_stream().is_some()
+        || event.actions.transfer_to_agent.is_some()
+        || event.actions.escalate
+        || event.actions.tool_confirmation_decision.is_some()
+        || event.actions.compaction.is_some()
+        || event.actions.route.is_some()
+        || !event.actions.artifact_delta.is_empty()
+        || !event.actions.state_delta.is_empty()
+        || event.actions.skip_summarization
+    {
+        return Err(AgentEventProjectionError::unsupported());
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineHitlData {
+    schema_revision: String,
+    #[serde(rename = "type")]
+    interrupt_type: String,
+    guardrail_type: String,
+    node_name: String,
+    message: String,
+    available_actions: Vec<String>,
+    routes: BTreeMap<String, String>,
+    edit_state_key: Option<String>,
+    definition_digest: String,
+}
+
+impl PipelineHitlData {
+    fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
+        if self.schema_revision != PIPELINE_HITL_SCHEMA
+            || self.interrupt_type != "hitl"
+            || self.guardrail_type != "pipeline_hitl"
+            || self.message != graph_message
+            || !valid_pipeline_node_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || self.routes.is_empty()
+            || self.routes.len() > 3
+            || self.available_actions.is_empty()
+            || self.available_actions.len() > 3
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let mut seen = HashSet::new();
+        for action in &self.available_actions {
+            if !matches!(action.as_str(), "approve" | "reject" | "edit")
+                || !seen.insert(action.as_str())
+                || !self.routes.contains_key(action)
+            {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+            if action == "edit"
+                && (self.edit_state_key.is_none()
+                    || self
+                        .routes
+                        .get(action)
+                        .is_some_and(|target| target == "END"))
+            {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+        }
+        for (action, target) in &self.routes {
+            if !matches!(action.as_str(), "approve" | "reject" | "edit")
+                || (target != "END" && !valid_pipeline_node_identity(target))
+            {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+        }
+        if self
+            .edit_state_key
+            .as_deref()
+            .is_some_and(|key| !valid_pipeline_state_key(key))
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        Ok(())
+    }
+}
+
+fn validate_graph_interrupt_event(
+    event: &Event,
+    root_agent_name: &str,
+) -> Result<(), AgentEventProjectionError> {
+    if event.author != root_agent_name
+        || !event.branch.is_empty()
+        || event.provider_metadata.len() != 1
+        || event.llm_response.partial
+        || event.llm_response.turn_complete
+        || event.llm_response.interrupted
+        || event.llm_response.finish_reason.is_some()
+        || event.llm_response.usage_metadata.is_some()
+        || event.llm_response.citation_metadata.is_some()
+        || event.llm_response.error_code.is_some()
+        || event.llm_response.error_message.is_some()
+        || event.llm_response.provider_metadata.is_some()
+        || event.llm_response.interaction_id.is_some()
+        || event.llm_request.is_some()
+        || !event.tool_calls().is_empty()
+        || !event.tool_results().is_empty()
+        || !event.long_running_tool_ids.is_empty()
+        || event.tool_progress_stream().is_some()
+        || event.actions.transfer_to_agent.is_some()
+        || event.actions.escalate
+        || event.actions.tool_confirmation.is_some()
+        || event.actions.tool_confirmation_decision.is_some()
+        || event.actions.compaction.is_some()
+        || event.actions.route.is_some()
+        || !event.actions.artifact_delta.is_empty()
+        || !event.actions.state_delta.is_empty()
+        || event.actions.skip_summarization
+    {
+        return Err(AgentEventProjectionError::unsupported());
+    }
+    let content = event
+        .content()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    if content.role != "assistant" || content.parts.len() != 1 {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let Part::Text { text } = &content.parts[0] else {
+        return Err(AgentEventProjectionError::invalid_state());
+    };
+    if text.is_empty() || text.len() > MAX_PIPELINE_HITL_MESSAGE_BYTES + 64 {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok(())
+}
+
+fn pipeline_hitl_identity(
+    invocation_id: &str,
+    payload: &GraphInterruptPayload,
+    data: &PipelineHitlData,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let canonical = canonical_json(
+        payload
+            .data
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(PIPELINE_HITL_DIGEST_DOMAIN);
+    for field in [
+        invocation_id.as_bytes(),
+        payload.thread_id.as_bytes(),
+        payload.checkpoint_id.as_bytes(),
+        data.node_name.as_bytes(),
+        data.definition_digest.as_bytes(),
+        canonical.as_slice(),
+    ] {
+        context.update(&(field.len() as u64).to_be_bytes());
+        context.update(field);
+    }
+    let digest = context.finish();
+    Ok((
+        format!("hitl_g1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
+        format!("sha256:{}", hex(digest.as_ref())),
+    ))
+}
+
+fn validate_pipeline_hitl_message(value: &str) -> Result<(), AgentEventProjectionError> {
+    if value.is_empty()
+        || value.len() > MAX_PIPELINE_HITL_MESSAGE_BYTES
+        || value.chars().any(|character| {
+            character == '\0'
+                || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+        })
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok(())
+}
+
+fn valid_pipeline_node_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':'))
+}
+
+fn valid_pipeline_state_key(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && !value
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+}
+
+fn valid_graph_checkpoint_identity(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
+}
+
+fn valid_sha256_label(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn sensitive_call_identity(
+    invocation_id: &str,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let canonical = canonical_json(arguments)?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(HITL_DIGEST_DOMAIN);
+    for field in [
+        invocation_id.as_bytes(),
+        call_id.as_bytes(),
+        tool_name.as_bytes(),
+    ] {
+        context.update(&(field.len() as u64).to_be_bytes());
+        context.update(field);
+    }
+    context.update(&(canonical.len() as u64).to_be_bytes());
+    context.update(&canonical);
+    let digest = context.finish();
+    Ok((
+        format!("hitl_e1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
+        format!("sha256:{}", hex(digest.as_ref())),
+    ))
+}
+
+fn canonical_json(value: &Value) -> Result<Vec<u8>, AgentEventProjectionError> {
+    serde_json::to_vec(&canonical_value(value, 0)?)
+        .map_err(|_| AgentEventProjectionError::invalid_state())
+}
+
+fn canonical_value(value: &Value, depth: usize) -> Result<Value, AgentEventProjectionError> {
+    if depth > 64 {
+        return Err(AgentEventProjectionError {
+            code: AgentEventProjectionErrorCode::ResourceExhausted,
+            protocol: None,
+        });
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .map(|value| canonical_value(value, depth + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            let mut object = serde_json::Map::with_capacity(values.len());
+            for key in keys {
+                let value = values
+                    .get(key)
+                    .ok_or_else(AgentEventProjectionError::invalid_state)?;
+                object.insert(key.clone(), canonical_value(value, depth + 1)?);
+            }
+            Ok(Value::Object(object))
+        }
+        value => Ok(value.clone()),
+    }
+}
+
+fn mask_sensitive_arguments(
+    value: &Value,
+    depth: usize,
+) -> Result<Value, AgentEventProjectionError> {
+    if depth > 64 {
+        return Err(AgentEventProjectionError {
+            code: AgentEventProjectionErrorCode::ResourceExhausted,
+            protocol: None,
+        });
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .map(|value| mask_sensitive_arguments(value, depth + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(values) => {
+            let mut masked = serde_json::Map::with_capacity(values.len());
+            for (key, value) in values {
+                let value = if sensitive_argument_key(key) {
+                    Value::String("***".to_owned())
+                } else {
+                    mask_sensitive_arguments(value, depth + 1)?
+                };
+                masked.insert(key.clone(), value);
+            }
+            Ok(Value::Object(masked))
+        }
+        value => Ok(value.clone()),
+    }
+}
+
+fn sensitive_argument_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    [
+        "password",
+        "passwd",
+        "token",
+        "secret",
+        "apikey",
+        "authorization",
+        "credential",
+        "cookie",
+        "privatekey",
+        "accesskey",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
 fn ordinary_model_event(
     event: &Event,
+    allow_function_calls: bool,
 ) -> Result<Option<OrdinaryModelEvent>, AgentEventProjectionError> {
     let Some(content) = event.content() else {
         let closes_turn =
@@ -737,7 +1437,7 @@ fn ordinary_model_event(
             protocol: None,
         });
     }
-    let (content, thinking) = ordinary_text_parts(content.parts.as_slice())?;
+    let (content, thinking) = ordinary_text_parts(content.parts.as_slice(), allow_function_calls)?;
     let closes_turn = event.llm_response.turn_complete || !event.llm_response.partial;
     if closes_turn {
         validate_finish_reason(event)?;
@@ -763,7 +1463,10 @@ fn validate_finish_reason(event: &Event) -> Result<(), AgentEventProjectionError
     }
 }
 
-fn ordinary_text_parts(parts: &[Part]) -> Result<(String, String), AgentEventProjectionError> {
+fn ordinary_text_parts(
+    parts: &[Part],
+    allow_function_calls: bool,
+) -> Result<(String, String), AgentEventProjectionError> {
     let mut content = String::new();
     let mut thinking = String::new();
     for part in parts {
@@ -772,6 +1475,7 @@ fn ordinary_text_parts(parts: &[Part]) -> Result<(String, String), AgentEventPro
             Part::Thinking {
                 thinking: value, ..
             } => extend_bounded(&mut thinking, value)?,
+            Part::FunctionCall { .. } if allow_function_calls => {}
             Part::InlineData { .. }
             | Part::FileData { .. }
             | Part::FunctionCall { .. }
@@ -784,6 +1488,46 @@ fn ordinary_text_parts(parts: &[Part]) -> Result<(String, String), AgentEventPro
         }
     }
     Ok((content, thinking))
+}
+
+fn tool_entry(
+    id: &str,
+    active: &ActiveToolCall,
+    timestamp_finish: Option<&str>,
+    finish_reason: Option<&str>,
+    output: Option<&str>,
+    error: Option<&str>,
+) -> Value {
+    json!({
+        "tool_name": active.name,
+        "tool_run_id": id,
+        "run_id": id,
+        "tool_meta": {"name": active.name, "metadata": {}},
+        "tool_inputs": active.public_arguments,
+        "metadata": {},
+        "timestamp_start": active.timestamp_start,
+        "timestamp_finish": timestamp_finish,
+        "finish_reason": finish_reason,
+        "tool_output": output,
+        "error": error,
+    })
+}
+
+fn valid_tool_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ADK_EVENT_ID_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+fn validate_tool_event_value(value: &Value) -> Result<(), AgentEventProjectionError> {
+    if serde_json::to_vec(value).is_ok_and(|encoded| encoded.len() <= MAX_TOOL_EVENT_VALUE_BYTES) {
+        Ok(())
+    } else {
+        Err(AgentEventProjectionError {
+            code: AgentEventProjectionErrorCode::ResourceExhausted,
+            protocol: None,
+        })
+    }
 }
 
 fn validate_event_id(value: &str) -> Result<(), AgentEventProjectionError> {
