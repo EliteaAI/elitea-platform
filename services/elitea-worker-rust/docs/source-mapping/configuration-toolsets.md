@@ -1605,9 +1605,11 @@ Azure service-principal roles prove both application and ad-hoc materialization.
 Health and generic read requests may also be independently sensitive because
 ARM responses contain tenant resource metadata.
 
-### Elasticsearch complete read family
+### Elasticsearch and compatible OpenSearch complete read family
 
-Elasticsearch is a complete one-tool read family over inline toolkit settings.
+Elasticsearch is a complete one-tool read family over inline toolkit settings,
+and the same direct REST implementation supports compatible OpenSearch search
+clusters without an Elasticsearch client library or version handshake.
 Current SDK `9bba9da` and worker-pinned SDK `b5113a1` expose the same
 `search_elastic_index(index, query)` operation and generated argument schema;
 current adds only `read` group metadata. Main's frozen toolkit catalog marks
@@ -1644,8 +1646,19 @@ thousand. The tool performs no scroll or continuation requests. Broad wildcard,
 script, runtime-field and aggregation cost remains subject to the cluster's own
 query controls and is called out to the model.
 
-One successful response must have a JSON media type, including the provider's
-`application/vnd.elasticsearch+json` form, and a top-level object. The provider
+OpenSearch originated from Elasticsearch 7.10.2 and retains this core Search
+API path, JSON request form and response structure. The two products have since
+diverged, so the model-facing query description requires clauses supported by
+the configured cluster rather than promising cross-product support for every
+new query feature. Anonymous OpenSearch clusters and current OpenSearch API
+keys use the existing wire contract. Older/self-managed deployments that only
+offer Basic authentication and Amazon OpenSearch domains protected by AWS
+Signature Version 4 are not supported by the SDK's URL-plus-optional-key schema;
+those remain explicit configuration/authentication gaps rather than silently
+reinterpreting the saved `api_key`.
+
+One successful response must have a JSON media type, including Elasticsearch
+and OpenSearch `application/*+json` vendor forms, and a top-level object. The provider
 body is capped at 2 MiB before decode and the serialized model result at 512
 KiB. The native response object remains intact, including hits, aggregations,
 timing and shard metadata. Authentication, authorization, not-found,
@@ -1665,7 +1678,7 @@ may independently require exact-invocation approval.
 | --- | --- | --- |
 | `tools/elastic/__init__.py::{ElasticToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline cluster URL, optional sealed API-key string, selection and source group | `config.rs` validates one claim-owned HTTPS authority, normalizes the encoded key contract and performs no construction I/O |
 | `tools/elastic/api_wrapper.py::{ELITEAElasticApiWrapper.search_elastic_index,SearchElasticIndexModel}` | One index plus Query DSL string search and native response | `tools.rs` exposes the complete bounded model contract; `client.rs` owns the exact Search API wire and stable projection/error taxonomy |
-| Elasticsearch Search API and API-key authentication contract | `POST /{index}/_search`, JSON body and encoded API-key header | deterministic fixtures cover exact route, header/body, native/vendor JSON media types, response shapes and status classes |
+| Elasticsearch and OpenSearch Search APIs plus compatible API-key authentication | `POST /{index}/_search`, JSON body and optional encoded API-key header | deterministic fixtures cover exact route, header/body, native/vendor JSON media types, response shapes and status classes; Basic auth and Amazon SigV4 remain gated |
 | Main application/ad-hoc freezer and claim materializer | API key remains sealed until accepted execution | focused Rust fixtures cover inline parsing, redaction and tenant isolation; full application/ad-hoc live-provider proof remains gated |
 
 Production registration remains disabled until Main projection and claim-time

@@ -173,7 +173,7 @@ struct ElasticTool {
 
 impl ElasticTool {
     fn new(toolkit_name: &str, client: Arc<dyn ElasticApi>) -> Self {
-        let action = "Search one Elasticsearch index, data stream, alias, wildcard, or comma-separated expression with a Query DSL JSON object. The index parameter selects the target, for example logs-2026.08-* or logs-current,logs-archive. query must be a JSON-object string; size defaults to Elasticsearch's 10 and is limited to 100, while from is limited to 10000. The tool performs one read-only POST /{index}/_search request over verified TLS without redirect, automatic retry, scroll, or continuation fetching. It returns the complete first bounded Elasticsearch response object, including hits, aggregations, took, and shard metadata when provided, up to 512 KiB. Queries and results can expose confidential indexed data and may independently require approval. Broad wildcards, scripts, runtime fields, and large aggregations can be expensive; use the narrowest index and query that answer the question.";
+        let action = "Search one Elasticsearch or REST-compatible OpenSearch index, data stream, alias, wildcard, or comma-separated expression with a Query DSL JSON object. The index parameter selects the target, for example logs-2026.08-* or logs-current,logs-archive. query must be a JSON-object string; size defaults to 10 and is limited to 100, while from is limited to 10000. The tool performs one read-only POST /{index}/_search request over verified TLS without redirect, automatic retry, scroll, or continuation fetching. It returns the complete first bounded search response object, including hits, aggregations, took, and shard metadata when provided, up to 512 KiB. Queries and results can expose confidential indexed data and may independently require approval. Broad wildcards, scripts, runtime fields, and large aggregations can be expensive; use the narrowest index and query that answer the question.";
         let prefix_bytes = "Toolkit: \n".len();
         let name_budget = MAX_DESCRIPTION_BYTES.saturating_sub(prefix_bytes + action.len());
         let bounded_name = truncate_utf8(toolkit_name, name_budget);
@@ -245,13 +245,13 @@ fn parameters_schema() -> Value {
                 "minLength": 1,
                 "maxLength": 1024,
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._*?,-]*$",
-                "description": "Required Elasticsearch index, data-stream, or alias expression, at most 1024 ASCII bytes; for example logs-2026.08-* or logs-current,logs-archive. Comma-separated expressions and suffix/infix * or ? wildcards are supported. Empty parts, path separators, traversal, date-math syntax, remote-cluster colons, and expressions beginning with -, _, +, *, or ? are rejected."
+                "description": "Required Elasticsearch or OpenSearch index, data-stream, or alias expression, at most 1024 ASCII bytes; for example logs-2026.08-* or logs-current,logs-archive. Comma-separated expressions and suffix/infix * or ? wildcards are supported. Empty parts, path separators, traversal, date-math syntax, remote-cluster colons, and expressions beginning with -, _, +, *, or ? are rejected."
             },
             "query": {
                 "type": "string",
                 "minLength": 2,
                 "maxLength": MAX_QUERY_SCHEMA_CHARS,
-                "description": "Required JSON-encoded Elasticsearch Query DSL object, not an array or scalar, using at most 64 KiB of UTF-8 input. Example: {\"size\":10,\"query\":{\"match\":{\"message\":\"timeout\"}}}. size defaults to 10 and is limited to 100; from is limited to 10000. The tool does not fetch scroll or continuation pages."
+                "description": "Required JSON-encoded Elasticsearch or OpenSearch Query DSL object, not an array or scalar, using at most 64 KiB of UTF-8 input. Example: {\"size\":10,\"query\":{\"match\":{\"message\":\"timeout\"}}}. Use only clauses supported by the configured cluster because the products have diverged since Elasticsearch 7.10.2. size defaults to 10 and is limited to 100; from is limited to 10000. The tool does not fetch scroll or continuation pages."
             }
         },
         "required": ["index", "query"],

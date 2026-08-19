@@ -214,6 +214,7 @@ async fn catalog_description_schema_selection_and_policy_are_model_truthful() {
     assert!(!tools[0].description().contains(CLUSTER_URL));
     assert!(!tools[0].description().contains(API_KEY));
     for cue in [
+        "Elasticsearch or REST-compatible OpenSearch",
         "index, data stream, alias",
         "size defaults",
         "POST /{index}/_search",
@@ -230,6 +231,16 @@ async fn catalog_description_schema_selection_and_policy_are_model_truthful() {
     assert_eq!(schema["additionalProperties"], false);
     assert_eq!(schema["properties"]["index"]["maxLength"], 1024);
     assert_eq!(schema["properties"]["query"]["maxLength"], 16_384);
+    assert!(
+        schema["properties"]["index"]["description"]
+            .as_str()
+            .is_some_and(|value| value.contains("Elasticsearch or OpenSearch"))
+    );
+    assert!(
+        schema["properties"]["query"]["description"]
+            .as_str()
+            .is_some_and(|value| value.contains("diverged since Elasticsearch 7.10.2"))
+    );
 
     let blocked = test_build_with_api(
         "logs-prod",
@@ -383,6 +394,7 @@ async fn native_and_vendor_json_success_are_projected_without_following_pages() 
     for content_type in [
         "application/json",
         "application/vnd.elasticsearch+json;compatible-with=8",
+        "application/vnd.opensearch+json",
     ] {
         let transport = Arc::new(FixtureTransport::new([Ok(ElasticHttpResponse::fixture(
             StatusCode::OK,

@@ -252,8 +252,11 @@ deliberately repairs the missing Python dependency, string-versus-tuple API-key
 mismatch and class-global client. The Query DSL object, index expressions,
 result window, provider body and 512 KiB model result are bounded while the
 native search response remains intact. Tested descriptions explain
-index/data-stream/alias targeting, wildcard and comma forms, Query DSL shape,
-first-response-only behavior, confidential-data risk and expensive-query cues.
+Elasticsearch and REST-compatible OpenSearch targeting, wildcard and comma
+forms, Query DSL shape and post-7.10.2 divergence, first-response-only behavior,
+confidential-data risk and expensive-query cues. The shared search wire works
+with anonymous or compatible API-key OpenSearch clusters; Basic-authenticated
+and Amazon SigV4 domains remain explicit unsupported activation gaps.
 Production composition remains closed until claim-only materialization, exact
 cluster DNS/IP egress and live authentication, index-privilege and query-load
 proof are composed. The `read` group remains metadata and sensitivity stays
