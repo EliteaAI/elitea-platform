@@ -170,6 +170,29 @@ remains closed until application/ad-hoc materialization, exact-`interrupt_id`
 approval, cancellation-safe effect reconciliation, owned TLS/trust, real
 PostgreSQL/MySQL proof and a response preallocation boundary are composed.
 
+The complete capability-disabled `Postman` family adds all thirty-one current
+SDK tools in source order: eight reads, nineteen writes, three deletes and one
+stored-request execute surface. One claim-scoped zeroizing client owns only the
+configured Postman HTTPS management origin and disables redirects and hidden
+retries. Collection traversal, request/folder resolution, JSON bodies, provider
+responses and projections are bounded. The SDK's deterministic analyzer is
+retained for collection, folder and request security, performance,
+documentation, testing, issue, score, recommendation and improvement results;
+read projections redact stored credentials and payload values without changing
+raw-field search matching. All management mutations are implemented but remain
+closed behind exact-`interrupt_id` sensitivity, durable per-collection fencing
+and cancellation-safe effect receipt/reconciliation. `execute_request` has a
+separate structurally closed dynamic-egress authority because reading a saved
+Postman URL cannot authorize downstream HTTP. Activation additionally requires
+claim-bound origin and DNS authorization, SSRF and redirect controls, dangerous
+header filtering, secret-safe output, and a distinct downstream effect receipt.
+The disabled executor preserves request-level auth fallback and commented-JSON
+behavior without inheriting broader collection/folder credentials or corrupting
+quoted `//` URL text.
+No public connection check is advertised: the configuration contract marks it
+unsupported and the source toolkit's nominal checker addresses fields that do
+not exist on its generated nested model.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline

@@ -133,7 +133,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `bitbucket` | `configurations/bitbucket.py::BitbucketConfiguration` | `tools/bitbucket::EliteABitbucketToolkit` | 22 | Yes | `configurations/families/bitbucket.rs`; `toolkits/families/bitbucket/` | Planned |
 | `confluence` | `configurations/confluence.py::ConfluenceConfiguration` | `tools/confluence::ConfluenceToolkit` | 25 | Yes | `configurations/families/confluence.rs`; `toolkits/families/confluence/` | Planned; shared Atlassian auth normalizer |
 | `jira` | `configurations/jira.py::JiraConfiguration` | `tools/jira::JiraToolkit` | 23 | Yes | `configurations/families/jira.rs`; `toolkits/families/jira/` | Planned; shared Atlassian auth normalizer |
-| `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `configurations/families/postman.rs`; `toolkits/families/postman/` | Planned |
+| `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `toolkits/families/slack/{config,client,tools}.rs` | Capability-disabled complete family: seven bounded fixed-origin messaging, membership and workspace operations; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
@@ -1329,6 +1329,89 @@ and reconciliation, and the real claim-scoped artifact resolver. Large tool
 results must retain one event owner and remain below the output-frame boundary;
 the Python worker's known duplicated 51,979-byte Aha result is a regression
 fixture rather than behavior to reproduce.
+
+### Postman complete collection-management family
+
+Postman is a complete thirty-one-tool family over one configured workspace and
+default collection. The current SDK at
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, the worker-pinned SDK at
+`b5113a129329b85d23c2d5c2bf55f18e307414ec` plus its two MCP-only patches,
+and Main's catalog revision `a78d3654f99d8ff89ca7233f20a66d676e564f79`
+have the same Postman schemas and behavior; current adds only eight `read`, one
+`execute`, nineteen `write` and three `delete` group annotations. Those groups
+describe effects for the model and catalog. They neither grant execution nor
+decide whether a deployment marks a particular read or effect sensitive.
+
+Main freezes the schema-declared nested `postman_configuration`, selected tool
+names, default `collection_id` and `environment_config`. Claim-time
+materialization redeems the nested API key before the Python worker passes the
+same application or ad-hoc settings to the SDK. The Rust configuration parser
+accepts that materialized shape, requires a nonempty API key despite the
+source's nullable descriptor, and retains downstream environment values only
+as zeroizing canonical JSON. Toolkit construction performs no provider I/O.
+The configuration catalog truthfully says connection checking is unsupported;
+the source toolkit's nominal checker addresses nonexistent flattened fields
+and is not reproduced.
+
+The catalog retains all source operations in order: eight collection, folder,
+request, script, search and deterministic analysis reads; twenty-two Postman
+management effects; and `execute_request`. Management calls are confined to
+the configured HTTPS Postman origin, percent-encode all identifiers, disable
+redirects and implicit retries, and apply finite request, response, JSON,
+traversal and output bounds. Reads return native bounded projections. Stored
+auth, variable values, headers and bodies are redacted unless a tool explicitly
+requests a bounded script. Path resolution uses exact case-insensitive segments
+and rejects sibling ambiguity instead of silently selecting or overwriting the
+first substring match.
+
+The SDK's `PostmanAnalyzer` remains business functionality rather than model
+decoration. Rust retains its collection, folder and request security,
+performance, documentation, test-coverage, naming, hardcoded-data, issue,
+score, recommendation and optional improvement rules. Traversal is iterative
+and bounded, and projected URLs remove user information and secret query
+values. Search still evaluates the raw collection fields before redacting the
+returned matches, so hardening does not change which requests match.
+
+Collection and subtree mutations preserve the source's whole-collection or
+individual folder/request routes, null semantics and result meaning. Rust
+rejects the source's crashing null request-body case before dispatch, treats
+folder `auth: null` as unchanged while collection/request null clears auth, and
+never retries an effect. A transport, unexpected-status, confirmation or
+post-success projection failure after dispatch is a nonretryable unknown
+outcome. The in-process mutation lock is only a local ordering aid; production
+activation still requires a durable per-collection fingerprint/fence plus
+effect receipt and reconciliation so concurrent worker invocations cannot
+overwrite a newer collection.
+
+`execute_request` is intentionally a separate authority boundary. Reading a
+saved request from Postman does not authorize sending its variable-expanded
+URL. The production client therefore has no constructor or injection point for
+the sealed downstream-egress authority. A future owner must bind the exact
+invocation, approved origin and DNS result; reject private, loopback,
+link-local and rebinding targets; disable or reauthorize redirects; filter
+dangerous headers; bound variable expansion, request and response data; retain
+duplicate query/form pairs; redact credentials and payloads; and bind any
+remote effect to the durable interrupt and effect receipt. Request-level auth
+is the only saved-request auth fallback, matching the SDK rather than widening
+credential use to collection or folder auth. Raw JSON with line comments keeps
+the SDK's JSON execution behavior through a bounded string-aware cleaner, so a
+`//` inside a quoted URL is not corrupted. Postman pre-request and test scripts
+remain stored data and are not executed by this tool.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `configurations/postman.py::PostmanConfiguration` and Main's frozen configuration/toolkit catalogs | Nested Postman origin, workspace and API-key authority plus claim-time materialization | `config.rs` validates the claim-owned HTTPS authority and stores the dynamic profile as zeroizing data |
+| `tools/postman/__init__.py::PostmanToolkit` and `api_wrapper.py` argument models/catalog | Exact 31-tool order, selected-tool behavior, defaults, schemas and operation groups | `tools.rs` exposes selection-oriented descriptions and executable bounded schemas without leaking origin or credentials |
+| `PostmanApiWrapper::_make_request`, collection readers and management effects | Fixed-origin management wire, result projection, full-collection and individual-resource mutations | `client.rs` owns one bounded no-redirect/no-retry client, typed safe errors and effect-aware outcomes |
+| `postman_analysis.py::PostmanAnalyzer` | Request/folder/collection scoring, findings, recommendations, improvements and path helpers | `analysis.rs` preserves deterministic rules with bounded iterative traversal and redacted URL projection |
+| `PostmanApiWrapper::execute_request` and `_apply_authentication` | Stored-request variable/auth/body resolution followed by arbitrary downstream HTTP | the private dynamic-execution boundary has no production authority constructor until claim-bound egress is composed |
+| Main toolkit freezer/materializer and Python `EliteaSdkAgentAdapter` | Same nested tool settings for application and ad-hoc requests | focused Rust fixtures cover the materialized shape; live Main-to-worker proof remains an activation gate |
+
+Production registration remains disabled pending authorized application/ad-hoc
+materialization, live Postman management proof, durable exact-`interrupt_id`
+sensitive-tool continuation, per-collection effect ownership and reconciliation,
+and the separately sealed dynamic-egress authority. Every read may independently
+be sensitive because collections can contain credentials, scripts and payloads.
 
 ## Special runtime toolsets
 
