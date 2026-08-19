@@ -44,4 +44,6 @@ mod sonar_tests;
 #[cfg(test)]
 mod sql_tests;
 #[cfg(test)]
+mod yagmail_tests;
+#[cfg(test)]
 mod zephyr_squad_tests;

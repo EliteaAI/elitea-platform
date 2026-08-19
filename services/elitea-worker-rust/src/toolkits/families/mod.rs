@@ -11,4 +11,5 @@ pub(crate) mod service_now;
 pub(crate) mod slack;
 pub(crate) mod sonar;
 pub(crate) mod sql;
+pub(crate) mod yagmail;
 pub(crate) mod zephyr_squad;

@@ -176,10 +176,11 @@ fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
-Elastic (1), PPTX (2), and Yagmail (1). LocalGit (13) is intentionally
-deferred: its local-filesystem/process isolation boundary is outside the
-remote toolkit migration priority.
-Their authority source and admission policy must be explicit before live porting.
+Elastic (1), PPTX (2), and Yagmail (1). Yagmail is now implemented completely
+behind a capability gate from its inline claim-materialized settings. LocalGit
+(13) is intentionally deferred: its local-filesystem/process isolation boundary
+is outside the remote toolkit migration priority. The remaining families still
+require an explicit authority source and admission policy before live porting.
 
 The SDK also defines `EmbeddingConfiguration`, but it is not one of the 32
 registered configuration families. Rust will model it as a referenced model
@@ -1412,6 +1413,55 @@ materialization, live Postman management proof, durable exact-`interrupt_id`
 sensitive-tool continuation, per-collection effect ownership and reconciliation,
 and the separately sealed dynamic-egress authority. Every read may independently
 be sensitive because collections can contain credentials, scripts and payloads.
+
+### Yagmail complete SMTP family
+
+Yagmail is a complete one-tool family over inline toolkit settings rather than a
+separately registered configuration. Current SDK `9bba9da` and worker-pinned SDK
+`b5113a1` expose the same `send_gmail_message` operation and SMTP behavior;
+current adds only its `write` group metadata. Main's frozen toolkit schema marks
+only the top-level password as secret, preserves the frozen host, username and
+selection, and redeems the password only for the accepted application or ad-hoc
+claim. No connection check or indexing capability exists.
+
+The source lazily sends through implicit TLS on configured host port 465 and
+normalizes a username without `@` to a Gmail address. It also stores its client
+on the wrapper class, uses an unverified Python TLS context, retries a disconnected
+send up to three times, has no deadlines or bounds, and can interpret a message
+that names a local file as an attachment. The Rust client instead owns one
+non-debuggable, zeroizing credential set per materialized toolkit; accepts only a
+bounded DNS host (defaulting absent or null to `smtp.gmail.com`); verifies native
+trust roots and the hostname; supports CRAM-MD5, PLAIN and LOGIN authentication;
+and makes exactly one bounded SMTP transaction. It treats the message as literal
+UTF-8, creates escaped text/plain and text/html alternatives, folds MIME headers,
+dot-stuffs DATA, and returns the source-compatible empty object when every
+recipient is accepted. A partial recipient refusal becomes a bounded receipt of
+address and SMTP code without provider diagnostic text. Timeout, disconnect or
+invalid acceptance after DATA begins is a nonretryable unknown outcome.
+
+The Python generated argument schema accidentally requires `cc` even though the
+method defaults it to `None` and shared dispatch removes explicit null values.
+Rust deliberately repairs that mismatch: `cc` is optional-null with default null,
+so omission and null both mean no copy recipients. Rust also rejects an unknown
+persisted selected-tool name instead of silently materializing an empty family.
+The public schema and tested descriptions make character and UTF-8 byte limits,
+mailbox format, literal-body semantics, one-attempt behavior and duplicate risk
+visible to the model. The operation remains non-read-only and
+non-concurrency-safe; the `write` group is metadata, not authorization.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/yagmail/__init__.py::{EliteAYagmailToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline host, username, sealed password and selected-tool materialization | `config.rs` validates the exact claim-owned host/login, normalizes the safe host/username defaults and keeps the password zeroizing |
+| `yagmail_wrapper.py::{SendEmail,YagmailWrapper}` | One public send schema, runtime default/null handling and SDK class-global wrapper | `tools.rs` exposes the complete catalog, truthful optional `cc`, selection-oriented descriptions and independent policy metadata |
+| pinned `yagmail==0.15.293` sender, address and MIME helpers | TLS SMTP authentication, envelope recipients, DATA and result behavior | `client.rs` owns verified implicit TLS, bounded SMTP/MIME parsing, one-attempt effect semantics and redacted typed outcomes |
+| Main application/ad-hoc freezer and claim materializer | Password remains sealed until accepted execution | focused Rust fixtures cover inline materialization and secret-safe construction; live Main-to-worker proof remains an activation gate |
+
+Production registration remains disabled until the shared direct-sensitive-tool
+wrapper authorizes the exact invocation by durable `interrupt_id`, a durable
+pre-send intent binds the exact arguments and stable Message-ID, effect receipts
+and unknown outcomes can be reconciled across restart/cancellation, SMTP egress is
+restricted to the frozen host on port 465 with DNS/IP policy, and a live server
+with a trusted certificate proves the complete claim-materialization path.
 
 ## Special runtime toolsets
 

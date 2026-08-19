@@ -193,6 +193,22 @@ No public connection check is advertised: the configuration contract marks it
 unsupported and the source toolkit's nominal checker addresses fields that do
 not exist on its generated nested model.
 
+The complete capability-disabled `Yagmail` family adds its one current SDK
+`send_gmail_message` write effect from inline claim-materialized settings. A
+non-debuggable zeroizing client owns the frozen DNS host, username and password;
+implicit TLS port 465 verifies native roots and hostname, SMTP authentication
+supports the source mechanisms, and the bounded MIME builder always treats the
+message as literal text rather than a local path. The client makes one send
+attempt, returns the source empty object on complete acceptance, reports partial
+recipient refusal without diagnostic text, and converts every ambiguous failure
+after DATA begins to a nonretryable unknown outcome. Rust intentionally makes
+`cc` optional-null, matching the Python method/runtime default rather than its
+accidentally required generated schema. Production composition remains closed
+until exact-`interrupt_id` approval, a durable pre-send Message-ID intent and
+effect receipt/reconciliation owner, claim-only secret redemption, fixed-host
+SMTP egress/DNS enforcement and live verified-TLS proof are composed. The
+`write` group alone grants no authority and sensitivity remains independent.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline
