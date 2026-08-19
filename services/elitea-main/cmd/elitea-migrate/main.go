@@ -40,17 +40,31 @@ func main() {
 	}
 	defer pool.Close()
 
+	runner := migrate.New(pool, platformmigrations.Files)
+	if err := runner.ApplyShared(ctx); err != nil {
+		exitError(err)
+	}
+
+	// Enumerated AFTER the shared history, not before it.
+	//
+	// TenantProjects reads centry.project. On a database that pylon populated
+	// that table is already there, so reading it first worked and this ordering
+	// never mattered. On an EMPTY database it does not exist yet, and
+	// -all-tenants failed before applying anything:
+	//
+	//   preflight legacy tenant projects: ERROR: relation "centry.project"
+	//   does not exist (SQLSTATE 42P01)
+	//
+	// which made the flag the chart passes by default unusable on a first
+	// install. The shared history is what creates that table, so the list has
+	// to be taken once it has run. Reading it later cannot lose a project
+	// either: nothing between these two statements creates one.
 	var projectIDs []int64
 	if allTenants {
 		projectIDs, err = migrate.TenantProjects(ctx, pool)
 		if err != nil {
 			exitError(err)
 		}
-	}
-
-	runner := migrate.New(pool, platformmigrations.Files)
-	if err := runner.ApplyShared(ctx); err != nil {
-		exitError(err)
 	}
 	if projectID > 0 {
 		if err := runner.ApplyTenant(ctx, projectID); err != nil {

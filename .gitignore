@@ -14,10 +14,23 @@ deploy/data/production/
 # OS
 .DS_Store
 
-# Go binaries
+# Go binaries.
+#
+# `go build ./cmd/<name>` writes ./<name> into the SERVICE directory, so every
+# cmd package is a binary that can land next to the source. This list was
+# missing most of them — elitea-migrate, the two material installers, the auth
+# validator and the index preflight — and a 13MB Mach-O got committed from a
+# routine `go build ./cmd/elitea-migrate/` before scripts/no-binaries-check.sh
+# would have caught it in CI. Keep one line per cmd package.
 /services/*/cmd/*/__debug_bin*
-/services/elitea-main/elitea-main
+/services/elitea-llm-gateway/elitea-llm-gateway
 /services/elitea-main/cutover-ctl
+/services/elitea-main/elitea-auth-material
+/services/elitea-main/elitea-auth-validate
+/services/elitea-main/elitea-main
+/services/elitea-main/elitea-migrate
+/services/elitea-main/elitea-runtime-material
+/services/elitea-main/index-v2-preflight
 /services/elitea-scheduler/elitea-scheduler
 bin/
 .claude/settings.json

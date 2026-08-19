@@ -364,6 +364,10 @@ mtls:
   # ca.crt (mTLS require-and-verify).
   mountPath: /etc/gateway/tls
 
+# probes: with mtls.enabled (the default) the paths below are NOT used — the
+# listener requires a verified client certificate, which a kubelet probe cannot
+# present, so templates/deployment.yaml probes the socket instead. The paths
+# apply when mtls.enabled is false.
 probes:
   liveness:
     # Process liveness only (no dependency calls) — issue #242: a NATS blip

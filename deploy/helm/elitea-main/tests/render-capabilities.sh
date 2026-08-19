@@ -147,6 +147,23 @@ if [ -n "$(data ADMIN_UI_STATIC_DIR "$WORK/default.yaml")" ]; then
 else
   fail "ADMIN_UI_STATIC_DIR renders empty, which turns the admin console off"
 fi
+# ELITEA_ALLOW_PROJECT_OWN_LLMS must be true or false, never empty.
+#
+# The chart renders every key in .Values.env, so an empty value is not "unset":
+# it arrives present and empty, and configurations_config.go accepts only the
+# two literals. Shipping it empty stopped elitea-main at boot on the first
+# install that enabled configurations, AFTER authentication had reported
+# success — the kind of failure that reads like an auth problem and is not.
+allow_own_llms="$(data ELITEA_ALLOW_PROJECT_OWN_LLMS "$WORK/default.yaml")"
+case "$allow_own_llms" in
+  true|false)
+    pass "ELITEA_ALLOW_PROJECT_OWN_LLMS renders \"$allow_own_llms\", which cmd/elitea-main accepts"
+    ;;
+  *)
+    fail "ELITEA_ALLOW_PROJECT_OWN_LLMS renders \"$allow_own_llms\"; cmd/elitea-main takes the key as configured and refuses anything but true or false"
+    ;;
+esac
+
 if yq eval-all 'select(.kind == "ConfigMap") | .data | has("REDIS_URL")' \
   "$WORK/default.yaml" | grep -qx true; then
   pass "the chart exposes REDIS_URL, the project event stream transport"
