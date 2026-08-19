@@ -135,6 +135,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `jira` | `configurations/jira.py::JiraConfiguration` | `tools/jira::JiraToolkit` | 23 | Yes | `configurations/families/jira.rs`; `toolkits/families/jira/` | Planned; shared Atlassian auth normalizer |
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
 | `keycloak` | None; authority and service-account credentials are inline toolkit settings | `tools/keycloak::KeycloakToolkit` | 1 | No | `toolkits/families/keycloak/{config,client,tools}.rs` | Capability-disabled complete family: one generic Admin REST execute surface retains reads, writes, deletes and actions inside one frozen HTTPS realm; exact-interrupt HITL, effect reconciliation, approved egress and live provider proof remain gates |
+| `azure` | None; subscription and service-principal credentials are inline toolkit settings | `tools/cloud/azure::AzureToolkit` | 2 | No | `toolkits/families/azure/{config,client,tools}.rs` | Capability-disabled complete family: one generic ARM execute surface plus its resource-group health read inside the frozen public-cloud subscription; exact-interrupt HITL, effect reconciliation, approved egress and live Azure role proof remain gates |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `toolkits/families/slack/{config,client,tools}.rs` | Capability-disabled complete family: seven bounded fixed-origin messaging, membership and workspace operations; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
@@ -177,7 +178,7 @@ fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
-Elastic (1), PPTX (2), and Yagmail (1). Yagmail and Keycloak are now implemented
+Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Keycloak and Azure are now implemented
 completely behind capability gates from inline claim-materialized settings. LocalGit
 (13) is intentionally deferred: its local-filesystem/process isolation boundary
 is outside the remote toolkit migration priority. The remaining families still
@@ -1521,6 +1522,81 @@ unknown outcomes across cancellation/restart; egress constrains the frozen
 Keycloak origin and DNS/IP resolution; and live Keycloak service-account roles
 prove both application and ad-hoc claim materialization. Read requests may also
 be independently sensitive because Admin API responses contain identity data.
+
+### Azure complete Resource Manager family
+
+Azure is a complete two-tool family over inline toolkit settings rather than a
+separately registered configuration. Current SDK `9bba9da` and worker-pinned
+SDK `b5113a1` expose the same source-ordered `execute` and
+`azure_integration_healthcheck` operations; current adds only `execute` and
+`read` group metadata. Main's frozen toolkit catalog marks only `client_secret`
+as secret and otherwise freezes the subscription, tenant, client and selected
+tool names for claim-time materialization. No public configuration connection
+check or indexing behavior exists; the health check is itself the second model
+tool.
+
+The intended source flow creates a client-secret credential, obtains a token
+for `https://management.azure.com/.default`, and dispatches an arbitrary HTTP
+method to a caller-provided Azure Resource Manager URL. In both pinned SDKs the
+operation is unusable because it calls missing `json_query_load` and
+`bad_domain` helpers before its exception boundary. If those calls were
+available, the source would still accept arbitrary request kwargs and origins,
+follow redirects, expose raw provider text, and provide no finite body or
+deadline bounds. Rust repairs that broken boundary without dropping either
+tool or any bounded RFC HTTP method token.
+
+One invocation-owned non-debuggable client retains the exact claim-materialized
+subscription, tenant, client ID and zeroizing secret. It performs the official
+client-credentials form exchange at the fixed public Microsoft Entra endpoint,
+then sends one Bearer-authenticated request to the exact
+`https://management.azure.com` origin. The URL must remain below the configured
+`/subscriptions/{subscription_id}` scope; userinfo, alternate ports or origins,
+fragments, traversal, decoded separators and redirects are rejected. This is an
+intentional security narrowing of the source's unscoped absolute URL, and the
+inline schema has no sovereign-cloud authority with which to authorize another
+login or ARM origin.
+
+`optional_args` remains compatible with object or JSON-object-string input, but
+its executable schema admits only bounded `headers`, `params`, `json`, `data`
+and `files`. Authorization, Host, length and hop-by-hop headers cannot be
+overridden. Query values are scalar or scalar arrays. JSON, raw text and form
+bodies are bounded; multipart values are inline text or
+`[filename,text,content_type?,headers?]`, with at most sixteen files and 240 KiB
+of file content. No value is interpreted as a local path or artifact reference.
+The complete materialized argument remains below the shared 256 KiB boundary.
+
+Every successful 2xx response returns one bounded UTF-8 body string, including
+an empty string for no content. GET, HEAD and OPTIONS are read-class requests;
+all other methods are effects. No token or ARM request is automatically
+retried. Timeout, transport, transient status, redirect, oversized response or
+post-accept projection failure after effect dispatch becomes a nonretryable
+unknown outcome. The read-only health tool makes the documented resource-group
+list request with API version `2021-04-01` and preserves the source tuple as a
+JSON array: `[true,""]` or `[false,<stable redacted reason>]`.
+
+The tool and parameter descriptions are tested model-selection contracts. They
+state the fixed subscription authority and absolute URL example, required API
+version, method/effect split, exact option shapes, inline-only multipart rule,
+512 KiB result ceiling, confidential read risk, independent approval, one-shot
+transport and reconciliation requirement. The generic tool is always
+non-read-only and non-concurrency-safe because its arguments select the effect;
+group metadata grants no authority.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/cloud/azure/__init__.py::{AzureToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline subscription, tenant, client ID, sealed client secret and selected-tool materialization | `config.rs` validates one public-cloud subscription authority, keeps the secret zeroizing and performs no construction I/O |
+| `tools/cloud/azure/api_wrapper.py::{AzureApiWrapper.execute,azure_integration_healthcheck}` | Generic ARM dispatch and resource-group health read | `tools.rs` exposes both source operations with selection-oriented schemas; `client.rs` owns the bounded two-request OAuth/ARM wire and stable result/error projection |
+| Microsoft Entra client-credentials and ARM resource-group REST contracts | Token form, Bearer use and exact health route | deterministic request fixtures cover both origins, request shapes, status classes and effect ambiguity; live credential proof remains gated |
+| Main application/ad-hoc freezer and claim materializer | Client secret remains sealed until accepted execution | focused Rust fixtures cover inline materialization and tenant isolation; full application/ad-hoc live provider proof remains an activation gate |
+
+Production registration remains disabled until the shared direct-sensitive-tool
+wrapper authorizes the exact invocation by durable `interrupt_id`; a durable
+effect intent/receipt owner binds method, URL, headers and canonical body and
+reconciles unknown outcomes across cancellation or restart; external egress
+enforces the approved public-cloud Entra and ARM DNS/IP destinations; and live
+Azure service-principal roles prove both application and ad-hoc materialization.
+Health and generic read requests may also be independently sensitive because
+ARM responses contain tenant resource metadata.
 
 ## Special runtime toolsets
 

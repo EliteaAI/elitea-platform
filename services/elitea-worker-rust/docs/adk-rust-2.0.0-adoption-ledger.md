@@ -225,6 +225,24 @@ durable effect intent/receipt reconciliation, claim-only secret redemption,
 fixed-origin DNS/IP egress enforcement and live Keycloak role/provider proof are
 composed. The `execute` group is metadata and grants no authority.
 
+The complete capability-disabled `Azure` family adds both current SDK cloud
+operations in source order: the generic ARM `execute` surface and its read-only
+resource-group health tool. One invocation-scoped client owns the frozen
+public-cloud subscription plus zeroizing Microsoft Entra client secret, admits
+the exact subscription-scoped `management.azure.com` authority, obtains one
+client-credentials token, and performs one bounded Bearer request with no
+redirect or automatic retry. Rust deliberately repairs the SDK's missing JSON
+and domain helpers, replaces unscoped request kwargs with explicit bounded
+headers/query/JSON/form/inline-multipart options, and never interprets a file
+value as a local path. All bounded HTTP method tokens remain available, so
+write, delete and action endpoints are not omitted. Tested descriptions explain
+the absolute URL/API-version contract, option shapes, confidential reads,
+effect risk, 512 KiB result ceiling, one-attempt behavior and reconciliation.
+Production composition remains closed until exact-`interrupt_id` approval,
+durable effect intent/receipt reconciliation, claim-only secret redemption,
+public-cloud DNS/IP egress enforcement and live Azure role proof are composed.
+The `execute`/`read` groups remain metadata and grant no authority.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline
