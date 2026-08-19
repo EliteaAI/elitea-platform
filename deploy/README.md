@@ -43,7 +43,7 @@ recurse — which is the intended behaviour: the children are created by ArgoCD.
 | `pylon-indexer` | `ghcr.io/eliteaai/pylon-indexer` | `applications/pylon-indexer.yaml` | 2 | `elitea` | **New. Legacy-by-design**, retained until the index path is replatformed (`INDEX_V2_CUTOVER.md`). No model-cache pre-seed. |
 | `elitea-web` | `ghcr.io/eliteaai/elitea-web` | `applications/elitea-web.yaml` | 3 | `elitea` | **New.** Static SPA behind nginx. In-cluster only until an ingress exists. |
 | — | `ghcr.io/eliteaai/elitea-ui` | — | — | — | **No chart.** The old UI is published and runs in compose; the Kubernetes path is `elitea-web`. |
-| — | `services/elitea-worker-python` | — | — | — | **No chart, deliberately.** That plane is `pending` in the workspace `repos.yaml` — packaging it would guess at an unsettled contract (issues #240, #244). |
+| — | `ghcr.io/eliteaai/elitea-worker-python` | — | — | — | **Image published, no chart yet.** The agent worker: compose calls it mandatory for agent execution, and it is now built by the release like every other image. Its chart is a separate change — the one open question is how a Kubernetes install serves the HTTPS `platform_origin` the worker requires. |
 | — | PostgreSQL, Redis | — | — | — | **Not provisioned here.** External prerequisites; see below. |
 
 Sync waves follow the issue's ordering — nats → migrations → backend →
