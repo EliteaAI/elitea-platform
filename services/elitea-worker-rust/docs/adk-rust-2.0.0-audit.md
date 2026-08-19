@@ -229,7 +229,7 @@ Linux CI and the deployed pooler.
 ## Session and compaction constraints
 
 The built-in `PostgresSessionService` is not the authoritative Elitea transcript
-store without additional work:
+store because:
 
 - history limits are applied after an unbounded matching-event query;
 - corrupt events are silently omitted during deserialization;
@@ -238,11 +238,38 @@ store without additional work:
 - state updates can lose concurrent deltas;
 - migration advisory locking is not held on one pinned connection.
 
+Rust therefore implements the same ADK `SessionService` trait in
+`src/state/postgres_session.rs`, backed by Main migration
+`0065_agent_sessions.sql` in the existing PostgreSQL `agentstate` schema. The
+fresh `adk-session.2.0.0.v1` lineage is bounded before decode/query, stores the
+complete event, assigns a deterministic ordinal, rejects corrupt rows, merges
+state tiers transactionally and fences every operation against the exact live
+execution claim. Writer rows survive session deletion so an older claim cannot
+regain authority over a recreated conversation. This is conversation/session
+state for every Runner, not graph frontier state.
+
+Graphs compose two ADK contracts over the same physical schema, pool and
+claim/fence authority: `SessionService` for conversation events/state and
+`Checkpointer` for graph frontier, node state and interrupts. Direct `LlmAgent`
+runs use only `SessionService`. This is not duplicate state ownership; the two
+versioned table lineages have non-overlapping semantics. Current invocation
+assembly still uses `InMemorySessionService` until it can inject the activated
+claim-bound adapter and seed frozen history exactly once.
+
 Compaction must preserve tool-call/result pairing and durable continuation. ADK
 has post-run summaries, intra-run heuristic compaction and a feature-gated
 runner compactor, but the latter two do not remove persisted originals. Elitea
 will select a versioned compacted representation only after transcript,
-checkpoint and resume tests pass.
+checkpoint and resume tests pass. `src/agents/context_management.rs` is now the
+explicit disabled-first composition owner immediately before Runner creation:
+empty settings and the current SDK master switch `enabled=false` are admitted,
+while active settings fail before PAT redemption. Although the protobuf and
+Python worker carry `context_settings`, current Main application and ad-hoc
+builders hard-code `{}`; Main must project a frozen policy plus summary-model
+authority before ADK compaction is enabled. Compaction records must update the
+custom PostgreSQL session lineage in `agentstate`; graph executions must
+coordinate any frontier change through the custom checkpointer as well. The
+stock ADK PostgreSQL session implementation is not introduced as another store.
 
 ## Tool and MCP constraints
 
@@ -264,11 +291,25 @@ checkpoint and resume tests pass.
 ADK tool confirmation and graph HITL are related but distinct primitives.
 `RunConfig` confirmation decisions are keyed by `function_call_id`, with an
 optional canonical argument fingerprint. That matches Elitea's requirement
-that an identical tool name and arguments can still be a new invocation. Graph
-interrupt-before/after and dynamic interrupts, together with a checkpoint, are
-the durable pause/resume substrate. The Elitea adapter must bind either path to
-the current `interrupt_id`; it must never authorize by tool name and arguments
-alone.
+that an identical tool name and arguments can still be a new invocation. The
+direct `LlmAgent` primitive emits and persists the model function-call event,
+then returns on the confirmation event; it does not itself own a cross-worker
+checkpoint that replays that exact call. Elitea must therefore retain the
+complete bounded in-turn transcript and pending call under the current claim,
+then replay it with the exact decision rather than asking the model to invent
+the same call again. Graph interrupt-before/after and dynamic interrupts,
+together with a checkpoint, are the stored-pipeline pause/resume substrate.
+The implemented dynamic HITL node binds its definition digest and consumes its
+private decision once. Both paths derive a fresh public `interrupt_id`; neither
+tool name nor arguments alone authorize anything.
+
+Exact ADK-Rust 2.0.0 `GraphAgent` currently constructs its dynamic-interrupt
+event with a placeholder invocation identity and an empty author. The
+capability-disabled `EliteaGraphAgent` adapter rebinds both values to the
+owning invocation/root agent before the event reaches the browser projector.
+This is an internal compatibility repair, not authority: the private
+checkpoint ID remains hidden and participates only in the public interrupt
+digest until the fenced PostgreSQL resume owner is composed.
 
 ## Redis ownership
 
@@ -305,12 +346,17 @@ credentials, checkpoint state or raw dependency errors across a trust boundary.
 Low-level code should not repeatedly log an error that the orchestration owner
 will record.
 
-Tracing is designed with each execution slice, even where export plumbing is
-deferred. Spans need stable execution, generation, claim-attempt, capability,
-agent/node/tool and function-call identifiers; secret values and high-cardinality
-payloads are excluded. ADK's own instrumentation is useful below this boundary,
-but Elitea owns the lifecycle span that correlates admission, authorization,
-ADK execution, durable output, settlement and Redis retirement.
+Tracing is designed with each execution slice. The binary now installs a
+crate-scoped subscriber whose `ELITEA_RUST_LOG` input is a single level, not an
+arbitrary dependency filter. Preparation/native-lifecycle, provider-neutral
+assembly, policy-wrapped tools and nested `AgentTool` calls have stable
+execution/generation/invocation/function-call correlation, phase, outcome and
+safe error-code fields plus span-close durations. Prompts, tool arguments,
+results, URLs, credentials and provider bodies are excluded. ADK's own
+instrumentation remains useful below this boundary, but Elitea owns the span
+that correlates admission, authorization, ADK execution, durable output,
+settlement and Redis retirement. OTLP/metrics export and deployed
+retention/cardinality policy remain local-platform checkpoint work.
 
 The scalability design is bounded async admission, resource-specific limits,
 single-owner delivery state and graph/tool concurrency ceilings. `smallvec`,
@@ -332,8 +378,10 @@ worker workload without weakening cancellation, backpressure or durability.
    deterministic latest, exact retry, prune/delete, wrong-thread and graph
    isolation, newer-claim fencing and pool reuse. Restricted-role/pooler load,
    Linux CI, invocation composition and restart fan-in remain production gates.
-5. Session metadata fidelity, SQL-bounded history, deterministic order,
-   concurrent deltas, corrupt-event visibility and compaction reconstruction.
+5. **Complete storage primitive:** session metadata fidelity, SQL-bounded
+   history, deterministic order, transactional state deltas and corrupt-event
+   visibility. Production injection, restart/resume and compaction
+   reconstruction remain integration gates.
 6. MCP HTTP plus external stdio runner, OAuth expiry/401, reconnect without
    duplicate mutation, cancellation, name prefixing and measured connection
    concurrency.

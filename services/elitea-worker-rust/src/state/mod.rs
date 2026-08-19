@@ -7,5 +7,9 @@
 mod postgres_checkpointer;
 #[cfg(test)]
 mod postgres_checkpointer_tests;
+mod postgres_session;
+#[cfg(test)]
+mod postgres_session_tests;
 
 pub use postgres_checkpointer::{CheckpointLimits, PostgresCheckpointError, PostgresCheckpointer};
+pub use postgres_session::{PostgresSessionError, PostgresSessionService, SessionLimits};

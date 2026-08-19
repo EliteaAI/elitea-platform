@@ -52,6 +52,40 @@ Detailed ledgers:
 - `configuration-toolsets.md` maps saved configuration and toolkit families.
 - `indexing.md` maps indexing behavior and its later Rust capability.
 
+Maintained Rust runtime ownership registry:
+
+- `src/agents/{assembly,ordinary,session,events,sensitive_tools}.rs`: direct
+  saved-agent and ad-hoc `LlmAgent` admission, session/Runner composition,
+  browser event projection and runtime-policy-bound sensitive-tool pauses;
+- `src/agents/application_tools.rs`: exact saved child application/version to
+  ADK `AgentTool` composition, recursion and model-visible delegation schema;
+- `src/agents/context_management.rs`: disabled-first seam for SDK context
+  settings and future ADK-native compaction through the durable session
+  lineage, coordinated with graph checkpoints where applicable;
+- `src/agents/graph/{agent,hitl,parallel,yaml}.rs`: stored-pipeline graph event
+  identity, bounded YAML node contracts, dynamic HITL routing and the durable
+  parallel-node core; the whole-pipeline compiler remains a separate gate;
+- `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
+  MCP and application references, native family toolsets and generic bounded
+  call policy/tracing;
+- `src/transport/model_facade.rs`: provider-neutral model ownership over
+  `model_gateway.rs` and `anthropic_gateway.rs`, including frozen
+  `model_project_id` authority;
+- `src/transport/platform_client.rs`: claim-bound application/version lookup
+  today and future artifact grants; `runtime_context.rs` owns the concrete
+  private transport;
+- `src/state/postgres_session.rs` plus Main migration
+  `migrations/shared/0065_agent_sessions.sql`: bounded claim-fenced ADK
+  conversation/session persistence for direct and graph Runners;
+- `src/state/postgres_checkpointer.rs` plus Main migration
+  `migrations/shared/0064_agent_graph_checkpoints.sql`: graph-only frontier,
+  node-state and interrupt persistence. Both adapters use the existing
+  PostgreSQL `agentstate` schema and the same execution authority, but implement
+  distinct ADK contracts rather than duplicating transcript state;
+- `src/diagnostics.rs`, `src/execution/{agent_preparation,native_agent_lifecycle}.rs`:
+  crate-scoped subscriber plus authenticated lifecycle/assembly/tool
+  correlation. Export/retention policy remains deployment-owned.
+
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are
 repository-relative to `services/elitea-worker-rust/`.
