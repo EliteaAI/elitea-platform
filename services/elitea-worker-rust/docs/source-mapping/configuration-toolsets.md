@@ -137,6 +137,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `confluence` | `configurations/confluence.py::ConfluenceConfiguration` | `tools/confluence::ConfluenceToolkit` | 25 | Yes | `configurations/families/confluence.rs`; `toolkits/families/confluence/` | Planned; shared Atlassian auth normalizer |
 | `jira` | `configurations/jira.py::JiraConfiguration` | `tools/jira::JiraToolkit` | 23 | Yes | `configurations/families/jira.rs`; `toolkits/families/jira/` | Planned; shared Atlassian auth normalizer |
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
+| `elastic` | None; cluster origin and optional encoded API key are inline toolkit settings | `tools/elastic::ElasticToolkit` | 1 | No | `toolkits/families/elastic/{config,client,tools}.rs` | Capability-disabled complete read family: one bounded Query DSL search against a fixed verified-TLS cluster; approved DNS/IP egress, authorized materialization and live read/load proof remain gates |
 | `keycloak` | None; authority and service-account credentials are inline toolkit settings | `tools/keycloak::KeycloakToolkit` | 1 | No | `toolkits/families/keycloak/{config,client,tools}.rs` | Capability-disabled complete family: one generic Admin REST execute surface retains reads, writes, deletes and actions inside one frozen HTTPS realm; exact-interrupt HITL, effect reconciliation, approved egress and live provider proof remain gates |
 | `azure` | None; subscription and service-principal credentials are inline toolkit settings | `tools/cloud/azure::AzureToolkit` | 2 | No | `toolkits/families/azure/{config,client,tools}.rs` | Capability-disabled complete family: one generic ARM execute surface plus its resource-group health read inside the frozen public-cloud subscription; exact-interrupt HITL, effect reconciliation, approved egress and live Azure role proof remain gates |
 | `gcp` | None; the service-account JSON is an inline sealed toolkit setting | `tools/cloud/gcp::GcpToolkit` | 1 | No | `toolkits/families/gcp/{config,client,tools}.rs` | Capability-disabled complete family: one generic scoped Google REST surface retains reads, writes, deletes and actions on approved `googleapis.com` origins; exact-interrupt HITL, effect reconciliation, DNS/IP egress and live service-account role proof remain gates |
@@ -183,9 +184,9 @@ fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure Resource Manager (2), GCP (1), Kubernetes
-(2), Keycloak (1), Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Keycloak,
-Azure Resource Manager, GCP and Kubernetes are now implemented completely
-behind capability gates from inline claim-materialized settings. LocalGit
+(2), Keycloak (1), Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Elastic,
+Keycloak, Azure Resource Manager, GCP and Kubernetes are now implemented
+completely behind capability gates from inline claim-materialized settings. LocalGit
 (13) is intentionally deferred: its local-filesystem/process isolation boundary
 is outside the remote toolkit migration priority. The remaining families still
 require an explicit authority source and admission policy before live porting.
@@ -1603,6 +1604,76 @@ enforces the approved public-cloud Entra and ARM DNS/IP destinations; and live
 Azure service-principal roles prove both application and ad-hoc materialization.
 Health and generic read requests may also be independently sensitive because
 ARM responses contain tenant resource metadata.
+
+### Elasticsearch complete read family
+
+Elasticsearch is a complete one-tool read family over inline toolkit settings.
+Current SDK `9bba9da` and worker-pinned SDK `b5113a1` expose the same
+`search_elastic_index(index, query)` operation and generated argument schema;
+current adds only `read` group metadata. Main's frozen toolkit catalog marks
+the optional top-level `api_key` as secret and uses `url` as the toolkit naming
+field. There is no registered configuration object, public connection check or
+indexing overlay in this family.
+
+The pinned Python worker does not declare the `elasticsearch` package, so the
+wrapper's guarded import can make toolkit construction fail before a tool is
+materialized. Even when installed, the public schema supplies one optional
+secret string while the wrapper model requires a two-string tuple, stores its
+client on the wrapper class, and disables certificate verification. Query and
+response sizes, deadlines and result windows are unbounded. Rust treats these
+as source defects rather than dropping the family or copying unsafe behavior.
+
+One invocation-owned, non-debuggable client requires an exact claim-materialized
+HTTPS cluster origin. Root-path custom ports remain supported, while userinfo,
+configured path prefixes, queries, fragments, malformed percent syntax and
+plaintext HTTP are rejected. The optional public API-key string is interpreted
+as Elasticsearch's encoded API-key value and sent only as
+`Authorization: ApiKey <encoded-value>`, matching the provider's documented
+header contract. Anonymous search remains available when the key is null or
+omitted, as in the SDK schema. Native root and hostname verification are on;
+ambient proxies, redirects and automatic retries are off.
+
+The sole operation issues exactly one `POST /{index}/_search` with a JSON Query
+DSL object. The target may be one index, data stream or alias expression, a
+comma-separated set, or a bounded `*`/`?` wildcard. Path separators, traversal,
+date-math syntax, remote-cluster colons and expressions beginning with reserved
+prefix characters are rejected. The query must be a JSON-object string below
+64 KiB of UTF-8 input with bounded depth, nodes and strings. `size` keeps the provider default
+of ten when absent and is capped at one hundred; `from` is capped at ten
+thousand. The tool performs no scroll or continuation requests. Broad wildcard,
+script, runtime-field and aggregation cost remains subject to the cluster's own
+query controls and is called out to the model.
+
+One successful response must have a JSON media type, including the provider's
+`application/vnd.elasticsearch+json` form, and a top-level object. The provider
+body is capped at 2 MiB before decode and the serialized model result at 512
+KiB. The native response object remains intact, including hits, aggregations,
+timing and shard metadata. Authentication, authorization, not-found,
+rate-limit, timeout, unavailable, malformed and resource-limit failures are
+typed, redacted and never include the origin, key, index, query or provider
+body.
+
+The tool and parameter descriptions are tested model-selection contracts. They
+state index/alias/data-stream selection, wildcard and comma examples, exact
+Query DSL form, result-window limits, first-response-only behavior, result
+shape and ceiling, confidential-data risk, independent approval and expensive
+query cues. The tool is read-only and concurrency-safe at the invocation
+boundary; `read` metadata still grants no authorization and deployment policy
+may independently require exact-invocation approval.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/elastic/__init__.py::{ElasticToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline cluster URL, optional sealed API-key string, selection and source group | `config.rs` validates one claim-owned HTTPS authority, normalizes the encoded key contract and performs no construction I/O |
+| `tools/elastic/api_wrapper.py::{ELITEAElasticApiWrapper.search_elastic_index,SearchElasticIndexModel}` | One index plus Query DSL string search and native response | `tools.rs` exposes the complete bounded model contract; `client.rs` owns the exact Search API wire and stable projection/error taxonomy |
+| Elasticsearch Search API and API-key authentication contract | `POST /{index}/_search`, JSON body and encoded API-key header | deterministic fixtures cover exact route, header/body, native/vendor JSON media types, response shapes and status classes |
+| Main application/ad-hoc freezer and claim materializer | API key remains sealed until accepted execution | focused Rust fixtures cover inline parsing, redaction and tenant isolation; full application/ad-hoc live-provider proof remains gated |
+
+Production registration remains disabled until Main projection and claim-time
+materialization are composed for this hidden family, external egress constrains
+the frozen cluster DNS/IP destination, and a live cluster proves encoded-key or
+anonymous authentication, index privileges and acceptable query-load policy.
+Searches may independently be sensitive because indexed documents can contain
+private operational or customer data.
 
 ### GCP complete scoped REST family
 

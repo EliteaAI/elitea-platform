@@ -243,6 +243,22 @@ durable effect intent/receipt reconciliation, claim-only secret redemption,
 public-cloud DNS/IP egress enforcement and live Azure role proof are composed.
 The `execute`/`read` groups remain metadata and grant no authority.
 
+The complete capability-disabled `Elasticsearch` family adds its one current
+SDK `search_elastic_index` read from inline claim-materialized settings. One
+invocation-owned client binds an exact verified-TLS cluster origin and optional
+zeroizing encoded API key, performs one bounded `POST /{index}/_search`, and
+never inherits proxy, redirect, retry or disabled-certificate behavior. Rust
+deliberately repairs the missing Python dependency, string-versus-tuple API-key
+mismatch and class-global client. The Query DSL object, index expressions,
+result window, provider body and 512 KiB model result are bounded while the
+native search response remains intact. Tested descriptions explain
+index/data-stream/alias targeting, wildcard and comma forms, Query DSL shape,
+first-response-only behavior, confidential-data risk and expensive-query cues.
+Production composition remains closed until claim-only materialization, exact
+cluster DNS/IP egress and live authentication, index-privilege and query-load
+proof are composed. The `read` group remains metadata and sensitivity stays
+independent.
+
 The complete capability-disabled `GCP` family adds the current SDK's one
 generic `execute_request` operation from inline claim-materialized
 service-account JSON. One invocation-owned client validates and zeroizes the

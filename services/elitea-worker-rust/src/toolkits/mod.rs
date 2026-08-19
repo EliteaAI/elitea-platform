@@ -18,6 +18,8 @@ mod azure_search_tests;
 #[cfg(test)]
 mod azure_tests;
 #[cfg(test)]
+mod elastic_tests;
+#[cfg(test)]
 mod gcp_tests;
 #[cfg(test)]
 mod github_tests;
