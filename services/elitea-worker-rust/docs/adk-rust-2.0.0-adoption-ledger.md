@@ -88,6 +88,29 @@ exact-`interrupt_id` sensitive-tool flow and cancellation-safe effect
 identity/reconciliation are composed. Read/write grouping remains metadata,
 not approval authority.
 
+The complete capability-disabled `ReportPortal` family adds all nine current
+SDK tools in source order. Every operation is a read: launch exports and
+details, paged launch/item/log collections, individual test items, users and
+dashboards. One invocation-scoped zeroizing Bearer client owns the
+claim-materialized project and HTTPS origin, replaces the SDK's class-global
+client, percent-encodes authority components, disables redirects and retries,
+and bounds every request, response and tool result. Raw HTML is explicit UTF-8,
+small raw PDF has an explicit base64 conformance fallback, and the readable
+report uses a deterministic bounded HTML-to-text projection rather than the
+SDK's broken PDF-as-HTML branch. The inline PDF bound is not the production
+download architecture: large exports require durable artifact/object-store
+streaming and a reference result before activation. Generic PDF analysis should
+extract text page by page and render only scanned or visually relevant pages for
+a multimodal model, rather than rasterizing every page by default. Tested
+descriptions expose the operation, identifier, page/format
+default, bounds and result shape without leaking endpoint or project details.
+Production composition remains closed until authorized application/ad-hoc
+materialization, approved egress, configuration-catalog projection, durable
+large-export artifact streaming and a live provider proof are composed.
+Although no effect owner is required, any report,
+log or user read may independently require the shared exact-`interrupt_id`
+sensitive-tool policy.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline

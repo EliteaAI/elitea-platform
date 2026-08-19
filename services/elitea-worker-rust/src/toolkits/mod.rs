@@ -24,6 +24,8 @@ mod policy_tests;
 #[cfg(test)]
 mod rally_tests;
 #[cfg(test)]
+mod report_portal_tests;
+#[cfg(test)]
 mod salesforce_tests;
 #[cfg(test)]
 mod service_now_tests;

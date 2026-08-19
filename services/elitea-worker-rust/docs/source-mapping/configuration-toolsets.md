@@ -152,7 +152,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `salesforce` | `configurations/salesforce.py::SalesforceConfiguration` | `tools/salesforce::SalesforceToolkit` | 6 | No | `toolkits/families/salesforce/{config,client,tools}.rs` | Capability-disabled complete family: six bounded CRM tools, including create/update and generic GET/POST/PATCH/DELETE; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; delegated/app-only auth and content limits |
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
-| `report_portal` | `ReportPortalConfiguration` | `ReportPortalToolkit` | 9 | Yes | corresponding family paths | Planned; source has no focused family tests |
+| `report_portal` | `configurations/report_portal.py::ReportPortalConfiguration` | `tools/report_portal::ReportPortalToolkit` | 9 | Yes | `toolkits/families/report_portal/{config,client,tools}.rs` | Capability-disabled complete read family: nine bounded project/report reads, including explicit UTF-8 HTML and base64 PDF export projections; authorized materialization, egress policy and live provider proof remain gates |
 | `testio` | `TestIOConfiguration` | `TestIOToolkit` | 15 | Yes | corresponding family paths | Planned; source has no focused family tests |
 | `openapi` | `OpenApiConfiguration` | `EliteAOpenAPIToolkit`, dynamic `OpenApiAction` | Dynamic | Yes | `configurations/families/openapi.rs`; `toolkits/families/openapi/` | Planned; specification parser/schema/auth is its own program |
 | `langfuse` | `LangfuseConfiguration` | No standard toolkit | 0 | Yes | `configurations/families/langfuse.rs` | Planned; observability support configuration |
@@ -949,6 +949,95 @@ exact-`interrupt_id` HITL wrapper, and cancellation-safe effect
 identity/reconciliation. Any read may independently be configured sensitive;
 catalog effect groups never authorize execution.
 
+### ReportPortal complete read family
+
+ReportPortal is a complete nine-tool read family over one configured project.
+The implementation follows SDK revision
+`9bba9da409771803f28c0ee21f5d0b9a8f456219` and worker-pinned revision
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`; their ReportPortal schemas,
+routes and projections are identical, while the current SDK adds the `read`
+group metadata. The worker's two pinned SDK patches do not touch this family.
+The Python SDK has no focused ReportPortal tests, so the Rust exact-route,
+content and isolation corpus is the executable compatibility proof.
+
+Main freezes the required nested `report_portal_configuration` containing
+`endpoint`, `project` and secret `api_key`, then claim-materializes that secret
+for both application and ad-hoc execution. `config.rs` accepts only that owned
+shape, normalizes one approved HTTPS origin, and creates no environment or
+process-global credential fallback. This intentionally removes the SDK
+validator's class-level `_client`, which can otherwise substitute credentials
+between toolkit instances. The API key is zeroized, non-cloneable and absent
+from model metadata, serialized arguments and diagnostics.
+
+The public source-order catalog is preserved, with every operation marked
+`read`:
+
+1. `get_extended_launch_data_as_raw` returns one HTML or PDF launch export.
+2. `get_extended_launch_data` returns bounded readable text from one HTML
+   launch export.
+3. `get_launch_details` returns one launch object.
+4. `get_all_launches` returns one zero-based launch page.
+5. `find_test_item_by_id` returns one test-item object.
+6. `get_test_items_for_launch` returns one zero-based item page.
+7. `get_logs_for_test_items` returns one zero-based log page.
+8. `get_user_information` returns one user object.
+9. `get_dashboard_data` returns one dashboard object.
+
+Each tool description states the selection purpose, identifier source,
+format/default/bounds, one representative example and the exact result shape.
+It does not repeat the configured endpoint or project as the SDK currently
+does. Empty selection still means all nine tools in catalog order; a persisted
+unknown selection fails closed instead of silently producing an incomplete
+toolset.
+
+The raw-export operation keeps the source's `html|pdf` choice but makes its
+otherwise unrepresentable Python `bytes` result explicit. HTML is returned as
+bounded UTF-8. Small PDF exports have a bounded base64 conformance fallback in
+a structured object containing the format, content type, encoding, byte length
+and content. PDF input is capped at 383 KiB so base64 plus the envelope remains
+within the 512 KiB tool-result limit; this is a transport safeguard, not the
+intended user experience for report downloads. Production activation requires
+large PDF exports to stream into durable artifact/object storage and return an
+authorized reference rather than expanding the document inline.
+`get_extended_launch_data` always asks for HTML, matching the source's actual
+request, and uses a deterministic bounded HTML-to-text projection. It
+rejects malformed UTF-8 and PDF/content-type substitution rather than passing
+PDF bytes to PyMuPDF with `filetype="html"`, the unreachable/broken source
+branch. JSON operations accept only a bounded JSON object.
+
+The SDK passes `page.page=1` by default even though the provider index is
+zero-based, thereby skipping the first page. Rust intentionally defaults to
+zero and validates a finite nonnegative page bound. All identifiers and the
+project are encoded as path or query components, redirects and automatic
+retries are disabled, one invocation performs exactly one request, and body,
+output and deadlines are bounded. Provider text, response bodies, endpoint,
+project and credentials never appear in typed errors.
+
+| Current business source | Preserved behavior | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `configurations/report_portal.py::ReportPortalConfiguration` and `check_connection` | Project-scoped Bearer configuration plus an authenticated project probe | `config.rs` validates claim-owned authority; the future public check route must use the same bounded family transport for the exact project read rather than duplicating provider logic |
+| SDK `tools/report_portal/__init__.py::{get_tools,toolkit_config_schema,get_toolkit}` and Main freezer/materializer | Nested configuration, empty/subset selection, source order, toolkit identity and read grouping | `tools.rs` preserves all nine tools and tested model-facing schemas while preventing endpoint/project disclosure |
+| SDK `ReportPortalApiWrapper` nine methods | One request per selected launch/item/log/user/dashboard/export operation | `client.rs::ReportPortalApi` preserves the route/result meaning and exposes bounded typed HTML, PDF and JSON projections |
+| SDK `RPClient` | Bearer header and fixed API route families | One invocation-scoped pooled client uses the accepted HTTPS origin, percent-encoded authority components, no redirects/retries and finite transport limits |
+| Python raw/readable export handling | Raw HTML/PDF and management-readable launch content | Explicit UTF-8/base64 envelope and deterministic HTML text replace bytes leaking through a `str` annotation and the broken PDF-as-HTML branch |
+
+For future general PDF analysis, the efficient default is text-first: extract
+bounded text page by page, then render only scanned or layout-dependent pages
+for a multimodal model. Rendering every page to an image is reserved for cases
+where text extraction cannot preserve the information needed by the task.
+
+The registered configuration check remains an activation contract; this
+capability-disabled family does not publish a check route yet. Its future route
+must use the same bounded client for the exact authenticated project read
+rather than duplicating provider behavior in Main. Production family
+registration remains disabled pending that check composition, authorized
+application/ad-hoc materialization, approved egress, current
+configuration-catalog projection, durable large-export artifact streaming and
+a credentialed live provider test. There
+is no mutation/effect-reconciliation gate because every operation is a read.
+Reports, logs and user data may still be independently configured as sensitive;
+read grouping never bypasses the shared exact `interrupt_id` policy.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -966,9 +1055,10 @@ catalog effect groups never authorize execution.
 
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
-REST families; Google Places, Sonar and Azure Search are complete reads, while
-ServiceNow, Salesforce, Slack and Rally prove the same boundary can retain bounded
-create/update/delete effects without activating them ahead of durable approval.
+REST families; Google Places, Sonar, Azure Search and ReportPortal are complete
+reads, while ServiceNow, Salesforce, Slack, Rally and Zephyr Squad prove the
+same boundary can retain bounded create/update/delete effects without
+activating them ahead of durable approval.
 These follow the partial GitHub reference family. Parallel family work still
 must not share mutable files or weaken the capability gate.
 Non-overlapping batches are:
