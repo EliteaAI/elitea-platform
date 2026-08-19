@@ -16,6 +16,17 @@
 # fails `helm template` rather than the pod.
 replicaCount: 2
 
+# Pull secrets for a registry that needs credentials. ghcr.io/eliteaai/elitea-main
+# is a PRIVATE package today — an anonymous pull is refused, unlike
+# elitea-web's — so a cluster without an entry here cannot start this service
+# at all: both the Deployment and the migration hook Job stop at
+# ImagePullBackOff. A Kubernetes pull secret has no effect until something
+# references it, and nothing in this chart did.
+#
+#   imagePullSecrets:
+#     - name: ghcr-pull
+imagePullSecrets: []
+
 image:
   repository: ghcr.io/eliteaai/elitea-main
   tag: "latest"

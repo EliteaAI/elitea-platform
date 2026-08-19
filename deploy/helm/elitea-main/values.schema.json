@@ -5,6 +5,18 @@
   "additionalProperties": true,
   "properties": {
     "replicaCount": { "type": "integer", "minimum": 0 },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "LocalObjectReference list for a registry that needs credentials. Required for ghcr.io/eliteaai/elitea-main, which is a private package: without it the Deployment and the migration Job both stop at ImagePullBackOff.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": true,
