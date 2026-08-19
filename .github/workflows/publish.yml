@@ -433,7 +433,26 @@ jobs:
           fi
           yq --version
 
-      - name: Log in to GHCR
+      # TWO logins, because two tools read two different credential stores and
+      # only one of them is Helm's.
+      #
+      # `helm registry login` writes ~/.config/helm/registry/config.json. cosign
+      # resolves credentials through the Docker keychain — ~/.docker/config.json
+      # — which it never sees. So the first run of this job pushed every chart
+      # and then failed to sign a single one, with GHCR answering the signature
+      # upload "UNAUTHORIZED: unauthenticated: User cannot be authenticated with
+      # the token provided" while the push seconds earlier had succeeded.
+      #
+      # Every other job in this workflow already uses docker/login-action, which
+      # is why image signing works and chart signing did not.
+      - name: Log in to GHCR (Docker keychain — used by cosign)
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GHCR (Helm registry config — used by helm push)
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -636,13 +655,34 @@ jobs:
           CHARTS=("elitea-main" "elitea-scheduler" "elitea-web" "elitea-llm-gateway" "pylon-indexer" "nats" "nats-bootstrap" "otel-collector")
           ORG="eliteaai"
 
+          # Report what could not be deleted. Every call here used to end in
+          # `2>/dev/null || true`, so a refused delete looked exactly like a
+          # successful one — and the charts from the two failed 1.18.0 releases
+          # stayed in the registry, at a version whose images this same job had
+          # already removed. That is the precise state the comment above says
+          # this step exists to prevent, and nothing reported it.
+          #
+          # Still non-fatal: this job runs BECAUSE something already failed, and
+          # aborting it half way would leave more behind, not less.
+          failed=0
           for chart in "${CHARTS[@]}"; do
             echo "Deleting chart ${chart}:${VERSION}..."
             VERSION_ID=$(gh api "orgs/${ORG}/packages/container/charts%2F${chart}/versions" \
               --jq ".[] | select(.metadata.container.tags[] == \"${VERSION}\") | .id" 2>/dev/null || true)
-            if [ -n "$VERSION_ID" ]; then
-              gh api -X DELETE "orgs/${ORG}/packages/container/charts%2F${chart}/versions/${VERSION_ID}" 2>/dev/null || true
+            if [ -z "$VERSION_ID" ]; then
+              echo "  no ${VERSION} version found (nothing pushed, or the listing was refused)"
+              continue
+            fi
+            if gh api -X DELETE "orgs/${ORG}/packages/container/charts%2F${chart}/versions/${VERSION_ID}"; then
+              echo "  deleted"
+            else
+              echo "::warning::could not delete chart ${chart}:${VERSION} — it stays published at a version whose images were just removed. Delete it by hand."
+              failed=1
             fi
           done
+
+          if [ "$failed" -eq 1 ]; then
+            echo "::warning::rollback left at least one chart behind; see the warnings above"
+          fi
 
           echo "Rollback complete."
