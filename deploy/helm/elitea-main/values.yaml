@@ -189,6 +189,28 @@ fileConfig:
       # adds the name and mounts it read-only. Mutually exclusive with
       # secretName, and no init container renders with it.
       volume: {}
+  # The mTLS client material for the /llm hop (issue #463 left this half
+  # done: it moved LLM_GATEWAY_CLIENT_CERT / _KEY / LLM_GATEWAY_CA_FILE from
+  # secretKeyRef entries to file paths, and no volume ever served those paths).
+  #
+  # Nothing here goes through internal/security/securefile —
+  # internal/llmproxy/proxy.go calls tls.LoadX509KeyPair and os.ReadFile
+  # directly — so a plain Secret volume is enough and no init container copy is
+  # needed. That is the whole difference from runtime.material.
+  #
+  # `secretName` is the usual shape: a cert-manager Certificate issued INTO
+  # THIS namespace produces a Secret with tls.crt / tls.key / ca.crt, which are
+  # the default keys below. Point env.LLM_GATEWAY_CLIENT_CERT and its two
+  # siblings at mountPath/<key>.
+  #
+  # `volume` is the alternative for material that already exists as files (a
+  # CSI secret driver, for example) and is mutually exclusive with secretName.
+  llmGatewayClientMaterial:
+    enabled: false
+    secretName: ""
+    mountPath: /run/elitea-llm-gateway
+    defaultMode: 0440
+    volume: {}
   brandPack:
     enabled: false
     configMapName: ""
@@ -402,10 +424,14 @@ env:
   #      returns an error, and cmd/elitea-main turns that into a FATAL boot
   #      error. A default URL with no certificates is a crash loop, not a
   #      working /llm path.
-  #   2. This chart cannot supply those certificates. They are issued by the
-  #      gateway chart's cert-manager Certificate into the `elitea-gateway`
-  #      namespace, and a Secret is namespace-scoped. See the "Cross-namespace
-  #      Secrets" section of deploy/README.md.
+  #   2. The certificates arrive through
+  #      fileConfig.llmGatewayClientMaterial above, which mounts a Secret at
+  #      the directory these three paths live in. That Secret must exist in
+  #      THIS namespace: the gateway chart's cert-manager Certificate issues
+  #      one into `elitea-gateway`, and a Secret is namespace-scoped, so a
+  #      split-namespace install needs the second Certificate or the
+  #      replication described in the "Cross-namespace Secrets" section of
+  #      deploy/README.md.
   # So the chart refuses the half-configured combination instead: set this URL
   # and the three file paths below together, or set none of them.
   # elitea-main.validateLLMGateway in _helpers.tpl performs that check at
