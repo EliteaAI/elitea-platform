@@ -225,7 +225,7 @@ durable effect intent/receipt reconciliation, claim-only secret redemption,
 fixed-origin DNS/IP egress enforcement and live Keycloak role/provider proof are
 composed. The `execute` group is metadata and grants no authority.
 
-The complete capability-disabled `Azure` family adds both current SDK cloud
+The complete capability-disabled `Azure Resource Manager` family adds both current SDK cloud
 operations in source order: the generic ARM `execute` surface and its read-only
 resource-group health tool. One invocation-scoped client owns the frozen
 public-cloud subscription plus zeroizing Microsoft Entra client secret, admits
@@ -242,6 +242,24 @@ Production composition remains closed until exact-`interrupt_id` approval,
 durable effect intent/receipt reconciliation, claim-only secret redemption,
 public-cloud DNS/IP egress enforcement and live Azure role proof are composed.
 The `execute`/`read` groups remain metadata and grant no authority.
+
+The complete capability-disabled `Kubernetes` family adds both current SDK
+cloud operations in source order: generic `execute_kubernetes` and the
+read-only `/version` health tool. One invocation-owned client requires the
+claim-materialized exact HTTPS cluster origin and zeroizing Bearer token,
+verifies native-root TLS, rejects redirects and ambient proxy/kubeconfig
+authority, and performs one bounded request without automatic retry. Rust
+deliberately repairs disabled certificate verification, class-global client
+state, object inputs passed through `json.loads`, status-blind health and raw
+provider errors. Every bounded HTTP method token remains available, so writes,
+deletes, patches and action subresources are not omitted. Tested descriptions
+explain the exact sub-URL/query contract, body/header shapes, patch media type,
+confidential reads, 512 KiB result ceiling, 202 semantics, one-attempt behavior
+and reconciliation. Production composition remains closed until exact-
+`interrupt_id` approval, durable effect intent/receipt reconciliation,
+claim-only token redemption, cluster DNS/IP plus certificate authority policy,
+and live RBAC proof are composed. The `execute`/`read` groups remain metadata
+and grant no authority.
 
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes

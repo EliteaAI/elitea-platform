@@ -28,6 +28,8 @@ mod invocation_tests;
 #[cfg(test)]
 mod keycloak_tests;
 #[cfg(test)]
+mod kubernetes_tests;
+#[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
 mod postman_tests;

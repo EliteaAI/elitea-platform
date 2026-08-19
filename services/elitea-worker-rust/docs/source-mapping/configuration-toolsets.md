@@ -126,7 +126,10 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
 | `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,projects,pull_requests,workflow_runs,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus twenty explicit identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search, workflow-status and Project V2 reads; the other 24 tools, workflow-log archives, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
-| `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
+| `ado_repos` | `configurations/ado.py::AdoConfiguration` | `tools/ado/repos::AzureDevOpsReposToolkit` | 22 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_repos/` | Planned as its own complete SDK family; 16 repository operations plus 6 inherited indexing tools |
+| `ado_plans` | `configurations/ado.py::AdoConfiguration` | `tools/ado/test_plan::AzureDevOpsPlansToolkit` | 18 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_plans/` | Planned as its own complete SDK family; 12 test-plan operations plus 6 inherited indexing tools |
+| `ado_boards` | `configurations/ado.py::AdoConfiguration` | `tools/ado/work_item::AzureDevOpsWorkItemsToolkit` | 20 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_boards/` | Planned as its own complete SDK family; 14 work-item operations plus 6 inherited indexing tools |
+| `ado_wiki` | `configurations/ado.py::AdoConfiguration` | `tools/ado/wiki::AzureDevOpsWikiToolkit` | 14 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_wiki/` | Planned as its own complete SDK family; 8 wiki operations plus 6 inherited indexing tools |
 | `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `tools/gitlab::EliteAGitlabToolkit` | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned standard repository family; inherited indexing overlay stays last |
 | `gitlab_org` | shared `configurations/gitlab.py::GitlabConfiguration` | `tools/gitlab_org::EliteAGitlabSpaceToolkit` | 17 | Yes | `toolkits/families/gitlab_org/{config,client,edit,diff,tools}.rs` | Capability-disabled complete family: 8 reads, 8 writes and 1 delete; dynamic-project authority, live check, HITL and effect reconciliation remain gates |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
@@ -136,6 +139,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
 | `keycloak` | None; authority and service-account credentials are inline toolkit settings | `tools/keycloak::KeycloakToolkit` | 1 | No | `toolkits/families/keycloak/{config,client,tools}.rs` | Capability-disabled complete family: one generic Admin REST execute surface retains reads, writes, deletes and actions inside one frozen HTTPS realm; exact-interrupt HITL, effect reconciliation, approved egress and live provider proof remain gates |
 | `azure` | None; subscription and service-principal credentials are inline toolkit settings | `tools/cloud/azure::AzureToolkit` | 2 | No | `toolkits/families/azure/{config,client,tools}.rs` | Capability-disabled complete family: one generic ARM execute surface plus its resource-group health read inside the frozen public-cloud subscription; exact-interrupt HITL, effect reconciliation, approved egress and live Azure role proof remain gates |
+| `kubernetes` | None; cluster origin and Bearer token are inline toolkit settings | `tools/cloud/k8s::KubernetesToolkit` | 2 | No | `toolkits/families/kubernetes/{config,client,tools}.rs` | Capability-disabled complete family: one generic Kubernetes REST execute surface plus its `/version` health read on an exact verified-TLS origin; exact-interrupt HITL, effect reconciliation, approved DNS/IP egress, CA policy and live RBAC proof remain gates |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `toolkits/families/slack/{config,client,tools}.rs` | Capability-disabled complete family: seven bounded fixed-origin messaging, membership and workspace operations; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
@@ -177,9 +181,10 @@ a coordinated platform/SDK contract revision or provider-backed migration
 fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
-tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
-Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Keycloak and Azure are now implemented
-completely behind capability gates from inline claim-materialized settings. LocalGit
+tracked separately: AWS (1), Azure Resource Manager (2), GCP (1), Kubernetes
+(2), Keycloak (1), Elastic (1), PPTX (2), and Yagmail (1). Yagmail, Keycloak,
+Azure Resource Manager and Kubernetes are now implemented completely behind
+capability gates from inline claim-materialized settings. LocalGit
 (13) is intentionally deferred: its local-filesystem/process isolation boundary
 is outside the remote toolkit migration priority. The remaining families still
 require an explicit authority source and admission policy before live porting.
@@ -1597,6 +1602,78 @@ enforces the approved public-cloud Entra and ARM DNS/IP destinations; and live
 Azure service-principal roles prove both application and ad-hoc materialization.
 Health and generic read requests may also be independently sensitive because
 ARM responses contain tenant resource metadata.
+
+### Kubernetes complete REST family
+
+Kubernetes is a complete two-tool family over inline toolkit settings rather
+than a separately registered configuration. Current SDK `9bba9da` and
+worker-pinned SDK `b5113a1` expose the same source-ordered
+`execute_kubernetes` and `kubernetes_integration_healthcheck` operations;
+current adds only `execute` and `read` group metadata. Main's frozen toolkit
+catalog marks only `token` as secret. There is no public configuration check,
+indexing behavior, or generated provider-specific operation: the model-facing
+health tool is the second operation.
+
+The source either constructs a client for the supplied URL and token with TLS
+certificate verification disabled, or silently loads ambient kubeconfig when
+either value is missing. Its validator stores the client on the wrapper class,
+so a later toolkit can overwrite an earlier toolkit's origin and credential.
+The generic method accepts arbitrary HTTP methods, paths, headers, and JSON,
+but the advertised object forms for `body` and `headers` are passed to
+`json.loads` and fail. Responses are unbounded and nonempty error bodies are
+returned as if they were ordinary results; health reports success for any
+JSON-decodable response regardless of HTTP status.
+
+Rust preserves both public operations and every bounded RFC HTTP method token,
+while intentionally removing those unsafe behaviors. One invocation-owned,
+non-debuggable client requires the claim-materialized exact HTTPS cluster
+origin and zeroizing Bearer token; it never reads kubeconfig, proxy variables,
+or another ambient credential source. Userinfo, non-root configured paths,
+query/fragment authority, cross-origin redirects, malformed escapes, repeated
+path separators, decoded traversal and encoded separators are rejected. An
+explicit custom port such as `6443` remains supported. The client verifies the
+certificate and hostname against native trust roots and performs no automatic
+retry.
+
+`body` and `headers` truthfully accept an object or strict JSON-object string.
+Bodies are bounded JSON objects; the source's array-excluding schema remains
+intact. Headers are a bounded string map and may select Kubernetes patch media
+types, but cannot replace Authorization, Host, length, proxy, or hop-by-hop
+transport headers. The complete argument stays below the shared 256 KiB limit,
+one request body below 240 KiB, and one serialized UTF-8 result below 512 KiB.
+The sub-URL starts with one slash and may carry a bounded query because the
+public schema exposes no separate query parameter.
+
+GET, HEAD, and OPTIONS are classified as reads; all other methods are effects.
+Every 2xx response, including 202 Accepted, preserves the source's UTF-8 body
+string. Read failures use stable redacted typed errors. Once an effect request
+is dispatched, transport loss, timeout, redirect, 408, 429, 5xx, oversized or
+unprojectable success becomes a nonretryable unknown outcome. The health tool
+uses exactly `GET /version` and returns `[true,""]` only for a successful JSON
+response, otherwise `[false,<stable redacted reason>]`.
+
+The model-facing descriptions are tested selection contracts. They state the
+configured-cluster boundary, exact path/query form, method-to-effect split,
+body/header shapes, patch media-type use, result ceiling, confidential-read
+risk, 202 semantics, one-attempt behavior and reconciliation requirement. The
+generic operation is always non-read-only and non-concurrency-safe because its
+arguments determine the effect; group metadata grants no authority.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/cloud/k8s/__init__.py::{KubernetesToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline cluster URL, sealed token, selection and source groups | `config.rs` requires one exact claim-owned HTTPS authority, keeps the token zeroizing and performs no construction I/O |
+| `tools/cloud/k8s/api_wrapper.py::{KubernetesApiWrapper.execute_kubernetes,kubernetes_integration_healthcheck}` | Generic REST dispatch and `/version` health read | `tools.rs` exposes both operations with selection-oriented schemas; `client.rs` owns bounded verified-TLS wire and stable result/error projection |
+| Main application/ad-hoc freezer and claim materializer | Token remains sealed until accepted execution | focused Rust fixtures cover inline materialization and tenant isolation; full application/ad-hoc live-cluster proof remains an activation gate |
+
+Production registration remains disabled until the shared direct-sensitive-tool
+wrapper authorizes the exact invocation by durable `interrupt_id`; a durable
+effect intent/receipt owner binds method, path, headers and canonical body and
+reconciles unknown outcomes across cancellation or restart; external egress
+enforces the approved cluster DNS/IP destination; and either a native-root
+certificate or a future claim-owned CA contract plus live Kubernetes RBAC prove
+both application and ad-hoc materialization. Reads may independently be marked
+sensitive because API responses can expose secrets, workload configuration and
+cluster topology.
 
 ## Special runtime toolsets
 
