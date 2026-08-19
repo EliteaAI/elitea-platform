@@ -127,7 +127,8 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | --- | --- | --- | ---: | :---: | --- | --- |
 | `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,projects,pull_requests,workflow_runs,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus twenty explicit identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search, workflow-status and Project V2 reads; the other 24 tools, workflow-log archives, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
 | `ado` | `configurations/ado.py::AdoConfiguration` | `tools/ado` dispatcher; repos, plans, boards, wiki toolkits | 74 | Yes | `configurations/families/ado.rs`; `toolkits/families/ado/` | Planned; one owner for shared auth/client and aliases |
-| `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `EliteAGitlabToolkit`, GitLab Org toolkit | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned; standard and org stay together |
+| `gitlab` | `configurations/gitlab.py::GitlabConfiguration` | `tools/gitlab::EliteAGitlabToolkit` | 44 | Yes | `configurations/families/gitlab.rs`; `toolkits/families/gitlab/` | Planned standard repository family; inherited indexing overlay stays last |
+| `gitlab_org` | shared `configurations/gitlab.py::GitlabConfiguration` | `tools/gitlab_org::EliteAGitlabSpaceToolkit` | 17 | Yes | `toolkits/families/gitlab_org/{config,client,edit,diff,tools}.rs` | Capability-disabled complete family: 8 reads, 8 writes and 1 delete; dynamic-project authority, live check, HITL and effect reconciliation remain gates |
 | `qtest` | `configurations/qtest.py::QtestConfiguration` | `tools/qtest::QtestToolkit` | 25 | Yes | `configurations/families/qtest.rs`; `toolkits/families/qtest/` | Planned |
 | `bitbucket` | `configurations/bitbucket.py::BitbucketConfiguration` | `tools/bitbucket::EliteABitbucketToolkit` | 22 | Yes | `configurations/families/bitbucket.rs`; `toolkits/families/bitbucket/` | Planned |
 | `confluence` | `configurations/confluence.py::ConfluenceConfiguration` | `tools/confluence::ConfluenceToolkit` | 25 | Yes | `configurations/families/confluence.rs`; `toolkits/families/confluence/` | Planned; shared Atlassian auth normalizer |
@@ -1038,6 +1039,99 @@ is no mutation/effect-reconciliation gate because every operation is a read.
 Reports, logs and user data may still be independently configured as sensitive;
 read grouping never bypasses the shared exact `interrupt_id` policy.
 
+### GitLab Org complete repository family
+
+`gitlab_org` is a separate seventeen-tool catalog from the standard GitLab
+toolkit. The implementation follows current SDK revision
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, worker-pinned revision
+`b5113a129329b85d23c2d5c2bf55f18e307414ec` and
+`python-gitlab==4.5.0`. The current and pinned implementations have identical
+schemas, routes and result behavior; current adds the eight `read`, eight
+`write` and one `delete` group annotations. There is no GitLab Org indexing,
+artifact or LLM path.
+
+Main freezes the shared nested `gitlab_configuration` reference and keeps the
+private token sealed. Claim-time configuration materialization accepts only an
+application or ad-hoc execution request, unseals that already-frozen revision,
+and passes the resulting tool settings through the Python worker SDK adapter.
+Rust accepts only that claim-owned HTTPS root origin and zeroizing token. It
+does not authenticate or resolve repositories while constructing the toolset,
+removing the SDK's eager network dependency and shared mutable client state.
+
+The public source-order catalog is preserved:
+
+1. `create_branch` creates a branch from the invocation's current active ref.
+2. `set_active_branch` changes only invocation-local branch state and performs
+   no provider request.
+3. `list_branches_in_repo` returns a bounded wildcard-filtered branch list.
+4. `get_issues` returns the first bounded page of open issues.
+5. `get_issue` returns one issue and its first ten comments.
+6. `create_pull_request` creates a merge request into the configured base
+   branch.
+7. `comment_on_issue` posts the packed `<iid>\n\n<comment>` input.
+8. `create_file` creates one text file after an exact not-found preflight.
+9. `read_file` reads UTF-8 text or a validated 1-indexed inclusive line range.
+10. `update_file` applies deterministic OLD/NEW marker pairs and commits the
+    complete bounded result.
+11. `delete_file` deletes one path on the selected branch.
+12. `get_pr_changes` returns one bounded merge-request diff with displayed row
+    indices.
+13. `create_pr_change_comment` binds a comment to one displayed diff row and
+    the merge request's exact base/head/start revisions.
+14. `list_files` returns bounded blob paths from one repository tree.
+15. `list_folders` returns bounded tree paths from the same tree contract.
+16. `append_file` reads and updates the same resolved repository and branch.
+17. `get_commits` returns a bounded commit projection with optional ref, path,
+    author and timezone-bearing RFC3339 filters.
+
+Every tool and parameter description states the full `group/project` repository
+format, configured/default repository behavior, configured base branch versus
+invocation-local active branch, result bound and remote-effect risk. It also
+documents the branch limit, first-page issue/comment behavior, 200,000-character
+and 512 KiB serialized file-read guidance, 1 MiB read-source ceiling, 256 KiB
+writable-file/edit ceiling, dedicated-line OLD/NEW grammar, zero-based displayed
+diff-row identity, bounded tree traversal and RFC3339 requirements. Model
+metadata never exposes the origin, token or configured allowlist.
+
+Nonempty configured repositories form a strict ordered allowlist; omission
+selects the first entry. The source-compatible empty configuration permits a
+repository argument visible to the token, but production activation of that
+mode requires a Main-issued claim-scoped organization-wide repository grant.
+The complete toolset serializes calls because active-branch mutation and calls
+that consume it must not race. Selected tools still preserve catalog order;
+empty selection means all and persisted unknown names fail closed.
+
+Rust intentionally replaces unbounded `get_all`/`all=True` iteration with
+finite page and item budgets, validates positive IDs and ordered line ranges,
+bounds provider bodies, decoded files, edits, diffs, requests and results, and
+performs no hidden retry. Only an exact file-not-found response permits create;
+append cannot read one project and write another. Unified-diff parsing accepts
+standard counted and count-less hunks. Transport ambiguity or unusable success
+data after an effect is an explicit nonretryable unknown outcome, never an
+ordinary retryable dependency error.
+
+Thirteen focused tests cover the exact catalog and descriptions, configured and
+dynamic project authority, encoded routes and request bodies for every remote
+effect, exact completion statuses, nullable results, pagination and commit
+filters, UTF-8/read/write bounds, Python-compatible wildcard classes, OLD/NEW
+matching, diff positions, secret redaction and fail-closed policy admission.
+
+| Current business source | Preserved behavior | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `configurations/gitlab.py::GitlabConfiguration::check_connection` | Root GitLab origin, private-token authentication and `/api/v4/user` probe | `config.rs` owns the claim-scoped authority; the future public check delegates the same bounded client instead of duplicating provider logic |
+| SDK `tools/gitlab_org/__init__.py::{get_tools,toolkit_config_schema,get_toolkit}` | Nested configuration, repositories/base branch, source order, selection and toolkit identity | `config.rs` and `tools.rs` preserve the separate seventeen-tool contract without construction I/O |
+| SDK `GitLabWorkspaceAPIWrapper` and `python-gitlab==4.5.0` | Branch, issue, merge-request, file, tree and commit routes plus PRIVATE-TOKEN auth | `client.rs` uses one bounded invocation client, exact encoded project/path/query components, no redirects/retries and typed data-free failures |
+| SDK `BaseCodeToolApiWrapper.edit_file` and `utils.text_operations` | Dedicated-line OLD/NEW pairs, exact then tolerant unique matching and sequential edits | `edit.rs` preserves deterministic edit semantics with a finite linear work budget and provider-byte/request caps |
+| SDK `gitlab.utils::{get_diff_w_position,get_position}` | Displayed diff row numbers and exact GitLab discussion position | `diff.rs` accepts standard unified hunks, binds exact diff refs and caps every provider string and projected row |
+| Main toolkit freezer/materializer and Python `EliteaSdkAgentAdapter` | Same frozen tool contract for application and ad-hoc execution | Rust tests consume the materialized nested shape; no environment/global credential fallback exists |
+
+Production family registration remains disabled pending delegated connection-
+check composition, application/ad-hoc materialization proof, live GitLab scope
+and pagination fixtures, explicit organization-wide authority for dynamic mode,
+and the shared exact-`interrupt_id` approval plus cancellation-safe effect
+receipt/reconciliation owner. Groups are presentation metadata: any read may be
+configured sensitive, and no write/delete is authorized merely by its group.
+
 ## Special runtime toolsets
 
 | Python source | Behavior | Rust target | Status / deviation |
@@ -1056,8 +1150,8 @@ read grouping never bypasses the shared exact `interrupt_id` policy.
 The shared schema, bounded HTTP, credential, policy, invocation-event,
 cancellation and ADK `Toolset` kernel is now stable enough for independent
 REST families; Google Places, Sonar, Azure Search and ReportPortal are complete
-reads, while ServiceNow, Salesforce, Slack, Rally and Zephyr Squad prove the
-same boundary can retain bounded create/update/delete effects without
+reads, while ServiceNow, Salesforce, Slack, Rally, GitLab Org and Zephyr Squad
+prove the same boundary can retain bounded create/update/delete effects without
 activating them ahead of durable approval.
 These follow the partial GitHub reference family. Parallel family work still
 must not share mutable files or weaken the capability gate.
@@ -1065,8 +1159,8 @@ Non-overlapping batches are:
 
 1. GitHub completion as the broad reference family, including its gated effects.
 2. Independent simple REST families using the Google Places/Sonar ownership pattern.
-3. GitLab plus GitLab Org and Bitbucket with separate owners; LocalGit stays
-   intentionally deferred.
+3. Standard GitLab and Bitbucket with separate owners; LocalGit stays
+   intentionally deferred. GitLab Org is already complete behind its gate.
 4. All four ADO toolsets under one owner.
 5. Jira and Confluence after one shared Atlassian normalizer.
 6. qTest, TestRail, Xray and all Zephyr variants as coherent test-management

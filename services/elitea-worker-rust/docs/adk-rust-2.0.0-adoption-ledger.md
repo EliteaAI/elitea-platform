@@ -88,6 +88,26 @@ exact-`interrupt_id` sensitive-tool flow and cancellation-safe effect
 identity/reconciliation are composed. Read/write grouping remains metadata,
 not approval authority.
 
+The complete capability-disabled `GitLab Org` family is a separate toolkit
+from the standard GitLab catalog and adds all seventeen current SDK operations
+in source order: eight reads, eight writes and one delete. One claim-scoped,
+zeroizing private-token client owns the accepted HTTPS GitLab origin and either
+a strict configured project allowlist or the source-compatible dynamic-project
+mode. Active-branch state is invocation-local and the complete toolset is
+serialized so a concurrent model loop cannot race branch selection with a
+repository effect. Rust preserves the current OLD/NEW file-edit and merge-
+request diff-position functionality while bounding project pages, files,
+commits, diffs, edits and results. The explicit limits include a 1 MiB decoded
+read source, 200,000-character plus 512 KiB serialized read result, and 256 KiB
+writable result/edit. It also fixes the SDK's eager construction I/O, unbounded
+pagination, cross-project append, error-as-missing create probe and raw provider
+failures. Production composition remains closed until Main binds dynamic mode
+to explicit organization-wide repository authority, the
+delegated GitLab connection check and live provider proof are composed, and the
+shared exact-`interrupt_id` HITL plus cancellation-safe effect receipt/
+reconciliation owner protects all remote effects. Operation grouping remains
+metadata, so any GitLab read may also be configured as sensitive.
+
 The complete capability-disabled `ReportPortal` family adds all nine current
 SDK tools in source order. Every operation is a read: launch exports and
 details, paged launch/item/log collections, individual test items, users and
