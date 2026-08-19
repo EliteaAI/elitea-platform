@@ -131,6 +131,30 @@ Although no effect owner is required, any report,
 log or user read may independently require the shared exact-`interrupt_id`
 sensitive-tool policy.
 
+The complete capability-disabled `Aha` family adds all thirty-three current
+SDK tools in source order: 25 REST/GraphQL/search/metadata reads, six writes,
+one delete and the legacy combined create/update/delete execute surface. The
+current and worker-pinned SDK implementations are functionally identical;
+current adds only operation-group metadata. One invocation-scoped zeroizing
+Bearer client owns the claim-materialized HTTPS account origin, disables
+redirects and retries, validates expected pagination collections and bounds
+every page, body, JSON value, formatter result and diagnostic. Native
+deterministic JSON/CSV/Markdown replaces optional pandas/tabulate behavior.
+Record parent scopes, GraphQL Markdown reads, comments, all seven link codes,
+release duplication, custom-field metadata and every mutation are retained.
+The combined `manage_record` is authorized according to its exact requested
+action rather than its generic `execute` label. `attach_file` accepts only an
+authorized Elitea `/{bucket}/{filename}` artifact reference: content is
+downloaded to a private bounded temp spool, immutable version/length/SHA-256
+are verified before dispatch, then the verified file is streamed once as
+multipart `attachment[data]`. This preserves files below Aha's 300 MB provider
+limit without a same-sized memory buffer. Production composition remains
+closed until authorized application/ad-hoc materialization, live Aha egress and
+connection proof, the sealed artifact resolver plus shared disk/concurrency
+budget, exact-`interrupt_id` sensitive-tool continuation and cancellation-safe
+effect receipt/reconciliation are composed. Any read may be sensitive; group
+metadata grants no authority.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline

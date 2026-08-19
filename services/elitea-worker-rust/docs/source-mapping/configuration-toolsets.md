@@ -154,11 +154,25 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; delegated/app-only auth and content limits |
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
 | `report_portal` | `configurations/report_portal.py::ReportPortalConfiguration` | `tools/report_portal::ReportPortalToolkit` | 9 | Yes | `toolkits/families/report_portal/{config,client,tools}.rs` | Capability-disabled complete read family: nine bounded project/report reads, including explicit UTF-8 HTML and base64 PDF export projections; authorized materialization, egress policy and live provider proof remain gates |
-| `testio` | `TestIOConfiguration` | `TestIOToolkit` | 15 | Yes | corresponding family paths | Planned; source has no focused family tests |
+| `testio` | `TestIOConfiguration` | `TestIOToolkit` | 15 | Yes | corresponding family paths | Deferred as an incoherent source contract: the check and official API require `Authorization: Token`, while runtime tools send `Bearer`; exploratory-test retrieval cannot receive its implementation-required product ID; and the two SDK write payloads do not map to the current provider create/confirmation operations without inventing product behavior |
 | `openapi` | `OpenApiConfiguration` | `EliteAOpenAPIToolkit`, dynamic `OpenApiAction` | Dynamic | Yes | `configurations/families/openapi.rs`; `toolkits/families/openapi/` | Planned; specification parser/schema/auth is its own program |
 | `langfuse` | `LangfuseConfiguration` | No standard toolkit | 0 | Yes | `configurations/families/langfuse.rs` | Planned; observability support configuration |
-| `aha` | `AhaConfiguration` | `AhaToolkit` | 33 | Yes | corresponding family paths | Planned |
+| `aha` | `configurations/aha.py::AhaConfiguration` | `tools/aha::AhaToolkit` | 33 | Yes | `toolkits/families/aha/` | Capability-disabled complete family; all 25 reads, 6 writes, 1 delete and the effectful combined execute surface are retained, with artifact-backed attachment upload behind a claim-scoped verified temp-spool resolver |
 | `pgvector` | `PgVectorConfiguration` | No standalone toolkit | 0 | No | `configurations/families/pgvector.rs` | Planned; shared indexing/runtime dependency |
+
+`testio` is deliberately deferred rather than copied as a nominally complete
+family. Its connection check and Test IO's current customer API authenticate
+with `Authorization: Token`, while all fifteen runtime methods send `Bearer`.
+The public `get_exploratory_test` schema also omits the product ID required by
+its implementation, and product-scoped list calls can construct a literal
+`/products/None/` path. More importantly, the SDK's two writes are not safely
+repairable by changing a URL: current exploratory-test creation requires a
+product-scoped nested request with a test environment and a feature-or-template
+choice, while the SDK exposes unrelated legacy device/date/goal fields; its
+`confirm_bug_fix` payload maps neither to the current confirmation-information
+request nor to the separate bug-state transitions. A Rust port therefore needs
+a coordinated platform/SDK contract revision or provider-backed migration
+fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
@@ -1131,6 +1145,114 @@ and pagination fixtures, explicit organization-wide authority for dynamic mode,
 and the shared exact-`interrupt_id` approval plus cancellation-safe effect
 receipt/reconciliation owner. Groups are presentation metadata: any read may be
 configured sensitive, and no write/delete is authorized merely by its group.
+
+### Aha complete product-management family
+
+`aha` is a complete thirty-three-tool product-management family. The behavioral
+baseline is current SDK revision
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, worker-pinned revision
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, Main's frozen toolkit and
+configuration catalogs, and the shared Python application/ad-hoc SDK adapter.
+The current and pinned implementations have identical schemas, routes, result
+semantics and focused Aha tests; current adds only the 25 `read`, six `write`,
+one `delete` and one `execute` group annotations. `manage_record` can create,
+update or delete and is therefore effectful regardless of its presentation
+group.
+
+Main freezes the nested `aha_configuration`, its owning configuration project
+and the selected source catalog before dispatch. The token remains sealed until
+claim-time materialization for an application or ad-hoc execution. Rust accepts
+only that claim-owned HTTPS origin and zeroizing Bearer token, constructs no
+client during schema/catalog inspection and never exposes the private origin or
+token in tool descriptions. The future public connection check will use the
+same bounded client for exact `GET /api/v1/me` validation rather than duplicating
+the SDK's redirect-following, body-leaking probe.
+
+The source-order catalog is retained in four parts:
+
+1. Direct REST reads: `get_feature`, `get_requirement`, `get_release`,
+   `get_initiative`, `get_epic`, `get_idea` and `get_product`.
+2. Bounded REST collections and search: `list_products`, `list_features`,
+   `list_requirements`, `list_releases`, `list_initiatives`, `list_epics`,
+   `list_ideas` and `search`. Release scope wins over product scope where the
+   SDK defines both.
+3. Fixed GraphQL and uniform read dispatchers: `get_page`,
+   `search_documents`, `get_feature_gql`, `get_requirement_gql`,
+   `find_project`, `search_records` and `read_records`. The page dispatcher
+   deliberately honors the requested projection and format instead of dropping
+   them as the SDK currently does.
+4. Comments, records, metadata and attachments: `add_comment`,
+   `list_comments`, legacy `manage_record`, `create_record`, `update_record`,
+   `delete_record`, `create_record_link`, `copy_record`, `fields_metadata`,
+   `field_options_metadata` and `attach_file`.
+
+The REST root is `{origin}/api/v1` and the fixed GraphQL endpoint is
+`{origin}/api/v2/graphql`. Reads preserve Aha reference and parent-scope rules,
+top-level field allowlisting, JSON/CSV/Markdown selection and the SDK's explicit
+empty-result messages. The native formatter is deterministic and bounded; it
+does not depend on pandas or the worker image's optional `tabulate` package.
+List pagination starts at page one, validates positive monotonic metadata,
+requires the endpoint's expected collection key and stops at the advertised
+record cap plus a finite page ceiling. It never follows redirects or an
+upstream URL.
+
+Record creation is release-scoped for features and epics, feature-scoped for
+requirements, and product-scoped for ideas, releases, initiatives and pages.
+Release and initiative updates/deletes also require the product parent. The
+legacy `manage_record` parent alias is preserved, but model guidance prefers
+the operation-specific tools and runtime authorization must bind its exact
+action. Record-link creation retains all seven link codes and resolves Aha
+reference numbers through bounded REST, GraphQL or collection reads before one
+effect request. Copy remains release-only. Every effect is one attempt; an
+unexpected success status/shape, timeout, cancellation, rate limit or provider
+failure after dispatch is a nonretryable unknown outcome that requires
+reconciliation.
+
+`attach_file` preserves the existing Elitea artifact contract rather than
+accepting a local path. Its public `/{bucket}/{filename}` reference is parsed and
+authorized by a claim-scoped artifact resolver. The resolver binds the immutable
+artifact version, exact byte length and SHA-256 digest, downloads into a private
+bounded temp spool, verifies all three before Aha dispatch, and then streams the
+verified file once as reqwest multipart field `attachment[data]`. This avoids a
+same-sized in-memory copy without allowing same-length content substitution. A `to_do`
+uploads to `/tasks/{id}/attachments`; other supported records are read once to
+obtain `description.id` and then upload to `/notes/{note_id}/attachments`.
+Aha's provider limit is strictly below 300,000,000 bytes and uploads must
+complete within 40 seconds; the family enforces both the decimal length ceiling
+and the invocation deadline. Production activation additionally requires the
+real artifact client, project authority and a shared temp-disk/concurrency
+budget. No artifact path, filename header injection, token, origin or provider
+body reaches diagnostics.
+
+Tool and parameter descriptions are part of the executable model contract.
+They identify REST versus Markdown/GraphQL reads, exact parent/reference
+formats, scope precedence, page and result bounds, output formats, link codes,
+the operation-specific alternative to `manage_record`, artifact path syntax,
+and whether an action can create duplicates or has an unknown outcome. Group
+metadata does not grant execution authority: any of the 25 reads may be
+configured sensitive, while all eight effectful tools require the shared exact
+`interrupt_id` decision and cancellation-safe effect receipt/reconciliation
+owner.
+
+| Current business source | Preserved behavior | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `configurations/aha.py::AhaConfiguration` | Nested base URL/token schema and authenticated `/api/v1/me` check | `config.rs` owns claim-scoped HTTPS authority; future check composition reuses the bounded client |
+| SDK `tools/aha/__init__.py::{get_tools,toolkit_config_schema,get_toolkit}` | Thirty-three source-ordered tools, empty/subset selection and toolkit identity | `config.rs` and `tools.rs` preserve the complete catalog without construction I/O or origin-bearing model text |
+| SDK `AhaApiWrapper::_rest_request`, `_paginate` and `_collect` | Bearer REST reads/effects and record-capped pagination | `client.rs` fixes origin, expected collection keys, page/body/output budgets, exact effect statuses and safe errors |
+| SDK four fixed GraphQL queries | Page/document search plus Markdown feature/requirement reads | `client.rs` retains fixed query documents/variables and rejects partial/error/oversized responses safely |
+| SDK `_project_record` and `_format_output` | Top-level field projection and JSON/CSV/Markdown | `format.rs` supplies deterministic native formatting and explicit size bounds |
+| SDK record/comment/link/copy methods | Parent-scoped mutations, link resolution and result projection | `client.rs` and `tools.rs` retain all effects while making ambiguity and action-specific authority explicit |
+| SDK `get_file_bytes_from_artifact` and `attach_file` | Elitea artifact retrieval followed by Aha multipart upload | `artifact.rs` binds immutable version/length/SHA-256, verifies a private bounded temp spool before dispatch and then streams the exact multipart attachment effect |
+| Main toolkit freezer/materializer and Python `EliteaSdkAgentAdapter` | Same frozen tool contract for application and ad-hoc execution | Rust fixtures consume the materialized nested shape; no environment/global credential fallback exists |
+| SDK Aha unit and credential-gated end-to-end suites | Route, schema, formatter and provider evidence | `aha_tests.rs` adds fourteen focused route/schema/model-metadata, adversarial bound, unknown-outcome, secret-isolation and artifact-authority tests |
+
+Production registration remains disabled pending authorized application/ad-hoc
+materialization, fixed-origin egress and live `/api/v1/me` proof, shared
+per-tool sensitive policy, durable exact-interrupt continuation, effect receipt
+and reconciliation, and the real claim-scoped artifact resolver. Large tool
+results must retain one event owner and remain below the output-frame boundary;
+the Python worker's known duplicated 51,979-byte Aha result is a regression
+fixture rather than behavior to reproduce.
 
 ## Special runtime toolsets
 

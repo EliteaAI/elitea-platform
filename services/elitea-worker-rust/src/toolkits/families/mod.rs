@@ -1,3 +1,4 @@
+pub(crate) mod aha;
 pub(crate) mod azure_search;
 pub(crate) mod github;
 pub(crate) mod gitlab_org;

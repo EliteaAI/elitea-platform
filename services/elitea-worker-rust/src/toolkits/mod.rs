@@ -12,6 +12,8 @@ mod policy;
 mod snapshot;
 
 #[cfg(test)]
+mod aha_tests;
+#[cfg(test)]
 mod azure_search_tests;
 #[cfg(test)]
 mod github_tests;
