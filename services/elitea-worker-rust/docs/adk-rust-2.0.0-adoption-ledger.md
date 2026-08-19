@@ -296,6 +296,23 @@ claim-only token redemption, cluster DNS/IP plus certificate authority policy,
 and live RBAC proof are composed. The `execute`/`read` groups remain metadata
 and grant no authority.
 
+The complete capability-disabled legacy `Zephyr` family adds all four current
+SDK tools in source order: one test-step read and three single/batch append
+effects. This toolkit uses inline Basic-auth settings and is deliberately
+separate from the configured, indexing-backed `zephyr_scale` family and the
+fixed-cloud Zephyr Squad family. One invocation-owned client binds the frozen
+HTTPS ZAPI prefix, verifies TLS, disables redirects, proxies and retries, and
+performs one bounded GET or POST per step. Batch inputs are completely
+prevalidated and limited to 50 steps per case, 20 cases, 100 total steps and a
+64-KiB encoded JSON string before sequential dispatch. Tested descriptions
+explain exact input shapes, selection cues, duplicate/partial-effect risk and
+reconciliation; compact batch receipts avoid echoing the model's payload.
+Production composition remains closed until authorized application/ad-hoc
+materialization, approved endpoint egress, a harmless live legacy-ZAPI read,
+the shared exact-`interrupt_id` sensitive-tool flow and durable single/partial
+effect receipts are composed. The read/write groups remain metadata and grant
+no authority.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline

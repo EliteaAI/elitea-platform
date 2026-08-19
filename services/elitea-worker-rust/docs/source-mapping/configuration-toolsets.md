@@ -149,7 +149,8 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `delta_lake` | `configurations/delta_lake.py::DeltaLakeConfiguration` | `tools/aws/delta_lake::DeltaLakeToolkit` | 3 | No | `configurations/families/delta_lake.rs`; `toolkits/families/delta_lake/` | Planned; source has no focused family tests |
 | `bigquery` | `configurations/bigquery.py::BigQueryConfiguration` | `tools/google/bigquery::BigQueryToolkit` | 11 | No | `configurations/families/bigquery.rs`; `toolkits/families/bigquery/` | Planned; source has no focused family tests |
 | `xray` | `configurations/xray.py::XrayConfiguration` | `tools/xray::XrayToolkit` as `xray_cloud` | 12 | Yes | `configurations/families/xray.rs`; `toolkits/families/xray/` | Planned; preserve runtime alias |
-| `zephyr` | `configurations/zephyr.py::ZephyrConfiguration` | Zephyr and Zephyr Scale | 30 | No | `configurations/families/zephyr.rs`; `toolkits/families/zephyr/` | Planned; all Zephyr variants one batch |
+| `zephyr` | None; base URL and Basic-auth credentials are inline toolkit settings | `tools/zephyr::ZephyrToolkit` | 4 | No | `toolkits/families/zephyr/{config,client,tools}.rs` | Capability-disabled complete legacy family: one bounded step read plus all three sequential create effects; exact-interrupt HITL, durable partial-effect reconciliation, approved egress and live legacy-ZAPI proof remain gates |
+| `zephyr_scale` | `configurations/zephyr.py::ZephyrConfiguration` plus optional `PgVectorConfiguration` | `tools/zephyr_scale::ZephyrScaleToolkit` | 26 | Yes | future `toolkits/families/zephyr_scale/` | Planned after the shared indexing overlay; 20 business operations plus 6 inherited indexing tools |
 | `zephyr_squad` | None; credentials are inline toolkit settings | `tools/zephyr_squad::ZephyrSquadToolkit` | 15 | No | `toolkits/families/zephyr_squad/{config,client,tools}.rs` | Capability-disabled complete family: five bounded reads plus all eight writes and two deletes over fixed Squad Cloud JWT routes; authorized materialization, live credential proof, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `zephyr_enterprise` | `ZephyrEnterpriseConfiguration` | `ZephyrEnterpriseToolkit` | 11 | Yes | corresponding family paths | Planned; source has no focused family tests |
 | `zephyr_essential` | `ZephyrEssentialConfiguration` | `ZephyrEssentialToolkit` | 51 | Yes | corresponding family paths | Planned; largest fixed catalog, no focused tests |
@@ -897,6 +898,69 @@ materialization, both API-key and Basic live WSAPI proofs, the shared durable
 HITL wrapper, and cancellation-safe effect reconciliation. The implementation
 is complete rather than read-only: both create and update remain compiled and
 tested behind those gates.
+
+### Legacy Zephyr complete ZAPI step family
+
+The independently registered legacy `zephyr` toolkit is a complete four-tool
+family and is not an alias for `zephyr_scale`, `zephyr_squad`,
+`zephyr_enterprise`, or `zephyr_essential`. Current SDK `9bba9da` and
+worker-pinned SDK `b5113a1` expose the same four operations, schemas, order and
+wire behavior; current adds only one `read` and three `write` group annotations.
+Its credentials are inline `base_url`, `username`, and sealed `password`
+settings in Main's frozen toolkit schema. The separately registered
+`ZephyrConfiguration` is consumed by `zephyr_scale` and does not describe this
+legacy Basic-auth client. Neither legacy toolkit source defines a connection
+check or an indexing operation.
+
+The complete source order is `get_test_case_steps`,
+`add_new_test_case_step`, `add_test_case`, and `add_test_cases`. All four use
+the fixed configured prefix followed by
+`/teststep/{issue_id}?projectId={project_id}`. The read sends one GET and
+projects `stepBeanCollection` to the source-compatible order_id, step, data,
+and result message. Every write sends the same POST body with exact step, data,
+and result fields. The two batch tools fully validate their JSON-string input
+before network access, then preserve case and step order while using the same
+single-step operation. No create, update-like append, or batch effect is
+omitted.
+
+Rust replaces the SDK's class-global client with one invocation-owned client
+bound to an exact HTTPS origin and optional frozen path prefix. It keeps the
+password zeroizing, uses Basic authentication only on that origin, verifies
+TLS, rejects redirects and proxy inheritance, performs no automatic retry, and
+bounds the request, two-MiB provider response, and 512-KiB model result. IDs
+must be positive. Single-case batches allow 1 through 50 steps; multi-case
+batches allow 1 through 20 cases and at most 100 total steps. The encoded JSON
+string is limited to 64 KiB, matching the shared tool-admission boundary rather
+than advertising an unreachable larger payload.
+
+The source logs complete step bodies, returns provider text directly, and can
+leave sequential batches partially applied while reporting only the failing
+call. Rust emits no body, credential, origin, or identifier in diagnostics.
+Definite read errors remain typed and redacted; a transport loss, timeout, 408,
+429, 5xx, or unprojectable response after effect dispatch is nonretryable
+unknown outcome. Once any step in a batch is confirmed, every later failure is
+also an unknown partial outcome. Compact structured batch receipts report only
+created case/step counts, avoiding the source's repetition of all model input.
+
+Tool and parameter descriptions are tested model-selection contracts. They
+state the exact read result, Jira issue/project ID roles, JSON object/array
+shape and examples, empty data/result semantics, batch and byte limits,
+sequential execution, duplicate risk, partial effects, and required
+reconciliation. Read/write groups remain metadata; any tool can independently
+be configured sensitive.
+
+| Python/SDK source | Observable responsibility | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| `tools/zephyr/__init__.py::{get_tools,ZephyrToolkit,toolkit_config_schema}` plus Main's frozen toolkit schema/materializer | Inline origin and Basic credentials, empty/subset selection, source order and groups | `config.rs` and `tools.rs` keep the exact four operations, reject unknown persisted selections, expose bounded selection-oriented schemas, and never use the incompatible Zephyr Scale configuration |
+| `tools/zephyr/api_wrapper.py::ZephyrV1ApiWrapper` | Step projection, one-step create and sequential batch orchestration | `tools.rs` prevalidates complete batches, preserves ordering, emits compact receipts, and classifies partial effects for reconciliation |
+| `tools/zephyr/Zephyr.py::Zephyr` | Basic-auth GET/POST ZAPI transport | `client.rs` binds one exact verified-TLS authority, disables ambient proxy/redirect/retry behavior, and bounds wire, projection and stable errors |
+
+Production registration remains disabled until application/ad-hoc
+claim-materialization fixtures and a harmless live legacy-ZAPI read prove the
+saved endpoint contract, approved DNS/IP egress is enforced, the shared direct
+sensitive-tool wrapper authorizes the exact invocation by durable
+`interrupt_id`, and an effect owner durably records and reconciles every
+single-step or partial-batch outcome across cancellation and restart.
 
 ### Zephyr Squad complete Jira test-management family
 
@@ -1865,8 +1929,9 @@ Non-overlapping batches are:
    intentionally deferred. GitLab Org is already complete behind its gate.
 4. All four ADO toolsets under one owner.
 5. Jira and Confluence after one shared Atlassian normalizer.
-6. qTest, TestRail, Xray and all Zephyr variants as coherent test-management
-   batches.
+6. qTest, TestRail, Xray and the indexing-backed Zephyr variants as coherent
+   test-management batches; legacy Zephyr and Zephyr Squad are already complete
+   behind capability gates.
 7. OpenAPI before Postman.
 8. Cloud/data toolsets only after explicit allowlists replace unrestricted
    generic execution.

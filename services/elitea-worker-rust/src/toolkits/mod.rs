@@ -57,3 +57,5 @@ mod sql_tests;
 mod yagmail_tests;
 #[cfg(test)]
 mod zephyr_squad_tests;
+#[cfg(test)]
+mod zephyr_tests;
