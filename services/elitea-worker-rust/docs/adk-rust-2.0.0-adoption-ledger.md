@@ -33,7 +33,7 @@ passing upstream test does not register a production worker capability.
 | MCP | HTTP clients, toolset and server manager behind optional feature | Wrap | Saved MCP admission, workload credentials, OAuth/HITL, bounded connections, name isolation, replay policy and external stdio runner remain Elitea-owned |
 | Sensitive tools/HITL | Function-call confirmation plus graph interrupts/checkpoints | Compose | Bind decisions to the current interrupt/function-call identity. Identical name and arguments can be a new call; tool arguments alone never authorize it |
 | Action HTTP | Graph action creates a fresh unrestricted `reqwest::Client`, interpolates URL/auth and includes dependency text in errors | Do not enable directly | A future Elitea HTTP capability must enforce approved origins, DNS/IP/redirect policy, workload credential references, response/body bounds, deadlines and redacted errors; the ADK config/action shape may be reused behind it |
-| Action database | ADK 2.0.0 validates config but its SQL/Mongo/Redis executors are explicit placeholders | Reject as executable capability | Design typed, allowlisted database operations with dedicated pools and workload grants only if a real product use case is approved |
+| Action database | ADK 2.0.0 validates config but its SQL/Mongo/Redis executors are explicit placeholders | Do not enable the placeholders | The current product SQL toolkit is implemented separately with backend-specific SQLx ownership, fixed claimed authority, bounded results and effect semantics; other database actions still require dedicated contracts |
 | Action code / code tools | Optional action/code/sandbox feature families exist | Separate plan | Current code-node parity requires a reviewed isolation boundary, filesystem/network policy, resource metering and artifact contract; it is not enabled inside the main worker process by this replatform slice |
 | Managed runtime | Optional `managed-runtime` exposes another lifecycle abstraction | Defer | Main plus the worker delivery coordinator remain the only execution authority. Revisit only as an internal adapter after proving it cannot duplicate claims, settlement or recovery |
 | Semantic memory | Optional memory service and database/Redis/SQLite backends | Defer and wrap | Define tenant/project/agent namespace, consent, retention, deletion, embedding/provider and poisoning policy before enabling global agent or graph memory |
@@ -154,6 +154,21 @@ connection proof, the sealed artifact resolver plus shared disk/concurrency
 budget, exact-`interrupt_id` sensitive-tool continuation and cancellation-safe
 effect receipt/reconciliation are composed. Any read may be sensitive; group
 metadata grants no authority.
+
+The complete capability-disabled `SQL` family adds both current SDK actions:
+one unrestricted committed statement executor and one default-schema table/
+column discovery read. PostgreSQL and MySQL have separate SQLx connection and
+row projection paths so normal decimal, temporal, UUID, JSON, binary and array
+results are not narrowed to SQLx `Any` primitives. Rust repairs the registered
+integer-port mismatch, replaces credential-bearing DSNs and unbounded
+reflection fanout, enforces a single bounded statement and finite results, and
+never echoes SQL or database authority. MySQL keeps the provider's existing
+session SQL mode and rejects `NO_BACKSLASH_ESCAPES` before user-statement
+dispatch instead of silently replacing tenant policy. `execute_sql` is always an effect;
+post-dispatch failure is a nonretryable unknown outcome. Production composition
+remains closed until application/ad-hoc materialization, exact-`interrupt_id`
+approval, cancellation-safe effect reconciliation, owned TLS/trust, real
+PostgreSQL/MySQL proof and a response preallocation boundary are composed.
 
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes

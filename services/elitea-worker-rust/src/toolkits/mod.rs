@@ -40,4 +40,6 @@ mod snapshot_tests;
 #[cfg(test)]
 mod sonar_tests;
 #[cfg(test)]
+mod sql_tests;
+#[cfg(test)]
 mod zephyr_squad_tests;

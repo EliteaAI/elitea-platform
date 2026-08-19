@@ -148,7 +148,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `figma` | `configurations/figma.py::FigmaConfiguration` | `tools/figma::FigmaToolkit` | 17 | Yes | corresponding family paths | Planned; content/artifact limits required |
 | `rally` | `configurations/rally.py::RallyConfiguration` | `tools/rally::RallyToolkit` | 8 | No | `toolkits/families/rally/{config,client,tools}.rs` | Capability-disabled complete family: six bounded WSAPI reads plus create/update, with lazy per-invocation API-key/Basic authority; authorized materialization, exact-interrupt HITL, live WSAPI proof and cancellation-safe effect reconciliation remain gates |
 | `sonar` | `configurations/sonar.py::SonarConfiguration` | `tools/code/sonar::SonarToolkit` | 1 | No | `toolkits/families/sonar/{config,client,tools}.rs` | Capability-disabled complete read family: one project-bound `/api/issues/search` request with bounded filters and raw JSON projection; authorized materialization and live Sonar TLS proof remain gates |
-| `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | corresponding family paths | Planned; dialect/driver and query policy required |
+| `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | `toolkits/families/sql/` | Capability-disabled complete family: backend-specific PostgreSQL/MySQL execution plus bounded default-schema discovery; exact-interrupt HITL, effect reconciliation, TLS authority and driver preallocation controls remain gates |
 | `google_places` | `configurations/google_places.py::GooglePlacesConfiguration` | `tools/google_places::GooglePlacesToolkit` | 2 | No | `toolkits/families/google_places/{config,client,tools}.rs` | Capability-disabled complete read family: supported Places API (New) projection for `places` and `find_near`; attribution/persisted-result policy, authorized materialization and live provider proof remain gates |
 | `salesforce` | `configurations/salesforce.py::SalesforceConfiguration` | `tools/salesforce::SalesforceToolkit` | 6 | No | `toolkits/families/salesforce/{config,client,tools}.rs` | Capability-disabled complete family: six bounded CRM tools, including create/update and generic GET/POST/PATCH/DELETE; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
 | `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; delegated/app-only auth and content limits |
@@ -1145,6 +1145,82 @@ and pagination fixtures, explicit organization-wide authority for dynamic mode,
 and the shared exact-`interrupt_id` approval plus cancellation-safe effect
 receipt/reconciliation owner. Groups are presentation metadata: any read may be
 configured sensitive, and no write/delete is authorized merely by its group.
+
+### SQL complete database family
+
+`sql` is the current SDK's complete two-tool database family. The behavioral
+baseline is current SDK revision
+`9bba9da409771803f28c0ee21f5d0b9a8f456219`, worker-pinned revision
+`b5113a129329b85d23c2d5c2bf55f18e307414ec`, Main's frozen configuration and
+toolkit catalogs, and the shared application/ad-hoc SDK adapter. Current adds
+only `execute` and `read` group annotations plus error-decorator metadata; the
+connection, query and reflection behavior is otherwise unchanged.
+
+Main freezes `dialect`, `database_name`, selected tools and the nested
+`sql_configuration` before dispatch. The password remains sealed until the
+claimed application or ad-hoc request is materialized. Rust accepts the
+registered integer port directly, repairing the SDK mismatch where the public
+configuration declares an integer but the wrapper expects a string. It builds
+typed SQLx options instead of interpolating credentials into a URL, uses the
+configured host/port/database as fixed authority, performs no construction
+I/O, and never exposes the host, database, SQL text or any part of the password
+through model metadata or diagnostics. SQL has no public connection check;
+the SDK's lazy `SELECT 1` is first-use behavior, not configuration metadata.
+Rust preserves the existing MySQL session SQL mode rather than replacing the
+tenant or server policy. Before user SQL is dispatched it reads the bounded
+session mode and fails closed when the exact `NO_BACKSLASH_ESCAPES` mode is
+present, because that mode would invalidate the lexical admission contract.
+The focused corpus proves both preservation of ordinary modes and this
+pre-dispatch rejection.
+
+Both public operations are retained:
+
+1. `execute_sql` executes exactly one bounded PostgreSQL or MySQL statement.
+   It returns a bounded array of row objects for a row-producing statement and
+   a data-free execution receipt for a non-row statement. Transaction-control
+   and multiple statements are rejected because the worker owns commit and
+   ambiguity handling. SQL is unrestricted at the product boundary, so this
+   action is always an effect even when its current text appears read-only.
+2. `list_tables_and_columns` returns base tables and ordered columns from the
+   configured database's default schema. Rust replaces the SDK's unbounded
+   table-by-table reflection fanout with one deterministic bounded
+   `information_schema` query per invocation.
+
+PostgreSQL and MySQL use separate row projectors rather than SQLx `Any`. This
+preserves common booleans, signed and MySQL unsigned integers, finite floats,
+exact decimal strings, dates/times/timestamps, UUIDs, JSON, binary values and
+supported PostgreSQL arrays. Unsupported provider/domain/composite types fail
+with a stable type-only diagnostic instead of being coerced or leaking a row.
+Rows, columns, catalog entries, query bytes, statement time and serialized
+output are finite. No database operation is retried. Once the statement has
+been dispatched, a timeout, cancellation, disconnect, decode/bound failure or
+uncertain commit is a nonretryable unknown outcome; the SQL text is never
+echoed in a success or error.
+
+Two SQLx boundaries remain explicit production gates. Its PostgreSQL options
+have no environment-free public constructor, so deployment `PG*` TLS material
+can still influence the connector even after ordinary claim fields are
+overridden. Both PostgreSQL and MySQL drivers also allocate one complete wire
+row/packet before the family can enforce post-decode row and result limits.
+Production activation therefore needs an owned TLS/trust policy plus a
+sanitized connector/upstream option constructor, and a driver/server response
+allocation bound or equivalent trusted database control. Credentialed
+PostgreSQL and MySQL protocol/TLS fixtures must prove these constraints.
+
+| Current business source | Preserved behavior | Rust owner / deliberate improvement |
+| --- | --- | --- |
+| SDK `configurations/sql.py::SqlConfiguration` | Nested host, optional integer port, username/password configuration | `config.rs` validates claim-owned fixed authority, repairs integer-port materialization and zeroizes the password |
+| SDK `tools/sql/__init__.py::SQLToolkit` | PostgreSQL/MySQL selection, database name, source order, empty/subset selection and toolkit identity | `config.rs` and `tools.rs` preserve the two-tool catalog without origin-bearing descriptions or construction I/O |
+| SDK `SQLApiWrapper.client` and SQLAlchemy engine setup | Lazy provider connection and first-use failure | `client.rs` uses backend-specific typed SQLx options and bounded one-attempt connection ownership; no credential DSN is created |
+| SDK `SQLApiWrapper.execute_sql` | Arbitrary committed SQL and row/non-row results | `lexer.rs`, `project.rs` and `client.rs` retain the complete effect while adding one-statement admission, JSON-safe type projection, finite results and unknown-outcome semantics |
+| SDK `SQLApiWrapper.list_tables_and_columns` | Default-schema base table and column metadata | `client.rs` replaces unbounded reflection fanout with one ordered bounded provider-specific information-schema query |
+| Main freezer/materializer and Python `EliteaSdkAgentAdapter` | Same frozen nested settings for application and ad-hoc execution | Focused Rust fixtures consume the claim-materialized nested settings without host/user/password fallback; end-to-end application/ad-hoc envelopes and SQLx's ambient PostgreSQL TLS-material seam remain activation gates |
+
+Production family registration remains disabled. `execute_sql` requires the
+shared durable exact-`interrupt_id` approval and cancellation-safe effect
+receipt/reconciliation owner. Either operation may independently be configured
+sensitive; `read`/`execute` groups are model/catalog metadata and never grant
+database authority.
 
 ### Aha complete product-management family
 
