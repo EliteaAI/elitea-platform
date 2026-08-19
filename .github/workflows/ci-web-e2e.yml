@@ -349,11 +349,19 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Install Playwright chromium
-        # The `setup` project (OIDC login → storageState) and this journey both
-        # run under Desktop Chrome; webkit would double the stack time for no
-        # additional signal about a transport.
-        run: npx playwright install --with-deps chromium
+      - name: Pre-pull the pinned Playwright container
+        # No `npx playwright install --with-deps chromium` step — that spent
+        # ~57s, most of it apt fetching system libraries the runner then throws
+        # away (see the `e2e` job's fuller version of this note). The journey
+        # runs inside the pinned Playwright image instead, which ships the
+        # browsers AND those libraries; the journey itself stays on Desktop
+        # Chrome (the script's --project selects it), so nothing about coverage
+        # changes. Bounded and NON-FATAL: the script's `docker run` pulls the
+        # image itself if this fails, so a stalled pull costs the overlap,
+        # never the run.
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, compose up, the
         # three seed steps, then Playwright. It uses its own compose project so
@@ -362,6 +370,14 @@ jobs:
         # COMPOSE_BIN is docker on the runner; the script auto-detects podman
         # locally. MOCK_LLM_CHUNK_DELAY_MS makes the partial-render assertion
         # deterministic rather than a race against a one-paint reply.
+        #
+        # PLAYWRIGHT_CONTAINER_IMAGE makes the script run `npx playwright test`
+        # inside the pinned container (--network host) instead of on the host.
+        # The tag is written HERE and not in the script on purpose:
+        # scripts/check-playwright-image-tag.mjs only scans .github/workflows/
+        # when it asserts every container tag matches the pinned
+        # @playwright/test, so this reference is gated automatically and one
+        # inside the script would not be.
         working-directory: ${{ github.workspace }}
         env:
           COMPOSE_BIN: docker compose
@@ -369,7 +385,14 @@ jobs:
           CHAT_STREAM_PROJECT: elitea-chatstream-ci
           CHAT_STREAM_PORT: "8084"
           MOCK_LLM_CHUNK_DELAY_MS: "120"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
         run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Give the report back to the runner user
+        # The container runs as root, so playwright-report/ comes back
+        # root-owned — same trap and same fix as the `e2e` job's copy of this
+        # step.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7
@@ -406,12 +429,21 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
-      - name: Install Playwright chromium
-        run: npx playwright install --with-deps chromium
+      - name: Pre-pull the pinned Playwright container
+        # Replaces `npx playwright install --with-deps chromium` — see the
+        # `chat-stream` job's copy of this step for the reasoning. Bounded and
+        # non-fatal: the script's `docker run` pulls inline if this fails.
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
       - name: Run the journey against a fresh standalone stack
         # The script owns the whole lifecycle: runtime PKI, build, compose up,
         # four seed steps, the embedding-path assertions, then Playwright. It
         # uses its own compose project and tears down on exit.
+        #
+        # PLAYWRIGHT_CONTAINER_IMAGE containerises the test run; the tag lives
+        # HERE so scripts/check-playwright-image-tag.mjs (which only scans
+        # .github/workflows/) keeps gating it — see the `chat-stream` job.
         working-directory: ${{ github.workspace }}
         env:
           COMPOSE_BIN: docker compose
@@ -419,7 +451,13 @@ jobs:
           INDEX_STREAM_PROJECT: elitea-indexstream-ci
           INDEX_STREAM_PORT: "8087"
           INDEX_STREAM_MOCK_PORT: "8091"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
         run: bash apps/elitea-web/scripts/index-stream-e2e.sh
+      - name: Give the report back to the runner user
+        # Same root-owned-report trap and fix as the `e2e` and `chat-stream`
+        # jobs.
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7

@@ -105,8 +105,27 @@ REPEAT_ARGS=""
 # render inside 20s — which reads exactly like the defect this journey exists to
 # detect. The project's `fullyParallel: false` covers tests within the file;
 # this covers `--repeat-each` copies, which Playwright otherwise spreads.
+#
+# When PLAYWRIGHT_CONTAINER_IMAGE is set (ci-web-e2e.yml sets it), the tests run
+# inside the pinned Playwright container instead of on the host — see the
+# identical block in chat-stream-e2e.sh for the full reasoning. In short: the
+# image replaces `npx playwright install --with-deps`; `--network host` because
+# the stack (and the mock journal on :${MOCK_PORT}) live on the HOST; and the
+# image TAG stays in the workflow because check-playwright-image-tag.mjs only
+# scans .github/workflows/, so a tag written here would escape the version gate.
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
-PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
-STANDALONE_MOCK_PORT="${MOCK_PORT}" \
-E2E_REUSE_STACK=1 \
-  npx playwright test --project=index-stream --workers 1 $REPEAT_ARGS
+if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
+  "${CONTAINER_BIN:-docker}" run --rm --network host \
+    -v "$WEB_DIR":/work -w /work \
+    -e CI="${CI:-}" \
+    -e E2E_REUSE_STACK=1 \
+    -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
+    -e STANDALONE_MOCK_PORT="${MOCK_PORT}" \
+    "$PLAYWRIGHT_CONTAINER_IMAGE" \
+    npx playwright test --project=index-stream --workers 1 $REPEAT_ARGS
+else
+  PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
+  STANDALONE_MOCK_PORT="${MOCK_PORT}" \
+  E2E_REUSE_STACK=1 \
+    npx playwright test --project=index-stream --workers 1 $REPEAT_ARGS
+fi
