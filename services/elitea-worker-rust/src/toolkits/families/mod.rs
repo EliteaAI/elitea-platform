@@ -3,6 +3,7 @@ pub(crate) mod azure_search;
 pub(crate) mod github;
 pub(crate) mod gitlab_org;
 pub(crate) mod google_places;
+pub(crate) mod keycloak;
 pub(crate) mod postman;
 pub(crate) mod rally;
 pub(crate) mod report_portal;

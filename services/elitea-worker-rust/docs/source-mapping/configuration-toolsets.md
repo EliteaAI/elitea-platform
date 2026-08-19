@@ -134,6 +134,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `confluence` | `configurations/confluence.py::ConfluenceConfiguration` | `tools/confluence::ConfluenceToolkit` | 25 | Yes | `configurations/families/confluence.rs`; `toolkits/families/confluence/` | Planned; shared Atlassian auth normalizer |
 | `jira` | `configurations/jira.py::JiraConfiguration` | `tools/jira::JiraToolkit` | 23 | Yes | `configurations/families/jira.rs`; `toolkits/families/jira/` | Planned; shared Atlassian auth normalizer |
 | `postman` | `configurations/postman.py::PostmanConfiguration` | `tools/postman::PostmanToolkit` | 31 | No | `toolkits/families/postman/` | Capability-disabled complete family: 8 reads, 19 writes, 3 deletes and 1 execute surface; management authority is fixed to the claimed Postman origin, while stored-request execution remains behind a separate sealed dynamic-egress authority |
+| `keycloak` | None; authority and service-account credentials are inline toolkit settings | `tools/keycloak::KeycloakToolkit` | 1 | No | `toolkits/families/keycloak/{config,client,tools}.rs` | Capability-disabled complete family: one generic Admin REST execute surface retains reads, writes, deletes and actions inside one frozen HTTPS realm; exact-interrupt HITL, effect reconciliation, approved egress and live provider proof remain gates |
 | `service_now` | `configurations/service_now.py::ServiceNowConfiguration` | `tools/servicenow::ServiceNowToolkit` | 3 | No | `toolkits/families/service_now/{config,client,tools}.rs` | Capability-disabled complete family: one bounded incident read plus create and update effects over fixed-origin Table API; shared durable sensitive-tool approval, authorized materialization and cancellation-safe effect reconciliation remain gates |
 | `testrail` | `configurations/testrail.py::TestRailConfiguration` | `tools/testrail::TestrailToolkit` | 23 | Yes | `configurations/families/testrail.rs`; `toolkits/families/testrail/` | Planned |
 | `slack` | `configurations/slack.py::SlackConfiguration` | `tools/slack::SlackToolkit` | 7 | No | `toolkits/families/slack/{config,client,tools}.rs` | Capability-disabled complete family: seven bounded fixed-origin messaging, membership and workspace operations; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
@@ -176,8 +177,8 @@ fixtures, not guessed provider effects.
 
 Additional standard toolkits without a registered same-named configuration are
 tracked separately: AWS (1), Azure (2), GCP (1), Kubernetes (2), Keycloak (1),
-Elastic (1), PPTX (2), and Yagmail (1). Yagmail is now implemented completely
-behind a capability gate from its inline claim-materialized settings. LocalGit
+Elastic (1), PPTX (2), and Yagmail (1). Yagmail and Keycloak are now implemented
+completely behind capability gates from inline claim-materialized settings. LocalGit
 (13) is intentionally deferred: its local-filesystem/process isolation boundary
 is outside the remote toolkit migration priority. The remaining families still
 require an explicit authority source and admission policy before live porting.
@@ -1462,6 +1463,64 @@ pre-send intent binds the exact arguments and stable Message-ID, effect receipts
 and unknown outcomes can be reconciled across restart/cancellation, SMTP egress is
 restricted to the frozen host on port 465 with DNS/IP policy, and a live server
 with a trusted certificate proves the complete claim-materialization path.
+
+### Keycloak complete Admin REST family
+
+Keycloak is a complete one-tool family over inline toolkit settings rather than
+a separately registered configuration. Current SDK `9bba9da` and worker-pinned
+SDK `b5113a1` expose the same `execute` operation and request behavior; current
+adds only its `execute` group metadata. Main's toolkit schema marks
+`client_secret` as secret and freezes the HTTPS base URL, realm, client ID and
+selection for claim-time materialization. Neither the configuration nor toolkit
+advertises a connection check, and the family has no indexing behavior.
+
+The source obtains a client-credentials token for every invocation, then sends
+one arbitrary Admin REST method to `/admin/realms/{realm}{relative_url}` and
+returns the raw response text. Its shared `requests.Session` also carries Basic
+authentication, which can overwrite the intended Bearer header on the Admin API
+request. It replaces every single quote in `params`, admits arbitrary paths,
+follows redirects, has no finite response or request deadline, and returns raw
+provider failures. Rust intentionally repairs those security and correctness
+defects: one invocation-scoped non-debuggable client owns a fixed normalized
+HTTPS origin/context path, percent-encoded realm and zeroizing secret. The token
+request uses the source form credentials without session-global Basic auth; the
+Admin call uses only the returned Bearer token. Redirects and protocol retries
+are disabled and the token is not cached or refreshed.
+
+The complete public method surface remains available, including custom bounded
+HTTP method tokens and DELETE. A relative URL must begin with one slash and stay
+inside the configured realm; schemes, authorities, fragments, traversal,
+decoded separators, backslashes and controls are rejected. Query parameters
+remain part of `relative_url`, while `params` is a strict JSON object string sent
+as the request body for every method. An omitted, null or empty `params` value
+sends `{}`, preserving the runtime default without accepting single-quoted
+pseudo-JSON. Every 2xx response returns bounded UTF-8 text, including an empty
+string for 204. GET, HEAD and OPTIONS are read-class requests; all other methods
+are effects. No request is automatically retried, and timeout, transport,
+transient-status or post-accept projection failure after effect dispatch becomes
+a nonretryable unknown outcome.
+
+The tool and parameter descriptions are a tested selection contract. They state
+the fixed configured realm, relative path/query format and example, strict JSON
+body semantics, accepted method scope, 512 KiB serialized-result ceiling,
+confidentiality and mutation/delete/action risk, independent approval,
+one-attempt behavior and reconciliation requirement. The tool is always non-read-only and
+non-concurrency-safe because its arguments select the effect; the `execute`
+group remains metadata and never supplies authorization.
+
+| Python source | Observable responsibility | Rust target |
+| --- | --- | --- |
+| `tools/keycloak/__init__.py::{KeycloakToolkit,get_tools,toolkit_config_schema}` and Main's frozen toolkit catalog/materializer | Inline base URL, realm, client ID, sealed client secret and selected-tool materialization | `config.rs` validates one claim-owned HTTPS realm authority, retains an optional deployment context path and keeps the exact secret zeroizing |
+| `tools/keycloak/api_wrapper.py::Execute` and `KeycloakAPIWrapper` | One public generic method/path/body schema, per-call client-credentials token and Admin REST dispatch | `tools.rs` exposes the complete catalog and selection-oriented bounded schema; `client.rs` owns the exact two-request wire with proper Bearer separation |
+| Main application/ad-hoc freezer and claim materializer | Secret remains sealed until accepted execution | focused Rust fixtures cover inline materialization and secret-safe construction; live application/ad-hoc provider proof remains an activation gate |
+
+Production registration remains disabled until the shared direct-sensitive-tool
+wrapper authorizes the exact invocation by durable `interrupt_id`; a durable
+effect intent/receipt owner binds method, path and canonical body and reconciles
+unknown outcomes across cancellation/restart; egress constrains the frozen
+Keycloak origin and DNS/IP resolution; and live Keycloak service-account roles
+prove both application and ad-hoc claim materialization. Read requests may also
+be independently sensitive because Admin API responses contain identity data.
 
 ## Special runtime toolsets
 

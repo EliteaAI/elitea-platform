@@ -209,6 +209,22 @@ effect receipt/reconciliation owner, claim-only secret redemption, fixed-host
 SMTP egress/DNS enforcement and live verified-TLS proof are composed. The
 `write` group alone grants no authority and sensitivity remains independent.
 
+The complete capability-disabled `Keycloak` family adds its one current SDK
+generic Admin REST `execute` operation from inline claim-materialized settings.
+All bounded HTTP method tokens remain available, so reads, writes, deletes and
+action endpoints are not omitted. One non-debuggable invocation client owns the
+frozen HTTPS origin/context path, realm, client ID and zeroizing client secret;
+each call makes one client-credentials token request and one Bearer Admin API
+request with no redirects, hidden retries or token refresh. Rust deliberately
+separates form credentials from Admin Bearer auth, replacing the SDK session's
+Basic/Bearer collision, and accepts only a strict bounded JSON-object body rather
+than single-quote rewriting. Tool metadata explains path/query/body semantics,
+confidential reads, effect scope, response limits and unknown-outcome retry risk.
+Production composition remains closed until exact-`interrupt_id` approval,
+durable effect intent/receipt reconciliation, claim-only secret redemption,
+fixed-origin DNS/IP egress enforcement and live Keycloak role/provider proof are
+composed. The `execute` group is metadata and grants no authority.
+
 The complete capability-disabled `Zephyr Squad` family adds all fifteen
 current SDK tools in source order: five reads, eight writes and two deletes
 covering test steps, BDD content, cycles, folders and executions. Its inline
