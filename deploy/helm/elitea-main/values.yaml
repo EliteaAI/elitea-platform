@@ -312,11 +312,24 @@ env:
   # picker offers them and the request then finds no credential.
   ELITEA_AI_PROJECT_ID: ""
 
-  # Whether a project may define its own LLM credentials. Empty keeps the
-  # binary's own default. Do NOT set ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS:
-  # that is the old name, and cmd/elitea-main refuses to start when it is
-  # present, because silently ignoring it would fail open.
-  ELITEA_ALLOW_PROJECT_OWN_LLMS: ""
+  # Whether a project may define its own LLM credentials.
+  #
+  # STATED, never empty. This ConfigMap renders every key in this map, so an
+  # empty value here does not mean "unset" — the variable reaches the container
+  # PRESENT and empty. cmd/elitea-main/configurations_config.go:101 tests
+  # presence and then accepts only "true" or "false", so the empty value this
+  # chart used to ship stopped elitea-main at boot with
+  # "ELITEA_ALLOW_PROJECT_OWN_LLMS must be true or false" — and only once
+  # ELITEA_CONFIGURATIONS_ENABLED was on, which is why a default install never
+  # saw it and the first configured install died on it.
+  #
+  # "true" is the binary's own default (configurations_config.go:100), so this
+  # states the existing behaviour rather than changing it.
+  #
+  # Do NOT set ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS: that is the old name, and
+  # cmd/elitea-main refuses to start when it is present, because silently
+  # ignoring it would fail open.
+  ELITEA_ALLOW_PROJECT_OWN_LLMS: "true"
 
   # Path to the secret-vault master key. Empty means the vault key column holds
   # the Fernet key itself; set means that column holds the key WRAPPED under
@@ -736,6 +749,14 @@ runtime:
 # templates/migrate-job.yaml for the full ordering-guarantee explanation.
 migrations:
   enabled: true
+  # Empty means the namespace default ServiceAccount. The chart's own
+  # ServiceAccount cannot be used here: this Job is a pre-install hook and that
+  # object is created later in the release, so naming it makes a FIRST install
+  # fail with "error looking up service account ... not found". Set this only
+  # when the database credential comes from a bound identity (cloud IAM auth),
+  # and provision that ServiceAccount outside this chart so it exists when the
+  # hook runs.
+  serviceAccountName: ""
   # -all-tenants mirrors deploy/centry-hybrid/pov-compose.yml's elitea-migrate
   # invocation: apply the shared history, then the tenant history for every
   # existing legacy project. Both cmd/elitea-migrate flags are idempotent —
