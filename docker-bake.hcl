@@ -58,13 +58,20 @@ target "elitea-web" {
 }
 
 
-# NOTE (issue #244): services/elitea-worker-python has a Containerfile but no
-# bake target here on purpose. The worker plane it belongs to (worker_core /
-# worker_client / indexer_worker / provider_worker) is marked `pending` in the
-# workspace repos.yaml — the runtime transport contract and the Go/Python
-# split aren't settled, so baking/publishing an image now would ship something
-# the runtime work will still reshape. Add a target + publish.yml matrix entry
-# once that plane's status moves off `pending`.
+# The agent worker. Repo-root context, because the Containerfile COPYs
+# libs/proto and testdata/proto/runtime/v1 from outside its own directory.
+#
+# Deliberately NOT in `group "default"`: this is the only target here that
+# compiles a Python dependency closure from source, so a bare `docker buildx
+# bake` would go from minutes to tens of minutes. Name it to build it.
+target "elitea-worker-python" {
+  context    = "."
+  dockerfile = "services/elitea-worker-python/Containerfile"
+  tags       = ["${REGISTRY}/elitea-worker-python:${TAG}"]
+  cache-from = ["type=gha,scope=elitea-worker-python"]
+  cache-to   = ["type=gha,mode=max,scope=elitea-worker-python"]
+  platforms  = ["linux/amd64", "linux/arm64"]
+}
 
 group "pylon" {
   targets = ["pylon-indexer"]

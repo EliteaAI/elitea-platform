@@ -177,14 +177,26 @@ jobs:
   #   fails when it ships an image that no scan covers, so a seventh entry
   #   cannot arrive unscanned in silence.
   #
-  # NOTE (issue #244): elitea-worker-python has a Containerfile
-  # (services/elitea-worker-python/Containerfile) but deliberately has no bake
-  # target and no entry in this matrix. The worker plane it belongs to
-  # (worker_core / worker_client / indexer_worker / provider_worker) is marked
-  # `pending` in the workspace repos.yaml — the runtime transport contract
-  # (Redis Streams) and the Go/Python split aren't settled, so publishing an
-  # image now would ship something the runtime work will still reshape.
-  # Revisit once that plane's status moves off `pending`.
+  # elitea-worker-python was excluded here until this change, on the grounds
+  # that "the worker plane it belongs to (worker_core / worker_client /
+  # indexer_worker / provider_worker) is marked `pending` in the workspace
+  # repos.yaml". That inference does not hold: those four rows are
+  # `legacy/plugins/` repositories — the code services/elitea-worker-python
+  # REPLACES — and the monorepo it actually lives in carries `status: target`.
+  # repos.yaml has no row for this service at all.
+  #
+  # The contract the note called unsettled is settled here and gated:
+  # `schema_version` is a Literal["elitea.runtime-deploy.v1"] with
+  # extra="forbid" (services/elitea-worker-python/src/elitea_worker/config.py),
+  # Redis Streams dispatch is implemented on both sides
+  # (services/elitea-main/internal/transport/redisdispatch, the worker's
+  # transport/redis_asyncio.py), and testdata/proto/runtime/v1 is a shared
+  # conformance corpus both languages run in CI.
+  #
+  # Meanwhile compose declares this service mandatory for agent execution —
+  # "without this service an admitted run streams nothing and ends in a
+  # terminal failure" — so the one service the platform cannot execute an agent
+  # without was the one service nobody could pull.
   build:
     name: Build ${{ matrix.image.name }} / ${{ matrix.platform.suffix }}
     needs: release
@@ -224,6 +236,13 @@ jobs:
           - name: elitea-llm-gateway
             context: ./services/elitea-llm-gateway
             dockerfile: ./services/elitea-llm-gateway/Containerfile
+          # Repo ROOT context, like elitea-main and unlike the two services
+          # above: the Containerfile COPYs libs/proto (:19) and
+          # testdata/proto/runtime/v1 (:85), so the service directory is not a
+          # valid context. No `target:` — its shipping stage is unnamed.
+          - name: elitea-worker-python
+            context: .
+            dockerfile: ./services/elitea-worker-python/Containerfile
         platform:
           - runner: ubuntu-latest
             arch: linux/amd64
@@ -288,6 +307,7 @@ jobs:
           - name: elitea-web
           - name: pylon-indexer
           - name: elitea-llm-gateway
+          - name: elitea-worker-python
 
     steps:
       - name: Set up Docker Buildx
@@ -330,6 +350,7 @@ jobs:
           - name: elitea-web
           - name: pylon-indexer
           - name: elitea-llm-gateway
+          - name: elitea-worker-python
 
     steps:
       - name: Install cosign
@@ -614,7 +635,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.new_release_version }}"
-          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway")
+          IMAGES=("elitea-main" "elitea-scheduler" "elitea-ui" "elitea-web" "pylon-indexer" "elitea-llm-gateway" "elitea-worker-python")
           SUFFIXES=("linux-amd64" "linux-arm64")
           ORG="eliteaai"
 

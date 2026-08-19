@@ -249,6 +249,9 @@ tasks:
       - task: images:ui
       - task: images:web
       - task: images:pylon
+      # images:worker is deliberately absent: it is the one target that compiles
+      # a Python dependency closure from source, so folding it into `task
+      # images` would turn a minutes-long build into a tens-of-minutes one.
 
   images:go:
     desc: Build Go service image
@@ -281,6 +284,15 @@ tasks:
     desc: Build pylon-indexer image
     cmds:
       - podman build -t ghcr.io/eliteaai/pylon-indexer:dev -f services/pylon-indexer/Containerfile services/pylon-indexer
+
+  images:worker:
+    desc: Build elitea-worker-python image
+    cmds:
+      # Repo root, not the service directory: the Containerfile COPYs
+      # libs/proto and testdata/proto/runtime/v1. Expect this to be the slowest
+      # image here by some margin — it compiles a Python dependency closure and
+      # clones the SDK at a digest-verified revision.
+      - podman build -t ghcr.io/eliteaai/elitea-worker-python:dev -f services/elitea-worker-python/Containerfile .
 
   # ── Deploy ────────────────────────────────────────────────────────────────────
   deploy:check-edge:

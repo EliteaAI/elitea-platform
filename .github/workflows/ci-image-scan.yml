@@ -33,10 +33,17 @@ name: CI — Image scan
 #   3. The threshold is HIGH,CRITICAL for every image. There is no ignore file,
 #      no `--ignore-unfixed`, and no waiver.
 #
-# ONE IMAGE DOES NOT BLOCK, AND IT SAYS SO
+# TWO IMAGES DO NOT BLOCK, AND THEY SAY SO
 #
-# `pylon-indexer` is scanned, reports its full finding count, and does NOT fail
-# the merge. Every other image blocks.
+# `pylon-indexer` and `elitea-worker-python` are scanned, report their full
+# finding counts, and do NOT fail the merge. Every other image blocks.
+#
+# They are exempt for different reasons, and the difference is the point.
+# pylon-indexer's 604 findings are ALL upstream. elitea-worker-python's are
+# mixed: 50 come from a Debian base with no fix available, and 30 are its own
+# pinned packages, which is why #554 exists to fix those 30 and end the
+# exemption. `.github/image-scan-exempt.txt` records both, and its criteria
+# were widened in the same change rather than stretched in silence.
 #
 #   WHY: all 604 findings come from `ghcr.io/eliteaai/pylon:1.2.25`. This
 #   repository does not build that image; `services/pylon-indexer/Containerfile`
@@ -68,6 +75,7 @@ on:
     paths:
       # Sources of the shipped binaries and assets.
       - "services/elitea-main/**"
+      - "services/elitea-worker-python/**"
       - "services/elitea-scheduler/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
@@ -92,6 +100,7 @@ on:
       - main
     paths:
       - "services/elitea-main/**"
+      - "services/elitea-worker-python/**"
       - "services/elitea-scheduler/**"
       - "services/elitea-llm-gateway/**"
       - "services/pylon-indexer/**"
@@ -289,6 +298,22 @@ jobs:
           - name: pylon-indexer
             context: ./services/pylon-indexer
             dockerfile: ./services/pylon-indexer/Containerfile
+            target: ""
+            expect_type: python-pkg
+            blocking: false
+          # Exemption recorded in #553 (findings) and #554 (what ends it).
+          # See the header: this is the mixed case, not an upstream-only one.
+          #
+          # expect_type is MEASURED, not guessed: trivy reports a `debian`
+          # Result for the python:3.12-slim base and a `python-pkg` Result for
+          # site-packages. python-pkg is the application half, so a scan that
+          # reads only the OS layers fails the dormancy guard instead of
+          # reading as clean.
+          - name: elitea-worker-python
+            # context/dockerfile mirror publish.yml exactly — repo root,
+            # because the Containerfile COPYs libs/proto and testdata/proto.
+            context: .
+            dockerfile: ./services/elitea-worker-python/Containerfile
             target: ""
             expect_type: python-pkg
             blocking: false
