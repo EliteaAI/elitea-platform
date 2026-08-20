@@ -28,6 +28,53 @@ function author(personalProjectId?: string) {
 }
 
 describe('createSessionStore', () => {
+  /*
+   * The Form plane mounts no /forward-auth/info at all
+   * (internal/api/production_router.go mounts one plane or the other), so on a
+   * Form deployment the probe 404s. Concluding "not logged in" from that alone
+   * sent a browser holding a perfectly good Form session cookie back to the
+   * login form on every load — and, with the boot redirect in App.tsx, into a
+   * loop. /social/author answers on both planes.
+   */
+  it('recovers the session from /social/author when /forward-auth/info is absent', async () => {
+    server.use(
+      http.get(INFO, () => new HttpResponse(null, { status: 404 })),
+      author('proj-9'),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toEqual({ id: 'u-42', personal_project_id: 'proj-9' });
+    expect(store.getState().probeStatus).toBe(404);
+  });
+
+  it('reports no user when the Form-plane fallback is itself unauthenticated', async () => {
+    server.use(
+      http.get(INFO, () => new HttpResponse(null, { status: 404 })),
+      http.get(AUTHOR, () => new HttpResponse(null, { status: 401 })),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toBeUndefined();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().probeStatus).toBe(404);
+  });
+
+  /*
+   * A 401 from /forward-auth/info is the OIDC plane saying "no session". It
+   * must NOT trigger the Form fallback, and it must keep its own status so the
+   * boot redirect picks the OIDC login path rather than the Form one.
+   */
+  it('does not treat an OIDC 401 as the Form plane', async () => {
+    server.use(http.get(INFO, () => new HttpResponse(null, { status: 401 })));
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toBeUndefined();
+    expect(store.getState().probeStatus).toBe(401);
+  });
+
   it('starts with no user and loaded=false before any probe', () => {
     const store = createSessionStore();
     expect(store.getState().user).toBeUndefined();
