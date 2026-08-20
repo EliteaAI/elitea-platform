@@ -1,3 +1,5 @@
+import { FORM_LOGIN_PATH, OIDC_LOGIN_PATH, TARGET_TO_PARAM } from './constants';
+
 /**
  * Where to send a browser that is not logged in.
  *
@@ -20,14 +22,6 @@
  * plane. Anything else means the OIDC plane answered. That keeps a single build
  * of this app correct on both, with no new runtime-config key to set wrong.
  */
-
-/** Form plane. Sets up the transaction, then redirects to the form itself. */
-export const FORM_LOGIN_PATH = '/forward-auth/login';
-
-/** OIDC plane. Also used by the re-auth popup (`popup.ts`). */
-export const OIDC_LOGIN_PATH = '/forward-auth/auth_oidc/login';
-
-export const TARGET_TO_PARAM = 'target_to';
 
 export type AuthPlane = 'form' | 'oidc';
 

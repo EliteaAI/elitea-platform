@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  authPlaneFromProbeStatus,
-  buildLoginUrl,
-  FORM_LOGIN_PATH,
-  loginPathForPlane,
-  OIDC_LOGIN_PATH,
-} from './login-redirect';
+import { FORM_LOGIN_PATH, OIDC_LOGIN_PATH } from './constants';
+import { authPlaneFromProbeStatus, buildLoginUrl, loginPathForPlane } from './login-redirect';
 
 describe('authPlaneFromProbeStatus', () => {
   it('reads a 404 from /forward-auth/info as the Form plane', () => {
