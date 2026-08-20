@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adk_rust::model::MockLlm;
+use adk_rust::session::{GetRequest, InMemorySessionService, SessionService};
 use adk_rust::tool::BasicToolset;
 use adk_rust::{
     Content, FinishReason, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part, Tool,
@@ -13,15 +14,16 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 use super::assembly::OrdinaryNoToolProfile;
-use super::assembly_tests::ordinary_request;
+use super::assembly_tests::{current_text_history, ordinary_request};
 use super::events::AgentEventProjectionErrorCode;
 use super::request::AgentExecutionKind;
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
-    AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, OrdinaryNativeAgentPlan,
-    assemble_ordinary_native,
+    AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, NativeSessionBackend,
+    OrdinaryNativeAgentPlan, assemble_ordinary_native, assemble_ordinary_native_with_sessions,
 };
+use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
 use crate::toolkits::ToolAdmissionPolicy;
 
@@ -210,6 +212,100 @@ async fn invocation_local_session_runs_one_real_adk_turn_and_projects_the_exact_
             .expect_err("one-use stream")
             .code(),
         NativeAgentRuntimeErrorCode::InvalidState
+    );
+}
+
+#[tokio::test]
+async fn injected_session_restores_existing_history_without_reseeding_the_frozen_snapshot() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    request.payload.chat_history = current_text_history();
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("ordinary profile");
+    let first_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first native plan");
+    let user_id = first_plan.user_id().to_owned();
+    let session_id = first_plan.session_id().to_owned();
+    let sessions = Arc::new(InMemorySessionService::new());
+    let first_sessions: Arc<dyn SessionService> = sessions.clone();
+    let first = assemble_ordinary_native_with_sessions(
+        bound_model("first response"),
+        first_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        first_sessions,
+    )
+    .await
+    .expect("first assembly");
+    drop(first);
+
+    let second_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("second native plan");
+    let second_sessions: Arc<dyn SessionService> = sessions.clone();
+    let second = assemble_ordinary_native_with_sessions(
+        bound_model("second response"),
+        second_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        second_sessions,
+    )
+    .await
+    .expect("restored assembly");
+    drop(second);
+
+    let restored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id,
+            session_id,
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("restored injected session");
+    assert_eq!(restored.events().len(), 2);
+    let first_id = restored
+        .events()
+        .at(0)
+        .expect("first history event")
+        .id
+        .clone();
+    let second_id = restored
+        .events()
+        .at(1)
+        .expect("second history event")
+        .id
+        .clone();
+    assert!(first_id.starts_with("fh-"));
+    assert!(second_id.starts_with("fh-"));
+    assert_ne!(first_id, second_id);
+}
+
+#[tokio::test]
+async fn session_backend_rejects_a_claim_from_another_execution_before_storage() {
+    let request = ordinary_request(AgentExecutionKind::Application);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("ordinary profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("native plan");
+    let result = NativeSessionBackend::invocation_local()
+        .open(test_session_authority_for("execution/two", 3), &plan)
+        .await;
+    let Err(error) = result else {
+        panic!("cross-execution session grant was accepted");
+    };
+    assert_eq!(
+        error.code(),
+        super::runtime::NativeAgentAssemblyErrorCode::AuthorizationFailed
     );
 }
 

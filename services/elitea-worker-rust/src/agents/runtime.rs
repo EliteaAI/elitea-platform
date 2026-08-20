@@ -24,7 +24,7 @@ use super::events::{
 };
 use super::request::AgentExecutionRequest;
 use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
-use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
+use crate::protocol::control::{ClaimBoundRuntimeContextAuthority, ClaimBoundSessionAuthority};
 use crate::toolkits::{AdmittedToolSnapshot, FrozenToolSnapshot, ToolAdmissionPolicy};
 use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::{ClaimScopedEliteaContext, RuntimeContextError};
@@ -140,21 +140,39 @@ pub(crate) trait NativeAgentCompletionSelector: Send {
 pub(crate) struct AuthorizedNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    session: ClaimBoundSessionAuthority,
     command: AuthorizedNativeCommandBinding,
 }
 
 impl<'a> AuthorizedNativeAssembly<'a> {
     #[must_use]
-    pub(crate) const fn new(
+    pub(crate) const fn from_authorized(
         request: &'a AgentExecutionRequest,
         runtime_context: ClaimBoundRuntimeContextAuthority,
+        session: ClaimBoundSessionAuthority,
         command: AuthorizedNativeCommandBinding,
     ) -> Self {
         Self {
             request,
             runtime_context,
+            session,
             command,
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn new(
+        request: &'a AgentExecutionRequest,
+        runtime_context: ClaimBoundRuntimeContextAuthority,
+        command: AuthorizedNativeCommandBinding,
+    ) -> Self {
+        Self::from_authorized(
+            request,
+            runtime_context,
+            crate::protocol::control::test_session_authority(),
+            command,
+        )
     }
 
     #[must_use]
@@ -176,6 +194,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         Ok(AdmittedOrdinaryNativeAssembly {
             request: self.request,
             runtime_context: self.runtime_context,
+            session: self.session,
             profile,
             plan,
             toolsets,
@@ -187,6 +206,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    session: ClaimBoundSessionAuthority,
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
     toolsets: AdmittedToolSnapshot<'a>,
@@ -214,6 +234,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
     ) -> Result<RedeemedOrdinaryNativeAssembly<'a>, RuntimeContextError> {
         let Self {
             runtime_context,
+            session,
             profile,
             plan,
             toolsets,
@@ -226,6 +247,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             toolsets,
             context,
             runtime_context,
+            session,
         })
     }
 }
@@ -237,6 +259,7 @@ pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
     toolsets: AdmittedToolSnapshot<'a>,
     context: ClaimScopedEliteaContext,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    session: ClaimBoundSessionAuthority,
 }
 
 impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
@@ -248,6 +271,7 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
         AdmittedToolSnapshot<'a>,
         ClaimScopedEliteaContext,
         ClaimBoundRuntimeContextAuthority,
+        ClaimBoundSessionAuthority,
     ) {
         (
             self.profile,
@@ -255,6 +279,7 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
             self.toolsets,
             self.context,
             self.runtime_context,
+            self.session,
         )
     }
 }

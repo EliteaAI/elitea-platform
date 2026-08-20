@@ -41,9 +41,10 @@ use crate::protocol::ProtocolError;
 use crate::protocol::command::VerifiedAgentCommand;
 use crate::protocol::control::{
     AgentControlClient, AgentControlError, AgentExecutionOutputAuthority, BeginAgentExecution,
-    ClaimBoundRuntimeContextAuthority, InvocationAuthorizationCandidate,
-    InvocationAuthorizationNoAckAuthority, InvocationAuthorizationPayload,
-    InvocationAuthorizationTerminalCause, InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
+    ClaimBoundRuntimeContextAuthority, ClaimBoundSessionAuthority,
+    InvocationAuthorizationCandidate, InvocationAuthorizationNoAckAuthority,
+    InvocationAuthorizationPayload, InvocationAuthorizationTerminalCause,
+    InvocationSubmissionPermit, LeaseMonitoredAgentExecution,
 };
 use crate::protocol::elitea::runtime::v1::{DigestAlgorithmV1, DigestV1};
 use crate::transport::redis_commands::{
@@ -331,6 +332,7 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
         permit: InvocationSubmissionPermit,
         output_authority: AgentExecutionOutputAuthority,
         runtime_context: ClaimBoundRuntimeContextAuthority,
+        session: ClaimBoundSessionAuthority,
     ) -> Self::Authorized {
         let Self {
             delivery,
@@ -348,6 +350,7 @@ impl InvocationAuthorizationPayload for PreparedAgentAuthorizationPayload {
             lease,
             permit,
             runtime_context,
+            session,
         }
     }
 
@@ -410,6 +413,7 @@ pub(crate) struct AuthorizedAgentRun {
     lease: ClaimLeaseMonitor,
     permit: InvocationSubmissionPermit,
     runtime_context: ClaimBoundRuntimeContextAuthority,
+    session: ClaimBoundSessionAuthority,
 }
 
 impl AuthorizedAgentRun {
@@ -489,6 +493,7 @@ impl AuthorizedAgentRun {
             lease,
             permit,
             runtime_context,
+            session,
         } = self;
         match output_authority.try_into_output_cursor(&verified) {
             Ok(cursor) => {
@@ -507,6 +512,7 @@ impl AuthorizedAgentRun {
                     lease,
                     permit: Some(permit),
                     runtime_context: Some(runtime_context),
+                    session: Some(session),
                 })
             }
             Err(failure) => {
@@ -521,6 +527,7 @@ impl AuthorizedAgentRun {
                         lease,
                         permit,
                         runtime_context,
+                        session,
                     },
                     connector,
                     error: AgentProgressPublishError::InvalidFrame(error),
@@ -563,6 +570,7 @@ pub(crate) struct CursorBoundAuthorizedAgentRun<C: AgentProgressConnector> {
     lease: ClaimLeaseMonitor,
     permit: Option<InvocationSubmissionPermit>,
     runtime_context: Option<ClaimBoundRuntimeContextAuthority>,
+    session: Option<ClaimBoundSessionAuthority>,
 }
 
 /// Closed outcome of the sole post-authorization assembly attempt.
@@ -645,7 +653,7 @@ where
         self,
     ) -> Result<StartedAuthorizedAgentRun<C, S>, Box<NativeStartFailure<C>>> {
         let Self { mut run, assembled } = self;
-        if run.permit.is_none() || run.runtime_context.is_some() {
+        if run.permit.is_none() || run.runtime_context.is_some() || run.session.is_some() {
             return Err(Box::new(NativeStartFailure {
                 run,
                 error: NativeAgentRuntimeError::invalid_state_for_lifecycle(),
@@ -739,6 +747,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             lease,
             permit,
             runtime_context,
+            session,
         } = self;
         let result = lease.check_now().await;
         (
@@ -750,6 +759,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 lease,
                 permit,
                 runtime_context,
+                session,
             },
             result,
         )
@@ -772,8 +782,11 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             mut lease,
             permit,
             mut runtime_context,
+            mut session,
         } = self;
-        let Some(runtime_context_authority) = runtime_context.take() else {
+        let (Some(runtime_context_authority), Some(session_authority)) =
+            (runtime_context.take(), session.take())
+        else {
             return AgentNativeAssemblyOutcome::Failed {
                 run: Box::new(Self {
                     delivery,
@@ -783,10 +796,11 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                     lease,
                     permit,
                     runtime_context,
+                    session,
                 }),
                 error: crate::agents::runtime::NativeAgentAssemblyError::new(
                     crate::agents::runtime::NativeAgentAssemblyErrorCode::InvalidConfiguration,
-                    "the authorized runtime-context grant is unavailable",
+                    "the authorized runtime/session grants are unavailable",
                 ),
             };
         };
@@ -802,13 +816,18 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                         lease,
                         permit,
                         runtime_context,
+                        session,
                     }),
                     error,
                 };
             }
         };
-        let assembly =
-            AuthorizedNativeAssembly::new(&request, runtime_context_authority, command_binding);
+        let assembly = AuthorizedNativeAssembly::from_authorized(
+            &request,
+            runtime_context_authority,
+            session_authority,
+            command_binding,
+        );
         let assembly_result = lease
             .run_cancellation_safe_phase(assembler.assemble(assembly))
             .await;
@@ -820,6 +839,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             lease,
             permit,
             runtime_context,
+            session,
         };
         match assembly_result {
             Ok(Ok(assembled_invocation)) => {
@@ -860,6 +880,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             mut lease,
             permit,
             runtime_context,
+            session,
         } = self;
         let selection_result = lease.run_cancellation_safe_phase(selector.select()).await;
         (
@@ -871,6 +892,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 lease,
                 permit,
                 runtime_context,
+                session,
             },
             selection_result,
         )
@@ -933,6 +955,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             lease,
             permit: _,
             runtime_context: _,
+            session: _,
         } = self;
         let execution_kind = request.kind;
         let result = async {

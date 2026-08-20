@@ -653,6 +653,46 @@ pub(crate) struct ClaimBoundRuntimeContextAuthority {
     resource_project_id: String,
 }
 
+/// Opaque authority for one claim-fenced ADK session writer.
+///
+/// This grant is minted beside the runtime-context grant only after
+/// `AUTHORIZED_NOW`. It carries the accepted claim identity and fence needed
+/// to activate durable session persistence, but no output, settlement, Redis,
+/// provider, or invocation-submission capability. The value is intentionally
+/// neither cloneable nor formattable and zeroizes its duplicated fence bytes
+/// on drop.
+pub(crate) struct ClaimBoundSessionAuthority {
+    tenant_id: String,
+    resource_project_id: String,
+    projection_project_id: String,
+    execution_id: String,
+    generation: u64,
+    claim_id: String,
+    claim_attempt: u64,
+    lease_epoch: u64,
+    workload_session_id: String,
+    producer_id: String,
+    fence_token: Zeroizing<Vec<u8>>,
+}
+
+/// Consuming session-writer material exposed only inside the worker crate.
+///
+/// The raw fence remains owned by this non-cloneable value until the
+/// `PostgreSQL` session boundary moves it into its narrower writer authority.
+pub(crate) struct SessionWriterClaimBinding {
+    pub(crate) tenant_id: String,
+    pub(crate) resource_project_id: String,
+    pub(crate) projection_project_id: String,
+    pub(crate) execution_id: String,
+    pub(crate) generation: u64,
+    pub(crate) claim_id: String,
+    pub(crate) claim_attempt: u64,
+    pub(crate) lease_epoch: u64,
+    pub(crate) workload_session_id: String,
+    pub(crate) producer_id: String,
+    pub(crate) fence_token: Zeroizing<Vec<u8>>,
+}
+
 /// Borrowed request material exposed only to the hardened runtime-context
 /// transport. Keeping this view tied to the opaque owner prevents credentials
 /// from being redeemed from caller-selected loose identity fields.
@@ -684,6 +724,42 @@ impl ClaimBoundRuntimeContextAuthority {
             claim_id: &self.claim_id,
             fence_token: self.fence_token.as_slice(),
             resource_project_id: &self.resource_project_id,
+        }
+    }
+}
+
+impl ClaimBoundSessionAuthority {
+    #[must_use]
+    fn from_claim(claim: &AcceptedAgentClaim) -> Self {
+        Self {
+            tenant_id: claim.identity.tenant_id.clone(),
+            resource_project_id: claim.identity.resource_project_id.clone(),
+            projection_project_id: claim.identity.projection_project_id.clone(),
+            execution_id: claim.identity.execution_id.clone(),
+            generation: claim.identity.generation,
+            claim_id: claim.claim_id.clone(),
+            claim_attempt: claim.fence.claim_attempt,
+            lease_epoch: claim.fence.lease_epoch,
+            workload_session_id: claim.fence.workload_session_id.clone(),
+            producer_id: claim.fence.producer_id.clone(),
+            fence_token: Zeroizing::new(claim.fence.fence_token.clone()),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn into_writer_binding(self) -> SessionWriterClaimBinding {
+        SessionWriterClaimBinding {
+            tenant_id: self.tenant_id,
+            resource_project_id: self.resource_project_id,
+            projection_project_id: self.projection_project_id,
+            execution_id: self.execution_id,
+            generation: self.generation,
+            claim_id: self.claim_id,
+            claim_attempt: self.claim_attempt,
+            lease_epoch: self.lease_epoch,
+            workload_session_id: self.workload_session_id,
+            producer_id: self.producer_id,
+            fence_token: self.fence_token,
         }
     }
 }
@@ -1153,6 +1229,31 @@ pub(crate) fn test_runtime_context_authority() -> ClaimBoundRuntimeContextAuthor
 }
 
 #[cfg(test)]
+pub(crate) fn test_session_authority() -> ClaimBoundSessionAuthority {
+    test_session_authority_for("execution/one", 3)
+}
+
+#[cfg(test)]
+pub(crate) fn test_session_authority_for(
+    execution_id: &str,
+    generation: u64,
+) -> ClaimBoundSessionAuthority {
+    ClaimBoundSessionAuthority {
+        tenant_id: "tenant-1".to_owned(),
+        resource_project_id: "17".to_owned(),
+        projection_project_id: "9".to_owned(),
+        execution_id: execution_id.to_owned(),
+        generation,
+        claim_id: "claim-1".to_owned(),
+        claim_attempt: 1,
+        lease_epoch: 1,
+        workload_session_id: "workload-session-1".to_owned(),
+        producer_id: "worker-1".to_owned(),
+        fence_token: Zeroizing::new(vec![b'f'; 32]),
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn test_lease_starting_execution(
     lease_expires_at_unix_millis: i64,
 ) -> LeaseStartingAgentExecution {
@@ -1377,6 +1478,7 @@ pub(crate) trait InvocationAuthorizationPayload: Sized {
         permit: InvocationSubmissionPermit,
         output: AgentExecutionOutputAuthority,
         runtime_context: ClaimBoundRuntimeContextAuthority,
+        session: ClaimBoundSessionAuthority,
     ) -> Self::Authorized;
 
     fn into_authorization_terminal(
@@ -1636,10 +1738,12 @@ impl<R: ControlRpc> AgentControlClient<R> {
         match parse_authorize_invocation_response(&response) {
             Ok(AuthorizeInvocationDecision::AuthorizedNow) => {
                 let runtime_context = ClaimBoundRuntimeContextAuthority::from_claim(&claim);
+                let session = ClaimBoundSessionAuthority::from_claim(&claim);
                 InvocationAuthorizationDecision::AuthorizedNow(Box::new(payload.into_authorized(
                     InvocationSubmissionPermit { _sealed: () },
                     AgentExecutionOutputAuthority { claim },
                     runtime_context,
+                    session,
                 )))
             }
             Ok(AuthorizeInvocationDecision::AlreadyAuthorized) => {

@@ -252,9 +252,24 @@ Graphs compose two ADK contracts over the same physical schema, pool and
 claim/fence authority: `SessionService` for conversation events/state and
 `Checkpointer` for graph frontier, node state and interrupts. Direct `LlmAgent`
 runs use only `SessionService`. This is not duplicate state ownership; the two
-versioned table lineages have non-overlapping semantics. Current invocation
-assembly still uses `InMemorySessionService` until it can inject the activated
-claim-bound adapter and seed frozen history exactly once.
+versioned table lineages have non-overlapping semantics. Authorization now
+mints a separate non-cloneable session-writer grant beside the runtime-context
+grant, and the common Runner assembly accepts either the invocation-local or
+claim-fenced PostgreSQL `SessionService`. Existing sessions are restored; the
+content-addressed frozen history is assigned deterministic event IDs and seeded
+only when that session is first created. The default assembler remains
+invocation-local until deployment bootstrap supplies the shared `agentstate`
+pool and restricted database role.
+
+Main/`elitea-core` remains the source of the frozen initial chat-history
+snapshot during this migration. The Rust session lineage must not silently
+become a second mutable transcript authority: it bootstraps a missing session
+from that snapshot and otherwise restores its durable events. A later cutover
+must define which store owns subsequent conversation edits, regenerate, and
+history projection, plus reconcile already-running Python conversations. For a
+graph agent, checkpointed message channels needed to resume an interrupted
+frontier remain graph state in `Checkpointer`; they do not replace the
+user-visible conversation/session events owned by `SessionService`.
 
 Compaction must preserve tool-call/result pairing and durable continuation. ADK
 has post-run summaries, intra-run heuristic compaction and a feature-gated

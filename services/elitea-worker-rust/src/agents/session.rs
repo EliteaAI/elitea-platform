@@ -1,12 +1,12 @@
 //! Invocation-local ADK-Rust session and Runner assembly.
 //!
 //! The ordinary profile treats Main's frozen input as the complete turn
-//! snapshot. It therefore creates one in-memory session and one exclusive
-//! Runner per authorized invocation. Stable, pseudonymous ADK identities keep
-//! tenant and principal references out of provider/session diagnostics while
-//! preserving the current thread boundary. The exact frozen text history is
-//! seeded without persistent checkpoints; rich history and durable continuation
-//! remain closed until their Elitea-owned contracts are proven.
+//! snapshot. It creates one claim-bound session service and one exclusive
+//! Runner per authorized invocation. The capability-disabled default remains
+//! invocation-local; production composition can inject the fenced `PostgreSQL`
+//! service without changing the Runner or agent shape. Stable, pseudonymous
+//! ADK identities keep tenant and principal references out of provider/session
+//! diagnostics while preserving the current thread boundary.
 
 #![allow(dead_code)] // Production capability registration remains disabled.
 
@@ -15,14 +15,17 @@ use std::sync::Arc;
 
 use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::session::{
-    AppendEventRequest, CreateRequest, InMemorySessionService, SessionService,
+    AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, SessionService,
 };
-use adk_rust::{Content, Event, GenerateContentConfig, Llm, SessionId, Toolset, UserId};
+use adk_rust::{
+    AdkIdentity, Content, Event, GenerateContentConfig, Llm, SessionId, Toolset, UserId,
+};
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::digest;
 use serde_json::{Map, Value};
+use sqlx::PgPool;
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
@@ -37,13 +40,20 @@ use super::runtime::{
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::command::VerifiedAgentCommand;
+use crate::protocol::control::ClaimBoundSessionAuthority;
 use crate::protocol::elitea::runtime::v1::{AgentExecutionCommandV1, worker_command_v1};
+use crate::state::{
+    PostgresSessionError, PostgresSessionService, SessionLimits, SessionWriterAuthority,
+};
 
 const APP_NAME: &str = "elitea-agent-v1";
 const ROOT_AGENT_NAME: &str = "elitea-agent";
 const USER_ID_DOMAIN: &[u8] = b"elitea.adk.user.v1\0";
 const SESSION_ID_DOMAIN: &[u8] = b"elitea.adk.session.v1\0";
 const MAX_PUBLIC_APPLICATION_DETAILS_BYTES: usize = 32 * 1_024;
+const APPLICATION_CAPABILITY_ID: &str = "agent.execute.application.v1";
+const ADHOC_CAPABILITY_ID: &str = "agent.execute.adhoc.v1";
+const FROZEN_HISTORY_EVENT_DOMAIN: &[u8] = b"elitea.adk.frozen-history-event.v1\0";
 
 /// Non-authority command fields needed by local ADK and browser projection.
 ///
@@ -56,6 +66,7 @@ pub(crate) struct AuthorizedNativeCommandBinding {
     principal_ref: String,
     resource_project_id: String,
     projection_project_id: String,
+    execution_id: String,
     generation: u64,
     client_stream_id: String,
     client_message_id: String,
@@ -87,6 +98,7 @@ impl AuthorizedNativeCommandBinding {
             principal_ref: command.principal_ref.clone(),
             resource_project_id: command.resource_project_id.clone(),
             projection_project_id: command.projection_project_id.clone(),
+            execution_id: command.execution_id.clone(),
             generation: command.generation,
             client_stream_id: agent.client_stream_id.clone(),
             client_message_id: agent.client_message_id.clone(),
@@ -101,6 +113,7 @@ impl AuthorizedNativeCommandBinding {
             principal_ref: "user:42".to_owned(),
             resource_project_id: "17".to_owned(),
             projection_project_id: "9".to_owned(),
+            execution_id: "execution/one".to_owned(),
             generation: 3,
             client_stream_id: "conversation-1".to_owned(),
             client_message_id: "message-1".to_owned(),
@@ -120,6 +133,13 @@ pub(crate) struct OrdinaryNativeAgentPlan {
     thread_id: String,
     chat_history: Vec<Content>,
     context_management: ContextManagementPlan,
+    capability_id: &'static str,
+    definition_digest: [u8; 32],
+    tenant_id: String,
+    resource_project_id: String,
+    projection_project_id: String,
+    execution_id: String,
+    generation: u64,
 }
 
 impl OrdinaryNativeAgentPlan {
@@ -172,6 +192,10 @@ impl OrdinaryNativeAgentPlan {
             application_details,
         })
         .map_err(projection_configuration)?;
+        let capability_id = match request.kind {
+            super::request::AgentExecutionKind::Application => APPLICATION_CAPABILITY_ID,
+            super::request::AgentExecutionKind::Adhoc => ADHOC_CAPABILITY_ID,
+        };
         Ok(Self {
             user_id,
             session_id,
@@ -186,12 +210,119 @@ impl OrdinaryNativeAgentPlan {
             thread_id,
             chat_history: profile.chat_history().to_vec(),
             context_management: profile.context_management(),
+            capability_id,
+            definition_digest: request.binding.request_content_digest,
+            tenant_id: binding.tenant_id.clone(),
+            resource_project_id: binding.resource_project_id.clone(),
+            projection_project_id: binding.projection_project_id.clone(),
+            execution_id: binding.execution_id.clone(),
+            generation: binding.generation,
         })
     }
 
     #[cfg(test)]
     pub(super) fn session_id(&self) -> &str {
         self.session_id.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn user_id(&self) -> &str {
+        self.user_id.as_ref()
+    }
+}
+
+/// Runtime-selected ADK session persistence behind the common Runner entrypoint.
+///
+/// The `PostgreSQL` variant is constructible only inside the worker crate and
+/// still requires the one-use claim-bound session grant at invocation time.
+/// Selecting a backend never grants output, settlement, or tool authority.
+pub(crate) enum NativeSessionBackend {
+    InvocationLocal,
+    Postgres { pool: PgPool, limits: SessionLimits },
+}
+
+impl NativeSessionBackend {
+    #[must_use]
+    pub(crate) const fn invocation_local() -> Self {
+        Self::InvocationLocal
+    }
+
+    #[must_use]
+    pub(crate) const fn postgres(pool: PgPool, limits: SessionLimits) -> Self {
+        Self::Postgres { pool, limits }
+    }
+
+    #[must_use]
+    pub(crate) const fn name(&self) -> &'static str {
+        match self {
+            Self::InvocationLocal => "invocation_local",
+            Self::Postgres { .. } => "postgres",
+        }
+    }
+
+    pub(crate) async fn open(
+        &self,
+        authority: ClaimBoundSessionAuthority,
+        plan: &OrdinaryNativeAgentPlan,
+    ) -> Result<Arc<dyn SessionService>, NativeAgentAssemblyError> {
+        let claim = authority.into_writer_binding();
+        if claim.tenant_id != plan.tenant_id
+            || claim.resource_project_id != plan.resource_project_id
+            || claim.projection_project_id != plan.projection_project_id
+            || claim.execution_id != plan.execution_id
+            || claim.generation != plan.generation
+        {
+            return Err(authorization_failed());
+        }
+        match self {
+            Self::InvocationLocal => {
+                drop(claim);
+                Ok(Arc::new(InMemorySessionService::new()))
+            }
+            Self::Postgres { pool, limits } => {
+                let resource_project_id = claim
+                    .resource_project_id
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(invalid_configuration)?;
+                let projection_project_id = claim
+                    .projection_project_id
+                    .parse::<i32>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(invalid_configuration)?;
+                let fence_token: [u8; 32] = claim
+                    .fence_token
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| invalid_configuration())?;
+                let writer = SessionWriterAuthority::new(
+                    claim.tenant_id,
+                    resource_project_id,
+                    projection_project_id,
+                    plan.capability_id,
+                    plan.definition_digest,
+                    plan.thread_id.clone(),
+                    APP_NAME.to_owned(),
+                    plan.user_id.to_string(),
+                    plan.session_id.to_string(),
+                    claim.execution_id,
+                    claim.generation,
+                    claim.claim_id,
+                    claim.claim_attempt,
+                    claim.lease_epoch,
+                    claim.workload_session_id,
+                    claim.producer_id,
+                    fence_token,
+                )
+                .map_err(|error| session_activation_error(&error))?;
+                let service = PostgresSessionService::activate(pool.clone(), writer, *limits)
+                    .await
+                    .map_err(|error| session_activation_error(&error))?;
+                Ok(Arc::new(service))
+            }
+        }
     }
 }
 
@@ -234,6 +365,25 @@ pub(crate) async fn assemble_ordinary_native<M>(
 where
     M: BoundOrdinaryAgentModel,
 {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    assemble_ordinary_native_with_sessions(model, plan, toolsets, sensitive_tools, sessions).await
+}
+
+/// Build a direct `LlmAgent` and exclusive Runner over an injected session service.
+///
+/// Both direct and future graph agents use this same ADK session boundary; the
+/// graph checkpointer remains an additional graph-only dependency rather than
+/// a replacement for `SessionService`.
+pub(crate) async fn assemble_ordinary_native_with_sessions<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
     let OrdinaryNativeAgentPlan {
         user_id,
         session_id,
@@ -244,6 +394,13 @@ where
         thread_id,
         chat_history,
         context_management,
+        capability_id: _,
+        definition_digest,
+        tenant_id: _,
+        resource_project_id: _,
+        projection_project_id: _,
+        execution_id: _,
+        generation: _,
     } = plan;
     context_management.prepare_runner_composition();
     let adk_model = model.adk_model();
@@ -260,21 +417,87 @@ where
         builder = builder.require_tool_confirmation(tool_name);
     }
     let agent = builder.build().map_err(|_| invalid_configuration())?;
-    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
-    let session = sessions
-        .create(CreateRequest {
-            app_name: APP_NAME.to_owned(),
-            user_id: user_id.to_string(),
-            session_id: Some(session_id.to_string()),
-            state: HashMap::new(),
-        })
-        .await
-        .map_err(|_| dependency_unavailable())?;
+    let (session, created) =
+        restore_or_create_session(sessions.as_ref(), &user_id, &session_id).await?;
     let identity = session
         .try_identity()
         .map_err(|_| invalid_configuration())?;
-    for content in chat_history {
-        let mut event = Event::new("frozen-current-history");
+    if created {
+        seed_frozen_history(
+            sessions.as_ref(),
+            &identity,
+            chat_history,
+            definition_digest,
+        )
+        .await?;
+    }
+    tracing::Span::current().record(
+        "session_bootstrap",
+        if created { "seeded" } else { "restored" },
+    );
+    tracing::debug!(
+        session_bootstrap = if created { "seeded" } else { "restored" },
+        "prepared the ADK session for the native agent runner"
+    );
+    let runner = adk_rust::runner::Runner::builder()
+        .app_name(APP_NAME)
+        .agent(Arc::new(agent))
+        .session_service(sessions)
+        .build()
+        .map_err(|_| invalid_configuration())?;
+    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
+        .map_err(projection_configuration)?;
+    Ok(AssembledNativeAgentInvocation::new(
+        NativeAgentInvocation::new(runner, user_id, session_id, user_content),
+        projector,
+        OrdinaryAgentCompletion { model, thread_id },
+    ))
+}
+
+async fn restore_or_create_session(
+    sessions: &dyn SessionService,
+    user_id: &UserId,
+    session_id: &SessionId,
+) -> Result<(Box<dyn adk_rust::session::Session>, bool), NativeAgentAssemblyError> {
+    let user_id = user_id.to_string();
+    let session_id = session_id.to_string();
+    match sessions
+        .get(GetRequest {
+            app_name: APP_NAME.to_owned(),
+            user_id: user_id.clone(),
+            session_id: session_id.clone(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+    {
+        Ok(session) => Ok((session, false)),
+        Err(error) if error.code == "session.not_found" => sessions
+            .create(CreateRequest {
+                app_name: APP_NAME.to_owned(),
+                user_id,
+                session_id: Some(session_id),
+                state: HashMap::new(),
+            })
+            .await
+            .map(|session| (session, true))
+            .map_err(|_| dependency_unavailable()),
+        Err(_) => Err(dependency_unavailable()),
+    }
+}
+
+async fn seed_frozen_history(
+    sessions: &dyn SessionService,
+    identity: &AdkIdentity,
+    chat_history: Vec<Content>,
+    definition_digest: [u8; 32],
+) -> Result<(), NativeAgentAssemblyError> {
+    for (ordinal, content) in chat_history.into_iter().enumerate() {
+        let ordinal = u64::try_from(ordinal).map_err(|_| resource_exhausted())?;
+        let mut event = Event::with_id(
+            frozen_history_event_id(definition_digest, ordinal),
+            "frozen-current-history",
+        );
         event.author = if content.role == "user" {
             "user".to_owned()
         } else {
@@ -289,19 +512,15 @@ where
             .await
             .map_err(|_| dependency_unavailable())?;
     }
-    let runner = adk_rust::runner::Runner::builder()
-        .app_name(APP_NAME)
-        .agent(Arc::new(agent))
-        .session_service(sessions)
-        .build()
-        .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
-        .map_err(projection_configuration)?;
-    Ok(AssembledNativeAgentInvocation::new(
-        NativeAgentInvocation::new(runner, user_id, session_id, user_content),
-        projector,
-        OrdinaryAgentCompletion { model, thread_id },
-    ))
+    Ok(())
+}
+
+fn frozen_history_event_id(definition_digest: [u8; 32], ordinal: u64) -> String {
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(FROZEN_HISTORY_EVENT_DOMAIN);
+    context.update(&definition_digest);
+    context.update(&ordinal.to_be_bytes());
+    format!("fh-{}", URL_SAFE_NO_PAD.encode(context.finish().as_ref()))
 }
 
 fn stable_identity(domain: &[u8], fields: &[&str]) -> String {
@@ -385,9 +604,36 @@ fn resource_exhausted() -> NativeAgentAssemblyError {
     )
 }
 
+fn authorization_failed() -> NativeAgentAssemblyError {
+    NativeAgentAssemblyError::new(
+        NativeAgentAssemblyErrorCode::AuthorizationFailed,
+        "the claim-bound native agent session does not match its command",
+    )
+}
+
 fn dependency_unavailable() -> NativeAgentAssemblyError {
     NativeAgentAssemblyError::new(
         NativeAgentAssemblyErrorCode::DependencyUnavailable,
         "the invocation-local native agent session is unavailable",
     )
+}
+
+fn session_activation_error(error: &PostgresSessionError) -> NativeAgentAssemblyError {
+    let code = match error {
+        PostgresSessionError::InvalidConfiguration => {
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        }
+        PostgresSessionError::InvalidScope | PostgresSessionError::WriterNotCurrent => {
+            NativeAgentAssemblyErrorCode::AuthorizationFailed
+        }
+        PostgresSessionError::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+        PostgresSessionError::CorruptStoredState | PostgresSessionError::EventConflict => {
+            NativeAgentAssemblyErrorCode::InvalidResult
+        }
+        PostgresSessionError::StorageUnavailable { .. }
+        | PostgresSessionError::StorageFailure { .. } => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the claim-bound native agent session is unavailable")
 }

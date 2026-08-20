@@ -20,7 +20,10 @@ use super::runtime::{
     NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
 };
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
-use super::session::{OrdinaryAgentCompletion, assemble_ordinary_native};
+use super::session::{
+    NativeSessionBackend, OrdinaryAgentCompletion, assemble_ordinary_native_with_sessions,
+};
+use crate::state::SessionLimits;
 use crate::toolkits::{
     AdkHttpMcpConnector, AdmittedToolSnapshot, FrozenToolKind, McpConnector,
     McpMaterializationError, McpMaterializationErrorCode, ToolAdmissionPolicy,
@@ -32,6 +35,7 @@ use crate::transport::model_facade::{
     ModelReasoningEffort,
 };
 use crate::transport::platform_client::PlatformClient;
+use sqlx::PgPool;
 
 /// Shared ordinary application/ad-hoc assembler used after `AUTHORIZED_NOW`.
 ///
@@ -43,6 +47,7 @@ pub(crate) struct OrdinaryNativeAgentAssembler {
     model_facade: Arc<ModelFacade>,
     tool_policy: Arc<ToolAdmissionPolicy>,
     mcp_connector: Arc<dyn McpConnector>,
+    sessions: NativeSessionBackend,
 }
 
 impl OrdinaryNativeAgentAssembler {
@@ -57,7 +62,18 @@ impl OrdinaryNativeAgentAssembler {
             model_facade,
             tool_policy,
             mcp_connector: Arc::new(AdkHttpMcpConnector::new()),
+            sessions: NativeSessionBackend::invocation_local(),
         }
+    }
+
+    /// Select claim-fenced `PostgreSQL` session persistence for the common Runner.
+    ///
+    /// Production construction remains closed until worker bootstrap supplies
+    /// the authorized `agentstate` pool and the capability is registered.
+    #[must_use]
+    pub(crate) fn with_postgres_sessions(mut self, pool: PgPool, limits: SessionLimits) -> Self {
+        self.sessions = NativeSessionBackend::postgres(pool, limits);
+        self
     }
 
     #[cfg(test)]
@@ -76,18 +92,7 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
         &self,
         assembly: AuthorizedNativeAssembly<'_>,
     ) -> Result<AssembledNativeAgentInvocation<Self::Completion>, NativeAgentAssemblyError> {
-        let span = tracing::info_span!(
-            "agent.assemble",
-            execution_kind = ?assembly.request().kind,
-            stage = tracing::field::Empty,
-            model_adapter = tracing::field::Empty,
-            model_project_id = tracing::field::Empty,
-            tool_reference_count = tracing::field::Empty,
-            nested_application_count = tracing::field::Empty,
-            materialized_toolset_count = tracing::field::Empty,
-            outcome = tracing::field::Empty,
-            error_code = tracing::field::Empty,
-        );
+        let span = assembly_span(&assembly, self.sessions.name());
         let result = async {
             // Admission also constructs the command-bound projection/session
             // plan, so deterministic local failures happen before PAT issuance.
@@ -98,7 +103,8 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 .redeem_runtime_context(self.platform.as_ref())
                 .await
                 .map_err(NativeAgentAssemblyError::from)?;
-            let (profile, plan, tool_snapshot, context, runtime_context) = redeemed.into_parts();
+            let (profile, plan, tool_snapshot, context, runtime_context, session_authority) =
+                redeemed.into_parts();
             let tool_reference_count = tool_snapshot.iter().count();
             let nested_application_count = tool_snapshot
                 .iter()
@@ -160,7 +166,9 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 )
                 .map_err(model_binding_error)?;
             tracing::Span::current().record("stage", "runner");
-            assemble_ordinary_native(model, plan, toolsets, sensitive_tools).await
+            let sessions = self.sessions.open(session_authority, &plan).await?;
+            assemble_ordinary_native_with_sessions(model, plan, toolsets, sensitive_tools, sessions)
+                .await
         }
         .instrument(span.clone())
         .await;
@@ -175,6 +183,23 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
         }
         result
     }
+}
+
+fn assembly_span(assembly: &AuthorizedNativeAssembly<'_>, session_backend: &str) -> tracing::Span {
+    tracing::info_span!(
+        "agent.assemble",
+        execution_kind = ?assembly.request().kind,
+        stage = tracing::field::Empty,
+        model_adapter = tracing::field::Empty,
+        model_project_id = tracing::field::Empty,
+        tool_reference_count = tracing::field::Empty,
+        nested_application_count = tracing::field::Empty,
+        materialized_toolset_count = tracing::field::Empty,
+        session_backend,
+        session_bootstrap = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+    )
 }
 
 async fn materialize_direct_toolsets(

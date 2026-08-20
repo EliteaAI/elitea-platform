@@ -55,8 +55,9 @@ Detailed ledgers:
 Maintained Rust runtime ownership registry:
 
 - `src/agents/{assembly,ordinary,session,events,sensitive_tools}.rs`: direct
-  saved-agent and ad-hoc `LlmAgent` admission, session/Runner composition,
-  browser event projection and runtime-policy-bound sensitive-tool pauses;
+  saved-agent and ad-hoc `LlmAgent` admission, common injected
+  `SessionService`/Runner composition, seed-once frozen history, browser event
+  projection and runtime-policy-bound sensitive-tool pauses;
 - `src/agents/application_tools.rs`: exact saved child application/version to
   ADK `AgentTool` composition, recursion and model-visible delegation schema;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
@@ -77,6 +78,9 @@ Maintained Rust runtime ownership registry:
 - `src/state/postgres_session.rs` plus Main migration
   `migrations/shared/0065_agent_sessions.sql`: bounded claim-fenced ADK
   conversation/session persistence for direct and graph Runners;
+- `src/protocol/control.rs::ClaimBoundSessionAuthority`: one-use session-writer
+  grant minted only at `AUTHORIZED_NOW`, independently of output and settlement
+  authority;
 - `src/state/postgres_checkpointer.rs` plus Main migration
   `migrations/shared/0064_agent_graph_checkpoints.sql`: graph-only frontier,
   node-state and interrupt persistence. Both adapters use the existing

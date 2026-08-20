@@ -12,4 +12,5 @@ mod postgres_session;
 mod postgres_session_tests;
 
 pub use postgres_checkpointer::{CheckpointLimits, PostgresCheckpointError, PostgresCheckpointer};
+pub(crate) use postgres_session::SessionWriterAuthority;
 pub use postgres_session::{PostgresSessionError, PostgresSessionService, SessionLimits};
