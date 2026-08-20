@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use adk_rust::agent::LlmAgentBuilder;
+use adk_rust::graph::Checkpointer;
 use adk_rust::session::{
     AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, SessionService,
 };
@@ -33,17 +34,22 @@ use super::direct_hitl::{DirectHitlDecision, DirectHitlError, DirectHitlErrorCod
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
     AgentEventProjector, CompletedAgentBrowserOutput, OrdinaryProjectionInput,
+    PipelineProjectionInput,
 };
+use super::graph::compiler::PipelineDefinition;
+use super::graph::resume::{PipelineResumeError, PipelineResumeErrorCode};
+use super::graph::{EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT};
 use super::request::{AgentExecutionRequest, UserInput};
 use super::runtime::{
     AssembledNativeAgentInvocation, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
-    NativeAgentCompletionSelector, NativeAgentInvocation,
+    NativeAgentCompletionSelector, NativeAgentInvocation, PipelineNativeStart,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::command::VerifiedAgentCommand;
-use crate::protocol::control::ClaimBoundSessionAuthority;
+use crate::protocol::control::{ClaimBoundSessionAuthority, SessionWriterClaimBinding};
 use crate::protocol::elitea::runtime::v1::{AgentExecutionCommandV1, worker_command_v1};
 use crate::state::{
+    CheckpointLimits, CheckpointWriterAuthority, PostgresCheckpointError, PostgresCheckpointer,
     PostgresSessionError, PostgresSessionService, SessionLimits, SessionWriterAuthority,
     StateWriterLease,
 };
@@ -153,6 +159,24 @@ impl OrdinaryNativeAgentPlan {
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
     ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::from_authorized_mode(request, profile, binding, None)
+    }
+
+    pub(crate) fn from_authorized_pipeline(
+        request: &AgentExecutionRequest,
+        profile: &OrdinaryNoToolProfile,
+        binding: &AuthorizedNativeCommandBinding,
+        resume: bool,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::from_authorized_mode(request, profile, binding, Some(resume))
+    }
+
+    fn from_authorized_mode(
+        request: &AgentExecutionRequest,
+        profile: &OrdinaryNoToolProfile,
+        binding: &AuthorizedNativeCommandBinding,
+        pipeline_resume: Option<bool>,
+    ) -> Result<Self, NativeAgentAssemblyError> {
         let user_text = match &request.payload.user_input {
             UserInput::Text(text) => text.clone(),
             UserInput::ContentBlocks(_) => return Err(invalid_input()),
@@ -184,7 +208,7 @@ impl OrdinaryNativeAgentPlan {
             .execution_generation
             .clone()
             .unwrap_or_else(|| binding.generation.to_string());
-        let projection = AgentEventProjectionContext::ordinary(OrdinaryProjectionInput {
+        let projection_input = OrdinaryProjectionInput {
             stream_id: binding.client_stream_id.clone(),
             message_id: binding.client_message_id.clone(),
             execution_generation,
@@ -195,7 +219,16 @@ impl OrdinaryNativeAgentPlan {
             root_agent_name: ROOT_AGENT_NAME.to_owned(),
             model_name: profile.model_name().to_owned(),
             application_details,
-        })
+        };
+        let projection = if let Some(resume) = pipeline_resume {
+            AgentEventProjectionContext::pipeline(PipelineProjectionInput {
+                ordinary: projection_input,
+                checkpoint_thread_id: session_id.to_string(),
+                resume,
+            })
+        } else {
+            AgentEventProjectionContext::ordinary(projection_input)
+        }
         .map_err(projection_configuration)?;
         let capability_id = match request.kind {
             super::request::AgentExecutionKind::Application => APPLICATION_CAPABILITY_ID,
@@ -372,6 +405,192 @@ impl NativeSessionBackend {
     }
 }
 
+/// One storage profile that activates graph conversation and frontier state.
+///
+/// A stored pipeline cannot use invocation-local state because its first node
+/// may pause. The `PostgreSQL` variant consumes one claim and derives both
+/// writers from that same immutable fence. No additional interrupt table or
+/// caller-selected checkpoint identity is introduced.
+pub(crate) enum NativePipelineStateBackend {
+    Postgres {
+        pool: PgPool,
+        session_limits: SessionLimits,
+        checkpoint_limits: CheckpointLimits,
+    },
+    #[cfg(test)]
+    Injected {
+        sessions: Arc<dyn SessionService>,
+        checkpointer: Arc<dyn Checkpointer>,
+    },
+}
+
+impl NativePipelineStateBackend {
+    #[must_use]
+    pub(crate) const fn postgres(
+        pool: PgPool,
+        session_limits: SessionLimits,
+        checkpoint_limits: CheckpointLimits,
+    ) -> Self {
+        Self::Postgres {
+            pool,
+            session_limits,
+            checkpoint_limits,
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn injected(
+        sessions: Arc<dyn SessionService>,
+        checkpointer: Arc<dyn Checkpointer>,
+    ) -> Self {
+        Self::Injected {
+            sessions,
+            checkpointer,
+        }
+    }
+
+    async fn open(
+        &self,
+        authority: ClaimBoundSessionAuthority,
+        state_writer_lease: Arc<dyn StateWriterLease>,
+        plan: &OrdinaryNativeAgentPlan,
+        pipeline_definition_digest: [u8; 32],
+    ) -> Result<PipelineStateServices, NativeAgentAssemblyError> {
+        let claim = authority.into_writer_binding();
+        if claim.tenant_id != plan.tenant_id
+            || claim.resource_project_id != plan.resource_project_id
+            || claim.projection_project_id != plan.projection_project_id
+            || claim.execution_id != plan.execution_id
+            || claim.generation != plan.generation
+        {
+            return Err(authorization_failed());
+        }
+        match self {
+            Self::Postgres {
+                pool,
+                session_limits,
+                checkpoint_limits,
+            } => {
+                activate_pipeline_postgres(
+                    pool,
+                    *session_limits,
+                    *checkpoint_limits,
+                    claim,
+                    state_writer_lease,
+                    plan,
+                    pipeline_definition_digest,
+                )
+                .await
+            }
+            #[cfg(test)]
+            Self::Injected {
+                sessions,
+                checkpointer,
+            } => {
+                drop(claim);
+                drop(state_writer_lease);
+                Ok(PipelineStateServices {
+                    sessions: Arc::clone(sessions),
+                    checkpointer: Arc::clone(checkpointer),
+                })
+            }
+        }
+    }
+}
+
+async fn activate_pipeline_postgres(
+    pool: &PgPool,
+    session_limits: SessionLimits,
+    checkpoint_limits: CheckpointLimits,
+    claim: SessionWriterClaimBinding,
+    state_writer_lease: Arc<dyn StateWriterLease>,
+    plan: &OrdinaryNativeAgentPlan,
+    pipeline_definition_digest: [u8; 32],
+) -> Result<PipelineStateServices, NativeAgentAssemblyError> {
+    let resource_project_id = claim
+        .resource_project_id
+        .parse::<i32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(invalid_configuration)?;
+    let projection_project_id = claim
+        .projection_project_id
+        .parse::<i32>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(invalid_configuration)?;
+    let fence_token: [u8; 32] = claim
+        .fence_token
+        .as_slice()
+        .try_into()
+        .map_err(|_| invalid_configuration())?;
+    let session_writer = SessionWriterAuthority::new(
+        claim.tenant_id.clone(),
+        resource_project_id,
+        projection_project_id,
+        plan.capability_id,
+        plan.definition_digest,
+        plan.thread_id.clone(),
+        APP_NAME.to_owned(),
+        plan.user_id.to_string(),
+        plan.session_id.to_string(),
+        claim.execution_id.clone(),
+        claim.generation,
+        claim.claim_id.clone(),
+        claim.claim_attempt,
+        claim.lease_epoch,
+        claim.claim_started_at_unix_micros,
+        claim.workload_session_id.clone(),
+        claim.producer_id.clone(),
+        fence_token,
+    )
+    .map_err(|error| session_activation_error(&error))?;
+    let checkpoint_writer = CheckpointWriterAuthority::new(
+        claim.tenant_id,
+        resource_project_id,
+        projection_project_id,
+        plan.capability_id,
+        pipeline_definition_digest,
+        plan.session_id.to_string(),
+        claim.execution_id,
+        claim.generation,
+        claim.claim_id,
+        claim.claim_attempt,
+        claim.lease_epoch,
+        claim.claim_started_at_unix_micros,
+        claim.workload_session_id,
+        claim.producer_id,
+        fence_token,
+    )
+    .map_err(|error| checkpoint_activation_error(&error))?;
+    let sessions = PostgresSessionService::activate(
+        pool.clone(),
+        session_writer,
+        session_limits,
+        Arc::clone(&state_writer_lease),
+    )
+    .await
+    .map_err(|error| session_activation_error(&error))?;
+    let checkpointer = PostgresCheckpointer::activate(
+        pool.clone(),
+        checkpoint_writer,
+        checkpoint_limits,
+        state_writer_lease,
+    )
+    .await
+    .map_err(|error| checkpoint_activation_error(&error))?;
+    Ok(PipelineStateServices {
+        sessions: Arc::new(sessions),
+        checkpointer: Arc::new(checkpointer),
+    })
+}
+
+struct PipelineStateServices {
+    sessions: Arc<dyn SessionService>,
+    checkpointer: Arc<dyn Checkpointer>,
+}
+
 /// One bound provider invocation that remains paired with its completion.
 ///
 /// Implementations may return a cloned ADK model handle only while the owner
@@ -399,6 +618,124 @@ where
         CompletedAgentBrowserOutput::ordinary(content, self.thread_id)
             .map_err(|error| completed_output_error(&error))
     }
+}
+
+/// Fixed terminal result for the initial control-flow-only pipeline profile.
+pub(crate) struct PipelineAgentCompletion {
+    thread_id: String,
+}
+
+#[async_trait]
+impl NativeAgentCompletionSelector for PipelineAgentCompletion {
+    async fn select(self) -> Result<CompletedAgentBrowserOutput, NativeAgentAssemblyError> {
+        CompletedAgentBrowserOutput::ordinary(PIPELINE_COMPLETED_CONTENT.to_owned(), self.thread_id)
+            .map_err(|error| completed_output_error(&error))
+    }
+}
+
+const PIPELINE_RESUME_MARKER: &str = "[elitea:pipeline-resume:v1]";
+
+/// Activate both durable state contracts and build one HITL-only graph Runner.
+pub(crate) async fn assemble_pipeline_native(
+    plan: OrdinaryNativeAgentPlan,
+    definition: PipelineDefinition,
+    start: PipelineNativeStart,
+    session_authority: ClaimBoundSessionAuthority,
+    state_writer_lease: Arc<dyn StateWriterLease>,
+    backend: &NativePipelineStateBackend,
+) -> Result<AssembledNativeAgentInvocation<PipelineAgentCompletion>, NativeAgentAssemblyError> {
+    let state = backend
+        .open(
+            session_authority,
+            state_writer_lease,
+            &plan,
+            definition.definition_digest(),
+        )
+        .await?;
+    let resume = match start {
+        PipelineNativeStart::Fresh => {
+            let (session, created) =
+                restore_or_create_session(state.sessions.as_ref(), &plan.user_id, &plan.session_id)
+                    .await?;
+            if created {
+                let identity = session
+                    .try_identity()
+                    .map_err(|_| invalid_configuration())?;
+                seed_frozen_history(
+                    state.sessions.as_ref(),
+                    &identity,
+                    plan.chat_history.clone(),
+                    plan.definition_digest,
+                )
+                .await?;
+            }
+            None
+        }
+        PipelineNativeStart::Hitl(decision) => {
+            let session = state
+                .sessions
+                .get(GetRequest {
+                    app_name: APP_NAME.to_owned(),
+                    user_id: plan.user_id.to_string(),
+                    session_id: plan.session_id.to_string(),
+                    num_recent_events: None,
+                    after: None,
+                })
+                .await
+                .map_err(|_| dependency_unavailable())?;
+            Some(
+                decision
+                    .resolve(
+                        session.as_ref(),
+                        state.checkpointer.as_ref(),
+                        ROOT_AGENT_NAME,
+                        plan.session_id.as_ref(),
+                    )
+                    .await
+                    .map_err(|error| pipeline_resume_error(&error))?,
+            )
+        }
+    };
+    let is_resume = resume.is_some();
+    let graph = definition
+        .compile(ROOT_AGENT_NAME, Arc::clone(&state.checkpointer), resume)
+        .map_err(|error| pipeline_configuration_error(error.code()))?;
+    let OrdinaryNativeAgentPlan {
+        user_id,
+        session_id,
+        user_content,
+        generation_config: _,
+        max_iterations: _,
+        projection,
+        thread_id,
+        chat_history: _,
+        context_management,
+        capability_id: _,
+        definition_digest: _,
+        tenant_id: _,
+        resource_project_id: _,
+        projection_project_id: _,
+        execution_id: _,
+        generation: _,
+    } = plan;
+    context_management.prepare_runner_composition();
+    let runner = adk_rust::runner::Runner::builder()
+        .app_name(APP_NAME)
+        .agent(Arc::new(EliteaGraphAgent::new(graph)))
+        .session_service(state.sessions)
+        .build()
+        .map_err(|_| invalid_configuration())?;
+    let projector = AgentEventProjector::new(projection).map_err(projection_configuration)?;
+    let input = if is_resume {
+        Content::new("user").with_text(PIPELINE_RESUME_MARKER)
+    } else {
+        user_content
+    };
+    Ok(AssembledNativeAgentInvocation::new(
+        NativeAgentInvocation::new(runner, user_id, session_id, input),
+        projector,
+        PipelineAgentCompletion { thread_id },
+    ))
 }
 
 /// Build one fresh ADK session, direct `LlmAgent`, and exclusive Runner.
@@ -812,4 +1149,58 @@ fn session_activation_error(error: &PostgresSessionError) -> NativeAgentAssembly
         }
     };
     NativeAgentAssemblyError::new(code, "the claim-bound native agent session is unavailable")
+}
+
+fn checkpoint_activation_error(error: &PostgresCheckpointError) -> NativeAgentAssemblyError {
+    let code = match error {
+        PostgresCheckpointError::InvalidConfiguration(_) => {
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        }
+        PostgresCheckpointError::InvalidScope(_) | PostgresCheckpointError::WriterNotCurrent => {
+            NativeAgentAssemblyErrorCode::AuthorizationFailed
+        }
+        PostgresCheckpointError::ResourceExhausted(_) => {
+            NativeAgentAssemblyErrorCode::ResourceExhausted
+        }
+        PostgresCheckpointError::CheckpointConflict
+        | PostgresCheckpointError::CorruptStoredState => {
+            NativeAgentAssemblyErrorCode::InvalidResult
+        }
+        PostgresCheckpointError::StorageUnavailable { .. }
+        | PostgresCheckpointError::StorageFailure { .. } => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the claim-bound pipeline checkpoint is unavailable")
+}
+
+fn pipeline_resume_error(error: &PipelineResumeError) -> NativeAgentAssemblyError {
+    let code = match error.code() {
+        PipelineResumeErrorCode::InvalidInput
+        | PipelineResumeErrorCode::StaleDecision
+        | PipelineResumeErrorCode::CorruptSession => NativeAgentAssemblyErrorCode::InvalidInput,
+        PipelineResumeErrorCode::UnsupportedCapability => {
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        PipelineResumeErrorCode::DependencyUnavailable => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the checkpointed pipeline decision was rejected")
+}
+
+fn pipeline_configuration_error(code: &str) -> NativeAgentAssemblyError {
+    let code = match code {
+        "graph.pipeline.configuration_resource_exhausted" => {
+            NativeAgentAssemblyErrorCode::ResourceExhausted
+        }
+        "graph.pipeline.unsupported_capability" => {
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        "graph.pipeline.malformed_yaml" | "graph.pipeline.invalid_configuration" => {
+            NativeAgentAssemblyErrorCode::InvalidInput
+        }
+        _ => NativeAgentAssemblyErrorCode::InvalidConfiguration,
+    };
+    NativeAgentAssemblyError::new(code, "the stored pipeline could not be compiled")
 }

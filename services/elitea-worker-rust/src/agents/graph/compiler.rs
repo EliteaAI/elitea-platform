@@ -20,6 +20,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
+use super::pipeline_completed_event;
 use super::resume::PipelineResume;
 use super::yaml::{valid_graph_id, valid_output_key};
 
@@ -281,7 +282,8 @@ impl PipelineDefinition {
             .edge(START, &self.entry_point)
             .checkpointer_arc(checkpointer)
             .recursion_limit(PIPELINE_RECURSION_LIMIT)
-            .max_concurrency(1);
+            .max_concurrency(1)
+            .output_mapper(|_| vec![pipeline_completed_event()]);
         for node in &self.nodes {
             builder = builder.node(HitlNode::new(node.clone()));
         }
@@ -296,22 +298,24 @@ impl PipelineDefinition {
 
 fn invocation_state(context: &dyn InvocationContext, resume: Option<&State>) -> State {
     let mut state = State::new();
-    let text = context
-        .user_content()
-        .parts
-        .iter()
-        .filter_map(|part| match part {
-            Part::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if !text.is_empty() {
-        state.insert("input".to_owned(), json!(text));
-        state.insert(
-            "messages".to_owned(),
-            json!([{"role": "user", "content": text}]),
-        );
+    if resume.is_none() {
+        let text = context
+            .user_content()
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            state.insert("input".to_owned(), json!(text));
+            state.insert(
+                "messages".to_owned(),
+                json!([{"role": "user", "content": text}]),
+            );
+        }
     }
     state.insert("session_id".to_owned(), json!(context.session_id()));
     if let Some(resume) = resume {

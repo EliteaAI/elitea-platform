@@ -233,8 +233,12 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             PipelineNativeStart::Fresh
         };
         let profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
-        let plan =
-            OrdinaryNativeAgentPlan::from_authorized(self.request, profile.shell(), &self.command)?;
+        let plan = OrdinaryNativeAgentPlan::from_authorized_pipeline(
+            self.request,
+            profile.shell(),
+            &self.command,
+            start.is_resume(),
+        )?;
         Ok(AdmittedPipelineNativeAssembly {
             request: self.request,
             runtime_context: self.runtime_context,

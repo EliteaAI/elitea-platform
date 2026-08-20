@@ -23,6 +23,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::direct_hitl::sensitive_call_identity;
+use super::graph::{
+    PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY, PIPELINE_COMPLETED_METADATA_VALUE,
+};
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
@@ -212,6 +215,7 @@ pub(crate) struct AgentEventProjectionContext {
     root_agent_name: String,
     model_name: String,
     application_details: Value,
+    graph_checkpoint_thread_id: Option<String>,
     should_continue: bool,
     hitl_resume: bool,
     parallel_reconcile: bool,
@@ -234,6 +238,13 @@ pub(crate) struct OrdinaryProjectionInput {
     pub(crate) application_details: Value,
 }
 
+/// Pipeline-only projection identity kept separate from the public chat thread.
+pub(crate) struct PipelineProjectionInput {
+    pub(crate) ordinary: OrdinaryProjectionInput,
+    pub(crate) checkpoint_thread_id: String,
+    pub(crate) resume: bool,
+}
+
 impl AgentEventProjectionContext {
     pub(crate) fn ordinary(
         input: OrdinaryProjectionInput,
@@ -249,12 +260,24 @@ impl AgentEventProjectionContext {
             root_agent_name: input.root_agent_name,
             model_name: input.model_name,
             application_details: input.application_details,
+            graph_checkpoint_thread_id: None,
             should_continue: false,
             hitl_resume: false,
             parallel_reconcile: false,
             invoked_skills: Vec::new(),
             applied_skills: Vec::new(),
         };
+        validate_context(&context)?;
+        Ok(context)
+    }
+
+    pub(crate) fn pipeline(
+        input: PipelineProjectionInput,
+    ) -> Result<Self, AgentEventProjectionError> {
+        let mut context = Self::ordinary(input.ordinary)?;
+        context.graph_checkpoint_thread_id = Some(input.checkpoint_thread_id);
+        context.should_continue = input.resume;
+        context.hitl_resume = input.resume;
         validate_context(&context)?;
         Ok(context)
     }
@@ -274,12 +297,19 @@ impl AgentEventProjectionContext {
             root_agent_name: "root-agent".to_owned(),
             model_name: "model-1".to_owned(),
             application_details,
+            graph_checkpoint_thread_id: None,
             should_continue: false,
             hitl_resume: false,
             parallel_reconcile: false,
             invoked_skills: Vec::new(),
             applied_skills: Vec::new(),
         }
+    }
+
+    pub(crate) fn pipeline_fixture(application_details: Value) -> Self {
+        let mut context = Self::fixture(application_details);
+        context.graph_checkpoint_thread_id = Some("thread-1".to_owned());
+        context
     }
 }
 
@@ -453,6 +483,14 @@ impl AgentEventProjector {
             self.bind_invocation_id(event);
             return Ok(batch);
         }
+        if event
+            .provider_metadata
+            .contains_key(PIPELINE_COMPLETED_METADATA_KEY)
+        {
+            let batch = self.project_pipeline_completion(event)?;
+            self.bind_invocation_id(event);
+            return Ok(batch);
+        }
         validate_adk_event(event, &self.context.root_agent_name)?;
         let tool_calls = event.tool_calls();
         let tool_results = event.tool_results();
@@ -575,11 +613,16 @@ impl AgentEventProjector {
         {
             return Err(AgentEventProjectionError::invalid_state());
         }
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
         let binding = pipeline_hitl_event_binding_from_payload(
             event,
             payload,
             &self.context.root_agent_name,
-            &self.context.thread_id,
+            checkpoint_thread_id,
         )?;
         let data = binding.data;
         let message = data.message.clone();
@@ -616,6 +659,45 @@ impl AgentEventProjector {
         )?)?;
         self.state = ProjectionState::Paused;
         Ok(batch)
+    }
+
+    fn project_pipeline_completion(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if self.context.graph_checkpoint_thread_id.is_none()
+            || !matches!(self.state, ProjectionState::Started)
+            || !self.active_tools.is_empty()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_adk_event(event, &self.context.root_agent_name)?;
+        let content = event
+            .content()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let terminal = matches!(
+            content.parts.as_slice(),
+            [Part::Text { text }] if text == PIPELINE_COMPLETED_CONTENT
+        );
+        if content.role != "assistant"
+            || !terminal
+            || event.provider_metadata.len() != 1
+            || event
+                .provider_metadata
+                .get(PIPELINE_COMPLETED_METADATA_KEY)
+                .map(String::as_str)
+                != Some(PIPELINE_COMPLETED_METADATA_VALUE)
+            || !event.actions.state_delta.is_empty()
+            || event.llm_response.partial
+            || event.llm_response.interrupted
+            || event.llm_response.finish_reason.is_some()
+            || event.llm_response.usage_metadata.is_some()
+            || event.llm_response.provider_metadata.is_some()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        self.state = ProjectionState::Complete(CompletedModelTurn);
+        Ok(ProjectedAgentEventBatch::new())
     }
 
     #[must_use]
@@ -1012,6 +1094,13 @@ fn validate_context(
                 .bytes()
                 .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
     }) {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    if context
+        .graph_checkpoint_thread_id
+        .as_deref()
+        .is_some_and(|value| validate_public_text(value).is_err())
+    {
         return Err(AgentEventProjectionError::invalid_state());
     }
     Ok(())

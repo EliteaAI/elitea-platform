@@ -11,8 +11,23 @@ use std::sync::Arc;
 
 use adk_rust::futures::StreamExt as _;
 use adk_rust::graph::GraphAgent;
-use adk_rust::{Agent, EventStream, InvocationContext};
+use adk_rust::{Agent, Content, Event, EventStream, InvocationContext};
 use async_trait::async_trait;
+
+pub(crate) const PIPELINE_COMPLETED_METADATA_KEY: &str = "elitea.pipeline.completed";
+pub(crate) const PIPELINE_COMPLETED_METADATA_VALUE: &str = "v1";
+pub(crate) const PIPELINE_COMPLETED_CONTENT: &str = "Pipeline completed.";
+
+/// Emit one bounded terminal marker without serializing private graph state.
+pub(crate) fn pipeline_completed_event() -> Event {
+    let mut event = Event::new("graph_invocation_pending");
+    event.set_content(Content::new("assistant").with_text(PIPELINE_COMPLETED_CONTENT));
+    event.provider_metadata.insert(
+        PIPELINE_COMPLETED_METADATA_KEY.to_owned(),
+        PIPELINE_COMPLETED_METADATA_VALUE.to_owned(),
+    );
+    event
+}
 
 pub(crate) struct EliteaGraphAgent {
     name: String,

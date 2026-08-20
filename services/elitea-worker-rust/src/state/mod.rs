@@ -12,6 +12,7 @@ mod postgres_session;
 mod postgres_session_tests;
 mod writer_lease;
 
+pub(crate) use postgres_checkpointer::CheckpointWriterAuthority;
 pub use postgres_checkpointer::{CheckpointLimits, PostgresCheckpointError, PostgresCheckpointer};
 pub(crate) use postgres_session::SessionWriterAuthority;
 pub use postgres_session::{PostgresSessionError, PostgresSessionService, SessionLimits};

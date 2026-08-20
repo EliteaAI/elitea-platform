@@ -57,12 +57,30 @@ with an empty tool-call identity; it never passes through sensitive-tool
 The focused corpus reconstructs the graph twice around two sequential pauses
 through the real common `Runner` and injected `SessionService`, proves final
 completion and one-use decisions, and rejects stale identities and unsupported
-node/static-interrupt documents. Three additional admission fixtures prove the
-stored application selector, graph-decision identity and fail-closed tool/node
-boundary. Production assembly still has to consume one combined claim-fenced
-state authority into the PostgreSQL session/checkpoint adapters. If the process
-stops after the Runner appends the continuation user event but before the graph
-advances, the exact suffix-recovery rule also remains an activation gate.
+node/static-interrupt documents. Three admission fixtures prove the stored
+application selector, graph-decision identity and fail-closed tool/node
+boundary. A fourth e2e fixture enters through `NativeAgentAssembler`, consumes
+one state grant, pauses, projects a browser interrupt, resumes the exact private
+checkpoint and emits the normal terminal browser lifecycle.
+
+`NativePipelineStateBackend` consumes the post-authorization session authority
+once and derives both PostgreSQL writers from the same immutable claim, fence
+and live lease. Conversation events and graph frontier state remain in their
+existing separate `elitea_runtime` tables inside `agentstate`; no parallel
+interrupt table is introduced. The public chat thread stays presentation data,
+while the pseudonymous ADK session ID is the private checkpoint thread and the
+interrupt-digest input. The Runner-required resume marker is persisted only in
+the private session lineage; the graph input mapper does not turn it into
+`input` or `messages`.
+
+The current all-HITL graph has no value-producing terminal node. Rust therefore
+maps its successful terminal state to the fixed bounded result `Pipeline
+completed.` rather than serializing private graph state or reproducing the
+Python `output is None` fallback text. Future value-producing nodes must add an
+explicit terminal-output selector compatible with
+`LangGraphAgentRunnable.invoke`/`extract_terminal_state_output`. If the process
+stops after the Runner appends the continuation event but before the graph
+advances, exact suffix recovery still remains an activation gate.
 
 ## Parallel YAML v1
 

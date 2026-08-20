@@ -451,8 +451,9 @@ fn artifact_delta_is_not_silently_accepted_as_browser_or_completion_state() {
 
 #[test]
 fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
-    let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
-        .expect("projector");
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
     projector.start(timestamp(0)).expect("start");
     let event = pipeline_hitl_event(json!({
         "schema_revision": "elitea.graph.hitl-interrupt.v1",
@@ -541,7 +542,7 @@ fn malformed_graph_hitl_never_becomes_an_approval_card() {
         },
     ] {
         let mut projector =
-            AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+            AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
                 .expect("projector");
         projector.start(timestamp(0)).expect("start");
         let error = projection_error(projector.project(&pipeline_hitl_event(invalid)));

@@ -17,6 +17,11 @@ mod parallel_tests;
 pub(crate) mod resume;
 mod yaml;
 
+pub(crate) use agent::{
+    EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
+    PIPELINE_COMPLETED_METADATA_VALUE, pipeline_completed_event,
+};
+
 pub use yaml::{
     ParallelBranchDefinition, ParallelConfigurationError, ParallelErrorPolicy,
     ParallelNodeDefinition, ParallelWaitPolicy,

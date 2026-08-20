@@ -65,7 +65,6 @@ impl Default for CheckpointLimits {
 }
 
 impl CheckpointLimits {
-    #[allow(dead_code)] // Called by the next sealed invocation/checkpointer composition slice.
     fn validate(self) -> Result<Self, PostgresCheckpointError> {
         if self.max_serialized_bytes == 0
             || self.max_serialized_bytes > MAX_DATABASE_PAYLOAD_BYTES
@@ -175,7 +174,6 @@ pub(crate) struct CheckpointWriterAuthority {
     fence_token: Zeroizing<[u8; 32]>,
 }
 
-#[allow(dead_code)] // Constructed by the next sealed invocation/checkpointer composition slice.
 impl CheckpointWriterAuthority {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
@@ -328,7 +326,6 @@ impl PostgresCheckpointer {
     /// receipt. An older claim cannot replace a writer whose claim was created
     /// later; equal timestamps from different claims fail closed instead of
     /// inventing an ordering.
-    #[allow(dead_code)] // Called by the next sealed invocation/checkpointer composition slice.
     pub(crate) async fn activate(
         pool: PgPool,
         authority: CheckpointWriterAuthority,
