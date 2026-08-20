@@ -425,4 +425,52 @@ describe('ProjectSwitcher', () => {
     expect(screen.queryByRole('option')).not.toBeInTheDocument();
     expect(onSelect).not.toHaveBeenCalled();
   });
+
+  /*
+   * The panel used minWidth: '14rem' — 224px against a 208px rail — so it
+   * always hung over the content beside the sidebar. It now follows the
+   * trigger's measured width.
+   */
+  it('sizes the panel from the trigger rather than a fixed 14rem', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Acme/ }));
+
+    const listbox = screen.getByRole('listbox');
+    expect(listbox).toBeInTheDocument();
+    // jsdom reports 0 for every measured box, so the assertion is on the
+    // STYLE the component asked for, which is what regressed.
+    expect(listbox.style.minWidth === '14rem').toBe(false);
+  });
+
+  /*
+   * Selection was conveyed by aria-selected alone: a sighted user could not
+   * tell which project was active. The icon matches SingleSelectMenuItem,
+   * the shared dropdown row this control cannot reuse (no avatar support).
+   */
+  it('marks the selected project visibly, not only for assistive tech', async () => {
+    const user = userEvent.setup();
+    renderWithTheme(
+      <ProjectSwitcher
+        projects={projects}
+        selectedProjectId="2"
+        onSelect={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Acme/ }));
+
+    // Two projects in the fixture, exactly one of them selected.
+    const marks = screen.getAllByTestId('project-switcher-selected');
+    expect(marks).toHaveLength(1);
+    const selectedRow = screen.getByRole('option', { name: /Acme/ });
+    expect(selectedRow).toContainElement(marks[0] ?? null);
+  });
 });
