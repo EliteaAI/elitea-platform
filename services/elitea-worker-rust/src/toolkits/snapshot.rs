@@ -171,6 +171,21 @@ impl<'a> AdmittedToolSnapshot<'a> {
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &FrozenToolReference<'a>> {
         self.references.iter()
     }
+
+    /// Retain only toolkit aliases selected by an admitted pipeline node.
+    ///
+    /// This is an authority reduction: unconnected toolkit credentials never
+    /// reach family materialization merely because they exist on the frozen
+    /// application version.
+    #[must_use]
+    pub(crate) fn retain_toolkit_names(
+        mut self,
+        aliases: &std::collections::BTreeSet<String>,
+    ) -> Self {
+        self.references
+            .retain(|reference| aliases.contains(reference.toolkit_name()));
+        self
+    }
 }
 
 /// One frozen configured, MCP, or nested-application reference.

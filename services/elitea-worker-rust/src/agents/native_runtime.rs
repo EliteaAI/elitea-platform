@@ -106,10 +106,20 @@ impl NativeRuntimeAssembler<OrdinaryNativeAgentAssembler, PipelineNativeAgentAss
         session_limits: SessionLimits,
         checkpoint_limits: CheckpointLimits,
     ) -> Self {
-        let direct = OrdinaryNativeAgentAssembler::new(platform, model_facade, tool_policy)
-            .with_postgres_sessions(pool.clone(), session_limits);
-        let pipeline =
-            PipelineNativeAgentAssembler::postgres(pool, session_limits, checkpoint_limits);
+        let direct = OrdinaryNativeAgentAssembler::new(
+            Arc::clone(&platform),
+            Arc::clone(&model_facade),
+            Arc::clone(&tool_policy),
+        )
+        .with_postgres_sessions(pool.clone(), session_limits);
+        let pipeline = PipelineNativeAgentAssembler::postgres(
+            pool,
+            session_limits,
+            checkpoint_limits,
+            tool_policy,
+            platform,
+            model_facade,
+        );
         Self::new(direct, pipeline)
     }
 }

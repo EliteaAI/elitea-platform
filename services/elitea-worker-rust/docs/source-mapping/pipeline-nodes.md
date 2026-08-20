@@ -27,7 +27,7 @@ accepted by `create_graph`.
 | `custom` | An editor placeholder whose current SDK execution rejects the node. Preserve that rejection until a concrete typed extension contract exists; it is not a hidden arbitrary-class escape hatch. Implemented rejection |
 | `decision` | Ask a model to select one declared route. Compile to a bounded model-backed ADK node plus validated `goto`; model/project authority remains claim-bound. Pending |
 | `hitl` | Pause the graph with structured data and resume the exact private checkpoint by a fresh `interrupt_id`. It is distinct from sensitive-tool confirmation and has no tool-call ID. Implemented capability-disabled |
-| `llm` | Build a native ADK `LlmAgent` for the node. The node receives only its UI-connected `tool_names`: resolve those names against the claim-authorized toolkit/MCP/application inventory and reject every missing or extra name. It must not inherit the ad-hoc agent's wider tool universe. Nested sensitive-tool/MCP pauses must bind the inner call ID and child session/checkpoint to the outer graph interrupt. Pending next runtime slice |
+| `llm` | Build an invocation-owned native ADK `LlmAgent` for the node. The node receives only its UI-connected `tool_names`; an empty selection grants no tools. Alias, policy and frozen configured-selection checks happen before credential redemption; exact dynamic MCP/configured catalog resolution finishes after authorized materialization but before model dispatch. Application references are rejected because the current UI does not expose them on this node. Implemented capability-disabled; sensitive/blocked tools and resumable MCP authorization remain fail-closed until inner call identity can be joined to the outer graph checkpoint. |
 | `mcp` | Execute the selected MCP tool with its declared state mapping. OAuth/on-demand authorization and sensitive policy remain invocation-bound. Pending |
 | `printer` | Publish the declared state value, durably pause after it where configured, then clear the printer marker without duplicating browser output. Pending |
 | `router` | Render bounded configured routes from state and choose only a declared target. Pending |
@@ -44,7 +44,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 
 | Python source branch / symbol | Current observable behavior | Rust target | ADK-Rust 2.0.0 use | Status / deliberate deviation |
 | --- | --- | --- | --- | --- |
-| `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl` and `state_modifier`. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
+| `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml,llm}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl`, `state_modifier` and `llm`. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order and LLM-node mapping/tool/output settings. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
 | Node types `function`, `toolkit`, `mcp` -> `FunctionTool` | Map selected state inputs to one direct tool and project declared outputs | `src/agents/graph/nodes/direct_tool.rs`, `src/toolkits/registry.rs` | ADK `Tool` and `Toolset` | Planned; workload credentials and sensitive policy remain Elitea-owned |
 | Node type `tool` -> `ToolNode` | Direct selected-tool execution with structured-output option | `src/agents/graph/nodes/tool.rs` | ADK typed tool | Planned |
 | Node type `loop` -> `LoopNode` | Repeated tool work and declared state projection | `src/agents/graph/nodes/loop.rs` | ADK loop and graph primitives where semantics match | Planned; ADK's sequential `LoopNodeConfig.parallel` is not true parallelism |
@@ -53,7 +53,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 | Node type `agent` -> `FunctionTool(Application)` | Invoke a selected saved application as a node | `src/agents/graph/nodes/application.rs` | ADK child agent/session | Planned; distinct from durable subagent fan-out |
 | Node types `subgraph`, `pipeline` in the direct-tool branch | Python explicitly rejects these paths and tells callers to use `agent` | `src/agents/graph/nodes/subgraph.rs` only after an admitted contract exists | ADK child `CompiledGraph` | Dead Python code is not copied. A future subgraph feature needs explicit state/checkpoint mapping |
 | Node type `code` -> sandbox `FunctionTool` | Execute editor-authored code with network-enabled Python sandbox | Separate code-execution plan and external isolation boundary | ADK action/code shape may inform the adapter | Intentionally not implemented in-process; filesystem, network, CPU/memory and artifact policy are prerequisites |
-| Node type `llm` -> `LLMNode` | Model call using only the UI-connected `tool_names`, plus lazy auth/control helpers needed by those selected capabilities | `src/agents/graph/nodes/llm.rs`, `src/agents/assembly.rs` | Nested ADK `LlmAgent`, model and one compiler-restricted `Toolset` | Planned next. Unlike ad-hoc execution, an empty or missing node selection must follow the stored pipeline contract and must not grant every claim-authorized tool. Provider routing and credentials materialize only after authorization; nested tool HITL retains inner call identity and outer checkpoint identity |
+| UI `LLMNode.jsx`, `useLLMInputMapping.js` and node type `llm` -> SDK `runtime/tools/llm.py::LLMNode` | Map fixed, state-variable or `{name}` template inputs into system/task/chat history; run the model with only the node's selected tool names; always append the final assistant message and optionally project native structured output into declared state keys | `src/agents/graph/llm.rs`, `src/agents/{pipeline,session}.rs`, `src/toolkits/snapshot.rs` | Invocation-owned nested ADK `LlmAgent`, native `output_schema` retry, exact compiler-restricted `Toolset`, ADK `Content`/`Part` conversion and normal state reducers | Implemented capability-disabled. Current dictionary-shaped `tool_names` is admitted strictly; empty aliases redeem no authority, missing/duplicate tools fail before model dispatch, and no selected sensitive/blocked tool can reach credential redemption until graph tool-confirmation is durable. Dynamic MCP catalogs necessarily resolve inside the authorized materialization phase. The checkpoint `messages` value remains a bounded JSON business channel, not a recreated LangChain class hierarchy. Text and text-block histories become separate ADK parts; unsupported multimodal/tool-result blocks fail rather than being stringified. Rust deliberately omits the Python custom runnable, second model coercion call, mutable wrapper state, hidden always-bound tools, history flattening and warning-and-skip behavior |
 | Node types `router`, `decision` | Select one configured route from state or model output | `src/agents/graph/nodes/router.rs` | ADK conditional edges and `NodeOutput::with_goto` | Planned |
 | Node type `state_modifier` -> `StateModifierNode` | Apply a declared template, project the first output to the existing state type and clear selected variables | `src/agents/graph/{state_modifier,compiler}.rs` | ADK custom `Node`, state channels and ordinary edges | Implemented capability-disabled. MiniJinja execution is fuel-bounded; source/template/regex/variable counts and serialized result are bounded. `from_json`, `base64_to_string`, `split_by_words` and `split_by_regex` match the active SDK filter surface. Fresh state descriptors/defaults are admitted and resume state wins without reseeding semantic input. `END` remains only a graph sink; when this value-producing node explicitly routes there, its first output becomes a separate public-result candidate projected as one normal browser model turn. Private graph state is never serialized wholesale |
 | Node type `printer` plus reset node | Publish printer output, pause after it, then clear its marker | `src/agents/graph/nodes/printer.rs`, `src/agents/hitl.rs` | ADK event plus checkpointed interrupt | Planned; output must pass through `NodeEventV1` and durable ACK |
@@ -85,16 +85,19 @@ an unreviewed `ActionNodeConfig` pass-through.
 
 ## Initial active-node compiler slices
 
-`PipelineDefinition::from_yaml` now admits a complete frozen pipeline document,
-but only when every executable node is a bounded dynamic `hitl` or
-`state_modifier` node.
+`PipelineDefinition::from_yaml` now admits a complete frozen pipeline document
+when every executable node is a bounded dynamic `hitl`, `state_modifier` or
+`llm` node. An LLM-bearing document can compile only when the assembler supplies
+the invocation-owned node factory; a pure/control graph never redeems model or
+tool authority.
 `AuthorizedNativeAssembly::admit_pipeline` selects only a frozen application
 whose `version_details.agent_type` is `pipeline`, validates the complete YAML
 before PAT, model, tool or state construction, and retains the claim-bound
-runtime/session authorities for the graph assembler. It rejects direct agents,
-configured top-level tools and every unsupported node rather than falling
-through to the ordinary `LlmAgent` path. A future pipeline LLM node will receive
-its own compiler-restricted node toolset; this is not the ad-hoc binding rule.
+runtime/session authorities for the graph assembler. It rejects direct agents
+and every unsupported node rather than falling through to the ordinary
+`LlmAgent` path. Frozen top-level tool references remain only an inventory:
+each pipeline LLM node authority-reduces it to its own compiler-selected aliases
+and concrete names; this is not the ad-hoc binding rule.
 
 It derives typed state defaults and channels, builds `START -> entry_point`,
 registers every node, validates all action/transition targets and compiles an
@@ -111,7 +114,10 @@ node/static-interrupt documents. It also runs active UI-shaped state/default
 YAML through the real Runner, covers the four template filters, typed output,
 cleaning, exact serialized bound and stable digest, and proves native message
 append, terminal-data precedence, assistant-message selection and deterministic
-zero-LLM state fallback. Reducer fixtures cover HITL append/clear and parallel
+zero-LLM state fallback. LLM fixtures cover current UI mapping, legacy messages
+input, bounded text blocks, exact selected-tool order, structured and plain
+state projection, missing-tool rejection and a real compiled graph checkpoint.
+Reducer fixtures cover HITL append/clear and parallel
 task merge/clear semantics. Admission fixtures prove the stored
 application selector, graph-decision identity and fail-closed tool/node
 boundary. The assembler e2e consumes one state grant, pauses, projects a browser
@@ -127,6 +133,27 @@ while the pseudonymous ADK session ID is the private checkpoint thread and the
 interrupt-digest input. The Runner-required resume marker is persisted only in
 the private session lineage; the graph input mapper does not turn it into
 `input` or `messages`.
+
+## Native LLM-node boundary
+
+The graph `messages` channel is retained because it is observable pipeline
+state, is part of the checkpoint, and participates in current UI/result
+behavior. It is canonical JSON with the ADK append reducer; it is not a Rust
+copy of LangChain message classes or runnable control flow. At execution time
+the node converts admitted text history into ADK `Content`/`Part` values and
+converts the terminal model text back into the declared state projection.
+
+The native ADK agent owns the model/tool loop, tool-call correlation and
+structured-schema retry. Elitea owns only the frozen YAML mapping, exact node
+tool authority, state type validation and result projection. In particular,
+Rust does not port `llm.py`'s per-call custom graph/runnable, its fallback second
+model call for output coercion, mutable client/wrapper state, implicit hidden
+tools, string-flattened history or warning-and-skip treatment of missing tools.
+Those patterns either duplicate ADK behavior or weaken authority and restart
+semantics. The remaining deliberate gate is mid-node durable tool/MCP
+authorization: selected sensitive or blocked tools are rejected before
+redemption until the inner ADK call ID can resume through the outer graph
+checkpoint without provider replanning.
 
 `START` and `END` remain only the graph's entry and sink sentinels. Public
 result selection is a separate policy matching the current SDK's business

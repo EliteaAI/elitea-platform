@@ -2,12 +2,15 @@ use std::sync::Arc;
 
 use adk_rust::graph::{Checkpointer, MemoryCheckpointer};
 use adk_rust::session::{InMemorySessionService, SessionService};
+use adk_rust::tool::{BasicToolset, SimpleToolContext};
+use adk_rust::{Tool, ToolContext, Toolset};
+use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use serde_json::{Value, json};
 
 use super::assembly_tests::ordinary_request;
 use super::events::pipeline_hitl_event_binding;
-use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler};
+use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, StrictNodeToolset};
 use super::request::AgentExecutionKind;
 use super::runtime::{
     AuthorizedNativeAssembly, NativeAgentAssembler, NativeAgentAssemblyErrorCode,
@@ -17,6 +20,7 @@ use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
+use crate::toolkits::ToolAdmissionPolicy;
 
 const PIPELINE: &str = r"
 state:
@@ -63,6 +67,52 @@ fn pipeline_request() -> super::request::AgentExecutionRequest {
     version.insert("agent_type".to_owned(), json!("pipeline"));
     version.insert("instructions".to_owned(), json!(PIPELINE));
     request
+}
+
+fn llm_pipeline_request(
+    toolkit_alias: &str,
+    configured_tools: &[&str],
+    node_tools: &[&str],
+) -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    let tool_names = node_tools
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let definition = format!(
+        "state:\n  answer: str\n  messages: list\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    output: [answer, messages]\n    tool_names:\n      {toolkit_alias}: [{tool_names}]\n    transition: END\n"
+    );
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert("instructions".to_owned(), json!(definition));
+    version.insert(
+        "tools".to_owned(),
+        json!([{
+            "id": 91,
+            "type": "gitlab_org",
+            "toolkit_name": "release_repository",
+            "settings": {
+                "gitlab_configuration": {
+                    "url": "https://gitlab.example.invalid",
+                    "private_token": "claim-materialized-token"
+                },
+                "repositories": "group/project",
+                "branch": "main",
+                "selected_tools": configured_tools
+            }
+        }]),
+    );
+    request
+}
+
+fn runtime_tool_policy(value: &Value) -> ToolAdmissionPolicy {
+    let runtime = value.as_object().expect("runtime policy object");
+    ToolAdmissionPolicy::from_runtime_config(runtime).expect("runtime tool policy")
 }
 
 fn authorized(request: &super::request::AgentExecutionRequest) -> AuthorizedNativeAssembly<'_> {
@@ -171,7 +221,7 @@ fn pipeline_hitl_resume_uses_the_graph_decision_contract_not_tool_confirmation()
 }
 
 #[test]
-fn pipeline_tools_and_unimplemented_nodes_fail_before_runtime_construction() {
+fn malformed_pipeline_tools_fail_and_llm_yaml_is_admitted_without_authority() {
     let mut with_tools = pipeline_request();
     with_tools
         .payload
@@ -181,10 +231,7 @@ fn pipeline_tools_and_unimplemented_nodes_fail_before_runtime_construction() {
         .expect("application version fixture")
         .insert("tools".to_owned(), json!([{"type": "github"}]));
     let error = admission_error(authorized(&with_tools).admit_pipeline());
-    assert_eq!(
-        error.code(),
-        NativeAgentAssemblyErrorCode::UnsupportedCapability
-    );
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
 
     let mut llm_node = pipeline_request();
     llm_node
@@ -197,11 +244,128 @@ fn pipeline_tools_and_unimplemented_nodes_fail_before_runtime_construction() {
             "instructions".to_owned(),
             json!("entry_point: draft\nnodes:\n  - id: draft\n    type: llm\n"),
         );
-    let error = admission_error(authorized(&llm_node).admit_pipeline());
-    assert_eq!(
-        error.code(),
-        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    let admitted = authorized(&llm_node)
+        .admit_pipeline()
+        .expect("authority-free LLM definition admission");
+    assert_eq!(admitted.profile().definition().node_count(), 1);
+}
+
+#[test]
+fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
+    let allowed = llm_pipeline_request(
+        "release_repository",
+        &["list_branches_in_repo"],
+        &["list_branches_in_repo"],
     );
+    let empty_policy = runtime_tool_policy(&json!({}));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&empty_policy)
+        .expect("exact frozen LLM tool scope");
+
+    let unknown_alias = llm_pipeline_request(
+        "other_repository",
+        &["list_branches_in_repo"],
+        &["list_branches_in_repo"],
+    );
+    let error =
+        admission_error(authorized(&unknown_alias).admit_pipeline_with_policy(&empty_policy));
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+
+    let outside_selection = llm_pipeline_request(
+        "release_repository",
+        &["get_issues"],
+        &["list_branches_in_repo"],
+    );
+    let error =
+        admission_error(authorized(&outside_selection).admit_pipeline_with_policy(&empty_policy));
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+
+    for policy in [
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"blocked_toolkits": ["gitlab_org"]}
+        })),
+        runtime_tool_policy(&json!({
+            "toolkit_security": {
+                "blocked_tools": {"gitlab_org": ["list_branches_in_repo"]}
+            }
+        })),
+        runtime_tool_policy(&json!({
+            "toolkit_security": {
+                "sensitive_tools": {"gitlab_org": ["list_branches_in_repo"]}
+            }
+        })),
+    ] {
+        let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&policy));
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
+}
+
+struct NamedReadTool(&'static str);
+
+#[async_trait]
+impl Tool for NamedReadTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn description(&self) -> &'static str {
+        "pipeline tool selection fixture"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        _arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        Ok(json!({"ok": true}))
+    }
+}
+
+#[tokio::test]
+async fn node_toolset_exposes_only_exact_selected_names_in_declared_order() {
+    let available: Arc<dyn Toolset> = Arc::new(BasicToolset::new(
+        "release_repository",
+        vec![
+            Arc::new(NamedReadTool("get_issues")),
+            Arc::new(NamedReadTool("list_branches_in_repo")),
+            Arc::new(NamedReadTool("get_issue")),
+        ],
+    ));
+    let context = Arc::new(SimpleToolContext::new("pipeline-toolset-test"));
+    let selected = StrictNodeToolset::new(
+        "release_repository",
+        available,
+        &["get_issue".to_owned(), "get_issues".to_owned()],
+    );
+    let tools = selected
+        .tools(context.clone())
+        .await
+        .expect("exact selected toolset");
+    assert_eq!(
+        tools.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
+        ["get_issue", "get_issues"]
+    );
+
+    let missing = StrictNodeToolset::new(
+        "release_repository",
+        Arc::new(BasicToolset::new(
+            "release_repository",
+            vec![Arc::new(NamedReadTool("get_issues"))],
+        )),
+        &["not_available".to_owned()],
+    );
+    assert!(missing.tools(context).await.is_err());
 }
 
 #[tokio::test]

@@ -11,6 +11,9 @@ mod compiler_tests;
 mod hitl;
 #[cfg(test)]
 mod hitl_tests;
+mod llm;
+#[cfg(test)]
+mod llm_tests;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;
@@ -23,6 +26,9 @@ mod yaml;
 pub(crate) use agent::{
     EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
     PIPELINE_COMPLETED_METADATA_VALUE, pipeline_completed_event, pipeline_result_event,
+};
+pub(crate) use llm::{
+    LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,
 };
 
 pub use yaml::{

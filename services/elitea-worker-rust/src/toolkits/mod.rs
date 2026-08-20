@@ -22,7 +22,7 @@ pub(crate) use mcp::{
     AdkHttpMcpConnector, McpConnector, McpMaterializationError, McpMaterializationErrorCode,
     materialize_mcp_toolsets,
 };
-pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionPolicy};
+pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy};
 pub(crate) use snapshot::{
     AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotError,
     FrozenToolSnapshotErrorCode,

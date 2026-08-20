@@ -21,6 +21,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
+use super::llm::{LlmNode, LlmNodeDefinition, LlmToolkitSelection, PipelineLlmAgentFactory};
 use super::resume::PipelineResume;
 use super::state_modifier::{StateModifierNode, StateModifierNodeDefinition};
 use super::yaml::{valid_graph_id, valid_output_key};
@@ -202,6 +203,7 @@ pub(crate) struct PipelineDefinition {
 #[derive(Clone)]
 enum PipelineNodeDefinition {
     Hitl(HitlNodeDefinition),
+    Llm(LlmNodeDefinition),
     StateModifier(StateModifierNodeDefinition),
 }
 
@@ -209,6 +211,7 @@ impl PipelineNodeDefinition {
     fn id(&self) -> &str {
         match self {
             Self::Hitl(node) => node.id(),
+            Self::Llm(node) => node.id(),
             Self::StateModifier(node) => node.id(),
         }
     }
@@ -216,6 +219,7 @@ impl PipelineNodeDefinition {
     fn input_keys(&self) -> &[String] {
         match self {
             Self::Hitl(node) => node.input_keys(),
+            Self::Llm(node) => node.input_keys(),
             Self::StateModifier(node) => node.input_keys(),
         }
     }
@@ -223,13 +227,14 @@ impl PipelineNodeDefinition {
     fn output_keys(&self) -> &[String] {
         match self {
             Self::Hitl(_) => &[],
+            Self::Llm(node) => node.output_keys(),
             Self::StateModifier(node) => node.output_keys(),
         }
     }
 
     fn cleaned_keys(&self) -> &[String] {
         match self {
-            Self::Hitl(_) => &[],
+            Self::Hitl(_) | Self::Llm(_) => &[],
             Self::StateModifier(node) => node.variables_to_clean(),
         }
     }
@@ -237,13 +242,14 @@ impl PipelineNodeDefinition {
     fn edit_state_key(&self) -> Option<&str> {
         match self {
             Self::Hitl(node) => node.edit_state_key(),
-            Self::StateModifier(_) => None,
+            Self::Llm(_) | Self::StateModifier(_) => None,
         }
     }
 
     fn route_targets(&self) -> Vec<&str> {
         match self {
             Self::Hitl(node) => node.route_targets().collect(),
+            Self::Llm(node) => node.transition().into_iter().collect(),
             Self::StateModifier(node) => node.transition().into_iter().collect(),
         }
     }
@@ -251,6 +257,7 @@ impl PipelineNodeDefinition {
     fn config_digest(&self) -> [u8; 32] {
         match self {
             Self::Hitl(node) => node.config_digest(),
+            Self::Llm(node) => node.config_digest(),
             Self::StateModifier(node) => node.config_digest(),
         }
     }
@@ -285,58 +292,7 @@ impl PipelineDefinition {
             ));
         }
 
-        let mut nodes = Vec::with_capacity(raw.nodes.len());
-        let mut node_ids = BTreeSet::new();
-        for raw_node in raw.nodes {
-            let node_type = yaml_string_field(&raw_node, "type")?;
-            let encoded = serde_yaml_ng::to_string(&raw_node)
-                .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
-            let node = match node_type {
-                "hitl" => {
-                    PipelineNodeDefinition::Hitl(HitlNodeDefinition::from_yaml(&encoded).map_err(
-                        |_| PipelineConfigurationError::Invalid("a HITL node is invalid"),
-                    )?)
-                }
-                "state_modifier" => PipelineNodeDefinition::StateModifier(
-                    StateModifierNodeDefinition::from_yaml(&encoded).map_err(|_| {
-                        PipelineConfigurationError::Invalid("a state modifier node is invalid")
-                    })?,
-                ),
-                _ => {
-                    return Err(PipelineConfigurationError::Unsupported(
-                        "the pipeline contains a node type that is not enabled",
-                    ));
-                }
-            };
-            if !node_ids.insert(node.id().to_owned()) {
-                return Err(PipelineConfigurationError::Invalid(
-                    "pipeline node identifiers must be unique",
-                ));
-            }
-            for key in node.input_keys() {
-                if !builtin_state_key(key) && !state.contains_key(key) {
-                    return Err(PipelineConfigurationError::Invalid(
-                        "a HITL input key is not declared in pipeline state",
-                    ));
-                }
-            }
-            for key in node.output_keys().iter().chain(node.cleaned_keys()) {
-                if !builtin_state_key(key) && !state.contains_key(key) {
-                    return Err(PipelineConfigurationError::Invalid(
-                        "a state modifier output or clean key is not declared in pipeline state",
-                    ));
-                }
-            }
-            if node
-                .edit_state_key()
-                .is_some_and(|key| !state.contains_key(key))
-            {
-                return Err(PipelineConfigurationError::Invalid(
-                    "the HITL edit key is not declared in pipeline state",
-                ));
-            }
-            nodes.push(node);
-        }
+        let (nodes, node_ids) = parse_pipeline_nodes(raw.nodes, &state)?;
         if !node_ids.contains(&raw.entry_point) {
             return Err(PipelineConfigurationError::Invalid(
                 "the pipeline entry point does not name a node",
@@ -383,12 +339,45 @@ impl PipelineDefinition {
         self.definition_digest
     }
 
+    /// Exact node-scoped toolkit selections, retained without credentials.
+    pub(crate) fn llm_tool_selections(&self) -> impl Iterator<Item = &LlmToolkitSelection> {
+        self.nodes.iter().flat_map(|node| match node {
+            PipelineNodeDefinition::Llm(node) => node.tool_selections(),
+            PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::StateModifier(_) => &[],
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn has_llm_nodes(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| matches!(node, PipelineNodeDefinition::Llm(_)))
+    }
+
+    pub(crate) fn llm_toolkit_aliases(&self) -> BTreeSet<String> {
+        self.llm_tool_selections()
+            .map(|selection| selection.alias().to_owned())
+            .collect()
+    }
+
     /// Compile this immutable definition into one invocation-owned graph agent.
     pub(crate) fn compile(
         &self,
         agent_name: &str,
         checkpointer: Arc<dyn Checkpointer>,
         resume: Option<PipelineResume>,
+    ) -> Result<GraphAgent, PipelineConfigurationError> {
+        self.compile_with_llm_runtime(agent_name, checkpointer, resume, None)
+    }
+
+    /// Compile with the invocation-owned model/tool factory required by LLM
+    /// nodes. Pure/control graphs keep using [`Self::compile`].
+    pub(crate) fn compile_with_llm_runtime(
+        &self,
+        agent_name: &str,
+        checkpointer: Arc<dyn Checkpointer>,
+        resume: Option<PipelineResume>,
+        llm_factory: Option<&Arc<dyn PipelineLlmAgentFactory>>,
     ) -> Result<GraphAgent, PipelineConfigurationError> {
         if !valid_graph_id(agent_name) {
             return Err(PipelineConfigurationError::Invalid(
@@ -436,6 +425,26 @@ impl PipelineDefinition {
         for node in &self.nodes {
             builder = match node {
                 PipelineNodeDefinition::Hitl(node) => builder.node(HitlNode::new(node.clone())),
+                PipelineNodeDefinition::Llm(node) => {
+                    let Some(factory) = llm_factory.cloned() else {
+                        return Err(PipelineConfigurationError::Unsupported(
+                            "the pipeline LLM runtime is not bound to this compiler",
+                        ));
+                    };
+                    let transition = node.transition().map(ToOwned::to_owned);
+                    let node_id = node.id().to_owned();
+                    let mut next =
+                        builder.node(LlmNode::new(node.clone(), self.state.clone(), factory));
+                    if let Some(transition) = transition {
+                        let target = if transition == "END" {
+                            END
+                        } else {
+                            transition.as_str()
+                        };
+                        next = next.edge(&node_id, target);
+                    }
+                    next
+                }
                 PipelineNodeDefinition::StateModifier(node) => {
                     let transition = node.transition().map(ToOwned::to_owned);
                     let node_id = node.id().to_owned();
@@ -520,13 +529,17 @@ impl PipelineDefinition {
     fn result_policy(&self) -> PipelineResultPolicy {
         let mut keys = Vec::new();
         for node in &self.nodes {
-            let PipelineNodeDefinition::StateModifier(node) = node else {
-                continue;
+            let (transition, output_keys) = match node {
+                PipelineNodeDefinition::Llm(node) => (node.transition(), node.output_keys()),
+                PipelineNodeDefinition::StateModifier(node) => {
+                    (node.transition(), node.output_keys())
+                }
+                PipelineNodeDefinition::Hitl(_) => continue,
             };
-            if node.transition() != Some("END") {
+            if transition != Some("END") {
                 continue;
             }
-            if let Some(key) = node.output_keys().first()
+            if let Some(key) = output_keys.iter().find(|key| key.as_str() != "messages")
                 && !internal_result_key(key)
                 && !keys.contains(key)
             {
@@ -701,6 +714,91 @@ fn invocation_state(
     state
 }
 
+fn parse_pipeline_nodes(
+    raw_nodes: Vec<serde_yaml_ng::Value>,
+    state: &BTreeMap<String, String>,
+) -> Result<(Vec<PipelineNodeDefinition>, BTreeSet<String>), PipelineConfigurationError> {
+    let mut nodes = Vec::with_capacity(raw_nodes.len());
+    let mut node_ids = BTreeSet::new();
+    for raw_node in raw_nodes {
+        let node = parse_pipeline_node(&raw_node)?;
+        if !node_ids.insert(node.id().to_owned()) {
+            return Err(PipelineConfigurationError::Invalid(
+                "pipeline node identifiers must be unique",
+            ));
+        }
+        validate_node_state(&node, state)?;
+        nodes.push(node);
+    }
+    Ok((nodes, node_ids))
+}
+
+fn parse_pipeline_node(
+    raw_node: &serde_yaml_ng::Value,
+) -> Result<PipelineNodeDefinition, PipelineConfigurationError> {
+    let node_type = yaml_string_field(raw_node, "type")?;
+    let encoded = serde_yaml_ng::to_string(raw_node)
+        .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
+    match node_type {
+        "hitl" => HitlNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Hitl)
+            .map_err(|_| PipelineConfigurationError::Invalid("a HITL node is invalid")),
+        "llm" => LlmNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Llm)
+            .map_err(|_| PipelineConfigurationError::Invalid("an LLM node is invalid")),
+        "state_modifier" => StateModifierNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::StateModifier)
+            .map_err(|_| PipelineConfigurationError::Invalid("a state modifier node is invalid")),
+        _ => Err(PipelineConfigurationError::Unsupported(
+            "the pipeline contains a node type that is not enabled",
+        )),
+    }
+}
+
+fn validate_node_state(
+    node: &PipelineNodeDefinition,
+    state: &BTreeMap<String, String>,
+) -> Result<(), PipelineConfigurationError> {
+    for key in node.input_keys() {
+        if !builtin_state_key(key) && !state.contains_key(key) {
+            return Err(PipelineConfigurationError::Invalid(
+                "a node input key is not declared in pipeline state",
+            ));
+        }
+    }
+    for key in node.output_keys().iter().chain(node.cleaned_keys()) {
+        if !builtin_state_key(key) && !state.contains_key(key) {
+            return Err(PipelineConfigurationError::Invalid(
+                "a node output or clean key is not declared in pipeline state",
+            ));
+        }
+    }
+    if let PipelineNodeDefinition::Llm(node) = node {
+        node.output_schema(state).map_err(|_| {
+            PipelineConfigurationError::Invalid("an LLM node output schema is invalid")
+        })?;
+        for mapping in node.input_mapping().values() {
+            if let super::llm::LlmInputMapping::Variable(key) = mapping
+                && !builtin_state_key(key)
+                && !state.contains_key(key)
+            {
+                return Err(PipelineConfigurationError::Invalid(
+                    "an LLM input mapping variable is not declared in pipeline state",
+                ));
+            }
+        }
+    }
+    if node
+        .edit_state_key()
+        .is_some_and(|key| !state.contains_key(key))
+    {
+        return Err(PipelineConfigurationError::Invalid(
+            "the HITL edit key is not declared in pipeline state",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_state(
     raw: serde_yaml_ng::Mapping,
 ) -> Result<ValidatedState, PipelineConfigurationError> {
@@ -862,6 +960,7 @@ fn definition_digest(
         digest_field(&mut context, node.id().as_bytes());
         let kind = match node {
             PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
+            PipelineNodeDefinition::Llm(_) => b"llm".as_slice(),
             PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),
         };
         digest_field(&mut context, kind);

@@ -85,10 +85,14 @@ impl OrdinaryNoToolProfile {
             CommonProfileMode::Fresh
         };
         let common = validate_common_profile(request, mode)?;
-        if request.kind != AgentExecutionKind::Application || !request.payload.tools.is_empty() {
+        if request.kind != AgentExecutionKind::Application {
             return Err(unsupported_profile());
         }
-        let model = application_model_for_agent_type(request, "pipeline", true)?;
+        // Pipeline LLM nodes bind only the exact aliases selected in YAML.
+        // The complete frozen toolkit list is therefore valid here; authority
+        // reduction and blocked/sensitive admission happen before any client
+        // or credential can be materialized.
+        let model = application_model_for_agent_type(request, "pipeline")?;
         Ok(Self {
             kind: request.kind,
             instructions: model.instructions,
@@ -406,13 +410,12 @@ fn current_text_history_message(value: &Value) -> Result<Content, NativeAgentAss
 fn application_model(
     request: &AgentExecutionRequest,
 ) -> Result<ValidatedModel, NativeAgentAssemblyError> {
-    application_model_for_agent_type(request, "agent", false)
+    application_model_for_agent_type(request, "agent")
 }
 
 fn application_model_for_agent_type(
     request: &AgentExecutionRequest,
     expected_agent_type: &str,
-    require_empty_tools: bool,
 ) -> Result<ValidatedModel, NativeAgentAssemblyError> {
     let version = request
         .payload
@@ -435,11 +438,7 @@ fn application_model_for_agent_type(
         Some(Value::String(_)) => return Err(unsupported_profile()),
         Some(_) | None => return Err(invalid_profile()),
     }
-    if require_empty_tools {
-        validate_empty_feature_array(version.get("tools"), true)?;
-    } else {
-        validate_feature_array(version.get("tools"), true)?;
-    }
+    validate_feature_array(version.get("tools"), true)?;
     validate_empty_feature_array(version.get("internal_tools"), false)?;
     validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;

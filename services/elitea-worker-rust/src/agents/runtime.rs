@@ -221,8 +221,9 @@ impl<'a> AuthorizedNativeAssembly<'a> {
     }
 
     /// Admit one frozen stored pipeline before provider or tool construction.
-    pub(crate) fn admit_pipeline(
+    pub(crate) fn admit_pipeline_with_policy(
         self,
+        policy: &ToolAdmissionPolicy,
     ) -> Result<AdmittedPipelineNativeAssembly<'a>, NativeAgentAssemblyError> {
         let has_continuation = has_continuation(self.request);
         let start = if has_continuation {
@@ -233,6 +234,10 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             PipelineNativeStart::Fresh
         };
         let profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
+        let frozen_toolsets =
+            FrozenToolSnapshot::from_request(self.request).map_err(tool_snapshot_error)?;
+        profile.validate_tool_snapshot(&frozen_toolsets, policy)?;
+        let toolsets = frozen_toolsets.apply_policy(policy);
         let plan = OrdinaryNativeAgentPlan::from_authorized_pipeline(
             self.request,
             profile.shell(),
@@ -246,8 +251,23 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             state_writer_lease: self.state_writer_lease,
             profile,
             plan,
+            toolsets,
             start,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admit_pipeline(
+        self,
+    ) -> Result<AdmittedPipelineNativeAssembly<'a>, NativeAgentAssemblyError> {
+        let policy =
+            ToolAdmissionPolicy::new(&[], &std::collections::BTreeMap::new()).map_err(|_| {
+                NativeAgentAssemblyError::new(
+                    NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                    "the native toolkit policy is invalid",
+                )
+            })?;
+        self.admit_pipeline_with_policy(&policy)
     }
 }
 
@@ -271,10 +291,11 @@ pub(crate) struct AdmittedPipelineNativeAssembly<'a> {
     state_writer_lease: Arc<dyn StateWriterLease>,
     profile: PipelineExecutionProfile,
     plan: OrdinaryNativeAgentPlan,
+    toolsets: AdmittedToolSnapshot<'a>,
     start: PipelineNativeStart,
 }
 
-impl AdmittedPipelineNativeAssembly<'_> {
+impl<'a> AdmittedPipelineNativeAssembly<'a> {
     #[must_use]
     pub(crate) const fn request(&self) -> &AgentExecutionRequest {
         self.request
@@ -296,6 +317,7 @@ impl AdmittedPipelineNativeAssembly<'_> {
     ) -> (
         PipelineExecutionProfile,
         OrdinaryNativeAgentPlan,
+        AdmittedToolSnapshot<'a>,
         PipelineNativeStart,
         ClaimBoundRuntimeContextAuthority,
         ClaimBoundSessionAuthority,
@@ -304,6 +326,7 @@ impl AdmittedPipelineNativeAssembly<'_> {
         (
             self.profile,
             self.plan,
+            self.toolsets,
             self.start,
             self.runtime_context,
             self.session,
