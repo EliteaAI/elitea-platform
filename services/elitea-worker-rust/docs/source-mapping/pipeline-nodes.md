@@ -44,7 +44,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 
 | Python source branch / symbol | Current observable behavior | Rust target | ADK-Rust 2.0.0 use | Status / deliberate deviation |
 | --- | --- | --- | --- | --- |
-| `create_graph`: YAML load, state creation, node loop, entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges | `src/agents/graph/{compiler,yaml}.rs` | `StateGraph`, state channels and reducers | Complete-document compiler implemented for dynamic `hitl` and `state_modifier`. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a canonical definition digest. Every other node family and static interrupt fails closed before execution authority is built |
+| `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl` and `state_modifier`. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
 | Node types `function`, `toolkit`, `mcp` -> `FunctionTool` | Map selected state inputs to one direct tool and project declared outputs | `src/agents/graph/nodes/direct_tool.rs`, `src/toolkits/registry.rs` | ADK `Tool` and `Toolset` | Planned; workload credentials and sensitive policy remain Elitea-owned |
 | Node type `tool` -> `ToolNode` | Direct selected-tool execution with structured-output option | `src/agents/graph/nodes/tool.rs` | ADK typed tool | Planned |
 | Node type `loop` -> `LoopNode` | Repeated tool work and declared state projection | `src/agents/graph/nodes/loop.rs` | ADK loop and graph primitives where semantics match | Planned; ADK's sequential `LoopNodeConfig.parallel` is not true parallelism |
@@ -62,6 +62,26 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 | `transition`, `decision`, `condition` edge blocks | Unconditional or conditional successor selection, including `END` | `src/agents/graph/compiler.rs`, future `src/agents/graph/edges.rs` | ADK edges and `goto` | HITL action routes plus state-modifier transitions and `END` are implemented and validated before graph construction. Decision/condition compilation remains planned |
 | `interrupt_before`, `interrupt_after`, printer successor analysis | Pause/resume at the current node or successor without false crash classification | `src/agents/graph/compiler.rs`, future static-interrupt adapter | ADK static interrupts/checkpoints | Explicitly rejected by the initial compiler. Exact browser projection, decision identity and restart semantics must be proven before activation |
 | `type: parallel` (absent in Python) | Bounded concurrent branch graphs, wait for all, declared-order result, fail after admitted siblings drain, crash-safe completed-branch reuse | `src/agents/graph/yaml.rs`, `src/agents/graph/parallel.rs`, `src/state/postgres_checkpointer/parallel_children.rs` | Custom ADK `Node`; separately checkpointed child `CompiledGraph` per branch | Core implemented. Full compiler plan construction remains. V1 rejects pausing branches and `wait: one`/`many` |
+
+## ADK action reuse boundary
+
+ADK Graph 2.0.0 already wraps `adk-action` configurations as graph nodes. The
+Elitea compiler should translate stored YAML into those actions where the
+business contract is genuinely the same, rather than duplicating their node
+executor. That does not make every action safe to expose:
+
+| ADK action pattern | Elitea YAML use | Disposition |
+| --- | --- | --- |
+| `Set` / `Transform` | State modifier and simple state projection | Reuse the reducer/mapping pattern. The current state modifier remains a small custom node because its four SDK filters, typed projection and cleaning contract are not the stock transform language |
+| `Switch` | Router and non-model decision edges | Candidate native executor after the Elitea route grammar, declared-target validation and default behavior are frozen; never accept an arbitrary action document directly from stored YAML |
+| `Loop` / `Merge` | Deprecated loop compatibility and future fan-in | Reuse only where iteration and merge semantics match. Durable true parallel children keep the existing Elitea checkpointed scheduler because action merge/wait does not own child execution or restart identity |
+| `Wait` / trigger | No active UI node today | Do not invent a visible capability. It may be used internally after deadline, cancellation and checkpoint semantics are specified |
+| File, code, HTTP, database, email and notification actions | Code node or provider effects | Do not enable directly. These require the existing claim-owned filesystem, sandbox, egress, credential, effect-receipt and resource boundaries; several upstream backends are placeholders or intentionally unrestricted |
+
+The crate currently enables ADK graph primitives without its optional broad
+`action` feature. A later node slice may enable only the needed adapter after
+the translation and authority tests exist; stored pipeline YAML never becomes
+an unreviewed `ActionNodeConfig` pass-through.
 
 ## Initial active-node compiler slices
 
@@ -89,8 +109,10 @@ through the real common `Runner` and injected `SessionService`, proves final
 completion and one-use decisions, and rejects stale identities and unsupported
 node/static-interrupt documents. It also runs active UI-shaped state/default
 YAML through the real Runner, covers the four template filters, typed output,
-cleaning, exact serialized bound and stable digest, and proves a selected public
-result projects as one closed browser model turn. Admission fixtures prove the stored
+cleaning, exact serialized bound and stable digest, and proves native message
+append, terminal-data precedence, assistant-message selection and deterministic
+zero-LLM state fallback. Reducer fixtures cover HITL append/clear and parallel
+task merge/clear semantics. Admission fixtures prove the stored
 application selector, graph-decision identity and fail-closed tool/node
 boundary. The assembler e2e consumes one state grant, pauses, projects a browser
 interrupt, resumes the exact private checkpoint and emits the normal terminal
@@ -106,19 +128,20 @@ interrupt-digest input. The Runner-required resume marker is persisted only in
 the private session lineage; the graph input mapper does not turn it into
 `input` or `messages`.
 
-`START` and `END` remain only the graph's entry and sink sentinels. A node whose
-declared route targets `END` is a predecessor of that sink; its business output
-is a separate concern. An all-HITL graph has no public result candidate, so Rust
-maps successful completion to the fixed bounded result `Pipeline completed.`.
-A `state_modifier` that explicitly routes to `END` contributes its first
-declared output as a candidate, encodes a structured value as compact JSON when
-needed and projects it through the normal browser model lifecycle. Branching
-router/decision nodes may later make a different value-producing predecessor
-the executed final node; their compiler slices must extend the candidate set,
-not reinterpret the `END` sentinel. No path serializes private graph state or
-reproduces the Python `output is None` fallback text. If the process stops after
-the Runner appends the continuation event but before the graph advances, exact
-suffix recovery still remains an activation gate.
+`START` and `END` remain only the graph's entry and sink sentinels. Public
+result selection is a separate policy matching the current SDK's business
+order: the last populated declared output of a value-producing terminal node
+wins; otherwise the last non-empty assistant message wins; otherwise the last
+non-empty user-declared state value in YAML declaration order is used. Runtime
+channels such as `messages`, context metadata, HITL decisions, parallel task
+records, printer/router markers and private resume state are never fallback
+results. An all-control graph with no candidate maps to the fixed bounded result
+`Pipeline completed.`. Structured state values use compact JSON, Claude-style
+text blocks omit thinking blocks, and the selected result is capped at 512 KiB.
+The declaration order is included in the definition digest because it affects
+the zero-LLM fallback. If the process stops after the Runner appends the
+continuation event but before the graph advances, exact suffix recovery still
+remains an activation gate.
 
 ## Parallel YAML v1
 

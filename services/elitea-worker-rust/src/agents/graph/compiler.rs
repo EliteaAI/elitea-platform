@@ -10,7 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use adk_rust::graph::{Checkpointer, END, GraphAgent, GraphError, START, State};
+use adk_rust::graph::{
+    Channel, Checkpointer, END, GraphAgent, GraphError, Reducer, START, State, StateSchema,
+};
 use adk_rust::{Event, InvocationContext, Part};
 use ring::digest;
 use serde::Deserialize;
@@ -29,12 +31,47 @@ const MAX_PIPELINE_NODES: usize = 128;
 const MAX_PIPELINE_STATE_KEYS: usize = 256;
 const MAX_STATIC_INTERRUPTS: usize = 128;
 const PIPELINE_RECURSION_LIMIT: usize = 100;
+const MAX_PIPELINE_RESULT_BYTES: usize = 512 * 1024;
 const PIPELINE_DIGEST_DOMAIN: &[u8] = b"elitea.graph.pipeline.config.v1\0";
 
 type ValidatedState = (
     BTreeMap<String, String>,
     BTreeMap<String, serde_json::Value>,
+    Vec<String>,
 );
+
+const RUNTIME_STRING_CHANNELS: &[&str] = &[
+    "input",
+    "output",
+    "result",
+    "router_output",
+    "elitea_response",
+    "printer_output",
+    "session_id",
+];
+
+const INTERNAL_RESULT_KEYS: &[&str] = &[
+    "messages",
+    "output",
+    "input",
+    "chat_history",
+    "thread_id",
+    "execution_finished",
+    "context_info",
+    "state_types",
+    "hitl_decisions",
+    "hitl_interrupt",
+    "parallel_tasks",
+    "parallel_parked",
+    "parallel_dispatch",
+    "dispatch_epoch",
+    "elitea_response",
+    "printer_output",
+    "router_output",
+    "_pipeline_blocked",
+    "session_id",
+    HITL_RESUME_STATE_KEY,
+];
 
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
@@ -72,7 +109,7 @@ impl RawStateType {
 #[serde(deny_unknown_fields)]
 struct RawPipelineDefinition {
     #[serde(default)]
-    state: BTreeMap<String, RawStateType>,
+    state: serde_yaml_ng::Mapping,
     entry_point: String,
     #[serde(deserialize_with = "deserialize_nodes")]
     nodes: Vec<serde_yaml_ng::Value>,
@@ -157,6 +194,7 @@ pub(crate) struct PipelineDefinition {
     entry_point: String,
     state: BTreeMap<String, String>,
     state_defaults: BTreeMap<String, serde_json::Value>,
+    state_declaration_order: Vec<String>,
     nodes: Vec<PipelineNodeDefinition>,
     definition_digest: [u8; 32],
 }
@@ -240,7 +278,7 @@ impl PipelineDefinition {
                 "the pipeline entry point is malformed",
             ));
         }
-        let (state, state_defaults) = validate_state(raw.state)?;
+        let (state, state_defaults, state_declaration_order) = validate_state(raw.state)?;
         if !raw.interrupt_before.is_empty() || !raw.interrupt_after.is_empty() {
             return Err(PipelineConfigurationError::Unsupported(
                 "static pipeline interrupts are not enabled in this compiler slice",
@@ -313,12 +351,18 @@ impl PipelineDefinition {
                 }
             }
         }
-        let definition_digest =
-            definition_digest(&raw.entry_point, &state, &state_defaults, &nodes);
+        let definition_digest = definition_digest(
+            &raw.entry_point,
+            &state,
+            &state_defaults,
+            &state_declaration_order,
+            &nodes,
+        );
         Ok(Self {
             entry_point: raw.entry_point,
             state,
             state_defaults,
+            state_declaration_order,
             nodes,
             definition_digest,
         })
@@ -356,6 +400,15 @@ impl PipelineDefinition {
             "messages".to_owned(),
             "output".to_owned(),
             "result".to_owned(),
+            "router_output".to_owned(),
+            "elitea_response".to_owned(),
+            "printer_output".to_owned(),
+            "state_types".to_owned(),
+            "context_info".to_owned(),
+            "hitl_decisions".to_owned(),
+            "hitl_interrupt".to_owned(),
+            "parallel_tasks".to_owned(),
+            "_pipeline_blocked".to_owned(),
             "session_id".to_owned(),
             HITL_RESUME_STATE_KEY.to_owned(),
         ]);
@@ -368,20 +421,17 @@ impl PipelineDefinition {
                 channels.insert(key.to_owned());
             }
         }
-        let channel_refs = channels.iter().map(String::as_str).collect::<Vec<_>>();
-        let public_result_keys = self.public_result_keys();
+        let state_schema = self.state_schema(channels);
+        let result_policy = self.result_policy();
         let mut builder = GraphAgent::builder(agent_name)
             .description("Elitea stored pipeline")
-            .channels(&channel_refs)
+            .state_schema(state_schema)
             .edge(START, &self.entry_point)
             .checkpointer_arc(checkpointer)
             .recursion_limit(PIPELINE_RECURSION_LIMIT)
             .max_concurrency(1)
             .output_mapper(move |state| {
-                vec![pipeline_completion_event_from_state(
-                    state,
-                    &public_result_keys,
-                )]
+                vec![pipeline_completion_event_from_state(state, &result_policy)]
             });
         for node in &self.nodes {
             builder = match node {
@@ -414,11 +464,60 @@ impl PipelineDefinition {
         builder.build().map_err(PipelineConfigurationError::Graph)
     }
 
-    /// Collect public result candidates separately from graph control flow.
+    /// Build the native ADK state schema for runtime-owned and user channels.
+    fn state_schema(&self, channels: BTreeSet<String>) -> StateSchema {
+        let mut schema = StateSchema::new();
+        for channel in channels {
+            let default = if channel == "state_types" {
+                self.state_types_default()
+            } else {
+                self.state_defaults
+                    .get(&channel)
+                    .cloned()
+                    .unwrap_or_else(|| runtime_channel_default(&channel))
+            };
+            schema.channels.insert(
+                channel.clone(),
+                Channel::new(&channel).with_default(default),
+            );
+        }
+        schema
+            .channels
+            .insert("messages".to_owned(), Channel::list("messages"));
+        schema.channels.insert(
+            "hitl_decisions".to_owned(),
+            Channel::new("hitl_decisions")
+                .with_default(json!([]))
+                .with_reducer(Reducer::Custom(Arc::new(append_or_clear_list))),
+        );
+        schema.channels.insert(
+            "parallel_tasks".to_owned(),
+            Channel::new("parallel_tasks")
+                .with_default(json!({}))
+                .with_reducer(Reducer::Custom(Arc::new(merge_or_clear_object))),
+        );
+        schema
+    }
+
+    fn state_types_default(&self) -> serde_json::Value {
+        let mut types = serde_json::Map::new();
+        for key in &self.state_declaration_order {
+            if key == "input" {
+                continue;
+            }
+            if let Some(kind) = self.state.get(key) {
+                types.insert(key.clone(), json!(kind));
+            }
+        }
+        types.insert("state_types".to_owned(), json!("dict"));
+        serde_json::Value::Object(types)
+    }
+
+    /// Collect result candidates separately from graph control flow.
     ///
     /// `END` is only the ADK graph sink. The candidate belongs to the
     /// value-producing node whose explicit route targets that sink.
-    fn public_result_keys(&self) -> Vec<String> {
+    fn result_policy(&self) -> PipelineResultPolicy {
         let mut keys = Vec::new();
         for node in &self.nodes {
             let PipelineNodeDefinition::StateModifier(node) = node else {
@@ -428,30 +527,144 @@ impl PipelineDefinition {
                 continue;
             }
             if let Some(key) = node.output_keys().first()
+                && !internal_result_key(key)
                 && !keys.contains(key)
             {
                 keys.push(key.clone());
             }
         }
-        keys
+        let fallback_keys = self
+            .state_declaration_order
+            .iter()
+            .filter(|key| !internal_result_key(key))
+            .cloned()
+            .collect();
+        PipelineResultPolicy {
+            terminal_data_keys: keys,
+            fallback_data_keys: fallback_keys,
+        }
     }
 }
 
-fn pipeline_completion_event_from_state(state: &State, public_result_keys: &[String]) -> Event {
-    for key in public_result_keys.iter().rev() {
-        let Some(value) = state.get(key) else {
-            continue;
-        };
-        let content = match value {
-            serde_json::Value::Null => String::new(),
-            serde_json::Value::String(value) => value.clone(),
-            value => serde_json::to_string(value).unwrap_or_default(),
-        };
-        if !content.trim().is_empty() {
-            return pipeline_result_event(&content);
-        }
+pub(super) struct PipelineResultPolicy {
+    pub(super) terminal_data_keys: Vec<String>,
+    pub(super) fallback_data_keys: Vec<String>,
+}
+
+fn pipeline_completion_event_from_state(state: &State, policy: &PipelineResultPolicy) -> Event {
+    if let Some(content) = select_pipeline_result(state, policy) {
+        return pipeline_result_event(&content);
     }
     pipeline_completed_event()
+}
+
+pub(super) fn select_pipeline_result(
+    state: &State,
+    policy: &PipelineResultPolicy,
+) -> Option<String> {
+    select_last_state_value(state, &policy.terminal_data_keys)
+        .or_else(|| select_last_assistant_message(state.get("messages")))
+        .or_else(|| select_last_state_value(state, &policy.fallback_data_keys))
+        .filter(|content| content.len() <= MAX_PIPELINE_RESULT_BYTES)
+}
+
+fn select_last_state_value(state: &State, keys: &[String]) -> Option<String> {
+    keys.iter()
+        .rev()
+        .filter_map(|key| state.get(key))
+        .filter_map(normalize_pipeline_value)
+        .find(|content| !content.trim().is_empty())
+}
+
+fn select_last_assistant_message(messages: Option<&serde_json::Value>) -> Option<String> {
+    messages?
+        .as_array()?
+        .iter()
+        .rev()
+        .filter(|message| {
+            matches!(
+                message.get("role").and_then(serde_json::Value::as_str),
+                Some("assistant" | "ai")
+            )
+        })
+        .filter_map(|message| message.get("content"))
+        .filter_map(normalize_pipeline_value)
+        .find(|content| !content.trim().is_empty())
+}
+
+fn normalize_pipeline_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(value) => Some(value.clone()),
+        serde_json::Value::Array(blocks) => {
+            let mut output = String::new();
+            for block in blocks {
+                match block {
+                    serde_json::Value::String(text) => output.push_str(text),
+                    serde_json::Value::Object(object)
+                        if object.get("type").is_none()
+                            || object.get("type").and_then(serde_json::Value::as_str)
+                                == Some("text") =>
+                    {
+                        if let Some(text) = object.get("text").and_then(serde_json::Value::as_str) {
+                            output.push_str(text);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(output)
+        }
+        value => serde_json::to_string(value).ok(),
+    }
+}
+
+pub(super) fn append_or_clear_list(
+    current: serde_json::Value,
+    update: serde_json::Value,
+) -> serde_json::Value {
+    if update.is_null() {
+        return json!([]);
+    }
+    let mut values = match current {
+        serde_json::Value::Array(values) => values,
+        _ => Vec::new(),
+    };
+    if let serde_json::Value::Array(update) = update {
+        values.extend(update);
+    }
+    serde_json::Value::Array(values)
+}
+
+pub(super) fn merge_or_clear_object(
+    current: serde_json::Value,
+    update: serde_json::Value,
+) -> serde_json::Value {
+    if update.is_null() {
+        return json!({});
+    }
+    let mut values = match current {
+        serde_json::Value::Object(values) => values,
+        _ => serde_json::Map::new(),
+    };
+    if let serde_json::Value::Object(update) = update {
+        values.extend(update);
+    }
+    serde_json::Value::Object(values)
+}
+
+fn runtime_channel_default(channel: &str) -> serde_json::Value {
+    match channel {
+        "messages" | "hitl_decisions" => json!([]),
+        "parallel_tasks" | "state_types" | HITL_RESUME_STATE_KEY => json!({}),
+        "context_info" | "hitl_interrupt" | "_pipeline_blocked" => serde_json::Value::Null,
+        channel if RUNTIME_STRING_CHANNELS.contains(&channel) => json!(""),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn internal_result_key(key: &str) -> bool {
+    INTERNAL_RESULT_KEYS.contains(&key)
 }
 
 fn invocation_state(
@@ -489,18 +702,24 @@ fn invocation_state(
 }
 
 fn validate_state(
-    raw: BTreeMap<String, RawStateType>,
+    raw: serde_yaml_ng::Mapping,
 ) -> Result<ValidatedState, PipelineConfigurationError> {
     if raw.len() > MAX_PIPELINE_STATE_KEYS {
         return Err(PipelineConfigurationError::ResourceExhausted);
     }
     let mut state = BTreeMap::new();
     let mut defaults = BTreeMap::new();
-    for (key, kind) in raw {
-        if !valid_output_key(&key)
-            || key == HITL_RESUME_STATE_KEY
-            || matches!(key.as_str(), "output" | "result" | "session_id")
-        {
+    let mut declaration_order = Vec::with_capacity(raw.len());
+    for (raw_key, raw_kind) in raw {
+        let Some(key) = raw_key.as_str().map(ToOwned::to_owned) else {
+            return Err(PipelineConfigurationError::Invalid(
+                "a pipeline state key must be a string",
+            ));
+        };
+        let kind = serde_yaml_ng::from_value::<RawStateType>(raw_kind).map_err(|_| {
+            PipelineConfigurationError::Invalid("a pipeline state type is malformed")
+        })?;
+        if !valid_output_key(&key) || reserved_user_state_key(&key) {
             return Err(PipelineConfigurationError::Invalid(
                 "a pipeline state key is malformed or reserved",
             ));
@@ -533,9 +752,10 @@ fn validate_state(
             ));
         }
         defaults.insert(key.clone(), value);
+        declaration_order.push(key.clone());
         state.insert(key, normalized.to_owned());
     }
-    Ok((state, defaults))
+    Ok((state, defaults, declaration_order))
 }
 
 fn default_state_value(kind: &str) -> serde_json::Value {
@@ -565,8 +785,43 @@ fn state_value_matches(kind: &str, value: &serde_json::Value) -> bool {
 fn builtin_state_key(key: &str) -> bool {
     matches!(
         key,
-        "input" | "messages" | "output" | "result" | "session_id"
+        "input"
+            | "messages"
+            | "output"
+            | "result"
+            | "router_output"
+            | "elitea_response"
+            | "printer_output"
+            | "state_types"
+            | "context_info"
+            | "hitl_decisions"
+            | "hitl_interrupt"
+            | "parallel_tasks"
+            | "_pipeline_blocked"
+            | "session_id"
     )
+}
+
+fn reserved_user_state_key(key: &str) -> bool {
+    key == HITL_RESUME_STATE_KEY
+        || matches!(
+            key,
+            "output"
+                | "result"
+                | "router_output"
+                | "elitea_response"
+                | "printer_output"
+                | "state_types"
+                | "context_info"
+                | "hitl_decisions"
+                | "hitl_interrupt"
+                | "parallel_tasks"
+                | "_pipeline_blocked"
+                | "session_id"
+                | "thread_id"
+                | "execution_finished"
+                | "chat_history"
+        )
 }
 
 fn yaml_string_field<'a>(
@@ -586,6 +841,7 @@ fn definition_digest(
     entry_point: &str,
     state: &BTreeMap<String, String>,
     state_defaults: &BTreeMap<String, serde_json::Value>,
+    state_declaration_order: &[String],
     nodes: &[PipelineNodeDefinition],
 ) -> [u8; 32] {
     let mut context = digest::Context::new(&digest::SHA256);
@@ -598,6 +854,9 @@ fn definition_digest(
             let encoded = serde_json::to_vec(value).unwrap_or_default();
             digest_field(&mut context, &encoded);
         }
+    }
+    for key in state_declaration_order {
+        digest_field(&mut context, key.as_bytes());
     }
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());

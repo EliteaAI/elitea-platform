@@ -9,7 +9,10 @@ use adk_rust::{Content, Event, Part, SessionId, UserId};
 use serde_json::{Map, json};
 
 use super::agent::EliteaGraphAgent;
-use super::compiler::PipelineDefinition;
+use super::compiler::{
+    PipelineDefinition, PipelineResultPolicy, append_or_clear_list, merge_or_clear_object,
+    select_pipeline_result,
+};
 use super::resume::{PipelineHitlDecision, PipelineResumeErrorCode};
 use crate::agents::events::pipeline_hitl_event_binding;
 use crate::agents::request::{AgentExecutionPayload, NextInputSuggestionPolicy, UserInput};
@@ -61,6 +64,23 @@ fn whole_pipeline_yaml_is_bounded_strict_and_digest_stable() {
         definition.definition_digest()
     );
 
+    let declaration_order_changes_fallback = PIPELINE.replace(
+        "state:\n  answer: string",
+        "state:\n  later: string\n  answer: string",
+    );
+    let reversed_declaration_order = PIPELINE.replace(
+        "state:\n  answer: string",
+        "state:\n  answer: string\n  later: string",
+    );
+    assert_ne!(
+        PipelineDefinition::from_yaml(&declaration_order_changes_fallback)
+            .expect("ordered state")
+            .definition_digest(),
+        PipelineDefinition::from_yaml(&reversed_declaration_order)
+            .expect("reordered state")
+            .definition_digest()
+    );
+
     for (yaml, code) in [
         (
             "entry_point: missing\nnodes:\n  - id: review\n    type: hitl\n    routes:\n      approve: END\n",
@@ -76,6 +96,10 @@ fn whole_pipeline_yaml_is_bounded_strict_and_digest_stable() {
         ),
         (
             "entry_point: review\nnodes:\n  - id: review\n    type: hitl\n    routes:\n      approve: absent\n",
+            "graph.pipeline.invalid_configuration",
+        ),
+        (
+            "state:\n  context_info: dict\nentry_point: review\nnodes:\n  - id: review\n    type: hitl\n    routes:\n      approve: END\n",
             "graph.pipeline.invalid_configuration",
         ),
         (
@@ -150,6 +174,161 @@ nodes:
         content.parts.as_slice(),
         [Part::Text { text }] if text == "Hello, world"
     ));
+}
+
+#[tokio::test]
+async fn messages_use_the_adk_append_reducer_and_surface_the_last_nonempty_ai_message() {
+    let definition = PipelineDefinition::from_yaml(
+        r#"
+state:
+  messages:
+    type: list
+entry_point: first
+nodes:
+  - id: first
+    type: state_modifier
+    template: '[{"role":"assistant","content":"first answer"}]'
+    output: [messages]
+    transition: second
+  - id: second
+    type: state_modifier
+    template: '[{"role":"assistant","content":""}]'
+    output: [messages]
+    transition: END
+"#,
+    )
+    .expect("message-producing pipeline");
+    let sessions = Arc::new(InMemorySessionService::new());
+    sessions
+        .create(CreateRequest {
+            app_name: APP.to_owned(),
+            user_id: USER.to_owned(),
+            session_id: Some(THREAD.to_owned()),
+            state: HashMap::new(),
+        })
+        .await
+        .expect("pipeline session");
+    let graph = definition
+        .compile(ROOT, Arc::new(MemoryCheckpointer::new()), None)
+        .expect("message graph");
+
+    let events = run_graph(graph, sessions, "question").await;
+    let [event] = events.as_slice() else {
+        panic!("message graph emitted an unexpected event count");
+    };
+    let Some(content) = event.content() else {
+        panic!("message graph result had no content");
+    };
+    assert!(matches!(
+        content.parts.as_slice(),
+        [Part::Text { text }] if text == "first answer"
+    ));
+}
+
+#[tokio::test]
+async fn zero_llm_pipeline_falls_back_to_the_last_declared_public_state_value() {
+    let definition = PipelineDefinition::from_yaml(
+        r#"
+state:
+  z_first:
+    type: str
+    value: first
+  a_last:
+    type: str
+    value: last
+entry_point: finish
+nodes:
+  - id: finish
+    type: state_modifier
+    template: ""
+    transition: END
+"#,
+    )
+    .expect("zero-LLM data pipeline");
+    let sessions = Arc::new(InMemorySessionService::new());
+    sessions
+        .create(CreateRequest {
+            app_name: APP.to_owned(),
+            user_id: USER.to_owned(),
+            session_id: Some(THREAD.to_owned()),
+            state: HashMap::new(),
+        })
+        .await
+        .expect("pipeline session");
+    let graph = definition
+        .compile(ROOT, Arc::new(MemoryCheckpointer::new()), None)
+        .expect("zero-LLM graph");
+
+    let events = run_graph(graph, sessions, "ignored").await;
+    let [event] = events.as_slice() else {
+        panic!("zero-LLM graph emitted an unexpected event count");
+    };
+    let Some(content) = event.content() else {
+        panic!("zero-LLM graph result had no content");
+    };
+    assert!(matches!(
+        content.parts.as_slice(),
+        [Part::Text { text }] if text == "last"
+    ));
+}
+
+#[test]
+fn result_policy_prefers_terminal_data_then_ai_messages_then_declared_state() {
+    let policy = PipelineResultPolicy {
+        terminal_data_keys: vec!["terminal_a".to_owned(), "terminal_b".to_owned()],
+        fallback_data_keys: vec!["z_first".to_owned(), "a_last".to_owned()],
+    };
+    let mut state = HashMap::from([
+        ("terminal_a".to_owned(), json!("first terminal")),
+        ("terminal_b".to_owned(), json!("last terminal")),
+        ("z_first".to_owned(), json!("first declared")),
+        ("a_last".to_owned(), json!("last declared")),
+        (
+            "messages".to_owned(),
+            json!([
+                {"role": "user", "content": "do not surface me"},
+                {"role": "assistant", "content": [{"type": "text", "text": "model answer"}]},
+                {"role": "assistant", "content": [{"type": "thinking", "thinking": "private"}]}
+            ]),
+        ),
+        ("context_info".to_owned(), json!({"private": true})),
+    ]);
+
+    assert_eq!(
+        select_pipeline_result(&state, &policy).as_deref(),
+        Some("last terminal")
+    );
+    state.insert("terminal_a".to_owned(), json!(""));
+    state.insert("terminal_b".to_owned(), json!(""));
+    assert_eq!(
+        select_pipeline_result(&state, &policy).as_deref(),
+        Some("model answer")
+    );
+    state.insert("messages".to_owned(), json!([]));
+    assert_eq!(
+        select_pipeline_result(&state, &policy).as_deref(),
+        Some("last declared")
+    );
+}
+
+#[test]
+fn runtime_owned_custom_reducers_append_merge_and_clear() {
+    assert_eq!(
+        append_or_clear_list(json!([{"id": 1}]), json!([{"id": 2}])),
+        json!([{"id": 1}, {"id": 2}])
+    );
+    assert_eq!(
+        append_or_clear_list(json!([1]), serde_json::Value::Null),
+        json!([])
+    );
+    assert_eq!(
+        merge_or_clear_object(json!({"a": 1}), json!({"b": 2})),
+        json!({"a": 1, "b": 2})
+    );
+    assert_eq!(
+        merge_or_clear_object(json!({"a": 1}), serde_json::Value::Null),
+        json!({})
+    );
 }
 
 #[tokio::test]
@@ -313,8 +492,12 @@ async fn run_graph(
     );
     let mut running = invocation.start().expect("pipeline invocation");
     let mut events = Vec::new();
-    while let Some(event) = running.next_event().await.expect("pipeline event") {
-        events.push(event);
+    loop {
+        match running.next_event().await {
+            Ok(Some(event)) => events.push(event),
+            Ok(None) => break,
+            Err(error) => panic!("pipeline event failed: {error}"),
+        }
     }
     events
 }
