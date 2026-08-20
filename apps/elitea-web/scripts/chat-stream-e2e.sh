@@ -170,7 +170,33 @@ REPEAT_ARGS=""
 # E2E_REUSE_STACK=1 stops Playwright's own `webServer` from trying to bring up
 # the E2E stack: the stack this journey needs is already up, and that hook
 # points at a different compose file entirely.
+#
+# When PLAYWRIGHT_CONTAINER_IMAGE is set (ci-web-e2e.yml sets it), the tests run
+# inside the pinned Playwright container instead of on the host — the same
+# mechanism and reasons as that workflow's `e2e` job: the image ships the
+# browsers AND their system libraries, so `npx playwright install --with-deps`
+# (whose cost is mostly apt fetching ~114 MB the runner then throws away)
+# disappears entirely. `--network host` because the stack is up on the HOST; a
+# container on the default bridge could not reach localhost:${PORT}. No
+# `--user`: playwright-core adds `--no-sandbox` itself when it detects uid 0.
+#
+# The image TAG is deliberately not written here: it must live in the workflow,
+# because scripts/check-playwright-image-tag.mjs only scans .github/workflows/
+# when it asserts every container tag matches the pinned @playwright/test — a
+# tag hardcoded in this script would escape that gate. Locally the variable is
+# normally unset and the host npx path runs; set CONTAINER_BIN=podman alongside
+# the image to use the container path off-runner.
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
-PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
-E2E_REUSE_STACK=1 \
-  npx playwright test --project=chat-stream $REPEAT_ARGS
+if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
+  "${CONTAINER_BIN:-docker}" run --rm --network host \
+    -v "$WEB_DIR":/work -w /work \
+    -e CI="${CI:-}" \
+    -e E2E_REUSE_STACK=1 \
+    -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
+    "$PLAYWRIGHT_CONTAINER_IMAGE" \
+    npx playwright test --project=chat-stream $REPEAT_ARGS
+else
+  PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
+  E2E_REUSE_STACK=1 \
+    npx playwright test --project=chat-stream $REPEAT_ARGS
+fi
