@@ -56,12 +56,14 @@ Maintained Rust runtime ownership registry:
 
 - `src/agents/{assembly,ordinary,session,events,sensitive_tools,direct_hitl}.rs`: direct
   saved-agent and ad-hoc `LlmAgent` admission, common injected
-  `SessionService`/Runner composition, seed-once frozen history, browser event
-  projection, runtime-policy-bound sensitive-tool pauses and worker-side exact
-  resolution of Main-authorized decisions against raw persisted calls. A
-  capability-disabled one-shot adapter additionally proves exact read-only
-  replay through ADK `RunConfig` and `ToolExecutor`; effects and production
-  continuation admission remain closed;
+  `SessionService`/Runner composition, request-independent definition lineage,
+  seed-once frozen history, browser event projection, runtime-policy-bound
+  sensitive-tool pauses and worker-side exact resolution of Main-authorized
+  decisions against raw persisted calls. The ordinary assembler accepts one
+  exact read-only continuation before PAT redemption, requires a restorable
+  session, and replays through ADK `RunConfig`/`ToolExecutor` without provider
+  replanning; effects, partial-replay restart and deployment registration remain
+  closed;
 - `src/agents/application_tools.rs`: exact saved child application/version to
   ADK `AgentTool` composition, recursion and model-visible delegation schema;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context

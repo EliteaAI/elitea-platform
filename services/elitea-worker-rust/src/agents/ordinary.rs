@@ -16,12 +16,14 @@ use tracing::Instrument as _;
 use super::application_tools::{ApplicationToolDependencies, materialize_application_toolset};
 use super::assembly::{OrdinaryModelProvider, ReasoningEffort};
 use super::runtime::{
-    AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
-    NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
+    AdmittedNativeStart, AssembledNativeAgentInvocation, AuthorizedNativeAssembly,
+    NativeAgentAssembler, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
+    RedeemedOrdinaryNativeAssembly,
 };
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
 use super::session::{
     NativeSessionBackend, OrdinaryAgentCompletion, assemble_ordinary_native_with_sessions,
+    assemble_read_only_direct_hitl_resume_with_sessions,
 };
 use crate::state::SessionLimits;
 use crate::toolkits::{
@@ -78,9 +80,126 @@ impl OrdinaryNativeAgentAssembler {
 
     #[cfg(test)]
     #[must_use]
+    pub(crate) fn with_sessions(
+        mut self,
+        sessions: Arc<dyn adk_rust::session::SessionService>,
+    ) -> Self {
+        self.sessions = NativeSessionBackend::injected(sessions);
+        self
+    }
+
+    #[cfg(test)]
+    #[must_use]
     pub(crate) fn with_mcp_connector(mut self, connector: Arc<dyn McpConnector>) -> Self {
         self.mcp_connector = connector;
         self
+    }
+
+    async fn assemble_redeemed(
+        &self,
+        redeemed: RedeemedOrdinaryNativeAssembly<'_>,
+    ) -> Result<
+        AssembledNativeAgentInvocation<OrdinaryAgentCompletion<BoundModelFacade>>,
+        NativeAgentAssemblyError,
+    > {
+        let (
+            profile,
+            plan,
+            tool_snapshot,
+            start,
+            context,
+            runtime_context,
+            session_authority,
+            state_writer_lease,
+        ) = redeemed.into_parts();
+        let tool_reference_count = tool_snapshot.iter().count();
+        let nested_application_count = tool_snapshot
+            .iter()
+            .filter(|reference| reference.kind() == FrozenToolKind::Application)
+            .count();
+        tracing::Span::current().record("tool_reference_count", tool_reference_count);
+        tracing::Span::current().record("nested_application_count", nested_application_count);
+        let context = Arc::new(context);
+        tracing::Span::current().record("stage", "toolsets");
+        let (mut toolsets, sensitive_tools) = materialize_direct_toolsets(
+            &tool_snapshot,
+            self.mcp_connector.as_ref(),
+            &self.tool_policy,
+        )
+        .await?;
+        if let Some(application_toolset) = materialize_application_toolset(
+            &tool_snapshot,
+            self.platform.as_ref(),
+            &runtime_context,
+            context.clone(),
+            &profile,
+            ApplicationToolDependencies {
+                model_facade: self.model_facade.clone(),
+                policy: self.tool_policy.clone(),
+                mcp_connector: self.mcp_connector.clone(),
+            },
+        )
+        .await?
+        {
+            toolsets.push(application_toolset);
+        }
+        tracing::Span::current().record("materialized_toolset_count", toolsets.len());
+        let model = self.bind_model(&profile, context.as_ref())?;
+        tracing::Span::current().record("stage", "runner");
+        let sessions = self
+            .sessions
+            .open(session_authority, state_writer_lease, &plan)
+            .await?;
+        match start {
+            AdmittedNativeStart::Fresh => {
+                assemble_ordinary_native_with_sessions(
+                    model,
+                    plan,
+                    toolsets,
+                    sensitive_tools,
+                    sessions,
+                )
+                .await
+            }
+            AdmittedNativeStart::DirectHitl(decision) => {
+                assemble_read_only_direct_hitl_resume_with_sessions(
+                    model,
+                    plan,
+                    toolsets,
+                    sensitive_tools,
+                    decision,
+                    sessions,
+                )
+                .await
+            }
+        }
+    }
+
+    fn bind_model(
+        &self,
+        profile: &super::assembly::OrdinaryNoToolProfile,
+        context: &crate::transport::runtime_context::ClaimScopedEliteaContext,
+    ) -> Result<BoundModelFacade, NativeAgentAssemblyError> {
+        let invocation = ModelInvocation {
+            model_name: profile.model_name().to_owned(),
+            system_instruction: profile.instructions().to_owned(),
+            max_tokens: profile.max_tokens(),
+            reasoning_effort: profile.reasoning_effort().map(model_reasoning_effort),
+            temperature: profile.temperature(),
+            max_model_turns: profile.step_limit(),
+        };
+        let (adapter, adapter_name) = match profile.model_provider() {
+            OrdinaryModelProvider::OpenAiChat => {
+                (ModelAdapterKind::OpenAiCompatible, "openai_compatible")
+            }
+            OrdinaryModelProvider::NativeAnthropic => (ModelAdapterKind::Anthropic, "anthropic"),
+        };
+        tracing::Span::current().record("model_adapter", adapter_name);
+        tracing::Span::current().record("model_project_id", profile.model_project_id());
+        tracing::Span::current().record("stage", "model_binding");
+        self.model_facade
+            .bind(adapter, context, profile.model_project_id(), invocation)
+            .map_err(model_binding_error)
     }
 }
 
@@ -98,87 +217,15 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
             // plan, so deterministic local failures happen before PAT issuance.
             tracing::Span::current().record("stage", "admission");
             let admitted = assembly.admit_llm_agent(self.tool_policy.as_ref())?;
+            if admitted.is_resume() && !self.sessions.supports_resume() {
+                return Err(unsupported_session_resume());
+            }
             tracing::Span::current().record("stage", "runtime_context");
             let redeemed = admitted
                 .redeem_runtime_context(self.platform.as_ref())
                 .await
                 .map_err(NativeAgentAssemblyError::from)?;
-            let (
-                profile,
-                plan,
-                tool_snapshot,
-                context,
-                runtime_context,
-                session_authority,
-                state_writer_lease,
-            ) = redeemed.into_parts();
-            let tool_reference_count = tool_snapshot.iter().count();
-            let nested_application_count = tool_snapshot
-                .iter()
-                .filter(|reference| reference.kind() == FrozenToolKind::Application)
-                .count();
-            tracing::Span::current().record("tool_reference_count", tool_reference_count);
-            tracing::Span::current().record("nested_application_count", nested_application_count);
-            let context = Arc::new(context);
-            tracing::Span::current().record("stage", "toolsets");
-            let (mut toolsets, sensitive_tools) = materialize_direct_toolsets(
-                &tool_snapshot,
-                self.mcp_connector.as_ref(),
-                &self.tool_policy,
-            )
-            .await?;
-            if let Some(application_toolset) = materialize_application_toolset(
-                &tool_snapshot,
-                self.platform.as_ref(),
-                &runtime_context,
-                context.clone(),
-                &profile,
-                ApplicationToolDependencies {
-                    model_facade: self.model_facade.clone(),
-                    policy: self.tool_policy.clone(),
-                    mcp_connector: self.mcp_connector.clone(),
-                },
-            )
-            .await?
-            {
-                toolsets.push(application_toolset);
-            }
-            tracing::Span::current().record("materialized_toolset_count", toolsets.len());
-            let invocation = ModelInvocation {
-                model_name: profile.model_name().to_owned(),
-                system_instruction: profile.instructions().to_owned(),
-                max_tokens: profile.max_tokens(),
-                reasoning_effort: profile.reasoning_effort().map(model_reasoning_effort),
-                temperature: profile.temperature(),
-                max_model_turns: profile.step_limit(),
-            };
-            let (adapter, adapter_name) = match profile.model_provider() {
-                OrdinaryModelProvider::OpenAiChat => {
-                    (ModelAdapterKind::OpenAiCompatible, "openai_compatible")
-                }
-                OrdinaryModelProvider::NativeAnthropic => {
-                    (ModelAdapterKind::Anthropic, "anthropic")
-                }
-            };
-            tracing::Span::current().record("model_adapter", adapter_name);
-            tracing::Span::current().record("model_project_id", profile.model_project_id());
-            tracing::Span::current().record("stage", "model_binding");
-            let model = self
-                .model_facade
-                .bind(
-                    adapter,
-                    context.as_ref(),
-                    profile.model_project_id(),
-                    invocation,
-                )
-                .map_err(model_binding_error)?;
-            tracing::Span::current().record("stage", "runner");
-            let sessions = self
-                .sessions
-                .open(session_authority, state_writer_lease, &plan)
-                .await?;
-            assemble_ordinary_native_with_sessions(model, plan, toolsets, sensitive_tools, sessions)
-                .await
+            self.assemble_redeemed(redeemed).await
         }
         .instrument(span.clone())
         .await;
@@ -193,6 +240,13 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
         }
         result
     }
+}
+
+fn unsupported_session_resume() -> NativeAgentAssemblyError {
+    NativeAgentAssemblyError::new(
+        NativeAgentAssemblyErrorCode::UnsupportedCapability,
+        "direct sensitive-tool continuation requires durable session persistence",
+    )
 }
 
 fn assembly_span(assembly: &AuthorizedNativeAssembly<'_>, session_backend: &str) -> tracing::Span {

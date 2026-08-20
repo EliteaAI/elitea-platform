@@ -19,7 +19,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::assembly::OrdinaryNoToolProfile;
-use super::direct_hitl::DirectHitlRunInput;
+use super::direct_hitl::{
+    DirectHitlDecision, DirectHitlError, DirectHitlErrorCode, DirectHitlRunInput,
+};
 use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
     ProjectedAgentEventBatch,
@@ -193,7 +195,13 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         self,
         policy: &ToolAdmissionPolicy,
     ) -> Result<AdmittedOrdinaryNativeAssembly<'a>, NativeAgentAssemblyError> {
-        let profile = OrdinaryNoToolProfile::validate(self.request)?;
+        let start = admit_native_start(self.request)?;
+        let profile = match &start {
+            AdmittedNativeStart::Fresh => OrdinaryNoToolProfile::validate(self.request)?,
+            AdmittedNativeStart::DirectHitl(_) => {
+                OrdinaryNoToolProfile::validate_direct_hitl_resume(self.request)?
+            }
+        };
         let plan = OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?;
         let toolsets = FrozenToolSnapshot::from_request(self.request)
             .map_err(tool_snapshot_error)?
@@ -206,7 +214,21 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             profile,
             plan,
             toolsets,
+            start,
         })
+    }
+}
+
+/// The only two direct-agent start modes admitted before PAT redemption.
+pub(crate) enum AdmittedNativeStart {
+    Fresh,
+    DirectHitl(DirectHitlDecision),
+}
+
+impl AdmittedNativeStart {
+    #[must_use]
+    pub(crate) const fn is_resume(&self) -> bool {
+        matches!(self, Self::DirectHitl(_))
     }
 }
 
@@ -219,6 +241,7 @@ pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
     toolsets: AdmittedToolSnapshot<'a>,
+    start: AdmittedNativeStart,
 }
 
 impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
@@ -230,6 +253,11 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
     #[must_use]
     pub(crate) const fn profile(&self) -> &OrdinaryNoToolProfile {
         &self.profile
+    }
+
+    #[must_use]
+    pub(crate) const fn is_resume(&self) -> bool {
+        self.start.is_resume()
     }
 
     /// Redeem the ephemeral execution actor only after `AUTHORIZED_NOW`.
@@ -248,6 +276,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             profile,
             plan,
             toolsets,
+            start,
             ..
         } = self;
         let context = client.redeem_elitea_context(&runtime_context).await?;
@@ -255,6 +284,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             profile,
             plan,
             toolsets,
+            start,
             context,
             runtime_context,
             session,
@@ -268,6 +298,7 @@ pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
     toolsets: AdmittedToolSnapshot<'a>,
+    start: AdmittedNativeStart,
     context: ClaimScopedEliteaContext,
     runtime_context: ClaimBoundRuntimeContextAuthority,
     session: ClaimBoundSessionAuthority,
@@ -281,6 +312,7 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
         OrdinaryNoToolProfile,
         OrdinaryNativeAgentPlan,
         AdmittedToolSnapshot<'a>,
+        AdmittedNativeStart,
         ClaimScopedEliteaContext,
         ClaimBoundRuntimeContextAuthority,
         ClaimBoundSessionAuthority,
@@ -290,12 +322,43 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
             self.profile,
             self.plan,
             self.toolsets,
+            self.start,
             self.context,
             self.runtime_context,
             self.session,
             self.state_writer_lease,
         )
     }
+}
+
+fn admit_native_start(
+    request: &AgentExecutionRequest,
+) -> Result<AdmittedNativeStart, NativeAgentAssemblyError> {
+    let payload = &request.payload;
+    let has_continuation = payload.should_continue
+        || payload.hitl_resume
+        || payload.hitl_action.is_some()
+        || payload.hitl_value.is_some()
+        || !payload.hitl_decisions.is_empty();
+    if !has_continuation {
+        return Ok(AdmittedNativeStart::Fresh);
+    }
+    DirectHitlDecision::from_payload(payload)
+        .map(AdmittedNativeStart::DirectHitl)
+        .map_err(|error| direct_hitl_admission_error(&error))
+}
+
+fn direct_hitl_admission_error(error: &DirectHitlError) -> NativeAgentAssemblyError {
+    let code = match error.code() {
+        DirectHitlErrorCode::InvalidInput
+        | DirectHitlErrorCode::StaleDecision
+        | DirectHitlErrorCode::CorruptSession => NativeAgentAssemblyErrorCode::InvalidInput,
+        DirectHitlErrorCode::UnsupportedCapability => {
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        DirectHitlErrorCode::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+    };
+    NativeAgentAssemblyError::new(code, "the direct sensitive-tool continuation is malformed")
 }
 
 fn tool_snapshot_error(

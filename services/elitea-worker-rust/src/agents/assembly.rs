@@ -56,7 +56,25 @@ impl OrdinaryNoToolProfile {
     pub(crate) fn validate(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        let common = validate_common_profile(request)?;
+        Self::validate_with_mode(request, CommonProfileMode::Fresh)
+    }
+
+    /// Validate the same direct `LlmAgent` definition for one exact HITL resume.
+    ///
+    /// The decision payload itself is admitted separately by `DirectHitlDecision`;
+    /// this mode only prevents the otherwise identical model/tool definition from
+    /// being rejected because Main supplied the four continuation fields.
+    pub(crate) fn validate_direct_hitl_resume(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::validate_with_mode(request, CommonProfileMode::DirectHitlResume)
+    }
+
+    fn validate_with_mode(
+        request: &AgentExecutionRequest,
+        mode: CommonProfileMode,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        let common = validate_common_profile(request, mode)?;
         let model = match request.kind {
             AgentExecutionKind::Application => application_model(request)?,
             AgentExecutionKind::Adhoc => adhoc_model(request)?,
@@ -213,8 +231,15 @@ struct CommonProfile {
     context_management: ContextManagementPlan,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CommonProfileMode {
+    Fresh,
+    DirectHitlResume,
+}
+
 fn validate_common_profile(
     request: &AgentExecutionRequest,
+    mode: CommonProfileMode,
 ) -> Result<CommonProfile, NativeAgentAssemblyError> {
     let payload = &request.payload;
     match &payload.user_input {
@@ -236,11 +261,6 @@ fn validate_common_profile(
         || !payload.mcp_tokens.is_empty()
         || !payload.ignored_mcp_servers.is_empty()
         || !payload.user_declined_mcp_servers.is_empty()
-        || payload.should_continue
-        || payload.hitl_resume
-        || payload.hitl_action.is_some()
-        || payload.hitl_value.is_some()
-        || !payload.hitl_decisions.is_empty()
         || payload.checkpoint_id.is_some()
         || payload.is_regenerate
         || payload.supports_vision
@@ -258,6 +278,16 @@ fn validate_common_profile(
         || payload.debug
         || !payload.meta.is_empty()
         || payload.persona != "generic"
+    {
+        return Err(unsupported_profile());
+    }
+    let has_direct_hitl_fields = payload.should_continue
+        || payload.hitl_resume
+        || payload.hitl_action.is_some()
+        || payload.hitl_value.is_some()
+        || !payload.hitl_decisions.is_empty();
+    if (mode == CommonProfileMode::Fresh && has_direct_hitl_fields)
+        || (mode == CommonProfileMode::DirectHitlResume && !has_direct_hitl_fields)
     {
         return Err(unsupported_profile());
     }

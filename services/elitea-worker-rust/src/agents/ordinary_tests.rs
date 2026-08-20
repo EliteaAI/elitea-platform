@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adk_rust::session::{InMemorySessionService, SessionService};
 use adk_rust::tool::BasicToolset;
 use adk_rust::{Tool, ToolContext, Toolset};
 use async_trait::async_trait;
@@ -41,6 +42,21 @@ fn empty_tool_policy() -> Arc<ToolAdmissionPolicy> {
     Arc::new(ToolAdmissionPolicy::new(&[], &BTreeMap::new()).expect("empty toolkit policy"))
 }
 
+fn sensitive_mcp_policy() -> Arc<ToolAdmissionPolicy> {
+    let runtime = serde_json::json!({
+        "toolkit_security": {
+            "sensitive_tools": {"mcp": ["lookup_release"]},
+            "sensitive_action_company_name": "Example Org"
+        }
+    });
+    Arc::new(
+        ToolAdmissionPolicy::from_runtime_config(
+            runtime.as_object().expect("runtime policy object"),
+        )
+        .expect("sensitive MCP policy"),
+    )
+}
+
 fn platform_client(runtime_context: RuntimeContextClient) -> Arc<PlatformClient> {
     Arc::new(PlatformClient::new(Arc::new(runtime_context)))
 }
@@ -71,14 +87,24 @@ impl RuntimeContextRpc for RuntimeContextFixture {
 }
 
 fn runtime_context_client() -> (RuntimeContextClient, Arc<AtomicUsize>) {
+    runtime_context_client_for_redemptions(1)
+}
+
+fn runtime_context_client_for_redemptions(
+    count: usize,
+) -> (RuntimeContextClient, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
-    let response = runtime_context_response(&serde_json::json!({
-        "schema_version": "elitea.runtime.elitea-client-token.v1",
-        "project_id": 17,
-        "token": TOKEN,
-    }));
+    let responses = (0..count)
+        .map(|_| {
+            runtime_context_response(&serde_json::json!({
+                "schema_version": "elitea.runtime.elitea-client-token.v1",
+                "project_id": 17,
+                "token": TOKEN,
+            }))
+        })
+        .collect();
     let paths = Arc::new(Mutex::new(Vec::new()));
-    let client = runtime_context_client_from(VecDeque::from([response]), Arc::clone(&calls), paths);
+    let client = runtime_context_client_from(responses, Arc::clone(&calls), paths);
     (client, calls)
 }
 
@@ -844,6 +870,130 @@ async fn application_and_adhoc_execute_adk_mcp_tools_in_the_direct_llm_loop() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_resume_exact_read_only_sensitive_mcp_call() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        run_sensitive_mcp_resume(kind).await;
+    }
+}
+
+async fn run_sensitive_mcp_resume(kind: AgentExecutionKind) {
+    let (runtime_context, context_calls) = runtime_context_client_for_redemptions(2);
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(model_response()),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway fixture client");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions = Arc::new(InMemorySessionService::new());
+    let shared_sessions: Arc<dyn SessionService> = sessions;
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        sensitive_mcp_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(Arc::clone(&shared_sessions));
+
+    let mut initial_request = ordinary_request(kind);
+    attach_remote_mcp_tool(&mut initial_request);
+    let initial = AuthorizedNativeAssembly::new(
+        &initial_request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut paused = assembler
+        .assemble(initial)
+        .await
+        .expect("initial sensitive MCP assembly");
+    paused
+        .project_start(chrono::Utc::now())
+        .expect("projected initial start");
+    let (mut run, mut projector, _completion) = paused.start().expect("initial native start");
+    let mut public_events = Vec::new();
+    while let Some(event) = run.next_event().await.expect("initial native event") {
+        for projected in projector.project(&event).expect("projected initial event") {
+            public_events.push(
+                serde_json::from_slice::<serde_json::Value>(
+                    &encode_current_node_event_json(&projected)
+                        .expect("canonical initial browser event"),
+                )
+                .expect("initial browser event JSON"),
+            );
+        }
+    }
+    assert!(projector.is_paused());
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    let interrupt_id = projected_interrupt_id(&public_events).to_owned();
+
+    let mut resume_request = ordinary_request(kind);
+    resume_request.binding.request_content_digest = [9; 32];
+    attach_remote_mcp_tool(&mut resume_request);
+    admit_approved_resume(&mut resume_request, &interrupt_id);
+    let resume = AuthorizedNativeAssembly::new(
+        &resume_request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let resumed = assembler
+        .assemble(resume)
+        .await
+        .expect("resumed sensitive MCP assembly");
+    let (mut run, _projector, completion) = resumed.start().expect("resumed native start");
+    while run
+        .next_event()
+        .await
+        .expect("resumed native event")
+        .is_some()
+    {}
+    let _completed = completion.select().await.expect("resumed completion");
+    assert_eq!(context_calls.load(Ordering::Acquire), 2);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+    assert_resumed_model_requests(&captured);
+}
+
+fn projected_interrupt_id(events: &[serde_json::Value]) -> &str {
+    events
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .and_then(|event| event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"].as_str())
+        .expect("public direct-tool interrupt identity")
+}
+
+fn admit_approved_resume(request: &mut super::request::AgentExecutionRequest, interrupt_id: &str) {
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = Some("approve".to_owned());
+    request.payload.hitl_value = Some(String::new());
+    request.payload.hitl_decisions = vec![serde_json::json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call_mcp",
+        "action": "approve",
+        "value": ""
+    })];
+}
+
+fn assert_resumed_model_requests(captured: &Arc<Mutex<Vec<CapturedModelRequest>>>) {
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 2);
+    let resumed: serde_json::Value =
+        serde_json::from_slice(&captured[1].body).expect("resumed model request");
+    let messages = resumed["messages"].as_array().expect("resumed messages");
+    assert!(
+        messages
+            .iter()
+            .any(|message| { message["role"] == "tool" && message["tool_call_id"] == "call_mcp" })
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
     let mut request = ordinary_request(AgentExecutionKind::Application);
     attach_nested_agent(&mut request);
@@ -1131,6 +1281,36 @@ async fn unsupported_profile_fails_before_pat_redemption_or_model_request() {
 
     let result = assembler.assemble(assembly).await;
     assert!(result.is_err());
+    assert_eq!(context_calls.load(Ordering::Acquire), 0);
+    assert!(captured.lock().expect("captured model requests").is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_resume_requires_restorable_sessions_before_pat_redemption() {
+    let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+    admit_approved_resume(&mut request, "hitl_e1:fixture");
+    let (runtime_context, context_calls) = runtime_context_client();
+    let (model_gateway, captured) =
+        test_model_gateway_client(Vec::new(), test_model_gateway_config())
+            .expect("model gateway fixture client");
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    );
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+
+    let Err(error) = assembler.assemble(assembly).await else {
+        panic!("invocation-local continuation must remain closed")
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
     assert_eq!(context_calls.load(Ordering::Acquire), 0);
     assert!(captured.lock().expect("captured model requests").is_empty());
 }

@@ -52,6 +52,9 @@ const APP_NAME: &str = "elitea-agent-v1";
 const ROOT_AGENT_NAME: &str = "elitea-agent";
 const USER_ID_DOMAIN: &[u8] = b"elitea.adk.user.v1\0";
 const SESSION_ID_DOMAIN: &[u8] = b"elitea.adk.session.v1\0";
+const DEFINITION_DIGEST_DOMAIN: &[u8] = b"elitea.adk.agent-definition.v1\0";
+const APPLICATION_DEFINITION_KIND: &[u8] = b"application";
+const ADHOC_DEFINITION_KIND: &[u8] = b"adhoc";
 const MAX_PUBLIC_APPLICATION_DETAILS_BYTES: usize = 32 * 1_024;
 const APPLICATION_CAPABILITY_ID: &str = "agent.execute.application.v1";
 const ADHOC_CAPABILITY_ID: &str = "agent.execute.adhoc.v1";
@@ -213,7 +216,7 @@ impl OrdinaryNativeAgentPlan {
             chat_history: profile.chat_history().to_vec(),
             context_management: profile.context_management(),
             capability_id,
-            definition_digest: request.binding.request_content_digest,
+            definition_digest: stable_definition_digest(request)?,
             tenant_id: binding.tenant_id.clone(),
             resource_project_id: binding.resource_project_id.clone(),
             projection_project_id: binding.projection_project_id.clone(),
@@ -231,6 +234,11 @@ impl OrdinaryNativeAgentPlan {
     pub(super) fn user_id(&self) -> &str {
         self.user_id.as_ref()
     }
+
+    #[cfg(test)]
+    pub(super) const fn definition_digest(&self) -> [u8; 32] {
+        self.definition_digest
+    }
 }
 
 /// Runtime-selected ADK session persistence behind the common Runner entrypoint.
@@ -240,7 +248,12 @@ impl OrdinaryNativeAgentPlan {
 /// Selecting a backend never grants output, settlement, or tool authority.
 pub(crate) enum NativeSessionBackend {
     InvocationLocal,
-    Postgres { pool: PgPool, limits: SessionLimits },
+    Postgres {
+        pool: PgPool,
+        limits: SessionLimits,
+    },
+    #[cfg(test)]
+    Injected(Arc<dyn SessionService>),
 }
 
 impl NativeSessionBackend {
@@ -254,11 +267,30 @@ impl NativeSessionBackend {
         Self::Postgres { pool, limits }
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn injected(service: Arc<dyn SessionService>) -> Self {
+        Self::Injected(service)
+    }
+
     #[must_use]
     pub(crate) const fn name(&self) -> &'static str {
         match self {
             Self::InvocationLocal => "invocation_local",
             Self::Postgres { .. } => "postgres",
+            #[cfg(test)]
+            Self::Injected(_) => "injected",
+        }
+    }
+
+    /// Whether this backend can restore the exact session that emitted HITL.
+    #[must_use]
+    pub(crate) const fn supports_resume(&self) -> bool {
+        match self {
+            Self::InvocationLocal => false,
+            Self::Postgres { .. } => true,
+            #[cfg(test)]
+            Self::Injected(_) => true,
         }
     }
 
@@ -330,6 +362,11 @@ impl NativeSessionBackend {
                 .await
                 .map_err(|error| session_activation_error(&error))?;
                 Ok(Arc::new(service))
+            }
+            #[cfg(test)]
+            Self::Injected(service) => {
+                drop(claim);
+                Ok(Arc::clone(service))
             }
         }
     }
@@ -634,6 +671,41 @@ fn stable_identity(domain: &[u8], fields: &[&str]) -> String {
         context.update(field.as_bytes());
     }
     format!("e1:{}", URL_SAFE_NO_PAD.encode(context.finish().as_ref()))
+}
+
+/// Derive a secret-free session lineage independent of one request envelope.
+///
+/// Saved applications are isolated by their immutable application/version
+/// identity. Ad-hoc turns deliberately share one lineage inside the already
+/// tenant/project/thread-scoped session so models and bound toolsets may change
+/// between chat turns without discarding conversation state.
+fn stable_definition_digest(
+    request: &AgentExecutionRequest,
+) -> Result<[u8; 32], NativeAgentAssemblyError> {
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(DEFINITION_DIGEST_DOMAIN);
+    match request.kind {
+        super::request::AgentExecutionKind::Application => {
+            let application_id = positive_json_identity(request.payload.application.get("id"))?;
+            let version_id = positive_json_identity(request.payload.application.get("version_id"))?;
+            context.update(APPLICATION_DEFINITION_KIND);
+            context.update(&application_id.to_be_bytes());
+            context.update(&version_id.to_be_bytes());
+        }
+        super::request::AgentExecutionKind::Adhoc => {
+            context.update(ADHOC_DEFINITION_KIND);
+        }
+    }
+    let mut definition_digest = [0_u8; 32];
+    definition_digest.copy_from_slice(context.finish().as_ref());
+    Ok(definition_digest)
+}
+
+fn positive_json_identity(value: Option<&Value>) -> Result<u64, NativeAgentAssemblyError> {
+    value
+        .and_then(Value::as_u64)
+        .filter(|value| (1..=i64::MAX.cast_unsigned()).contains(value))
+        .ok_or_else(invalid_input)
 }
 
 fn current_numeric_identity(value: &str) -> Value {

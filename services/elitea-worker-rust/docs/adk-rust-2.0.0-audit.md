@@ -353,17 +353,22 @@ validates the exact pending interrupt/action set, uses that set in submission
 idempotency, and atomically clears the public pending card while recording its
 resolved identity. Rust's `direct_hitl.rs` performs the independent worker-side
 join: strict current continuation admission plus exact latest-session call,
-invocation, argument and call-ID resolution. The capability-disabled read-only
-proof narrows the resolved call against materialized tool metadata, rejects
-effects, then uses a one-shot model adapter to re-emit the exact call ID and
-arguments. ADK's own fingerprint-bound `RunConfig` confirmation and
-`ToolExecutor` execute it once before the normal post-result model turn, so no
-provider model recreates or replans the approved call. This is not yet
-production continuation authority: Runner records an explicit confirmation
-user event on the second run, and restart after that event but before a durable
-result still needs an explicit recovery rule. Effectful calls need durable
-intent/outcome receipts and reconciliation. This reuses the existing Main
-contract and requires no Main schema or Python-worker path change. Graph dynamic/static interrupts
+invocation, argument and call-ID resolution. The capability-disabled ordinary
+assembler selects this start mode before PAT redemption and requires a
+restorable `SessionService`; invocation-local continuation fails closed. It
+narrows the resolved call against materialized tool metadata, rejects effects,
+then uses a one-shot model adapter to re-emit the exact call ID and arguments.
+ADK's own fingerprint-bound `RunConfig` confirmation and `ToolExecutor` execute
+it once before the normal post-result model turn, so no provider model recreates
+or replans the approved call. Saved applications derive the session definition
+lineage from exact application/version identity, while ad-hoc chat retains one
+secret-free lineage inside the already tenant/project/thread-scoped session;
+neither depends on the per-request content digest. Production registration is
+still closed: Runner records an explicit confirmation user event on the second
+run, and restart after that event but before a durable result still needs an
+explicit recovery rule. Effectful calls need durable intent/outcome receipts
+and reconciliation. This reuses the existing Main contract and requires no
+Main schema or Python-worker path change. Graph dynamic/static interrupts
 instead belong to their standard graph checkpoint. A future effect receipt may
 require an additional atomic record, but it must first prove that a
 deterministic decision event or checkpoint transition cannot satisfy the

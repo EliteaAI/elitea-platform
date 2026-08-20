@@ -17,7 +17,7 @@ use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::{current_text_history, ordinary_request};
 use super::direct_hitl::DirectHitlDecision;
 use super::events::AgentEventProjectionErrorCode;
-use super::request::AgentExecutionKind;
+use super::request::{AgentExecutionKind, UserInput};
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
@@ -858,6 +858,69 @@ fn pseudonymous_session_identity_is_stable_per_thread_and_separated_between_thre
     )
     .expect("other plan");
     assert_ne!(first.session_id(), other.session_id());
+}
+
+#[test]
+fn session_definition_lineage_is_request_independent_and_application_version_scoped() {
+    let mut first_request = ordinary_request(AgentExecutionKind::Application);
+    let first_profile =
+        OrdinaryNoToolProfile::validate(&first_request).expect("first application profile");
+    let first = OrdinaryNativeAgentPlan::from_authorized(
+        &first_request,
+        &first_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first application plan");
+
+    first_request.binding.request_content_digest = [9; 32];
+    first_request.payload.user_input = UserInput::Text("continued input".to_owned());
+    first_request.payload.chat_history = current_text_history();
+    let continued_profile =
+        OrdinaryNoToolProfile::validate(&first_request).expect("continued application profile");
+    let continued = OrdinaryNativeAgentPlan::from_authorized(
+        &first_request,
+        &continued_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("continued application plan");
+    assert_eq!(first.definition_digest(), continued.definition_digest());
+
+    first_request
+        .payload
+        .application
+        .insert("version_id".to_owned(), json!(23));
+    let changed_profile =
+        OrdinaryNoToolProfile::validate(&first_request).expect("changed application profile");
+    let changed = OrdinaryNativeAgentPlan::from_authorized(
+        &first_request,
+        &changed_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("changed application plan");
+    assert_ne!(first.definition_digest(), changed.definition_digest());
+
+    let mut adhoc_request = ordinary_request(AgentExecutionKind::Adhoc);
+    let adhoc_profile =
+        OrdinaryNoToolProfile::validate(&adhoc_request).expect("first ad-hoc profile");
+    let adhoc = OrdinaryNativeAgentPlan::from_authorized(
+        &adhoc_request,
+        &adhoc_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first ad-hoc plan");
+    adhoc_request.binding.request_content_digest = [7; 32];
+    adhoc_request.payload.user_input = UserInput::Text("next ad-hoc turn".to_owned());
+    adhoc_request.payload.llm["kwargs"]["model"] = json!("another-model");
+    let next_adhoc_profile =
+        OrdinaryNoToolProfile::validate(&adhoc_request).expect("next ad-hoc profile");
+    let next_adhoc = OrdinaryNativeAgentPlan::from_authorized(
+        &adhoc_request,
+        &next_adhoc_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("next ad-hoc plan");
+    assert_eq!(adhoc.definition_digest(), next_adhoc.definition_digest());
+    assert_ne!(first.definition_digest(), adhoc.definition_digest());
 }
 
 #[test]
