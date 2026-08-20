@@ -234,7 +234,7 @@ fn authorized_pipeline_admission_is_distinct_from_direct_agent_admission() {
 }
 
 #[test]
-fn pipeline_hitl_resume_uses_the_graph_decision_contract_not_tool_confirmation() {
+fn pipeline_resume_admits_distinct_node_and_tool_decision_envelopes_before_checkpoint_join() {
     let mut pipeline = pipeline_request();
     pipeline.payload.should_continue = true;
     pipeline.payload.hitl_resume = true;
@@ -252,8 +252,10 @@ fn pipeline_hitl_resume_uses_the_graph_decision_contract_not_tool_confirmation()
     assert!(admitted.is_resume());
 
     pipeline.payload.hitl_decisions[0]["tool_call_id"] = json!("tool-call-1");
-    let error = admission_error(authorized(&pipeline).admit_pipeline());
-    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    let admitted = authorized(&pipeline)
+        .admit_pipeline()
+        .expect("Toolkit-call decision envelope admission");
+    assert!(admitted.is_resume());
 }
 
 #[test]
@@ -340,7 +342,7 @@ fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
 }
 
 #[test]
-fn toolkit_node_scope_is_exact_and_sensitive_authority_fails_before_materialization() {
+fn toolkit_node_scope_is_exact_and_sensitive_read_is_bound_for_graph_confirmation() {
     let allowed = toolkit_pipeline_request("release_repository", &["get_issues"], "get_issues");
     let empty_policy = runtime_tool_policy(&json!({}));
     authorized(&allowed)
@@ -366,9 +368,6 @@ fn toolkit_node_scope_is_exact_and_sensitive_authority_fails_before_materializat
         runtime_tool_policy(&json!({
             "toolkit_security": {"blocked_tools": {"gitlab_org": ["get_issues"]}}
         })),
-        runtime_tool_policy(&json!({
-            "toolkit_security": {"sensitive_tools": {"gitlab_org": ["get_issues"]}}
-        })),
     ] {
         let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&policy));
         assert_eq!(
@@ -376,6 +375,12 @@ fn toolkit_node_scope_is_exact_and_sensitive_authority_fails_before_materializat
             NativeAgentAssemblyErrorCode::UnsupportedCapability
         );
     }
+    let sensitive = runtime_tool_policy(&json!({
+        "toolkit_security": {"sensitive_tools": {"gitlab_org": ["get_issues"]}}
+    }));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&sensitive)
+        .expect("sensitive direct read is admitted for checkpointed confirmation");
 }
 
 #[tokio::test]

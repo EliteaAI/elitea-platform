@@ -26,7 +26,9 @@ use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
     ProjectedAgentEventBatch,
 };
-use super::graph::resume::{PipelineHitlDecision, PipelineResumeError, PipelineResumeErrorCode};
+use super::graph::resume::{
+    PipelineContinuationDecision, PipelineResumeError, PipelineResumeErrorCode,
+};
 use super::pipeline::PipelineExecutionProfile;
 use super::request::AgentExecutionRequest;
 use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
@@ -227,13 +229,13 @@ impl<'a> AuthorizedNativeAssembly<'a> {
     ) -> Result<AdmittedPipelineNativeAssembly<'a>, NativeAgentAssemblyError> {
         let has_continuation = has_continuation(self.request);
         let start = if has_continuation {
-            PipelineHitlDecision::from_payload(&self.request.payload)
+            PipelineContinuationDecision::from_payload(&self.request.payload)
                 .map(PipelineNativeStart::Hitl)
                 .map_err(|error| pipeline_hitl_admission_error(&error))?
         } else {
             PipelineNativeStart::Fresh
         };
-        let profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
+        let mut profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
         let frozen_toolsets =
             FrozenToolSnapshot::from_request(self.request).map_err(tool_snapshot_error)?;
         profile.validate_tool_snapshot(&frozen_toolsets, policy)?;
@@ -273,7 +275,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 
 pub(crate) enum PipelineNativeStart {
     Fresh,
-    Hitl(PipelineHitlDecision),
+    Hitl(PipelineContinuationDecision),
 }
 
 impl PipelineNativeStart {

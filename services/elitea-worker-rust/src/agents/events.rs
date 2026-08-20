@@ -41,7 +41,9 @@ const MAX_CONTEXT_TEXT_BYTES: usize = 2_048;
 const MAX_COMPLETED_CONTENT_BYTES: usize = 60 * 1_024;
 const MAX_TOOL_EVENT_VALUE_BYTES: usize = 40 * 1_024;
 const PIPELINE_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-hitl-interrupt.v1\0";
+const PIPELINE_TOOL_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-tool-hitl-interrupt.v1\0";
 const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
+const PIPELINE_TOOL_HITL_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
 const MAX_PIPELINE_HITL_MESSAGE_BYTES: usize = 8 * 1024;
 
 /// Stable, low-cardinality event projection failures.
@@ -481,7 +483,17 @@ impl AgentEventProjector {
         if event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY) {
             let payload = GraphInterruptPayload::from_event(event)
                 .ok_or_else(AgentEventProjectionError::invalid_state)?;
-            let batch = self.project_pipeline_hitl(event, &payload)?;
+            let guardrail_type = payload
+                .data
+                .as_ref()
+                .and_then(|data| data.get("guardrail_type"))
+                .and_then(Value::as_str)
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            let batch = match guardrail_type {
+                "pipeline_hitl" => self.project_pipeline_hitl(event, &payload)?,
+                "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload)?,
+                _ => return Err(AgentEventProjectionError::unsupported()),
+            };
             self.bind_invocation_id(event);
             return Ok(batch);
         }
@@ -655,6 +667,72 @@ impl AgentEventProjector {
         batch.push(self.event(
             "agent_hitl_interrupt",
             &Value::String(message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    fn project_pipeline_tool_confirmation(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if !matches!(
+            self.state,
+            ProjectionState::Started | ProjectionState::Complete(_)
+        ) || !self.active_tools.is_empty()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let binding = pipeline_tool_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            checkpoint_thread_id,
+        )?;
+        let data = binding.data;
+        let pending = json!({
+            "type": "hitl",
+            "interrupt_id": binding.interrupt_id,
+            "call_digest": binding.call_digest,
+            "guardrail_type": "sensitive_tool",
+            "node_name": data.node_name,
+            "message": data.message,
+            "available_actions": data.available_actions,
+            "routes": {},
+            "tool_call_id": data.tool_call_id,
+            "tool_name": data.tool_name,
+            "toolkit_name": data.toolkit_name,
+            "toolkit_type": data.toolkit_type,
+            "action_label": data.action_label,
+            "tool_args": data.tool_args,
+            "policy_message": data.policy_message,
+            "definition_digest": data.definition_digest,
+            "argument_digest": data.argument_digest,
+        });
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "message": data.message,
+            "hitl_interrupt": pending,
+            "hitl_interrupts": [pending],
+            "node_name": data.node_name,
+            "available_actions": data.available_actions,
+            "routes": {},
+            "edit_state_key": Value::Null,
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "agent_hitl_interrupt",
+            &Value::String(data.message),
             None,
             &metadata,
             event.timestamp,
@@ -1272,6 +1350,58 @@ impl PipelineHitlData {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineToolHitlData {
+    schema_revision: String,
+    #[serde(rename = "type")]
+    interrupt_type: String,
+    guardrail_type: String,
+    node_name: String,
+    message: String,
+    available_actions: Vec<String>,
+    routes: BTreeMap<String, String>,
+    definition_digest: String,
+    tool_call_id: String,
+    tool_name: String,
+    toolkit_name: String,
+    toolkit_type: String,
+    action_label: String,
+    tool_args: Value,
+    argument_digest: String,
+    policy_message: String,
+}
+
+impl PipelineToolHitlData {
+    fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
+        if self.schema_revision != PIPELINE_TOOL_HITL_SCHEMA
+            || self.interrupt_type != "hitl"
+            || self.guardrail_type != "sensitive_tool"
+            || self.message != graph_message
+            || self.policy_message != self.message
+            || !valid_pipeline_node_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || !valid_sha256_label(&self.argument_digest)
+            || !valid_tool_identity(&self.tool_call_id)
+            || !valid_tool_identity(&self.tool_name)
+            || !valid_tool_identity(&self.toolkit_name)
+            || !valid_tool_identity(&self.toolkit_type)
+            || !valid_tool_identity(&self.action_label)
+            || !self.routes.is_empty()
+            || self.available_actions != ["approve", "reject", "block_with_comment"]
+            || self.message.is_empty()
+            || self.message.len() > MAX_PIPELINE_HITL_MESSAGE_BYTES
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_tool_event_value(&self.tool_args)?;
+        if mask_sensitive_arguments(&self.tool_args, 0)? != self.tool_args {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        Ok(())
+    }
+}
+
 /// Exact private graph interrupt identity reconstructed from one persisted ADK
 /// event. Browser projection exposes only `interrupt_id`; checkpoint routing
 /// stays on the worker side.
@@ -1280,6 +1410,46 @@ pub(crate) struct PipelineHitlEventBinding {
     call_digest: String,
     checkpoint_id: String,
     data: PipelineHitlData,
+}
+
+/// Exact private identity for a graph Toolkit-node confirmation.
+pub(crate) struct PipelineToolHitlEventBinding {
+    interrupt_id: String,
+    call_digest: String,
+    checkpoint_id: String,
+    data: PipelineToolHitlData,
+}
+
+impl PipelineToolHitlEventBinding {
+    #[must_use]
+    pub(crate) fn interrupt_id(&self) -> &str {
+        &self.interrupt_id
+    }
+
+    #[must_use]
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    #[must_use]
+    pub(crate) fn node_name(&self) -> &str {
+        &self.data.node_name
+    }
+
+    #[must_use]
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.data.definition_digest
+    }
+
+    #[must_use]
+    pub(crate) fn argument_digest(&self) -> &str {
+        &self.data.argument_digest
+    }
+
+    #[must_use]
+    pub(crate) fn tool_call_id(&self) -> &str {
+        &self.data.tool_call_id
+    }
 }
 
 impl PipelineHitlEventBinding {
@@ -1327,6 +1497,17 @@ pub(crate) fn pipeline_hitl_event_binding(
     pipeline_hitl_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
 }
 
+/// Validate and bind a persisted direct Toolkit confirmation interrupt.
+pub(crate) fn pipeline_tool_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineToolHitlEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_tool_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
 fn pipeline_hitl_event_binding_from_payload(
     event: &Event,
     payload: &GraphInterruptPayload,
@@ -1356,6 +1537,43 @@ fn pipeline_hitl_event_binding_from_payload(
     data.validate(message)?;
     let (interrupt_id, call_digest) = pipeline_hitl_identity(&event.invocation_id, payload, &data)?;
     Ok(PipelineHitlEventBinding {
+        interrupt_id,
+        call_digest,
+        checkpoint_id: payload.checkpoint_id.clone(),
+        data,
+    })
+}
+
+fn pipeline_tool_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineToolHitlEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let message = payload
+        .message
+        .as_deref()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    validate_pipeline_hitl_message(message)?;
+    let data = serde_json::from_value::<PipelineToolHitlData>(
+        payload
+            .data
+            .clone()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )
+    .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    data.validate(message)?;
+    let (interrupt_id, call_digest) =
+        pipeline_tool_hitl_identity(&event.invocation_id, payload, &data)?;
+    Ok(PipelineToolHitlEventBinding {
         interrupt_id,
         call_digest,
         checkpoint_id: payload.checkpoint_id.clone(),
@@ -1443,6 +1661,39 @@ fn pipeline_hitl_identity(
     ))
 }
 
+fn pipeline_tool_hitl_identity(
+    invocation_id: &str,
+    payload: &GraphInterruptPayload,
+    data: &PipelineToolHitlData,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let canonical = canonical_json(
+        payload
+            .data
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(PIPELINE_TOOL_HITL_DIGEST_DOMAIN);
+    for field in [
+        invocation_id.as_bytes(),
+        payload.thread_id.as_bytes(),
+        payload.checkpoint_id.as_bytes(),
+        data.node_name.as_bytes(),
+        data.definition_digest.as_bytes(),
+        data.tool_call_id.as_bytes(),
+        data.argument_digest.as_bytes(),
+        canonical.as_slice(),
+    ] {
+        context.update(&(field.len() as u64).to_be_bytes());
+        context.update(field);
+    }
+    let digest = context.finish();
+    Ok((
+        format!("hitl_gt1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
+        format!("sha256:{}", hex(digest.as_ref())),
+    ))
+}
+
 fn validate_pipeline_hitl_message(value: &str) -> Result<(), AgentEventProjectionError> {
     if value.is_empty()
         || value.len() > MAX_PIPELINE_HITL_MESSAGE_BYTES
@@ -1516,7 +1767,7 @@ fn canonical_value(value: &Value, depth: usize) -> Result<Value, AgentEventProje
     }
 }
 
-fn mask_sensitive_arguments(
+pub(crate) fn mask_sensitive_arguments(
     value: &Value,
     depth: usize,
 ) -> Result<Value, AgentEventProjectionError> {

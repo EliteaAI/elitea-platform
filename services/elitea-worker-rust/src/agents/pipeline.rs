@@ -23,7 +23,7 @@ use super::graph::compiler::PipelineNodeRuntimes;
 use super::graph::compiler::{PipelineConfigurationError, PipelineDefinition};
 use super::graph::{
     DirectToolExecutionError, DirectToolSelection, LlmExecutionError, LlmExecutionInput,
-    LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory,
+    LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory, ResolvedDirectTool,
 };
 use super::request::AgentExecutionRequest;
 use super::runtime::{
@@ -36,8 +36,9 @@ use super::session::{
 };
 use crate::state::{CheckpointLimits, SessionLimits};
 use crate::toolkits::{
-    AdkHttpMcpConnector, FrozenToolKind, FrozenToolSnapshot, McpConnector, ToolAdmissionDecision,
-    ToolAdmissionPolicy, materialize_configured_toolsets, materialize_mcp_toolsets,
+    AdkHttpMcpConnector, FrozenToolKind, FrozenToolSnapshot, McpConnector, SensitiveToolPolicy,
+    ToolAdmissionDecision, ToolAdmissionPolicy, materialize_configured_toolsets,
+    materialize_mcp_toolsets,
 };
 use crate::transport::model_facade::{
     ModelAdapterKind, ModelFacade, ModelInvocation, ModelReasoningEffort,
@@ -52,6 +53,7 @@ const MAX_PIPELINE_MATERIALIZED_TOOLS: usize = 1_024;
 pub(crate) struct PipelineExecutionProfile {
     shell: OrdinaryNoToolProfile,
     definition: PipelineDefinition,
+    sensitive_direct_tools: BTreeMap<(String, String), SensitiveToolPolicy>,
 }
 
 impl PipelineExecutionProfile {
@@ -63,7 +65,11 @@ impl PipelineExecutionProfile {
         let shell = OrdinaryNoToolProfile::validate_pipeline_shell(request, resume)?;
         let definition = PipelineDefinition::from_yaml(shell.instructions())
             .map_err(|error| pipeline_configuration_error(&error))?;
-        Ok(Self { shell, definition })
+        Ok(Self {
+            shell,
+            definition,
+            sensitive_direct_tools: BTreeMap::new(),
+        })
     }
 
     #[must_use]
@@ -84,10 +90,11 @@ impl PipelineExecutionProfile {
     /// Bind node selections to the exact frozen toolkit aliases before any
     /// credential or client is constructed.
     pub(crate) fn validate_tool_snapshot(
-        &self,
+        &mut self,
         snapshot: &FrozenToolSnapshot<'_>,
         policy: &ToolAdmissionPolicy,
     ) -> Result<(), NativeAgentAssemblyError> {
+        self.sensitive_direct_tools.clear();
         for selection in self.definition.llm_tool_selections() {
             let mut matches = snapshot
                 .iter()
@@ -142,15 +149,18 @@ impl PipelineExecutionProfile {
             }
             if policy.tool_decision(reference.tool_type(), selection.tool())
                 != ToolAdmissionDecision::Allowed
-                || policy
-                    .sensitive_tool(
-                        reference.tool_type(),
-                        reference.toolkit_name(),
-                        selection.tool(),
-                    )
-                    .is_some()
             {
                 return Err(unsupported_pipeline_tool_scope());
+            }
+            if let Some(sensitive) = policy.sensitive_tool(
+                reference.tool_type(),
+                reference.toolkit_name(),
+                selection.tool(),
+            ) {
+                self.sensitive_direct_tools.insert(
+                    (selection.alias().to_owned(), selection.tool().to_owned()),
+                    sensitive,
+                );
             }
             let configured = reference
                 .settings()
@@ -166,6 +176,15 @@ impl PipelineExecutionProfile {
             }
         }
         Ok(())
+    }
+
+    fn sensitive_direct_tool(
+        &self,
+        selection: &DirectToolSelection,
+    ) -> Option<SensitiveToolPolicy> {
+        self.sensitive_direct_tools
+            .get(&(selection.alias().to_owned(), selection.tool().to_owned()))
+            .cloned()
     }
 }
 
@@ -281,8 +300,7 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
                 .map_err(|_| unsupported_pipeline_runtime())?;
                 materialized.append(&mut mcp);
                 let toolsets = toolsets_by_alias(materialized)?;
-                let direct_tool_resolver =
-                    build_direct_tool_resolver(profile.definition(), &toolsets).await?;
+                let direct_tool_resolver = build_direct_tool_resolver(&profile, &toolsets).await?;
                 let llm_factory = context.zip(model_facade).map(|(context, model_facade)| {
                     Arc::new(NativePipelineLlmAgentFactory {
                         profile: profile.shell().clone(),
@@ -333,14 +351,14 @@ struct NativePipelineLlmAgentFactory {
 }
 
 struct NativePipelineDirectToolResolver {
-    tools: BTreeMap<(String, String), Arc<dyn Tool>>,
+    tools: BTreeMap<(String, String), ResolvedDirectTool>,
 }
 
 impl PipelineDirectToolResolver for NativePipelineDirectToolResolver {
     fn resolve(
         &self,
         selection: &DirectToolSelection,
-    ) -> Result<Arc<dyn Tool>, DirectToolExecutionError> {
+    ) -> Result<ResolvedDirectTool, DirectToolExecutionError> {
         self.tools
             .get(&(selection.alias().to_owned(), selection.tool().to_owned()))
             .cloned()
@@ -480,10 +498,13 @@ fn toolsets_by_alias(
 }
 
 async fn build_direct_tool_resolver(
-    definition: &PipelineDefinition,
+    profile: &PipelineExecutionProfile,
     toolsets: &BTreeMap<String, Arc<dyn Toolset>>,
 ) -> Result<Option<Arc<dyn PipelineDirectToolResolver>>, NativeAgentAssemblyError> {
-    let selections = definition.direct_tool_selections().collect::<Vec<_>>();
+    let selections = profile
+        .definition()
+        .direct_tool_selections()
+        .collect::<Vec<_>>();
     if selections.is_empty() {
         return Ok(None);
     }
@@ -529,7 +550,7 @@ async fn build_direct_tool_resolver(
             }
             tools.insert(
                 (selection.alias().to_owned(), selection.tool().to_owned()),
-                tool,
+                ResolvedDirectTool::new(tool, profile.sensitive_direct_tool(selection)),
             );
         }
     }

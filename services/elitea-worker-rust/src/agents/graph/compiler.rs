@@ -22,8 +22,8 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::direct_tool::{
-    DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition, DirectToolSelection,
-    PipelineDirectToolResolver,
+    DIRECT_TOOL_RESUME_STATE_KEY, DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition,
+    DirectToolSelection, PipelineDirectToolResolver,
 };
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
 use super::llm::{LlmNode, LlmNodeDefinition, LlmToolkitSelection, PipelineLlmAgentFactory};
@@ -77,6 +77,7 @@ const INTERNAL_RESULT_KEYS: &[&str] = &[
     "_pipeline_blocked",
     "session_id",
     HITL_RESUME_STATE_KEY,
+    DIRECT_TOOL_RESUME_STATE_KEY,
 ];
 
 #[derive(Clone, Deserialize)]
@@ -506,6 +507,7 @@ impl PipelineDefinition {
             "_pipeline_blocked".to_owned(),
             "session_id".to_owned(),
             HITL_RESUME_STATE_KEY.to_owned(),
+            DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
         ]);
         channels.extend(self.state.keys().cloned());
         for node in &self.nodes {
@@ -784,7 +786,9 @@ pub(super) fn merge_or_clear_object(
 fn runtime_channel_default(channel: &str) -> serde_json::Value {
     match channel {
         "messages" | "hitl_decisions" => json!([]),
-        "parallel_tasks" | "state_types" | HITL_RESUME_STATE_KEY => json!({}),
+        "parallel_tasks" | "state_types" | HITL_RESUME_STATE_KEY | DIRECT_TOOL_RESUME_STATE_KEY => {
+            json!({})
+        }
         "context_info" | "hitl_interrupt" | "_pipeline_blocked" => serde_json::Value::Null,
         channel if RUNTIME_STRING_CHANNELS.contains(&channel) => json!(""),
         _ => serde_json::Value::Null,
@@ -1035,6 +1039,7 @@ fn builtin_state_key(key: &str) -> bool {
 
 fn reserved_user_state_key(key: &str) -> bool {
     key == HITL_RESUME_STATE_KEY
+        || key == DIRECT_TOOL_RESUME_STATE_KEY
         || matches!(
             key,
             "output"

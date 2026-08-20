@@ -87,6 +87,32 @@ fn pipeline_hitl_event(data: Value) -> Event {
     event
 }
 
+fn pipeline_tool_hitl_event(data: Value) -> Event {
+    let message = "Example Corp requires approval before reading customer records.";
+    let payload = GraphInterruptPayload {
+        kind: "dynamic".to_owned(),
+        node: None,
+        message: Some(message.to_owned()),
+        data: Some(data),
+        thread_id: "thread-1".to_owned(),
+        checkpoint_id: "checkpoint-8".to_owned(),
+    };
+    let mut event = Event::with_id("graph-tool-interrupt", "invocation-1");
+    event.timestamp = timestamp(1);
+    event.author = "root-agent".to_owned();
+    event.llm_response.content = Some(Content {
+        role: "assistant".to_owned(),
+        parts: vec![Part::Text {
+            text: format!("Dynamic interrupt: {message}"),
+        }],
+    });
+    event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        payload.to_metadata_value(),
+    );
+    event
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // One ordered browser lifecycle is clearer as one trace.
 fn ordinary_stream_matches_current_text_lifecycle_without_a_heap_event_queue() {
@@ -504,6 +530,53 @@ fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
     );
     assert!(metadata.get("checkpoint_id").is_none());
     assert!(metadata.get("definition_digest").is_none());
+    assert!(projector.is_paused());
+}
+
+#[test]
+fn graph_tool_confirmation_projects_masked_call_bound_sensitive_interrupt() {
+    let message = "Example Corp requires approval before reading customer records.";
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected = projector
+        .project(&pipeline_tool_hitl_event(json!({
+            "schema_revision": "elitea.graph.tool-confirmation.v1",
+            "type": "hitl",
+            "guardrail_type": "sensitive_tool",
+            "node_name": "lookup",
+            "message": message,
+            "available_actions": ["approve", "reject", "block_with_comment"],
+            "routes": {},
+            "definition_digest": format!("sha256:{}", "1".repeat(64)),
+            "tool_call_id": "pipeline:lookup:7",
+            "tool_name": "search_records",
+            "toolkit_name": "Customer Support",
+            "toolkit_type": "customer_support",
+            "action_label": "Customer Support.search_records",
+            "tool_args": {"query": "ticket 42", "token": "***"},
+            "argument_digest": format!("sha256:{}", "2".repeat(64)),
+            "policy_message": message,
+        })))
+        .expect("Toolkit confirmation projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 1);
+    let pending = &projected[0]["response_metadata"]["hitl_interrupt"];
+    assert_eq!(pending["guardrail_type"], "sensitive_tool");
+    assert_eq!(pending["tool_call_id"], "pipeline:lookup:7");
+    assert_eq!(pending["tool_args"]["token"], "***");
+    assert_eq!(
+        pending["available_actions"],
+        json!(["approve", "reject", "block_with_comment"])
+    );
+    assert!(
+        pending["interrupt_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("hitl_gt1:"))
+    );
     assert!(projector.is_paused());
 }
 

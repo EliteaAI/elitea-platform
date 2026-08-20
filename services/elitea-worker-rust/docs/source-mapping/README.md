@@ -77,12 +77,15 @@ Maintained Rust runtime ownership registry:
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
-- `src/agents/graph/{agent,compiler,resume,hitl,parallel,yaml}.rs`:
-  stored-pipeline graph event identity, the complete-document HITL/state-modifier
-  compiler, exact latest-event/checkpoint decision binding, bounded YAML node
-  contracts and the durable parallel-node core. General LLM/tool/MCP/parallel
-  node compilation, static interrupts and production PostgreSQL assembly remain
-  separate gates;
+- `src/agents/graph/{agent,compiler,resume,hitl,llm,direct_tool,state_modifier,parallel,yaml}.rs`:
+  stored-pipeline event identity, complete-document active-node compilation,
+  latest-event/checkpoint decision binding, bounded YAML contracts and the
+  durable parallel-node core. Direct Toolkit reads use native `ToolContext`;
+  sensitive reads pause before dispatch, approval returns the ordinary result,
+  and denial records the same-call blocked result plus SDK-formatted terminal
+  message before `goto END` without nulling typed outputs. MCP/agent/router/
+  decision/printer compilation, LLM-node nested confirmation, effects, static
+  interrupts and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;

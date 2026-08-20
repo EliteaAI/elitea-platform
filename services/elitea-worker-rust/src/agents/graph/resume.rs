@@ -10,8 +10,9 @@ use adk_rust::session::Session;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY;
 use super::hitl::HITL_RESUME_STATE_KEY;
-use crate::agents::events::pipeline_hitl_event_binding;
+use crate::agents::events::{pipeline_hitl_event_binding, pipeline_tool_event_binding};
 use crate::agents::request::AgentExecutionPayload;
 
 const MAX_COMMENT_BYTES: usize = 8 * 1024;
@@ -65,6 +66,167 @@ pub(crate) struct PipelineHitlDecision {
     interrupt_id: String,
     action: PipelineHitlAction,
     value: String,
+}
+
+/// Either configured graph HITL or one direct Toolkit-node confirmation.
+pub(crate) enum PipelineContinuationDecision {
+    Node(PipelineHitlDecision),
+    Tool(PipelineToolDecision),
+}
+
+impl PipelineContinuationDecision {
+    pub(crate) fn from_payload(
+        payload: &AgentExecutionPayload,
+    ) -> Result<Self, PipelineResumeError> {
+        let raw = payload
+            .hitl_decisions
+            .first()
+            .and_then(Value::as_object)
+            .and_then(|decision| decision.get("tool_call_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if raw.is_empty() {
+            PipelineHitlDecision::from_payload(payload).map(Self::Node)
+        } else {
+            PipelineToolDecision::from_payload(payload).map(Self::Tool)
+        }
+    }
+
+    pub(crate) async fn resolve(
+        self,
+        session: &dyn Session,
+        checkpointer: &dyn Checkpointer,
+        root_agent_name: &str,
+        thread_id: &str,
+    ) -> Result<PipelineResume, PipelineResumeError> {
+        match self {
+            Self::Node(decision) => {
+                decision
+                    .resolve(session, checkpointer, root_agent_name, thread_id)
+                    .await
+            }
+            Self::Tool(decision) => {
+                decision
+                    .resolve(session, checkpointer, root_agent_name, thread_id)
+                    .await
+            }
+        }
+    }
+}
+
+/// One exact browser decision for a checkpointed Toolkit-node call.
+pub(crate) struct PipelineToolDecision {
+    interrupt_id: String,
+    tool_call_id: String,
+    action: PipelineHitlAction,
+    value: String,
+}
+
+impl PipelineToolDecision {
+    fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, PipelineResumeError> {
+        if !payload.should_continue
+            || !payload.hitl_resume
+            || payload.auto_approve_sensitive_actions
+            || payload.hitl_decisions.len() != 1
+            || payload.checkpoint_id.is_some()
+        {
+            return Err(PipelineResumeError::new(
+                PipelineResumeErrorCode::UnsupportedCapability,
+            ));
+        }
+        let raw = serde_json::from_value::<RawPipelineHitlDecision>(
+            payload
+                .hitl_decisions
+                .first()
+                .cloned()
+                .ok_or_else(PipelineResumeError::invalid)?,
+        )
+        .map_err(|_| PipelineResumeError::invalid())?;
+        if !valid_identity(&raw.interrupt_id) || !valid_identity(&raw.tool_call_id) {
+            return Err(PipelineResumeError::invalid());
+        }
+        if payload.hitl_action.as_deref() != Some(raw.action.wire_name())
+            || payload.hitl_value.as_deref() != Some(raw.value.as_str())
+        {
+            return Err(PipelineResumeError::invalid());
+        }
+        match raw.action {
+            PipelineHitlAction::Approve | PipelineHitlAction::Reject if !raw.value.is_empty() => {
+                return Err(PipelineResumeError::invalid());
+            }
+            PipelineHitlAction::BlockWithComment
+                if raw.value.is_empty()
+                    || raw.value.len() > MAX_COMMENT_BYTES
+                    || raw.value.contains('\0') =>
+            {
+                return Err(PipelineResumeError::invalid());
+            }
+            PipelineHitlAction::Edit => return Err(PipelineResumeError::invalid()),
+            _ => {}
+        }
+        Ok(Self {
+            interrupt_id: raw.interrupt_id,
+            tool_call_id: raw.tool_call_id,
+            action: raw.action,
+            value: raw.value,
+        })
+    }
+
+    async fn resolve(
+        self,
+        session: &dyn Session,
+        checkpointer: &dyn Checkpointer,
+        root_agent_name: &str,
+        thread_id: &str,
+    ) -> Result<PipelineResume, PipelineResumeError> {
+        let events = session.events().all();
+        let interrupt_index = events
+            .iter()
+            .rposition(|event| event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY))
+            .ok_or_else(PipelineResumeError::stale)?;
+        if interrupt_index + 1 != events.len() {
+            return Err(PipelineResumeError::stale());
+        }
+        let binding =
+            pipeline_tool_event_binding(&events[interrupt_index], root_agent_name, thread_id)
+                .map_err(|_| PipelineResumeError::corrupt())?;
+        if binding.interrupt_id() != self.interrupt_id
+            || binding.tool_call_id() != self.tool_call_id
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        let checkpoint = checkpointer
+            .load(thread_id)
+            .await
+            .map_err(|_| PipelineResumeError::dependency())?
+            .ok_or_else(PipelineResumeError::stale)?;
+        if checkpoint.thread_id != thread_id
+            || checkpoint.checkpoint_id != binding.checkpoint_id()
+            || checkpoint.pending_nodes.as_slice() != [binding.node_name()]
+            || checkpoint
+                .state
+                .get(DIRECT_TOOL_RESUME_STATE_KEY)
+                .is_some_and(|value| value != &json!({}))
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        Ok(PipelineResume {
+            state: [(
+                DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+                json!({
+                    binding.node_name(): {
+                        "definition_digest": binding.definition_digest(),
+                        "tool_call_id": binding.tool_call_id(),
+                        "argument_digest": binding.argument_digest(),
+                        "action": self.action.wire_name(),
+                        "value": self.value,
+                    }
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        })
+    }
 }
 
 impl PipelineHitlDecision {

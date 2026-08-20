@@ -1,20 +1,26 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use adk_rust::graph::{Checkpointer, ExecutionConfig, MemoryCheckpointer, Node, NodeContext};
+use adk_rust::futures::StreamExt as _;
+use adk_rust::graph::interrupt::Interrupt;
+use adk_rust::graph::{Checkpointer, END, ExecutionConfig, MemoryCheckpointer, Node, NodeContext};
 use adk_rust::runner::Runner;
-use adk_rust::session::{CreateRequest, InMemorySessionService, SessionService};
+use adk_rust::session::{CreateRequest, GetRequest, InMemorySessionService, SessionService};
 use adk_rust::{Content, Part, SessionId, Tool, ToolContext, UserId};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::compiler::PipelineNodeRuntimes;
 use super::direct_tool::{
-    DirectToolExecutionError, DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition,
-    DirectToolSelection, PipelineDirectToolResolver,
+    DIRECT_TOOL_RESUME_STATE_KEY, DirectToolExecutionError, DirectToolInputMapping, DirectToolNode,
+    DirectToolNodeDefinition, DirectToolSelection, PipelineDirectToolResolver, ResolvedDirectTool,
 };
 use super::{EliteaGraphAgent, compiler::PipelineDefinition};
+use crate::agents::events::pipeline_tool_event_binding;
+use crate::agents::graph::resume::{PipelineContinuationDecision, PipelineResumeErrorCode};
+use crate::agents::request::{AgentExecutionPayload, NextInputSuggestionPolicy, UserInput};
 use crate::agents::runtime::NativeAgentInvocation;
+use crate::toolkits::{SensitiveToolPolicy, ToolAdmissionPolicy};
 
 const TOOLKIT_NODE: &str = r#"
 id: lookup
@@ -137,15 +143,19 @@ impl Tool for FixtureTool {
 struct FixtureResolver {
     alias: String,
     tool: Arc<dyn Tool>,
+    sensitive: Option<SensitiveToolPolicy>,
 }
 
 impl PipelineDirectToolResolver for FixtureResolver {
     fn resolve(
         &self,
         selection: &DirectToolSelection,
-    ) -> Result<Arc<dyn Tool>, DirectToolExecutionError> {
+    ) -> Result<ResolvedDirectTool, DirectToolExecutionError> {
         if selection.alias() == self.alias && selection.tool() == self.tool.name() {
-            Ok(Arc::clone(&self.tool))
+            Ok(ResolvedDirectTool::new(
+                Arc::clone(&self.tool),
+                self.sensitive.clone(),
+            ))
         } else {
             Err(DirectToolExecutionError::Unavailable)
         }
@@ -170,6 +180,43 @@ fn fixture_runtime(
         Arc::new(FixtureResolver {
             alias: "Customer Support".to_owned(),
             tool,
+            sensitive: None,
+        }),
+        capture,
+    )
+}
+
+fn sensitive_fixture_runtime(
+    response: Value,
+) -> (
+    Arc<dyn PipelineDirectToolResolver>,
+    Arc<Mutex<InvocationCapture>>,
+) {
+    let capture = Arc::new(Mutex::new(InvocationCapture::default()));
+    let tool: Arc<dyn Tool> = Arc::new(FixtureTool {
+        name: "search_records".to_owned(),
+        read_only: true,
+        response,
+        capture: Arc::clone(&capture),
+    });
+    let policy = ToolAdmissionPolicy::from_runtime_config(
+        json!({
+            "toolkit_security": {
+                "sensitive_tools": {"customer_support": ["search_records"]},
+                "sensitive_action_company_name": "Example Corp"
+            }
+        })
+        .as_object()
+        .expect("runtime policy"),
+    )
+    .expect("sensitive policy")
+    .sensitive_tool("customer_support", "Customer Support", "search_records")
+    .expect("sensitive action");
+    (
+        Arc::new(FixtureResolver {
+            alias: "Customer Support".to_owned(),
+            tool,
+            sensitive: Some(policy),
         }),
         capture,
     )
@@ -214,6 +261,130 @@ async fn native_toolkit_node_executes_once_with_checkpoint_step_identity_and_pro
     );
     assert_eq!(capture.function_call_id, "pipeline:lookup:7");
     assert_eq!(capture.session_id, "pipeline-thread");
+}
+
+#[tokio::test]
+async fn sensitive_toolkit_node_pauses_then_approval_returns_the_normal_tool_result() {
+    let definition = DirectToolNodeDefinition::from_yaml(TOOLKIT_NODE).expect("Toolkit node");
+    let (resolver, capture) = sensitive_fixture_runtime(json!({
+        "report": {"id": 42},
+        "messages": [{"role":"assistant","content":"approved read"}]
+    }));
+    let node = DirectToolNode::new(definition, state_types(), resolver);
+    let state = HashMap::from([
+        ("ticket_id".to_owned(), json!(42)),
+        ("filters".to_owned(), json!({"token": "must-not-leak"})),
+    ]);
+    let paused = node
+        .execute(&NodeContext::new(
+            state.clone(),
+            ExecutionConfig::new("thread-sensitive"),
+            7,
+        ))
+        .await
+        .expect("sensitive pause");
+    assert_eq!(capture.lock().expect("capture lock").calls, 0);
+    let Interrupt::Dynamic { data, .. } = paused.interrupt.expect("dynamic interrupt") else {
+        panic!("Toolkit confirmation must use a dynamic interrupt");
+    };
+    let data = data.expect("interrupt data");
+    assert_eq!(data["tool_call_id"], "pipeline:lookup:7");
+    assert_eq!(data["tool_args"]["filters"]["token"], "***");
+    assert_eq!(data["guardrail_type"], "sensitive_tool");
+
+    let mut resumed = state;
+    resumed.insert(
+        DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+        json!({
+            "lookup": {
+                "definition_digest": data["definition_digest"],
+                "tool_call_id": data["tool_call_id"],
+                "argument_digest": data["argument_digest"],
+                "action": "approve",
+                "value": "",
+            }
+        }),
+    );
+    let output = node
+        .execute(&NodeContext::new(
+            resumed,
+            ExecutionConfig::new("thread-sensitive"),
+            7,
+        ))
+        .await
+        .expect("approved execution");
+    assert_eq!(capture.lock().expect("capture lock").calls, 1);
+    assert_eq!(output.updates[DIRECT_TOOL_RESUME_STATE_KEY], json!({}));
+    assert_eq!(output.updates["report"], json!({"id": 42}));
+    assert_eq!(
+        output.updates["messages"],
+        json!([{"role":"assistant","content":"approved read"}])
+    );
+}
+
+#[tokio::test]
+async fn blocked_sensitive_toolkit_node_stops_with_correlated_result_and_clean_state() {
+    let definition = DirectToolNodeDefinition::from_yaml(TOOLKIT_NODE).expect("Toolkit node");
+    let (resolver, capture) = sensitive_fixture_runtime(json!({"report": {"unexpected": true}}));
+    let node = DirectToolNode::new(definition, state_types(), resolver);
+    let state = HashMap::from([
+        ("ticket_id".to_owned(), json!(42)),
+        ("filters".to_owned(), json!({})),
+    ]);
+    let paused = node
+        .execute(&NodeContext::new(
+            state.clone(),
+            ExecutionConfig::new("thread-blocked"),
+            3,
+        ))
+        .await
+        .expect("sensitive pause");
+    let Interrupt::Dynamic { data, .. } = paused.interrupt.expect("dynamic interrupt") else {
+        panic!("Toolkit confirmation must use a dynamic interrupt");
+    };
+    let data = data.expect("interrupt data");
+    let mut resumed = state;
+    resumed.insert(
+        DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+        json!({
+            "lookup": {
+                "definition_digest": data["definition_digest"],
+                "tool_call_id": data["tool_call_id"],
+                "argument_digest": data["argument_digest"],
+                "action": "block_with_comment",
+                "value": "Do not read this customer record.",
+            }
+        }),
+    );
+    let output = node
+        .execute(&NodeContext::new(
+            resumed,
+            ExecutionConfig::new("thread-blocked"),
+            3,
+        ))
+        .await
+        .expect("blocked terminal result");
+    assert_eq!(capture.lock().expect("capture lock").calls, 0);
+    assert_eq!(output.goto, Some(vec![END.to_owned()]));
+    assert!(!output.updates.contains_key("report"));
+    let public = output.updates["_pipeline_blocked"]
+        .as_str()
+        .expect("formatted blocked message");
+    assert!(public.contains("**Pipeline stopped**"));
+    assert!(public.contains("search_records"));
+    assert!(public.contains("node: *lookup*"));
+    let messages = output.updates["messages"]
+        .as_array()
+        .expect("blocked messages");
+    assert_eq!(messages[0]["role"], "tool");
+    assert_eq!(messages[0]["tool_call_id"], "pipeline:lookup:3");
+    assert_eq!(messages[0]["content"]["type"], "sensitive_tool_blocked");
+    assert_eq!(
+        messages[0]["content"]["denial_reason"],
+        "Do not read this customer record."
+    );
+    assert_eq!(messages[1]["role"], "assistant");
+    assert_eq!(messages[1]["content"], public);
 }
 
 #[tokio::test]
@@ -379,4 +550,226 @@ nodes:
             {"role":"assistant","content":"read complete"}
         ]))
     );
+}
+
+#[tokio::test]
+async fn sensitive_toolkit_graph_resumes_exact_checkpoint_and_executes_once_after_approval() {
+    const ROOT: &str = "pipeline-root";
+    const THREAD: &str = "sensitive-toolkit-thread";
+    let definition = sensitive_pipeline_definition();
+    let (resolver, capture) = sensitive_fixture_runtime(json!({
+        "report": {"id": 9},
+        "messages": [{"role":"assistant","content":"approved read"}]
+    }));
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let sessions = sensitive_pipeline_session(THREAD).await;
+    let first = definition
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            None,
+            &PipelineNodeRuntimes::new(None, Some(Arc::clone(&resolver))),
+        )
+        .expect("first graph");
+    let first_events = run_direct_graph(first, sessions.clone(), THREAD, "lookup").await;
+    assert_eq!(first_events.len(), 1);
+    assert_eq!(capture.lock().expect("capture lock").calls, 0);
+    let binding = pipeline_tool_event_binding(&first_events[0], ROOT, THREAD)
+        .expect("checkpoint-bound Toolkit interrupt");
+    assert_eq!(binding.tool_call_id(), "pipeline:lookup:0");
+    let session = sessions
+        .get(GetRequest {
+            app_name: "elitea".to_owned(),
+            user_id: "user-1".to_owned(),
+            session_id: THREAD.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("persisted session");
+    let wrong_call = PipelineContinuationDecision::from_payload(&tool_resume_payload(
+        binding.interrupt_id(),
+        "pipeline:lookup:wrong",
+        "approve",
+        "",
+        THREAD,
+    ))
+    .expect("bounded wrong call")
+    .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+    .await;
+    let Err(wrong_call) = wrong_call else {
+        panic!("wrong call must be stale");
+    };
+    assert_eq!(wrong_call.code(), PipelineResumeErrorCode::StaleDecision);
+    let resume = PipelineContinuationDecision::from_payload(&tool_resume_payload(
+        binding.interrupt_id(),
+        binding.tool_call_id(),
+        "approve",
+        "",
+        THREAD,
+    ))
+    .expect("approved Toolkit decision")
+    .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+    .await
+    .expect("checkpoint-bound Toolkit resume");
+    let resumed = definition
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            Some(resume),
+            &PipelineNodeRuntimes::new(None, Some(resolver)),
+        )
+        .expect("resumed graph");
+    let events = run_direct_graph(resumed, sessions.clone(), THREAD, "continue").await;
+    assert_eq!(capture.lock().expect("capture lock").calls, 1);
+    assert_eq!(events.len(), 1);
+    assert!(
+        !events[0]
+            .provider_metadata
+            .contains_key(adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY)
+    );
+    let completed = sessions
+        .get(GetRequest {
+            app_name: "elitea".to_owned(),
+            user_id: "user-1".to_owned(),
+            session_id: THREAD.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("completed session");
+    let replay = PipelineContinuationDecision::from_payload(&tool_resume_payload(
+        binding.interrupt_id(),
+        binding.tool_call_id(),
+        "approve",
+        "",
+        THREAD,
+    ))
+    .expect("same decision")
+    .resolve(completed.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+    .await;
+    let Err(replay) = replay else {
+        panic!("completed call cannot replay");
+    };
+    assert_eq!(replay.code(), PipelineResumeErrorCode::StaleDecision);
+}
+
+fn sensitive_pipeline_definition() -> PipelineDefinition {
+    PipelineDefinition::from_yaml(
+        r#"
+state:
+  ticket_id: {type: int, value: 9}
+  filters: {type: dict, value: {active: true}}
+  report: dict
+  messages: list
+entry_point: lookup
+nodes:
+  - id: lookup
+    type: toolkit
+    toolkit_name: Customer Support
+    tool: search_records
+    input_mapping:
+      query: {type: fstring, value: "ticket {ticket_id}"}
+      filters: {type: variable, value: filters}
+    input: [ticket_id, filters]
+    output: [report, messages]
+    structured_output: true
+    transition: END
+"#,
+    )
+    .expect("sensitive Toolkit pipeline")
+}
+
+async fn sensitive_pipeline_session(thread: &str) -> Arc<InMemorySessionService> {
+    let sessions = Arc::new(InMemorySessionService::new());
+    sessions
+        .create(CreateRequest {
+            app_name: "elitea".to_owned(),
+            user_id: "user-1".to_owned(),
+            session_id: Some(thread.to_owned()),
+            state: HashMap::new(),
+        })
+        .await
+        .expect("pipeline session");
+    sessions
+}
+
+async fn run_direct_graph(
+    graph: adk_rust::graph::GraphAgent,
+    sessions: Arc<InMemorySessionService>,
+    thread: &str,
+    input: &str,
+) -> Vec<adk_rust::Event> {
+    let session_service: Arc<dyn SessionService> = sessions;
+    let runner = Runner::builder()
+        .app_name("elitea")
+        .agent(Arc::new(EliteaGraphAgent::new(graph)))
+        .session_service(session_service)
+        .build()
+        .expect("pipeline runner");
+    let mut running = runner
+        .run(
+            UserId::new("user-1").expect("fixture user"),
+            SessionId::new(thread).expect("fixture session"),
+            Content::new("user").with_text(input),
+        )
+        .await
+        .expect("Toolkit pipeline invocation");
+    let mut events = Vec::new();
+    while let Some(event) = running.next().await {
+        events.push(event.unwrap_or_else(|error| panic!("pipeline event: {error}")));
+    }
+    events
+}
+
+fn tool_resume_payload(
+    interrupt_id: &str,
+    tool_call_id: &str,
+    action: &str,
+    value: &str,
+    thread: &str,
+) -> AgentExecutionPayload {
+    AgentExecutionPayload {
+        llm: Map::new(),
+        chat_history: Vec::new(),
+        user_input: UserInput::Text("continue".to_owned()),
+        thread_id: Some(thread.to_owned()),
+        checkpoint_id: None,
+        debug: false,
+        tools: Vec::new(),
+        application: Map::new(),
+        internal_tools: Vec::new(),
+        steps_limit: None,
+        mcp_tokens: Map::new(),
+        ignored_mcp_servers: Vec::new(),
+        user_declined_mcp_servers: Vec::new(),
+        should_continue: true,
+        hitl_resume: true,
+        hitl_action: Some(action.to_owned()),
+        hitl_value: Some(value.to_owned()),
+        hitl_decisions: vec![json!({
+            "interrupt_id": interrupt_id,
+            "tool_call_id": tool_call_id,
+            "action": action,
+            "value": value,
+        })],
+        execution_generation: Some("generation-1".to_owned()),
+        is_regenerate: false,
+        meta: Map::new(),
+        conversation_id: Some("conversation-1".to_owned()),
+        persona: "generic".to_owned(),
+        context_settings: Map::new(),
+        supports_vision: false,
+        return_chat_history: false,
+        invoked_skills: Vec::new(),
+        applied_skills: Vec::new(),
+        auto_approve_sensitive_actions: false,
+        attached_skills: Vec::new(),
+        input_attachments: Vec::new(),
+        parallel_reconcile: None,
+        parallel_terminal_errors: Vec::new(),
+        exception_handling_enabled: None,
+        debug_mode: None,
+        next_input_suggestion: NextInputSuggestionPolicy::default(),
+    }
 }

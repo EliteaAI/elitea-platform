@@ -32,7 +32,7 @@ accepted by `create_graph`.
 | `printer` | Publish the declared state value, durably pause after it where configured, then clear the printer marker without duplicating browser output. Pending |
 | `router` | Render bounded configured routes from state and choose only a declared target. Pending |
 | `state_modifier` | Render one bounded MiniJinja template with the four current SDK filters, update the first declared output using the existing state type, and clear declared variables by type. When its explicit route targets the `END` control-flow sink, that output is also a public-result candidate. Implemented capability-disabled |
-| `toolkit` | Execute the exact selected read-only tool from the selected configured toolkit with fixed/state/template argument mapping and declared typed output projection. It is one native ADK `Tool` call, not an `LlmAgent` turn. Implemented capability-disabled; sensitive tools and remote effects remain fail-closed until graph-native confirmation plus effect receipts can resume the same checkpoint. |
+| `toolkit` | Execute the exact selected read-only tool from the selected configured toolkit with fixed/state/template argument mapping and declared typed output projection. It is one native ADK `Tool` call, not an `LlmAgent` turn. Implemented capability-disabled, including checkpoint-bound confirmation for sensitive reads. Approval returns the ordinary tool result; reject/block stops at `END`. Remote effects remain fail-closed pending effect receipts/reconciliation. |
 
 The UI marks `function`, `condition`, `pipeline`, `loop`, `loop_from_tool` and
 `tool` deprecated and removes them from the add menu. `END`, `ghost` and
@@ -45,7 +45,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 | Python source branch / symbol | Current observable behavior | Rust target | ADK-Rust 2.0.0 use | Status / deliberate deviation |
 | --- | --- | --- | --- | --- |
 | `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml,llm,direct_tool}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl`, `state_modifier`, `llm` and configured `toolkit` nodes. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order plus node mapping/tool/output settings. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
-| Node type `toolkit` -> `FunctionTool` | Map fixed, state-variable or `{name}` template values to one exact configured-tool argument object, execute once, and project declared outputs | `src/agents/graph/{direct_tool,compiler}.rs`, `src/agents/{pipeline,session}.rs`, `src/toolkits/{snapshot,materialize}.rs` | Native ADK `Tool`/`ToolContext`, claim-materialized `Toolset`, graph state and ordinary edges | Implemented capability-disabled for read-only actions. Alias, configured selection, blocked and sensitive policy are admitted before credential redemption; exact catalog identity and read-only metadata are checked after bounded materialization and before graph execution. Empty outputs append a bounded assistant message; ordinary outputs retain the active SDK first-output/messages projection; `structured_output: true` deliberately repairs the UI/SDK mismatch by requiring same-named, state-type-correct object fields. Rust does not port `FunctionTool`'s mutable wrapper, broad exception-as-assistant-message leak, silent type corruption or post-result model turn. Effects and direct sensitive confirmation remain gated |
+| Node type `toolkit` -> `FunctionTool` | Map fixed, state-variable or `{name}` template values to one exact configured-tool argument object, execute once, and project declared outputs; if the selected read is sensitive, pause before dispatch and terminate cleanly when declined | `src/agents/graph/{direct_tool,compiler,resume}.rs`, `src/agents/{pipeline,session,events}.rs`, `src/toolkits/{snapshot,materialize,policy}.rs` | Native ADK `Tool`/`ToolContext`, `interrupt_with_data`, claim-materialized `Toolset`, graph state and `goto END` | Implemented capability-disabled for read-only actions. Alias, configured selection, blocked and sensitive policy are admitted before credential redemption; exact catalog identity/read-only metadata are checked after bounded materialization. Sensitive arguments are masked publicly and bound to the invocation, checkpoint, pending node, definition, `pipeline:<node>:<step>` call ID and canonical argument digest. Approval consumes the one-use decision and applies the normal tool result. Reject/block executes no provider call, records `sensitive_tool_blocked` under the same call ID, emits the SDK-compatible markdown explanation, leaves typed outputs untouched and routes directly to `END`. Empty outputs and `structured_output` retain the previously documented projection. Rust does not port mutable wrappers, raw exception leakage or null-based state corruption. Effects remain gated on durable outcome reconciliation |
 | Node types `function`, `mcp` -> `FunctionTool` | Execute a legacy function or selected MCP tool with declared state mapping | Future typed function/MCP nodes | ADK `Tool`/MCP toolset plus graph interrupts | Pending. MCP OAuth/on-demand authorization must resume the exact outer graph checkpoint; it is not folded into the configured Toolkit node |
 | Node type `tool` -> `ToolNode` | Direct selected-tool execution with structured-output option | `src/agents/graph/nodes/tool.rs` | ADK typed tool | Planned |
 | Node type `loop` -> `LoopNode` | Repeated tool work and declared state projection | `src/agents/graph/nodes/loop.rs` | ADK loop and graph primitives where semantics match | Planned; ADK's sequential `LoopNodeConfig.parallel` is not true parallelism |
@@ -178,10 +178,21 @@ data-free graph failure instead. It also validates declared output state types
 rather than checkpointing an incompatible value. The UI exposes
 `structured_output` for Toolkit nodes but Python never forwards it to
 `FunctionTool`; Rust deliberately makes the flag meaningful by accepting only
-an object with every declared non-message key. Remote effects and sensitive
-reads are not downgraded to direct calls: both remain unavailable until an
-interrupt-bound confirmation and, for effects, durable outcome reconciliation
-can preserve the same graph checkpoint.
+an object with every declared non-message key.
+
+A sensitive read uses one dynamic ADK graph interrupt before dispatch. The
+public decision is rebound to the latest durable session interrupt and exact
+private graph checkpoint, pending node, node-definition digest, visit-specific
+tool call ID and canonical argument digest. Approval clears the resume channel,
+executes once and returns the ordinary projection. Reject or Block With Comment
+never invokes the provider: Rust preserves the SDK's formatted
+`**Pipeline stopped**` explanation, stores a structured
+`sensitive_tool_blocked` tool record with the same call ID, and uses
+`NodeOutput::with_goto(END)`. Because no LLM exists in this node, it does not
+pretend the graph can choose an alternative. Unlike Python, it leaves declared
+typed outputs unchanged rather than writing incompatible nulls. Remote effects
+remain unavailable until durable outcome reconciliation can preserve the same
+graph checkpoint.
 
 `START` and `END` remain only the graph's entry and sink sentinels. Public
 result selection is a separate policy matching the current SDK's business

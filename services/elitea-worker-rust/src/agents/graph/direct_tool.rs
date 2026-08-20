@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
-use adk_rust::graph::{GraphError, Node, NodeContext, NodeOutput, State};
+use adk_rust::graph::{END, GraphError, Node, NodeContext, NodeOutput, State};
 use adk_rust::tool::SimpleToolContext;
 use adk_rust::{
     CallbackContext, Content, EventActions, InvocationContext, MemoryEntry, ReadonlyContext,
@@ -22,6 +22,8 @@ use thiserror::Error;
 use tracing::Instrument as _;
 
 use super::yaml::{valid_graph_id, valid_output_key};
+use crate::agents::events::mask_sensitive_arguments;
+use crate::toolkits::SensitiveToolPolicy;
 
 const MAX_NODE_YAML_BYTES: usize = 64 * 1024;
 const MAX_MAPPING_ENTRIES: usize = 256;
@@ -29,7 +31,13 @@ const MAX_NODE_VARIABLES: usize = 64;
 const MAX_TOOL_IDENTITY_BYTES: usize = 1_024;
 const MAX_MAPPING_VALUE_BYTES: usize = 64 * 1024;
 const MAX_RESULT_BYTES: usize = 512 * 1024;
+const MAX_CONFIRMATION_ARGUMENT_BYTES: usize = 40 * 1024;
+const MAX_CONFIRMATION_IDENTITY_BYTES: usize = 512;
+const MAX_CONFIRMATION_MESSAGE_BYTES: usize = 16 * 1024;
 const CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.direct_tool.config.v1\0";
+const ARGUMENT_DIGEST_DOMAIN: &[u8] = b"elitea.graph.direct_tool.arguments.v1\0";
+const TOOL_CONFIRMATION_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
+pub(crate) const DIRECT_TOOL_RESUME_STATE_KEY: &str = "__elitea_tool_resume_v1";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -307,7 +315,21 @@ pub(crate) trait PipelineDirectToolResolver: Send + Sync {
     fn resolve(
         &self,
         selection: &DirectToolSelection,
-    ) -> Result<Arc<dyn Tool>, DirectToolExecutionError>;
+    ) -> Result<ResolvedDirectTool, DirectToolExecutionError>;
+}
+
+/// One exact materialized tool plus its immutable invocation policy.
+#[derive(Clone)]
+pub(crate) struct ResolvedDirectTool {
+    tool: Arc<dyn Tool>,
+    sensitive: Option<SensitiveToolPolicy>,
+}
+
+impl ResolvedDirectTool {
+    #[must_use]
+    pub(crate) const fn new(tool: Arc<dyn Tool>, sensitive: Option<SensitiveToolPolicy>) -> Self {
+        Self { tool, sensitive }
+    }
 }
 
 /// Native graph node that invokes one exact ADK tool.
@@ -329,6 +351,114 @@ impl DirectToolNode {
             resolver,
         }
     }
+
+    async fn execute_mapped(&self, context: &NodeContext) -> Result<NodeOutput, GraphError> {
+        tracing::Span::current().record("stage", "input_mapping");
+        let arguments = self
+            .definition
+            .map_arguments(&context.state)
+            .map_err(|_| node_failure(self.name()))?;
+        tracing::Span::current().record("stage", "tool_binding");
+        let ResolvedDirectTool { tool, sensitive } = self
+            .resolver
+            .resolve(self.definition.selection())
+            .map_err(|_| node_failure(self.name()))?;
+        if !tool.is_read_only() {
+            return Err(node_failure(self.name()));
+        }
+        let tool_context = pipeline_tool_context(context, self.name(), tool.name());
+        let granted_scopes = tool_context.user_scopes();
+        if tool
+            .required_scopes()
+            .iter()
+            .any(|required| !granted_scopes.iter().any(|granted| granted == required))
+        {
+            return Err(node_failure(self.name()));
+        }
+        if let Some(policy) = sensitive.as_ref() {
+            return self
+                .execute_sensitive(context, tool.as_ref(), tool_context, arguments, policy)
+                .await;
+        }
+        if context
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .and_then(Value::as_object)
+            .is_some_and(|resumes| resumes.contains_key(self.name()))
+        {
+            return Err(node_failure(self.name()));
+        }
+        self.invoke_and_project(tool.as_ref(), tool_context, arguments, None)
+            .await
+    }
+
+    async fn execute_sensitive(
+        &self,
+        context: &NodeContext,
+        tool: &dyn Tool,
+        tool_context: Arc<dyn ToolContext>,
+        arguments: Value,
+        policy: &SensitiveToolPolicy,
+    ) -> Result<NodeOutput, GraphError> {
+        tracing::Span::current().record("stage", "tool_confirmation");
+        match self
+            .sensitive_decision(context, &arguments, tool_context.function_call_id(), policy)
+            .map_err(|_| node_failure(self.name()))?
+        {
+            SensitiveDirectToolDecision::Pause(data) => Ok(NodeOutput::interrupt_with_data(
+                policy.policy_message(),
+                data,
+            )),
+            SensitiveDirectToolDecision::Approve(remaining) => {
+                self.invoke_and_project(tool, tool_context, arguments, Some(remaining))
+                    .await
+            }
+            SensitiveDirectToolDecision::Block {
+                remaining,
+                result,
+                message,
+            } => Ok(NodeOutput::new()
+                .with_update(DIRECT_TOOL_RESUME_STATE_KEY, remaining)
+                .with_update("_pipeline_blocked", Value::String(message.clone()))
+                .with_update(
+                    "messages",
+                    blocked_messages(
+                        tool_context.function_call_id(),
+                        tool.name(),
+                        &result,
+                        &message,
+                    ),
+                )
+                .with_goto([END])),
+        }
+    }
+
+    async fn invoke_and_project(
+        &self,
+        tool: &dyn Tool,
+        tool_context: Arc<dyn ToolContext>,
+        arguments: Value,
+        remaining: Option<Value>,
+    ) -> Result<NodeOutput, GraphError> {
+        tracing::Span::current().record("stage", "tool_execution");
+        let result = tool
+            .execute(tool_context, arguments)
+            .await
+            .map_err(|_| node_failure(self.name()))?;
+        tracing::Span::current().record("stage", "state_projection");
+        let updates = self
+            .definition
+            .project_result(result, &self.state_types)
+            .map_err(|_| node_failure(self.name()))?;
+        let mut output = NodeOutput::new();
+        if let Some(remaining) = remaining {
+            output = output.with_update(DIRECT_TOOL_RESUME_STATE_KEY, remaining);
+        }
+        for (key, value) in updates {
+            output = output.with_update(&key, value);
+        }
+        Ok(output)
+    }
 }
 
 #[async_trait]
@@ -348,47 +478,7 @@ impl Node for DirectToolNode {
             outcome = tracing::field::Empty,
             error_code = tracing::field::Empty,
         );
-        let result = async {
-            tracing::Span::current().record("stage", "input_mapping");
-            let arguments = self
-                .definition
-                .map_arguments(&context.state)
-                .map_err(|_| node_failure(self.name()))?;
-            tracing::Span::current().record("stage", "tool_binding");
-            let tool = self
-                .resolver
-                .resolve(self.definition.selection())
-                .map_err(|_| node_failure(self.name()))?;
-            if !tool.is_read_only() {
-                return Err(node_failure(self.name()));
-            }
-            let tool_context = pipeline_tool_context(context, self.name(), tool.name());
-            let granted_scopes = tool_context.user_scopes();
-            if tool
-                .required_scopes()
-                .iter()
-                .any(|required| !granted_scopes.iter().any(|granted| granted == required))
-            {
-                return Err(node_failure(self.name()));
-            }
-            tracing::Span::current().record("stage", "tool_execution");
-            let result = tool
-                .execute(tool_context, arguments)
-                .await
-                .map_err(|_| node_failure(self.name()))?;
-            tracing::Span::current().record("stage", "state_projection");
-            let updates = self
-                .definition
-                .project_result(result, &self.state_types)
-                .map_err(|_| node_failure(self.name()))?;
-            let mut output = NodeOutput::new();
-            for (key, value) in updates {
-                output = output.with_update(&key, value);
-            }
-            Ok(output)
-        }
-        .instrument(span.clone())
-        .await;
+        let result = self.execute_mapped(context).instrument(span.clone()).await;
         if result.is_ok() {
             span.record("outcome", "completed");
         } else {
@@ -397,6 +487,270 @@ impl Node for DirectToolNode {
         }
         result
     }
+}
+
+enum SensitiveDirectToolDecision {
+    Pause(Value),
+    Approve(Value),
+    Block {
+        remaining: Value,
+        result: Value,
+        message: String,
+    },
+}
+
+impl DirectToolNode {
+    fn sensitive_decision(
+        &self,
+        context: &NodeContext,
+        arguments: &Value,
+        call_id: &str,
+        policy: &SensitiveToolPolicy,
+    ) -> Result<SensitiveDirectToolDecision, DirectToolExecutionError> {
+        if [
+            self.name(),
+            self.definition.selection().tool(),
+            policy.toolkit_name(),
+            policy.toolkit_type(),
+            policy.action_name(),
+        ]
+        .into_iter()
+        .any(|value| {
+            value.is_empty()
+                || value.len() > MAX_CONFIRMATION_IDENTITY_BYTES
+                || value.chars().any(char::is_control)
+        }) || policy.policy_message().is_empty()
+            || policy.policy_message().len() > MAX_CONFIRMATION_MESSAGE_BYTES
+            || policy.policy_message().chars().any(|character| {
+                character == '\0'
+                    || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+            })
+        {
+            return Err(DirectToolExecutionError::ResourceExhausted);
+        }
+        let argument_digest =
+            argument_digest(call_id, self.definition.selection().tool(), arguments)?;
+        let definition_digest = self.definition.digest_label();
+        let resumes = context
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .map(|value| {
+                value
+                    .as_object()
+                    .ok_or(DirectToolExecutionError::InvalidArguments)
+            })
+            .transpose()?;
+        let raw = resumes.and_then(|resumes| resumes.get(self.name()));
+        let Some(raw) = raw else {
+            let masked = mask_sensitive_arguments(arguments, 0)
+                .map_err(|_| DirectToolExecutionError::ResourceExhausted)?;
+            return Ok(SensitiveDirectToolDecision::Pause(json!({
+                "schema_revision": TOOL_CONFIRMATION_SCHEMA,
+                "type": "hitl",
+                "guardrail_type": "sensitive_tool",
+                "node_name": self.name(),
+                "message": policy.policy_message(),
+                "available_actions": ["approve", "reject", "block_with_comment"],
+                "routes": {},
+                "definition_digest": definition_digest,
+                "tool_call_id": call_id,
+                "tool_name": self.definition.selection().tool(),
+                "toolkit_name": policy.toolkit_name(),
+                "toolkit_type": policy.toolkit_type(),
+                "action_label": policy.action_name(),
+                "tool_args": masked,
+                "argument_digest": argument_digest,
+                "policy_message": policy.policy_message(),
+            })));
+        };
+        let resumes = resumes.ok_or(DirectToolExecutionError::InvalidArguments)?;
+        let decision =
+            SensitiveResumeDecision::parse(raw, &definition_digest, call_id, &argument_digest)?;
+        let mut remaining = resumes.clone();
+        if remaining.remove(self.name()).is_none() {
+            return Err(DirectToolExecutionError::InvalidArguments);
+        }
+        let remaining = Value::Object(remaining);
+        match decision.action {
+            SensitiveResumeAction::Approve => Ok(SensitiveDirectToolDecision::Approve(remaining)),
+            SensitiveResumeAction::Reject | SensitiveResumeAction::BlockWithComment => {
+                let reason = decision.value.as_deref().unwrap_or(
+                    "This exact sensitive Toolkit call was declined and was not executed.",
+                );
+                let message = blocked_pipeline_message(
+                    self.name(),
+                    self.definition.selection().tool(),
+                    policy.toolkit_type(),
+                );
+                let result =
+                    blocked_result(self.definition.selection().tool(), policy, reason, &message);
+                Ok(SensitiveDirectToolDecision::Block {
+                    remaining,
+                    result,
+                    message,
+                })
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SensitiveResumeAction {
+    Approve,
+    Reject,
+    BlockWithComment,
+}
+
+struct SensitiveResumeDecision {
+    action: SensitiveResumeAction,
+    value: Option<String>,
+}
+
+impl SensitiveResumeDecision {
+    fn parse(
+        raw: &Value,
+        definition_digest: &str,
+        call_id: &str,
+        argument_digest: &str,
+    ) -> Result<Self, DirectToolExecutionError> {
+        let object = raw
+            .as_object()
+            .ok_or(DirectToolExecutionError::InvalidArguments)?;
+        if object.len() > 5
+            || object.keys().any(|key| {
+                !matches!(
+                    key.as_str(),
+                    "definition_digest" | "tool_call_id" | "argument_digest" | "action" | "value"
+                )
+            })
+            || object.get("definition_digest").and_then(Value::as_str) != Some(definition_digest)
+            || object.get("tool_call_id").and_then(Value::as_str) != Some(call_id)
+            || object.get("argument_digest").and_then(Value::as_str) != Some(argument_digest)
+        {
+            return Err(DirectToolExecutionError::InvalidArguments);
+        }
+        let action = match object.get("action").and_then(Value::as_str) {
+            Some("approve") => SensitiveResumeAction::Approve,
+            Some("reject") => SensitiveResumeAction::Reject,
+            Some("block_with_comment") => SensitiveResumeAction::BlockWithComment,
+            _ => return Err(DirectToolExecutionError::InvalidArguments),
+        };
+        let value = object
+            .get("value")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        if (action == SensitiveResumeAction::BlockWithComment && value.is_none())
+            || (action != SensitiveResumeAction::BlockWithComment && value.is_some())
+        {
+            return Err(DirectToolExecutionError::InvalidArguments);
+        }
+        if value.as_ref().is_some_and(|value| {
+            value.len() > 8 * 1024
+                || value.chars().any(|character| {
+                    character == '\0'
+                        || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+                })
+        }) {
+            return Err(DirectToolExecutionError::ResourceExhausted);
+        }
+        Ok(Self { action, value })
+    }
+}
+
+impl DirectToolNodeDefinition {
+    fn digest_label(&self) -> String {
+        format!("sha256:{}", hex(&self.config_digest()))
+    }
+}
+
+fn argument_digest(
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<String, DirectToolExecutionError> {
+    let canonical = canonical_value(arguments, 0)?;
+    let encoded =
+        serde_json::to_vec(&canonical).map_err(|_| DirectToolExecutionError::InvalidArguments)?;
+    if encoded.len() > MAX_CONFIRMATION_ARGUMENT_BYTES {
+        return Err(DirectToolExecutionError::ResourceExhausted);
+    }
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(ARGUMENT_DIGEST_DOMAIN);
+    digest_field(&mut context, call_id.as_bytes());
+    digest_field(&mut context, tool_name.as_bytes());
+    digest_field(&mut context, &encoded);
+    Ok(format!("sha256:{}", hex(context.finish().as_ref())))
+}
+
+fn canonical_value(value: &Value, depth: usize) -> Result<Value, DirectToolExecutionError> {
+    if depth > 64 {
+        return Err(DirectToolExecutionError::ResourceExhausted);
+    }
+    match value {
+        Value::Array(values) => values
+            .iter()
+            .map(|value| canonical_value(value, depth + 1))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            let mut canonical = Map::with_capacity(values.len());
+            for key in keys {
+                canonical.insert(
+                    key.clone(),
+                    canonical_value(
+                        values
+                            .get(key)
+                            .ok_or(DirectToolExecutionError::InvalidArguments)?,
+                        depth + 1,
+                    )?,
+                );
+            }
+            Ok(Value::Object(canonical))
+        }
+        value => Ok(value.clone()),
+    }
+}
+
+fn blocked_result(
+    tool_name: &str,
+    policy: &SensitiveToolPolicy,
+    reason: &str,
+    message: &str,
+) -> Value {
+    json!({
+        "type": "sensitive_tool_blocked",
+        "blocked_tool_name": tool_name,
+        "blocked_toolkit_name": policy.toolkit_name(),
+        "blocked_toolkit_type": policy.toolkit_type(),
+        "denial_reason": reason,
+        "message": message,
+    })
+}
+
+fn blocked_pipeline_message(node_name: &str, tool_name: &str, toolkit_type: &str) -> String {
+    let details = if toolkit_type.is_empty() {
+        format!("node: *{node_name}*")
+    } else {
+        format!("toolkit type: *{toolkit_type}*, node: *{node_name}*")
+    };
+    format!(
+        "**Pipeline stopped** — the action **{tool_name}** ({details}) was **blocked** by user.\n\nDownstream nodes that depend on `{tool_name}` output were skipped to prevent invalid data.\n\n> **Tip:** Regenerate this message to re-trigger the approval request and try again."
+    )
+}
+
+fn blocked_messages(call_id: &str, tool_name: &str, result: &Value, message: &str) -> Value {
+    json!([
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "name": tool_name,
+            "content": result,
+        },
+        {"role": "assistant", "content": message},
+    ])
 }
 
 fn pipeline_tool_context(
@@ -747,6 +1101,16 @@ fn copy_digest(value: &[u8]) -> [u8; 32] {
     let mut digest = [0_u8; 32];
     digest.copy_from_slice(value);
     digest
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 #[derive(Debug, Error)]
