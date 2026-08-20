@@ -1,9 +1,8 @@
 //! Bounded stored-pipeline document admission and ADK graph compilation.
 //!
-//! This first compiler slice deliberately admits only the already implemented
-//! dynamic `hitl` node. Other Python node families fail before graph or
-//! credential construction; they are added here only after their own bounded
-//! business contract exists.
+//! Node families are admitted only after their bounded business contract is
+//! implemented. Unsupported Python branches still fail before graph or
+//! credential construction.
 
 #![allow(dead_code)] // Production pipeline assembly remains capability-gated.
 
@@ -11,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-use adk_rust::graph::{Checkpointer, GraphAgent, GraphError, START, State};
-use adk_rust::{InvocationContext, Part};
+use adk_rust::graph::{Checkpointer, END, GraphAgent, GraphError, START, State};
+use adk_rust::{Event, InvocationContext, Part};
 use ring::digest;
 use serde::Deserialize;
 use serde::de::{Deserializer, SeqAccess, Visitor};
@@ -20,9 +19,10 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
-use super::pipeline_completed_event;
 use super::resume::PipelineResume;
+use super::state_modifier::{StateModifierNode, StateModifierNodeDefinition};
 use super::yaml::{valid_graph_id, valid_output_key};
+use super::{pipeline_completed_event, pipeline_result_event};
 
 const MAX_PIPELINE_YAML_BYTES: usize = 512 * 1024;
 const MAX_PIPELINE_NODES: usize = 128;
@@ -30,6 +30,11 @@ const MAX_PIPELINE_STATE_KEYS: usize = 256;
 const MAX_STATIC_INTERRUPTS: usize = 128;
 const PIPELINE_RECURSION_LIMIT: usize = 100;
 const PIPELINE_DIGEST_DOMAIN: &[u8] = b"elitea.graph.pipeline.config.v1\0";
+
+type ValidatedState = (
+    BTreeMap<String, String>,
+    BTreeMap<String, serde_json::Value>,
+);
 
 #[derive(Clone, Deserialize)]
 #[serde(untagged)]
@@ -43,6 +48,8 @@ enum RawStateType {
 struct RawStateTypeDescriptor {
     #[serde(rename = "type")]
     kind: String,
+    #[serde(default)]
+    value: Option<serde_json::Value>,
 }
 
 impl RawStateType {
@@ -50,6 +57,13 @@ impl RawStateType {
         match self {
             Self::Name(name) => name,
             Self::Descriptor(descriptor) => &descriptor.kind,
+        }
+    }
+
+    fn configured_value(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Name(_) => None,
+            Self::Descriptor(descriptor) => descriptor.value.as_ref(),
         }
     }
 }
@@ -142,8 +156,66 @@ where
 pub(crate) struct PipelineDefinition {
     entry_point: String,
     state: BTreeMap<String, String>,
-    nodes: Vec<HitlNodeDefinition>,
+    state_defaults: BTreeMap<String, serde_json::Value>,
+    nodes: Vec<PipelineNodeDefinition>,
     definition_digest: [u8; 32],
+}
+
+#[derive(Clone)]
+enum PipelineNodeDefinition {
+    Hitl(HitlNodeDefinition),
+    StateModifier(StateModifierNodeDefinition),
+}
+
+impl PipelineNodeDefinition {
+    fn id(&self) -> &str {
+        match self {
+            Self::Hitl(node) => node.id(),
+            Self::StateModifier(node) => node.id(),
+        }
+    }
+
+    fn input_keys(&self) -> &[String] {
+        match self {
+            Self::Hitl(node) => node.input_keys(),
+            Self::StateModifier(node) => node.input_keys(),
+        }
+    }
+
+    fn output_keys(&self) -> &[String] {
+        match self {
+            Self::Hitl(_) => &[],
+            Self::StateModifier(node) => node.output_keys(),
+        }
+    }
+
+    fn cleaned_keys(&self) -> &[String] {
+        match self {
+            Self::Hitl(_) => &[],
+            Self::StateModifier(node) => node.variables_to_clean(),
+        }
+    }
+
+    fn edit_state_key(&self) -> Option<&str> {
+        match self {
+            Self::Hitl(node) => node.edit_state_key(),
+            Self::StateModifier(_) => None,
+        }
+    }
+
+    fn route_targets(&self) -> Vec<&str> {
+        match self {
+            Self::Hitl(node) => node.route_targets().collect(),
+            Self::StateModifier(node) => node.transition().into_iter().collect(),
+        }
+    }
+
+    fn config_digest(&self) -> [u8; 32] {
+        match self {
+            Self::Hitl(node) => node.config_digest(),
+            Self::StateModifier(node) => node.config_digest(),
+        }
+    }
 }
 
 impl PipelineDefinition {
@@ -168,7 +240,7 @@ impl PipelineDefinition {
                 "the pipeline entry point is malformed",
             ));
         }
-        let state = validate_state(raw.state)?;
+        let (state, state_defaults) = validate_state(raw.state)?;
         if !raw.interrupt_before.is_empty() || !raw.interrupt_after.is_empty() {
             return Err(PipelineConfigurationError::Unsupported(
                 "static pipeline interrupts are not enabled in this compiler slice",
@@ -179,15 +251,25 @@ impl PipelineDefinition {
         let mut node_ids = BTreeSet::new();
         for raw_node in raw.nodes {
             let node_type = yaml_string_field(&raw_node, "type")?;
-            if node_type != "hitl" {
-                return Err(PipelineConfigurationError::Unsupported(
-                    "the pipeline contains a node type that is not enabled",
-                ));
-            }
             let encoded = serde_yaml_ng::to_string(&raw_node)
                 .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
-            let node = HitlNodeDefinition::from_yaml(&encoded)
-                .map_err(|_| PipelineConfigurationError::Invalid("a HITL node is invalid"))?;
+            let node = match node_type {
+                "hitl" => {
+                    PipelineNodeDefinition::Hitl(HitlNodeDefinition::from_yaml(&encoded).map_err(
+                        |_| PipelineConfigurationError::Invalid("a HITL node is invalid"),
+                    )?)
+                }
+                "state_modifier" => PipelineNodeDefinition::StateModifier(
+                    StateModifierNodeDefinition::from_yaml(&encoded).map_err(|_| {
+                        PipelineConfigurationError::Invalid("a state modifier node is invalid")
+                    })?,
+                ),
+                _ => {
+                    return Err(PipelineConfigurationError::Unsupported(
+                        "the pipeline contains a node type that is not enabled",
+                    ));
+                }
+            };
             if !node_ids.insert(node.id().to_owned()) {
                 return Err(PipelineConfigurationError::Invalid(
                     "pipeline node identifiers must be unique",
@@ -197,6 +279,13 @@ impl PipelineDefinition {
                 if !builtin_state_key(key) && !state.contains_key(key) {
                     return Err(PipelineConfigurationError::Invalid(
                         "a HITL input key is not declared in pipeline state",
+                    ));
+                }
+            }
+            for key in node.output_keys().iter().chain(node.cleaned_keys()) {
+                if !builtin_state_key(key) && !state.contains_key(key) {
+                    return Err(PipelineConfigurationError::Invalid(
+                        "a state modifier output or clean key is not declared in pipeline state",
                     ));
                 }
             }
@@ -219,15 +308,17 @@ impl PipelineDefinition {
             for target in node.route_targets() {
                 if target != "END" && !node_ids.contains(target) {
                     return Err(PipelineConfigurationError::Invalid(
-                        "a HITL route target does not name a node",
+                        "a pipeline route target does not name a node",
                     ));
                 }
             }
         }
-        let definition_digest = definition_digest(&raw.entry_point, &state, &nodes);
+        let definition_digest =
+            definition_digest(&raw.entry_point, &state, &state_defaults, &nodes);
         Ok(Self {
             entry_point: raw.entry_point,
             state,
+            state_defaults,
             nodes,
             definition_digest,
         })
@@ -271,11 +362,14 @@ impl PipelineDefinition {
         channels.extend(self.state.keys().cloned());
         for node in &self.nodes {
             channels.extend(node.input_keys().iter().cloned());
+            channels.extend(node.output_keys().iter().cloned());
+            channels.extend(node.cleaned_keys().iter().cloned());
             if let Some(key) = node.edit_state_key() {
                 channels.insert(key.to_owned());
             }
         }
         let channel_refs = channels.iter().map(String::as_str).collect::<Vec<_>>();
+        let public_result_keys = self.public_result_keys();
         let mut builder = GraphAgent::builder(agent_name)
             .description("Elitea stored pipeline")
             .channels(&channel_refs)
@@ -283,21 +377,91 @@ impl PipelineDefinition {
             .checkpointer_arc(checkpointer)
             .recursion_limit(PIPELINE_RECURSION_LIMIT)
             .max_concurrency(1)
-            .output_mapper(|_| vec![pipeline_completed_event()]);
+            .output_mapper(move |state| {
+                vec![pipeline_completion_event_from_state(
+                    state,
+                    &public_result_keys,
+                )]
+            });
         for node in &self.nodes {
-            builder = builder.node(HitlNode::new(node.clone()));
+            builder = match node {
+                PipelineNodeDefinition::Hitl(node) => builder.node(HitlNode::new(node.clone())),
+                PipelineNodeDefinition::StateModifier(node) => {
+                    let transition = node.transition().map(ToOwned::to_owned);
+                    let node_id = node.id().to_owned();
+                    let mut next = builder.node(StateModifierNode::new(node.clone()));
+                    if let Some(transition) = transition {
+                        let target = if transition == "END" {
+                            END
+                        } else {
+                            transition.as_str()
+                        };
+                        next = next.edge(&node_id, target);
+                    }
+                    next
+                }
+            };
         }
         if let Some(resume) = resume {
             let resume_state = resume.into_state();
-            builder =
-                builder.input_mapper(move |context| invocation_state(context, Some(&resume_state)));
+            builder = builder
+                .input_mapper(move |context| invocation_state(context, None, Some(&resume_state)));
+        } else {
+            let defaults = self.state_defaults.clone();
+            builder = builder
+                .input_mapper(move |context| invocation_state(context, Some(&defaults), None));
         }
         builder.build().map_err(PipelineConfigurationError::Graph)
     }
+
+    /// Collect public result candidates separately from graph control flow.
+    ///
+    /// `END` is only the ADK graph sink. The candidate belongs to the
+    /// value-producing node whose explicit route targets that sink.
+    fn public_result_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        for node in &self.nodes {
+            let PipelineNodeDefinition::StateModifier(node) = node else {
+                continue;
+            };
+            if node.transition() != Some("END") {
+                continue;
+            }
+            if let Some(key) = node.output_keys().first()
+                && !keys.contains(key)
+            {
+                keys.push(key.clone());
+            }
+        }
+        keys
+    }
 }
 
-fn invocation_state(context: &dyn InvocationContext, resume: Option<&State>) -> State {
-    let mut state = State::new();
+fn pipeline_completion_event_from_state(state: &State, public_result_keys: &[String]) -> Event {
+    for key in public_result_keys.iter().rev() {
+        let Some(value) = state.get(key) else {
+            continue;
+        };
+        let content = match value {
+            serde_json::Value::Null => String::new(),
+            serde_json::Value::String(value) => value.clone(),
+            value => serde_json::to_string(value).unwrap_or_default(),
+        };
+        if !content.trim().is_empty() {
+            return pipeline_result_event(&content);
+        }
+    }
+    pipeline_completed_event()
+}
+
+fn invocation_state(
+    context: &dyn InvocationContext,
+    defaults: Option<&BTreeMap<String, serde_json::Value>>,
+    resume: Option<&State>,
+) -> State {
+    let mut state: State = defaults
+        .map(|defaults| defaults.clone().into_iter().collect())
+        .unwrap_or_default();
     if resume.is_none() {
         let text = context
             .user_content()
@@ -326,13 +490,17 @@ fn invocation_state(context: &dyn InvocationContext, resume: Option<&State>) -> 
 
 fn validate_state(
     raw: BTreeMap<String, RawStateType>,
-) -> Result<BTreeMap<String, String>, PipelineConfigurationError> {
+) -> Result<ValidatedState, PipelineConfigurationError> {
     if raw.len() > MAX_PIPELINE_STATE_KEYS {
         return Err(PipelineConfigurationError::ResourceExhausted);
     }
     let mut state = BTreeMap::new();
+    let mut defaults = BTreeMap::new();
     for (key, kind) in raw {
-        if !valid_output_key(&key) || key == HITL_RESUME_STATE_KEY || builtin_state_key(&key) {
+        if !valid_output_key(&key)
+            || key == HITL_RESUME_STATE_KEY
+            || matches!(key.as_str(), "output" | "result" | "session_id")
+        {
             return Err(PipelineConfigurationError::Invalid(
                 "a pipeline state key is malformed or reserved",
             ));
@@ -350,9 +518,48 @@ fn validate_state(
                 ));
             }
         };
+        if (key == "input" && normalized != "str") || (key == "messages" && normalized != "list") {
+            return Err(PipelineConfigurationError::Invalid(
+                "a built-in pipeline state key has the wrong type",
+            ));
+        }
+        let value = kind
+            .configured_value()
+            .cloned()
+            .unwrap_or_else(|| default_state_value(normalized));
+        if !state_value_matches(normalized, &value) {
+            return Err(PipelineConfigurationError::Invalid(
+                "a pipeline state default has the wrong type",
+            ));
+        }
+        defaults.insert(key.clone(), value);
         state.insert(key, normalized.to_owned());
     }
-    Ok(state)
+    Ok((state, defaults))
+}
+
+fn default_state_value(kind: &str) -> serde_json::Value {
+    match kind {
+        "str" => json!(""),
+        "int" => json!(0),
+        "float" => json!(0.0),
+        "bool" => json!(false),
+        "list" => json!([]),
+        "dict" => json!({}),
+        _ => serde_json::Value::Null,
+    }
+}
+
+fn state_value_matches(kind: &str, value: &serde_json::Value) -> bool {
+    match kind {
+        "str" => value.is_string(),
+        "int" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "float" => value.as_f64().is_some(),
+        "bool" => value.is_boolean(),
+        "list" => value.is_array(),
+        "dict" => value.is_object(),
+        _ => false,
+    }
 }
 
 fn builtin_state_key(key: &str) -> bool {
@@ -378,7 +585,8 @@ fn yaml_string_field<'a>(
 fn definition_digest(
     entry_point: &str,
     state: &BTreeMap<String, String>,
-    nodes: &[HitlNodeDefinition],
+    state_defaults: &BTreeMap<String, serde_json::Value>,
+    nodes: &[PipelineNodeDefinition],
 ) -> [u8; 32] {
     let mut context = digest::Context::new(&digest::SHA256);
     context.update(PIPELINE_DIGEST_DOMAIN);
@@ -386,9 +594,18 @@ fn definition_digest(
     for (key, kind) in state {
         digest_field(&mut context, key.as_bytes());
         digest_field(&mut context, kind.as_bytes());
+        if let Some(value) = state_defaults.get(key) {
+            let encoded = serde_json::to_vec(value).unwrap_or_default();
+            digest_field(&mut context, &encoded);
+        }
     }
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());
+        let kind = match node {
+            PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
+            PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),
+        };
+        digest_field(&mut context, kind);
         digest_field(&mut context, &node.config_digest());
     }
     let digest = context.finish();

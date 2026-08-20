@@ -20,8 +20,13 @@ pub(crate) const PIPELINE_COMPLETED_CONTENT: &str = "Pipeline completed.";
 
 /// Emit one bounded terminal marker without serializing private graph state.
 pub(crate) fn pipeline_completed_event() -> Event {
+    pipeline_result_event(PIPELINE_COMPLETED_CONTENT)
+}
+
+/// Emit one bounded terminal result selected from public pipeline state.
+pub(crate) fn pipeline_result_event(content: &str) -> Event {
     let mut event = Event::new("graph_invocation_pending");
-    event.set_content(Content::new("assistant").with_text(PIPELINE_COMPLETED_CONTENT));
+    event.set_content(Content::new("assistant").with_text(content));
     event.provider_metadata.insert(
         PIPELINE_COMPLETED_METADATA_KEY.to_owned(),
         PIPELINE_COMPLETED_METADATA_VALUE.to_owned(),

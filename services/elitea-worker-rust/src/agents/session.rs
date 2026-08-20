@@ -620,7 +620,7 @@ where
     }
 }
 
-/// Fixed terminal result for the initial control-flow-only pipeline profile.
+/// Fallback completion for a pipeline that emitted no selected public result.
 pub(crate) struct PipelineAgentCompletion {
     thread_id: String,
 }
@@ -635,7 +635,7 @@ impl NativeAgentCompletionSelector for PipelineAgentCompletion {
 
 const PIPELINE_RESUME_MARKER: &str = "[elitea:pipeline-resume:v1]";
 
-/// Activate both durable state contracts and build one HITL-only graph Runner.
+/// Activate both durable state contracts and build one admitted graph Runner.
 pub(crate) async fn assemble_pipeline_native(
     plan: OrdinaryNativeAgentPlan,
     definition: PipelineDefinition,

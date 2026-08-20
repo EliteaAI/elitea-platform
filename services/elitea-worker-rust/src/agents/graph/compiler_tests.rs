@@ -5,7 +5,7 @@ use adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY;
 use adk_rust::graph::{Checkpointer, MemoryCheckpointer};
 use adk_rust::runner::Runner;
 use adk_rust::session::{CreateRequest, GetRequest, InMemorySessionService, SessionService};
-use adk_rust::{Content, Event, SessionId, UserId};
+use adk_rust::{Content, Event, Part, SessionId, UserId};
 use serde_json::{Map, json};
 
 use super::agent::EliteaGraphAgent;
@@ -97,6 +97,59 @@ fn whole_pipeline_yaml_is_bounded_strict_and_digest_stable() {
         error.code(),
         "graph.pipeline.configuration_resource_exhausted"
     );
+}
+
+#[tokio::test]
+async fn active_state_modifier_yaml_runs_natively_and_surfaces_terminal_output() {
+    let definition = PipelineDefinition::from_yaml(
+        r#"
+state:
+  input:
+    type: str
+  messages:
+    type: list
+  prefix:
+    type: str
+    value: Hello
+  final_text:
+    type: str
+    value: ""
+entry_point: transform
+nodes:
+  - id: transform
+    type: state_modifier
+    template: "{{ prefix }}, {{ input }}"
+    input: [prefix, input]
+    output: [final_text]
+    variables_to_clean: [prefix]
+    transition: END
+"#,
+    )
+    .expect("UI-compatible state modifier pipeline");
+    let sessions = Arc::new(InMemorySessionService::new());
+    sessions
+        .create(CreateRequest {
+            app_name: APP.to_owned(),
+            user_id: USER.to_owned(),
+            session_id: Some(THREAD.to_owned()),
+            state: HashMap::new(),
+        })
+        .await
+        .expect("pipeline session");
+    let graph = definition
+        .compile(ROOT, Arc::new(MemoryCheckpointer::new()), None)
+        .expect("state modifier graph");
+    let events = run_graph(graph, sessions, "world").await;
+    let [event] = events.as_slice() else {
+        panic!("state modifier graph emitted an unexpected event count");
+    };
+    let Some(content) = event.content() else {
+        panic!("terminal state modifier result had no content");
+    };
+    assert!(matches!(
+        content.parts.as_slice(),
+        [Part::Text { text }] if text == "Hello, world"
+    ));
 }
 
 #[tokio::test]

@@ -73,7 +73,7 @@ impl OrdinaryNoToolProfile {
     /// Validate the model/session shell shared by a stored pipeline.
     ///
     /// The model fields remain part of the frozen application contract even
-    /// when the initial HITL-only graph does not call a model. Pipeline YAML is
+    /// when the currently admitted pure/control graph does not call a model. Pipeline YAML is
     /// returned as instructions and parsed by the graph-owned boundary.
     pub(crate) fn validate_pipeline_shell(
         request: &AgentExecutionRequest,

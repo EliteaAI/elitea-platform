@@ -408,6 +408,7 @@ pub(crate) struct AgentEventProjector {
     invocation_id: Option<String>,
     active_tools: BTreeMap<String, ActiveToolCall>,
     sensitive_tools: SensitiveToolCatalog,
+    pipeline_result: Option<String>,
 }
 
 impl AgentEventProjector {
@@ -428,6 +429,7 @@ impl AgentEventProjector {
             invocation_id: None,
             active_tools: BTreeMap::new(),
             sensitive_tools,
+            pipeline_result: None,
         })
     }
 
@@ -675,12 +677,14 @@ impl AgentEventProjector {
         let content = event
             .content()
             .ok_or_else(AgentEventProjectionError::invalid_state)?;
-        let terminal = matches!(
-            content.parts.as_slice(),
-            [Part::Text { text }] if text == PIPELINE_COMPLETED_CONTENT
-        );
+        let [Part::Text { text }] = content.parts.as_slice() else {
+            return Err(AgentEventProjectionError::invalid_state());
+        };
+        let terminal = text == PIPELINE_COMPLETED_CONTENT;
         if content.role != "assistant"
-            || !terminal
+            || text.is_empty()
+            || text.len() > MAX_COMPLETED_CONTENT_BYTES
+            || text.contains('\0')
             || event.provider_metadata.len() != 1
             || event
                 .provider_metadata
@@ -696,8 +700,24 @@ impl AgentEventProjector {
         {
             return Err(AgentEventProjectionError::invalid_state());
         }
+        let batch = if terminal {
+            ProjectedAgentEventBatch::new()
+        } else {
+            self.pipeline_result = Some(text.clone());
+            self.project_model_event(
+                event,
+                OrdinaryModelEvent {
+                    content: text.clone(),
+                    thinking: String::new(),
+                    closes_turn: true,
+                    timestamp: event
+                        .timestamp
+                        .to_rfc3339_opts(SecondsFormat::AutoSi, false),
+                },
+            )?
+        };
         self.state = ProjectionState::Complete(CompletedModelTurn);
-        Ok(ProjectedAgentEventBatch::new())
+        Ok(batch)
     }
 
     #[must_use]
@@ -983,9 +1003,16 @@ impl AgentEventProjector {
             return Err(AgentEventProjectionError::invalid_state());
         }
         validate_public_text(&completion.thread_id)?;
+        let CompletedAgentBrowserOutput {
+            content,
+            thread_id,
+            execution_finished,
+            context_info,
+        } = completion;
+        let content = self.pipeline_result.take().unwrap_or(content);
         let mut batch = ProjectedAgentEventBatch::new();
-        let response = Value::String(completion.content);
-        if completion.execution_finished {
+        let response = Value::String(content);
+        if execution_finished {
             batch.push(self.event(
                 "pipeline_finish",
                 &response,
@@ -993,7 +1020,7 @@ impl AgentEventProjector {
                 &json!({
                     "finish_reason": "finished",
                     "next_step": "END",
-                    "thread_id": completion.thread_id,
+                    "thread_id": thread_id,
                 }),
                 occurred_at,
             )?)?;
@@ -1002,7 +1029,7 @@ impl AgentEventProjector {
             "agent_response",
             &response,
             None,
-            &json!({"finish_reason": "stop", "thread_id": completion.thread_id}),
+            &json!({"finish_reason": "stop", "thread_id": thread_id}),
             occurred_at,
         )?)?;
         batch.push(self.event(
@@ -1013,7 +1040,7 @@ impl AgentEventProjector {
                 "project_id": self.context.project_id,
                 "chat_project_id": self.context.chat_project_id,
                 "application_details": self.context.application_details,
-                "thread_id": completion.thread_id,
+                "thread_id": thread_id,
                 "llm_start_timestamp": Value::Null,
                 "additional_response_meta": {},
                 "files_modified": [],
@@ -1024,7 +1051,7 @@ impl AgentEventProjector {
                 "should_continue": self.context.should_continue,
                 "hitl_resume": self.context.hitl_resume,
                 "parallel_reconcile": self.context.parallel_reconcile,
-                "context_info": completion.context_info,
+                "context_info": context_info,
                 "invoked_skills": self.context.applied_skills,
             }),
             occurred_at,

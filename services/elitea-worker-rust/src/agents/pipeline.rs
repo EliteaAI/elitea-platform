@@ -111,7 +111,8 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
             tracing::Span::current().record("stage", "admission");
             let admitted = assembly.admit_pipeline()?;
             let (profile, plan, start, runtime_context, session, lease) = admitted.into_parts();
-            // The HITL-only graph needs neither a model nor an Elitea PAT. Keep
+            // The currently admitted HITL/state-transform graph needs neither a
+            // model nor an Elitea PAT. Keep
             // the one-use runtime-context authority sealed and drop it without
             // redemption; value-producing node slices will redeem explicitly.
             drop(runtime_context);

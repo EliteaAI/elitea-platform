@@ -33,6 +33,25 @@ nodes:
       reject: END
 ";
 
+const STATE_MODIFIER_PIPELINE: &str = r#"
+state:
+  input:
+    type: str
+  prefix:
+    type: str
+    value: Hello
+  final_text:
+    type: str
+entry_point: transform
+nodes:
+  - id: transform
+    type: state_modifier
+    template: "{{ prefix }}, {{ input }}"
+    input: [prefix, input]
+    output: [final_text]
+    transition: END
+"#;
+
 fn pipeline_request() -> super::request::AgentExecutionRequest {
     let mut request = ordinary_request(AgentExecutionKind::Application);
     let version = request
@@ -287,4 +306,58 @@ async fn admitted_pipeline_uses_common_runner_and_resumes_exact_private_checkpoi
         panic!("completed interrupt replay was admitted");
     };
     assert_eq!(replay.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
+#[tokio::test]
+async fn state_modifier_result_survives_common_runner_projection_and_eos_completion() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let pipeline_assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::new(MemoryCheckpointer::new()),
+    );
+    let mut request = pipeline_request();
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("pipeline version")
+        .insert("instructions".to_owned(), json!(STATE_MODIFIER_PIPELINE));
+
+    let mut invocation = pipeline_assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("state modifier pipeline assembly");
+    invocation
+        .project_start(timestamp(0))
+        .expect("browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("pipeline start");
+    let result = run
+        .next_event()
+        .await
+        .expect("pipeline result read")
+        .expect("pipeline result event");
+    let progress = projector
+        .project(&result)
+        .expect("pipeline result projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(progress.len(), 4);
+    assert_eq!(progress[1]["content"], "Hello, current");
+    assert!(run.next_event().await.expect("pipeline EOS").is_none());
+
+    let selected = completion.select().await.expect("completion selection");
+    let completed = projector
+        .finish_after_eos(selected, timestamp(1))
+        .expect("browser completion")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(completed.len(), 3);
+    assert!(
+        completed
+            .iter()
+            .all(|event| event["content"] == "Hello, current")
+    );
 }

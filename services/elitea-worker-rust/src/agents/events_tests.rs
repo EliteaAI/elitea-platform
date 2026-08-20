@@ -7,6 +7,7 @@ use super::events::{
     AgentEventProjectionContext, AgentEventProjectionErrorCode, AgentEventProjector,
     CompletedAgentBrowserOutput,
 };
+use super::graph::pipeline_result_event;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
 
@@ -504,6 +505,60 @@ fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
     assert!(metadata.get("checkpoint_id").is_none());
     assert!(metadata.get("definition_digest").is_none());
     assert!(projector.is_paused());
+}
+
+#[test]
+fn graph_terminal_state_result_projects_as_one_closed_model_turn() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+
+    let mut result = pipeline_result_event("Hello, world");
+    result.id = "pipeline-result".to_owned();
+    result.invocation_id = "invocation-1".to_owned();
+    result.author = "root-agent".to_owned();
+    result.timestamp = timestamp(1);
+    let projected = projector
+        .project(&result)
+        .expect("terminal pipeline result")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        projected
+            .iter()
+            .map(|event| event["type"].as_str())
+            .collect::<Vec<_>>(),
+        [
+            Some("agent_llm_start"),
+            Some("agent_llm_chunk"),
+            Some("agent_llm_end"),
+            Some("partial_message")
+        ]
+    );
+    assert_eq!(projected[1]["content"], "Hello, world");
+    assert_eq!(
+        projected[3]["response_metadata"]["thinking_steps"][0]["text"],
+        "Hello, world"
+    );
+
+    let completed = projector
+        .finish_after_eos(
+            CompletedAgentBrowserOutput::fixture("Pipeline completed."),
+            timestamp(2),
+        )
+        .expect("post-EOS pipeline result")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(completed.len(), 3);
+    assert!(
+        completed
+            .iter()
+            .all(|event| event["content"] == "Hello, world")
+    );
 }
 
 #[test]

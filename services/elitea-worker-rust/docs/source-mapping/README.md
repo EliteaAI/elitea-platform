@@ -78,7 +78,7 @@ Maintained Rust runtime ownership registry:
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
 - `src/agents/graph/{agent,compiler,resume,hitl,parallel,yaml}.rs`:
-  stored-pipeline graph event identity, the complete-document HITL-only
+  stored-pipeline graph event identity, the complete-document HITL/state-modifier
   compiler, exact latest-event/checkpoint decision binding, bounded YAML node
   contracts and the durable parallel-node core. General LLM/tool/MCP/parallel
   node compilation, static interrupts and production PostgreSQL assembly remain
