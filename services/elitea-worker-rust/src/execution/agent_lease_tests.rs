@@ -183,6 +183,64 @@ async fn immediate_poll_is_sequential_and_uses_unique_renewal_keys() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn state_probe_fails_closed_on_local_expiry_and_monitor_shutdown() {
+    let state = Arc::new(FakeState::default());
+    let clock = Arc::new(AtomicI64::new(NOW));
+    let sampled_clock = {
+        let clock = Arc::clone(&clock);
+        Arc::new(move || clock.load(Ordering::SeqCst))
+    };
+    let monitor = ClaimLeaseMonitor::start(
+        client(state),
+        test_lease_starting_execution(NOW + 30_000),
+        sampled_clock,
+        config(Duration::from_secs(10)),
+    );
+    let probe = monitor.state_probe();
+    probe.ensure_running().expect("initial state-write margin");
+
+    clock.store(NOW + 10_001, Ordering::SeqCst);
+    let expired = probe.ensure_running().expect_err("insufficient margin");
+    assert_eq!(expired.code(), ClaimLeaseErrorCode::LeaseLost);
+
+    monitor.close().await.expect("close monitor");
+    let closed = probe.ensure_running().expect_err("closed monitor");
+    assert_eq!(closed.code(), ClaimLeaseErrorCode::MonitorClosed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn successful_renewal_extends_the_state_probe_deadline() {
+    let state = Arc::new(FakeState::default());
+    let clock = Arc::new(AtomicI64::new(NOW));
+    let sampled_clock = {
+        let clock = Arc::clone(&clock);
+        Arc::new(move || clock.load(Ordering::SeqCst))
+    };
+    let monitor = ClaimLeaseMonitor::start(
+        client(state),
+        test_lease_starting_execution(NOW + 20_500),
+        sampled_clock,
+        config(Duration::from_secs(10)),
+    );
+    let probe = monitor.state_probe();
+    probe.ensure_running().expect("initial state-write margin");
+
+    monitor.check_now().await.expect("renew lease");
+    clock.store(NOW + 30_000, Ordering::SeqCst);
+    probe
+        .ensure_running()
+        .expect("renewed state-write margin is published");
+    monitor.close().await.expect("close monitor");
+    assert_eq!(
+        probe
+            .ensure_running()
+            .expect_err("closed monitor after unseen renewal")
+            .code(),
+        ClaimLeaseErrorCode::MonitorClosed
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn margin_uses_clock_sampled_after_desired_state_observation() {
     let state = Arc::new(FakeState::default());
     let clock = Arc::new(AtomicI64::new(NOW));

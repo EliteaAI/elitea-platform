@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use adk_rust::graph::checkpoint::RetentionPolicy;
 use adk_rust::graph::{Checkpoint, Checkpointer, GraphError, State};
 use async_trait::async_trait;
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, TimeZone as _, Utc};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+use super::StateWriterLease;
 
 mod parallel_children;
 
@@ -151,9 +154,9 @@ impl From<PostgresCheckpointError> for GraphError {
 /// Claim-bound identity used to activate one thread writer.
 ///
 /// This type is crate-private, non-cloneable and intentionally has no `Debug`.
-/// Main's claim row is the database authority. The full bearer fence is kept in
-/// a zeroizing, non-debug field and matched on every operation, but is never
-/// written to either checkpoint table.
+/// Main's authenticated claim receipt supplies the database-authored creation
+/// time used to order writer takeover. The full bearer fence is kept in a
+/// zeroizing, non-debug field and never written to either checkpoint table.
 pub(crate) struct CheckpointWriterAuthority {
     tenant_id: String,
     resource_project_id: i32,
@@ -166,6 +169,7 @@ pub(crate) struct CheckpointWriterAuthority {
     claim_id: String,
     claim_attempt: i64,
     lease_epoch: i64,
+    claim_started_at: DateTime<Utc>,
     workload_session_id: String,
     producer_id: String,
     fence_token: Zeroizing<[u8; 32]>,
@@ -186,6 +190,7 @@ impl CheckpointWriterAuthority {
         claim_id: String,
         claim_attempt: u64,
         lease_epoch: u64,
+        claim_started_at_unix_micros: i64,
         workload_session_id: String,
         producer_id: String,
         fence_token: [u8; 32],
@@ -205,6 +210,12 @@ impl CheckpointWriterAuthority {
                 "the checkpoint lease epoch is outside PostgreSQL BIGINT",
             )
         })?;
+        let claim_started_at = Utc
+            .timestamp_micros(claim_started_at_unix_micros)
+            .single()
+            .ok_or(PostgresCheckpointError::InvalidScope(
+                "the checkpoint claim creation time is malformed",
+            ))?;
         let authority = Self {
             tenant_id,
             resource_project_id,
@@ -217,6 +228,7 @@ impl CheckpointWriterAuthority {
             claim_id,
             claim_attempt,
             lease_epoch,
+            claim_started_at,
             workload_session_id,
             producer_id,
             fence_token: Zeroizing::new(fence_token),
@@ -242,6 +254,7 @@ impl CheckpointWriterAuthority {
             || self.generation <= 0
             || self.claim_attempt <= 0
             || self.lease_epoch <= 0
+            || self.claim_started_at.timestamp_micros() <= 0
             || self.fence_token.iter().all(|byte| *byte == 0)
         {
             return Err(PostgresCheckpointError::InvalidScope(
@@ -266,6 +279,7 @@ impl CheckpointWriterAuthority {
             claim_id: self.claim_id.clone(),
             claim_attempt: self.claim_attempt,
             lease_epoch: self.lease_epoch,
+            claim_started_at: self.claim_started_at,
             workload_session_id: self.workload_session_id.clone(),
             producer_id: self.producer_id.clone(),
             fence_token: Zeroizing::new(fence_token),
@@ -293,7 +307,7 @@ impl CheckpointScope {
 /// ADK-Rust 2.0.0 [`Checkpointer`] backed by Elitea's `PostgreSQL` runtime schema.
 ///
 /// One instance is activated for exactly one tenant/project/thread and one
-/// current Main claim. Every operation rechecks the database-owned lease and
+/// supervised Main claim. Every operation rechecks the live lease guard and
 /// writer row. A newer claim activation therefore fences an older worker even
 /// when that worker still holds this Rust value.
 ///
@@ -304,64 +318,29 @@ pub struct PostgresCheckpointer {
     pool: PgPool,
     scope: CheckpointScope,
     limits: CheckpointLimits,
+    state_writer_lease: Arc<dyn StateWriterLease>,
 }
 
 impl PostgresCheckpointer {
     /// Activate the claim as current writer for its exact checkpoint lineage.
     ///
-    /// Main's `PostgreSQL` clock and claim row are authoritative. An older claim
-    /// cannot replace a writer whose claim was created later; equal timestamps
-    /// from different claims fail closed instead of inventing an ordering.
+    /// Main's `PostgreSQL` claim creation time is carried by the authenticated
+    /// receipt. An older claim cannot replace a writer whose claim was created
+    /// later; equal timestamps from different claims fail closed instead of
+    /// inventing an ordering.
     #[allow(dead_code)] // Called by the next sealed invocation/checkpointer composition slice.
     pub(crate) async fn activate(
         pool: PgPool,
         authority: CheckpointWriterAuthority,
         limits: CheckpointLimits,
+        state_writer_lease: Arc<dyn StateWriterLease>,
     ) -> Result<Self, PostgresCheckpointError> {
         authority.validate()?;
         let limits = limits.validate()?;
+        state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresCheckpointError::WriterNotCurrent)?;
         let mut transaction = pool.begin().await.map_err(storage_error)?;
-        let claimed_at = sqlx::query_scalar::<_, DateTime<Utc>>(
-            r"
-SELECT claim.claimed_at
-FROM elitea_runtime.execution_claims AS claim
-JOIN elitea_runtime.execution_jobs AS job
-  ON job.execution_id = claim.execution_id
- AND job.generation = claim.generation
-WHERE claim.claim_id = $1
-  AND claim.execution_id = $2
-  AND claim.generation = $3
-  AND claim.claim_attempt = $4
-  AND claim.lease_epoch = $5
-  AND claim.workload_session_id = $6
-  AND claim.producer_id = $7
-  AND claim.fence_token = $8
-  AND claim.released_at IS NULL
-  AND claim.lease_expires_at > clock_timestamp()
-  AND job.invocation_state = 'MAY_HAVE_STARTED'
-  AND job.tenant_id = $9
-  AND job.resource_project_id = $10
-  AND job.projection_project_id = $11
-  AND job.capability_id = $12
-FOR SHARE OF job, claim
-            ",
-        )
-        .bind(&authority.claim_id)
-        .bind(&authority.execution_id)
-        .bind(authority.generation)
-        .bind(authority.claim_attempt)
-        .bind(authority.lease_epoch)
-        .bind(&authority.workload_session_id)
-        .bind(&authority.producer_id)
-        .bind(authority.fence_token.as_slice())
-        .bind(&authority.tenant_id)
-        .bind(authority.resource_project_id)
-        .bind(authority.projection_project_id)
-        .bind(authority.capability_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(storage_error)?
-        .ok_or(PostgresCheckpointError::WriterNotCurrent)?;
         let activated = sqlx::query_scalar::<_, String>(
             r"
 INSERT INTO elitea_runtime.agent_graph_checkpoint_writers AS writer (
@@ -400,18 +379,22 @@ RETURNING writer_claim_id
         .bind(authority.generation)
         .bind(authority.claim_attempt)
         .bind(authority.lease_epoch)
-        .bind(claimed_at)
+        .bind(authority.claim_started_at)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(storage_error)?;
         if activated.as_deref() != Some(authority.claim_id.as_str()) {
             return Err(PostgresCheckpointError::WriterNotCurrent);
         }
+        state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresCheckpointError::WriterNotCurrent)?;
         transaction.commit().await.map_err(storage_error)?;
         Ok(Self {
             pool,
             scope: CheckpointScope { authority },
             limits,
+            state_writer_lease,
         })
     }
 
@@ -469,7 +452,7 @@ WHERE tenant_id = $1
         .map_err(storage_error)?;
         match exact_existing {
             Some(true) => {
-                transaction.commit().await.map_err(storage_error)?;
+                self.commit_current(transaction).await?;
                 return Ok(checkpoint.checkpoint_id.clone());
             }
             Some(false) => return Err(PostgresCheckpointError::CheckpointConflict),
@@ -481,7 +464,7 @@ WHERE tenant_id = $1
         let save_ordinal = self.allocate_save_ordinal(&mut transaction).await?;
         self.insert_checkpoint(&mut transaction, checkpoint, &serialized, save_ordinal)
             .await?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         Ok(checkpoint.checkpoint_id.clone())
     }
 
@@ -688,7 +671,7 @@ LIMIT 1
             .map_err(storage_error)?
         };
         let checkpoint = row.map(|row| self.decode_row(&row)).transpose()?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         Ok(checkpoint)
     }
 
@@ -771,7 +754,7 @@ LIMIT $8
             .iter()
             .map(|row| self.decode_row(row))
             .collect::<Result<Vec<_>, _>>()?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         Ok(checkpoints)
     }
 
@@ -801,7 +784,7 @@ WHERE tenant_id = $1
         .execute(&mut *transaction)
         .await
         .map_err(storage_error)?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         Ok(())
     }
 
@@ -886,7 +869,7 @@ WHERE checkpoint.tenant_id = $1
         .execute(&mut *transaction)
         .await
         .map_err(storage_error)?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         usize::try_from(result.rows_affected()).map_err(|_| {
             PostgresCheckpointError::ResourceExhausted(
                 "the pruned checkpoint count exceeds the platform integer range",
@@ -899,25 +882,9 @@ WHERE checkpoint.tenant_id = $1
         transaction: &mut Transaction<'_, Postgres>,
         lock: WriterLock,
     ) -> Result<(), PostgresCheckpointError> {
-        let current_claim = sqlx::query_scalar::<_, i32>(CURRENT_CLAIM_SQL)
-            .bind(&self.scope.authority.tenant_id)
-            .bind(self.scope.authority.resource_project_id)
-            .bind(self.scope.authority.projection_project_id)
-            .bind(self.scope.authority.capability_id)
-            .bind(&self.scope.authority.claim_id)
-            .bind(&self.scope.authority.execution_id)
-            .bind(self.scope.authority.generation)
-            .bind(self.scope.authority.claim_attempt)
-            .bind(self.scope.authority.lease_epoch)
-            .bind(&self.scope.authority.workload_session_id)
-            .bind(&self.scope.authority.producer_id)
-            .bind(self.scope.authority.fence_token.as_slice())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(storage_error)?;
-        if current_claim != Some(1) {
-            return Err(PostgresCheckpointError::WriterNotCurrent);
-        }
+        self.state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresCheckpointError::WriterNotCurrent)?;
         let writer_query = match lock {
             WriterLock::Shared => CURRENT_WRITER_SHARED_SQL,
             WriterLock::Exclusive => CURRENT_WRITER_EXCLUSIVE_SQL,
@@ -942,6 +909,16 @@ WHERE checkpoint.tenant_id = $1
             return Err(PostgresCheckpointError::WriterNotCurrent);
         }
         Ok(())
+    }
+
+    async fn commit_current(
+        &self,
+        transaction: Transaction<'_, Postgres>,
+    ) -> Result<(), PostgresCheckpointError> {
+        self.state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresCheckpointError::WriterNotCurrent)?;
+        transaction.commit().await.map_err(storage_error)
     }
 
     fn decode_row(
@@ -1035,30 +1012,6 @@ enum WriterLock {
     Shared,
     Exclusive,
 }
-
-const CURRENT_CLAIM_SQL: &str = r"
-SELECT 1
-FROM elitea_runtime.execution_jobs AS job
-JOIN elitea_runtime.execution_claims AS claim
-  ON job.execution_id = claim.execution_id
- AND job.generation = claim.generation
-WHERE job.tenant_id = $1
-  AND job.resource_project_id = $2
-  AND job.projection_project_id = $3
-  AND job.capability_id = $4
-  AND claim.claim_id = $5
-  AND claim.execution_id = $6
-  AND claim.generation = $7
-  AND claim.claim_attempt = $8
-  AND claim.lease_epoch = $9
-  AND claim.workload_session_id = $10
-  AND claim.producer_id = $11
-  AND claim.fence_token = $12
-  AND claim.released_at IS NULL
-  AND claim.lease_expires_at > clock_timestamp()
-  AND job.invocation_state = 'MAY_HAVE_STARTED'
-FOR SHARE OF job, claim
-";
 
 const CURRENT_WRITER_SHARED_SQL: &str = r"
 SELECT 1
@@ -1407,6 +1360,7 @@ mod tests {
             "claim-1".to_owned(),
             3,
             4,
+            1_700_000_000_123_456,
             "session-1".to_owned(),
             "producer-1".to_owned(),
             [0x66; 32],
@@ -1482,6 +1436,7 @@ mod tests {
                 "claim-1".to_owned(),
                 1,
                 1,
+                1_700_000_000_123_456,
                 "session-1".to_owned(),
                 "producer-1".to_owned(),
                 [0x66; 32],
@@ -1501,6 +1456,7 @@ mod tests {
                 "claim-1".to_owned(),
                 1,
                 1,
+                1_700_000_000_123_456,
                 "session-1".to_owned(),
                 "producer-1".to_owned(),
                 [0x66; 32],
@@ -1520,6 +1476,7 @@ mod tests {
                 "claim-1".to_owned(),
                 1,
                 1,
+                1_700_000_000_123_456,
                 "session-1".to_owned(),
                 "producer-1".to_owned(),
                 [0x66; 32],

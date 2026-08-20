@@ -1,5 +1,6 @@
 use std::env;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use adk_rust::session::{
@@ -11,9 +12,10 @@ use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions as _, PgPool};
 
+use super::TestStateWriterLease;
 use super::postgres_session::{
-    APPLICATION_CAPABILITY_ID, PostgresSessionService, SessionLimits, SessionWriterAuthority,
-    canonical_json, decode_event, encode_event, postgres_timestamp,
+    APPLICATION_CAPABILITY_ID, PostgresSessionError, PostgresSessionService, SessionLimits,
+    SessionWriterAuthority, canonical_json, decode_event, encode_event, postgres_timestamp,
 };
 
 const TEST_DATABASE_URL: &str = "ELITEA_TEST_DATABASE_URL";
@@ -96,89 +98,10 @@ impl Drop for IsolatedPostgres {
 }
 
 async fn install_schema(pool: &PgPool) {
-    sqlx::raw_sql(
-        r"
-CREATE SCHEMA elitea_runtime;
-CREATE TABLE elitea_runtime.execution_jobs (
-    execution_id TEXT NOT NULL,
-    generation BIGINT NOT NULL,
-    tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL,
-    projection_project_id INTEGER NOT NULL,
-    capability_id TEXT NOT NULL,
-    invocation_state TEXT NOT NULL,
-    PRIMARY KEY (execution_id, generation)
-);
-CREATE TABLE elitea_runtime.execution_claims (
-    claim_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL,
-    generation BIGINT NOT NULL,
-    workload_session_id TEXT NOT NULL,
-    producer_id TEXT NOT NULL,
-    claim_attempt BIGINT NOT NULL,
-    lease_epoch BIGINT NOT NULL,
-    fence_token BYTEA NOT NULL,
-    claimed_at TIMESTAMPTZ NOT NULL,
-    lease_expires_at TIMESTAMPTZ NOT NULL,
-    released_at TIMESTAMPTZ,
-    FOREIGN KEY (execution_id, generation)
-        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
-);
-        ",
-    )
-    .execute(pool)
-    .await
-    .expect("install session authority fixtures");
     sqlx::raw_sql(SESSION_MIGRATION)
         .execute(pool)
         .await
         .expect("apply session migration");
-}
-
-async fn seed_job_and_claim(pool: &PgPool) {
-    sqlx::query(
-        r"
-INSERT INTO elitea_runtime.execution_jobs (
-    execution_id, generation, tenant_id, resource_project_id,
-    projection_project_id, capability_id, invocation_state
-) VALUES ('execution-1', 1, 'tenant-1', 1, 2, $1, 'MAY_HAVE_STARTED')
-        ",
-    )
-    .bind(APPLICATION_CAPABILITY_ID)
-    .execute(pool)
-    .await
-    .expect("seed session execution");
-    seed_claim(pool, "claim-1", 1, 1, [0x22; 32], 0).await;
-}
-
-async fn seed_claim(
-    pool: &PgPool,
-    claim_id: &str,
-    claim_attempt: i64,
-    lease_epoch: i64,
-    fence_token: [u8; 32],
-    claimed_offset_seconds: i64,
-) {
-    sqlx::query(
-        r"
-INSERT INTO elitea_runtime.execution_claims (
-    claim_id, execution_id, generation, workload_session_id, producer_id,
-    claim_attempt, lease_epoch, fence_token, claimed_at, lease_expires_at
-) VALUES (
-    $1, 'execution-1', 1, 'workload-1', 'producer-1', $2, $3, $4,
-    clock_timestamp() + make_interval(secs => $5),
-    clock_timestamp() + interval '5 minutes'
-)
-        ",
-    )
-    .bind(claim_id)
-    .bind(claim_attempt)
-    .bind(lease_epoch)
-    .bind(fence_token.as_slice())
-    .bind(claimed_offset_seconds)
-    .execute(pool)
-    .await
-    .expect("seed session claim");
 }
 
 fn authority_for(
@@ -186,6 +109,22 @@ fn authority_for(
     claim_attempt: u64,
     lease_epoch: u64,
     fence_token: [u8; 32],
+) -> SessionWriterAuthority {
+    authority_for_at(
+        claim_id,
+        claim_attempt,
+        lease_epoch,
+        fence_token,
+        1_700_000_000_000_000 + i64::try_from(claim_attempt).expect("claim attempt") * 1_000_000,
+    )
+}
+
+fn authority_for_at(
+    claim_id: &str,
+    claim_attempt: u64,
+    lease_epoch: u64,
+    fence_token: [u8; 32],
+    claim_started_at_unix_micros: i64,
 ) -> SessionWriterAuthority {
     SessionWriterAuthority::new(
         "tenant-1".to_owned(),
@@ -202,6 +141,7 @@ fn authority_for(
         claim_id.to_owned(),
         claim_attempt,
         lease_epoch,
+        claim_started_at_unix_micros,
         "workload-1".to_owned(),
         "producer-1".to_owned(),
         fence_token,
@@ -225,6 +165,7 @@ fn authority() -> SessionWriterAuthority {
         "claim-1".to_owned(),
         1,
         1,
+        1_700_000_001_000_000,
         "workload-1".to_owned(),
         "producer-1".to_owned(),
         [0x22; 32],
@@ -253,6 +194,7 @@ fn authority_and_limits_fail_closed_without_debugging_secrets() {
             "claim-1".to_owned(),
             1,
             1,
+            1_700_000_001_000_000,
             "workload-1".to_owned(),
             "producer-1".to_owned(),
             [0x22; 32],
@@ -316,14 +258,26 @@ async fn postgres_session_component_story() {
     };
     let database = IsolatedPostgres::create(&database_url).await;
     install_schema(&database.pool).await;
-    seed_job_and_claim(&database.pool).await;
+    let first_lease = Arc::new(TestStateWriterLease::current());
     let service = PostgresSessionService::activate(
         database.pool.clone(),
         authority_for("claim-1", 1, 1, [0x22; 32]),
         SessionLimits::default(),
+        first_lease,
     )
     .await
     .expect("activate first session writer");
+    let equal_time = PostgresSessionService::activate(
+        database.pool.clone(),
+        authority_for_at("claim-equal", 2, 2, [0x23; 32], 1_700_000_001_000_000),
+        SessionLimits::default(),
+        Arc::new(TestStateWriterLease::current()),
+    )
+    .await;
+    assert!(matches!(
+        equal_time,
+        Err(PostgresSessionError::WriterNotCurrent)
+    ));
     let session = service
         .create(CreateRequest {
             app_name: "elitea-agent-v1".to_owned(),
@@ -457,11 +411,12 @@ async fn postgres_session_component_story() {
         .expect("list bound session");
     assert_eq!(listed.len(), 1);
 
-    seed_claim(&database.pool, "claim-2", 2, 2, [0x33; 32], 1).await;
+    let replacement_lease = Arc::new(TestStateWriterLease::current());
     let replacement = PostgresSessionService::activate(
         database.pool.clone(),
         authority_for("claim-2", 2, 2, [0x33; 32]),
         SessionLimits::default(),
+        replacement_lease.clone(),
     )
     .await
     .expect("activate replacement session writer");
@@ -518,4 +473,7 @@ async fn postgres_session_component_story() {
             .expect("count deleted events");
     assert_eq!(writer_count, 1);
     assert_eq!(event_count, 0);
+    replacement_lease.revoke();
+    let revoked = replacement.health_check().await.expect_err("revoked lease");
+    assert_eq!(revoked.code, "session.writer_not_current");
 }

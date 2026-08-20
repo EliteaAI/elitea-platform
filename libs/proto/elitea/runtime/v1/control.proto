@@ -70,7 +70,11 @@ message ClaimReceiptV1 {
   string claim_id = 9;
   SettlementRecoveryV1 settlement_recovery = 10;
   RuntimeErrorV1 retirement = 11;
-  reserved 12 to 15;
+  // Database-authored creation instant for a fresh accepted claim. This is
+  // carried only by ACCEPTED receipts so a separate execution-state database
+  // can order stale-writer takeover without reading Main's business tables.
+  int64 claim_started_at_unix_micros = 12;
+  reserved 13 to 15;
 }
 
 message ClaimCommandResponseV1 {

@@ -822,10 +822,12 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 };
             }
         };
+        let state_writer_lease = Arc::new(lease.state_probe());
         let assembly = AuthorizedNativeAssembly::from_authorized(
             &request,
             runtime_context_authority,
             session_authority,
+            state_writer_lease,
             command_binding,
         );
         let assembly_result = lease
@@ -1394,16 +1396,18 @@ where
                     return preparation_error(AgentPreparationError::Lease(error));
                 }
             };
-            ActiveAgentPreparation {
-                kind,
-                delivery,
-                verified,
-                output_spool,
-                execution,
-                reservation,
-                lease,
-            }
-            .materialize(input, clock.as_ref())
+            Box::pin(
+                ActiveAgentPreparation {
+                    kind,
+                    delivery,
+                    verified,
+                    output_spool,
+                    execution,
+                    reservation,
+                    lease,
+                }
+                .materialize(input, clock.as_ref()),
+            )
             .await
         }
         .instrument(span),

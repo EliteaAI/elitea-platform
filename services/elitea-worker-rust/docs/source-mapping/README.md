@@ -81,13 +81,19 @@ Maintained Rust runtime ownership registry:
 - `src/protocol/control.rs::ClaimBoundSessionAuthority`: one-use session-writer
   grant minted only at `AUTHORIZED_NOW`, independently of output and settlement
   authority;
+- `src/execution/agent_lease.rs` and `src/state/writer_lease.rs`: the supervised
+  Main claim lease becomes a read-only state-writer guard. Main's accepted
+  control receipt supplies the database-authored claim start used to order
+  writer takeover in the separate state database;
 - `src/state/postgres_checkpointer.rs` plus Main migration
   `migrations/agentstate/0001_agent_graph_checkpoints.sql`: graph-only frontier,
   node-state and interrupt persistence. Both adapters target the same separate
   PostgreSQL `agentstate` database under an isolated `elitea_runtime` schema,
   leaving legacy LangGraph tables in `public` unchanged. They implement
-  distinct ADK contracts rather than duplicating transcript state. Production
-  still needs cross-database live-claim fencing and cleanup-owner coverage;
+  distinct ADK contracts rather than duplicating transcript state. State writes
+  check the supervised lease before locking and before commit, then retain a
+  durable newer-writer fence. This does not claim an atomic transaction across
+  Main and `agentstate`; cleanup-owner coverage remains a deployment gate;
 - `src/diagnostics.rs`, `src/execution/{agent_preparation,native_agent_lifecycle}.rs`:
   crate-scoped subscriber plus authenticated lifecycle/assembly/tool
   correlation. Export/retention policy remains deployment-owned.

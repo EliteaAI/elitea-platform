@@ -298,7 +298,11 @@ async fn session_backend_rejects_a_claim_from_another_execution_before_storage()
     )
     .expect("native plan");
     let result = NativeSessionBackend::invocation_local()
-        .open(test_session_authority_for("execution/two", 3), &plan)
+        .open(
+            test_session_authority_for("execution/two", 3),
+            Arc::new(crate::state::TestStateWriterLease::current()),
+            &plan,
+        )
         .await;
     let Err(error) = result else {
         panic!("cross-execution session grant was accepted");

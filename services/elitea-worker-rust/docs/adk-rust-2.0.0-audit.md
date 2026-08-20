@@ -246,23 +246,28 @@ Rust therefore implements the same ADK `SessionService` trait in
 fresh `adk-session.2.0.0.v1` lineage is bounded before decode/query, stores the
 complete event, assigns a deterministic ordinal, rejects corrupt rows, merges
 state tiers transactionally and retains the exact claim/fence identity on every
-operation. The current component adapter verifies that identity against
-co-located Main claim fixtures; production agentstate composition cannot rely
-on those Main tables and therefore remains closed until an exact cross-database
-claim/lease fence replaces that lookup. Writer rows survive session deletion so
-an older activated writer cannot regain authority over a recreated
-conversation. This is conversation/session state for every Runner, not graph
-frontier state.
+operation. The accepted Main control receipt now carries the database-authored
+fresh-claim start time. The supervised claim lease is projected into a
+read-only writer guard, and the adapter verifies that guard before locking its
+`agentstate` writer row and again before commit. The claim time orders durable
+writer takeover without copying or querying Main business tables in the state
+database. Writer rows survive session deletion so an older activated writer
+cannot regain authority over a recreated conversation. This is deliberately a
+bounded cross-database protocol, not a distributed transaction: a Main claim
+transition can race after the final local guard check, while lease expiry,
+monitor shutdown and later writer takeover close further writes. This is
+conversation/session state for every Runner, not graph frontier state.
 
 Graphs compose two ADK contracts over the same physical agentstate schema and
 pool: `SessionService` for conversation events/state and
 `Checkpointer` for graph frontier, node state and interrupts. Direct `LlmAgent`
 runs use only `SessionService`. This is not duplicate state ownership; the two
 versioned table lineages have non-overlapping semantics. The existing
-agentstate cleanup owner must cover both native lineages before activation, and
-the current same-database Main-claim check must be replaced by an exact
-cross-database claim/lease fence without copying Main business tables.
-Authorization now
+agentstate cleanup owner must cover both native lineages before activation.
+Both adapters use the authenticated Main claim-start receipt, the same
+supervised lease guard and their own durable writer row; neither reads Main
+tables through the state connection. Production bootstrap and failure testing
+must retain the documented non-atomic two-database limitation. Authorization now
 mints a separate non-cloneable session-writer grant beside the runtime-context
 grant, and the common Runner assembly accepts either the invocation-local or
 claim-fenced PostgreSQL `SessionService`. Existing sessions are restored; the

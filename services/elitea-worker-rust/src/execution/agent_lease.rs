@@ -9,6 +9,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::{mpsc, oneshot, watch};
@@ -21,6 +22,7 @@ use crate::protocol::control::{
     LeaseMonitoredAgentExecution, LeaseStartingAgentExecution, PendingLeaseActivation,
     RuntimeControlRejectionKind,
 };
+use crate::state::{StateWriterLease, StateWriterLeaseLost};
 use crate::transport::ControlRpc;
 
 const MIN_LEASE_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -210,7 +212,7 @@ impl std::error::Error for ClaimLeaseError {
 
 #[derive(Clone)]
 enum MonitorState {
-    Running,
+    Running { lease_expires_at_unix_millis: i64 },
     Cancelled,
     Failed(ClaimLeaseError),
 }
@@ -240,6 +242,9 @@ pub struct ClaimLeaseMonitor {
     shutdown: watch::Sender<bool>,
     actor: Option<JoinHandle<()>>,
     activation: Option<PendingLeaseActivation>,
+    clock: Arc<dyn UnixMillisClock>,
+    margin_millis: i64,
+    supervision_live: Arc<AtomicBool>,
 }
 
 /// Cloneable read-only view of one supervised claim lease.
@@ -253,6 +258,9 @@ pub struct ClaimLeaseMonitor {
 #[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
 pub(crate) struct ClaimLeaseStateProbe {
     state: watch::Receiver<MonitorState>,
+    clock: Arc<dyn UnixMillisClock>,
+    margin_millis: i64,
+    supervision_live: Arc<AtomicBool>,
 }
 
 #[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
@@ -260,6 +268,9 @@ impl Clone for ClaimLeaseStateProbe {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
+            clock: Arc::clone(&self.clock),
+            margin_millis: self.margin_millis,
+            supervision_live: Arc::clone(&self.supervision_live),
         }
     }
 }
@@ -272,7 +283,7 @@ impl ClaimLeaseStateProbe {
     ///
     /// Returns the latched durable Stop or fatal lease cause.
     pub(crate) fn ensure_running(&self) -> Result<(), ClaimLeaseError> {
-        monitor_state_result(&self.state.borrow())
+        self.ensure_live_margin()
     }
 
     /// Wait for and consume the next authoritative state transition.
@@ -290,6 +301,46 @@ impl ClaimLeaseStateProbe {
             .await
             .map_err(|_| ClaimLeaseError::closed())?;
         monitor_state_result(&self.state.borrow_and_update())
+    }
+
+    fn ensure_live_margin(&self) -> Result<(), ClaimLeaseError> {
+        if !self.supervision_live.load(Ordering::Acquire) {
+            return Err(ClaimLeaseError::closed());
+        }
+        if self.state.has_changed().is_err() {
+            return Err(ClaimLeaseError::closed());
+        }
+        let state = self.state.borrow();
+        monitor_state_result(&state)?;
+        let MonitorState::Running {
+            lease_expires_at_unix_millis,
+        } = &*state
+        else {
+            return Err(ClaimLeaseError::LeaseLost(
+                "the supervised claim lease is unavailable for state persistence",
+            ));
+        };
+        let now_unix_millis = self.clock.now_unix_millis();
+        if now_unix_millis <= 0 {
+            return Err(ClaimLeaseError::InvalidClock(
+                "the wall clock cannot validate the supervised claim lease",
+            ));
+        }
+        if lease_expires_at_unix_millis
+            .checked_sub(now_unix_millis)
+            .is_none_or(|remaining| remaining < self.margin_millis)
+        {
+            return Err(ClaimLeaseError::LeaseLost(
+                "the supervised claim lease has insufficient state-write margin",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl StateWriterLease for ClaimLeaseStateProbe {
+    fn ensure_current(&self) -> Result<(), StateWriterLeaseLost> {
+        self.ensure_live_margin().map_err(|_| StateWriterLeaseLost)
     }
 }
 
@@ -341,17 +392,25 @@ impl ClaimLeaseMonitor {
         K: UnixMillisClock,
     {
         let config = config.validated;
+        let initial_expiry = lease.lease_expires_at_unix_millis();
+        let probe_clock: Arc<dyn UnixMillisClock> = clock.clone();
         let (command_sender, command_receiver) = mpsc::channel(1);
-        let (state_sender, state_receiver) = watch::channel(MonitorState::Running);
+        let (state_sender, state_receiver) = watch::channel(MonitorState::Running {
+            lease_expires_at_unix_millis: initial_expiry,
+        });
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let supervision_live = Arc::new(AtomicBool::new(true));
         let actor = tokio::spawn(run_lease_actor(
             control,
             lease,
             clock,
             config,
-            command_receiver,
-            state_sender,
-            shutdown_receiver,
+            LeaseActorChannels {
+                commands: command_receiver,
+                state: state_sender,
+                shutdown: shutdown_receiver,
+                supervision_live: Arc::clone(&supervision_live),
+            },
         ));
         Self {
             commands: command_sender,
@@ -359,6 +418,9 @@ impl ClaimLeaseMonitor {
             shutdown: shutdown_sender,
             actor: Some(actor),
             activation,
+            clock: probe_clock,
+            margin_millis: config.margin_millis,
+            supervision_live,
         }
     }
 
@@ -415,6 +477,9 @@ impl ClaimLeaseMonitor {
     pub(crate) fn state_probe(&self) -> ClaimLeaseStateProbe {
         ClaimLeaseStateProbe {
             state: self.state.clone(),
+            clock: Arc::clone(&self.clock),
+            margin_millis: self.margin_millis,
+            supervision_live: Arc::clone(&self.supervision_live),
         }
     }
 
@@ -492,6 +557,7 @@ impl ClaimLeaseMonitor {
     ///
     /// Returns a previously latched fatal state or an actor lifecycle failure.
     pub async fn close(mut self) -> Result<(), ClaimLeaseError> {
+        self.supervision_live.store(false, Ordering::Release);
         let _ = self.shutdown.send(true);
         let actor = self.actor.take().ok_or_else(ClaimLeaseError::closed)?;
         actor.await.map_err(|_| ClaimLeaseError::closed())?;
@@ -506,7 +572,7 @@ impl ClaimLeaseMonitor {
 
     fn current_error(&self) -> Option<ClaimLeaseError> {
         match &*self.state.borrow() {
-            MonitorState::Running => None,
+            MonitorState::Running { .. } => None,
             MonitorState::Cancelled => Some(ClaimLeaseError::cancelled()),
             MonitorState::Failed(error) => Some(error.clone()),
         }
@@ -515,7 +581,7 @@ impl ClaimLeaseMonitor {
     fn current_fatal_error(&self) -> Option<ClaimLeaseError> {
         match &*self.state.borrow() {
             MonitorState::Failed(error) => Some(error.clone()),
-            MonitorState::Running | MonitorState::Cancelled => None,
+            MonitorState::Running { .. } | MonitorState::Cancelled => None,
         }
     }
 }
@@ -523,7 +589,7 @@ impl ClaimLeaseMonitor {
 #[allow(dead_code)] // Consumed by the capability-disabled native invocation lifecycle.
 fn monitor_state_result(state: &MonitorState) -> Result<(), ClaimLeaseError> {
     match state {
-        MonitorState::Running => Ok(()),
+        MonitorState::Running { .. } => Ok(()),
         MonitorState::Cancelled => Err(ClaimLeaseError::cancelled()),
         MonitorState::Failed(error) => Err(error.clone()),
     }
@@ -531,8 +597,24 @@ fn monitor_state_result(state: &MonitorState) -> Result<(), ClaimLeaseError> {
 
 impl Drop for ClaimLeaseMonitor {
     fn drop(&mut self) {
+        self.supervision_live.store(false, Ordering::Release);
         let _ = self.shutdown.send(true);
     }
+}
+
+struct LeaseActorLifetime(Arc<AtomicBool>);
+
+impl Drop for LeaseActorLifetime {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+struct LeaseActorChannels {
+    commands: mpsc::Receiver<MonitorCommand>,
+    state: watch::Sender<MonitorState>,
+    shutdown: watch::Receiver<bool>,
+    supervision_live: Arc<AtomicBool>,
 }
 
 async fn run_lease_actor<R, K>(
@@ -540,13 +622,18 @@ async fn run_lease_actor<R, K>(
     mut lease: ClaimLeaseHandle,
     clock: Arc<K>,
     config: ValidatedLeaseConfig,
-    mut commands: mpsc::Receiver<MonitorCommand>,
-    state: watch::Sender<MonitorState>,
-    mut shutdown: watch::Receiver<bool>,
+    channels: LeaseActorChannels,
 ) where
     R: ControlRpc + 'static,
     K: UnixMillisClock,
 {
+    let LeaseActorChannels {
+        mut commands,
+        state,
+        mut shutdown,
+        supervision_live,
+    } = channels;
+    let _lifetime = LeaseActorLifetime(supervision_live);
     let start = Instant::now() + config.poll_interval;
     let mut ticker = interval_at(start, config.poll_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -615,7 +702,7 @@ async fn poll_or_shutdown<R, K>(
     clock: &K,
     config: ValidatedLeaseConfig,
     shutdown: &mut watch::Receiver<bool>,
-) -> Option<Result<(), ClaimLeaseError>>
+) -> Option<Result<i64, ClaimLeaseError>>
 where
     R: ControlRpc,
     K: UnixMillisClock,
@@ -638,7 +725,7 @@ async fn poll_once<R, K>(
     lease: &mut ClaimLeaseHandle,
     clock: &K,
     config: ValidatedLeaseConfig,
-) -> Result<(), ClaimLeaseError>
+) -> Result<i64, ClaimLeaseError>
 where
     R: ControlRpc,
     K: UnixMillisClock,
@@ -671,7 +758,8 @@ where
     // baseline before either desired-state value is interpreted.
     lease.commit_renewal(renewal);
     require_running(renewal.desired_state)?;
-    require_running(observed)
+    require_running(observed)?;
+    Ok(renewal.lease_expires_at_unix_millis)
 }
 
 fn require_running(state: DesiredExecutionState) -> Result<(), ClaimLeaseError> {
@@ -685,13 +773,18 @@ fn require_running(state: DesiredExecutionState) -> Result<(), ClaimLeaseError> 
 }
 
 fn record_poll_result(
-    result: Result<(), ClaimLeaseError>,
+    result: Result<i64, ClaimLeaseError>,
     cancellation_latched: &mut bool,
     state: &watch::Sender<MonitorState>,
 ) -> (Result<(), ClaimLeaseError>, bool) {
     match result {
-        Ok(()) if *cancellation_latched => (Err(ClaimLeaseError::cancelled()), true),
-        Ok(()) => (Ok(()), true),
+        Ok(_) if *cancellation_latched => (Err(ClaimLeaseError::cancelled()), true),
+        Ok(lease_expires_at_unix_millis) => {
+            state.send_replace(MonitorState::Running {
+                lease_expires_at_unix_millis,
+            });
+            (Ok(()), true)
+        }
         Err(error @ ClaimLeaseError::Cancelled(_)) => {
             *cancellation_latched = true;
             state.send_replace(MonitorState::Cancelled);

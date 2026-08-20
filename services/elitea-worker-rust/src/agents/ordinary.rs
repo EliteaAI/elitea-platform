@@ -103,8 +103,15 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 .redeem_runtime_context(self.platform.as_ref())
                 .await
                 .map_err(NativeAgentAssemblyError::from)?;
-            let (profile, plan, tool_snapshot, context, runtime_context, session_authority) =
-                redeemed.into_parts();
+            let (
+                profile,
+                plan,
+                tool_snapshot,
+                context,
+                runtime_context,
+                session_authority,
+                state_writer_lease,
+            ) = redeemed.into_parts();
             let tool_reference_count = tool_snapshot.iter().count();
             let nested_application_count = tool_snapshot
                 .iter()
@@ -166,7 +173,10 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 )
                 .map_err(model_binding_error)?;
             tracing::Span::current().record("stage", "runner");
-            let sessions = self.sessions.open(session_authority, &plan).await?;
+            let sessions = self
+                .sessions
+                .open(session_authority, state_writer_lease, &plan)
+                .await?;
             assemble_ordinary_native_with_sessions(model, plan, toolsets, sensitive_tools, sessions)
                 .await
         }

@@ -504,7 +504,7 @@ async fn supervised_lease_key_state_and_monotonicity_match_python_semantics() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn claim_authority_rejects_every_binding_mutation() {
-    let mutations: [fn(&mut ClaimCommandResponseV1); 5] = [
+    let mutations: [fn(&mut ClaimCommandResponseV1); 7] = [
         |response| {
             response
                 .receipt
@@ -555,6 +555,20 @@ async fn claim_authority_rejects_every_binding_mutation() {
                 .as_mut()
                 .expect("manifest");
             manifest.entries.push(manifest.entries[0].clone());
+        },
+        |response| {
+            response
+                .receipt
+                .as_mut()
+                .expect("receipt")
+                .claim_started_at_unix_micros = 0;
+        },
+        |response| {
+            let receipt = response.receipt.as_mut().expect("receipt");
+            receipt.claim_started_at_unix_micros = receipt
+                .lease_expires_at_unix_millis
+                .checked_mul(1_000)
+                .expect("fixture expiry in microseconds");
         },
     ];
     for mutate in mutations {

@@ -10,6 +10,7 @@
 #![allow(dead_code)] // Production composition waits for assembly and event projection.
 
 use std::fmt;
+use std::sync::Arc;
 
 use adk_rust::futures::{FutureExt as _, StreamExt};
 use adk_rust::runner::Runner;
@@ -25,6 +26,7 @@ use super::events::{
 use super::request::AgentExecutionRequest;
 use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::{ClaimBoundRuntimeContextAuthority, ClaimBoundSessionAuthority};
+use crate::state::StateWriterLease;
 use crate::toolkits::{AdmittedToolSnapshot, FrozenToolSnapshot, ToolAdmissionPolicy};
 use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::{ClaimScopedEliteaContext, RuntimeContextError};
@@ -141,6 +143,7 @@ pub(crate) struct AuthorizedNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
     session: ClaimBoundSessionAuthority,
+    state_writer_lease: Arc<dyn StateWriterLease>,
     command: AuthorizedNativeCommandBinding,
 }
 
@@ -150,12 +153,14 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         request: &'a AgentExecutionRequest,
         runtime_context: ClaimBoundRuntimeContextAuthority,
         session: ClaimBoundSessionAuthority,
+        state_writer_lease: Arc<dyn StateWriterLease>,
         command: AuthorizedNativeCommandBinding,
     ) -> Self {
         Self {
             request,
             runtime_context,
             session,
+            state_writer_lease,
             command,
         }
     }
@@ -171,6 +176,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             request,
             runtime_context,
             crate::protocol::control::test_session_authority(),
+            Arc::new(crate::state::TestStateWriterLease::current()),
             command,
         )
     }
@@ -195,6 +201,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             request: self.request,
             runtime_context: self.runtime_context,
             session: self.session,
+            state_writer_lease: self.state_writer_lease,
             profile,
             plan,
             toolsets,
@@ -207,6 +214,7 @@ pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     request: &'a AgentExecutionRequest,
     runtime_context: ClaimBoundRuntimeContextAuthority,
     session: ClaimBoundSessionAuthority,
+    state_writer_lease: Arc<dyn StateWriterLease>,
     profile: OrdinaryNoToolProfile,
     plan: OrdinaryNativeAgentPlan,
     toolsets: AdmittedToolSnapshot<'a>,
@@ -235,6 +243,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
         let Self {
             runtime_context,
             session,
+            state_writer_lease,
             profile,
             plan,
             toolsets,
@@ -248,6 +257,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             context,
             runtime_context,
             session,
+            state_writer_lease,
         })
     }
 }
@@ -260,6 +270,7 @@ pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
     context: ClaimScopedEliteaContext,
     runtime_context: ClaimBoundRuntimeContextAuthority,
     session: ClaimBoundSessionAuthority,
+    state_writer_lease: Arc<dyn StateWriterLease>,
 }
 
 impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
@@ -272,6 +283,7 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
         ClaimScopedEliteaContext,
         ClaimBoundRuntimeContextAuthority,
         ClaimBoundSessionAuthority,
+        Arc<dyn StateWriterLease>,
     ) {
         (
             self.profile,
@@ -280,6 +292,7 @@ impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
             self.context,
             self.runtime_context,
             self.session,
+            self.state_writer_lease,
         )
     }
 }

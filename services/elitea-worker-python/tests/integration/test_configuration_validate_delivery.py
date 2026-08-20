@@ -144,6 +144,9 @@ class Control:
                 ),
                 fence=self.envelope.fence,
                 lease_expires_at_unix_millis=CONFORMANCE_OCCURRED_AT_UNIX_MILLIS + 60_000,
+                # Rust state fencing consumes this additive receipt field. The
+                # Python SDK/LangGraph execution path deliberately ignores it.
+                claim_started_at_unix_micros=CONFORMANCE_OCCURRED_AT_UNIX_MILLIS * 1_000,
                 input_bundle_ref=self.command.input_bundle_ref,
                 input_bundle=self.manifest,
                 desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,

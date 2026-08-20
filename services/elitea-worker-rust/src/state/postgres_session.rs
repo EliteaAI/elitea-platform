@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
+use std::sync::Arc;
 
 use adk_rust::session::{
     AppendEventRequest, CreateRequest, DeleteRequest, Events, GetRequest, ListRequest, Session,
@@ -15,12 +16,14 @@ use adk_rust::session::{
 };
 use adk_rust::{AdkError, ErrorCategory, ErrorComponent, Event};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone as _, Utc};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
 use zeroize::Zeroizing;
+
+use super::StateWriterLease;
 
 const SESSION_FAMILY: &str = "adk-session.2.0.0.v1";
 const MAX_STATE_BYTES: usize = 1024 * 1024;
@@ -172,6 +175,7 @@ pub(crate) struct SessionWriterAuthority {
     claim_id: String,
     claim_attempt: i64,
     lease_epoch: i64,
+    claim_started_at: DateTime<Utc>,
     workload_session_id: String,
     producer_id: String,
     fence_token: Zeroizing<[u8; 32]>,
@@ -194,6 +198,7 @@ impl SessionWriterAuthority {
         claim_id: String,
         claim_attempt: u64,
         lease_epoch: u64,
+        claim_started_at_unix_micros: i64,
         workload_session_id: String,
         producer_id: String,
         fence_token: [u8; 32],
@@ -204,6 +209,10 @@ impl SessionWriterAuthority {
             i64::try_from(claim_attempt).map_err(|_| PostgresSessionError::InvalidScope)?;
         let lease_epoch =
             i64::try_from(lease_epoch).map_err(|_| PostgresSessionError::InvalidScope)?;
+        let claim_started_at = Utc
+            .timestamp_micros(claim_started_at_unix_micros)
+            .single()
+            .ok_or(PostgresSessionError::InvalidScope)?;
         let authority = Self {
             tenant_id,
             resource_project_id,
@@ -219,6 +228,7 @@ impl SessionWriterAuthority {
             claim_id,
             claim_attempt,
             lease_epoch,
+            claim_started_at,
             workload_session_id,
             producer_id,
             fence_token: Zeroizing::new(fence_token),
@@ -247,6 +257,7 @@ impl SessionWriterAuthority {
             || self.generation <= 0
             || self.claim_attempt <= 0
             || self.lease_epoch <= 0
+            || self.claim_started_at.timestamp_micros() <= 0
             || self.fence_token.iter().all(|byte| *byte == 0)
         {
             return Err(PostgresSessionError::InvalidScope);
@@ -255,11 +266,17 @@ impl SessionWriterAuthority {
     }
 }
 
-/// ADK `SessionService` activated for one current Elitea execution claim.
+/// ADK `SessionService` activated for one supervised Elitea execution claim.
+///
+/// Main-authored claim time orders durable writer takeover in `agentstate`;
+/// the attached live-lease guard rejects local work after cancellation,
+/// supervision loss, or expiry. This deliberately avoids querying Main's
+/// business tables from the separate state database.
 pub struct PostgresSessionService {
     pool: PgPool,
     authority: SessionWriterAuthority,
     limits: SessionLimits,
+    state_writer_lease: Arc<dyn StateWriterLease>,
 }
 
 struct StoredSession {
@@ -343,20 +360,28 @@ impl PostgresSessionService {
         pool: PgPool,
         authority: SessionWriterAuthority,
         limits: SessionLimits,
+        state_writer_lease: Arc<dyn StateWriterLease>,
     ) -> Result<Self, PostgresSessionError> {
         authority.validate()?;
         let limits = limits.validate()?;
+        state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresSessionError::WriterNotCurrent)?;
         let mut transaction = pool.begin().await.map_err(storage_error)?;
-        let claimed_at = current_claimed_at(&mut transaction, &authority).await?;
-        let activated = activate_writer_row(&mut transaction, &authority, claimed_at).await?;
+        let activated =
+            activate_writer_row(&mut transaction, &authority, authority.claim_started_at).await?;
         if activated.as_deref() != Some(authority.claim_id.as_str()) {
             return Err(PostgresSessionError::WriterNotCurrent);
         }
+        state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresSessionError::WriterNotCurrent)?;
         transaction.commit().await.map_err(storage_error)?;
         Ok(Self {
             pool,
             authority,
             limits,
+            state_writer_lease,
         })
     }
 
@@ -387,23 +412,9 @@ impl PostgresSessionService {
         transaction: &mut Transaction<'_, Postgres>,
         exclusive: bool,
     ) -> Result<(), PostgresSessionError> {
-        sqlx::query_scalar::<_, i32>(CURRENT_CLAIM_SQL)
-            .bind(&self.authority.tenant_id)
-            .bind(self.authority.resource_project_id)
-            .bind(self.authority.projection_project_id)
-            .bind(self.authority.capability_id)
-            .bind(&self.authority.claim_id)
-            .bind(&self.authority.execution_id)
-            .bind(self.authority.generation)
-            .bind(self.authority.claim_attempt)
-            .bind(self.authority.lease_epoch)
-            .bind(&self.authority.workload_session_id)
-            .bind(&self.authority.producer_id)
-            .bind(self.authority.fence_token.as_slice())
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(storage_error)?
-            .ok_or(PostgresSessionError::WriterNotCurrent)?;
+        self.state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresSessionError::WriterNotCurrent)?;
         let writer_sql = if exclusive {
             CURRENT_WRITER_EXCLUSIVE_SQL
         } else {
@@ -430,6 +441,16 @@ impl PostgresSessionService {
             .map_err(storage_error)?
             .ok_or(PostgresSessionError::WriterNotCurrent)?;
         Ok(())
+    }
+
+    async fn commit_current(
+        &self,
+        transaction: Transaction<'_, Postgres>,
+    ) -> Result<(), PostgresSessionError> {
+        self.state_writer_lease
+            .ensure_current()
+            .map_err(|_| PostgresSessionError::WriterNotCurrent)?;
+        transaction.commit().await.map_err(storage_error)
     }
 
     async fn create_session(
@@ -496,7 +517,7 @@ INSERT INTO elitea_runtime.agent_sessions (
         .execute(&mut *transaction)
         .await
         .map_err(storage_error)?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         let merged = merge_states(&stored_app_state, &stored_user_state, &session_state);
         Ok(Box::new(StoredSession {
             app_name: req.app_name,
@@ -526,7 +547,7 @@ INSERT INTO elitea_runtime.agent_sessions (
             .await?;
         let app_state = load_app_state(&mut transaction, &self.authority, self.limits).await?;
         let user_state = load_user_state(&mut transaction, &self.authority, self.limits).await?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         let (session_state, updated_at) = session_row;
         Ok(Box::new(StoredSession {
             app_name: req.app_name,
@@ -717,7 +738,7 @@ WHERE tenant_id = $1
         .map_err(storage_error)?;
         match exact_existing {
             Some(true) => {
-                transaction.commit().await.map_err(storage_error)?;
+                self.commit_current(transaction).await?;
                 return Ok(());
             }
             Some(false) => return Err(PostgresSessionError::EventConflict),
@@ -754,7 +775,7 @@ WHERE tenant_id = $1
             ordinal,
         )
         .await?;
-        transaction.commit().await.map_err(storage_error)?;
+        self.commit_current(transaction).await?;
         Ok(())
     }
 
@@ -1009,10 +1030,8 @@ WHERE tenant_id = $1
         .await
         .map_err(storage_error)
         .map_err(PostgresSessionError::into_adk)?;
-        transaction
-            .commit()
+        self.commit_current(transaction)
             .await
-            .map_err(storage_error)
             .map_err(PostgresSessionError::into_adk)?;
         Ok(())
     }
@@ -1050,59 +1069,10 @@ WHERE tenant_id = $1
         self.lock_current_writer(&mut transaction, false)
             .await
             .map_err(PostgresSessionError::into_adk)?;
-        transaction
-            .commit()
+        self.commit_current(transaction)
             .await
-            .map_err(storage_error)
             .map_err(PostgresSessionError::into_adk)
     }
-}
-
-async fn current_claimed_at(
-    transaction: &mut Transaction<'_, Postgres>,
-    authority: &SessionWriterAuthority,
-) -> Result<DateTime<Utc>, PostgresSessionError> {
-    sqlx::query_scalar::<_, DateTime<Utc>>(
-        r"
-SELECT claim.claimed_at
-FROM elitea_runtime.execution_claims AS claim
-JOIN elitea_runtime.execution_jobs AS job
-  ON job.execution_id = claim.execution_id
- AND job.generation = claim.generation
-WHERE claim.claim_id = $1
-  AND claim.execution_id = $2
-  AND claim.generation = $3
-  AND claim.claim_attempt = $4
-  AND claim.lease_epoch = $5
-  AND claim.workload_session_id = $6
-  AND claim.producer_id = $7
-  AND claim.fence_token = $8
-  AND claim.released_at IS NULL
-  AND claim.lease_expires_at > clock_timestamp()
-  AND job.invocation_state = 'MAY_HAVE_STARTED'
-  AND job.tenant_id = $9
-  AND job.resource_project_id = $10
-  AND job.projection_project_id = $11
-  AND job.capability_id = $12
-FOR SHARE OF job, claim
-        ",
-    )
-    .bind(&authority.claim_id)
-    .bind(&authority.execution_id)
-    .bind(authority.generation)
-    .bind(authority.claim_attempt)
-    .bind(authority.lease_epoch)
-    .bind(&authority.workload_session_id)
-    .bind(&authority.producer_id)
-    .bind(authority.fence_token.as_slice())
-    .bind(&authority.tenant_id)
-    .bind(authority.resource_project_id)
-    .bind(authority.projection_project_id)
-    .bind(authority.capability_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(storage_error)?
-    .ok_or(PostgresSessionError::WriterNotCurrent)
 }
 
 async fn activate_writer_row(
@@ -1579,30 +1549,6 @@ fn storage_error(source: sqlx::Error) -> PostgresSessionError {
         _ => PostgresSessionError::StorageFailure { source },
     }
 }
-
-const CURRENT_CLAIM_SQL: &str = r"
-SELECT 1
-FROM elitea_runtime.execution_jobs AS job
-JOIN elitea_runtime.execution_claims AS claim
-  ON job.execution_id = claim.execution_id
- AND job.generation = claim.generation
-WHERE job.tenant_id = $1
-  AND job.resource_project_id = $2
-  AND job.projection_project_id = $3
-  AND job.capability_id = $4
-  AND claim.claim_id = $5
-  AND claim.execution_id = $6
-  AND claim.generation = $7
-  AND claim.claim_attempt = $8
-  AND claim.lease_epoch = $9
-  AND claim.workload_session_id = $10
-  AND claim.producer_id = $11
-  AND claim.fence_token = $12
-  AND claim.released_at IS NULL
-  AND claim.lease_expires_at > clock_timestamp()
-  AND job.invocation_state = 'MAY_HAVE_STARTED'
-FOR SHARE OF job, claim
-";
 
 const CURRENT_WRITER_SHARED_SQL: &str = r"
 SELECT 1

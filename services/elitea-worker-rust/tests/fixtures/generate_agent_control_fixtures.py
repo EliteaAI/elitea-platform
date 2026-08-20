@@ -128,6 +128,7 @@ claim = control_pb2.ClaimCommandResponseV1(
         desired_state=common_pb2.DESIRED_EXECUTION_STATE_V1_RUNNING,
         claim_handoff_watermark=4,
         claim_id="claim-5",
+        claim_started_at_unix_micros=1_700_000_000_123_456,
     )
 )
 renewal_seed = (
@@ -146,6 +147,7 @@ def recovery_claim(disposition: int) -> control_pb2.ClaimCommandResponseV1:
     response.receipt.disposition = disposition
     response.receipt.ClearField("input_bundle_ref")
     response.receipt.ClearField("input_bundle")
+    response.receipt.claim_started_at_unix_micros = 0
     return response
 
 

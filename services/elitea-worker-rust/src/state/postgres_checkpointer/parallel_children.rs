@@ -38,8 +38,13 @@ impl ParallelChildCheckpointerFactory for PostgresCheckpointer {
         })?;
         let thread_id = child_thread_id(self, activation, branch, ordinal, input_digest);
         let authority = self.scope.authority.for_thread(thread_id.clone())?;
-        let child =
-            PostgresCheckpointer::activate(self.pool.clone(), authority, self.limits).await?;
+        let child = PostgresCheckpointer::activate(
+            self.pool.clone(),
+            authority,
+            self.limits,
+            Arc::clone(&self.state_writer_lease),
+        )
+        .await?;
         let checkpointer: Arc<dyn Checkpointer> = Arc::new(child);
         Ok(ParallelChildCheckpoint {
             thread_id,

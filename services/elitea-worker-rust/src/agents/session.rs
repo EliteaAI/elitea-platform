@@ -44,6 +44,7 @@ use crate::protocol::control::ClaimBoundSessionAuthority;
 use crate::protocol::elitea::runtime::v1::{AgentExecutionCommandV1, worker_command_v1};
 use crate::state::{
     PostgresSessionError, PostgresSessionService, SessionLimits, SessionWriterAuthority,
+    StateWriterLease,
 };
 
 const APP_NAME: &str = "elitea-agent-v1";
@@ -263,6 +264,7 @@ impl NativeSessionBackend {
     pub(crate) async fn open(
         &self,
         authority: ClaimBoundSessionAuthority,
+        state_writer_lease: Arc<dyn StateWriterLease>,
         plan: &OrdinaryNativeAgentPlan,
     ) -> Result<Arc<dyn SessionService>, NativeAgentAssemblyError> {
         let claim = authority.into_writer_binding();
@@ -312,14 +314,20 @@ impl NativeSessionBackend {
                     claim.claim_id,
                     claim.claim_attempt,
                     claim.lease_epoch,
+                    claim.claim_started_at_unix_micros,
                     claim.workload_session_id,
                     claim.producer_id,
                     fence_token,
                 )
                 .map_err(|error| session_activation_error(&error))?;
-                let service = PostgresSessionService::activate(pool.clone(), writer, *limits)
-                    .await
-                    .map_err(|error| session_activation_error(&error))?;
+                let service = PostgresSessionService::activate(
+                    pool.clone(),
+                    writer,
+                    *limits,
+                    state_writer_lease,
+                )
+                .await
+                .map_err(|error| session_activation_error(&error))?;
                 Ok(Arc::new(service))
             }
         }

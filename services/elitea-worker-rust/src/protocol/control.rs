@@ -206,6 +206,7 @@ pub struct AcceptedAgentClaim {
     command_binding: [u8; 32],
     fence: ExecutionFenceV1,
     lease_expires_at_unix_millis: i64,
+    claim_started_at_unix_micros: i64,
     claim_id: String,
     claim_handoff_watermark: u64,
     input_bundle_ref: ExecutionInputBundleReferenceV1,
@@ -302,6 +303,7 @@ impl AcceptedAgentClaim {
             identity,
             fence,
             lease_expires_at_unix_millis,
+            claim_started_at_unix_micros: _,
             claim_id,
             claim_handoff_watermark,
             command_binding: _,
@@ -670,6 +672,7 @@ pub(crate) struct ClaimBoundSessionAuthority {
     claim_id: String,
     claim_attempt: u64,
     lease_epoch: u64,
+    claim_started_at_unix_micros: i64,
     workload_session_id: String,
     producer_id: String,
     fence_token: Zeroizing<Vec<u8>>,
@@ -688,6 +691,7 @@ pub(crate) struct SessionWriterClaimBinding {
     pub(crate) claim_id: String,
     pub(crate) claim_attempt: u64,
     pub(crate) lease_epoch: u64,
+    pub(crate) claim_started_at_unix_micros: i64,
     pub(crate) workload_session_id: String,
     pub(crate) producer_id: String,
     pub(crate) fence_token: Zeroizing<Vec<u8>>,
@@ -740,6 +744,7 @@ impl ClaimBoundSessionAuthority {
             claim_id: claim.claim_id.clone(),
             claim_attempt: claim.fence.claim_attempt,
             lease_epoch: claim.fence.lease_epoch,
+            claim_started_at_unix_micros: claim.claim_started_at_unix_micros,
             workload_session_id: claim.fence.workload_session_id.clone(),
             producer_id: claim.fence.producer_id.clone(),
             fence_token: Zeroizing::new(claim.fence.fence_token.clone()),
@@ -757,6 +762,7 @@ impl ClaimBoundSessionAuthority {
             claim_id: self.claim_id,
             claim_attempt: self.claim_attempt,
             lease_epoch: self.lease_epoch,
+            claim_started_at_unix_micros: self.claim_started_at_unix_micros,
             workload_session_id: self.workload_session_id,
             producer_id: self.producer_id,
             fence_token: self.fence_token,
@@ -1203,6 +1209,7 @@ pub(crate) fn test_lease_monitored_input_execution(
                 ..ExecutionFenceV1::default()
             },
             lease_expires_at_unix_millis: 1_700_000_060_000,
+            claim_started_at_unix_micros: 1_700_000_000_123_456,
             claim_id: "claim-1".to_owned(),
             claim_handoff_watermark: 0,
             input_bundle_ref: ExecutionInputBundleReferenceV1::default(),
@@ -1247,6 +1254,7 @@ pub(crate) fn test_session_authority_for(
         claim_id: "claim-1".to_owned(),
         claim_attempt: 1,
         lease_epoch: 1,
+        claim_started_at_unix_micros: 1_700_000_000_123_456,
         workload_session_id: "workload-session-1".to_owned(),
         producer_id: "worker-1".to_owned(),
         fence_token: Zeroizing::new(vec![b'f'; 32]),
@@ -2094,6 +2102,7 @@ fn validate_no_worker_authority_except_retirement(
         || receipt.claim_handoff_watermark != 0
         || !receipt.claim_id.is_empty()
         || receipt.settlement_recovery.is_some()
+        || receipt.claim_started_at_unix_micros != 0
     {
         return Err(ControlSemanticError::InvalidInput(
             "the no-authority claim contains worker authority or business material",
@@ -2129,6 +2138,7 @@ fn validate_recovery_claim(
         || receipt.retirement.is_some()
         || (!allow_settlement_recovery && receipt.settlement_recovery.is_some())
         || receipt.claim_handoff_watermark > i64::MAX as u64
+        || receipt.claim_started_at_unix_micros != 0
     {
         return Err(ControlSemanticError::InvalidInput(
             "the recovery claim contains unexpected business material",
@@ -2380,6 +2390,10 @@ fn parse_accepted_agent_claim(
         producer_id,
         now_unix_millis,
     )?;
+    validate_fresh_claim_started_at(
+        receipt.claim_started_at_unix_micros,
+        receipt.lease_expires_at_unix_millis,
+    )?;
     if receipt.claim_handoff_watermark > i64::MAX as u64 {
         return Err(ControlSemanticError::ResourceExhausted(
             "the claim handoff watermark exceeds the durable counter limit",
@@ -2423,6 +2437,7 @@ fn parse_accepted_agent_claim(
         command_binding: verified_command_binding(verified),
         fence,
         lease_expires_at_unix_millis: receipt.lease_expires_at_unix_millis,
+        claim_started_at_unix_micros: receipt.claim_started_at_unix_micros,
         claim_id: receipt.claim_id,
         claim_handoff_watermark: receipt.claim_handoff_watermark,
         input_bundle_ref,
@@ -2625,6 +2640,24 @@ fn validate_active_fence(
     {
         return Err(ControlSemanticError::AuthorizationFailed(
             "the claim fence is malformed or expired",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fresh_claim_started_at(
+    claim_started_at_unix_micros: i64,
+    lease_expires_at_unix_millis: i64,
+) -> Result<(), ControlSemanticError> {
+    if claim_started_at_unix_micros <= 0
+        || lease_expires_at_unix_millis.checked_mul(1_000).is_none_or(
+            |lease_expires_at_unix_micros| {
+                claim_started_at_unix_micros >= lease_expires_at_unix_micros
+            },
+        )
+    {
+        return Err(ControlSemanticError::AuthorizationFailed(
+            "the accepted claim creation time is malformed",
         ));
     }
     Ok(())

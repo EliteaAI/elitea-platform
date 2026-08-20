@@ -14,8 +14,10 @@ use serde_json::json;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{ConnectOptions, PgPool};
 
+use super::TestStateWriterLease;
 use super::postgres_checkpointer::{
-    APPLICATION_CAPABILITY_ID, CheckpointLimits, CheckpointWriterAuthority, PostgresCheckpointer,
+    APPLICATION_CAPABILITY_ID, CheckpointLimits, CheckpointWriterAuthority,
+    PostgresCheckpointError, PostgresCheckpointer,
 };
 use crate::agents::graph::{
     ParallelActivation, ParallelChildCheckpointerFactory, ParallelNodeDefinition,
@@ -102,88 +104,10 @@ impl Drop for IsolatedPostgres {
 }
 
 async fn install_test_schema(pool: &PgPool) {
-    sqlx::raw_sql(
-        r"
-CREATE SCHEMA elitea_runtime;
-CREATE TABLE elitea_runtime.execution_jobs (
-    execution_id TEXT NOT NULL,
-    generation BIGINT NOT NULL,
-    tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL,
-    projection_project_id INTEGER NOT NULL,
-    capability_id TEXT NOT NULL,
-    invocation_state TEXT NOT NULL,
-    PRIMARY KEY (execution_id, generation)
-);
-CREATE TABLE elitea_runtime.execution_claims (
-    claim_id TEXT PRIMARY KEY,
-    execution_id TEXT NOT NULL,
-    generation BIGINT NOT NULL,
-    workload_session_id TEXT NOT NULL,
-    producer_id TEXT NOT NULL,
-    claim_attempt BIGINT NOT NULL,
-    lease_epoch BIGINT NOT NULL,
-    fence_token BYTEA NOT NULL,
-    claimed_at TIMESTAMPTZ NOT NULL,
-    lease_expires_at TIMESTAMPTZ NOT NULL,
-    released_at TIMESTAMPTZ,
-    FOREIGN KEY (execution_id, generation)
-        REFERENCES elitea_runtime.execution_jobs(execution_id, generation)
-);
-        ",
-    )
-    .execute(pool)
-    .await
-    .expect("install checkpoint authority fixtures");
     sqlx::raw_sql(CHECKPOINT_MIGRATION)
         .execute(pool)
         .await
         .expect("apply checkpoint migration");
-}
-
-async fn seed_claim(
-    pool: &PgPool,
-    execution_id: &str,
-    claim_id: &str,
-    claim_attempt: i64,
-    lease_epoch: i64,
-    fence_token: [u8; 32],
-    claimed_offset_seconds: i64,
-) {
-    sqlx::query(
-        r"
-INSERT INTO elitea_runtime.execution_jobs (
-    execution_id, generation, tenant_id, resource_project_id,
-    projection_project_id, capability_id, invocation_state
-) VALUES ($1, 1, 'tenant-1', 1, 1, $2, 'MAY_HAVE_STARTED')
-        ",
-    )
-    .bind(execution_id)
-    .bind(APPLICATION_CAPABILITY_ID)
-    .execute(pool)
-    .await
-    .expect("seed checkpoint execution");
-    sqlx::query(
-        r"
-INSERT INTO elitea_runtime.execution_claims (
-    claim_id, execution_id, generation, workload_session_id, producer_id,
-    claim_attempt, lease_epoch, fence_token, claimed_at, lease_expires_at
-) VALUES (
-    $1, $2, 1, 'workload-1', 'producer-1', $3, $4, $5,
-    clock_timestamp() + make_interval(secs => $6),
-    clock_timestamp() + interval '5 minutes'
-)
-        ",
-    )
-    .bind(claim_id)
-    .bind(execution_id)
-    .bind(claim_attempt)
-    .bind(lease_epoch)
-    .bind(fence_token.as_slice())
-    .bind(claimed_offset_seconds)
-    .execute(pool)
-    .await
-    .expect("seed checkpoint claim");
 }
 
 async fn wait_for_blocked_query(pool: &PgPool, fragment: &str) {
@@ -223,6 +147,26 @@ fn writer(
     definition_digest: [u8; 32],
     fence_token: [u8; 32],
 ) -> CheckpointWriterAuthority {
+    writer_at(
+        execution_id,
+        claim_id,
+        claim_attempt,
+        lease_epoch,
+        definition_digest,
+        fence_token,
+        1_700_000_000_000_000 + i64::try_from(claim_attempt).expect("claim attempt") * 1_000_000,
+    )
+}
+
+fn writer_at(
+    execution_id: &str,
+    claim_id: &str,
+    claim_attempt: u64,
+    lease_epoch: u64,
+    definition_digest: [u8; 32],
+    fence_token: [u8; 32],
+    claim_started_at_unix_micros: i64,
+) -> CheckpointWriterAuthority {
     CheckpointWriterAuthority::new(
         "tenant-1".to_owned(),
         1,
@@ -235,6 +179,7 @@ fn writer(
         claim_id.to_owned(),
         claim_attempt,
         lease_epoch,
+        claim_started_at_unix_micros,
         "workload-1".to_owned(),
         "producer-1".to_owned(),
         fence_token,
@@ -274,25 +219,36 @@ async fn postgres_checkpointer_round_trips_scopes_fences_prunes_and_releases_poo
     };
     let database = IsolatedPostgres::create(&database_url).await;
     install_test_schema(&database.pool).await;
-    seed_claim(
-        &database.pool,
-        "execution-1",
-        "claim-1",
-        1,
-        1,
-        [0x61; 32],
-        -10,
-    )
-    .await;
+    let first_lease = Arc::new(TestStateWriterLease::current());
     let first = Arc::new(
         PostgresCheckpointer::activate(
             database.pool.clone(),
             writer("execution-1", "claim-1", 1, 1, [0x41; 32], [0x61; 32]),
             CheckpointLimits::default(),
+            first_lease.clone(),
         )
         .await
         .expect("activate first checkpoint writer"),
     );
+    let equal_time = PostgresCheckpointer::activate(
+        database.pool.clone(),
+        writer_at(
+            "execution-equal",
+            "claim-equal",
+            2,
+            2,
+            [0x41; 32],
+            [0x63; 32],
+            1_700_000_001_000_000,
+        ),
+        CheckpointLimits::default(),
+        Arc::new(TestStateWriterLease::current()),
+    )
+    .await;
+    assert!(matches!(
+        equal_time,
+        Err(PostgresCheckpointError::WriterNotCurrent)
+    ));
 
     let first_checkpoint = checkpoint("checkpoint-z", "2026-08-13T12:34:56.123456789Z", 1);
     first
@@ -377,6 +333,7 @@ async fn postgres_checkpointer_round_trips_scopes_fences_prunes_and_releases_poo
         database.pool.clone(),
         writer("execution-1", "claim-1", 1, 1, [0x42; 32], [0x61; 32]),
         CheckpointLimits::default(),
+        first_lease.clone(),
     )
     .await
     .expect("activate isolated graph definition");
@@ -528,43 +485,24 @@ FOR EACH ROW EXECUTE FUNCTION block_agent_graph_checkpoint_insert();
         ) => {}
     }
 
-    let release_pool = database.pool.clone();
-    let mut release_task = tokio::spawn(async move {
-        sqlx::query(
-            r"
-UPDATE elitea_runtime.execution_claims
-SET released_at = clock_timestamp()
-WHERE claim_id = 'claim-1' AND released_at IS NULL
-            ",
-        )
-        .execute(&release_pool)
-        .await
-    });
-    tokio::select! {
-        result = &mut release_task => {
-            panic!("claim release finished before the writer committed: {result:?}");
-        }
-        () = wait_for_blocked_query(
-            &database.pool,
-            "UPDATE elitea_runtime.execution_claims",
-        ) => {}
-    }
-    assert!(!release_task.is_finished());
+    first_lease.revoke();
 
     barrier
         .commit()
         .await
         .expect("release checkpoint mutation barrier");
-    tokio::time::timeout(Duration::from_secs(5), save_task)
+    let save_error = tokio::time::timeout(Duration::from_secs(5), save_task)
         .await
         .expect("bounded checkpoint save race")
         .expect("checkpoint save task")
-        .expect("checkpoint mutation commits before claim release");
-    tokio::time::timeout(Duration::from_secs(5), release_task)
-        .await
-        .expect("bounded claim release race")
-        .expect("claim release task")
-        .expect("release claim after checkpoint transaction");
+        .expect_err("lease loss before commit must roll back the checkpoint");
+    assert_eq!(
+        save_error.to_string(),
+        concat!(
+            "Checkpoint error: checkpoint.writer_not_current: ",
+            "the PostgreSQL checkpoint writer is no longer current"
+        )
+    );
     sqlx::raw_sql(
         r"
 DROP TRIGGER block_agent_graph_checkpoint_insert
@@ -577,30 +515,29 @@ DROP FUNCTION block_agent_graph_checkpoint_insert();
     .expect("remove checkpoint mutation barrier");
     assert!(first.load("thread-1").await.is_err());
 
-    seed_claim(
-        &database.pool,
-        "execution-2",
-        "claim-2",
-        2,
-        2,
-        [0x62; 32],
-        0,
-    )
-    .await;
+    let replacement_lease = Arc::new(TestStateWriterLease::current());
     let replacement = PostgresCheckpointer::activate(
         database.pool.clone(),
         writer("execution-2", "claim-2", 2, 2, [0x41; 32], [0x62; 32]),
         CheckpointLimits::default(),
+        replacement_lease.clone(),
     )
     .await
     .expect("activate replacement checkpoint writer");
     assert!(first.load("thread-1").await.is_err());
+    assert!(
+        replacement
+            .load_by_id("checkpoint-race")
+            .await
+            .expect("look up rolled-back checkpoint")
+            .is_none()
+    );
     assert_eq!(
         replacement
             .prune("thread-1", &RetentionPolicy::keep_last(1))
             .await
             .expect("prune checkpoint history"),
-        3
+        2
     );
     assert_eq!(
         replacement
@@ -629,4 +566,6 @@ DROP FUNCTION block_agent_graph_checkpoint_insert();
         .expect("reuse pooled connection");
     drop(connection);
     assert!(database.pool.size() <= 4);
+    replacement_lease.revoke();
+    assert!(replacement.load("thread-1").await.is_err());
 }
