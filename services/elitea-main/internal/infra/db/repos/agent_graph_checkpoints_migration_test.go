@@ -9,7 +9,7 @@ import (
 
 func TestAgentGraphCheckpointMigrationCreatesFreshBoundedRustLineage(t *testing.T) {
 	raw, err := platformmigrations.Files.ReadFile(
-		"shared/0064_agent_graph_checkpoints.sql",
+		"agentstate/0001_agent_graph_checkpoints.sql",
 	)
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
@@ -36,6 +36,7 @@ func TestAgentGraphCheckpointMigrationCreatesFreshBoundedRustLineage(t *testing.
 		}
 	}
 	for _, forbidden := range []string{
+		"references centry.project",
 		"langgraph_checkpoint",
 		"checkpoint_blobs",
 		"checkpoint_writes",

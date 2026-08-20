@@ -249,6 +249,12 @@ secrets:
 # touch or replace). Runs as a pre-install/pre-upgrade Helm hook Job so it
 # completes — or the release aborts — before any Deployment pods roll; see
 # templates/migrate-job.yaml for the full ordering-guarantee explanation.
+#
+# Native ADK session/checkpoint tables have an independent `agentstate`
+# history. The existing Job intentionally does not receive that database
+# credential. Production activation must add a separately credentialed
+# `/elitea-migrate -agentstate` hook using `AGENTSTATE_DATABASE_URL`, and extend
+# the existing agentstate cleanup/retention owner to the native lineages.
 migrations:
   enabled: true
   # -all-tenants mirrors deploy/centry-hybrid/pov-compose.yml's elitea-migrate

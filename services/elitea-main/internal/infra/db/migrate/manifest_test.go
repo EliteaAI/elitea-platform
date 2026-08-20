@@ -87,6 +87,7 @@ func TestAdvisoryLockKeyIsScopedAndStable(t *testing.T) {
 	require.Equal(t, advisoryLockKey(ScopeShared, "platform"), advisoryLockKey(ScopeShared, "platform"))
 	require.NotEqual(t, advisoryLockKey(ScopeShared, "platform"), advisoryLockKey(ScopeTenant, "platform"))
 	require.NotEqual(t, advisoryLockKey(ScopeTenant, "1"), advisoryLockKey(ScopeTenant, "2"))
+	require.NotEqual(t, advisoryLockKey(ScopeShared, "platform"), advisoryLockKey(ScopeAgentState, "agentstate"))
 }
 
 func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
@@ -99,4 +100,8 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
 	require.EqualValues(t, 122, Head(tenant))
+
+	agentState, err := LoadManifest(platformmigrations.Files, ScopeAgentState)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, Head(agentState))
 }

@@ -76,16 +76,18 @@ Maintained Rust runtime ownership registry:
   today and future artifact grants; `runtime_context.rs` owns the concrete
   private transport;
 - `src/state/postgres_session.rs` plus Main migration
-  `migrations/shared/0065_agent_sessions.sql`: bounded claim-fenced ADK
+  `migrations/agentstate/0002_agent_sessions.sql`: bounded claim-fenced ADK
   conversation/session persistence for direct and graph Runners;
 - `src/protocol/control.rs::ClaimBoundSessionAuthority`: one-use session-writer
   grant minted only at `AUTHORIZED_NOW`, independently of output and settlement
   authority;
 - `src/state/postgres_checkpointer.rs` plus Main migration
-  `migrations/shared/0064_agent_graph_checkpoints.sql`: graph-only frontier,
-  node-state and interrupt persistence. Both adapters use the existing
-  PostgreSQL `agentstate` schema and the same execution authority, but implement
-  distinct ADK contracts rather than duplicating transcript state;
+  `migrations/agentstate/0001_agent_graph_checkpoints.sql`: graph-only frontier,
+  node-state and interrupt persistence. Both adapters target the same separate
+  PostgreSQL `agentstate` database under an isolated `elitea_runtime` schema,
+  leaving legacy LangGraph tables in `public` unchanged. They implement
+  distinct ADK contracts rather than duplicating transcript state. Production
+  still needs cross-database live-claim fencing and cleanup-owner coverage;
 - `src/diagnostics.rs`, `src/execution/{agent_preparation,native_agent_lifecycle}.rs`:
   crate-scoped subscriber plus authenticated lifecycle/assembly/tool
   correlation. Export/retention policy remains deployment-owned.

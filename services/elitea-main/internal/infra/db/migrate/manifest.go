@@ -14,8 +14,9 @@ import (
 type Scope string
 
 const (
-	ScopeShared Scope = "shared"
-	ScopeTenant Scope = "tenant"
+	ScopeShared     Scope = "shared"
+	ScopeTenant     Scope = "tenant"
+	ScopeAgentState Scope = "agentstate"
 )
 
 var migrationName = regexp.MustCompile(`^([0-9]{4})_([a-z][a-z0-9_]*)\.sql$`)
@@ -32,7 +33,7 @@ type Migration struct {
 
 // LoadManifest discovers, validates, and orders one migration history.
 func LoadManifest(files fs.FS, scope Scope) ([]Migration, error) {
-	if scope != ScopeShared && scope != ScopeTenant {
+	if scope != ScopeShared && scope != ScopeTenant && scope != ScopeAgentState {
 		return nil, fmt.Errorf("migrate: invalid scope %q", scope)
 	}
 

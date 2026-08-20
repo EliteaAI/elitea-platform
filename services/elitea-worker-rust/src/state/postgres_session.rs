@@ -638,7 +638,11 @@ LIMIT $11
                 .try_get::<DateTime<Utc>, _>("event_timestamp")
                 .map_err(storage_error)?;
             let event = decode_event(&payload, self.limits)?;
-            if event.timestamp != timestamp {
+            // PostgreSQL TIMESTAMPTZ stores microseconds while the canonical
+            // event payload retains ADK's full nanosecond timestamp. Compare
+            // the relational audit column at PostgreSQL precision without
+            // discarding the exact timestamp returned from the payload.
+            if postgres_timestamp(event.timestamp)? != timestamp {
                 return Err(PostgresSessionError::CorruptStoredState);
             }
             if after.is_none_or(|after| event.timestamp >= after) {
@@ -1544,6 +1548,13 @@ fn canonicalize(value: &Value) -> Value {
 
 fn decode_json<T: DeserializeOwned>(encoded: &str) -> Result<T, PostgresSessionError> {
     serde_json::from_str(encoded).map_err(|_| PostgresSessionError::CorruptStoredState)
+}
+
+pub(super) fn postgres_timestamp(
+    timestamp: DateTime<Utc>,
+) -> Result<DateTime<Utc>, PostgresSessionError> {
+    DateTime::from_timestamp_micros(timestamp.timestamp_micros())
+        .ok_or(PostgresSessionError::CorruptStoredState)
 }
 
 fn bounded(value: &str, max_bytes: usize) -> bool {

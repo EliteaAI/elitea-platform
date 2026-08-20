@@ -8,7 +8,7 @@ import (
 )
 
 func TestAgentSessionMigrationCreatesScopedBoundedADKLineage(t *testing.T) {
-	raw, err := platformmigrations.Files.ReadFile("shared/0065_agent_sessions.sql")
+	raw, err := platformmigrations.Files.ReadFile("agentstate/0002_agent_sessions.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
@@ -36,6 +36,7 @@ func TestAgentSessionMigrationCreatesScopedBoundedADKLineage(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		"references centry.project",
 		"langgraph_checkpoint",
 		"checkpoint_blobs",
 		"checkpoint_writes",

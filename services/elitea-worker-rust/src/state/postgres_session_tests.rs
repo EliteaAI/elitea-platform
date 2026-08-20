@@ -13,12 +13,12 @@ use sqlx::{ConnectOptions as _, PgPool};
 
 use super::postgres_session::{
     APPLICATION_CAPABILITY_ID, PostgresSessionService, SessionLimits, SessionWriterAuthority,
-    canonical_json, decode_event, encode_event,
+    canonical_json, decode_event, encode_event, postgres_timestamp,
 };
 
 const TEST_DATABASE_URL: &str = "ELITEA_TEST_DATABASE_URL";
 const SESSION_MIGRATION: &str =
-    include_str!("../../../elitea-main/migrations/shared/0065_agent_sessions.sql");
+    include_str!("../../../elitea-main/migrations/agentstate/0002_agent_sessions.sql");
 
 struct IsolatedPostgres {
     pool: PgPool,
@@ -98,16 +98,13 @@ impl Drop for IsolatedPostgres {
 async fn install_schema(pool: &PgPool) {
     sqlx::raw_sql(
         r"
-CREATE SCHEMA centry;
-CREATE TABLE centry.project (id INTEGER PRIMARY KEY);
-INSERT INTO centry.project (id) VALUES (1), (2);
 CREATE SCHEMA elitea_runtime;
 CREATE TABLE elitea_runtime.execution_jobs (
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL REFERENCES centry.project(id),
-    projection_project_id INTEGER NOT NULL REFERENCES centry.project(id),
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     invocation_state TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)
@@ -300,6 +297,14 @@ fn canonical_json_sorts_nested_object_keys_and_enforces_bytes() {
     let encoded = canonical_json(&value, 1024).expect("canonical JSON");
     assert_eq!(encoded, r#"{"a":[{"c":3,"d":4}],"z":{"a":1,"b":2}}"#);
     assert!(canonical_json(&value, encoded.len() - 1).is_err());
+}
+
+#[test]
+fn postgres_timestamp_retains_payload_nanoseconds_at_relational_precision() {
+    let exact = Utc.timestamp_nanos(1_700_000_000_123_456_789);
+    let relational = postgres_timestamp(exact).expect("PostgreSQL timestamp precision");
+    assert_eq!(relational.to_rfc3339(), "2023-11-14T22:13:20.123456+00:00");
+    assert_eq!(exact.timestamp_subsec_nanos(), 123_456_789);
 }
 
 #[tokio::test]

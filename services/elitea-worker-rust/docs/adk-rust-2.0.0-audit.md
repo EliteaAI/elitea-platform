@@ -152,7 +152,8 @@ deliberately small trait.
 
 The worker now implements the exact ADK-Rust 2.0.0 `Checkpointer` trait in
 `src/state/postgres_checkpointer.rs`. Main migration
-`0064_agent_graph_checkpoints.sql` owns a new `adk-graph.2.0.0.v1` lineage. It
+`migrations/agentstate/0001_agent_graph_checkpoints.sql` owns a new
+`adk-graph.2.0.0.v1` lineage in the separate `agentstate` database. It
 deliberately does not read, write, copy or pickle LangGraph checkpoint tuples or
 blob tables.
 
@@ -240,19 +241,28 @@ store because:
 
 Rust therefore implements the same ADK `SessionService` trait in
 `src/state/postgres_session.rs`, backed by Main migration
-`0065_agent_sessions.sql` in the existing PostgreSQL `agentstate` schema. The
+`migrations/agentstate/0002_agent_sessions.sql` in the separate PostgreSQL
+`agentstate` database under an isolated `elitea_runtime` schema. The
 fresh `adk-session.2.0.0.v1` lineage is bounded before decode/query, stores the
 complete event, assigns a deterministic ordinal, rejects corrupt rows, merges
-state tiers transactionally and fences every operation against the exact live
-execution claim. Writer rows survive session deletion so an older claim cannot
-regain authority over a recreated conversation. This is conversation/session
-state for every Runner, not graph frontier state.
+state tiers transactionally and retains the exact claim/fence identity on every
+operation. The current component adapter verifies that identity against
+co-located Main claim fixtures; production agentstate composition cannot rely
+on those Main tables and therefore remains closed until an exact cross-database
+claim/lease fence replaces that lookup. Writer rows survive session deletion so
+an older activated writer cannot regain authority over a recreated
+conversation. This is conversation/session state for every Runner, not graph
+frontier state.
 
-Graphs compose two ADK contracts over the same physical schema, pool and
-claim/fence authority: `SessionService` for conversation events/state and
+Graphs compose two ADK contracts over the same physical agentstate schema and
+pool: `SessionService` for conversation events/state and
 `Checkpointer` for graph frontier, node state and interrupts. Direct `LlmAgent`
 runs use only `SessionService`. This is not duplicate state ownership; the two
-versioned table lineages have non-overlapping semantics. Authorization now
+versioned table lineages have non-overlapping semantics. The existing
+agentstate cleanup owner must cover both native lineages before activation, and
+the current same-database Main-claim check must be replaced by an exact
+cross-database claim/lease fence without copying Main business tables.
+Authorization now
 mints a separate non-cloneable session-writer grant beside the runtime-context
 grant, and the common Runner assembly accepts either the invocation-local or
 claim-fenced PostgreSQL `SessionService`. Existing sessions are restored; the
@@ -260,6 +270,17 @@ content-addressed frozen history is assigned deterministic event IDs and seeded
 only when that session is first created. The default assembler remains
 invocation-local until deployment bootstrap supplies the shared `agentstate`
 pool and restricted database role.
+
+Current cleanup behavior is also part of the ported contract, not an unrelated
+maintenance concern. Python worker
+`sdk_adapter.py::{_discard_failed_checkpoint,_discard_regenerated_thread}`
+uses LangGraph `delete_thread`, while SDK planning cleanup deletes the legacy
+`checkpoints`, `checkpoint_writes` and `checkpoint_blobs` rows for an exact
+thread. The native owner must route failed/regenerated graph cleanup through
+`Checkpointer::delete`, define when the paired `SessionService` conversation is
+retained or deleted, and extend the agentstate retention sweep to both native
+lineages. Intentional HITL or authorization pauses must remain durable and must
+never be mistaken for failed-run cleanup.
 
 Main/`elitea-core` remains the source of the frozen initial chat-history
 snapshot during this migration. The Rust session lineage must not silently

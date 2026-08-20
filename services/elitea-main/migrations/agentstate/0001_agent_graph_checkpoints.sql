@@ -4,12 +4,15 @@
 -- The writer row is deliberately retained when a thread's checkpoints are
 -- deleted. It is the stale-writer fence: deleting graph history must not let an
 -- older, still-running claimant reacquire the thread by recreating its row.
+-- This history runs against the separate agentstate database. The legacy
+-- LangGraph tables remain untouched in public; native ADK state is isolated in
+-- elitea_runtime and therefore cannot carry cross-database centry.project FKs.
+CREATE SCHEMA IF NOT EXISTS elitea_runtime;
+
 CREATE TABLE elitea_runtime.agent_graph_checkpoint_writers (
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
-    projection_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     checkpoint_family TEXT NOT NULL,
     definition_digest BYTEA NOT NULL,
@@ -40,6 +43,8 @@ CREATE TABLE elitea_runtime.agent_graph_checkpoint_writers (
     ),
     CONSTRAINT agent_graph_checkpoint_writers_identity CHECK (
         octet_length(tenant_id) BETWEEN 1 AND 256
+        AND resource_project_id > 0
+        AND projection_project_id > 0
         AND octet_length(thread_id) BETWEEN 1 AND 512
         AND octet_length(writer_claim_id) BETWEEN 1 AND 256
         AND octet_length(writer_execution_id) BETWEEN 1 AND 256

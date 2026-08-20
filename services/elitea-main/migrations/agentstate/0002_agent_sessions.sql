@@ -5,12 +5,15 @@
 -- Writer rows survive session deletion. They are the stale-claim fence: an
 -- older worker must not regain a conversation after its durable events are
 -- erased or compacted.
+-- This history runs against the separate agentstate database. The legacy
+-- LangGraph tables remain untouched in public; native ADK state is isolated in
+-- elitea_runtime and therefore cannot carry cross-database centry.project FKs.
+CREATE SCHEMA IF NOT EXISTS elitea_runtime;
+
 CREATE TABLE elitea_runtime.agent_session_writers (
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
-    projection_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     session_family TEXT NOT NULL,
     definition_digest BYTEA NOT NULL,
@@ -45,6 +48,8 @@ CREATE TABLE elitea_runtime.agent_session_writers (
     ),
     CONSTRAINT agent_session_writers_identity CHECK (
         octet_length(tenant_id) BETWEEN 1 AND 256
+        AND resource_project_id > 0
+        AND projection_project_id > 0
         AND octet_length(thread_id) BETWEEN 1 AND 512
         AND octet_length(app_name) BETWEEN 1 AND 256
         AND octet_length(user_id) BETWEEN 1 AND 256
@@ -65,10 +70,8 @@ CREATE TABLE elitea_runtime.agent_session_writers (
 
 CREATE TABLE elitea_runtime.agent_session_app_states (
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
-    projection_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     session_family TEXT NOT NULL,
     definition_digest BYTEA NOT NULL,
@@ -87,6 +90,8 @@ CREATE TABLE elitea_runtime.agent_session_app_states (
         AND session_family = 'adk-session.2.0.0.v1'
         AND octet_length(definition_digest) = 32
         AND octet_length(tenant_id) BETWEEN 1 AND 256
+        AND resource_project_id > 0
+        AND projection_project_id > 0
         AND octet_length(app_name) BETWEEN 1 AND 256
     ),
     CONSTRAINT agent_session_app_state_shape CHECK (
@@ -100,10 +105,8 @@ CREATE TABLE elitea_runtime.agent_session_app_states (
 
 CREATE TABLE elitea_runtime.agent_session_user_states (
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
-    projection_project_id INTEGER NOT NULL
-        REFERENCES centry.project(id) ON DELETE CASCADE,
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     session_family TEXT NOT NULL,
     definition_digest BYTEA NOT NULL,
@@ -123,6 +126,8 @@ CREATE TABLE elitea_runtime.agent_session_user_states (
         AND session_family = 'adk-session.2.0.0.v1'
         AND octet_length(definition_digest) = 32
         AND octet_length(tenant_id) BETWEEN 1 AND 256
+        AND resource_project_id > 0
+        AND projection_project_id > 0
         AND octet_length(app_name) BETWEEN 1 AND 256
         AND octet_length(user_id) BETWEEN 1 AND 256
     ),

@@ -23,7 +23,7 @@ use crate::agents::graph::{
 
 const TEST_DATABASE_URL: &str = "ELITEA_TEST_DATABASE_URL";
 const CHECKPOINT_MIGRATION: &str =
-    include_str!("../../../elitea-main/migrations/shared/0064_agent_graph_checkpoints.sql");
+    include_str!("../../../elitea-main/migrations/agentstate/0001_agent_graph_checkpoints.sql");
 
 struct IsolatedPostgres {
     pool: PgPool,
@@ -104,16 +104,13 @@ impl Drop for IsolatedPostgres {
 async fn install_test_schema(pool: &PgPool) {
     sqlx::raw_sql(
         r"
-CREATE SCHEMA centry;
-CREATE TABLE centry.project (id INTEGER PRIMARY KEY);
-INSERT INTO centry.project (id) VALUES (1), (2);
 CREATE SCHEMA elitea_runtime;
 CREATE TABLE elitea_runtime.execution_jobs (
     execution_id TEXT NOT NULL,
     generation BIGINT NOT NULL,
     tenant_id TEXT NOT NULL,
-    resource_project_id INTEGER NOT NULL REFERENCES centry.project(id),
-    projection_project_id INTEGER NOT NULL REFERENCES centry.project(id),
+    resource_project_id INTEGER NOT NULL,
+    projection_project_id INTEGER NOT NULL,
     capability_id TEXT NOT NULL,
     invocation_state TEXT NOT NULL,
     PRIMARY KEY (execution_id, generation)

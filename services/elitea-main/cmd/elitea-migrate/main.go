@@ -19,22 +19,35 @@ import (
 func main() {
 	var projectID int64
 	var allTenants bool
+	var agentState bool
 	flag.Int64Var(&projectID, "tenant-project", 0, "apply tenant history for this project after the shared history")
 	flag.BoolVar(&allTenants, "all-tenants", false, "apply tenant history for every existing legacy project after the shared history")
+	flag.BoolVar(&agentState, "agentstate", false, "apply only the native agent history to AGENTSTATE_DATABASE_URL")
 	flag.Parse()
 	if projectID > 0 && allTenants {
 		exitError(fmt.Errorf("-tenant-project and -all-tenants are mutually exclusive"))
 	}
+	if agentState && (projectID > 0 || allTenants) {
+		exitError(fmt.Errorf("-agentstate cannot be combined with tenant migration flags"))
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if agentState {
+		if err := applyAgentState(ctx); err != nil {
+			exitError(err)
+		}
+		slog.Info("agentstate migrations applied")
+		return
+	}
+
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		exitError(fmt.Errorf("DATABASE_URL is required"))
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		exitError(fmt.Errorf("open database: %w", err))
@@ -67,7 +80,28 @@ func main() {
 		}
 		tenantCount = len(projectIDs)
 	}
-	slog.Info("migrations applied", "tenant_project", projectID, "all_tenants", allTenants, "tenant_count", tenantCount)
+	slog.Info(
+		"migrations applied",
+		"tenant_project", projectID,
+		"all_tenants", allTenants,
+		"tenant_count", tenantCount,
+	)
+}
+
+func applyAgentState(ctx context.Context) error {
+	dsn := os.Getenv("AGENTSTATE_DATABASE_URL")
+	if dsn == "" {
+		return fmt.Errorf("AGENTSTATE_DATABASE_URL is required with -agentstate")
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		return fmt.Errorf("open agentstate database: %w", err)
+	}
+	defer pool.Close()
+	if err := migrate.New(pool, platformmigrations.Files).ApplyAgentState(ctx); err != nil {
+		return fmt.Errorf("apply agentstate migrations: %w", err)
+	}
+	return nil
 }
 
 type tenantProjectQueryer interface {

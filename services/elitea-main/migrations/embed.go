@@ -5,7 +5,8 @@ package migrations
 
 import "embed"
 
-// Files contains the independently versioned shared and tenant histories.
+// Files contains the independently versioned shared, tenant and agent-state
+// histories.
 //
-//go:embed shared/*.sql tenant/*.sql
+//go:embed shared/*.sql tenant/*.sql agentstate/*.sql
 var Files embed.FS
