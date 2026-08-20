@@ -5,7 +5,7 @@
 //! `Checkpoint` model.
 
 mod agent;
-mod compiler;
+pub(crate) mod compiler;
 #[cfg(test)]
 mod compiler_tests;
 mod hitl;
@@ -14,7 +14,7 @@ mod hitl_tests;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;
-mod resume;
+pub(crate) mod resume;
 mod yaml;
 
 pub use yaml::{

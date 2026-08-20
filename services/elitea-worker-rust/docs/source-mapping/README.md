@@ -54,7 +54,7 @@ Detailed ledgers:
 
 Maintained Rust runtime ownership registry:
 
-- `src/agents/{assembly,ordinary,session,events,sensitive_tools,direct_hitl}.rs`: direct
+- `src/agents/{assembly,ordinary,pipeline,session,events,sensitive_tools,direct_hitl}.rs`: direct
   saved-agent and ad-hoc `LlmAgent` admission, common injected
   `SessionService`/Runner composition, request-independent definition lineage,
   seed-once frozen history, browser event projection, runtime-policy-bound
@@ -65,7 +65,10 @@ Maintained Rust runtime ownership registry:
   produce a structured result under the original call ID without dispatching
   the real tool. Exact restart suffixes are recovered and the internal replay
   marker is removed before provider dispatch. Approved effects and deployment
-  registration remain closed;
+  registration remain closed. The pipeline profile separately admits only
+  frozen `agent_type=pipeline` applications, compiles their complete YAML before
+  provider/state construction and retains the authorized state inputs for the
+  graph assembler;
 - `src/agents/application_tools.rs`: exact saved child application/version to
   ADK `AgentTool` composition, recursion and model-visible delegation schema;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context

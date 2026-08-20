@@ -7,6 +7,7 @@ pub(crate) mod direct_hitl;
 pub(crate) mod events;
 pub mod graph;
 pub(crate) mod ordinary;
+pub(crate) mod pipeline;
 pub mod protocol;
 pub mod request;
 pub mod result;
@@ -22,6 +23,8 @@ mod direct_hitl_tests;
 mod events_tests;
 #[cfg(test)]
 mod ordinary_tests;
+#[cfg(test)]
+mod pipeline_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]

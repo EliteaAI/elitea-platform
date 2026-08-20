@@ -26,6 +26,8 @@ use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
     ProjectedAgentEventBatch,
 };
+use super::graph::resume::{PipelineHitlDecision, PipelineResumeError, PipelineResumeErrorCode};
+use super::pipeline::PipelineExecutionProfile;
 use super::request::AgentExecutionRequest;
 use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::{ClaimBoundRuntimeContextAuthority, ClaimBoundSessionAuthority};
@@ -217,6 +219,93 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             start,
         })
     }
+
+    /// Admit one frozen stored pipeline before provider or tool construction.
+    pub(crate) fn admit_pipeline(
+        self,
+    ) -> Result<AdmittedPipelineNativeAssembly<'a>, NativeAgentAssemblyError> {
+        let has_continuation = has_continuation(self.request);
+        let start = if has_continuation {
+            PipelineHitlDecision::from_payload(&self.request.payload)
+                .map(PipelineNativeStart::Hitl)
+                .map_err(|error| pipeline_hitl_admission_error(&error))?
+        } else {
+            PipelineNativeStart::Fresh
+        };
+        let profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
+        let plan =
+            OrdinaryNativeAgentPlan::from_authorized(self.request, profile.shell(), &self.command)?;
+        Ok(AdmittedPipelineNativeAssembly {
+            request: self.request,
+            runtime_context: self.runtime_context,
+            session: self.session,
+            state_writer_lease: self.state_writer_lease,
+            profile,
+            plan,
+            start,
+        })
+    }
+}
+
+pub(crate) enum PipelineNativeStart {
+    Fresh,
+    Hitl(PipelineHitlDecision),
+}
+
+impl PipelineNativeStart {
+    #[must_use]
+    pub(crate) const fn is_resume(&self) -> bool {
+        matches!(self, Self::Hitl(_))
+    }
+}
+
+/// Authorized pipeline state retained for the graph assembler.
+pub(crate) struct AdmittedPipelineNativeAssembly<'a> {
+    request: &'a AgentExecutionRequest,
+    runtime_context: ClaimBoundRuntimeContextAuthority,
+    session: ClaimBoundSessionAuthority,
+    state_writer_lease: Arc<dyn StateWriterLease>,
+    profile: PipelineExecutionProfile,
+    plan: OrdinaryNativeAgentPlan,
+    start: PipelineNativeStart,
+}
+
+impl AdmittedPipelineNativeAssembly<'_> {
+    #[must_use]
+    pub(crate) const fn request(&self) -> &AgentExecutionRequest {
+        self.request
+    }
+
+    #[must_use]
+    pub(crate) const fn profile(&self) -> &PipelineExecutionProfile {
+        &self.profile
+    }
+
+    #[must_use]
+    pub(crate) const fn is_resume(&self) -> bool {
+        self.start.is_resume()
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        PipelineExecutionProfile,
+        OrdinaryNativeAgentPlan,
+        PipelineNativeStart,
+        ClaimBoundRuntimeContextAuthority,
+        ClaimBoundSessionAuthority,
+        Arc<dyn StateWriterLease>,
+    ) {
+        (
+            self.profile,
+            self.plan,
+            self.start,
+            self.runtime_context,
+            self.session,
+            self.state_writer_lease,
+        )
+    }
 }
 
 /// The only two direct-agent start modes admitted before PAT redemption.
@@ -335,17 +424,21 @@ fn admit_native_start(
     request: &AgentExecutionRequest,
 ) -> Result<AdmittedNativeStart, NativeAgentAssemblyError> {
     let payload = &request.payload;
-    let has_continuation = payload.should_continue
-        || payload.hitl_resume
-        || payload.hitl_action.is_some()
-        || payload.hitl_value.is_some()
-        || !payload.hitl_decisions.is_empty();
-    if !has_continuation {
+    if !has_continuation(request) {
         return Ok(AdmittedNativeStart::Fresh);
     }
     DirectHitlDecision::from_payload(payload)
         .map(AdmittedNativeStart::DirectHitl)
         .map_err(|error| direct_hitl_admission_error(&error))
+}
+
+fn has_continuation(request: &AgentExecutionRequest) -> bool {
+    let payload = &request.payload;
+    payload.should_continue
+        || payload.hitl_resume
+        || payload.hitl_action.is_some()
+        || payload.hitl_value.is_some()
+        || !payload.hitl_decisions.is_empty()
 }
 
 fn direct_hitl_admission_error(error: &DirectHitlError) -> NativeAgentAssemblyError {
@@ -359,6 +452,21 @@ fn direct_hitl_admission_error(error: &DirectHitlError) -> NativeAgentAssemblyEr
         DirectHitlErrorCode::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
     };
     NativeAgentAssemblyError::new(code, "the direct sensitive-tool continuation is malformed")
+}
+
+fn pipeline_hitl_admission_error(error: &PipelineResumeError) -> NativeAgentAssemblyError {
+    let code = match error.code() {
+        PipelineResumeErrorCode::InvalidInput
+        | PipelineResumeErrorCode::StaleDecision
+        | PipelineResumeErrorCode::CorruptSession => NativeAgentAssemblyErrorCode::InvalidInput,
+        PipelineResumeErrorCode::UnsupportedCapability => {
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        PipelineResumeErrorCode::DependencyUnavailable => {
+            NativeAgentAssemblyErrorCode::DependencyUnavailable
+        }
+    };
+    NativeAgentAssemblyError::new(code, "the pipeline HITL continuation is malformed")
 }
 
 fn tool_snapshot_error(

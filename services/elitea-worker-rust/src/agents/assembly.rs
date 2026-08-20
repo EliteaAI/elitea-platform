@@ -67,7 +67,41 @@ impl OrdinaryNoToolProfile {
     pub(crate) fn validate_direct_hitl_resume(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::validate_with_mode(request, CommonProfileMode::DirectHitlResume)
+        Self::validate_with_mode(request, CommonProfileMode::Continuation)
+    }
+
+    /// Validate the model/session shell shared by a stored pipeline.
+    ///
+    /// The model fields remain part of the frozen application contract even
+    /// when the initial HITL-only graph does not call a model. Pipeline YAML is
+    /// returned as instructions and parsed by the graph-owned boundary.
+    pub(crate) fn validate_pipeline_shell(
+        request: &AgentExecutionRequest,
+        resume: bool,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        let mode = if resume {
+            CommonProfileMode::Continuation
+        } else {
+            CommonProfileMode::Fresh
+        };
+        let common = validate_common_profile(request, mode)?;
+        if request.kind != AgentExecutionKind::Application || !request.payload.tools.is_empty() {
+            return Err(unsupported_profile());
+        }
+        let model = application_model_for_agent_type(request, "pipeline", true)?;
+        Ok(Self {
+            kind: request.kind,
+            instructions: model.instructions,
+            model_name: model.model_name,
+            model_provider: model.model_provider,
+            model_project_id: model.model_project_id,
+            max_tokens: model.max_tokens,
+            reasoning_effort: model.reasoning_effort,
+            temperature: model.temperature,
+            step_limit: validate_step_limit(request.payload.steps_limit)?,
+            chat_history: common.chat_history,
+            context_management: common.context_management,
+        })
     }
 
     fn validate_with_mode(
@@ -234,7 +268,7 @@ struct CommonProfile {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CommonProfileMode {
     Fresh,
-    DirectHitlResume,
+    Continuation,
 }
 
 fn validate_common_profile(
@@ -287,7 +321,7 @@ fn validate_common_profile(
         || payload.hitl_value.is_some()
         || !payload.hitl_decisions.is_empty();
     if (mode == CommonProfileMode::Fresh && has_direct_hitl_fields)
-        || (mode == CommonProfileMode::DirectHitlResume && !has_direct_hitl_fields)
+        || (mode == CommonProfileMode::Continuation && !has_direct_hitl_fields)
     {
         return Err(unsupported_profile());
     }
@@ -372,6 +406,14 @@ fn current_text_history_message(value: &Value) -> Result<Content, NativeAgentAss
 fn application_model(
     request: &AgentExecutionRequest,
 ) -> Result<ValidatedModel, NativeAgentAssemblyError> {
+    application_model_for_agent_type(request, "agent", false)
+}
+
+fn application_model_for_agent_type(
+    request: &AgentExecutionRequest,
+    expected_agent_type: &str,
+    require_empty_tools: bool,
+) -> Result<ValidatedModel, NativeAgentAssemblyError> {
     let version = request
         .payload
         .application
@@ -388,12 +430,16 @@ fn application_model(
         return Err(unsupported_profile());
     }
     match version.get("agent_type") {
-        None => {}
-        Some(Value::String(value)) if value == "agent" => {}
+        None if expected_agent_type == "agent" => {}
+        Some(Value::String(value)) if value == expected_agent_type => {}
         Some(Value::String(_)) => return Err(unsupported_profile()),
-        Some(_) => return Err(invalid_profile()),
+        Some(_) | None => return Err(invalid_profile()),
     }
-    validate_feature_array(version.get("tools"), true)?;
+    if require_empty_tools {
+        validate_empty_feature_array(version.get("tools"), true)?;
+    } else {
+        validate_feature_array(version.get("tools"), true)?;
+    }
     validate_empty_feature_array(version.get("internal_tools"), false)?;
     validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;
@@ -402,9 +448,10 @@ fn application_model(
         .and_then(Value::as_str)
         .filter(|value| bounded_instruction(value))
         .ok_or_else(invalid_profile)?;
-    if ["{{", "{%", "{#"]
-        .iter()
-        .any(|marker| instructions.contains(marker))
+    if expected_agent_type == "agent"
+        && ["{{", "{%", "{#"]
+            .iter()
+            .any(|marker| instructions.contains(marker))
     {
         return Err(unsupported_profile());
     }

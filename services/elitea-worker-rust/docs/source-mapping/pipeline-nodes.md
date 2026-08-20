@@ -39,19 +39,30 @@ intentional product addition requested for the Rust runtime.
 
 `PipelineDefinition::from_yaml` now admits a complete frozen pipeline document,
 but only when every executable node is the already bounded dynamic `hitl` node.
+`AuthorizedNativeAssembly::admit_pipeline` selects only a frozen application
+whose `version_details.agent_type` is `pipeline`, validates the complete YAML
+before PAT, model, tool or state construction, and retains the claim-bound
+runtime/session authorities for the graph assembler. It rejects direct agents,
+configured tools and every unsupported node rather than falling through to the
+ordinary `LlmAgent` path.
+
 It derives state channels, builds `START -> entry_point`, registers every node,
 validates all action targets and compiles an invocation-owned ADK `GraphAgent`
 with an injected `Checkpointer`. A fresh graph instance can resume the exact
 latest checkpoint through `PipelineHitlDecision`; no caller-supplied checkpoint
-identifier is trusted.
+identifier is trusted. Pipeline continuation is the graph decision contract
+with an empty tool-call identity; it never passes through sensitive-tool
+`require_tool_confirmation`.
 
 The focused corpus reconstructs the graph twice around two sequential pauses
 through the real common `Runner` and injected `SessionService`, proves final
 completion and one-use decisions, and rejects stale identities and unsupported
-node/static-interrupt documents. Production assembly still has to inject the
-claim-fenced PostgreSQL session/checkpoint adapters. If the process stops after
-the Runner appends the continuation user event but before the graph advances,
-the exact suffix-recovery rule also remains an activation gate.
+node/static-interrupt documents. Three additional admission fixtures prove the
+stored application selector, graph-decision identity and fail-closed tool/node
+boundary. Production assembly still has to consume one combined claim-fenced
+state authority into the PostgreSQL session/checkpoint adapters. If the process
+stops after the Runner appends the continuation user event but before the graph
+advances, the exact suffix-recovery rule also remains an activation gate.
 
 ## Parallel YAML v1
 
