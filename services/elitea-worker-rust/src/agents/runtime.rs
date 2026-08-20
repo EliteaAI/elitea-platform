@@ -525,6 +525,28 @@ impl<S> AssembledNativeAgentInvocation<S> {
         }
     }
 
+    /// Replace only the terminal-result selector while preserving the exact
+    /// Runner and browser projector assembled for this invocation.
+    ///
+    /// Runtime routing uses this consuming transform to erase the concrete
+    /// direct/pipeline completion type without creating a second execution or
+    /// separating completion ownership from its Runner.
+    pub(crate) fn map_completion<T>(
+        self,
+        map: impl FnOnce(S) -> T,
+    ) -> AssembledNativeAgentInvocation<T> {
+        let Self {
+            invocation,
+            projector,
+            completion,
+        } = self;
+        AssembledNativeAgentInvocation {
+            invocation,
+            projector,
+            completion: map(completion),
+        }
+    }
+
     pub(crate) fn project_start(
         &mut self,
         occurred_at: DateTime<Utc>,

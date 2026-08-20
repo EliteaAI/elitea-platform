@@ -6,6 +6,7 @@ pub(crate) mod context_management;
 pub(crate) mod direct_hitl;
 pub(crate) mod events;
 pub mod graph;
+pub(crate) mod native_runtime;
 pub(crate) mod ordinary;
 pub(crate) mod pipeline;
 pub mod protocol;
@@ -21,6 +22,8 @@ mod assembly_tests;
 mod direct_hitl_tests;
 #[cfg(test)]
 mod events_tests;
+#[cfg(test)]
+mod native_runtime_tests;
 #[cfg(test)]
 mod ordinary_tests;
 #[cfg(test)]
