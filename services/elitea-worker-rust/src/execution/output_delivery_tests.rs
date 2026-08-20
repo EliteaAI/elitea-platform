@@ -1366,6 +1366,7 @@ fn sensitive_catalog_fixture() -> SensitiveToolCatalog {
         policy
             .sensitive_tool("fixture", "Fixture Tools", "double")
             .expect("sensitive fixture policy"),
+        false,
     )
     .expect("sensitive fixture catalog")
 }

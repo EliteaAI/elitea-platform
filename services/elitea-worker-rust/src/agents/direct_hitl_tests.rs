@@ -7,6 +7,8 @@ use super::direct_hitl::{
     sensitive_call_identity,
 };
 use super::request::AgentExecutionKind;
+use super::sensitive_tools::SensitiveToolCatalog;
+use crate::toolkits::ToolAdmissionPolicy;
 
 fn pending_events(arguments: Value) -> Vec<Event> {
     let mut call = Event::with_id("call-event", "invocation-1");
@@ -53,6 +55,27 @@ fn direct_payload(
 
 fn session(events: Vec<Event>) -> FixtureSession {
     FixtureSession { events }
+}
+
+fn sensitive_catalog(read_only: bool) -> SensitiveToolCatalog {
+    let runtime = json!({
+        "toolkit_security": {
+            "sensitive_tools": {"fixture": ["double"]},
+            "sensitive_action_company_name": "Example Org"
+        }
+    });
+    let policy = ToolAdmissionPolicy::from_runtime_config(
+        runtime.as_object().expect("runtime configuration object"),
+    )
+    .expect("runtime policy");
+    SensitiveToolCatalog::fixture(
+        "double",
+        policy
+            .sensitive_tool("fixture", "Fixture Tools", "double")
+            .expect("sensitive tool policy"),
+        read_only,
+    )
+    .expect("sensitive catalog")
 }
 
 fn admission_error(result: Result<DirectHitlDecision, DirectHitlError>) -> DirectHitlError {
@@ -151,6 +174,22 @@ fn direct_decision_resolves_only_the_exact_latest_persisted_call() {
         resolved.fingerprint(),
         adk_rust::tool_call_fingerprint("double", &arguments)
     );
+}
+
+#[test]
+fn direct_replay_rejects_effectful_tools_before_model_or_tool_execution() {
+    let arguments = json!({"value": 21});
+    let events = pending_events(arguments.clone());
+    let (interrupt_id, _) = sensitive_call_identity("invocation-1", "call-1", "double", &arguments)
+        .expect("call identity");
+    let resolved = DirectHitlDecision::from_payload(&direct_payload("approve", "", &interrupt_id))
+        .expect("decision admission")
+        .resolve(&session(events))
+        .expect("exact session call");
+    let Err(error) = resolved.into_read_only_replay(&sensitive_catalog(false)) else {
+        panic!("effectful direct tool was admitted for replay");
+    };
+    assert_eq!(error.code(), DirectHitlErrorCode::UnsupportedCapability);
 }
 
 #[test]

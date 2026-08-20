@@ -16,8 +16,15 @@
 #![allow(dead_code)] // Resume execution remains capability-gated.
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
-use adk_rust::{Event, ToolConfirmationDecision, tool_call_fingerprint};
+use adk_rust::futures::stream;
+use adk_rust::{
+    AdkError, Content, Event, FinishReason, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part,
+    RunConfig, SchemaAdapter, ToolConfirmationDecision, tool_call_fingerprint,
+};
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::digest;
@@ -25,6 +32,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::request::AgentExecutionPayload;
+use super::sensitive_tools::SensitiveToolCatalog;
 
 const MAX_IDENTITY_BYTES: usize = 512;
 const MAX_COMMENT_BYTES: usize = 2_000;
@@ -267,6 +275,283 @@ pub(crate) struct ResolvedDirectHitlDecision {
     fingerprint: String,
     decision: ToolConfirmationDecision,
     denial_comment: Option<String>,
+}
+
+/// One exact read-only call prepared for native ADK replay.
+///
+/// Construction consumes the resolved browser decision and requires that the
+/// same materialized sensitive-tool catalog classified the exact concrete tool
+/// as read-only. It deliberately cannot authorize an effectful tool.
+pub(crate) struct ReadOnlyDirectHitlReplay {
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+    fingerprint: String,
+    decision: ToolConfirmationDecision,
+    user_content: Content,
+}
+
+impl ResolvedDirectHitlDecision {
+    /// Narrow one resolved decision to the temporary read-only replay boundary.
+    pub(crate) fn into_read_only_replay(
+        self,
+        sensitive_tools: &SensitiveToolCatalog,
+    ) -> Result<ReadOnlyDirectHitlReplay, DirectHitlError> {
+        if sensitive_tools.is_read_only(&self.tool_name) != Some(true) {
+            tracing::debug!(
+                tool.name = %self.tool_name,
+                "direct HITL replay remains closed for an effectful or unknown tool"
+            );
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        let user_content = match (self.decision, self.denial_comment.as_deref()) {
+            (ToolConfirmationDecision::Approve, _) => Content::new("user")
+                .with_text("The pending tool call was approved. Continue the original request."),
+            (ToolConfirmationDecision::Deny, Some(comment)) => Content::new("user").with_text(
+                format!("The pending tool call was rejected. User instruction: {comment}"),
+            ),
+            (ToolConfirmationDecision::Deny, None) => Content::new("user")
+                .with_text("The pending tool call was rejected. Continue without executing it."),
+        };
+        Ok(ReadOnlyDirectHitlReplay {
+            call_id: self.call_id,
+            tool_name: self.tool_name,
+            arguments: self.arguments,
+            fingerprint: self.fingerprint,
+            decision: self.decision,
+            user_content,
+        })
+    }
+}
+
+impl ReadOnlyDirectHitlReplay {
+    /// Bind the one-shot replay model and exact ADK confirmation decision.
+    pub(crate) fn bind(self, delegate: Arc<dyn Llm>) -> PreparedDirectHitlReplay {
+        let mut run_config = RunConfig::default();
+        run_config
+            .tool_confirmation_decisions
+            .insert(self.call_id.clone(), self.decision);
+        run_config
+            .tool_confirmation_fingerprints
+            .insert(self.call_id.clone(), self.fingerprint);
+        let model: Arc<dyn Llm> = Arc::new(DirectHitlReplayModel {
+            delegate,
+            state: AtomicU8::new(REPLAY_PENDING),
+            call_id: self.call_id,
+            tool_name: self.tool_name,
+            arguments: self.arguments,
+        });
+        PreparedDirectHitlReplay {
+            model,
+            run: DirectHitlRunInput {
+                user_content: self.user_content,
+                run_config,
+            },
+        }
+    }
+}
+
+/// Bound replay values consumed by the invocation/session assembler.
+///
+/// This type is intentionally neither `Clone` nor `Debug`; the model retains
+/// the raw call arguments and the user content may contain a denial comment.
+pub(crate) struct PreparedDirectHitlReplay {
+    model: Arc<dyn Llm>,
+    run: DirectHitlRunInput,
+}
+
+/// Opaque invocation input minted with the exact replay model.
+pub(crate) struct DirectHitlRunInput {
+    user_content: Content,
+    run_config: RunConfig,
+}
+
+impl PreparedDirectHitlReplay {
+    pub(crate) fn into_parts(self) -> (Arc<dyn Llm>, DirectHitlRunInput) {
+        (self.model, self.run)
+    }
+}
+
+impl DirectHitlRunInput {
+    pub(super) fn into_parts(self) -> (Content, RunConfig) {
+        (self.user_content, self.run_config)
+    }
+}
+
+const REPLAY_PENDING: u8 = 0;
+const REPLAY_EMITTED: u8 = 1;
+const REPLAY_DELEGATING: u8 = 2;
+
+/// Model adapter that deterministically re-emits one persisted function call.
+///
+/// The first generation never contacts the provider. ADK receives the original
+/// function-call ID/arguments and applies the exact `RunConfig` decision before
+/// its native `ToolExecutor`. Only after one matching function response exists
+/// does the adapter delegate later turns to the bound provider model.
+struct DirectHitlReplayModel {
+    delegate: Arc<dyn Llm>,
+    state: AtomicU8,
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+}
+
+#[async_trait]
+impl Llm for DirectHitlReplayModel {
+    fn name(&self) -> &str {
+        self.delegate.name()
+    }
+
+    fn schema_adapter(&self) -> &dyn SchemaAdapter {
+        self.delegate.schema_adapter()
+    }
+
+    fn uses_interactions_api(&self) -> bool {
+        self.delegate.uses_interactions_api()
+    }
+
+    async fn generate_content(
+        &self,
+        request: LlmRequest,
+        stream_response: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        match self.state.compare_exchange(
+            REPLAY_PENDING,
+            REPLAY_EMITTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                self.validate_pending_request(&request)?;
+                tracing::debug!(
+                    tool.name = %self.tool_name,
+                    tool.call_id = %self.call_id,
+                    "re-emitting one persisted read-only tool call through ADK"
+                );
+                let response = LlmResponse {
+                    content: Some(Content {
+                        role: "model".to_owned(),
+                        parts: vec![Part::FunctionCall {
+                            name: self.tool_name.clone(),
+                            args: self.arguments.clone(),
+                            id: Some(self.call_id.clone()),
+                            thought_signature: None,
+                        }],
+                    }),
+                    finish_reason: Some(FinishReason::Stop),
+                    turn_complete: true,
+                    ..LlmResponse::default()
+                };
+                Ok(Box::pin(stream::once(async move { Ok(response) })))
+            }
+            Err(REPLAY_EMITTED) => {
+                if self
+                    .state
+                    .compare_exchange(
+                        REPLAY_EMITTED,
+                        REPLAY_DELEGATING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    self.validate_completed_replay(&request)?;
+                    tracing::debug!(
+                        tool.name = %self.tool_name,
+                        tool.call_id = %self.call_id,
+                        "validated the replayed tool result before provider continuation"
+                    );
+                }
+                self.delegate
+                    .generate_content(request, stream_response)
+                    .await
+            }
+            Err(_) => {
+                self.delegate
+                    .generate_content(request, stream_response)
+                    .await
+            }
+        }
+    }
+}
+
+impl DirectHitlReplayModel {
+    fn validate_pending_request(&self, request: &LlmRequest) -> adk_rust::Result<()> {
+        let state = latest_call_state(request, &self.call_id, &self.tool_name, &self.arguments);
+        if !request.tools.contains_key(&self.tool_name) || state != LatestCallState::Pending {
+            return Err(AdkError::agent(
+                "the persisted direct tool call is unavailable for exact replay",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_completed_replay(&self, request: &LlmRequest) -> adk_rust::Result<()> {
+        if latest_call_state(request, &self.call_id, &self.tool_name, &self.arguments)
+            != LatestCallState::Completed
+        {
+            return Err(AdkError::agent(
+                "the replayed direct tool result is unavailable for model continuation",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LatestCallState {
+    Missing,
+    Pending,
+    Completed,
+}
+
+fn latest_call_state(
+    request: &LlmRequest,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> LatestCallState {
+    let mut last_call = None;
+    let mut last_response = None;
+    for (position, part) in request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .enumerate()
+    {
+        match part {
+            Part::FunctionCall {
+                name,
+                args,
+                id: Some(id),
+                ..
+            } if id == call_id => {
+                last_call = Some((position, name == tool_name && args == arguments));
+            }
+            Part::FunctionResponse {
+                function_response,
+                id: Some(id),
+                ..
+            } if id == call_id => {
+                last_response = Some((position, function_response.name == tool_name));
+            }
+            _ => {}
+        }
+    }
+    let Some((call_position, true)) = last_call else {
+        return LatestCallState::Missing;
+    };
+    match last_response {
+        Some((response_position, true)) if response_position > call_position => {
+            LatestCallState::Completed
+        }
+        Some((response_position, _)) if response_position > call_position => {
+            LatestCallState::Missing
+        }
+        _ => LatestCallState::Pending,
+    }
 }
 
 impl ResolvedDirectHitlDecision {

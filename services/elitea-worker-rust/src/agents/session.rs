@@ -29,6 +29,7 @@ use sqlx::PgPool;
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
+use super::direct_hitl::{DirectHitlDecision, DirectHitlError, DirectHitlErrorCode};
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
     AgentEventProjector, CompletedAgentBrowserOutput, OrdinaryProjectionInput,
@@ -460,6 +461,100 @@ where
         projector,
         OrdinaryAgentCompletion { model, thread_id },
     ))
+}
+
+/// Rebuild one direct `LlmAgent` around an exact persisted read-only call.
+///
+/// ADK 2.0.0 does not expose a suspended `LlmAgent` frame after restart. This
+/// capability-disabled seam therefore uses a one-shot model adapter to emit the
+/// already-proven call once, then lets ADK's normal confirmation and
+/// `ToolExecutor` path apply the decision and continue with the bound provider.
+/// Effectful tools are rejected before the Runner is constructed.
+pub(crate) async fn assemble_read_only_direct_hitl_resume_with_sessions<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
+    decision: DirectHitlDecision,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
+    let OrdinaryNativeAgentPlan {
+        user_id,
+        session_id,
+        user_content: _,
+        generation_config,
+        max_iterations,
+        projection,
+        thread_id,
+        chat_history: _,
+        context_management,
+        capability_id: _,
+        definition_digest: _,
+        tenant_id: _,
+        resource_project_id: _,
+        projection_project_id: _,
+        execution_id: _,
+        generation: _,
+    } = plan;
+    context_management.prepare_runner_composition();
+    let stored = sessions
+        .get(GetRequest {
+            app_name: APP_NAME.to_owned(),
+            user_id: user_id.to_string(),
+            session_id: session_id.to_string(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .map_err(|_| dependency_unavailable())?;
+    let resolved = decision
+        .resolve(stored.as_ref())
+        .and_then(|resolved| resolved.into_read_only_replay(&sensitive_tools))
+        .map_err(|error| direct_hitl_error(&error))?;
+    let prepared = resolved.bind(model.adk_model());
+    let (replay_model, run_input) = prepared.into_parts();
+    let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
+        .model(replay_model)
+        .generate_content_config(generation_config)
+        .max_iterations(max_iterations)
+        .disallow_transfer_to_parent(true)
+        .disallow_transfer_to_peers(true);
+    for toolset in toolsets {
+        builder = builder.toolset(toolset);
+    }
+    for tool_name in sensitive_tools.tool_names() {
+        builder = builder.require_tool_confirmation(tool_name);
+    }
+    let agent = builder.build().map_err(|_| invalid_configuration())?;
+    let runner = adk_rust::runner::Runner::builder()
+        .app_name(APP_NAME)
+        .agent(Arc::new(agent))
+        .session_service(sessions)
+        .build()
+        .map_err(|_| invalid_configuration())?;
+    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
+        .map_err(projection_configuration)?;
+    Ok(AssembledNativeAgentInvocation::new(
+        NativeAgentInvocation::new_direct_hitl(runner, user_id, session_id, run_input),
+        projector,
+        OrdinaryAgentCompletion { model, thread_id },
+    ))
+}
+
+fn direct_hitl_error(error: &DirectHitlError) -> NativeAgentAssemblyError {
+    let code = match error.code() {
+        DirectHitlErrorCode::InvalidInput
+        | DirectHitlErrorCode::StaleDecision
+        | DirectHitlErrorCode::CorruptSession => NativeAgentAssemblyErrorCode::InvalidInput,
+        DirectHitlErrorCode::UnsupportedCapability => {
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        DirectHitlErrorCode::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
+    };
+    NativeAgentAssemblyError::new(code, "the direct sensitive-tool replay was rejected")
 }
 
 async fn restore_or_create_session(

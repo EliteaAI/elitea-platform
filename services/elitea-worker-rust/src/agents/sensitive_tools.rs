@@ -29,7 +29,12 @@ const MAX_CONFIRMED_TOOLS: usize = 1_024;
 /// authority do not exist until the model emits a call.
 #[derive(Default)]
 pub(crate) struct SensitiveToolCatalog {
-    entries: BTreeMap<Box<str>, SensitiveToolPolicy>,
+    entries: BTreeMap<Box<str>, SensitiveToolEntry>,
+}
+
+struct SensitiveToolEntry {
+    policy: SensitiveToolPolicy,
+    read_only: bool,
 }
 
 impl SensitiveToolCatalog {
@@ -44,7 +49,17 @@ impl SensitiveToolCatalog {
 
     #[must_use]
     pub(crate) fn policy_for(&self, tool_name: &str) -> Option<&SensitiveToolPolicy> {
-        self.entries.get(tool_name)
+        self.entries.get(tool_name).map(|entry| &entry.policy)
+    }
+
+    /// Return whether one exact sensitive tool was admitted as read-only.
+    ///
+    /// This is execution metadata, not authorization. It only permits the
+    /// capability-disabled direct-HITL replay seam to exclude effects while
+    /// the durable effect owner is still absent.
+    #[must_use]
+    pub(crate) fn is_read_only(&self, tool_name: &str) -> Option<bool> {
+        self.entries.get(tool_name).map(|entry| entry.read_only)
     }
 
     pub(crate) fn merge(&mut self, other: Self) -> Result<(), NativeAgentAssemblyError> {
@@ -68,13 +83,14 @@ impl SensitiveToolCatalog {
     pub(crate) fn fixture(
         tool_name: &str,
         policy: SensitiveToolPolicy,
+        read_only: bool,
     ) -> Result<Self, NativeAgentAssemblyError> {
         if tool_name.is_empty() || tool_name.len() > 512 || tool_name.chars().any(char::is_control)
         {
             return Err(invalid_configuration());
         }
         Ok(Self {
-            entries: BTreeMap::from([(tool_name.into(), policy)]),
+            entries: BTreeMap::from([(tool_name.into(), SensitiveToolEntry { policy, read_only })]),
         })
     }
 }
@@ -119,7 +135,13 @@ pub(crate) async fn sensitive_tools_for_kind(
             };
             if catalog
                 .entries
-                .insert(tool.name().into(), sensitive)
+                .insert(
+                    tool.name().into(),
+                    SensitiveToolEntry {
+                        policy: sensitive,
+                        read_only: tool.is_read_only(),
+                    },
+                )
                 .is_some()
             {
                 return Err(invalid_configuration());

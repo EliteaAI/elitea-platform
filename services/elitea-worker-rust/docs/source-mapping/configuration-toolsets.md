@@ -115,7 +115,7 @@ later function call.
 | SDK `runtime/toolkits/tools.py::get_tools` | Runtime toolsets before standard/community dispatch | `src/toolkits/materialize.rs` | Runtime/family dispatch tests | Planned |
 | SDK `tools/base/tool.py::BaseAction` and `tools/elitea_base.py::BaseToolApiWrapper.run` | Map selected tool name to bounded invocation | `src/toolkits/invocation.rs` | Native ADK metadata, top-level null normalization, bounds, cancellation and safe-error tests | Implemented shared kernel; family operations remain planned |
 | SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs` | Alias, scope, bound and pre-materialization filter corpus | Implemented foundation; serve-time config generation swap remains planned |
-| SDK `runtime/middleware/sensitive_tool_guard.py` | Sensitive effect admission | `src/agents/sensitive_tools.rs` | Exact invocation-ID and at-most-once tests | Planned |
+| SDK `runtime/middleware/sensitive_tool_guard.py` | Sensitive-tool policy and confirmation admission | `src/agents/{sensitive_tools,direct_hitl}.rs` | Runtime dictionary binding, exact call-bound interrupt, strict decision/stale-session corpus, effectful replay rejection and one read-only native replay | Partial capability-disabled path. Initial pause and exact read-only replay are proven through ADK; production request composition, partial-replay recovery and effect intent/outcome ownership remain gates |
 
 ## Family inventory
 

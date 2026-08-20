@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use super::assembly::OrdinaryNoToolProfile;
+use super::direct_hitl::DirectHitlRunInput;
 use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
     ProjectedAgentEventBatch,
@@ -470,6 +471,7 @@ pub(crate) struct NativeAgentInvocation {
     user_id: UserId,
     session_id: SessionId,
     user_content: Content,
+    run_config: Option<adk_rust::RunConfig>,
 }
 
 impl NativeAgentInvocation {
@@ -489,6 +491,24 @@ impl NativeAgentInvocation {
             user_id,
             session_id,
             user_content,
+            run_config: None,
+        }
+    }
+
+    /// Seal a read-only direct-HITL replay prepared from one persisted call.
+    pub(crate) fn new_direct_hitl(
+        runner: Runner,
+        user_id: UserId,
+        session_id: SessionId,
+        replay: DirectHitlRunInput,
+    ) -> Self {
+        let (user_content, run_config) = replay.into_parts();
+        Self {
+            runner,
+            user_id,
+            session_id,
+            user_content,
+            run_config: Some(run_config),
         }
     }
 
@@ -516,7 +536,12 @@ impl NativeAgentInvocation {
         // Refuse a future version that moves I/O into this authority-consuming
         // boundary instead of allowing an unbounded, non-interruptible start.
         let events = runner
-            .run(self.user_id, self.session_id, self.user_content)
+            .run_with_config(
+                self.user_id,
+                self.session_id,
+                self.user_content,
+                self.run_config,
+            )
             .now_or_never()
             .ok_or_else(NativeAgentRuntimeError::start_deferred)?
             .map_err(NativeAgentRuntimeError::start_failed)?;

@@ -7,7 +7,7 @@ use adk_rust::session::{GetRequest, InMemorySessionService, SessionService};
 use adk_rust::tool::BasicToolset;
 use adk_rust::{
     Content, FinishReason, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part, Tool,
-    ToolContext, Toolset,
+    ToolConfirmationDecision, ToolContext, Toolset,
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -23,6 +23,7 @@ use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, NativeSessionBackend,
     OrdinaryNativeAgentPlan, assemble_ordinary_native, assemble_ordinary_native_with_sessions,
+    assemble_read_only_direct_hitl_resume_with_sessions,
 };
 use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -57,6 +58,35 @@ fn bound_model(response: &str) -> FixtureBoundModel {
 struct SequencedLlm {
     responses: Mutex<VecDeque<LlmResponse>>,
     calls: Arc<AtomicUsize>,
+}
+
+struct CapturingFinalLlm {
+    requests: Arc<Mutex<Vec<LlmRequest>>>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Llm for CapturingFinalLlm {
+    fn name(&self) -> &'static str {
+        "fixture-model"
+    }
+
+    async fn generate_content(
+        &self,
+        request: LlmRequest,
+        _stream: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.requests
+            .lock()
+            .map_err(|_| adk_rust::AdkError::agent("fixture request lock failed"))?
+            .push(request);
+        Ok(Box::pin(adk_rust::futures::stream::once(async {
+            Ok(LlmResponse::new(
+                Content::new("model").with_text("The resumed answer is 42."),
+            ))
+        })))
+    }
 }
 
 #[async_trait]
@@ -95,6 +125,10 @@ impl Tool for CountingTool {
 
     fn description(&self) -> &'static str {
         "Double one integer."
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
     }
 
     async fn execute(
@@ -150,6 +184,7 @@ fn sensitive_catalog() -> SensitiveToolCatalog {
         policy
             .sensitive_tool("fixture", "Fixture Tools", "double")
             .expect("sensitive double policy"),
+        true,
     )
     .expect("sensitive catalog")
 }
@@ -449,6 +484,247 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
     assert!(durable_confirmation_seen);
     assert_eq!(model_calls.load(Ordering::SeqCst), 1);
     assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn persisted_read_only_sensitive_call_replays_through_native_adk_without_model_replanning() {
+    let fixture = pause_read_only_sensitive_call().await;
+    let profile = OrdinaryNoToolProfile::validate(&fixture.request).expect("agent profile");
+    let decision =
+        DirectHitlDecision::from_payload(&approved_resume_payload(&fixture.interrupt_id))
+            .expect("approved decision");
+
+    let second_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("resume native plan");
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let second_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&provider_calls),
+        }),
+        completed: "The resumed answer is 42.".to_owned(),
+    };
+    let second_tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+    });
+    let second_toolset: Arc<dyn Toolset> =
+        Arc::new(BasicToolset::new("fixture-tools", vec![second_tool]));
+    let second_sessions: Arc<dyn SessionService> = fixture.sessions.clone();
+    let resumed = assemble_read_only_direct_hitl_resume_with_sessions(
+        second_model,
+        second_plan,
+        vec![second_toolset],
+        sensitive_catalog(),
+        decision,
+        second_sessions,
+    )
+    .await
+    .expect("read-only replay assembly");
+    let (mut resumed_run, _projector, completion) = resumed.start().expect("resumed native run");
+    let mut saw_approved_result = false;
+    while let Some(event) = resumed_run.next_event().await.expect("resumed event") {
+        saw_approved_result |= event.actions.tool_confirmation_decision
+            == Some(ToolConfirmationDecision::Approve)
+            && !event.tool_results().is_empty();
+    }
+
+    assert!(saw_approved_result);
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    {
+        let requests = captured.lock().expect("captured provider requests");
+        assert_eq!(requests.len(), 1);
+        assert_replay_provider_transcript(&requests[0]);
+    }
+    completion.select().await.expect("resumed completion");
+
+    let advanced = fixture
+        .sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id: fixture.user_id,
+            session_id: fixture.session_id,
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("advanced resumed session");
+    let replayed =
+        DirectHitlDecision::from_payload(&approved_resume_payload(&fixture.interrupt_id))
+            .expect("same bounded decision")
+            .resolve(advanced.as_ref());
+    let Err(replayed) = replayed else {
+        panic!("completed decision was replayed again");
+    };
+    assert_eq!(
+        replayed.code(),
+        super::direct_hitl::DirectHitlErrorCode::StaleDecision
+    );
+}
+
+struct PendingReadOnlyReplay {
+    request: super::request::AgentExecutionRequest,
+    sessions: Arc<InMemorySessionService>,
+    user_id: String,
+    session_id: String,
+    interrupt_id: String,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+async fn pause_read_only_sensitive_call() -> PendingReadOnlyReplay {
+    let request = ordinary_request(AgentExecutionKind::Adhoc);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("agent profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first native plan");
+    let user_id = plan.user_id().to_owned();
+    let session_id = plan.session_id().to_owned();
+    let sessions = Arc::new(InMemorySessionService::new());
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&tool_calls),
+    });
+    let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
+    let model = FixtureBoundModel {
+        model: Arc::new(SequencedLlm {
+            responses: Mutex::new(VecDeque::from([tool_call_response()])),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        completed: "not completed".to_owned(),
+    };
+    let injected: Arc<dyn SessionService> = sessions.clone();
+    let first = assemble_ordinary_native_with_sessions(
+        model,
+        plan,
+        vec![toolset],
+        sensitive_catalog(),
+        injected,
+    )
+    .await
+    .expect("initial sensitive assembly");
+    let (mut run, _projector, _completion) = first.start().expect("initial native run");
+    while run
+        .next_event()
+        .await
+        .expect("initial sensitive event")
+        .is_some()
+    {}
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+    let interrupt_id = persisted_interrupt_id(&sessions, &user_id, &session_id).await;
+    PendingReadOnlyReplay {
+        request,
+        sessions,
+        user_id,
+        session_id,
+        interrupt_id,
+        tool_calls,
+    }
+}
+
+async fn persisted_interrupt_id(
+    sessions: &InMemorySessionService,
+    user_id: &str,
+    session_id: &str,
+) -> String {
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id: user_id.to_owned(),
+            session_id: session_id.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("persisted pending session");
+    let confirmation = stored
+        .events()
+        .all()
+        .into_iter()
+        .find(|event| event.actions.tool_confirmation.is_some())
+        .expect("persisted confirmation");
+    let pending = confirmation
+        .actions
+        .tool_confirmation
+        .as_ref()
+        .expect("confirmation request");
+    super::direct_hitl::sensitive_call_identity(
+        &confirmation.invocation_id,
+        pending
+            .function_call_id
+            .as_deref()
+            .expect("function call identity"),
+        &pending.tool_name,
+        &pending.args,
+    )
+    .expect("public interrupt identity")
+    .0
+}
+
+fn approved_resume_payload(interrupt_id: &str) -> super::request::AgentExecutionPayload {
+    let mut resume = ordinary_request(AgentExecutionKind::Adhoc);
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = Some("approve".to_owned());
+    resume.payload.hitl_value = Some(String::new());
+    resume.payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call-1",
+        "action": "approve",
+        "value": "",
+    })];
+    resume.payload
+}
+
+fn assert_replay_provider_transcript(request: &LlmRequest) {
+    let approval_messages = request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(|part| {
+            matches!(
+                part,
+                Part::Text { text }
+                    if text == "The pending tool call was approved. Continue the original request."
+            )
+        })
+        .count();
+    let replayed_calls = request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(|part| {
+            matches!(
+                part,
+                Part::FunctionCall { name, id: Some(id), args, .. }
+                    if name == "double" && id == "call-1" && args == &json!({"value": 21})
+            )
+        })
+        .count();
+    let results = request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(|part| {
+            matches!(
+                part,
+                Part::FunctionResponse { function_response, id: Some(id), .. }
+                    if function_response.name == "double"
+                        && id == "call-1"
+                        && function_response.response == json!({"value": 42})
+            )
+        })
+        .count();
+    assert_eq!(approval_messages, 1);
+    assert_eq!(replayed_calls, 2);
+    assert_eq!(results, 1);
 }
 
 async fn resolve_persisted_sensitive_decision(
