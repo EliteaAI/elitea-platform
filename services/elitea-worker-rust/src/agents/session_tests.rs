@@ -22,8 +22,8 @@ use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode}
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, NativeSessionBackend,
-    OrdinaryNativeAgentPlan, assemble_ordinary_native, assemble_ordinary_native_with_sessions,
-    assemble_read_only_direct_hitl_resume_with_sessions,
+    OrdinaryNativeAgentPlan, assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native,
+    assemble_ordinary_native_with_sessions,
 };
 use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -115,6 +115,7 @@ impl Llm for SequencedLlm {
 
 struct CountingTool {
     calls: Arc<AtomicUsize>,
+    read_only: bool,
 }
 
 #[async_trait]
@@ -128,7 +129,7 @@ impl Tool for CountingTool {
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        self.read_only
     }
 
     async fn execute(
@@ -167,6 +168,10 @@ fn tool_call_response_with(args: Value) -> LlmResponse {
 }
 
 fn sensitive_catalog() -> SensitiveToolCatalog {
+    sensitive_catalog_with_read_only(true)
+}
+
+fn sensitive_catalog_with_read_only(read_only: bool) -> SensitiveToolCatalog {
     let runtime = json!({
         "toolkit_security": {
             "sensitive_tools": {"fixture": ["double"]},
@@ -184,7 +189,7 @@ fn sensitive_catalog() -> SensitiveToolCatalog {
         policy
             .sensitive_tool("fixture", "Fixture Tools", "double")
             .expect("sensitive double policy"),
-        true,
+        read_only,
     )
     .expect("sensitive catalog")
 }
@@ -373,6 +378,7 @@ async fn direct_llm_agent_executes_a_bound_toolset_before_the_final_model_turn()
     };
     let tool: Arc<dyn Tool> = Arc::new(CountingTool {
         calls: Arc::clone(&tool_calls),
+        read_only: true,
     });
     let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
     let assembled =
@@ -420,6 +426,7 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
     };
     let tool: Arc<dyn Tool> = Arc::new(CountingTool {
         calls: Arc::clone(&tool_calls),
+        read_only: true,
     });
     let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
     let user_id = plan.user_id().to_owned();
@@ -511,11 +518,12 @@ async fn persisted_read_only_sensitive_call_replays_through_native_adk_without_m
     };
     let second_tool: Arc<dyn Tool> = Arc::new(CountingTool {
         calls: Arc::clone(&fixture.tool_calls),
+        read_only: true,
     });
     let second_toolset: Arc<dyn Toolset> =
         Arc::new(BasicToolset::new("fixture-tools", vec![second_tool]));
     let second_sessions: Arc<dyn SessionService> = fixture.sessions.clone();
-    let resumed = assemble_read_only_direct_hitl_resume_with_sessions(
+    let resumed = assemble_direct_hitl_resume_with_sessions(
         second_model,
         second_plan,
         vec![second_toolset],
@@ -567,7 +575,281 @@ async fn persisted_read_only_sensitive_call_replays_through_native_adk_without_m
     );
 }
 
-struct PendingReadOnlyReplay {
+#[tokio::test]
+async fn block_actions_emit_one_correlated_structured_result_without_executing_the_tool() {
+    assert_blocked_direct_replay("reject", "", "denied by user").await;
+    assert_blocked_direct_replay(
+        "block_with_comment",
+        "retain this record",
+        "retain this record",
+    )
+    .await;
+}
+
+async fn assert_blocked_direct_replay(action: &str, value: &str, expected_reason: &str) {
+    let fixture = pause_sensitive_call(false).await;
+    let profile = OrdinaryNoToolProfile::validate(&fixture.request).expect("agent profile");
+    let expected = expected_blocked_result(expected_reason);
+    persist_blocked_result_before_provider(&fixture, &profile, action, value, &expected).await;
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("blocked replay plan");
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&provider_calls),
+        }),
+        completed: "continued after blocked tool".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+        read_only: false,
+    });
+    let decision = DirectHitlDecision::from_payload(&blocked_resume_payload(
+        &fixture.interrupt_id,
+        action,
+        value,
+    ))
+    .expect("blocked replay decision");
+    let assembled = assemble_direct_hitl_resume_with_sessions(
+        model,
+        plan,
+        vec![Arc::new(BasicToolset::new("fixture-tools", vec![tool]))],
+        sensitive_catalog_with_read_only(false),
+        decision,
+        fixture.sessions.clone(),
+    )
+    .await
+    .expect("blocked replay assembly");
+    let (mut run, _projector, completion) = assembled.start().expect("blocked replay run");
+    while let Some(event) = run.next_event().await.expect("blocked replay event") {
+        assert!(event.tool_results().is_empty());
+    }
+    completion
+        .select()
+        .await
+        .expect("blocked replay completion");
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    let requests = captured.lock().expect("blocked provider request");
+    assert_eq!(requests.len(), 1);
+    assert_blocked_provider_transcript(&requests[0], &expected);
+}
+
+async fn persist_blocked_result_before_provider(
+    fixture: &PendingDirectReplay,
+    profile: &OrdinaryNoToolProfile,
+    action: &str,
+    value: &str,
+    expected: &Value,
+) {
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("blocked result plan");
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            calls: Arc::clone(&provider_calls),
+        }),
+        completed: "not reached".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+        read_only: false,
+    });
+    let decision = DirectHitlDecision::from_payload(&blocked_resume_payload(
+        &fixture.interrupt_id,
+        action,
+        value,
+    ))
+    .expect("blocked result decision");
+    let assembled = assemble_direct_hitl_resume_with_sessions(
+        model,
+        plan,
+        vec![Arc::new(BasicToolset::new("fixture-tools", vec![tool]))],
+        sensitive_catalog_with_read_only(false),
+        decision,
+        fixture.sessions.clone(),
+    )
+    .await
+    .expect("blocked result assembly");
+    let (mut run, _projector, _completion) = assembled.start().expect("blocked result run");
+    loop {
+        let event = run
+            .next_event()
+            .await
+            .expect("blocked result event")
+            .expect("blocked result before EOS");
+        if event.actions.tool_confirmation_decision == Some(ToolConfirmationDecision::Deny) {
+            let results = event.tool_results();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].call_id, Some("call-1"));
+            assert_eq!(results[0].name, "double");
+            assert_eq!(results[0].response, expected);
+            break;
+        }
+    }
+    drop(run);
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn persisted_read_only_result_continues_after_restart_without_tool_reexecution() {
+    let fixture = pause_read_only_sensitive_call().await;
+    let profile = OrdinaryNoToolProfile::validate(&fixture.request).expect("agent profile");
+    interrupt_replay_before_tool_result(&fixture, &profile).await;
+    let first_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first resume plan");
+    let first_provider_calls = Arc::new(AtomicUsize::new(0));
+    let first_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            calls: Arc::clone(&first_provider_calls),
+        }),
+        completed: "not reached".to_owned(),
+    };
+    let first_tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+        read_only: true,
+    });
+    let first = assemble_direct_hitl_resume_with_sessions(
+        first_model,
+        first_plan,
+        vec![Arc::new(BasicToolset::new(
+            "fixture-tools",
+            vec![first_tool],
+        ))],
+        sensitive_catalog(),
+        approved_decision(&fixture),
+        fixture.sessions.clone(),
+    )
+    .await
+    .expect("first replay assembly");
+    let (mut first_run, _projector, _completion) = first.start().expect("first replay run");
+    loop {
+        let event = first_run
+            .next_event()
+            .await
+            .expect("first replay event")
+            .expect("persisted result before EOS");
+        if !event.tool_results().is_empty() {
+            break;
+        }
+    }
+    drop(first_run);
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(first_provider_calls.load(Ordering::SeqCst), 0);
+
+    let second_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("second resume plan");
+    let second_provider_calls = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let second_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&second_provider_calls),
+        }),
+        completed: "resumed after persisted result".to_owned(),
+    };
+    let second_tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+        read_only: true,
+    });
+    let second = assemble_direct_hitl_resume_with_sessions(
+        second_model,
+        second_plan,
+        vec![Arc::new(BasicToolset::new(
+            "fixture-tools",
+            vec![second_tool],
+        ))],
+        sensitive_catalog(),
+        approved_decision(&fixture),
+        fixture.sessions.clone(),
+    )
+    .await
+    .expect("second replay assembly");
+    let (mut second_run, _projector, completion) = second.start().expect("second replay run");
+    while second_run
+        .next_event()
+        .await
+        .expect("second replay event")
+        .is_some()
+    {}
+    completion.select().await.expect("second completion");
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(second_provider_calls.load(Ordering::SeqCst), 1);
+    let requests = captured.lock().expect("captured resumed request");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(count_call_parts(&requests[0], "call-1"), (3, 1));
+}
+
+async fn interrupt_replay_before_tool_result(
+    fixture: &PendingDirectReplay,
+    profile: &OrdinaryNoToolProfile,
+) {
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &fixture.request,
+        profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("interrupted resume plan");
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            calls: Arc::clone(&provider_calls),
+        }),
+        completed: "not reached".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(CountingTool {
+        calls: Arc::clone(&fixture.tool_calls),
+        read_only: true,
+    });
+    let assembled = assemble_direct_hitl_resume_with_sessions(
+        model,
+        plan,
+        vec![Arc::new(BasicToolset::new("fixture-tools", vec![tool]))],
+        sensitive_catalog(),
+        approved_decision(fixture),
+        fixture.sessions.clone(),
+    )
+    .await
+    .expect("interrupted replay assembly");
+    let (mut run, _projector, _completion) = assembled.start().expect("interrupted replay run");
+    loop {
+        let event = run
+            .next_event()
+            .await
+            .expect("interrupted replay event")
+            .expect("replayed call before EOS");
+        if !event.tool_calls().is_empty() {
+            break;
+        }
+    }
+    drop(run);
+    assert_eq!(fixture.tool_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+}
+
+struct PendingDirectReplay {
     request: super::request::AgentExecutionRequest,
     sessions: Arc<InMemorySessionService>,
     user_id: String,
@@ -576,7 +858,11 @@ struct PendingReadOnlyReplay {
     tool_calls: Arc<AtomicUsize>,
 }
 
-async fn pause_read_only_sensitive_call() -> PendingReadOnlyReplay {
+async fn pause_read_only_sensitive_call() -> PendingDirectReplay {
+    pause_sensitive_call(true).await
+}
+
+async fn pause_sensitive_call(read_only: bool) -> PendingDirectReplay {
     let request = ordinary_request(AgentExecutionKind::Adhoc);
     let profile = OrdinaryNoToolProfile::validate(&request).expect("agent profile");
     let plan = OrdinaryNativeAgentPlan::from_authorized(
@@ -591,6 +877,7 @@ async fn pause_read_only_sensitive_call() -> PendingReadOnlyReplay {
     let tool_calls = Arc::new(AtomicUsize::new(0));
     let tool: Arc<dyn Tool> = Arc::new(CountingTool {
         calls: Arc::clone(&tool_calls),
+        read_only,
     });
     let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
     let model = FixtureBoundModel {
@@ -605,7 +892,7 @@ async fn pause_read_only_sensitive_call() -> PendingReadOnlyReplay {
         model,
         plan,
         vec![toolset],
-        sensitive_catalog(),
+        sensitive_catalog_with_read_only(read_only),
         injected,
     )
     .await
@@ -619,7 +906,7 @@ async fn pause_read_only_sensitive_call() -> PendingReadOnlyReplay {
     {}
     assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
     let interrupt_id = persisted_interrupt_id(&sessions, &user_id, &session_id).await;
-    PendingReadOnlyReplay {
+    PendingDirectReplay {
         request,
         sessions,
         user_id,
@@ -683,6 +970,53 @@ fn approved_resume_payload(interrupt_id: &str) -> super::request::AgentExecution
     resume.payload
 }
 
+fn blocked_resume_payload(
+    interrupt_id: &str,
+    action: &str,
+    value: &str,
+) -> super::request::AgentExecutionPayload {
+    let mut resume = ordinary_request(AgentExecutionKind::Adhoc);
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = Some(action.to_owned());
+    resume.payload.hitl_value = Some(value.to_owned());
+    resume.payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call-1",
+        "action": action,
+        "value": value,
+    })];
+    resume.payload
+}
+
+fn expected_blocked_result(reason: &str) -> Value {
+    json!({
+        "type": "sensitive_tool_blocked",
+        "blocked_tool_name": "double",
+        "blocked_toolkit_name": "Fixture Tools",
+        "blocked_toolkit_type": "fixture",
+        "denial_reason": reason,
+        "message": "You declined THIS specific call to 'Fixture Tools.double'; it was not executed. The block is for THIS invocation only, not the tool itself. This is NOT a stop signal — do not end your turn or summarize yet. Do not retry this same call with the same arguments, but DO continue: if more items remain, call the tool again for the NEXT item now; otherwise use another available tool to keep making progress. Only stop and ask the user when nothing remains that can be done without this exact declined call."
+    })
+}
+
+fn approved_decision(fixture: &PendingDirectReplay) -> DirectHitlDecision {
+    DirectHitlDecision::from_payload(&approved_resume_payload(&fixture.interrupt_id))
+        .expect("approved replay decision")
+}
+
+fn count_call_parts(request: &LlmRequest, call_id: &str) -> (usize, usize) {
+    request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .fold((0, 0), |(calls, results), part| match part {
+            Part::FunctionCall { id: Some(id), .. } if id == call_id => (calls + 1, results),
+            Part::FunctionResponse { id: Some(id), .. } if id == call_id => (calls, results + 1),
+            _ => (calls, results),
+        })
+}
+
 fn assert_replay_provider_transcript(request: &LlmRequest) {
     let approval_messages = request
         .contents
@@ -692,7 +1026,10 @@ fn assert_replay_provider_transcript(request: &LlmRequest) {
             matches!(
                 part,
                 Part::Text { text }
-                    if text == "The pending tool call was approved. Continue the original request."
+                    if text.starts_with("[Elitea direct HITL hitl_e1:")
+                        && text.ends_with(
+                            "] The pending tool call was approved. Continue the original request."
+                        )
             )
         })
         .count();
@@ -722,8 +1059,35 @@ fn assert_replay_provider_transcript(request: &LlmRequest) {
             )
         })
         .count();
-    assert_eq!(approval_messages, 1);
+    assert_eq!(approval_messages, 0);
     assert_eq!(replayed_calls, 2);
+    assert_eq!(results, 1);
+}
+
+fn assert_blocked_provider_transcript(request: &LlmRequest, expected: &Value) {
+    let replay_markers = request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(
+            |part| matches!(part, Part::Text { text } if text.starts_with("[Elitea direct HITL ")),
+        )
+        .count();
+    let results = request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .filter(|part| {
+            matches!(
+                part,
+                Part::FunctionResponse { function_response, id: Some(id), .. }
+                    if function_response.name == "double"
+                        && id == "call-1"
+                        && &function_response.response == expected
+            )
+        })
+        .count();
+    assert_eq!(replay_markers, 0);
     assert_eq!(results, 1);
 }
 

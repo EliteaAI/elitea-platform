@@ -356,18 +356,25 @@ join: strict current continuation admission plus exact latest-session call,
 invocation, argument and call-ID resolution. The capability-disabled ordinary
 assembler selects this start mode before PAT redemption and requires a
 restorable `SessionService`; invocation-local continuation fails closed. It
-narrows the resolved call against materialized tool metadata, rejects effects,
-then uses a one-shot model adapter to re-emit the exact call ID and arguments.
-ADK's own fingerprint-bound `RunConfig` confirmation and `ToolExecutor` execute
-it once before the normal post-result model turn, so no provider model recreates
-or replans the approved call. Saved applications derive the session definition
+narrows the resolved call against materialized tool metadata and uses a one-shot
+model adapter to re-emit the exact call ID and arguments. An approval is admitted
+only for a read-only tool, then ADK's fingerprint-bound `RunConfig` confirmation
+and `ToolExecutor` execute it once before the normal post-result model turn. A
+denial may target a read or effect: the real tool is replaced with a local
+no-effect adapter that emits the SDK-compatible `sensitive_tool_blocked` result
+under the original call ID. Reject uses the default denial reason; Block With
+Comment preserves its bounded comment in `denial_reason`. Saved applications
+derive the session definition
 lineage from exact application/version identity, while ad-hoc chat retains one
 secret-free lineage inside the already tenant/project/thread-scoped session;
-neither depends on the per-request content digest. Production registration is
-still closed: Runner records an explicit confirmation user event on the second
-run, and restart after that event but before a durable result still needs an
-explicit recovery rule. Effectful calls need durable intent/outcome receipts
-and reconciliation. This reuses the existing Main contract and requires no
+neither depends on the per-request content digest. Runner records an explicit
+protocol user event on the second run because it has no no-input resume API;
+the replay model removes that exact marker before every provider request.
+Restart before the tool result safely repeats only an approved read or the
+no-effect blocked adapter, while restart after the exact persisted result
+continues without reexecution. Production registration is still closed, and an
+approved effect still needs durable intent/outcome receipts and reconciliation.
+This reuses the existing Main contract and requires no
 Main schema or Python-worker path change. Graph dynamic/static interrupts
 instead belong to their standard graph checkpoint. A future effect receipt may
 require an additional atomic record, but it must first prove that a

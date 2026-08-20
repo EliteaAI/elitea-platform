@@ -60,10 +60,12 @@ Maintained Rust runtime ownership registry:
   seed-once frozen history, browser event projection, runtime-policy-bound
   sensitive-tool pauses and worker-side exact resolution of Main-authorized
   decisions against raw persisted calls. The ordinary assembler accepts one
-  exact read-only continuation before PAT redemption, requires a restorable
-  session, and replays through ADK `RunConfig`/`ToolExecutor` without provider
-  replanning; effects, partial-replay restart and deployment registration remain
-  closed;
+  exact continuation before PAT redemption and requires a restorable session.
+  Approved reads replay through ADK `RunConfig`/`ToolExecutor`; denied calls
+  produce a structured result under the original call ID without dispatching
+  the real tool. Exact restart suffixes are recovered and the internal replay
+  marker is removed before provider dispatch. Approved effects and deployment
+  registration remain closed;
 - `src/agents/application_tools.rs`: exact saved child application/version to
   ADK `AgentTool` composition, recursion and model-visible delegation schema;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context

@@ -22,8 +22,8 @@ use super::runtime::{
 };
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
 use super::session::{
-    NativeSessionBackend, OrdinaryAgentCompletion, assemble_ordinary_native_with_sessions,
-    assemble_read_only_direct_hitl_resume_with_sessions,
+    NativeSessionBackend, OrdinaryAgentCompletion, assemble_direct_hitl_resume_with_sessions,
+    assemble_ordinary_native_with_sessions,
 };
 use crate::state::SessionLimits;
 use crate::toolkits::{
@@ -162,7 +162,7 @@ impl OrdinaryNativeAgentAssembler {
                 .await
             }
             AdmittedNativeStart::DirectHitl(decision) => {
-                assemble_read_only_direct_hitl_resume_with_sessions(
+                assemble_direct_hitl_resume_with_sessions(
                     model,
                     plan,
                     toolsets,

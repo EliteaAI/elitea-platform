@@ -7,11 +7,12 @@
 //! unresolved [`ToolConfirmationRequest`](adk_rust::ToolConfirmationRequest)
 //! persisted by ADK's [`SessionService`](adk_rust::session::SessionService).
 //!
-//! It deliberately does not execute the resolved tool. ADK-Rust 2.0.0's direct
-//! `LlmAgent` confirmation event does not preserve a restart-safe suspended
-//! execution frame, and effectful tools additionally need an owned durable
-//! effect receipt. Until those boundaries are present, resolution is useful
-//! evidence but not execution authority.
+//! ADK-Rust 2.0.0's direct `LlmAgent` confirmation event does not preserve a
+//! restart-safe suspended execution frame. This module therefore reconstructs
+//! the exact call from durable session events: an approved read may execute
+//! once, while a denied call is replaced by a local adapter that emits the
+//! structured blocked result under the original call ID. Approved effects
+//! remain closed until they have an owned durable effect receipt.
 
 #![allow(dead_code)] // Resume execution remains capability-gated.
 
@@ -22,7 +23,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use adk_rust::futures::stream;
 use adk_rust::{
     AdkError, Content, Event, FinishReason, Llm, LlmRequest, LlmResponse, LlmResponseStream, Part,
-    RunConfig, SchemaAdapter, ToolConfirmationDecision, tool_call_fingerprint,
+    ReadonlyContext, RunConfig, SchemaAdapter, Tool, ToolConfirmationDecision, ToolContext,
+    Toolset, tool_call_fingerprint,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -39,6 +41,8 @@ const MAX_COMMENT_BYTES: usize = 2_000;
 const MAX_CALL_VALUE_BYTES: usize = 40 * 1_024;
 const MAX_JSON_DEPTH: usize = 64;
 const HITL_DIGEST_DOMAIN: &[u8] = b"elitea.sensitive-tool-interrupt.v1\0";
+const BLOCKED_TOOL_RESULT_TYPE: &str = "sensitive_tool_blocked";
+const BLOCKED_TOOL_DEFAULT_REASON: &str = "denied by user";
 
 /// Stable direct-HITL admission and resolution failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,13 +194,6 @@ impl DirectHitlDecision {
             .iter()
             .rposition(|event| event.actions.tool_confirmation.is_some())
             .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))?;
-        if events
-            .iter()
-            .skip(confirmation_index + 1)
-            .any(semantic_event)
-        {
-            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
-        }
         let confirmation_event = &events[confirmation_index];
         let request = confirmation_event
             .actions
@@ -248,6 +245,15 @@ impl DirectHitlDecision {
                 ToolConfirmationDecision::Deny
             }
         };
+        let user_content = replay_user_content(&interrupt_id, decision);
+        let persisted = persisted_replay_state(
+            &events[confirmation_index + 1..],
+            &user_content,
+            call_id,
+            &request.tool_name,
+            &request.args,
+            decision,
+        )?;
         Ok(ResolvedDirectHitlDecision {
             interrupt_id,
             call_digest,
@@ -257,6 +263,9 @@ impl DirectHitlDecision {
             fingerprint: tool_call_fingerprint(&request.tool_name, &request.args),
             decision,
             denial_comment: self.comment,
+            user_content,
+            resume_mode: persisted.mode,
+            persisted_result: persisted.result,
         })
     }
 }
@@ -275,73 +284,114 @@ pub(crate) struct ResolvedDirectHitlDecision {
     fingerprint: String,
     decision: ToolConfirmationDecision,
     denial_comment: Option<String>,
+    user_content: Content,
+    resume_mode: ReplayResumeMode,
+    persisted_result: Option<Value>,
 }
 
-/// One exact read-only call prepared for native ADK replay.
+/// One exact call prepared for native ADK replay.
 ///
-/// Construction consumes the resolved browser decision and requires that the
-/// same materialized sensitive-tool catalog classified the exact concrete tool
-/// as read-only. It deliberately cannot authorize an effectful tool.
-pub(crate) struct ReadOnlyDirectHitlReplay {
+/// Construction permits an approved read or a denied call. A denied effect is
+/// safe here because the real tool is replaced before Runner construction.
+pub(crate) struct DirectHitlReplay {
     call_id: String,
     tool_name: String,
     arguments: Value,
     fingerprint: String,
-    decision: ToolConfirmationDecision,
     user_content: Content,
+    resume_mode: ReplayResumeMode,
+    blocked_result: Option<Value>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ReplayResumeMode {
+    ExecuteCall,
+    ContinueAfterResult,
+}
+
+struct PersistedReplayState {
+    mode: ReplayResumeMode,
+    result: Option<Value>,
 }
 
 impl ResolvedDirectHitlDecision {
-    /// Narrow one resolved decision to the temporary read-only replay boundary.
-    pub(crate) fn into_read_only_replay(
+    /// Narrow one resolved decision to the safe direct replay boundary.
+    ///
+    /// Approved calls must be read-only until durable effect ownership exists.
+    /// A denied call may be effectful because the real tool is replaced by a
+    /// local structured-result adapter and is never dispatched.
+    pub(crate) fn into_direct_replay(
         self,
         sensitive_tools: &SensitiveToolCatalog,
-    ) -> Result<ReadOnlyDirectHitlReplay, DirectHitlError> {
-        if sensitive_tools.is_read_only(&self.tool_name) != Some(true) {
+    ) -> Result<DirectHitlReplay, DirectHitlError> {
+        let policy = sensitive_tools
+            .policy_for(&self.tool_name)
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::UnsupportedCapability))?;
+        let blocked_result = if self.decision == ToolConfirmationDecision::Deny {
+            Some(blocked_tool_result(
+                &self.tool_name,
+                policy.toolkit_name(),
+                policy.toolkit_type(),
+                policy.action_name(),
+                self.denial_comment.as_deref(),
+            ))
+        } else {
+            None
+        };
+        if blocked_result.is_none() && sensitive_tools.is_read_only(&self.tool_name) != Some(true) {
             tracing::debug!(
                 tool.name = %self.tool_name,
-                "direct HITL replay remains closed for an effectful or unknown tool"
+                "approved direct HITL replay remains closed for an effectful tool"
             );
             return Err(DirectHitlError::new(
                 DirectHitlErrorCode::UnsupportedCapability,
             ));
         }
-        let user_content = match (self.decision, self.denial_comment.as_deref()) {
-            (ToolConfirmationDecision::Approve, _) => Content::new("user")
-                .with_text("The pending tool call was approved. Continue the original request."),
-            (ToolConfirmationDecision::Deny, Some(comment)) => Content::new("user").with_text(
-                format!("The pending tool call was rejected. User instruction: {comment}"),
-            ),
-            (ToolConfirmationDecision::Deny, None) => Content::new("user")
-                .with_text("The pending tool call was rejected. Continue without executing it."),
-        };
-        Ok(ReadOnlyDirectHitlReplay {
+        if matches!(self.resume_mode, ReplayResumeMode::ContinueAfterResult)
+            && blocked_result
+                .as_ref()
+                .is_some_and(|expected| self.persisted_result.as_ref() != Some(expected))
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+        }
+        Ok(DirectHitlReplay {
             call_id: self.call_id,
             tool_name: self.tool_name,
             arguments: self.arguments,
             fingerprint: self.fingerprint,
-            decision: self.decision,
-            user_content,
+            user_content: self.user_content,
+            resume_mode: self.resume_mode,
+            blocked_result,
         })
     }
 }
 
-impl ReadOnlyDirectHitlReplay {
+impl DirectHitlReplay {
     /// Bind the one-shot replay model and exact ADK confirmation decision.
     pub(crate) fn bind(self, delegate: Arc<dyn Llm>) -> PreparedDirectHitlReplay {
         let mut run_config = RunConfig::default();
-        run_config
-            .tool_confirmation_decisions
-            .insert(self.call_id.clone(), self.decision);
-        run_config
-            .tool_confirmation_fingerprints
-            .insert(self.call_id.clone(), self.fingerprint);
+        let state = match self.resume_mode {
+            ReplayResumeMode::ExecuteCall => {
+                run_config
+                    .tool_confirmation_decisions
+                    .insert(self.call_id.clone(), ToolConfirmationDecision::Approve);
+                run_config
+                    .tool_confirmation_fingerprints
+                    .insert(self.call_id.clone(), self.fingerprint);
+                REPLAY_PENDING
+            }
+            ReplayResumeMode::ContinueAfterResult => REPLAY_EMITTED,
+        };
+        let call_id = self.call_id;
+        let tool_name = self.tool_name;
+        let arguments = self.arguments;
         let model: Arc<dyn Llm> = Arc::new(DirectHitlReplayModel {
             delegate,
-            state: AtomicU8::new(REPLAY_PENDING),
-            call_id: self.call_id,
-            tool_name: self.tool_name,
-            arguments: self.arguments,
+            state: AtomicU8::new(state),
+            call_id: call_id.clone(),
+            tool_name: tool_name.clone(),
+            arguments: arguments.clone(),
+            replay_marker: self.user_content.clone(),
         });
         PreparedDirectHitlReplay {
             model,
@@ -349,6 +399,12 @@ impl ReadOnlyDirectHitlReplay {
                 user_content: self.user_content,
                 run_config,
             },
+            blocked_result: self.blocked_result.map(|response| BlockedToolReplay {
+                call_id,
+                tool_name,
+                arguments,
+                response,
+            }),
         }
     }
 }
@@ -360,6 +416,7 @@ impl ReadOnlyDirectHitlReplay {
 pub(crate) struct PreparedDirectHitlReplay {
     model: Arc<dyn Llm>,
     run: DirectHitlRunInput,
+    blocked_result: Option<BlockedToolReplay>,
 }
 
 /// Opaque invocation input minted with the exact replay model.
@@ -369,14 +426,141 @@ pub(crate) struct DirectHitlRunInput {
 }
 
 impl PreparedDirectHitlReplay {
-    pub(crate) fn into_parts(self) -> (Arc<dyn Llm>, DirectHitlRunInput) {
-        (self.model, self.run)
+    pub(crate) fn into_parts(
+        self,
+        toolsets: Vec<Arc<dyn Toolset>>,
+    ) -> (Arc<dyn Llm>, DirectHitlRunInput, Vec<Arc<dyn Toolset>>) {
+        let toolsets = match self.blocked_result {
+            None => toolsets,
+            Some(blocked) => toolsets
+                .into_iter()
+                .map(|inner| {
+                    Arc::new(BlockedToolset {
+                        name: format!("{}-blocked", inner.name()),
+                        inner,
+                        blocked: blocked.clone(),
+                    }) as Arc<dyn Toolset>
+                })
+                .collect(),
+        };
+        (self.model, self.run, toolsets)
     }
 }
 
 impl DirectHitlRunInput {
     pub(super) fn into_parts(self) -> (Content, RunConfig) {
         (self.user_content, self.run_config)
+    }
+}
+
+#[derive(Clone)]
+struct BlockedToolReplay {
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+    response: Value,
+}
+
+struct BlockedToolset {
+    name: String,
+    inner: Arc<dyn Toolset>,
+    blocked: BlockedToolReplay,
+}
+
+#[async_trait]
+impl Toolset for BlockedToolset {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn tools(
+        &self,
+        context: Arc<dyn ReadonlyContext>,
+    ) -> adk_rust::Result<Vec<Arc<dyn Tool>>> {
+        self.inner.tools(context).await.map(|tools| {
+            tools
+                .into_iter()
+                .map(|inner| {
+                    if inner.name() == self.blocked.tool_name {
+                        Arc::new(BlockedTool {
+                            inner,
+                            blocked: self.blocked.clone(),
+                        }) as Arc<dyn Tool>
+                    } else {
+                        inner
+                    }
+                })
+                .collect()
+        })
+    }
+}
+
+struct BlockedTool {
+    inner: Arc<dyn Tool>,
+    blocked: BlockedToolReplay,
+}
+
+#[async_trait]
+impl Tool for BlockedTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn declaration(&self) -> Value {
+        self.inner.declaration()
+    }
+
+    fn enhanced_description(&self) -> String {
+        self.inner.enhanced_description()
+    }
+
+    fn is_long_running(&self) -> bool {
+        self.inner.is_long_running()
+    }
+
+    fn is_builtin(&self) -> bool {
+        self.inner.is_builtin()
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        self.inner.parameters_schema()
+    }
+
+    fn response_schema(&self) -> Option<Value> {
+        self.inner.response_schema()
+    }
+
+    fn required_scopes(&self) -> &[&str] {
+        self.inner.required_scopes()
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        false
+    }
+
+    async fn execute(
+        &self,
+        context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        if context.function_call_id() != self.blocked.call_id || arguments != self.blocked.arguments
+        {
+            return Err(AdkError::agent(
+                "the blocked direct tool call does not match its authorized replay",
+            ));
+        }
+        let mut actions = context.actions();
+        actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Deny);
+        context.set_actions(actions);
+        Ok(self.blocked.response.clone())
     }
 }
 
@@ -396,6 +580,7 @@ struct DirectHitlReplayModel {
     call_id: String,
     tool_name: String,
     arguments: Value,
+    replay_marker: Content,
 }
 
 #[async_trait]
@@ -428,7 +613,7 @@ impl Llm for DirectHitlReplayModel {
                 tracing::debug!(
                     tool.name = %self.tool_name,
                     tool.call_id = %self.call_id,
-                    "re-emitting one persisted read-only tool call through ADK"
+                    "re-emitting one persisted direct tool call through ADK"
                 );
                 let response = LlmResponse {
                     content: Some(Content {
@@ -464,17 +649,26 @@ impl Llm for DirectHitlReplayModel {
                         "validated the replayed tool result before provider continuation"
                     );
                 }
+                let request = without_replay_marker(request, &self.replay_marker);
                 self.delegate
                     .generate_content(request, stream_response)
                     .await
             }
             Err(_) => {
+                let request = without_replay_marker(request, &self.replay_marker);
                 self.delegate
                     .generate_content(request, stream_response)
                     .await
             }
         }
     }
+}
+
+fn without_replay_marker(mut request: LlmRequest, replay_marker: &Content) -> LlmRequest {
+    request.contents.retain(|content| {
+        content.role != replay_marker.role || content.parts != replay_marker.parts
+    });
+    request
 }
 
 impl DirectHitlReplayModel {
@@ -489,8 +683,9 @@ impl DirectHitlReplayModel {
     }
 
     fn validate_completed_replay(&self, request: &LlmRequest) -> adk_rust::Result<()> {
-        if latest_call_state(request, &self.call_id, &self.tool_name, &self.arguments)
-            != LatestCallState::Completed
+        if !request.tools.contains_key(&self.tool_name)
+            || latest_call_state(request, &self.call_id, &self.tool_name, &self.arguments)
+                != LatestCallState::Completed
         {
             return Err(AdkError::agent(
                 "the replayed direct tool result is unavailable for model continuation",
@@ -594,6 +789,166 @@ impl ResolvedDirectHitlDecision {
     pub(crate) fn denial_comment(&self) -> Option<&str> {
         self.denial_comment.as_deref()
     }
+
+    #[cfg(test)]
+    pub(crate) const fn has_persisted_result(&self) -> bool {
+        matches!(self.resume_mode, ReplayResumeMode::ContinueAfterResult)
+    }
+}
+
+fn replay_user_content(interrupt_id: &str, decision: ToolConfirmationDecision) -> Content {
+    let prefix = format!("[Elitea direct HITL {interrupt_id}] ");
+    match decision {
+        ToolConfirmationDecision::Approve => Content::new("user").with_text(format!(
+            "{prefix}The pending tool call was approved. Continue the original request."
+        )),
+        ToolConfirmationDecision::Deny => Content::new("user").with_text(format!(
+            "{prefix}The pending tool call was rejected. Continue without executing it."
+        )),
+    }
+}
+
+fn persisted_replay_state(
+    events: &[Event],
+    user_content: &Content,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+    decision: ToolConfirmationDecision,
+) -> Result<PersistedReplayState, DirectHitlError> {
+    let mut replay_invocation = None;
+    let mut call_pending = false;
+    let mut result_persisted = None;
+    for event in events.iter().filter(|event| semantic_event(event)) {
+        if exact_replay_user_event(event, user_content) {
+            replay_invocation = Some(event.invocation_id.as_str());
+            call_pending = false;
+            continue;
+        }
+        if result_persisted.is_some() {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+        }
+        if exact_replay_call(event, replay_invocation, call_id, tool_name, arguments) {
+            call_pending = true;
+            continue;
+        }
+        if call_pending {
+            let Some(result) =
+                exact_replay_result(event, replay_invocation, call_id, tool_name, decision)
+            else {
+                return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+            };
+            result_persisted = Some(result.clone());
+            call_pending = false;
+            continue;
+        }
+        return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+    }
+    Ok(PersistedReplayState {
+        mode: if result_persisted.is_some() {
+            ReplayResumeMode::ContinueAfterResult
+        } else {
+            ReplayResumeMode::ExecuteCall
+        },
+        result: result_persisted,
+    })
+}
+
+fn exact_replay_user_event(event: &Event, expected: &Content) -> bool {
+    let Some(content) = event.llm_response.content.as_ref() else {
+        return false;
+    };
+    event.author == "user"
+        && content.role == expected.role
+        && content.parts == expected.parts
+        && event.actions.tool_confirmation.is_none()
+        && event.actions.tool_confirmation_decision.is_none()
+        && event.actions.state_delta.is_empty()
+        && event.actions.artifact_delta.is_empty()
+        && event.actions.transfer_to_agent.is_none()
+        && !event.actions.escalate
+}
+
+fn exact_replay_call(
+    event: &Event,
+    replay_invocation: Option<&str>,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> bool {
+    let calls = event.tool_calls();
+    replay_invocation == Some(event.invocation_id.as_str())
+        && calls.len() == 1
+        && calls[0].call_id == Some(call_id)
+        && calls[0].name == tool_name
+        && calls[0].args == arguments
+        && event.tool_results().is_empty()
+        && event.actions.tool_confirmation.is_none()
+        && event.actions.tool_confirmation_decision.is_none()
+}
+
+fn exact_replay_result<'a>(
+    event: &'a Event,
+    replay_invocation: Option<&str>,
+    call_id: &str,
+    tool_name: &str,
+    decision: ToolConfirmationDecision,
+) -> Option<&'a Value> {
+    let results = event.tool_results();
+    (replay_invocation == Some(event.invocation_id.as_str())
+        && results.len() == 1
+        && results[0].call_id == Some(call_id)
+        && results[0].name == tool_name
+        && event.tool_calls().is_empty()
+        && event.actions.tool_confirmation.is_none()
+        && event.actions.tool_confirmation_decision == Some(decision))
+    .then_some(results[0].response)
+}
+
+fn blocked_tool_result(
+    tool_name: &str,
+    toolkit_name: &str,
+    toolkit_type: &str,
+    action_label: &str,
+    denial_comment: Option<&str>,
+) -> Value {
+    let mut result = serde_json::Map::from_iter([
+        (
+            "type".to_owned(),
+            Value::String(BLOCKED_TOOL_RESULT_TYPE.to_owned()),
+        ),
+        (
+            "blocked_tool_name".to_owned(),
+            Value::String(tool_name.to_owned()),
+        ),
+        (
+            "denial_reason".to_owned(),
+            Value::String(
+                denial_comment
+                    .unwrap_or(BLOCKED_TOOL_DEFAULT_REASON)
+                    .to_owned(),
+            ),
+        ),
+        (
+            "message".to_owned(),
+            Value::String(format!(
+                "You declined THIS specific call to '{action_label}'; it was not executed. The block is for THIS invocation only, not the tool itself. This is NOT a stop signal — do not end your turn or summarize yet. Do not retry this same call with the same arguments, but DO continue: if more items remain, call the tool again for the NEXT item now; otherwise use another available tool to keep making progress. Only stop and ask the user when nothing remains that can be done without this exact declined call."
+            )),
+        ),
+    ]);
+    if !toolkit_name.is_empty() {
+        result.insert(
+            "blocked_toolkit_name".to_owned(),
+            Value::String(toolkit_name.to_owned()),
+        );
+    }
+    if !toolkit_type.is_empty() {
+        result.insert(
+            "blocked_toolkit_type".to_owned(),
+            Value::String(toolkit_type.to_owned()),
+        );
+    }
+    Value::Object(result)
 }
 
 pub(super) fn sensitive_call_identity(

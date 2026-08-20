@@ -500,14 +500,15 @@ where
     ))
 }
 
-/// Rebuild one direct `LlmAgent` around an exact persisted read-only call.
+/// Rebuild one direct `LlmAgent` around an exact persisted sensitive call.
 ///
 /// ADK 2.0.0 does not expose a suspended `LlmAgent` frame after restart. This
 /// capability-disabled seam therefore uses a one-shot model adapter to emit the
 /// already-proven call once, then lets ADK's normal confirmation and
 /// `ToolExecutor` path apply the decision and continue with the bound provider.
-/// Effectful tools are rejected before the Runner is constructed.
-pub(crate) async fn assemble_read_only_direct_hitl_resume_with_sessions<M>(
+/// Approved effects are rejected before Runner construction; denied effects
+/// use a local blocked-result adapter and never dispatch the real tool.
+pub(crate) async fn assemble_direct_hitl_resume_with_sessions<M>(
     model: M,
     plan: OrdinaryNativeAgentPlan,
     toolsets: Vec<Arc<dyn Toolset>>,
@@ -549,10 +550,10 @@ where
         .map_err(|_| dependency_unavailable())?;
     let resolved = decision
         .resolve(stored.as_ref())
-        .and_then(|resolved| resolved.into_read_only_replay(&sensitive_tools))
+        .and_then(|resolved| resolved.into_direct_replay(&sensitive_tools))
         .map_err(|error| direct_hitl_error(&error))?;
     let prepared = resolved.bind(model.adk_model());
-    let (replay_model, run_input) = prepared.into_parts();
+    let (replay_model, run_input, toolsets) = prepared.into_parts(toolsets);
     let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
         .model(replay_model)
         .generate_content_config(generation_config)

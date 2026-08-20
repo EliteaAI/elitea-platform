@@ -186,10 +186,77 @@ fn direct_replay_rejects_effectful_tools_before_model_or_tool_execution() {
         .expect("decision admission")
         .resolve(&session(events))
         .expect("exact session call");
-    let Err(error) = resolved.into_read_only_replay(&sensitive_catalog(false)) else {
+    let Err(error) = resolved.into_direct_replay(&sensitive_catalog(false)) else {
         panic!("effectful direct tool was admitted for replay");
     };
     assert_eq!(error.code(), DirectHitlErrorCode::UnsupportedCapability);
+}
+
+#[test]
+fn exact_partial_replay_suffix_is_restartable_but_completed_output_is_stale() {
+    let arguments = json!({"value": 21});
+    let mut events = pending_events(arguments.clone());
+    let (interrupt_id, _) = sensitive_call_identity("invocation-1", "call-1", "double", &arguments)
+        .expect("call identity");
+    let marker_text = format!(
+        "[Elitea direct HITL {interrupt_id}] The pending tool call was approved. Continue the original request."
+    );
+    let mut marker = Event::with_id("resume-user", "invocation-2");
+    marker.author = "user".to_owned();
+    marker.llm_response.content = Some(Content::new("user").with_text(marker_text));
+    events.push(marker);
+    let pending = DirectHitlDecision::from_payload(&direct_payload("approve", "", &interrupt_id))
+        .expect("pending decision")
+        .resolve(&session(events.clone()))
+        .expect("exact marker-only suffix");
+    assert!(!pending.has_persisted_result());
+
+    let mut call = Event::with_id("resume-call", "invocation-2");
+    call.author = "elitea-agent".to_owned();
+    call.llm_response.content = Some(Content {
+        role: "model".to_owned(),
+        parts: vec![Part::FunctionCall {
+            name: "double".to_owned(),
+            args: arguments.clone(),
+            id: Some("call-1".to_owned()),
+            thought_signature: None,
+        }],
+    });
+    events.push(call);
+    let pending = DirectHitlDecision::from_payload(&direct_payload("approve", "", &interrupt_id))
+        .expect("pending call decision")
+        .resolve(&session(events.clone()))
+        .expect("exact call suffix");
+    assert!(!pending.has_persisted_result());
+
+    let mut result = Event::with_id("resume-result", "invocation-2");
+    result.author = "elitea-agent".to_owned();
+    result.actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Approve);
+    result.llm_response.content = Some(Content {
+        role: "function".to_owned(),
+        parts: vec![Part::FunctionResponse {
+            function_response: adk_rust::FunctionResponseData::new("double", json!({"value": 42})),
+            id: Some("call-1".to_owned()),
+            annotations: None,
+        }],
+    });
+    events.push(result);
+    let completed = DirectHitlDecision::from_payload(&direct_payload("approve", "", &interrupt_id))
+        .expect("completed decision")
+        .resolve(&session(events.clone()))
+        .expect("exact persisted result");
+    assert!(completed.has_persisted_result());
+
+    let mut final_output = Event::with_id("resume-final", "invocation-2");
+    final_output.author = "elitea-agent".to_owned();
+    final_output.llm_response.content = Some(Content::new("model").with_text("already complete"));
+    events.push(final_output);
+    let error = resolution_error(
+        DirectHitlDecision::from_payload(&direct_payload("approve", "", &interrupt_id))
+            .expect("terminal decision")
+            .resolve(&session(events)),
+    );
+    assert_eq!(error.code(), DirectHitlErrorCode::StaleDecision);
 }
 
 #[test]
