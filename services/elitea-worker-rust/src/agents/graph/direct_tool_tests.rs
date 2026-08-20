@@ -13,7 +13,8 @@ use serde_json::{Map, Value, json};
 use super::compiler::PipelineNodeRuntimes;
 use super::direct_tool::{
     DIRECT_TOOL_RESUME_STATE_KEY, DirectToolExecutionError, DirectToolInputMapping, DirectToolNode,
-    DirectToolNodeDefinition, DirectToolSelection, PipelineDirectToolResolver, ResolvedDirectTool,
+    DirectToolNodeDefinition, DirectToolNodeKind, DirectToolSelection, PipelineDirectToolResolver,
+    ResolvedDirectTool,
 };
 use super::{EliteaGraphAgent, compiler::PipelineDefinition};
 use crate::agents::events::pipeline_tool_event_binding;
@@ -72,6 +73,12 @@ fn toolkit_node_admits_ui_yaml_typed_mapping_and_structured_output() {
     ));
     assert!(node.config_digest().iter().any(|byte| *byte != 0));
 
+    let mcp =
+        DirectToolNodeDefinition::from_yaml(&TOOLKIT_NODE.replace("type: toolkit", "type: mcp"))
+            .expect("MCP node shares the direct-call mapping contract");
+    assert_eq!(mcp.selection().kind(), DirectToolNodeKind::Mcp);
+    assert_ne!(mcp.config_digest(), node.config_digest());
+
     let legacy = DirectToolNodeDefinition::from_yaml(
         "id: lookup\ntype: toolkit\ntoolkit_name: support\ntool: search\ntransition: END\n",
     )
@@ -86,7 +93,7 @@ fn toolkit_node_admits_ui_yaml_typed_mapping_and_structured_output() {
 #[test]
 fn toolkit_node_rejects_ambiguous_or_unbounded_configuration() {
     for yaml in [
-        TOOLKIT_NODE.replace("type: toolkit", "type: mcp"),
+        TOOLKIT_NODE.replace("type: toolkit", "type: function"),
         TOOLKIT_NODE.replace("tool: search_records", "tool: ''"),
         TOOLKIT_NODE.replace("output: [report, messages]", "output: [report, report]"),
         TOOLKIT_NODE.replace("type: variable", "type: expression"),
@@ -192,6 +199,16 @@ fn sensitive_fixture_runtime(
     Arc<dyn PipelineDirectToolResolver>,
     Arc<Mutex<InvocationCapture>>,
 ) {
+    sensitive_fixture_runtime_for(response, "customer_support")
+}
+
+fn sensitive_fixture_runtime_for(
+    response: Value,
+    toolkit_type: &str,
+) -> (
+    Arc<dyn PipelineDirectToolResolver>,
+    Arc<Mutex<InvocationCapture>>,
+) {
     let capture = Arc::new(Mutex::new(InvocationCapture::default()));
     let tool: Arc<dyn Tool> = Arc::new(FixtureTool {
         name: "search_records".to_owned(),
@@ -199,18 +216,19 @@ fn sensitive_fixture_runtime(
         response,
         capture: Arc::clone(&capture),
     });
+    let mut sensitive = Map::new();
+    sensitive.insert(toolkit_type.to_owned(), json!(["search_records"]));
+    let policy_config = json!({
+        "toolkit_security": {
+            "sensitive_tools": sensitive,
+            "sensitive_action_company_name": "Example Corp"
+        }
+    });
     let policy = ToolAdmissionPolicy::from_runtime_config(
-        json!({
-            "toolkit_security": {
-                "sensitive_tools": {"customer_support": ["search_records"]},
-                "sensitive_action_company_name": "Example Corp"
-            }
-        })
-        .as_object()
-        .expect("runtime policy"),
+        policy_config.as_object().expect("runtime policy"),
     )
     .expect("sensitive policy")
-    .sensitive_tool("customer_support", "Customer Support", "search_records")
+    .sensitive_tool(toolkit_type, "Customer Support", "search_records")
     .expect("sensitive action");
     (
         Arc::new(FixtureResolver {
@@ -323,9 +341,37 @@ async fn sensitive_toolkit_node_pauses_then_approval_returns_the_normal_tool_res
 }
 
 #[tokio::test]
-async fn blocked_sensitive_toolkit_node_stops_with_correlated_result_and_clean_state() {
-    let definition = DirectToolNodeDefinition::from_yaml(TOOLKIT_NODE).expect("Toolkit node");
-    let (resolver, capture) = sensitive_fixture_runtime(json!({"report": {"unexpected": true}}));
+async fn blocked_sensitive_direct_node_stops_with_correlated_result_and_clean_state() {
+    for (node_type, toolkit_type) in [("toolkit", "customer_support"), ("mcp", "mcp")] {
+        for (action, comment, expected_reason) in [
+            (
+                "reject",
+                None,
+                "This exact sensitive tool call was declined and was not executed.",
+            ),
+            (
+                "block_with_comment",
+                Some("Do not read this customer record."),
+                "Do not read this customer record.",
+            ),
+        ] {
+            assert_blocked_direct_node(node_type, toolkit_type, action, comment, expected_reason)
+                .await;
+        }
+    }
+}
+
+async fn assert_blocked_direct_node(
+    node_type: &str,
+    toolkit_type: &str,
+    action: &str,
+    comment: Option<&str>,
+    expected_reason: &str,
+) {
+    let yaml = TOOLKIT_NODE.replace("type: toolkit", &format!("type: {node_type}"));
+    let definition = DirectToolNodeDefinition::from_yaml(&yaml).expect("direct-tool node");
+    let (resolver, capture) =
+        sensitive_fixture_runtime_for(json!({"report": {"unexpected": true}}), toolkit_type);
     let node = DirectToolNode::new(definition, state_types(), resolver);
     let state = HashMap::from([
         ("ticket_id".to_owned(), json!(42)),
@@ -340,21 +386,25 @@ async fn blocked_sensitive_toolkit_node_stops_with_correlated_result_and_clean_s
         .await
         .expect("sensitive pause");
     let Interrupt::Dynamic { data, .. } = paused.interrupt.expect("dynamic interrupt") else {
-        panic!("Toolkit confirmation must use a dynamic interrupt");
+        panic!("direct confirmation must use a dynamic interrupt");
     };
     let data = data.expect("interrupt data");
+    let mut decision = json!({
+        "definition_digest": data["definition_digest"],
+        "tool_call_id": data["tool_call_id"],
+        "argument_digest": data["argument_digest"],
+        "action": action,
+    });
+    if let Some(comment) = comment {
+        decision
+            .as_object_mut()
+            .expect("decision object")
+            .insert("value".to_owned(), json!(comment));
+    }
     let mut resumed = state;
     resumed.insert(
         DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
-        json!({
-            "lookup": {
-                "definition_digest": data["definition_digest"],
-                "tool_call_id": data["tool_call_id"],
-                "argument_digest": data["argument_digest"],
-                "action": "block_with_comment",
-                "value": "Do not read this customer record.",
-            }
-        }),
+        json!({"lookup": decision}),
     );
     let output = node
         .execute(&NodeContext::new(
@@ -370,19 +420,19 @@ async fn blocked_sensitive_toolkit_node_stops_with_correlated_result_and_clean_s
     let public = output.updates["_pipeline_blocked"]
         .as_str()
         .expect("formatted blocked message");
-    assert!(public.contains("**Pipeline stopped**"));
-    assert!(public.contains("search_records"));
-    assert!(public.contains("node: *lookup*"));
+    let expected_public = format!(
+        "**Pipeline stopped** — the action **search_records** (toolkit type: *{toolkit_type}*, node: *lookup*) was **blocked** by user.\n\nDownstream nodes that depend on `search_records` output were skipped to prevent invalid data.\n\n> **Tip:** Regenerate this message to re-trigger the approval request and try again."
+    );
+    assert_eq!(public, expected_public);
     let messages = output.updates["messages"]
         .as_array()
         .expect("blocked messages");
     assert_eq!(messages[0]["role"], "tool");
     assert_eq!(messages[0]["tool_call_id"], "pipeline:lookup:3");
     assert_eq!(messages[0]["content"]["type"], "sensitive_tool_blocked");
-    assert_eq!(
-        messages[0]["content"]["denial_reason"],
-        "Do not read this customer record."
-    );
+    assert_eq!(messages[0]["content"]["blocked_toolkit_type"], toolkit_type);
+    assert_eq!(messages[0]["content"]["message"], public);
+    assert_eq!(messages[0]["content"]["denial_reason"], expected_reason);
     assert_eq!(messages[1]["role"], "assistant");
     assert_eq!(messages[1]["content"], public);
 }

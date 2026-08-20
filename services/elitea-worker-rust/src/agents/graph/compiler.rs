@@ -378,7 +378,7 @@ impl PipelineDefinition {
         })
     }
 
-    /// Exact configured toolkit actions selected by direct Toolkit nodes.
+    /// Exact selected actions resolved by direct Toolkit or MCP nodes.
     pub(crate) fn direct_tool_selections(&self) -> impl Iterator<Item = &DirectToolSelection> {
         self.nodes.iter().filter_map(|node| match node {
             PipelineNodeDefinition::DirectTool(node) => Some(node.selection()),
@@ -859,9 +859,9 @@ fn parse_pipeline_node(
     let encoded = serde_yaml_ng::to_string(raw_node)
         .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
     match node_type {
-        "toolkit" => DirectToolNodeDefinition::from_yaml(&encoded)
+        "toolkit" | "mcp" => DirectToolNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::DirectTool)
-            .map_err(|_| PipelineConfigurationError::Invalid("a Toolkit node is invalid")),
+            .map_err(|_| PipelineConfigurationError::Invalid("a direct-tool node is invalid")),
         "hitl" => HitlNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::Hitl)
             .map_err(|_| PipelineConfigurationError::Invalid("a HITL node is invalid")),
@@ -903,7 +903,7 @@ fn validate_node_state(
                     && !state.contains_key(key)
                 {
                     return Err(PipelineConfigurationError::Invalid(
-                        "a Toolkit input mapping variable is not declared in pipeline state",
+                        "a direct-tool input mapping variable is not declared in pipeline state",
                     ));
                 }
             }
@@ -1097,7 +1097,9 @@ fn definition_digest(
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());
         let kind = match node {
-            PipelineNodeDefinition::DirectTool(_) => b"toolkit".as_slice(),
+            PipelineNodeDefinition::DirectTool(node) => {
+                node.selection().kind().wire_name().as_bytes()
+            }
             PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
             PipelineNodeDefinition::Llm(_) => b"llm".as_slice(),
             PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),

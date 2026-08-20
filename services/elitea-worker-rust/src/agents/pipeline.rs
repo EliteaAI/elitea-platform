@@ -22,8 +22,9 @@ use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEff
 use super::graph::compiler::PipelineNodeRuntimes;
 use super::graph::compiler::{PipelineConfigurationError, PipelineDefinition};
 use super::graph::{
-    DirectToolExecutionError, DirectToolSelection, LlmExecutionError, LlmExecutionInput,
-    LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory, ResolvedDirectTool,
+    DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection, LlmExecutionError,
+    LlmExecutionInput, LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory,
+    ResolvedDirectTool,
 };
 use super::request::AgentExecutionRequest;
 use super::runtime::{
@@ -141,7 +142,11 @@ impl PipelineExecutionProfile {
             let Some(reference) = matches.next() else {
                 return Err(invalid_pipeline_tool_scope());
             };
-            if matches.next().is_some() || reference.kind() != FrozenToolKind::Configured {
+            let expected_kind = match selection.kind() {
+                DirectToolNodeKind::Toolkit => FrozenToolKind::Configured,
+                DirectToolNodeKind::Mcp => FrozenToolKind::Mcp,
+            };
+            if matches.next().is_some() || reference.kind() != expected_kind {
                 return Err(invalid_pipeline_tool_scope());
             }
             if policy.toolkit_decision(reference.tool_type()) != ToolAdmissionDecision::Allowed {
@@ -235,6 +240,13 @@ impl PipelineNativeAgentAssembler {
             model_facade: None,
             mcp_connector: Arc::new(AdkHttpMcpConnector::new()),
         }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_mcp_connector(mut self, connector: Arc<dyn McpConnector>) -> Self {
+        self.mcp_connector = connector;
+        self
     }
 }
 

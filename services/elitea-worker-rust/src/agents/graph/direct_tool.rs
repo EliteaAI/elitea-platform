@@ -75,14 +75,19 @@ pub(super) enum DirectToolInputMapping {
     Template(String),
 }
 
-/// Exact configured-tool identity selected by one Toolkit node.
+/// Exact toolset identity selected by one direct Toolkit or MCP node.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DirectToolSelection {
+    kind: DirectToolNodeKind,
     alias: String,
     tool: String,
 }
 
 impl DirectToolSelection {
+    pub(crate) const fn kind(&self) -> DirectToolNodeKind {
+        self.kind
+    }
+
     pub(crate) fn alias(&self) -> &str {
         &self.alias
     }
@@ -92,7 +97,23 @@ impl DirectToolSelection {
     }
 }
 
-/// Strict, authority-free Toolkit node definition.
+/// Active direct-call node family selected by stored pipeline YAML.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DirectToolNodeKind {
+    Toolkit,
+    Mcp,
+}
+
+impl DirectToolNodeKind {
+    pub(crate) const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Toolkit => "toolkit",
+            Self::Mcp => "mcp",
+        }
+    }
+}
+
+/// Strict, authority-free direct Toolkit or MCP node definition.
 #[derive(Clone)]
 pub(crate) struct DirectToolNodeDefinition {
     id: String,
@@ -117,19 +138,23 @@ impl DirectToolNodeDefinition {
     fn from_raw(
         mut raw: RawDirectToolNodeDefinition,
     ) -> Result<Self, DirectToolConfigurationError> {
-        if raw.node_type != "toolkit" {
-            return Err(DirectToolConfigurationError::Invalid(
-                "the node type must be toolkit",
-            ));
-        }
+        let kind = match raw.node_type.as_str() {
+            "toolkit" => DirectToolNodeKind::Toolkit,
+            "mcp" => DirectToolNodeKind::Mcp,
+            _ => {
+                return Err(DirectToolConfigurationError::Invalid(
+                    "the direct-tool node type is unsupported",
+                ));
+            }
+        };
         if !valid_graph_id(&raw.id) {
             return Err(DirectToolConfigurationError::Invalid(
-                "the Toolkit node ID is malformed",
+                "the direct-tool node ID is malformed",
             ));
         }
         if !valid_tool_identity(&raw.toolkit_name) || !valid_tool_identity(&raw.tool) {
             return Err(DirectToolConfigurationError::Invalid(
-                "the Toolkit node tool identity is malformed",
+                "the direct-tool node tool identity is malformed",
             ));
         }
         if raw.input_mapping.len() > MAX_MAPPING_ENTRIES
@@ -144,7 +169,7 @@ impl DirectToolNodeDefinition {
         for key in raw.input.iter().chain(&raw.output) {
             if !valid_output_key(key) {
                 return Err(DirectToolConfigurationError::Invalid(
-                    "a Toolkit node state variable is malformed",
+                    "a direct-tool node state variable is malformed",
                 ));
             }
         }
@@ -161,13 +186,14 @@ impl DirectToolNodeDefinition {
             .is_some_and(|target| target != "END" && !valid_graph_id(target))
         {
             return Err(DirectToolConfigurationError::Invalid(
-                "the Toolkit node transition is malformed",
+                "the direct-tool node transition is malformed",
             ));
         }
         let input_mapping = validate_input_mapping(raw.input_mapping)?;
         Ok(Self {
             id: raw.id,
             selection: DirectToolSelection {
+                kind,
                 alias: raw.toolkit_name,
                 tool: raw.tool,
             },
@@ -211,6 +237,7 @@ impl DirectToolNodeDefinition {
         let mut context = digest::Context::new(&digest::SHA256);
         context.update(CONFIG_DIGEST_DOMAIN);
         digest_field(&mut context, self.id.as_bytes());
+        digest_field(&mut context, self.selection.kind.wire_name().as_bytes());
         digest_field(&mut context, self.selection.alias.as_bytes());
         digest_field(&mut context, self.selection.tool.as_bytes());
         for (key, mapping) in &self.input_mapping {
@@ -469,8 +496,9 @@ impl Node for DirectToolNode {
 
     async fn execute(&self, context: &NodeContext) -> Result<NodeOutput, GraphError> {
         let span = tracing::info_span!(
-            "agent.pipeline.toolkit_node",
+            "agent.pipeline.direct_tool_node",
             node_id = self.name(),
+            node_type = self.definition.selection().kind().wire_name(),
             toolkit_name = self.definition.selection().alias(),
             tool_name = self.definition.selection().tool(),
             structured_output = self.definition.structured_output(),
@@ -574,9 +602,10 @@ impl DirectToolNode {
         match decision.action {
             SensitiveResumeAction::Approve => Ok(SensitiveDirectToolDecision::Approve(remaining)),
             SensitiveResumeAction::Reject | SensitiveResumeAction::BlockWithComment => {
-                let reason = decision.value.as_deref().unwrap_or(
-                    "This exact sensitive Toolkit call was declined and was not executed.",
-                );
+                let reason = decision
+                    .value
+                    .as_deref()
+                    .unwrap_or("This exact sensitive tool call was declined and was not executed.");
                 let message = blocked_pipeline_message(
                     self.name(),
                     self.definition.selection().tool(),
@@ -928,7 +957,7 @@ fn validate_input_mapping(
             }
             _ => {
                 return Err(DirectToolConfigurationError::Unsupported(
-                    "the Toolkit input mapping type is not supported",
+                    "the direct-tool input mapping type is not supported",
                 ));
             }
         };
@@ -941,7 +970,7 @@ fn validate_unique(values: &[String]) -> Result<(), DirectToolConfigurationError
     let mut seen = BTreeSet::new();
     if values.iter().any(|value| !seen.insert(value.as_str())) {
         return Err(DirectToolConfigurationError::Invalid(
-            "Toolkit node variables must be unique within each field",
+            "direct-tool node variables must be unique within each field",
         ));
     }
     Ok(())
@@ -958,7 +987,7 @@ fn bounded_mapping_text(value: &Value) -> Result<&str, DirectToolConfigurationEr
         .as_str()
         .filter(|value| value.len() <= MAX_MAPPING_VALUE_BYTES && !value.contains('\0'))
         .ok_or(DirectToolConfigurationError::Invalid(
-            "a Toolkit input mapping value is malformed",
+            "a direct-tool input mapping value is malformed",
         ))
 }
 
@@ -1088,7 +1117,7 @@ fn ensure_bounded_value(value: &Value) -> Result<(), DirectToolExecutionError> {
 fn node_failure(node: &str) -> GraphError {
     GraphError::NodeExecutionFailed {
         node: node.to_owned(),
-        message: "the pipeline Toolkit node failed".to_owned(),
+        message: "the pipeline direct-tool node failed".to_owned(),
     }
 }
 
@@ -1115,7 +1144,7 @@ fn hex(bytes: &[u8]) -> String {
 
 #[derive(Debug, Error)]
 pub(crate) enum DirectToolConfigurationError {
-    #[error("the Toolkit node YAML is malformed")]
+    #[error("the direct-tool node YAML is malformed")]
     MalformedYaml {
         #[source]
         source: serde_yaml_ng::Error,
@@ -1124,18 +1153,18 @@ pub(crate) enum DirectToolConfigurationError {
     Invalid(&'static str),
     #[error("{0}")]
     Unsupported(&'static str),
-    #[error("the Toolkit node exceeds its resource bound")]
+    #[error("the direct-tool node exceeds its resource bound")]
     ResourceExhausted,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub(crate) enum DirectToolExecutionError {
-    #[error("the Toolkit node arguments are invalid")]
+    #[error("the direct-tool node arguments are invalid")]
     InvalidArguments,
-    #[error("the Toolkit node result is invalid")]
+    #[error("the direct-tool node result is invalid")]
     InvalidResult,
-    #[error("the Toolkit node exceeds its resource bound")]
+    #[error("the direct-tool node exceeds its resource bound")]
     ResourceExhausted,
-    #[error("the Toolkit node runtime is unavailable")]
+    #[error("the direct-tool node runtime is unavailable")]
     Unavailable,
 }

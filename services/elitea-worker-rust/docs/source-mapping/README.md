@@ -80,12 +80,13 @@ Maintained Rust runtime ownership registry:
 - `src/agents/graph/{agent,compiler,resume,hitl,llm,direct_tool,state_modifier,parallel,yaml}.rs`:
   stored-pipeline event identity, complete-document active-node compilation,
   latest-event/checkpoint decision binding, bounded YAML contracts and the
-  durable parallel-node core. Direct Toolkit reads use native `ToolContext`;
-  sensitive reads pause before dispatch, approval returns the ordinary result,
-  and denial records the same-call blocked result plus SDK-formatted terminal
-  message before `goto END` without nulling typed outputs. MCP/agent/router/
-  decision/printer compilation, LLM-node nested confirmation, effects, static
-  interrupts and production activation remain separate gates;
+  durable parallel-node core. Direct Toolkit and auth-free remote MCP reads use
+  native `ToolContext`; sensitive reads pause before dispatch, approval returns
+  the ordinary result, and denial records the same-call blocked result plus the
+  SDK-formatted terminal chat message before `goto END` without nulling typed
+  outputs. MCP OAuth/on-demand auth, prebuilt/static MCP, remote effects,
+  agent/router/decision/printer compilation, LLM-node nested confirmation,
+  static interrupts and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;

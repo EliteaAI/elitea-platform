@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use adk_rust::graph::{Checkpointer, MemoryCheckpointer};
 use adk_rust::session::{InMemorySessionService, SessionService};
@@ -20,7 +21,9 @@ use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
-use crate::toolkits::ToolAdmissionPolicy;
+use crate::toolkits::{
+    McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
+};
 
 const PIPELINE: &str = r"
 state:
@@ -140,6 +143,45 @@ fn toolkit_pipeline_request(
                 "repositories": "group/project",
                 "branch": "main",
                 "selected_tools": configured_tools
+            }
+        }]),
+    );
+    request
+}
+
+fn mcp_pipeline_request(
+    toolkit_alias: &str,
+    selected_tools: &[&str],
+    node_tool: &str,
+) -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    let definition = format!(
+        "state:\n  records: dict\n  messages: list\nentry_point: direct\nnodes:\n  - id: direct\n    type: mcp\n    toolkit_name: {toolkit_alias:?}\n    tool: {node_tool:?}\n    input_mapping:\n      release: {{type: fixed, value: '1.2'}}\n    output: [records, messages]\n    structured_output: true\n    transition: END\n"
+    );
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert("instructions".to_owned(), json!(definition));
+    version.insert(
+        "tools".to_owned(),
+        json!([{
+            "id": 92,
+            "type": "mcp",
+            "toolkit_name": "release intelligence",
+            "settings": {
+                "url": "https://mcp.example.invalid/v1/mcp",
+                "headers": null,
+                "client_id": null,
+                "client_secret": null,
+                "scopes": null,
+                "timeout": 30,
+                "selected_tools": selected_tools,
+                "enable_caching": true,
+                "cache_ttl": 300,
+                "ssl_verify": true
             }
         }]),
     );
@@ -383,6 +425,76 @@ fn toolkit_node_scope_is_exact_and_sensitive_read_is_bound_for_graph_confirmatio
         .expect("sensitive direct read is admitted for checkpointed confirmation");
 }
 
+#[test]
+fn mcp_node_scope_is_exact_and_sensitive_read_uses_the_graph_confirmation() {
+    let allowed = mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        "lookup_release",
+    );
+    let empty_policy = runtime_tool_policy(&json!({}));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&empty_policy)
+        .expect("exact frozen direct MCP scope");
+
+    for invalid in [
+        mcp_pipeline_request("other MCP", &["lookup_release"], "lookup_release"),
+        mcp_pipeline_request(
+            "release intelligence",
+            &["other_release_tool"],
+            "lookup_release",
+        ),
+    ] {
+        let error = admission_error(authorized(&invalid).admit_pipeline_with_policy(&empty_policy));
+        assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    }
+
+    for policy in [
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"blocked_toolkits": ["mcp"]}
+        })),
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"blocked_tools": {"mcp": ["lookup_release"]}}
+        })),
+    ] {
+        let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&policy));
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
+    let sensitive = runtime_tool_policy(&json!({
+        "toolkit_security": {"sensitive_tools": {"mcp": ["lookup_release"]}}
+    }));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&sensitive)
+        .expect("sensitive MCP read is admitted for checkpointed confirmation");
+
+    let configured_as_mcp =
+        toolkit_pipeline_request("release_repository", &["get_issues"], "get_issues");
+    let mut configured_as_mcp = configured_as_mcp;
+    let instructions = configured_as_mcp
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("pipeline version")
+        .get("instructions")
+        .and_then(Value::as_str)
+        .expect("pipeline instructions")
+        .replace("type: toolkit", "type: mcp");
+    configured_as_mcp
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("pipeline version")
+        .insert("instructions".to_owned(), json!(instructions));
+    let error =
+        admission_error(authorized(&configured_as_mcp).admit_pipeline_with_policy(&empty_policy));
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
 #[tokio::test]
 async fn toolkit_node_materializes_read_only_action_but_rejects_remote_effect() {
     let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
@@ -406,6 +518,170 @@ async fn toolkit_node_materializes_read_only_action_but_rejects_remote_effect() 
         error.code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
     );
+}
+
+struct PipelineMcpConnector {
+    connections: Arc<AtomicUsize>,
+    tool_calls: Arc<AtomicUsize>,
+    read_only: bool,
+}
+
+#[async_trait]
+impl McpConnector for PipelineMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(config.endpoint(), "https://mcp.example.invalid/v1/mcp");
+        Ok(Arc::new(BasicToolset::new(
+            "fixture_mcp",
+            vec![Arc::new(PipelineMcpTool {
+                calls: Arc::clone(&self.tool_calls),
+                read_only: self.read_only,
+            })],
+        )))
+    }
+}
+
+struct PipelineMcpTool {
+    calls: Arc<AtomicUsize>,
+    read_only: bool,
+}
+
+#[async_trait]
+impl Tool for PipelineMcpTool {
+    fn name(&self) -> &'static str {
+        "lookup_release"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read release evidence for one release identifier."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {"release": {"type": "string"}},
+            "required": ["release"],
+            "additionalProperties": false
+        }))
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(json!({
+            "records": {"release": arguments["release"], "risk": "low"},
+            "messages": [{"role": "assistant", "content": "MCP read complete"}]
+        }))
+    }
+}
+
+#[tokio::test]
+async fn mcp_node_discovers_and_executes_one_read_without_a_model_turn() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(PipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    });
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_mcp_connector(connector);
+    let request = mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        "lookup_release",
+    );
+    let private_thread = private_pipeline_session_id(&request);
+    let mut invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized direct MCP pipeline");
+    invocation
+        .project_start(timestamp(0))
+        .expect("browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("MCP pipeline start");
+    while let Some(event) = run.next_event().await.expect("MCP pipeline event") {
+        let _ = projector.project(&event).expect("MCP event projection");
+    }
+    let selected = completion.select().await.expect("MCP result selection");
+    let browser = projector
+        .finish_after_eos(selected, timestamp(1))
+        .expect("MCP browser completion");
+    assert_eq!(connections.load(Ordering::Acquire), 1);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+    let browser_content = browser
+        .into_iter()
+        .map(|event| current(&event)["content"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        browser_content
+            .iter()
+            .any(|content| content == "{\"release\":\"1.2\",\"risk\":\"low\"}"),
+        "unexpected MCP completion: {browser_content:?}"
+    );
+    let checkpoint = checkpointer
+        .load(&private_thread)
+        .await
+        .expect("checkpoint read")
+        .expect("terminal MCP checkpoint");
+    assert_eq!(
+        checkpoint.state.get("records"),
+        Some(&json!({"release": "1.2", "risk": "low"}))
+    );
+    assert_eq!(
+        checkpoint.state.get("messages"),
+        Some(&json!([
+            {"role": "user", "content": "current"},
+            {"role": "assistant", "content": "MCP read complete"}
+        ]))
+    );
+}
+
+#[tokio::test]
+async fn mcp_node_rejects_server_declared_effect_before_tool_execution() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(PipelineMcpConnector {
+        connections: Arc::new(AtomicUsize::new(0)),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: false,
+    });
+    let assembler =
+        PipelineNativeAgentAssembler::with_state(sessions, Arc::new(MemoryCheckpointer::new()))
+            .with_mcp_connector(connector);
+    let request = mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        "lookup_release",
+    );
+    let result = assembler.assemble(authorized(&request)).await;
+    let Err(error) = result else {
+        panic!("effectful direct MCP node was assembled");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
 }
 
 struct NamedReadTool(&'static str);

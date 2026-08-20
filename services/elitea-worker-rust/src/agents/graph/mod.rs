@@ -31,7 +31,8 @@ pub(crate) use agent::{
     PIPELINE_COMPLETED_METADATA_VALUE, pipeline_completed_event, pipeline_result_event,
 };
 pub(crate) use direct_tool::{
-    DirectToolExecutionError, DirectToolSelection, PipelineDirectToolResolver, ResolvedDirectTool,
+    DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection, PipelineDirectToolResolver,
+    ResolvedDirectTool,
 };
 pub(crate) use llm::{
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,
