@@ -3,6 +3,7 @@
 pub(crate) mod application_tools;
 pub(crate) mod assembly;
 pub(crate) mod context_management;
+pub(crate) mod direct_hitl;
 pub(crate) mod events;
 pub mod graph;
 pub(crate) mod ordinary;
@@ -15,6 +16,8 @@ pub(crate) mod session;
 
 #[cfg(test)]
 mod assembly_tests;
+#[cfg(test)]
+mod direct_hitl_tests;
 #[cfg(test)]
 mod events_tests;
 #[cfg(test)]

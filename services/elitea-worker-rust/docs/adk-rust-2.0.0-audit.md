@@ -344,6 +344,31 @@ The implemented dynamic HITL node binds its definition digest and consumes its
 private decision once. Both paths derive a fresh public `interrupt_id`; neither
 tool name nor arguments alone authorize anything.
 
+No separate pending-interrupt table is needed for this first direct pause.
+ADK-Rust 2.0.0 Runner awaits `SessionService::append_event_for_identity` before
+yielding each final model/confirmation event, and the focused Rust fixture
+reloads both the exact function call and confirmation from the injected session
+before browser projection. Main's existing `ContinueCurrentAgent` path then
+validates the exact pending interrupt/action set, uses that set in submission
+idempotency, and atomically clears the public pending card while recording its
+resolved identity. Rust's `direct_hitl.rs` performs the independent worker-side
+join: strict current continuation admission plus exact latest-session call,
+invocation, argument and call-ID resolution. The resolved value deliberately
+cannot execute a tool. This reuses the existing Main contract and requires no
+Main schema or Python-worker path change. Graph dynamic/static interrupts
+instead belong to their standard graph checkpoint. A future effect receipt may
+require an additional atomic record, but it must first prove that a
+deterministic decision event or checkpoint transition cannot satisfy the
+contract; pending state alone is not justification for another table.
+
+Physical-table accounting is therefore seven native runtime tables today: two
+for graph checkpoint ownership and five for normalized ADK session ownership.
+The migration ledger is an eighth physical bookkeeping table, while four
+legacy LangGraph tables remain untouched. Separate child session/checkpoint
+identity is the basis for parallel and nested HITL. App/user/session-state
+consolidation may be benchmarked after live workload evidence; it is not a
+correctness prerequisite.
+
 Exact ADK-Rust 2.0.0 `GraphAgent` currently constructs its dynamic-interrupt
 event with a placeholder invocation identity and an empty author. The
 capability-disabled `EliteaGraphAgent` adapter rebinds both values to the

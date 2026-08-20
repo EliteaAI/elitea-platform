@@ -54,10 +54,12 @@ Detailed ledgers:
 
 Maintained Rust runtime ownership registry:
 
-- `src/agents/{assembly,ordinary,session,events,sensitive_tools}.rs`: direct
+- `src/agents/{assembly,ordinary,session,events,sensitive_tools,direct_hitl}.rs`: direct
   saved-agent and ad-hoc `LlmAgent` admission, common injected
   `SessionService`/Runner composition, seed-once frozen history, browser event
-  projection and runtime-policy-bound sensitive-tool pauses;
+  projection, runtime-policy-bound sensitive-tool pauses and worker-side exact
+  resolution of Main-authorized decisions against raw persisted calls. The
+  resolver does not grant tool execution;
 - `src/agents/application_tools.rs`: exact saved child application/version to
   ADK `AgentTool` composition, recursion and model-visible delegation schema;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
@@ -77,7 +79,10 @@ Maintained Rust runtime ownership registry:
   private transport;
 - `src/state/postgres_session.rs` plus Main migration
   `migrations/agentstate/0002_agent_sessions.sql`: bounded claim-fenced ADK
-  conversation/session persistence for direct and graph Runners;
+  conversation/session persistence for direct and graph Runners. Direct
+  sensitive confirmations remain standard ADK events: Runner awaits persistence
+  before yielding them to browser projection, so no duplicate pending-interrupt
+  table is introduced;
 - `src/protocol/control.rs::ClaimBoundSessionAuthority`: one-use session-writer
   grant minted only at `AUTHORIZED_NOW`, independently of output and settlement
   authority;
@@ -94,6 +99,13 @@ Maintained Rust runtime ownership registry:
   check the supervised lease before locking and before commit, then retain a
   durable newer-writer fence. This does not claim an atomic transaction across
   Main and `agentstate`; cleanup-owner coverage remains a deployment gate;
+- current native storage is seven runtime tables: two graph-checkpoint tables
+  and five normalized session tables. `elitea_runtime.schema_migrations` is an
+  eighth physical bookkeeping table, not session state. The four legacy
+  LangGraph tables remain untouched. Future app/user/session-state
+  consolidation is a measured storage optimization; parallel or nested HITL
+  must use distinct session/checkpoint identities rather than new tables per
+  pause scope;
 - `src/diagnostics.rs`, `src/execution/{agent_preparation,native_agent_lifecycle}.rs`:
   crate-scoped subscriber plus authenticated lifecycle/assembly/tool
   correlation. Export/retention policy remains deployment-owned.

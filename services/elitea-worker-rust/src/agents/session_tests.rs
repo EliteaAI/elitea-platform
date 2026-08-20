@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::{current_text_history, ordinary_request};
+use super::direct_hitl::DirectHitlDecision;
 use super::events::AgentEventProjectionErrorCode;
 use super::request::AgentExecutionKind;
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
@@ -386,18 +387,33 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
         calls: Arc::clone(&tool_calls),
     });
     let toolset: Arc<dyn Toolset> = Arc::new(BasicToolset::new("fixture-tools", vec![tool]));
-    let mut assembled = assemble_ordinary_native(model, plan, vec![toolset], sensitive_catalog())
-        .await
-        .expect("native assembly");
+    let user_id = plan.user_id().to_owned();
+    let session_id = plan.session_id().to_owned();
+    let sessions = Arc::new(InMemorySessionService::new());
+    let injected_sessions: Arc<dyn SessionService> = sessions.clone();
+    let mut assembled = assemble_ordinary_native_with_sessions(
+        model,
+        plan,
+        vec![toolset],
+        sensitive_catalog(),
+        injected_sessions,
+    )
+    .await
+    .expect("native assembly");
     assembled
         .project_start(Utc::now())
         .expect("projected start");
     let (mut native, mut projector, _completion) = assembled.start().expect("native start");
 
     let mut interrupt = None;
+    let mut durable_confirmation_seen = false;
     let mut public_events = Vec::new();
     while let Some(event) = native.next_event().await.expect("native event") {
         let confirmation = event.actions.tool_confirmation.as_ref();
+        if confirmation.is_some() {
+            assert_confirmation_persisted(&sessions, &user_id, &session_id, &event).await;
+            durable_confirmation_seen = true;
+        }
         let summary = format!(
             "author={} interrupted={} complete={} calls={} confirmation={} confirmation_id={}",
             event.author,
@@ -424,7 +440,87 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
         }
     }
 
-    let interrupt = interrupt.expect("sensitive-tool interrupt");
+    assert_sensitive_interrupt_projection(
+        &interrupt.expect("sensitive-tool interrupt"),
+        &public_events,
+    );
+    resolve_persisted_sensitive_decision(&sessions, &user_id, &session_id, &public_events).await;
+    assert!(projector.is_paused());
+    assert!(durable_confirmation_seen);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+}
+
+async fn resolve_persisted_sensitive_decision(
+    sessions: &InMemorySessionService,
+    user_id: &str,
+    session_id: &str,
+    public_events: &[Value],
+) {
+    let interrupt_id = public_events
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .and_then(|event| event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"].as_str())
+        .expect("public interrupt identity");
+    let mut resume = ordinary_request(AgentExecutionKind::Adhoc);
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = Some("approve".to_owned());
+    resume.payload.hitl_value = Some(String::new());
+    resume.payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call-1",
+        "action": "approve",
+        "value": "",
+    })];
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id: user_id.to_owned(),
+            session_id: session_id.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("persisted pending session");
+    let resolved = DirectHitlDecision::from_payload(&resume.payload)
+        .expect("authorized continuation shape")
+        .resolve(stored.as_ref())
+        .expect("exact persisted call");
+    assert_eq!(resolved.call_id(), "call-1");
+    assert_eq!(resolved.arguments()["api_token"], "must-not-be-published");
+}
+
+async fn assert_confirmation_persisted(
+    sessions: &InMemorySessionService,
+    user_id: &str,
+    session_id: &str,
+    event: &adk_rust::Event,
+) {
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id: user_id.to_owned(),
+            session_id: session_id.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("confirmation event persisted before Runner yield");
+    let stored_events = stored.events().all();
+    assert_eq!(
+        stored_events.last().map(|stored| stored.id.as_str()),
+        Some(event.id.as_str())
+    );
+    assert!(stored_events.iter().any(|stored| {
+        stored
+            .tool_calls()
+            .iter()
+            .any(|call| call.call_id == Some("call-1"))
+    }));
+}
+
+fn assert_sensitive_interrupt_projection(interrupt: &Value, public_events: &[Value]) {
     let pending = &interrupt["response_metadata"]["hitl_interrupts"][0];
     assert_eq!(pending["guardrail_type"], "sensitive_tool");
     assert_eq!(pending["tool_call_id"], "call-1");
@@ -433,7 +529,7 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
     assert_eq!(pending["tool_args"]["value"], 21);
     assert_eq!(pending["tool_args"]["api_token"], "***");
     assert!(pending.get("tool_args_raw").is_none());
-    let encoded_public_events = serde_json::to_string(&public_events).expect("public event JSON");
+    let encoded_public_events = serde_json::to_string(public_events).expect("public event JSON");
     assert!(!encoded_public_events.contains("must-not-be-published"));
     let tool_start = public_events
         .iter()
@@ -453,9 +549,6 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
             .as_str()
             .is_some_and(|value| value.starts_with("sha256:"))
     );
-    assert!(projector.is_paused());
-    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
-    assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

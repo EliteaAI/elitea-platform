@@ -22,6 +22,7 @@ use ring::digest;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::direct_hitl::sensitive_call_identity;
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
@@ -36,7 +37,6 @@ const MAX_ADK_PARTS_PER_EVENT: usize = 256;
 const MAX_CONTEXT_TEXT_BYTES: usize = 2_048;
 const MAX_COMPLETED_CONTENT_BYTES: usize = 60 * 1_024;
 const MAX_TOOL_EVENT_VALUE_BYTES: usize = 40 * 1_024;
-const HITL_DIGEST_DOMAIN: &[u8] = b"elitea.sensitive-tool-interrupt.v1\0";
 const PIPELINE_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-hitl-interrupt.v1\0";
 const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
 const MAX_PIPELINE_HITL_MESSAGE_BYTES: usize = 8 * 1024;
@@ -512,7 +512,16 @@ impl AgentEventProjector {
             call_id,
             &request.tool_name,
             &request.args,
-        )?;
+        )
+        .map_err(|error| match error.code() {
+            super::direct_hitl::DirectHitlErrorCode::ResourceExhausted => {
+                AgentEventProjectionError {
+                    code: AgentEventProjectionErrorCode::ResourceExhausted,
+                    protocol: None,
+                }
+            }
+            _ => AgentEventProjectionError::invalid_state(),
+        })?;
         let tool_args = mask_sensitive_arguments(&active.arguments, 0)?;
         let message = policy.policy_message().to_owned();
         let metadata = json!({
@@ -1279,32 +1288,6 @@ fn valid_sha256_label(value: &str) -> bool {
     value.len() == 71
         && value.starts_with("sha256:")
         && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn sensitive_call_identity(
-    invocation_id: &str,
-    call_id: &str,
-    tool_name: &str,
-    arguments: &Value,
-) -> Result<(String, String), AgentEventProjectionError> {
-    let canonical = canonical_json(arguments)?;
-    let mut context = digest::Context::new(&digest::SHA256);
-    context.update(HITL_DIGEST_DOMAIN);
-    for field in [
-        invocation_id.as_bytes(),
-        call_id.as_bytes(),
-        tool_name.as_bytes(),
-    ] {
-        context.update(&(field.len() as u64).to_be_bytes());
-        context.update(field);
-    }
-    context.update(&(canonical.len() as u64).to_be_bytes());
-    context.update(&canonical);
-    let digest = context.finish();
-    Ok((
-        format!("hitl_e1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
-        format!("sha256:{}", hex(digest.as_ref())),
-    ))
 }
 
 fn canonical_json(value: &Value) -> Result<Vec<u8>, AgentEventProjectionError> {
