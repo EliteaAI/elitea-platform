@@ -220,7 +220,20 @@ fileConfig:
     enabled: false
     secretName: ""
     mountPath: /run/elitea-llm-gateway
-    defaultMode: 0440
+    # 0444, for the same reason runtime.material and the authentication
+    # material default to it: the kubelet owns these files as root, this pod
+    # runs as nonroot, and podSecurityContext sets no fsGroup — so the
+    # other-read bit is the only one that reaches the user that must read them.
+    #
+    # This shipped as 0440 and could not work: elitea-main reached
+    # "production runtime enabled" and then died with
+    #   compose llm gateway proxy: llmproxy: build mTLS transport:
+    #   load client cert: open /run/elitea-llm-gateway/tls.crt: permission denied
+    # on the first cluster that mounted it.
+    #
+    # Set podSecurityContext.fsGroup and lower this to 0440 to tighten it,
+    # exactly as the two blocks above document.
+    defaultMode: 0444
     volume: {}
   brandPack:
     enabled: false
