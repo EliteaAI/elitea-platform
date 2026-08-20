@@ -13,6 +13,8 @@ import Typography from '@mui/material/Typography';
 import type { Project } from '@/entities/project';
 import { t } from '@/shared/i18n';
 
+import { CheckedIcon } from '@/shared/ui/icons/checked-icon';
+
 import { ProjectAvatar } from './ProjectAvatar';
 
 export interface ProjectSwitcherProps {
@@ -75,8 +77,21 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
   const noneLabel = t('widgets.sidebar.projectSwitcher.none', 'No projects');
   const selectedName = selected?.name ?? noneLabel;
 
+  /**
+   * The trigger's rendered width, read when the panel opens.
+   *
+   * Measured rather than derived from SIDE_BAR_WIDTH_PX so the panel tracks
+   * whatever the rail actually is — the two widths (208px expanded, 72px
+   * collapsed) live in Sidebar.tsx and a third copy here would be a constant
+   * to keep in sync by hand.
+   */
+  const [anchorWidth, setAnchorWidth] = useState<number | undefined>(undefined);
+
   const close = useCallback(() => setOpen(false), []);
-  const toggle = useCallback(() => setOpen((value) => !value), []);
+  const toggle = useCallback(() => {
+    setAnchorWidth(anchorRef.current?.getBoundingClientRect().width);
+    setOpen((value) => !value);
+  }, []);
   const handleSelect = useCallback(
     (project: Project) => {
       onSelect(String(project.id), project.name);
@@ -175,6 +190,15 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
           open={open}
           anchorEl={anchorRef.current}
           placement="bottom-start"
+          // Keep the panel inside the viewport and off the trigger. Without
+          // these the panel is placed at the anchor's bottom edge with no
+          // gap and no flip, so a rail near the bottom of a short window
+          // renders its list off-screen.
+          modifiers={[
+            { name: 'offset', options: { offset: [0, 4] } },
+            { name: 'preventOverflow', options: { padding: 8 } },
+            { name: 'flip', enabled: true },
+          ]}
           sx={{ zIndex: 1300 }}
         >
           <Paper
@@ -187,7 +211,17 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
               borderRadius: theme.vars.shape.radiusMd,
               border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
               padding: '0.5rem 0',
-              minWidth: '14rem',
+              // Match the rail, do not exceed it.
+              //
+              // This was minWidth: '14rem' — 224px against a 208px rail, so
+              // the panel always hung over the content beside the sidebar, and
+              // over nothing at all when the rail was collapsed to 72px. The
+              // width now follows the trigger, which is the rail's width in
+              // both states, with a floor so the collapsed rail still gets a
+              // readable list rather than a 72px column of clipped names.
+              width: anchorWidth,
+              minWidth: '11.5rem',
+              maxWidth: '18rem',
               maxHeight: '20rem',
               overflowY: 'auto',
               boxShadow: theme.vars.palette.boxShadow.default,
@@ -227,7 +261,11 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
                 sx={(theme: Theme) => ({
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '0.75rem',
+                  // 0.5rem, matching the trigger above. The row used 0.75rem,
+                  // so the avatar column stepped sideways between the closed
+                  // control and the open list — most visible now that the
+                  // panel is the same width as the rail.
+                  gap: '0.5rem',
                   padding: theme.spacing(1, 2),
                   cursor: 'pointer',
                   '&:hover': { backgroundColor: theme.vars.palette.action.hover },
@@ -239,10 +277,29 @@ export function ProjectSwitcher({ projects, selectedProjectId, onSelect, collaps
                 />
                 <Typography
                   variant="labelMedium"
-                  sx={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  sx={{
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    flex: 1,
+                    minWidth: 0,
+                  }}
                 >
                   {project.name}
                 </Typography>
+                {String(project.id) === selectedProjectId && (
+                  // The selected row carried aria-selected and NOTHING a
+                  // sighted user could see. `SingleSelectMenuItem` — the
+                  // shared dropdown row this control deliberately does not
+                  // use, because it cannot host an avatar — marks selection
+                  // with this same icon, so the affordance matches the rest
+                  // of the app rather than inventing a third convention.
+                  <CheckedIcon
+                    aria-hidden
+                    data-testid="project-switcher-selected"
+                    style={{ flexShrink: 0 }}
+                  />
+                )}
               </Box>
             ))}
           </Paper>

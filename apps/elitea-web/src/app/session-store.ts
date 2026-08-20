@@ -28,6 +28,14 @@ import type { AuthContext, AuthUser } from './router-context';
 interface SessionState {
   user: AuthUser | undefined;
   loaded: boolean;
+  /**
+   * HTTP status of the last `/forward-auth/info` probe, or undefined when the
+   * request produced none. It is kept because "no user" alone cannot say WHERE
+   * to send the browser: a 404 means that endpoint is not mounted, i.e. the
+   * Form plane, and a 401 means the OIDC plane answered "no session". See
+   * `shared/api/auth/login-redirect.ts`.
+   */
+  probeStatus: number | undefined;
   fetchSession: () => Promise<void>;
 }
 
@@ -46,6 +54,7 @@ interface SessionInfoResponse {
  * documents this as this stack's `auth/me`-class endpoint.
  */
 interface AuthorProfileResponse {
+  id?: string;
   personal_project_id?: string;
 }
 
@@ -67,6 +76,36 @@ const AUTHOR_PATH = '/social/author/';
  * onboarding) — which is the correct behaviour when the server cannot name a
  * personal project, and strictly better than inventing one.
  */
+/**
+ * The Form plane's session probe.
+ *
+ * `/forward-auth/info` exists only in the OIDC composition, so on a Form
+ * deployment the probe above 404s and can never report a logged-in user — the
+ * app would bounce a freshly-authenticated browser straight back to the login
+ * form, forever. `/social/author` is the endpoint that CAN answer on both
+ * planes: it is authenticated, and it returns the two fields a session needs.
+ *
+ * A 401 here means "not logged in", which is the answer being asked for, so
+ * `reauthenticate` stays unconfigured for the same reason it does below.
+ */
+async function fetchAuthorSession(
+  apiBaseUrl: string | undefined,
+): Promise<{ id: string; personalProjectId: string | undefined } | undefined> {
+  if (apiBaseUrl === undefined) return undefined;
+
+  const http = createHttpClient({ baseUrl: apiBaseUrl });
+  const result = await http.get<AuthorProfileResponse>(AUTHOR_PATH);
+  if (!result.ok) return undefined;
+
+  const id = result.data.id;
+  if (id === undefined || id === '') return undefined;
+  const personalProjectId = result.data.personal_project_id;
+  return {
+    id,
+    personalProjectId: personalProjectId === '' ? undefined : personalProjectId,
+  };
+}
+
 async function fetchPersonalProjectId(apiBaseUrl: string | undefined): Promise<string | undefined> {
   if (apiBaseUrl === undefined) return undefined;
 
@@ -115,10 +154,40 @@ export function createSessionStore(options: CreateSessionStoreOptions = {}): Ses
   return create<SessionState>((set) => ({
     user: undefined,
     loaded: false,
+    probeStatus: undefined,
     fetchSession: async () => {
       const result = await http.get<SessionInfoResponse>('/forward-auth/info');
+      // The status lives in a different place on each arm of HttpResult, and
+      // the arm that matters here is the FAILURE one: a 404 is what identifies
+      // the Form plane. `network` and `aborted` failures carry no status.
+      const probeStatus = result.ok
+        ? result.status
+        : 'status' in result.error
+          ? result.error.status
+          : undefined;
       if (!result.ok || !result.data.authenticated || !result.data.user_id) {
-        set({ user: undefined, loaded: true });
+        // A 404 means the OIDC plane is not mounted, i.e. this is a Form
+        // deployment, and the browser may well hold a valid Form session
+        // cookie. Ask the endpoint that answers on both planes before
+        // concluding "not logged in" — otherwise a logged-in user is sent back
+        // to the login form on every load.
+        if (probeStatus === 404) {
+          const author = await fetchAuthorSession(options.apiBaseUrl ?? resolveApiBaseUrl());
+          if (author !== undefined) {
+            set({
+              user: {
+                id: author.id,
+                ...(author.personalProjectId !== undefined
+                  ? { personal_project_id: author.personalProjectId }
+                  : {}),
+              },
+              loaded: true,
+              probeStatus,
+            });
+            return;
+          }
+        }
+        set({ user: undefined, loaded: true, probeStatus });
         return;
       }
       // `/forward-auth/info` (services/elitea-main/internal/api/v2/auth/
@@ -135,6 +204,7 @@ export function createSessionStore(options: CreateSessionStoreOptions = {}): Ses
           ...(personalProjectId !== undefined ? { personal_project_id: personalProjectId } : {}),
         },
         loaded: true,
+        probeStatus,
       });
     },
   }));

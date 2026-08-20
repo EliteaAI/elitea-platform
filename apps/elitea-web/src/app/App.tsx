@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { getConfig, MissingEnvPage } from '@/shared/config';
 import { configureGeneratedClient } from '@/shared/api/generated/mutator';
 import { createAuthPopupController } from '@/shared/api/auth';
+import { AUTH_CALLBACK_PATH } from '@/shared/api/auth/constants';
+import { authPlaneFromProbeStatus, buildLoginUrl } from '@/shared/api/auth/login-redirect';
 
 import { AppProviders, getAppBasename } from './providers';
 import { createAppRouter } from './router';
@@ -76,6 +78,27 @@ export function App() {
     void fetchSession().then(() => {
       // Re-run all active beforeLoad guards now that the session is known.
       void router.invalidate();
+
+      // Not logged in -> send the browser to the login form.
+      //
+      // Without this the app renders `<RoutePending />` forever: nothing gates
+      // /app/** at the edge, so an unauthenticated deep link is served the SPA
+      // shell, the session probe correctly reports "no session", every route
+      // guard fails open, and the index guard returns {kind:'loading'}. The
+      // login form was one redirect away and nothing performed it.
+      //
+      // A full-page assign rather than the router: the login form is served by
+      // elitea-main and is outside this SPA's route tree.
+      //
+      // The callback path is exempt. It is where the OIDC popup lands to hand
+      // its result back, and it runs while the opener is still unauthenticated
+      // by definition — redirecting it would cancel the flight it completes.
+      const { user, probeStatus } = useSessionStore.getState();
+      if (user !== undefined) return;
+      if (window.location.pathname.endsWith(AUTH_CALLBACK_PATH)) return;
+
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.assign(buildLoginUrl(authPlaneFromProbeStatus(probeStatus), returnTo));
     });
   }, [fetchSession, router]);
 

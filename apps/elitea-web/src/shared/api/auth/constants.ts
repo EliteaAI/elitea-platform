@@ -73,11 +73,23 @@ export const LOGOUT_PATH = '/forward-auth/logout'; // old UserButton.jsx:32
  * which is what carries `auth_state` through (`safeRedirectTarget` returns
  * the value unchanged, `internal/api/v2/auth/util.go`).
  *
- * `/forward-auth/login` is NOT used: it redirects to the path below while
- * dropping `target_to` (`internal/api/api/router.go`), which would land the
- * popup on `/` instead of the callback page and strand the flight.
+ * `/forward-auth/login` is not used BY THE POPUP: on the OIDC plane it
+ * redirects to the path below while dropping `target_to`
+ * (`internal/api/api/router.go`), which would land the popup on `/` instead of
+ * the callback page and strand the flight. It is the right entry point on the
+ * FORM plane, where it is the only path that opens a login transaction — see
+ * `FORM_LOGIN_PATH` below and `login-redirect.ts` for which plane is which.
  */
 export const OIDC_LOGIN_PATH = '/forward-auth/auth_oidc/login';
+
+/**
+ * Form login entry point.
+ *
+ * `/forward-auth/auth_form/login` renders the form itself and 400s without a
+ * transaction id; only this path creates one (`beginLogin`,
+ * `internal/api/browserauth/handler.go`), so this is what a browser is sent to.
+ */
+export const FORM_LOGIN_PATH = '/forward-auth/login';
 export const TARGET_TO_PARAM = 'target_to';
 
 export interface AuthResultMessage {
