@@ -21,6 +21,7 @@ use serde_json::json;
 use tokio::sync::{Notify, Semaphore, oneshot};
 use tonic::{Request, Response, Status};
 
+use super::agent_coordinator::native_agent_coordinator;
 use super::agent_delivery::{FreshAgentDelivery, test_fresh_agent_delivery};
 use super::agent_invocation::{
     AgentAuthorizationJob, AgentAuthorizationJobCompletion, AgentAuthorizedLifecycleCompletion,
@@ -2647,7 +2648,6 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
     let admission = InvocationAdmission::new(
         InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
     );
-    let supervisor = InvocationSupervisor::new(admission.clone());
     let prepared = prepare_fresh_agent_invocation_with(
         *empty,
         Arc::clone(&control),
@@ -2677,7 +2677,8 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
             unmapped: 1,
         }),
     ));
-    let lifecycle = Arc::new(NativeAuthorizedAgentLifecycle::new(
+    let coordinator = native_agent_coordinator(
+        admission.clone(),
         Arc::new(TestNativeAssembler {
             trace: Arc::clone(&trace),
             agent: Arc::new(ImmediateTextAgent),
@@ -2689,25 +2690,16 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
         Arc::new(|| NOW + 2),
         1,
         recovery_config(1),
-    ));
-    let (reservation, job) = AgentAuthorizationJob::new(
-        *prepared,
-        control,
-        retirer,
-        Arc::new(connector),
-        Arc::new(|| NOW + 2),
-        recovery_config(1),
-        lifecycle,
     );
-    let invocation = match supervisor.submit(reservation, job) {
+    let invocation = match coordinator.submit(*prepared) {
         Ok(invocation) => invocation,
-        Err(rejected) => panic!("native lifecycle supervision failed: {}", rejected.error()),
+        Err(rejected) => panic!("native coordination failed: {}", rejected.error()),
     };
     let completion = invocation.wait().await.expect("native lifecycle result");
     let AgentAuthorizationJobCompletion::Authorized(completion) = completion else {
         panic!("the native lifecycle must own the authorized outcome");
     };
-    supervisor.close().await.expect("native lifecycle drain");
+    coordinator.close().await.expect("native lifecycle drain");
 
     assert_eq!(completion.execution_kind(), kind);
     let AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked {
@@ -2774,6 +2766,86 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
             "redis",
         ]
     );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn stopped_native_coordinator_returns_an_explicitly_closeable_unstarted_job() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let outcome = preflight(output_root, "worker-1")
+        .prepare(fresh_for_kind(AgentExecutionKind::Application))
+        .await
+        .expect("empty native coordinator preflight");
+    let AgentOutputPreflightOutcome::Empty(empty) = outcome else {
+        panic!("new coordinator spool must be empty");
+    };
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let prepared = prepare_fresh_agent_invocation_with(
+        *empty,
+        Arc::clone(&control),
+        &admission,
+        &KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind: AgentExecutionKind::Application,
+        },
+        Arc::new(|| NOW),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+    )
+    .await
+    .expect("prepared native invocation");
+    let AgentPreparationOutcome::Prepared(prepared) = prepared else {
+        panic!("valid input must reach native coordination");
+    };
+    let connector = FakeProgressConnector {
+        state: FakeProgressState::new([], []),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let coordinator = native_agent_coordinator(
+        admission.clone(),
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(ImmediateTextAgent),
+            sensitive: false,
+        }),
+        connector,
+        control,
+        retirer,
+        Arc::new(|| NOW + 2),
+        1,
+        recovery_config(1),
+    );
+    coordinator.stop().expect("stop native coordinator");
+
+    let Err(rejected) = coordinator.submit(*prepared) else {
+        panic!("stopped coordinator accepted an invocation");
+    };
+    assert_eq!(rejected.error().code(), "invocation_supervision.closed");
+    assert!(
+        rejected
+            .close()
+            .await
+            .expect("close rejected invocation")
+            .is_none()
+    );
+    coordinator
+        .close()
+        .await
+        .expect("drain stopped coordinator");
+
+    assert_eq!(coordinator.active_count(), 0);
+    assert_eq!(admission.available_capacity(), 1);
+    assert!(!trace.lock().expect("trace").contains(&"authorize"));
     drop(temporary);
 }
 

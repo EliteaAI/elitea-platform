@@ -5,7 +5,7 @@
 //! the returned result waiter therefore cannot cancel `AuthorizeInvocation`,
 //! lose its response, or abandon the unique lease/output authority.
 
-#![allow(dead_code)] // Capability registration waits for the native ADK driver.
+#![allow(dead_code)] // Production command-consumer registration remains disabled.
 
 use std::fmt;
 use std::future::Future;

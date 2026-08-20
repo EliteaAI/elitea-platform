@@ -6,7 +6,7 @@
 //! to own the task and its reservation until the real future exits, and an
 //! explicit close stops the exact admission pool before draining every task.
 
-#![allow(dead_code)] // Wired by the next authorized invocation coordinator slice.
+#![allow(dead_code)] // Production command-consumer registration remains disabled.
 
 use std::fmt;
 use std::future::Future;

@@ -1,5 +1,6 @@
 //! Shared durable execution coordination.
 
+mod agent_coordinator;
 pub mod agent_delivery;
 mod agent_invocation;
 pub mod agent_lease;

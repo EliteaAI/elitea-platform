@@ -1,8 +1,8 @@
 //! Supervisor-owned native ADK execution and durable output composition.
 //!
 //! This module is deliberately capability-disabled. It proves the single-owner
-//! lifecycle shared by application and ad-hoc execution before production
-//! model, session, tool, skill, HITL, and MCP assembly is admitted.
+//! lifecycle shared by direct application/ad-hoc agents and stored pipelines
+//! before production command-consumer registration is admitted.
 
 #![allow(dead_code)] // Production capability registration remains fail-closed.
 
@@ -36,7 +36,7 @@ use crate::protocol::output::RuntimeFailureKind;
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{RedisCommandRetirer, RedisRetirementClient};
 
-/// Capability-disabled concrete lifecycle shared by application and ad-hoc.
+/// Capability-disabled concrete lifecycle shared by both native runtime modes.
 pub(super) struct NativeAuthorizedAgentLifecycle<A, C, R, RC, K> {
     native_factory: Arc<A>,
     connector: C,

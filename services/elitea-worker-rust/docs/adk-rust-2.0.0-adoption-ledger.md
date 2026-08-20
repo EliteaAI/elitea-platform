@@ -377,10 +377,13 @@ fencing remains mandatory.
 
 The scaling foundation is bounded asynchronous admission, shared pools,
 per-resource concurrency ceilings, backpressure and one owner for each durable
-delivery. The internal invocation supervisor now accepts work only with a
-non-cloneable reservation from its exact bounded admission pool, keeps accepted
-work alive when a result waiter disappears, closes admission during drain and
-returns an unaccepted authority-bearing future intact. The process panic hook
+delivery. The internal `AgentInvocationCoordinator` is now the sole prepared
+request entrypoint. It constructs authorization plus the common native
+lifecycle and synchronously transfers work to the invocation supervisor only
+with a non-cloneable reservation from its exact bounded admission pool. The
+supervisor keeps accepted work alive when a result waiter disappears, closes
+admission during drain and returns an unaccepted authority-bearing future
+intact for explicit close. The process panic hook
 also replaces arbitrary panic payloads with one static diagnostic. The
 capability-disabled native application/ad-hoc lifecycle now owns one authorized
 run through ADK EOS, per-event durable ACK backpressure, final lease and
