@@ -643,7 +643,7 @@ pub(crate) async fn assemble_pipeline_native(
     session_authority: ClaimBoundSessionAuthority,
     state_writer_lease: Arc<dyn StateWriterLease>,
     backend: &NativePipelineStateBackend,
-    llm_factory: Option<Arc<dyn super::graph::PipelineLlmAgentFactory>>,
+    node_runtimes: super::graph::compiler::PipelineNodeRuntimes,
 ) -> Result<AssembledNativeAgentInvocation<PipelineAgentCompletion>, NativeAgentAssemblyError> {
     let state = backend
         .open(
@@ -699,11 +699,11 @@ pub(crate) async fn assemble_pipeline_native(
     };
     let is_resume = resume.is_some();
     let graph = definition
-        .compile_with_llm_runtime(
+        .compile_with_runtime(
             ROOT_AGENT_NAME,
             Arc::clone(&state.checkpointer),
             resume,
-            llm_factory.as_ref(),
+            &node_runtimes,
         )
         .map_err(|error| pipeline_configuration_error(error.code()))?;
     let OrdinaryNativeAgentPlan {

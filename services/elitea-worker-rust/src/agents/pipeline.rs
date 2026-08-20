@@ -7,19 +7,23 @@
 
 #![allow(dead_code)] // Capability routing remains intentionally disabled.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use adk_rust::agent::LlmAgentBuilder;
+use adk_rust::tool::SimpleToolContext;
 use adk_rust::{Agent, GenerateContentConfig, ReadonlyContext, Tool, Toolset};
 use async_trait::async_trait;
 use sqlx::PgPool;
 use tracing::Instrument as _;
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
+use super::graph::compiler::PipelineNodeRuntimes;
 use super::graph::compiler::{PipelineConfigurationError, PipelineDefinition};
 use super::graph::{
-    LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,
+    DirectToolExecutionError, DirectToolSelection, LlmExecutionError, LlmExecutionInput,
+    LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory,
 };
 use super::request::AgentExecutionRequest;
 use super::runtime::{
@@ -40,6 +44,9 @@ use crate::transport::model_facade::{
 };
 use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::ClaimScopedEliteaContext;
+
+const PIPELINE_TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_PIPELINE_MATERIALIZED_TOOLS: usize = 1_024;
 
 /// Frozen, fully admitted application pipeline definition.
 pub(crate) struct PipelineExecutionProfile {
@@ -120,6 +127,44 @@ impl PipelineExecutionProfile {
                 }
             }
         }
+        for selection in self.definition.direct_tool_selections() {
+            let mut matches = snapshot
+                .iter()
+                .filter(|reference| reference.toolkit_name() == selection.alias());
+            let Some(reference) = matches.next() else {
+                return Err(invalid_pipeline_tool_scope());
+            };
+            if matches.next().is_some() || reference.kind() != FrozenToolKind::Configured {
+                return Err(invalid_pipeline_tool_scope());
+            }
+            if policy.toolkit_decision(reference.tool_type()) != ToolAdmissionDecision::Allowed {
+                return Err(unsupported_pipeline_tool_scope());
+            }
+            if policy.tool_decision(reference.tool_type(), selection.tool())
+                != ToolAdmissionDecision::Allowed
+                || policy
+                    .sensitive_tool(
+                        reference.tool_type(),
+                        reference.toolkit_name(),
+                        selection.tool(),
+                    )
+                    .is_some()
+            {
+                return Err(unsupported_pipeline_tool_scope());
+            }
+            let configured = reference
+                .settings()
+                .and_then(|settings| settings.get("selected_tools"))
+                .and_then(serde_json::Value::as_array);
+            if configured.is_some_and(|configured| {
+                !configured.is_empty()
+                    && !configured
+                        .iter()
+                        .any(|name| name.as_str() == Some(selection.tool()))
+            }) {
+                return Err(invalid_pipeline_tool_scope());
+            }
+        }
         Ok(())
     }
 }
@@ -195,25 +240,34 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
             let admitted = assembly.admit_pipeline_with_policy(self.tool_policy.as_ref())?;
             let (profile, plan, toolsets, start, runtime_context, session, lease) =
                 admitted.into_parts();
-            let llm_factory = if profile.definition().has_llm_nodes() {
+            let has_llm_nodes = profile.definition().has_llm_nodes();
+            let has_direct_tool_nodes = profile.definition().has_direct_tool_nodes();
+            let (context, model_facade) = if has_llm_nodes {
                 let platform = self
                     .platform
                     .as_ref()
                     .ok_or_else(unsupported_pipeline_runtime)?;
                 let model_facade = self
                     .model_facade
-                    .as_ref()
+                    .clone()
                     .ok_or_else(unsupported_pipeline_runtime)?;
                 tracing::Span::current().record("stage", "runtime_context");
-                let context = Arc::new(
-                    platform
-                        .redeem_elitea_context(&runtime_context)
-                        .await
-                        .map_err(NativeAgentAssemblyError::from)?,
-                );
+                (
+                    Some(Arc::new(
+                        platform
+                            .redeem_elitea_context(&runtime_context)
+                            .await
+                            .map_err(NativeAgentAssemblyError::from)?,
+                    )),
+                    Some(model_facade),
+                )
+            } else {
                 drop(runtime_context);
+                (None, None)
+            };
+            let (llm_factory, direct_tool_resolver) = if has_llm_nodes || has_direct_tool_nodes {
                 tracing::Span::current().record("stage", "toolsets");
-                let aliases = profile.definition().llm_toolkit_aliases();
+                let aliases = profile.definition().runtime_toolkit_aliases();
                 let selected_snapshot = toolsets.retain_toolkit_names(&aliases);
                 let mut materialized =
                     materialize_configured_toolsets(&selected_snapshot, &self.tool_policy)
@@ -227,18 +281,22 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
                 .map_err(|_| unsupported_pipeline_runtime())?;
                 materialized.append(&mut mcp);
                 let toolsets = toolsets_by_alias(materialized)?;
-                Some(Arc::new(NativePipelineLlmAgentFactory {
-                    profile: profile.shell().clone(),
-                    context,
-                    model_facade: Arc::clone(model_facade),
-                    toolsets,
-                }) as Arc<dyn PipelineLlmAgentFactory>)
+                let direct_tool_resolver =
+                    build_direct_tool_resolver(profile.definition(), &toolsets).await?;
+                let llm_factory = context.zip(model_facade).map(|(context, model_facade)| {
+                    Arc::new(NativePipelineLlmAgentFactory {
+                        profile: profile.shell().clone(),
+                        context,
+                        model_facade,
+                        toolsets,
+                    }) as Arc<dyn PipelineLlmAgentFactory>
+                });
+                (llm_factory, direct_tool_resolver)
             } else {
                 // Pure/control graphs neither redeem a PAT nor construct an
                 // unused toolkit client.
-                drop(runtime_context);
                 drop(toolsets);
-                None
+                (None, None)
             };
             tracing::Span::current().record("stage", "state");
             assemble_pipeline_native(
@@ -248,7 +306,7 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
                 session,
                 lease,
                 &self.state,
-                llm_factory,
+                PipelineNodeRuntimes::new(llm_factory, direct_tool_resolver),
             )
             .await
         }
@@ -272,6 +330,22 @@ struct NativePipelineLlmAgentFactory {
     context: Arc<ClaimScopedEliteaContext>,
     model_facade: Arc<ModelFacade>,
     toolsets: std::collections::BTreeMap<String, Arc<dyn Toolset>>,
+}
+
+struct NativePipelineDirectToolResolver {
+    tools: BTreeMap<(String, String), Arc<dyn Tool>>,
+}
+
+impl PipelineDirectToolResolver for NativePipelineDirectToolResolver {
+    fn resolve(
+        &self,
+        selection: &DirectToolSelection,
+    ) -> Result<Arc<dyn Tool>, DirectToolExecutionError> {
+        self.tools
+            .get(&(selection.alias().to_owned(), selection.tool().to_owned()))
+            .cloned()
+            .ok_or(DirectToolExecutionError::Unavailable)
+    }
 }
 
 impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
@@ -403,6 +477,63 @@ fn toolsets_by_alias(
         }
     }
     Ok(by_alias)
+}
+
+async fn build_direct_tool_resolver(
+    definition: &PipelineDefinition,
+    toolsets: &BTreeMap<String, Arc<dyn Toolset>>,
+) -> Result<Option<Arc<dyn PipelineDirectToolResolver>>, NativeAgentAssemblyError> {
+    let selections = definition.direct_tool_selections().collect::<Vec<_>>();
+    if selections.is_empty() {
+        return Ok(None);
+    }
+    let aliases = selections
+        .iter()
+        .map(|selection| selection.alias())
+        .collect::<BTreeSet<_>>();
+    let context: Arc<dyn ReadonlyContext> =
+        Arc::new(SimpleToolContext::new("pipeline_toolkit_catalog"));
+    let mut tools = BTreeMap::new();
+    for alias in aliases {
+        let toolset = toolsets
+            .get(alias)
+            .ok_or_else(invalid_pipeline_tool_scope)?;
+        let available = tokio::time::timeout(
+            PIPELINE_TOOL_ENUMERATION_TIMEOUT,
+            toolset.tools(Arc::clone(&context)),
+        )
+        .await
+        .map_err(|_| unsupported_pipeline_runtime())?
+        .map_err(|_| unsupported_pipeline_runtime())?;
+        if available.len() > MAX_PIPELINE_MATERIALIZED_TOOLS {
+            return Err(invalid_pipeline_tool_scope());
+        }
+        let mut by_name = BTreeMap::new();
+        for tool in available {
+            if by_name.insert(tool.name().to_owned(), tool).is_some() {
+                return Err(invalid_pipeline_tool_scope());
+            }
+        }
+        for selection in selections
+            .iter()
+            .filter(|selection| selection.alias() == alias)
+        {
+            let tool = by_name
+                .get(selection.tool())
+                .cloned()
+                .ok_or_else(invalid_pipeline_tool_scope)?;
+            if !tool.is_read_only() {
+                // Direct effects need graph-native durable confirmation and an
+                // effect receipt/reconciliation owner before activation.
+                return Err(unsupported_pipeline_tool_scope());
+            }
+            tools.insert(
+                (selection.alias().to_owned(), selection.tool().to_owned()),
+                tool,
+            );
+        }
+    }
+    Ok(Some(Arc::new(NativePipelineDirectToolResolver { tools })))
 }
 
 const fn model_reasoning_effort(effort: ReasoningEffort) -> ModelReasoningEffort {

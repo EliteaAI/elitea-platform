@@ -8,6 +8,9 @@ mod agent;
 pub(crate) mod compiler;
 #[cfg(test)]
 mod compiler_tests;
+mod direct_tool;
+#[cfg(test)]
+mod direct_tool_tests;
 mod hitl;
 #[cfg(test)]
 mod hitl_tests;
@@ -26,6 +29,9 @@ mod yaml;
 pub(crate) use agent::{
     EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
     PIPELINE_COMPLETED_METADATA_VALUE, pipeline_completed_event, pipeline_result_event,
+};
+pub(crate) use direct_tool::{
+    DirectToolExecutionError, DirectToolSelection, PipelineDirectToolResolver,
 };
 pub(crate) use llm::{
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,

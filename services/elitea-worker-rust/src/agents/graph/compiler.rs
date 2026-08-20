@@ -11,7 +11,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use adk_rust::graph::{
-    Channel, Checkpointer, END, GraphAgent, GraphError, Reducer, START, State, StateSchema,
+    Channel, Checkpointer, END, GraphAgent, GraphAgentBuilder, GraphError, Reducer, START, State,
+    StateSchema,
 };
 use adk_rust::{Event, InvocationContext, Part};
 use ring::digest;
@@ -20,6 +21,10 @@ use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde_json::json;
 use thiserror::Error;
 
+use super::direct_tool::{
+    DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition, DirectToolSelection,
+    PipelineDirectToolResolver,
+};
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
 use super::llm::{LlmNode, LlmNodeDefinition, LlmToolkitSelection, PipelineLlmAgentFactory};
 use super::resume::PipelineResume;
@@ -200,8 +205,26 @@ pub(crate) struct PipelineDefinition {
     definition_digest: [u8; 32],
 }
 
+/// Invocation-owned dependencies for executable pipeline node families.
+#[derive(Clone, Default)]
+pub(crate) struct PipelineNodeRuntimes {
+    llm: Option<Arc<dyn PipelineLlmAgentFactory>>,
+    direct_tool: Option<Arc<dyn PipelineDirectToolResolver>>,
+}
+
+impl PipelineNodeRuntimes {
+    #[must_use]
+    pub(crate) const fn new(
+        llm: Option<Arc<dyn PipelineLlmAgentFactory>>,
+        direct_tool: Option<Arc<dyn PipelineDirectToolResolver>>,
+    ) -> Self {
+        Self { llm, direct_tool }
+    }
+}
+
 #[derive(Clone)]
 enum PipelineNodeDefinition {
+    DirectTool(DirectToolNodeDefinition),
     Hitl(HitlNodeDefinition),
     Llm(LlmNodeDefinition),
     StateModifier(StateModifierNodeDefinition),
@@ -210,6 +233,7 @@ enum PipelineNodeDefinition {
 impl PipelineNodeDefinition {
     fn id(&self) -> &str {
         match self {
+            Self::DirectTool(node) => node.id(),
             Self::Hitl(node) => node.id(),
             Self::Llm(node) => node.id(),
             Self::StateModifier(node) => node.id(),
@@ -218,6 +242,7 @@ impl PipelineNodeDefinition {
 
     fn input_keys(&self) -> &[String] {
         match self {
+            Self::DirectTool(node) => node.input_keys(),
             Self::Hitl(node) => node.input_keys(),
             Self::Llm(node) => node.input_keys(),
             Self::StateModifier(node) => node.input_keys(),
@@ -226,6 +251,7 @@ impl PipelineNodeDefinition {
 
     fn output_keys(&self) -> &[String] {
         match self {
+            Self::DirectTool(node) => node.output_keys(),
             Self::Hitl(_) => &[],
             Self::Llm(node) => node.output_keys(),
             Self::StateModifier(node) => node.output_keys(),
@@ -234,7 +260,7 @@ impl PipelineNodeDefinition {
 
     fn cleaned_keys(&self) -> &[String] {
         match self {
-            Self::Hitl(_) | Self::Llm(_) => &[],
+            Self::DirectTool(_) | Self::Hitl(_) | Self::Llm(_) => &[],
             Self::StateModifier(node) => node.variables_to_clean(),
         }
     }
@@ -242,12 +268,13 @@ impl PipelineNodeDefinition {
     fn edit_state_key(&self) -> Option<&str> {
         match self {
             Self::Hitl(node) => node.edit_state_key(),
-            Self::Llm(_) | Self::StateModifier(_) => None,
+            Self::DirectTool(_) | Self::Llm(_) | Self::StateModifier(_) => None,
         }
     }
 
     fn route_targets(&self) -> Vec<&str> {
         match self {
+            Self::DirectTool(node) => node.transition().into_iter().collect(),
             Self::Hitl(node) => node.route_targets().collect(),
             Self::Llm(node) => node.transition().into_iter().collect(),
             Self::StateModifier(node) => node.transition().into_iter().collect(),
@@ -256,6 +283,7 @@ impl PipelineNodeDefinition {
 
     fn config_digest(&self) -> [u8; 32] {
         match self {
+            Self::DirectTool(node) => node.config_digest(),
             Self::Hitl(node) => node.config_digest(),
             Self::Llm(node) => node.config_digest(),
             Self::StateModifier(node) => node.config_digest(),
@@ -343,7 +371,19 @@ impl PipelineDefinition {
     pub(crate) fn llm_tool_selections(&self) -> impl Iterator<Item = &LlmToolkitSelection> {
         self.nodes.iter().flat_map(|node| match node {
             PipelineNodeDefinition::Llm(node) => node.tool_selections(),
-            PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::StateModifier(_) => &[],
+            PipelineNodeDefinition::DirectTool(_)
+            | PipelineNodeDefinition::Hitl(_)
+            | PipelineNodeDefinition::StateModifier(_) => &[],
+        })
+    }
+
+    /// Exact configured toolkit actions selected by direct Toolkit nodes.
+    pub(crate) fn direct_tool_selections(&self) -> impl Iterator<Item = &DirectToolSelection> {
+        self.nodes.iter().filter_map(|node| match node {
+            PipelineNodeDefinition::DirectTool(node) => Some(node.selection()),
+            PipelineNodeDefinition::Hitl(_)
+            | PipelineNodeDefinition::Llm(_)
+            | PipelineNodeDefinition::StateModifier(_) => None,
         })
     }
 
@@ -354,9 +394,26 @@ impl PipelineDefinition {
             .any(|node| matches!(node, PipelineNodeDefinition::Llm(_)))
     }
 
+    #[must_use]
+    pub(crate) fn has_direct_tool_nodes(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| matches!(node, PipelineNodeDefinition::DirectTool(_)))
+    }
+
     pub(crate) fn llm_toolkit_aliases(&self) -> BTreeSet<String> {
         self.llm_tool_selections()
             .map(|selection| selection.alias().to_owned())
+            .collect()
+    }
+
+    pub(crate) fn runtime_toolkit_aliases(&self) -> BTreeSet<String> {
+        self.llm_toolkit_aliases()
+            .into_iter()
+            .chain(
+                self.direct_tool_selections()
+                    .map(|selection| selection.alias().to_owned()),
+            )
             .collect()
     }
 
@@ -367,7 +424,12 @@ impl PipelineDefinition {
         checkpointer: Arc<dyn Checkpointer>,
         resume: Option<PipelineResume>,
     ) -> Result<GraphAgent, PipelineConfigurationError> {
-        self.compile_with_llm_runtime(agent_name, checkpointer, resume, None)
+        self.compile_with_runtime(
+            agent_name,
+            checkpointer,
+            resume,
+            &PipelineNodeRuntimes::default(),
+        )
     }
 
     /// Compile with the invocation-owned model/tool factory required by LLM
@@ -379,11 +441,55 @@ impl PipelineDefinition {
         resume: Option<PipelineResume>,
         llm_factory: Option<&Arc<dyn PipelineLlmAgentFactory>>,
     ) -> Result<GraphAgent, PipelineConfigurationError> {
+        self.compile_with_runtime(
+            agent_name,
+            checkpointer,
+            resume,
+            &PipelineNodeRuntimes::new(llm_factory.cloned(), None),
+        )
+    }
+
+    /// Compile with invocation-owned model and direct-tool runtimes.
+    pub(crate) fn compile_with_runtime(
+        &self,
+        agent_name: &str,
+        checkpointer: Arc<dyn Checkpointer>,
+        resume: Option<PipelineResume>,
+        runtimes: &PipelineNodeRuntimes,
+    ) -> Result<GraphAgent, PipelineConfigurationError> {
         if !valid_graph_id(agent_name) {
             return Err(PipelineConfigurationError::Invalid(
                 "the pipeline agent name is malformed",
             ));
         }
+        let state_schema = self.state_schema(self.runtime_channels());
+        let result_policy = self.result_policy();
+        let mut builder = GraphAgent::builder(agent_name)
+            .description("Elitea stored pipeline")
+            .state_schema(state_schema)
+            .edge(START, &self.entry_point)
+            .checkpointer_arc(checkpointer)
+            .recursion_limit(PIPELINE_RECURSION_LIMIT)
+            .max_concurrency(1)
+            .output_mapper(move |state| {
+                vec![pipeline_completion_event_from_state(state, &result_policy)]
+            });
+        for node in &self.nodes {
+            builder = self.bind_node(builder, node, runtimes)?;
+        }
+        if let Some(resume) = resume {
+            let resume_state = resume.into_state();
+            builder = builder
+                .input_mapper(move |context| invocation_state(context, None, Some(&resume_state)));
+        } else {
+            let defaults = self.state_defaults.clone();
+            builder = builder
+                .input_mapper(move |context| invocation_state(context, Some(&defaults), None));
+        }
+        builder.build().map_err(PipelineConfigurationError::Graph)
+    }
+
+    fn runtime_channels(&self) -> BTreeSet<String> {
         let mut channels = BTreeSet::from([
             "input".to_owned(),
             "messages".to_owned(),
@@ -410,67 +516,75 @@ impl PipelineDefinition {
                 channels.insert(key.to_owned());
             }
         }
-        let state_schema = self.state_schema(channels);
-        let result_policy = self.result_policy();
-        let mut builder = GraphAgent::builder(agent_name)
-            .description("Elitea stored pipeline")
-            .state_schema(state_schema)
-            .edge(START, &self.entry_point)
-            .checkpointer_arc(checkpointer)
-            .recursion_limit(PIPELINE_RECURSION_LIMIT)
-            .max_concurrency(1)
-            .output_mapper(move |state| {
-                vec![pipeline_completion_event_from_state(state, &result_policy)]
-            });
-        for node in &self.nodes {
-            builder = match node {
-                PipelineNodeDefinition::Hitl(node) => builder.node(HitlNode::new(node.clone())),
-                PipelineNodeDefinition::Llm(node) => {
-                    let Some(factory) = llm_factory.cloned() else {
-                        return Err(PipelineConfigurationError::Unsupported(
-                            "the pipeline LLM runtime is not bound to this compiler",
-                        ));
+        channels
+    }
+
+    fn bind_node(
+        &self,
+        builder: GraphAgentBuilder,
+        node: &PipelineNodeDefinition,
+        runtimes: &PipelineNodeRuntimes,
+    ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
+        Ok(match node {
+            PipelineNodeDefinition::DirectTool(node) => {
+                let Some(resolver) = runtimes.direct_tool.clone() else {
+                    return Err(PipelineConfigurationError::Unsupported(
+                        "the pipeline Toolkit runtime is not bound to this compiler",
+                    ));
+                };
+                let transition = node.transition().map(ToOwned::to_owned);
+                let node_id = node.id().to_owned();
+                let mut next = builder.node(DirectToolNode::new(
+                    node.clone(),
+                    self.state.clone(),
+                    resolver,
+                ));
+                if let Some(transition) = transition {
+                    let target = if transition == "END" {
+                        END
+                    } else {
+                        transition.as_str()
                     };
-                    let transition = node.transition().map(ToOwned::to_owned);
-                    let node_id = node.id().to_owned();
-                    let mut next =
-                        builder.node(LlmNode::new(node.clone(), self.state.clone(), factory));
-                    if let Some(transition) = transition {
-                        let target = if transition == "END" {
-                            END
-                        } else {
-                            transition.as_str()
-                        };
-                        next = next.edge(&node_id, target);
-                    }
-                    next
+                    next = next.edge(&node_id, target);
                 }
-                PipelineNodeDefinition::StateModifier(node) => {
-                    let transition = node.transition().map(ToOwned::to_owned);
-                    let node_id = node.id().to_owned();
-                    let mut next = builder.node(StateModifierNode::new(node.clone()));
-                    if let Some(transition) = transition {
-                        let target = if transition == "END" {
-                            END
-                        } else {
-                            transition.as_str()
-                        };
-                        next = next.edge(&node_id, target);
-                    }
-                    next
+                next
+            }
+            PipelineNodeDefinition::Hitl(node) => builder.node(HitlNode::new(node.clone())),
+            PipelineNodeDefinition::Llm(node) => {
+                let Some(factory) = runtimes.llm.clone() else {
+                    return Err(PipelineConfigurationError::Unsupported(
+                        "the pipeline LLM runtime is not bound to this compiler",
+                    ));
+                };
+                let transition = node.transition().map(ToOwned::to_owned);
+                let node_id = node.id().to_owned();
+                let mut next =
+                    builder.node(LlmNode::new(node.clone(), self.state.clone(), factory));
+                if let Some(transition) = transition {
+                    let target = if transition == "END" {
+                        END
+                    } else {
+                        transition.as_str()
+                    };
+                    next = next.edge(&node_id, target);
                 }
-            };
-        }
-        if let Some(resume) = resume {
-            let resume_state = resume.into_state();
-            builder = builder
-                .input_mapper(move |context| invocation_state(context, None, Some(&resume_state)));
-        } else {
-            let defaults = self.state_defaults.clone();
-            builder = builder
-                .input_mapper(move |context| invocation_state(context, Some(&defaults), None));
-        }
-        builder.build().map_err(PipelineConfigurationError::Graph)
+                next
+            }
+            PipelineNodeDefinition::StateModifier(node) => {
+                let transition = node.transition().map(ToOwned::to_owned);
+                let node_id = node.id().to_owned();
+                let mut next = builder.node(StateModifierNode::new(node.clone()));
+                if let Some(transition) = transition {
+                    let target = if transition == "END" {
+                        END
+                    } else {
+                        transition.as_str()
+                    };
+                    next = next.edge(&node_id, target);
+                }
+                next
+            }
+        })
     }
 
     /// Build the native ADK state schema for runtime-owned and user channels.
@@ -530,6 +644,7 @@ impl PipelineDefinition {
         let mut keys = Vec::new();
         for node in &self.nodes {
             let (transition, output_keys) = match node {
+                PipelineNodeDefinition::DirectTool(node) => (node.transition(), node.output_keys()),
                 PipelineNodeDefinition::Llm(node) => (node.transition(), node.output_keys()),
                 PipelineNodeDefinition::StateModifier(node) => {
                     (node.transition(), node.output_keys())
@@ -740,6 +855,9 @@ fn parse_pipeline_node(
     let encoded = serde_yaml_ng::to_string(raw_node)
         .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
     match node_type {
+        "toolkit" => DirectToolNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::DirectTool)
+            .map_err(|_| PipelineConfigurationError::Invalid("a Toolkit node is invalid")),
         "hitl" => HitlNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::Hitl)
             .map_err(|_| PipelineConfigurationError::Invalid("a HITL node is invalid")),
@@ -773,20 +891,35 @@ fn validate_node_state(
             ));
         }
     }
-    if let PipelineNodeDefinition::Llm(node) = node {
-        node.output_schema(state).map_err(|_| {
-            PipelineConfigurationError::Invalid("an LLM node output schema is invalid")
-        })?;
-        for mapping in node.input_mapping().values() {
-            if let super::llm::LlmInputMapping::Variable(key) = mapping
-                && !builtin_state_key(key)
-                && !state.contains_key(key)
-            {
-                return Err(PipelineConfigurationError::Invalid(
-                    "an LLM input mapping variable is not declared in pipeline state",
-                ));
+    match node {
+        PipelineNodeDefinition::DirectTool(node) => {
+            for mapping in node.input_mapping().values() {
+                if let DirectToolInputMapping::Variable(key) = mapping
+                    && !builtin_state_key(key)
+                    && !state.contains_key(key)
+                {
+                    return Err(PipelineConfigurationError::Invalid(
+                        "a Toolkit input mapping variable is not declared in pipeline state",
+                    ));
+                }
             }
         }
+        PipelineNodeDefinition::Llm(node) => {
+            node.output_schema(state).map_err(|_| {
+                PipelineConfigurationError::Invalid("an LLM node output schema is invalid")
+            })?;
+            for mapping in node.input_mapping().values() {
+                if let super::llm::LlmInputMapping::Variable(key) = mapping
+                    && !builtin_state_key(key)
+                    && !state.contains_key(key)
+                {
+                    return Err(PipelineConfigurationError::Invalid(
+                        "an LLM input mapping variable is not declared in pipeline state",
+                    ));
+                }
+            }
+        }
+        PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::StateModifier(_) => {}
     }
     if node
         .edit_state_key()
@@ -959,6 +1092,7 @@ fn definition_digest(
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());
         let kind = match node {
+            PipelineNodeDefinition::DirectTool(_) => b"toolkit".as_slice(),
             PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
             PipelineNodeDefinition::Llm(_) => b"llm".as_slice(),
             PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),

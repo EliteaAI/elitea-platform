@@ -32,7 +32,7 @@ accepted by `create_graph`.
 | `printer` | Publish the declared state value, durably pause after it where configured, then clear the printer marker without duplicating browser output. Pending |
 | `router` | Render bounded configured routes from state and choose only a declared target. Pending |
 | `state_modifier` | Render one bounded MiniJinja template with the four current SDK filters, update the first declared output using the existing state type, and clear declared variables by type. When its explicit route targets the `END` control-flow sink, that output is also a public-result candidate. Implemented capability-disabled |
-| `toolkit` | Execute the exact selected tool from the selected configured toolkit with state input/output mapping. Sensitive-tool policy remains independent of the node label. Pending |
+| `toolkit` | Execute the exact selected read-only tool from the selected configured toolkit with fixed/state/template argument mapping and declared typed output projection. It is one native ADK `Tool` call, not an `LlmAgent` turn. Implemented capability-disabled; sensitive tools and remote effects remain fail-closed until graph-native confirmation plus effect receipts can resume the same checkpoint. |
 
 The UI marks `function`, `condition`, `pipeline`, `loop`, `loop_from_tool` and
 `tool` deprecated and removes them from the add menu. `END`, `ghost` and
@@ -44,8 +44,9 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 
 | Python source branch / symbol | Current observable behavior | Rust target | ADK-Rust 2.0.0 use | Status / deliberate deviation |
 | --- | --- | --- | --- | --- |
-| `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml,llm}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl`, `state_modifier` and `llm`. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order and LLM-node mapping/tool/output settings. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
-| Node types `function`, `toolkit`, `mcp` -> `FunctionTool` | Map selected state inputs to one direct tool and project declared outputs | `src/agents/graph/nodes/direct_tool.rs`, `src/toolkits/registry.rs` | ADK `Tool` and `Toolset` | Planned; workload credentials and sensitive policy remain Elitea-owned |
+| `create_graph` plus `utils.py::{create_state,_hitl_decisions_reducer,_parallel_tasks_reducer}`: YAML load, state construction, node loop and entry point | Load `state`, state defaults, `entry_point`, `nodes`, interrupts and graph edges; keep runtime-owned channels separate from user variables | `src/agents/graph/{compiler,yaml,llm,direct_tool}.rs` | `StateGraph`, `StateSchema`, `Channel` and native ADK reducers | Complete-document compiler implemented for dynamic `hitl`, `state_modifier`, `llm` and configured `toolkit` nodes. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates state types/defaults, the entry point, references, unique IDs and every route before graph construction; and binds a definition digest that includes behaviorally significant state declaration order plus node mapping/tool/output settings. `messages` uses ADK list/append reduction, HITL decisions use append-or-clear and parallel task records use merge-or-clear; internal channels cannot be redefined by YAML. Every other node family and static interrupt fails closed before execution authority is built |
+| Node type `toolkit` -> `FunctionTool` | Map fixed, state-variable or `{name}` template values to one exact configured-tool argument object, execute once, and project declared outputs | `src/agents/graph/{direct_tool,compiler}.rs`, `src/agents/{pipeline,session}.rs`, `src/toolkits/{snapshot,materialize}.rs` | Native ADK `Tool`/`ToolContext`, claim-materialized `Toolset`, graph state and ordinary edges | Implemented capability-disabled for read-only actions. Alias, configured selection, blocked and sensitive policy are admitted before credential redemption; exact catalog identity and read-only metadata are checked after bounded materialization and before graph execution. Empty outputs append a bounded assistant message; ordinary outputs retain the active SDK first-output/messages projection; `structured_output: true` deliberately repairs the UI/SDK mismatch by requiring same-named, state-type-correct object fields. Rust does not port `FunctionTool`'s mutable wrapper, broad exception-as-assistant-message leak, silent type corruption or post-result model turn. Effects and direct sensitive confirmation remain gated |
+| Node types `function`, `mcp` -> `FunctionTool` | Execute a legacy function or selected MCP tool with declared state mapping | Future typed function/MCP nodes | ADK `Tool`/MCP toolset plus graph interrupts | Pending. MCP OAuth/on-demand authorization must resume the exact outer graph checkpoint; it is not folded into the configured Toolkit node |
 | Node type `tool` -> `ToolNode` | Direct selected-tool execution with structured-output option | `src/agents/graph/nodes/tool.rs` | ADK typed tool | Planned |
 | Node type `loop` -> `LoopNode` | Repeated tool work and declared state projection | `src/agents/graph/nodes/loop.rs` | ADK loop and graph primitives where semantics match | Planned; ADK's sequential `LoopNodeConfig.parallel` is not true parallelism |
 | Node type `loop_from_tool` -> `LoopToolNode` | One tool supplies items and another processes iterations | `src/agents/graph/nodes/loop_from_tool.rs` | ADK custom node plus tools | Planned |
@@ -86,18 +87,20 @@ an unreviewed `ActionNodeConfig` pass-through.
 ## Initial active-node compiler slices
 
 `PipelineDefinition::from_yaml` now admits a complete frozen pipeline document
-when every executable node is a bounded dynamic `hitl`, `state_modifier` or
-`llm` node. An LLM-bearing document can compile only when the assembler supplies
-the invocation-owned node factory; a pure/control graph never redeems model or
-tool authority.
+when every executable node is a bounded dynamic `hitl`, `state_modifier`, `llm`
+or configured `toolkit` node. An LLM-bearing document can compile only when the
+assembler supplies the invocation-owned node factory; a Toolkit-bearing
+document requires one exact materialized direct-tool resolver. A pure/control
+graph never redeems model or tool authority.
 `AuthorizedNativeAssembly::admit_pipeline` selects only a frozen application
 whose `version_details.agent_type` is `pipeline`, validates the complete YAML
 before PAT, model, tool or state construction, and retains the claim-bound
 runtime/session authorities for the graph assembler. It rejects direct agents
 and every unsupported node rather than falling through to the ordinary
 `LlmAgent` path. Frozen top-level tool references remain only an inventory:
-each pipeline LLM node authority-reduces it to its own compiler-selected aliases
-and concrete names; this is not the ad-hoc binding rule.
+each pipeline LLM or Toolkit node authority-reduces it to its own
+compiler-selected aliases and concrete names; this is not the ad-hoc binding
+rule.
 
 It derives typed state defaults and channels, builds `START -> entry_point`,
 registers every node, validates all action/transition targets and compiles an
@@ -117,7 +120,11 @@ append, terminal-data precedence, assistant-message selection and deterministic
 zero-LLM state fallback. LLM fixtures cover current UI mapping, legacy messages
 input, bounded text blocks, exact selected-tool order, structured and plain
 state projection, missing-tool rejection and a real compiled graph checkpoint.
-Reducer fixtures cover HITL append/clear and parallel
+Toolkit fixtures cover current UI fixed/variable/template mappings, exact
+alias/action admission, checkpoint-stable `pipeline:<node>:<step>` call identity, one-call
+execution, legacy and repaired structured projection, type/bound failures,
+read-only enforcement and a real compiled graph checkpoint without a model
+turn. Reducer fixtures cover HITL append/clear and parallel
 task merge/clear semantics. Admission fixtures prove the stored
 application selector, graph-decision identity and fail-closed tool/node
 boundary. The assembler e2e consumes one state grant, pauses, projects a browser
@@ -154,6 +161,27 @@ semantics. The remaining deliberate gate is mid-node durable tool/MCP
 authorization: selected sensitive or blocked tools are rejected before
 redemption until the inner ADK call ID can resume through the outer graph
 checkpoint without provider replanning.
+
+## Native configured Toolkit-node boundary
+
+The active UI Toolkit node is a direct action, so Rust compiles it as one ADK
+graph `Node` around one exact claim-materialized `Tool`. It does not create an
+`LlmAgent`, expose the rest of the toolkit, or ask a model to reinterpret the
+result. The tool context preserves the parent invocation/session/user identity,
+scopes, memory, artifacts and described secret access, while the stable
+`pipeline:<node-id>:<graph-step>` function-call identity leaves a clear seam for the later
+graph confirmation owner.
+
+The active SDK `FunctionTool` converts broad exceptions into assistant messages
+containing raw arguments, schemas and dependency text. Rust returns one stable,
+data-free graph failure instead. It also validates declared output state types
+rather than checkpointing an incompatible value. The UI exposes
+`structured_output` for Toolkit nodes but Python never forwards it to
+`FunctionTool`; Rust deliberately makes the flag meaningful by accepting only
+an object with every declared non-message key. Remote effects and sensitive
+reads are not downgraded to direct calls: both remain unavailable until an
+interrupt-bound confirmation and, for effects, durable outcome reconciliation
+can preserve the same graph checkpoint.
 
 `START` and `END` remain only the graph's entry and sink sentinels. Public
 result selection is a separate policy matching the current SDK's business

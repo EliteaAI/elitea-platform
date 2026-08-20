@@ -110,6 +110,42 @@ fn llm_pipeline_request(
     request
 }
 
+fn toolkit_pipeline_request(
+    toolkit_alias: &str,
+    configured_tools: &[&str],
+    node_tool: &str,
+) -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    let definition = format!(
+        "state:\n  records: dict\n  messages: list\nentry_point: direct\nnodes:\n  - id: direct\n    type: toolkit\n    toolkit_name: {toolkit_alias:?}\n    tool: {node_tool:?}\n    input_mapping:\n      repository: {{type: fixed, value: group/project}}\n    output: [records, messages]\n    transition: END\n"
+    );
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert("instructions".to_owned(), json!(definition));
+    version.insert(
+        "tools".to_owned(),
+        json!([{
+            "id": 91,
+            "type": "gitlab_org",
+            "toolkit_name": "release_repository",
+            "settings": {
+                "gitlab_configuration": {
+                    "url": "https://gitlab.example.invalid",
+                    "private_token": "claim-materialized-token"
+                },
+                "repositories": "group/project",
+                "branch": "main",
+                "selected_tools": configured_tools
+            }
+        }]),
+    );
+    request
+}
+
 fn runtime_tool_policy(value: &Value) -> ToolAdmissionPolicy {
     let runtime = value.as_object().expect("runtime policy object");
     ToolAdmissionPolicy::from_runtime_config(runtime).expect("runtime tool policy")
@@ -301,6 +337,70 @@ fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
             NativeAgentAssemblyErrorCode::UnsupportedCapability
         );
     }
+}
+
+#[test]
+fn toolkit_node_scope_is_exact_and_sensitive_authority_fails_before_materialization() {
+    let allowed = toolkit_pipeline_request("release_repository", &["get_issues"], "get_issues");
+    let empty_policy = runtime_tool_policy(&json!({}));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&empty_policy)
+        .expect("exact frozen direct Toolkit scope");
+
+    for invalid in [
+        toolkit_pipeline_request("other_repository", &["get_issues"], "get_issues"),
+        toolkit_pipeline_request(
+            "release_repository",
+            &["list_branches_in_repo"],
+            "get_issues",
+        ),
+    ] {
+        let error = admission_error(authorized(&invalid).admit_pipeline_with_policy(&empty_policy));
+        assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    }
+
+    for policy in [
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"blocked_toolkits": ["gitlab_org"]}
+        })),
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"blocked_tools": {"gitlab_org": ["get_issues"]}}
+        })),
+        runtime_tool_policy(&json!({
+            "toolkit_security": {"sensitive_tools": {"gitlab_org": ["get_issues"]}}
+        })),
+    ] {
+        let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&policy));
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
+}
+
+#[tokio::test]
+async fn toolkit_node_materializes_read_only_action_but_rejects_remote_effect() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::new(MemoryCheckpointer::new()),
+    );
+    let read = toolkit_pipeline_request("release_repository", &["get_issues"], "get_issues");
+    assembler
+        .assemble(authorized(&read))
+        .await
+        .expect("read-only direct Toolkit assembly");
+
+    let effect =
+        toolkit_pipeline_request("release_repository", &["create_branch"], "create_branch");
+    let result = assembler.assemble(authorized(&effect)).await;
+    let Err(error) = result else {
+        panic!("effectful direct Toolkit node was assembled");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
 }
 
 struct NamedReadTool(&'static str);
