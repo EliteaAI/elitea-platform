@@ -568,7 +568,6 @@ impl AgentEventProjector {
         event: &Event,
         payload: &GraphInterruptPayload,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
-        validate_graph_interrupt_event(event, &self.context.root_agent_name)?;
         if !matches!(
             self.state,
             ProjectionState::Started | ProjectionState::Complete(_)
@@ -576,32 +575,18 @@ impl AgentEventProjector {
         {
             return Err(AgentEventProjectionError::invalid_state());
         }
-        if payload.kind != "dynamic"
-            || payload.node.is_some()
-            || payload.thread_id != self.context.thread_id
-            || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
-        {
-            return Err(AgentEventProjectionError::invalid_state());
-        }
-        let message = payload
-            .message
-            .as_deref()
-            .ok_or_else(AgentEventProjectionError::invalid_state)?;
-        validate_pipeline_hitl_message(message)?;
-        let data = serde_json::from_value::<PipelineHitlData>(
-            payload
-                .data
-                .clone()
-                .ok_or_else(AgentEventProjectionError::invalid_state)?,
-        )
-        .map_err(|_| AgentEventProjectionError::invalid_state())?;
-        data.validate(message)?;
-        let (interrupt_id, decision_digest) =
-            pipeline_hitl_identity(&event.invocation_id, payload, &data)?;
+        let binding = pipeline_hitl_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            &self.context.thread_id,
+        )?;
+        let data = binding.data;
+        let message = data.message.clone();
         let pending = json!({
             "type": "hitl",
-            "interrupt_id": interrupt_id,
-            "call_digest": decision_digest,
+            "interrupt_id": binding.interrupt_id,
+            "call_digest": binding.call_digest,
             "guardrail_type": "pipeline_hitl",
             "node_name": data.node_name,
             "message": data.message,
@@ -613,7 +598,7 @@ impl AgentEventProjector {
         let metadata = json!({
             "thread_id": self.context.thread_id,
             "chat_project_id": self.context.chat_project_id,
-            "message": message,
+            "message": data.message,
             "hitl_interrupt": pending,
             "hitl_interrupts": [pending],
             "node_name": data.node_name,
@@ -624,7 +609,7 @@ impl AgentEventProjector {
         let mut batch = ProjectedAgentEventBatch::new();
         batch.push(self.event(
             "agent_hitl_interrupt",
-            &Value::String(message.to_owned()),
+            &Value::String(message),
             None,
             &metadata,
             event.timestamp,
@@ -1169,6 +1154,97 @@ impl PipelineHitlData {
         }
         Ok(())
     }
+}
+
+/// Exact private graph interrupt identity reconstructed from one persisted ADK
+/// event. Browser projection exposes only `interrupt_id`; checkpoint routing
+/// stays on the worker side.
+pub(crate) struct PipelineHitlEventBinding {
+    interrupt_id: String,
+    call_digest: String,
+    checkpoint_id: String,
+    data: PipelineHitlData,
+}
+
+impl PipelineHitlEventBinding {
+    #[must_use]
+    pub(crate) fn interrupt_id(&self) -> &str {
+        &self.interrupt_id
+    }
+
+    #[must_use]
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    #[must_use]
+    pub(crate) fn node_name(&self) -> &str {
+        &self.data.node_name
+    }
+
+    #[must_use]
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.data.definition_digest
+    }
+
+    #[must_use]
+    pub(crate) fn allows(&self, action: &str) -> bool {
+        self.data
+            .available_actions
+            .iter()
+            .any(|candidate| candidate == action)
+    }
+}
+
+/// Validate and bind a persisted graph interrupt without projecting it again.
+///
+/// This is the restart boundary used by the pipeline resume adapter. It shares
+/// the exact parser and digest with browser projection so those paths cannot
+/// disagree about which checkpoint a public interrupt authorizes.
+pub(crate) fn pipeline_hitl_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineHitlEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_hitl_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
+fn pipeline_hitl_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineHitlEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let message = payload
+        .message
+        .as_deref()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    validate_pipeline_hitl_message(message)?;
+    let data = serde_json::from_value::<PipelineHitlData>(
+        payload
+            .data
+            .clone()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )
+    .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    data.validate(message)?;
+    let (interrupt_id, call_digest) = pipeline_hitl_identity(&event.invocation_id, payload, &data)?;
+    Ok(PipelineHitlEventBinding {
+        interrupt_id,
+        call_digest,
+        checkpoint_id: payload.checkpoint_id.clone(),
+        data,
+    })
 }
 
 fn validate_graph_interrupt_event(

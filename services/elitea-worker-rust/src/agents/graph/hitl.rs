@@ -206,6 +206,16 @@ impl HitlNodeDefinition {
             .collect()
     }
 
+    /// Configured successors used by the whole-document compiler.
+    pub(crate) fn route_targets(&self) -> impl Iterator<Item = &str> {
+        self.routes.iter().map(|(_, target)| target)
+    }
+
+    /// Stable node-definition digest used by the pipeline definition lineage.
+    pub(crate) const fn config_digest(&self) -> [u8; 32] {
+        self.config_digest
+    }
+
     fn action_is_available(&self, action: HitlAction) -> bool {
         match action {
             HitlAction::Edit => {

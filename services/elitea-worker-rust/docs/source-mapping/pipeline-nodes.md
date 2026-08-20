@@ -16,7 +16,7 @@ intentional product addition requested for the Rust runtime.
 
 | Python source branch / symbol | Current observable behavior | Rust target | ADK-Rust 2.0.0 use | Status / deliberate deviation |
 | --- | --- | --- | --- | --- |
-| `create_graph`: YAML load, state creation, node loop, entry point | Load `state`, `entry_point`, `nodes`, interrupts and graph edges | `src/agents/graph/compiler.rs`, `src/agents/graph/yaml.rs` | `StateGraph`, state channels and reducers | Compiler planned. `yaml.rs` currently implements only the strict `parallel` mapping; the parser is bounded and rejects unknown fields |
+| `create_graph`: YAML load, state creation, node loop, entry point | Load `state`, `entry_point`, `nodes`, interrupts and graph edges | `src/agents/graph/{compiler,yaml}.rs` | `StateGraph`, state channels and reducers | Initial complete-document compiler implemented for dynamic `hitl` nodes only. It bounds the YAML at 512 KiB, nodes at 128 and declared state keys at 256; validates the entry point, state references, unique IDs and every route before graph construction; and binds a canonical definition digest. Every other node family and static interrupt fails closed before execution authority is built |
 | Node types `function`, `toolkit`, `mcp` -> `FunctionTool` | Map selected state inputs to one direct tool and project declared outputs | `src/agents/graph/nodes/direct_tool.rs`, `src/toolkits/registry.rs` | ADK `Tool` and `Toolset` | Planned; workload credentials and sensitive policy remain Elitea-owned |
 | Node type `tool` -> `ToolNode` | Direct selected-tool execution with structured-output option | `src/agents/graph/nodes/tool.rs` | ADK typed tool | Planned |
 | Node type `loop` -> `LoopNode` | Repeated tool work and declared state projection | `src/agents/graph/nodes/loop.rs` | ADK loop and graph primitives where semantics match | Planned; ADK's sequential `LoopNodeConfig.parallel` is not true parallelism |
@@ -29,11 +29,29 @@ intentional product addition requested for the Rust runtime.
 | Node types `router`, `decision` | Select one configured route from state or model output | `src/agents/graph/nodes/router.rs` | ADK conditional edges and `NodeOutput::with_goto` | Planned |
 | Node type `state_modifier` -> `StateModifierNode` | Apply a declared template and remove selected variables | `src/agents/graph/nodes/state_modifier.rs` | ADK custom node/reducers | Planned with closed mappings and bounded templates |
 | Node type `printer` plus reset node | Publish printer output, pause after it, then clear its marker | `src/agents/graph/nodes/printer.rs`, `src/agents/hitl.rs` | ADK event plus checkpointed interrupt | Planned; output must pass through `NodeEventV1` and durable ACK |
-| Node type `hitl` -> `HITLNode` | Durable user choice, optional state edit and route | `src/agents/hitl.rs`, `src/agents/graph/nodes/hitl.rs` | ADK interrupt/checkpoint | Planned; a decision binds the current interrupt ID, never tool name and arguments alone |
+| Node type `hitl` -> `HITLNode` | Durable user choice, optional state edit and route | `src/agents/graph/{hitl,resume}.rs`, `src/agents/events.rs` | ADK `interrupt_with_data`, graph checkpoint/resume and `goto` | Initial compiler path implemented. A fresh graph agent resolves one Main-authorized decision only against the latest persisted interrupt event and the exact latest checkpoint/thread/pending node/definition digest. Stale, advanced, tampered or already-consumed decisions fail closed; `block_with_comment` follows the configured reject route without publishing the comment |
 | Node type `custom` | UI editing placeholder rejected at execution with supported-type guidance | `src/agents/graph/compiler.rs` rejection | None | Preserve rejection; it is not an executable Rust node |
-| `transition`, `decision`, `condition` edge blocks | Unconditional or conditional successor selection, including `END` | `src/agents/graph/compiler.rs`, `src/agents/graph/edges.rs` | ADK edges and `goto` | Planned with target validation before execution |
-| `interrupt_before`, `interrupt_after`, printer successor analysis | Pause/resume at the current node or successor without false crash classification | `src/agents/hitl.rs`, `src/agents/graph/compiler.rs` | ADK static interrupts/checkpoints | Planned; exact current interrupt identity remains Elitea-owned |
+| `transition`, `decision`, `condition` edge blocks | Unconditional or conditional successor selection, including `END` | `src/agents/graph/compiler.rs`, future `src/agents/graph/edges.rs` | ADK edges and `goto` | HITL action routes and `END` are implemented and validated before graph construction. General transition/decision/condition compilation remains planned |
+| `interrupt_before`, `interrupt_after`, printer successor analysis | Pause/resume at the current node or successor without false crash classification | `src/agents/graph/compiler.rs`, future static-interrupt adapter | ADK static interrupts/checkpoints | Explicitly rejected by the initial compiler. Exact browser projection, decision identity and restart semantics must be proven before activation |
 | `type: parallel` (absent in Python) | Bounded concurrent branch graphs, wait for all, declared-order result, fail after admitted siblings drain, crash-safe completed-branch reuse | `src/agents/graph/yaml.rs`, `src/agents/graph/parallel.rs`, `src/state/postgres_checkpointer/parallel_children.rs` | Custom ADK `Node`; separately checkpointed child `CompiledGraph` per branch | Core implemented. Full compiler plan construction remains. V1 rejects pausing branches and `wait: one`/`many` |
+
+## Initial HITL-only compiler slice
+
+`PipelineDefinition::from_yaml` now admits a complete frozen pipeline document,
+but only when every executable node is the already bounded dynamic `hitl` node.
+It derives state channels, builds `START -> entry_point`, registers every node,
+validates all action targets and compiles an invocation-owned ADK `GraphAgent`
+with an injected `Checkpointer`. A fresh graph instance can resume the exact
+latest checkpoint through `PipelineHitlDecision`; no caller-supplied checkpoint
+identifier is trusted.
+
+The focused corpus reconstructs the graph twice around two sequential pauses
+through the real common `Runner` and injected `SessionService`, proves final
+completion and one-use decisions, and rejects stale identities and unsupported
+node/static-interrupt documents. Production assembly still has to inject the
+claim-fenced PostgreSQL session/checkpoint adapters. If the process stops after
+the Runner appends the continuation user event but before the graph advances,
+the exact suffix-recovery rule also remains an activation gate.
 
 ## Parallel YAML v1
 

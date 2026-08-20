@@ -5,12 +5,16 @@
 //! `Checkpoint` model.
 
 mod agent;
+mod compiler;
+#[cfg(test)]
+mod compiler_tests;
 mod hitl;
 #[cfg(test)]
 mod hitl_tests;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;
+mod resume;
 mod yaml;
 
 pub use yaml::{
