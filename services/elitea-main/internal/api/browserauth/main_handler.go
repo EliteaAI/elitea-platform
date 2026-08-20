@@ -39,6 +39,21 @@ type MainAuthorizer interface {
 type MainConfig struct {
 	CredentialHeaders  []CredentialHeader
 	AccessDeniedTarget string
+	// PublicOrigin is the origin a BROWSER reaches this deployment on, and it
+	// is what makes this handler's redirects usable.
+	//
+	// The redirects below were relative. A ForwardAuth response is consumed by
+	// the EDGE, not by the browser, and an edge resolves a relative Location
+	// against the address it called — which is this service's INTERNAL
+	// address. Traefik handed browsers
+	//   http://elitea-main.elitea.svc.cluster.local:8080/forward-auth/login?...
+	// and the browser answered ERR_NAME_NOT_RESOLVED, because that name exists
+	// only inside the cluster. Every deployment that puts this endpoint behind
+	// a proxy hits this, which is every deployment that uses it at all.
+	//
+	// Empty keeps the previous relative form, for a caller that reaches this
+	// handler directly.
+	PublicOrigin string
 }
 
 // MainHandler translates one trusted gateway request into the typed in-process
@@ -51,6 +66,7 @@ type MainHandler struct {
 	cookies            *CookiePolicy
 	credentialHeaders  []CredentialHeader
 	accessDeniedTarget string
+	publicOrigin       string
 }
 
 func NewMainHandler(
@@ -90,7 +106,18 @@ func NewMainHandler(
 		cookies:            cookies,
 		credentialHeaders:  headers,
 		accessDeniedTarget: config.AccessDeniedTarget,
+		publicOrigin:       strings.TrimSuffix(config.PublicOrigin, "/"),
 	}, nil
+}
+
+// absoluteTarget makes a same-origin path absolute against the configured
+// public origin, so the Location survives an edge that resolves a relative URL
+// against the address it called.
+func (h *MainHandler) absoluteTarget(path string) string {
+	if h.publicOrigin == "" {
+		return path
+	}
+	return h.publicOrigin + path
 }
 
 func (h *MainHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -155,10 +182,10 @@ func (h *MainHandler) ServeHTTP(writer http.ResponseWriter, request *http.Reques
 			writeProblem(writer, http.StatusServiceUnavailable)
 		}
 	case forwardapp.DecisionDeny:
-		http.Redirect(writer, request, h.accessDeniedTarget, http.StatusFound)
+		http.Redirect(writer, request, h.absoluteTarget(h.accessDeniedTarget), http.StatusFound)
 	case forwardapp.DecisionLogin:
 		query := url.Values{"target_to": {forwarded.URI}}
-		http.Redirect(writer, request, BasePath+LoginPath+"?"+query.Encode(), http.StatusFound)
+		http.Redirect(writer, request, h.absoluteTarget(BasePath+LoginPath+"?"+query.Encode()), http.StatusFound)
 	case forwardapp.DecisionDependencyFailure:
 		writeProblem(writer, http.StatusServiceUnavailable)
 	default:

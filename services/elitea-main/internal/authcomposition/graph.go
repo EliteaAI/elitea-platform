@@ -210,6 +210,10 @@ func newFormGraph(
 		browserapi.MainConfig{
 			CredentialHeaders:  credentialHeaders(config.Credentials.Headers),
 			AccessDeniedTarget: config.Redirects.MainAccessDenied,
+			// The edge resolves this handler's relative Location against the
+			// address it called, which is this service's internal one. The
+			// configuration already names the origin browsers use.
+			PublicOrigin: config.PublicOrigin,
 		},
 	)
 	if err != nil {
