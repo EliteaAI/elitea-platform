@@ -59,6 +59,28 @@ nodes:
     transition: END
 "#;
 
+const PRINTER_PIPELINE: &str = r#"
+state:
+  answer:
+    type: str
+    value: Draft ready
+  messages: list
+entry_point: show
+nodes:
+  - id: show
+    type: printer
+    input_mapping:
+      printer: {type: variable, value: answer}
+    final_message: Continue when ready.
+    transition: capture
+  - id: capture
+    type: state_modifier
+    template: "{{ input }}"
+    input: [input]
+    output: [answer]
+    transition: END
+"#;
+
 fn pipeline_request() -> super::request::AgentExecutionRequest {
     let mut request = ordinary_request(AgentExecutionKind::Application);
     let version = request
@@ -69,6 +91,24 @@ fn pipeline_request() -> super::request::AgentExecutionRequest {
         .expect("application version fixture");
     version.insert("agent_type".to_owned(), json!("pipeline"));
     version.insert("instructions".to_owned(), json!(PIPELINE));
+    request
+}
+
+fn printer_pipeline_request(
+    input: &str,
+    should_continue: bool,
+) -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    request.payload.user_input = super::request::UserInput::Text(input.to_owned());
+    request.payload.should_continue = should_continue;
+    request.payload.hitl_resume = false;
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert("instructions".to_owned(), json!(PRINTER_PIPELINE));
     request
 }
 
@@ -232,6 +272,7 @@ fn private_pipeline_session_id(request: &super::request::AgentExecutionRequest) 
         request,
         profile.shell(),
         &AuthorizedNativeCommandBinding::fixture(),
+        false,
         false,
     )
     .expect("pipeline plan")
@@ -849,6 +890,129 @@ async fn admitted_pipeline_uses_common_runner_and_resumes_exact_private_checkpoi
     let replay = pipeline_assembler.assemble(authorized(&resume)).await;
     let Err(replay) = replay else {
         panic!("completed interrupt replay was admitted");
+    };
+    assert_eq!(replay.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
+async fn assert_fresh_printer_pause(
+    assembler: &PipelineNativeAgentAssembler,
+    fresh: &super::request::AgentExecutionRequest,
+) {
+    let mut invocation = assembler
+        .assemble(authorized(fresh))
+        .await
+        .expect("fresh Printer assembly");
+    invocation
+        .project_start(timestamp(0))
+        .expect("Printer browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("Printer start");
+    let interrupt = run
+        .next_event()
+        .await
+        .expect("Printer event")
+        .expect("Printer checkpoint event");
+    assert!(
+        projector
+            .project(&interrupt)
+            .expect("Printer projection")
+            .is_empty()
+    );
+    assert!(!projector.is_paused());
+    assert!(run.next_event().await.expect("Printer EOS").is_none());
+    let selected = completion
+        .select()
+        .await
+        .expect("Printer fallback selection");
+    let output = projector
+        .finish_after_eos(selected, timestamp(1))
+        .expect("Printer public result")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        output
+            .iter()
+            .map(|event| event["type"].as_str())
+            .collect::<Vec<_>>(),
+        [Some("agent_response"), Some("full_message")]
+    );
+    assert!(
+        output
+            .iter()
+            .all(|event| { event["content"] == "Draft ready\n\n-----\n*Continue when ready.*" })
+    );
+    assert_eq!(output[1]["response_metadata"]["should_continue"], false);
+    assert_eq!(output[1]["response_metadata"]["hitl_resume"], false);
+}
+
+#[tokio::test]
+async fn printer_uses_the_common_runner_as_a_nonterminal_result_then_resumes_from_user_text() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let assembler =
+        PipelineNativeAgentAssembler::with_state(Arc::clone(&sessions), checkpointer.clone());
+    let fresh = printer_pipeline_request("start", false);
+    let private_thread = private_pipeline_session_id(&fresh);
+    assert_fresh_printer_pause(&assembler, &fresh).await;
+
+    let resume = printer_pipeline_request("continue now", true);
+    let mut invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("checkpoint-bound Printer continuation");
+    invocation
+        .project_start(timestamp(2))
+        .expect("Printer resume browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("Printer resume start");
+    let completed = run
+        .next_event()
+        .await
+        .expect("Printer completion event")
+        .expect("Printer completion marker");
+    let progress = projector
+        .project(&completed)
+        .expect("Printer completion projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(progress.len(), 4);
+    assert_eq!(progress[1]["content"], "continue now");
+    assert!(
+        run.next_event()
+            .await
+            .expect("Printer completed EOS")
+            .is_none()
+    );
+    let selected = completion
+        .select()
+        .await
+        .expect("Printer completion selection");
+    let output = projector
+        .finish_after_eos(selected, timestamp(3))
+        .expect("Printer terminal result")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(output[0]["type"], "pipeline_finish");
+    assert_eq!(output[0]["content"], "continue now");
+    assert_eq!(output[2]["response_metadata"]["should_continue"], true);
+    assert_eq!(output[2]["response_metadata"]["hitl_resume"], false);
+
+    let checkpoint = checkpointer
+        .load(&private_thread)
+        .await
+        .expect("Printer checkpoint read")
+        .expect("Printer terminal checkpoint");
+    assert_eq!(
+        checkpoint.state.get("messages"),
+        Some(&json!([
+            {"role": "user", "content": "start"},
+            {"role": "user", "content": "continue now"}
+        ]))
+    );
+    let replay = assembler.assemble(authorized(&resume)).await;
+    let Err(replay) = replay else {
+        panic!("completed Printer continuation was replayed");
     };
     assert_eq!(replay.code(), NativeAgentAssemblyErrorCode::InvalidInput);
 }

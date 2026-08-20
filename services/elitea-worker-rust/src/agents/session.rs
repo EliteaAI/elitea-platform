@@ -166,16 +166,22 @@ impl OrdinaryNativeAgentPlan {
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
-        resume: bool,
+        should_continue: bool,
+        hitl_resume: bool,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::from_authorized_mode(request, profile, binding, Some(resume))
+        Self::from_authorized_mode(
+            request,
+            profile,
+            binding,
+            Some((should_continue, hitl_resume)),
+        )
     }
 
     fn from_authorized_mode(
         request: &AgentExecutionRequest,
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
-        pipeline_resume: Option<bool>,
+        pipeline_resume: Option<(bool, bool)>,
     ) -> Result<Self, NativeAgentAssemblyError> {
         let user_text = match &request.payload.user_input {
             UserInput::Text(text) => text.clone(),
@@ -220,11 +226,12 @@ impl OrdinaryNativeAgentPlan {
             model_name: profile.model_name().to_owned(),
             application_details,
         };
-        let projection = if let Some(resume) = pipeline_resume {
+        let projection = if let Some((should_continue, hitl_resume)) = pipeline_resume {
             AgentEventProjectionContext::pipeline(PipelineProjectionInput {
                 ordinary: projection_input,
                 checkpoint_thread_id: session_id.to_string(),
-                resume,
+                should_continue,
+                hitl_resume,
             })
         } else {
             AgentEventProjectionContext::ordinary(projection_input)
@@ -653,7 +660,68 @@ pub(crate) async fn assemble_pipeline_native(
             definition.definition_digest(),
         )
         .await?;
-    let resume = match start {
+    let printer_catalog = definition.printer_pause_catalog();
+    let printer_resume = matches!(&start, PipelineNativeStart::Printer(_));
+    let resume = resolve_pipeline_start(start, &state, &plan, &printer_catalog).await?;
+    let is_resume = resume.is_some();
+    let graph = definition
+        .compile_with_runtime(
+            ROOT_AGENT_NAME,
+            Arc::clone(&state.checkpointer),
+            resume,
+            &node_runtimes,
+        )
+        .map_err(|error| pipeline_configuration_error(error.code()))?;
+    let OrdinaryNativeAgentPlan {
+        user_id,
+        session_id,
+        user_content,
+        generation_config: _,
+        max_iterations: _,
+        projection,
+        thread_id,
+        chat_history: _,
+        context_management,
+        capability_id: _,
+        definition_digest: _,
+        tenant_id: _,
+        resource_project_id: _,
+        projection_project_id: _,
+        execution_id: _,
+        generation: _,
+    } = plan;
+    context_management.prepare_runner_composition();
+    let runner = adk_rust::runner::Runner::builder()
+        .app_name(APP_NAME)
+        .agent(Arc::new(
+            EliteaGraphAgent::new(graph)
+                .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
+        ))
+        .session_service(state.sessions)
+        .build()
+        .map_err(|_| invalid_configuration())?;
+    let projector = AgentEventProjector::new(projection).map_err(projection_configuration)?;
+    let input = if printer_resume {
+        user_content
+    } else if is_resume {
+        Content::new("user").with_text(PIPELINE_RESUME_MARKER)
+    } else {
+        user_content
+    };
+    Ok(AssembledNativeAgentInvocation::new(
+        NativeAgentInvocation::new(runner, user_id, session_id, input),
+        projector,
+        PipelineAgentCompletion { thread_id },
+    ))
+}
+
+async fn resolve_pipeline_start(
+    start: PipelineNativeStart,
+    state: &PipelineStateServices,
+    plan: &OrdinaryNativeAgentPlan,
+    printer_catalog: &super::graph::PrinterPauseCatalog,
+) -> Result<Option<super::graph::resume::PipelineResume>, NativeAgentAssemblyError> {
+    Ok(match start {
         PipelineNativeStart::Fresh => {
             let (session, created) =
                 restore_or_create_session(state.sessions.as_ref(), &plan.user_id, &plan.session_id)
@@ -696,52 +764,44 @@ pub(crate) async fn assemble_pipeline_native(
                     .map_err(|error| pipeline_resume_error(&error))?,
             )
         }
-    };
-    let is_resume = resume.is_some();
-    let graph = definition
-        .compile_with_runtime(
-            ROOT_AGENT_NAME,
-            Arc::clone(&state.checkpointer),
-            resume,
-            &node_runtimes,
-        )
-        .map_err(|error| pipeline_configuration_error(error.code()))?;
-    let OrdinaryNativeAgentPlan {
-        user_id,
-        session_id,
-        user_content,
-        generation_config: _,
-        max_iterations: _,
-        projection,
-        thread_id,
-        chat_history: _,
-        context_management,
-        capability_id: _,
-        definition_digest: _,
-        tenant_id: _,
-        resource_project_id: _,
-        projection_project_id: _,
-        execution_id: _,
-        generation: _,
-    } = plan;
-    context_management.prepare_runner_composition();
-    let runner = adk_rust::runner::Runner::builder()
-        .app_name(APP_NAME)
-        .agent(Arc::new(EliteaGraphAgent::new(graph)))
-        .session_service(state.sessions)
-        .build()
-        .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::new(projection).map_err(projection_configuration)?;
-    let input = if is_resume {
-        Content::new("user").with_text(PIPELINE_RESUME_MARKER)
-    } else {
-        user_content
-    };
-    Ok(AssembledNativeAgentInvocation::new(
-        NativeAgentInvocation::new(runner, user_id, session_id, input),
-        projector,
-        PipelineAgentCompletion { thread_id },
-    ))
+        PipelineNativeStart::Printer(continuation) => {
+            let session = state
+                .sessions
+                .get(GetRequest {
+                    app_name: APP_NAME.to_owned(),
+                    user_id: plan.user_id.to_string(),
+                    session_id: plan.session_id.to_string(),
+                    num_recent_events: None,
+                    after: None,
+                })
+                .await
+                .map_err(|_| dependency_unavailable())?;
+            Some(
+                continuation
+                    .resolve(
+                        super::graph::resume::PrinterResumeContext::new(
+                            session.as_ref(),
+                            state.checkpointer.as_ref(),
+                            ROOT_AGENT_NAME,
+                            plan.session_id.as_ref(),
+                            printer_catalog,
+                        ),
+                        &plan
+                            .user_content
+                            .parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                adk_rust::Part::Text { text } => Some(text.as_str()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    )
+                    .await
+                    .map_err(|error| pipeline_resume_error(&error))?,
+            )
+        }
+    })
 }
 
 /// Build one fresh ADK session, direct `LlmAgent`, and exclusive Runner.

@@ -684,7 +684,7 @@ where
 {
     run: CursorBoundAuthorizedAgentRun<C>,
     native: NativeAgentRun,
-    projector: crate::agents::events::AgentEventProjector,
+    projector: Box<crate::agents::events::AgentEventProjector>,
     completion: S,
 }
 
@@ -697,7 +697,7 @@ where
     ) -> (
         CursorBoundAuthorizedAgentRun<C>,
         NativeAgentRun,
-        crate::agents::events::AgentEventProjector,
+        Box<crate::agents::events::AgentEventProjector>,
         S,
     ) {
         (self.run, self.native, self.projector, self.completion)

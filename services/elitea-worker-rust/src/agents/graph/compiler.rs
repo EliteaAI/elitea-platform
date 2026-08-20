@@ -27,6 +27,9 @@ use super::direct_tool::{
 };
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
 use super::llm::{LlmNode, LlmNodeDefinition, LlmToolkitSelection, PipelineLlmAgentFactory};
+use super::printer::{
+    PrinterInputMapping, PrinterNode, PrinterNodeDefinition, PrinterPauseCatalog, PrinterResetNode,
+};
 use super::resume::PipelineResume;
 use super::state_modifier::{StateModifierNode, StateModifierNodeDefinition};
 use super::yaml::{valid_graph_id, valid_output_key};
@@ -228,6 +231,7 @@ enum PipelineNodeDefinition {
     DirectTool(DirectToolNodeDefinition),
     Hitl(HitlNodeDefinition),
     Llm(LlmNodeDefinition),
+    Printer(PrinterNodeDefinition),
     StateModifier(StateModifierNodeDefinition),
 }
 
@@ -237,6 +241,7 @@ impl PipelineNodeDefinition {
             Self::DirectTool(node) => node.id(),
             Self::Hitl(node) => node.id(),
             Self::Llm(node) => node.id(),
+            Self::Printer(node) => node.id(),
             Self::StateModifier(node) => node.id(),
         }
     }
@@ -246,6 +251,7 @@ impl PipelineNodeDefinition {
             Self::DirectTool(node) => node.input_keys(),
             Self::Hitl(node) => node.input_keys(),
             Self::Llm(node) => node.input_keys(),
+            Self::Printer(_) => &[],
             Self::StateModifier(node) => node.input_keys(),
         }
     }
@@ -253,7 +259,7 @@ impl PipelineNodeDefinition {
     fn output_keys(&self) -> &[String] {
         match self {
             Self::DirectTool(node) => node.output_keys(),
-            Self::Hitl(_) => &[],
+            Self::Hitl(_) | Self::Printer(_) => &[],
             Self::Llm(node) => node.output_keys(),
             Self::StateModifier(node) => node.output_keys(),
         }
@@ -261,7 +267,7 @@ impl PipelineNodeDefinition {
 
     fn cleaned_keys(&self) -> &[String] {
         match self {
-            Self::DirectTool(_) | Self::Hitl(_) | Self::Llm(_) => &[],
+            Self::DirectTool(_) | Self::Hitl(_) | Self::Llm(_) | Self::Printer(_) => &[],
             Self::StateModifier(node) => node.variables_to_clean(),
         }
     }
@@ -269,7 +275,7 @@ impl PipelineNodeDefinition {
     fn edit_state_key(&self) -> Option<&str> {
         match self {
             Self::Hitl(node) => node.edit_state_key(),
-            Self::DirectTool(_) | Self::Llm(_) | Self::StateModifier(_) => None,
+            Self::DirectTool(_) | Self::Llm(_) | Self::Printer(_) | Self::StateModifier(_) => None,
         }
     }
 
@@ -278,6 +284,7 @@ impl PipelineNodeDefinition {
             Self::DirectTool(node) => node.transition().into_iter().collect(),
             Self::Hitl(node) => node.route_targets().collect(),
             Self::Llm(node) => node.transition().into_iter().collect(),
+            Self::Printer(node) => [node.transition()].into_iter().collect(),
             Self::StateModifier(node) => node.transition().into_iter().collect(),
         }
     }
@@ -287,6 +294,7 @@ impl PipelineNodeDefinition {
             Self::DirectTool(node) => node.config_digest(),
             Self::Hitl(node) => node.config_digest(),
             Self::Llm(node) => node.config_digest(),
+            Self::Printer(node) => node.config_digest(),
             Self::StateModifier(node) => node.config_digest(),
         }
     }
@@ -336,6 +344,15 @@ impl PipelineDefinition {
                 }
             }
         }
+        for node in &nodes {
+            if let PipelineNodeDefinition::Printer(printer) = node
+                && node_ids.contains(&printer.reset_node_id())
+            {
+                return Err(PipelineConfigurationError::Invalid(
+                    "a Printer reset node conflicts with a stored node identifier",
+                ));
+            }
+        }
         let definition_digest = definition_digest(
             &raw.entry_point,
             &state,
@@ -368,12 +385,23 @@ impl PipelineDefinition {
         self.definition_digest
     }
 
+    pub(crate) fn printer_pause_catalog(&self) -> PrinterPauseCatalog {
+        PrinterPauseCatalog::from_definition(
+            self.definition_digest,
+            self.nodes.iter().filter_map(|node| match node {
+                PipelineNodeDefinition::Printer(node) => Some(node.clone()),
+                _ => None,
+            }),
+        )
+    }
+
     /// Exact node-scoped toolkit selections, retained without credentials.
     pub(crate) fn llm_tool_selections(&self) -> impl Iterator<Item = &LlmToolkitSelection> {
         self.nodes.iter().flat_map(|node| match node {
             PipelineNodeDefinition::Llm(node) => node.tool_selections(),
             PipelineNodeDefinition::DirectTool(_)
             | PipelineNodeDefinition::Hitl(_)
+            | PipelineNodeDefinition::Printer(_)
             | PipelineNodeDefinition::StateModifier(_) => &[],
         })
     }
@@ -384,6 +412,7 @@ impl PipelineDefinition {
             PipelineNodeDefinition::DirectTool(node) => Some(node.selection()),
             PipelineNodeDefinition::Hitl(_)
             | PipelineNodeDefinition::Llm(_)
+            | PipelineNodeDefinition::Printer(_)
             | PipelineNodeDefinition::StateModifier(_) => None,
         })
     }
@@ -477,6 +506,17 @@ impl PipelineDefinition {
             });
         for node in &self.nodes {
             builder = self.bind_node(builder, node, runtimes)?;
+        }
+        let printer_interrupts = self
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                PipelineNodeDefinition::Printer(node) => Some(node.id()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if !printer_interrupts.is_empty() {
+            builder = builder.interrupt_after(&printer_interrupts);
         }
         if let Some(resume) = resume {
             let resume_state = resume.into_state();
@@ -572,6 +612,23 @@ impl PipelineDefinition {
                 }
                 next
             }
+            PipelineNodeDefinition::Printer(node) => {
+                let node_id = node.id().to_owned();
+                let reset_node_id = node.reset_node_id();
+                let transition = node.transition().to_owned();
+                builder
+                    .node(PrinterNode::new(node.clone()))
+                    .node(PrinterResetNode::new(reset_node_id.clone()))
+                    .edge(&node_id, &reset_node_id)
+                    .edge(
+                        &reset_node_id,
+                        if transition == "END" {
+                            END
+                        } else {
+                            transition.as_str()
+                        },
+                    )
+            }
             PipelineNodeDefinition::StateModifier(node) => {
                 let transition = node.transition().map(ToOwned::to_owned);
                 let node_id = node.id().to_owned();
@@ -651,7 +708,7 @@ impl PipelineDefinition {
                 PipelineNodeDefinition::StateModifier(node) => {
                     (node.transition(), node.output_keys())
                 }
-                PipelineNodeDefinition::Hitl(_) => continue,
+                PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::Printer(_) => continue,
             };
             if transition != Some("END") {
                 continue;
@@ -868,6 +925,9 @@ fn parse_pipeline_node(
         "llm" => LlmNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::Llm)
             .map_err(|_| PipelineConfigurationError::Invalid("an LLM node is invalid")),
+        "printer" => PrinterNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Printer)
+            .map_err(|_| PipelineConfigurationError::Invalid("a Printer node is invalid")),
         "state_modifier" => StateModifierNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::StateModifier)
             .map_err(|_| PipelineConfigurationError::Invalid("a state modifier node is invalid")),
@@ -921,6 +981,16 @@ fn validate_node_state(
                         "an LLM input mapping variable is not declared in pipeline state",
                     ));
                 }
+            }
+        }
+        PipelineNodeDefinition::Printer(node) => {
+            if let PrinterInputMapping::Variable(key) = node.mapping()
+                && !builtin_state_key(key)
+                && !state.contains_key(key)
+            {
+                return Err(PipelineConfigurationError::Invalid(
+                    "a Printer input mapping variable is not declared in pipeline state",
+                ));
             }
         }
         PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::StateModifier(_) => {}
@@ -1102,6 +1172,7 @@ fn definition_digest(
             }
             PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
             PipelineNodeDefinition::Llm(_) => b"llm".as_slice(),
+            PipelineNodeDefinition::Printer(_) => b"printer".as_slice(),
             PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),
         };
         digest_field(&mut context, kind);

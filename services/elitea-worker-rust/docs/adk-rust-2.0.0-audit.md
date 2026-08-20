@@ -375,8 +375,9 @@ no-effect blocked adapter, while restart after the exact persisted result
 continues without reexecution. Production registration is still closed, and an
 approved effect still needs durable intent/outcome receipts and reconciliation.
 This reuses the existing Main contract and requires no
-Main schema or Python-worker path change. Graph dynamic/static interrupts
-instead belong to their standard graph checkpoint. A future effect receipt may
+Main schema or Python-worker path change. Graph dynamic interrupts and the
+compiler-owned Printer static interrupt instead belong to their standard graph
+checkpoint. Arbitrary static breakpoints remain closed. A future effect receipt may
 require an additional atomic record, but it must first prove that a
 deterministic decision event or checkpoint transition cannot satisfy the
 contract; pending state alone is not justification for another table.

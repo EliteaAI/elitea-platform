@@ -12,12 +12,132 @@ use serde_json::{Value, json};
 
 use super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY;
 use super::hitl::HITL_RESUME_STATE_KEY;
-use crate::agents::events::{pipeline_hitl_event_binding, pipeline_tool_event_binding};
+use super::printer::{
+    PRINTER_OUTPUT_STATE_KEY, PRINTER_PAUSE_SCHEMA, PrinterPauseCatalog, PrinterPauseMetadata,
+};
+use crate::agents::events::{
+    pipeline_hitl_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
+};
 use crate::agents::request::AgentExecutionPayload;
 
 const MAX_COMMENT_BYTES: usize = 8 * 1024;
 const MAX_EDIT_BYTES: usize = 64 * 1024;
 const MAX_IDENTITY_BYTES: usize = 512;
+
+/// Current SDK-compatible continuation of a static Printer checkpoint.
+///
+/// This is not a HITL decision: any ordinary non-empty user text resumes the
+/// exact latest Printer checkpoint, and the text is appended to graph messages
+/// before the compiler-owned reset node executes.
+pub(crate) struct PrinterContinuation;
+
+pub(crate) struct PrinterResumeContext<'a> {
+    session: &'a dyn Session,
+    checkpointer: &'a dyn Checkpointer,
+    root_agent_name: &'a str,
+    thread_id: &'a str,
+    catalog: &'a PrinterPauseCatalog,
+}
+
+impl<'a> PrinterResumeContext<'a> {
+    pub(crate) const fn new(
+        session: &'a dyn Session,
+        checkpointer: &'a dyn Checkpointer,
+        root_agent_name: &'a str,
+        thread_id: &'a str,
+        catalog: &'a PrinterPauseCatalog,
+    ) -> Self {
+        Self {
+            session,
+            checkpointer,
+            root_agent_name,
+            thread_id,
+            catalog,
+        }
+    }
+}
+
+impl PrinterContinuation {
+    pub(crate) fn from_payload(
+        payload: &AgentExecutionPayload,
+    ) -> Result<Self, PipelineResumeError> {
+        if !payload.should_continue
+            || payload.hitl_resume
+            || payload.hitl_action.is_some()
+            || payload.hitl_value.is_some()
+            || !payload.hitl_decisions.is_empty()
+            || payload.checkpoint_id.is_some()
+            || payload.auto_approve_sensitive_actions
+        {
+            return Err(PipelineResumeError::new(
+                PipelineResumeErrorCode::UnsupportedCapability,
+            ));
+        }
+        Ok(Self)
+    }
+
+    pub(crate) async fn resolve(
+        self,
+        context: PrinterResumeContext<'_>,
+        user_input: &str,
+    ) -> Result<PipelineResume, PipelineResumeError> {
+        if user_input.is_empty() || user_input.contains('\0') {
+            return Err(PipelineResumeError::invalid());
+        }
+        let events = context.session.events().all();
+        let interrupt_index = events
+            .iter()
+            .rposition(|event| event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY))
+            .ok_or_else(PipelineResumeError::stale)?;
+        if interrupt_index + 1 != events.len() {
+            return Err(PipelineResumeError::stale());
+        }
+        let binding = pipeline_printer_event_binding(
+            &events[interrupt_index],
+            context.root_agent_name,
+            context.thread_id,
+        )
+        .map_err(|_| PipelineResumeError::corrupt())?;
+        let metadata = PrinterPauseMetadata {
+            schema: PRINTER_PAUSE_SCHEMA.to_owned(),
+            node_name: binding.node_name().to_owned(),
+            reset_node_name: binding.reset_node_name().to_owned(),
+            definition_digest: binding.definition_digest().to_owned(),
+            node_digest: binding.node_digest().to_owned(),
+        };
+        if !context.catalog.contains_exact(&metadata) {
+            return Err(PipelineResumeError::stale());
+        }
+        let checkpoint = context
+            .checkpointer
+            .load(context.thread_id)
+            .await
+            .map_err(|_| PipelineResumeError::dependency())?
+            .ok_or_else(PipelineResumeError::stale)?;
+        if checkpoint.thread_id != context.thread_id
+            || checkpoint.checkpoint_id != binding.checkpoint_id()
+            || checkpoint.pending_nodes.as_slice() != [binding.reset_node_name()]
+            || checkpoint
+                .state
+                .get(PRINTER_OUTPUT_STATE_KEY)
+                .and_then(Value::as_str)
+                != Some(binding.output())
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        Ok(PipelineResume {
+            state: [
+                ("input".to_owned(), Value::String(user_input.to_owned())),
+                (
+                    "messages".to_owned(),
+                    json!([{"role": "user", "content": user_input}]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        })
+    }
+}
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]

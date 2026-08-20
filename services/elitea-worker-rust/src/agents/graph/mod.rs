@@ -20,6 +20,9 @@ mod llm_tests;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;
+mod printer;
+#[cfg(test)]
+mod printer_tests;
 pub(crate) mod resume;
 mod state_modifier;
 #[cfg(test)]
@@ -46,3 +49,4 @@ pub use yaml::{
 pub(crate) use parallel::{
     ParallelActivation, ParallelChildCheckpoint, ParallelChildCheckpointerFactory,
 };
+pub(crate) use printer::{PRINTER_PAUSE_METADATA_KEY, PrinterPauseCatalog, PrinterPauseMetadata};

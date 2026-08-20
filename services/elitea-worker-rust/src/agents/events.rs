@@ -1,12 +1,12 @@
 //! Closed ADK-Rust 2.0.0 to current `NodeEventV1` projection.
 //!
 //! The current compatibility profile handles bounded root-agent model/tool
-//! events, direct sensitive-tool confirmations and dynamic stored-pipeline
-//! HITL interrupts. Transfers, citations, MCP authorization, static graph
-//! breakpoints, pipeline custom events and multi-agent branches remain closed
-//! until their typed Elitea identities are available. Production construction
-//! remains capability-gated behind the authorized lifecycle and durable resume
-//! owner.
+//! events, direct sensitive-tool confirmations, dynamic stored-pipeline HITL
+//! interrupts and compiler-owned Printer `interrupt_after` checkpoints.
+//! Transfers, citations, MCP authorization, arbitrary static graph breakpoints,
+//! pipeline custom events and multi-agent branches remain closed until their
+//! typed Elitea identities are available. Production construction remains
+//! capability-gated behind the authorized lifecycle and durable resume owner.
 
 #![allow(dead_code)] // Production construction waits for authorized progress delivery.
 
@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use super::direct_hitl::sensitive_call_identity;
 use super::graph::{
     PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY, PIPELINE_COMPLETED_METADATA_VALUE,
+    PRINTER_PAUSE_METADATA_KEY, PrinterPauseMetadata,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -244,7 +245,8 @@ pub(crate) struct OrdinaryProjectionInput {
 pub(crate) struct PipelineProjectionInput {
     pub(crate) ordinary: OrdinaryProjectionInput,
     pub(crate) checkpoint_thread_id: String,
-    pub(crate) resume: bool,
+    pub(crate) should_continue: bool,
+    pub(crate) hitl_resume: bool,
 }
 
 impl AgentEventProjectionContext {
@@ -278,8 +280,8 @@ impl AgentEventProjectionContext {
     ) -> Result<Self, AgentEventProjectionError> {
         let mut context = Self::ordinary(input.ordinary)?;
         context.graph_checkpoint_thread_id = Some(input.checkpoint_thread_id);
-        context.should_continue = input.resume;
-        context.hitl_resume = input.resume;
+        context.should_continue = input.should_continue;
+        context.hitl_resume = input.hitl_resume;
         validate_context(&context)?;
         Ok(context)
     }
@@ -399,6 +401,7 @@ enum ProjectionState {
     Started,
     Active(ActiveModelTurn),
     Complete(CompletedModelTurn),
+    PrinterComplete,
     Paused,
     Finished,
 }
@@ -481,19 +484,7 @@ impl AgentEventProjector {
             return Ok(batch);
         }
         if event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY) {
-            let payload = GraphInterruptPayload::from_event(event)
-                .ok_or_else(AgentEventProjectionError::invalid_state)?;
-            let guardrail_type = payload
-                .data
-                .as_ref()
-                .and_then(|data| data.get("guardrail_type"))
-                .and_then(Value::as_str)
-                .ok_or_else(AgentEventProjectionError::invalid_state)?;
-            let batch = match guardrail_type {
-                "pipeline_hitl" => self.project_pipeline_hitl(event, &payload)?,
-                "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload)?,
-                _ => return Err(AgentEventProjectionError::unsupported()),
-            };
+            let batch = self.project_graph_interrupt(event)?;
             self.bind_invocation_id(event);
             return Ok(batch);
         }
@@ -526,6 +517,31 @@ impl AgentEventProjector {
         }
         self.bind_invocation_id(event);
         Ok(batch)
+    }
+
+    fn project_graph_interrupt(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        let payload = GraphInterruptPayload::from_event(event)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if event
+            .provider_metadata
+            .contains_key(PRINTER_PAUSE_METADATA_KEY)
+        {
+            return self.project_pipeline_printer(event, &payload);
+        }
+        let guardrail_type = payload
+            .data
+            .as_ref()
+            .and_then(|data| data.get("guardrail_type"))
+            .and_then(Value::as_str)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        match guardrail_type {
+            "pipeline_hitl" => self.project_pipeline_hitl(event, &payload),
+            "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload),
+            _ => Err(AgentEventProjectionError::unsupported()),
+        }
     }
 
     fn project_sensitive_confirmation(
@@ -613,6 +629,30 @@ impl AgentEventProjector {
         )?)?;
         self.state = ProjectionState::Paused;
         Ok(batch)
+    }
+
+    fn project_pipeline_printer(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if !matches!(self.state, ProjectionState::Started) || !self.active_tools.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let binding = pipeline_printer_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            checkpoint_thread_id,
+        )?;
+        self.pipeline_result = Some(binding.output);
+        self.state = ProjectionState::PrinterComplete;
+        Ok(ProjectedAgentEventBatch::new())
     }
 
     fn project_pipeline_hitl(
@@ -831,7 +871,10 @@ impl AgentEventProjector {
                     turn.thinking.as_str(),
                 )
             }
-            ProjectionState::Created | ProjectionState::Paused | ProjectionState::Finished => {
+            ProjectionState::Created
+            | ProjectionState::PrinterComplete
+            | ProjectionState::Paused
+            | ProjectionState::Finished => {
                 return Err(AgentEventProjectionError::invalid_state());
             }
         };
@@ -1077,16 +1120,22 @@ impl AgentEventProjector {
         completion: CompletedAgentBrowserOutput,
         occurred_at: DateTime<Utc>,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
-        if !matches!(self.state, ProjectionState::Complete(_)) || !self.active_tools.is_empty() {
+        let printer_checkpoint = matches!(self.state, ProjectionState::PrinterComplete);
+        if !matches!(
+            self.state,
+            ProjectionState::Complete(_) | ProjectionState::PrinterComplete
+        ) || !self.active_tools.is_empty()
+        {
             return Err(AgentEventProjectionError::invalid_state());
         }
         validate_public_text(&completion.thread_id)?;
         let CompletedAgentBrowserOutput {
             content,
             thread_id,
-            execution_finished,
+            mut execution_finished,
             context_info,
         } = completion;
+        execution_finished &= !printer_checkpoint;
         let content = self.pipeline_result.take().unwrap_or(content);
         let mut batch = ProjectedAgentEventBatch::new();
         let response = Value::String(content);
@@ -1420,6 +1469,45 @@ pub(crate) struct PipelineToolHitlEventBinding {
     data: PipelineToolHitlData,
 }
 
+/// Exact private identity for one compiler-owned static Printer checkpoint.
+pub(crate) struct PipelinePrinterEventBinding {
+    checkpoint_id: String,
+    output: String,
+    metadata: PrinterPauseMetadata,
+}
+
+impl PipelinePrinterEventBinding {
+    #[must_use]
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    #[must_use]
+    pub(crate) fn output(&self) -> &str {
+        &self.output
+    }
+
+    #[must_use]
+    pub(crate) fn node_name(&self) -> &str {
+        &self.metadata.node_name
+    }
+
+    #[must_use]
+    pub(crate) fn reset_node_name(&self) -> &str {
+        &self.metadata.reset_node_name
+    }
+
+    #[must_use]
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.metadata.definition_digest
+    }
+
+    #[must_use]
+    pub(crate) fn node_digest(&self) -> &str {
+        &self.metadata.node_digest
+    }
+}
+
 impl PipelineToolHitlEventBinding {
     #[must_use]
     pub(crate) fn interrupt_id(&self) -> &str {
@@ -1508,6 +1596,59 @@ pub(crate) fn pipeline_tool_event_binding(
     pipeline_tool_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
 }
 
+/// Validate and bind one persisted static Printer interruption.
+pub(crate) fn pipeline_printer_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelinePrinterEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_printer_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
+fn pipeline_printer_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelinePrinterEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event_with_metadata_count(event, root_agent_name, 2)?;
+    let metadata = serde_json::from_str::<PrinterPauseMetadata>(
+        event
+            .provider_metadata
+            .get(PRINTER_PAUSE_METADATA_KEY)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )
+    .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    if !metadata.validate()
+        || payload.kind != "after"
+        || payload.node.as_deref() != Some(metadata.node_name.as_str())
+        || payload.message.is_some()
+        || payload.data.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+        || event
+            .provider_metadata
+            .keys()
+            .any(|key| key != INTERRUPT_METADATA_KEY && key != PRINTER_PAUSE_METADATA_KEY)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let content = event
+        .content()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let [Part::Text { text }] = content.parts.as_slice() else {
+        return Err(AgentEventProjectionError::invalid_state());
+    };
+    validate_pipeline_hitl_message(text)?;
+    Ok(PipelinePrinterEventBinding {
+        checkpoint_id: payload.checkpoint_id.clone(),
+        output: text.clone(),
+        metadata,
+    })
+}
+
 fn pipeline_hitl_event_binding_from_payload(
     event: &Event,
     payload: &GraphInterruptPayload,
@@ -1585,9 +1726,17 @@ fn validate_graph_interrupt_event(
     event: &Event,
     root_agent_name: &str,
 ) -> Result<(), AgentEventProjectionError> {
+    validate_graph_interrupt_event_with_metadata_count(event, root_agent_name, 1)
+}
+
+fn validate_graph_interrupt_event_with_metadata_count(
+    event: &Event,
+    root_agent_name: &str,
+    metadata_count: usize,
+) -> Result<(), AgentEventProjectionError> {
     if event.author != root_agent_name
         || !event.branch.is_empty()
-        || event.provider_metadata.len() != 1
+        || event.provider_metadata.len() != metadata_count
         || event.llm_response.partial
         || event.llm_response.turn_complete
         || event.llm_response.interrupted

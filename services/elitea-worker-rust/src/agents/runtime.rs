@@ -27,7 +27,7 @@ use super::events::{
     ProjectedAgentEventBatch,
 };
 use super::graph::resume::{
-    PipelineContinuationDecision, PipelineResumeError, PipelineResumeErrorCode,
+    PipelineContinuationDecision, PipelineResumeError, PipelineResumeErrorCode, PrinterContinuation,
 };
 use super::pipeline::PipelineExecutionProfile;
 use super::request::AgentExecutionRequest;
@@ -229,9 +229,15 @@ impl<'a> AuthorizedNativeAssembly<'a> {
     ) -> Result<AdmittedPipelineNativeAssembly<'a>, NativeAgentAssemblyError> {
         let has_continuation = has_continuation(self.request);
         let start = if has_continuation {
-            PipelineContinuationDecision::from_payload(&self.request.payload)
-                .map(PipelineNativeStart::Hitl)
-                .map_err(|error| pipeline_hitl_admission_error(&error))?
+            if self.request.payload.should_continue && !self.request.payload.hitl_resume {
+                PrinterContinuation::from_payload(&self.request.payload)
+                    .map(PipelineNativeStart::Printer)
+                    .map_err(|error| pipeline_hitl_admission_error(&error))?
+            } else {
+                PipelineContinuationDecision::from_payload(&self.request.payload)
+                    .map(PipelineNativeStart::Hitl)
+                    .map_err(|error| pipeline_hitl_admission_error(&error))?
+            }
         } else {
             PipelineNativeStart::Fresh
         };
@@ -245,6 +251,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             profile.shell(),
             &self.command,
             start.is_resume(),
+            start.is_hitl_resume(),
         )?;
         Ok(AdmittedPipelineNativeAssembly {
             request: self.request,
@@ -276,11 +283,17 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 pub(crate) enum PipelineNativeStart {
     Fresh,
     Hitl(PipelineContinuationDecision),
+    Printer(PrinterContinuation),
 }
 
 impl PipelineNativeStart {
     #[must_use]
     pub(crate) const fn is_resume(&self) -> bool {
+        !matches!(self, Self::Fresh)
+    }
+
+    #[must_use]
+    pub(crate) const fn is_hitl_resume(&self) -> bool {
         matches!(self, Self::Hitl(_))
     }
 }
@@ -533,19 +546,21 @@ pub(crate) trait NativeAgentAssembler: Send + Sync + 'static {
 /// This aggregate contains no claim, fence, settlement, or Redis authority.
 pub(crate) struct AssembledNativeAgentInvocation<S> {
     invocation: NativeAgentInvocation,
-    projector: AgentEventProjector,
+    // The projector grows with the browser compatibility surface. Heap-own it
+    // once so additional node states do not inflate every lifecycle poll frame.
+    projector: Box<AgentEventProjector>,
     completion: S,
 }
 
 impl<S> AssembledNativeAgentInvocation<S> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         invocation: NativeAgentInvocation,
         projector: AgentEventProjector,
         completion: S,
     ) -> Self {
         Self {
             invocation,
-            projector,
+            projector: Box::new(projector),
             completion,
         }
     }
@@ -581,7 +596,7 @@ impl<S> AssembledNativeAgentInvocation<S> {
 
     pub(crate) fn start(
         self,
-    ) -> Result<(NativeAgentRun, AgentEventProjector, S), NativeAgentRuntimeError> {
+    ) -> Result<(NativeAgentRun, Box<AgentEventProjector>, S), NativeAgentRuntimeError> {
         let Self {
             invocation,
             projector,
