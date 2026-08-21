@@ -170,6 +170,16 @@ Maintained Rust runtime ownership registry:
   consolidation is a measured storage optimization; parallel or nested HITL
   must use distinct session/checkpoint identities rather than new tables per
   pause scope;
+- `src/config.rs` and `src/security.rs`: strict file-only
+  `elitea.runtime-deploy.v1` admission, protocol-fixed transport limits,
+  canonical private-plane endpoints, permission-bounded regular-file access,
+  TLS 1.3 workload identity validation, exact Ed25519 command-key resolution
+  and zeroizing spool/Redis secret ownership. Redis password and TLS files are
+  reloaded for each connection generation. This is the trust-material boundary,
+  not a running bootstrap: channel construction, signal/drain orchestration and
+  capability registration remain closed. Production agent registration also
+  requires an authoritative frozen runtime/admin `toolkit_security` snapshot;
+  an absent policy is never silently interpreted as an empty policy;
 - `src/diagnostics.rs`, `src/execution/{agent_delivery_processor,agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle,redis_delivery}.rs`:
   crate-scoped subscriber plus authenticated lifecycle/assembly/tool
   correlation. The concrete agent delivery processor now keeps one raw Redis
