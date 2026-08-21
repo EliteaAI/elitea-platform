@@ -40,13 +40,14 @@ const LIST_PATH_PREFIX = '/api/v2/notifications/notifications/prompt_lib/';
 const LIST_GLOB = '**/api/v2/notifications/notifications/prompt_lib/**';
 
 /**
- * Navigate into the shell and WAIT FOR THE ROUTER'S SEARCH-PARAM
- * NORMALIZATION to land before returning. Same helper, and the same webkit
- * navigation-interruption reason, as `settings.tokens.spec.ts` documents.
+ * Navigate into the shell, WAIT FOR THE ROUTER TO COMMIT the location, and
+ * assert it left the URL alone. Same helper, and the same
+ * `stripSearchParams` reason, as `settings.tokens.spec.ts` documents.
  */
 async function gotoSettled(page: import('@playwright/test').Page, url: string): Promise<void> {
   await page.goto(url);
-  await expect(page).toHaveURL(/[?&]viewMode=owner(&|$)/);
+  await expect(page.getByTestId('sidebar-collapse-toggle')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(url);
 }
 
 test('J31a: the notifications screen reads its list from a registered route', async ({ page }) => {
