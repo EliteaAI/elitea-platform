@@ -16,7 +16,9 @@
 #                embedding model row only when no row exists yet, so it can
 #                never overwrite the name seed-llm wrote (#468)
 #   check        verify the gateway mTLS hop, the runtime plane and the chat
-#                critical path (delegates the last to chat-smoke.py). It counts
+#                critical path (delegates the last to chat-smoke.py), plus the
+#                embedding path (embedding-path-check.sh) and a REAL elitea-sdk
+#                EliteAClient (sdk-client-check.sh). It counts
 #                passes, failures AND skips, and a skipped assertion exits
 #                non-zero: add --allow-skips to accept an unmeasured
 #                precondition on purpose (#429). It also states how many
@@ -801,7 +803,7 @@ SQL
     #
     # Move this number when you add or remove an assertion. Do not lower it to
     # make a run agree.
-    EXPECTED_ASSERTIONS=28
+    EXPECTED_ASSERTIONS=29
     ALLOW_SKIPS=0
     for check_arg in "${@:2}"; do
       case "$check_arg" in
@@ -1559,6 +1561,24 @@ except Exception as error:
       ok "the embedding path check passed all of its own assertions"
     else
       fail "the embedding path check failed — read its assertion lines above"
+    fi
+
+    # ── The REAL elitea-sdk client ───────────────────────────────────────────
+    # Every /llm assertion above this line — this script's own probes and the
+    # embedding path check — speaks HTTP the way we BELIEVE elitea-sdk speaks
+    # it. None of them imports the SDK, so none of them can fail when the SDK's
+    # defaults, its client libraries or its error reader disagree with what the
+    # platform serves. That is exactly how the budget refusal defect survived:
+    # a correct-looking body, a correct status, a passing unit test, and an SDK
+    # that still returned None.
+    #
+    # This script drives the real EliteAClient inside the running worker's own
+    # image, so the SDK under test is the SDK the product runs. It makes 15
+    # assertions of its own; read its lines above, not this one alone.
+    if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh"; then
+      ok "the elitea-sdk client check passed all of its own assertions"
+    else
+      fail "the elitea-sdk client check failed — read its assertion lines above"
     fi
 
     echo "→ chat critical path (#284 smoke):"

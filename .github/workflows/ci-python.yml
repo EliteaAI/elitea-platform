@@ -26,6 +26,26 @@ on:
       # branch until #448.
       - "services/elitea-main/internal/application/configurations/current_available_snapshot.json"
       - "services/elitea-main/internal/runtimecomposition/current_sdk_configuration_catalog_snapshot.json"
+      # ── The elitea-sdk compatibility gates ─────────────────────────────────
+      # Tier 1 (scripts/contract/test_sdk_budget_contract.py) reads the gateway
+      # Go source. Tier 2 (the "elitea-sdk conformance" step below) mounts the
+      # gateway's real router and drives the installed SDK against it. Both
+      # therefore FAIL on a gateway change, and until this path existed neither
+      # could START on one — the #429/#518 shape: the gate that exists to catch
+      # a change cannot run on the change.
+      #
+      # The whole module is named rather than the two files tier 1 parses,
+      # because tier 2 mounts the real handler and any gateway source change can
+      # break it. The cost is real: a gateway pull request now also runs the
+      # Python worker job. That is the price of the gate, and it is cheaper than
+      # the alternative, which is a compatibility claim nothing re-measures.
+      - "services/elitea-llm-gateway/**"
+      # Tier 3 (deploy/scripts/sdk-client-check.*) is operator-run — see the
+      # "elitea-sdk tier 3 wiring" step in the validate job for why. These paths
+      # start the static half of it, which is the half CI can honestly run.
+      - "deploy/scripts/sdk-client-check.py"
+      - "deploy/scripts/sdk-client-check.sh"
+      - "deploy/scripts/standalone-stack.sh"
   push:
     branches:
       - main
@@ -42,6 +62,13 @@ on:
       - "services/elitea-main/internal/api/v2/indextypes/testdata/current_index_types_ui_response.json"
       - "services/elitea-main/internal/application/configurations/current_available_snapshot.json"
       - "services/elitea-main/internal/runtimecomposition/current_sdk_configuration_catalog_snapshot.json"
+      # The elitea-sdk compatibility gates. Same reasoning as the pull_request
+      # arm above; a push arm that omits a path the pull_request arm names is
+      # its own #518 defect.
+      - "services/elitea-llm-gateway/**"
+      - "deploy/scripts/sdk-client-check.py"
+      - "deploy/scripts/sdk-client-check.sh"
+      - "deploy/scripts/standalone-stack.sh"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -94,6 +121,97 @@ jobs:
           grep -q "FROM ghcr.io/eliteaai/pylon" Containerfile
           echo "Containerfile base image OK."
 
+      - name: elitea-sdk tier 3 wiring
+        # TIER 3 (deploy/scripts/sdk-client-check.sh) STAYS OPERATOR-RUN, and
+        # this step is the honest half of it.
+        #
+        # WHY IT IS NOT RUN HERE. It drives the SDK inside the RUNNING worker
+        # container of a full standalone stack, because that image is the only
+        # one in the stack carrying the SDK. Running it in CI means building
+        # that image — the most expensive build in the repository — and bringing
+        # up the whole standalone compose. Only one standalone stack can be up
+        # per host (oidc-mock's 9400 cannot be remapped; the issuer comes from
+        # the Host header), so it cannot share a runner with the two journeys in
+        # ci-web-e2e.yml and would need a third full-stack job. And its own
+        # docstring says its budget arm CANNOT run there: that stack sets no
+        # GATEWAY_NATS_URL, so Handler.budgetGate stays nil and no request can
+        # be refused with 402. Tier 2 above produces that refusal for real.
+        # A third full-stack job would therefore buy the model-catalogue and
+        # credential-isolation arms and nothing else.
+        #
+        # WHAT THIS STEP DOES BUY. An operator-run script that nothing starts
+        # rots, and the way it rots here is silently: `standalone-stack.sh
+        # check` is the only caller, and a caller that is deleted leaves a file
+        # that still looks maintained. So: both files must still parse, and the
+        # call site must still exist.
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          check_sh=deploy/scripts/sdk-client-check.sh
+          check_py=deploy/scripts/sdk-client-check.py
+          caller=deploy/scripts/standalone-stack.sh
+          for f in "$check_sh" "$check_py" "$caller"; do
+            [ -f "$f" ] || { echo "::error::$f is missing"; exit 1; }
+          done
+          # The caller runs the script directly rather than through `bash`, so a
+          # lost execute bit is a runtime failure in an operator's terminal and
+          # nothing else would report it.
+          [ -x "$check_sh" ] || { echo "::error::$check_sh is not executable; $caller invokes it directly"; exit 1; }
+          bash -n "$check_sh"
+          python3 -m py_compile "$check_py"
+          # The call site. COMMENT lines are excluded before counting: the
+          # caller's own header prose names the script, so counting every
+          # mention would report a healthy wiring for a file whose only real
+          # invocation had been deleted — the check passing because it looked at
+          # the wrong line.
+          calls="$(grep -v '^[[:space:]]*#' "$caller" | grep -c 'deploy/scripts/sdk-client-check\.sh' || true)"
+          if [ "$calls" != "1" ]; then
+            echo "::error::$caller INVOKES sdk-client-check.sh $calls time(s) outside comments, expected exactly 1."
+            echo "::error::Zero means tier 3 is now unreachable: nothing else starts it, and the file would keep looking maintained."
+            echo "::error::More than one means two call sites, where the assertion budget in \`standalone-stack.sh check\` assumes one."
+            exit 1
+          fi
+          # The link from the wrapper to the python. The wrapper mounts the .py
+          # into the worker container and runs it as the entrypoint; rename the
+          # .py or edit the -v line and the .py still exists and still compiles,
+          # so every check above stays green while an operator run dies at the
+          # mount. Count outside comments, for the same reason as the call site.
+          # Match the HOST path specifically. A bare 'sdk-client-check.py'
+          # also matches the container side of the -v mount and the entrypoint
+          # argument, so renaming only the host path left the count unchanged
+          # and this check passed a wrapper that could no longer find the file
+          # (measured). The host path is the half that must match the tree.
+          mounts="$(grep -v '^[[:space:]]*#' "$check_sh" | grep -c "$check_py" || true)"
+          if [ "$mounts" -lt 1 ]; then
+            echo "::error::$check_sh does not name $check_py outside comments, so the -v mount no longer points at the file in the tree."
+            echo "::error::The .py existing and compiling does not mean the wrapper still runs it."
+            exit 1
+          fi
+          # A gutted script passes every structural check above: replace
+          # sdk-client-check.sh with '#!/usr/bin/env bash' + 'exit 0' and it is
+          # present, executable, parses, and keeps its one call site — the step
+          # reported OK for a tier 3 that asserts nothing. The operator path
+          # does not catch it either, because the wrapper counts as one
+          # assertion in standalone-stack.sh's total. So: require the assertion
+          # body to still be there. These floors are deliberately far below the
+          # real counts; they catch removal, not editing.
+          ok_calls="$(grep -c 'result\.ok(' "$check_py" || true)"
+          if [ "$ok_calls" -lt 10 ]; then
+            echo "::error::$check_py records $ok_calls passing assertion(s) via result.ok(), expected at least 10."
+            echo "::error::Tier 3 has been emptied. A script that asserts nothing cannot fail, and CI would keep calling its wiring healthy."
+            exit 1
+          fi
+          if ! grep -q '^EXPECTED_ASSERTIONS' "$check_py"; then
+            echo "::error::$check_py no longer declares EXPECTED_ASSERTIONS, the floor that stops a partial run from reporting success."
+            exit 1
+          fi
+          sh_body="$(grep -vc '^[[:space:]]*\(#.*\)\?$' "$check_sh" || true)"
+          if [ "$sh_body" -lt 20 ]; then
+            echo "::error::$check_sh has $sh_body non-comment line(s), expected at least 20. It looks emptied rather than edited."
+            exit 1
+          fi
+          echo "elitea-sdk tier 3 wiring OK (operator-run; started by $caller): ${ok_calls} assertions, ${mounts} host-path reference(s) to the python, ${sh_body} lines of wrapper."
+
   runtime-worker:
     name: Runtime worker
     runs-on: ubuntu-latest
@@ -108,6 +226,22 @@ jobs:
             libs/proto/pyproject.toml
             services/elitea-worker-python/pyproject.toml
 
+      # Tier 2 of the elitea-sdk compatibility gates builds and runs a Go test
+      # server from services/elitea-llm-gateway. Go lives HERE rather than the
+      # SDK living in ci-gateway.yml, and the reason is cost: importing
+      # EliteAClient pulls the whole LangChain/LangGraph runtime plus the
+      # indexing closure, which is the same install this job already performs
+      # and the most expensive one in the repository. actions/setup-go adds
+      # seconds; a second copy of the SDK install would add minutes AND fork the
+      # clone-verify-cherry-pick recipe into two files that drift.
+      #
+      # The version MUST match ci-gateway.yml: the gateway is a standalone
+      # module on Go 1.26.4, deliberately outside the root go.work.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+          cache-dependency-path: services/elitea-llm-gateway/go.sum
+
       - name: Install current binary indexing prerequisites
         run: |
           sudo apt-get update
@@ -118,23 +252,74 @@ jobs:
             poppler-utils \
             tesseract-ocr
 
+      - name: Read the pinned SDK out of the worker lock file
+        # The revision, the archive digest and the cherry-picks used to be
+        # written HERE as well as in the lock file. Two copies of one pin drift,
+        # and the copy that drifts is the one nobody reads. The lock file owns
+        # them now; this step publishes them for the steps below.
+        #
+        # Every value is validated before it is exported. An empty revision
+        # would make `git checkout --detach ""` fail with a message about a
+        # pathspec, and an empty digest would make the `test` below compare a
+        # real digest with nothing — a comparison that can only fail confusingly
+        # or, if inverted one day, not at all.
+        run: |
+          python3 - <<'PYTHON' >> "$GITHUB_ENV"
+          import json
+          import re
+          import sys
+
+          LOCK = "services/elitea-worker-python/elitea-sdk.lock.json"
+          FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+          FULL_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+
+          with open(LOCK, encoding="utf-8") as handle:
+              source = json.load(handle)["source"]
+
+          revision = source.get("revision", "")
+          digest = source.get("git_archive_sha256", "")
+          patches = source.get("patch_revisions") or []
+          repository = source.get("repository", "")
+
+          problems = []
+          if not FULL_SHA.match(revision):
+              problems.append(f"source.revision {revision!r} is not a 40-character object name")
+          if not FULL_DIGEST.match(digest):
+              problems.append(f"source.git_archive_sha256 {digest!r} is not a sha256 digest")
+          if not repository.startswith("https://"):
+              problems.append(f"source.repository {repository!r} is not an https URL")
+          if not patches:
+              problems.append("source.patch_revisions is empty; the pinned SDK is a revision "
+                              "PLUS cherry-picks, and an empty list would install neither")
+          for patch in patches:
+              if not FULL_SHA.match(patch):
+                  problems.append(f"patch revision {patch!r} is not a 40-character object name")
+          if problems:
+              print("\n".join(f"::error::{LOCK}: {p}" for p in problems), file=sys.stderr)
+              raise SystemExit(1)
+
+          print(f"SDK_REPOSITORY={repository}")
+          print(f"SDK_REVISION={revision}")
+          print(f"SDK_ARCHIVE_SHA256={digest}")
+          print("SDK_PATCH_REVISIONS=" + " ".join(patches))
+          PYTHON
+
       - name: Check out the exact worker-locked SDK source
-        env:
-          SDK_REVISION: b5113a129329b85d23c2d5c2bf55f18e307414ec
-          SDK_ARCHIVE_SHA256: df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7
-          SDK_MCP_PREFLIGHT_PATCH: 5c9409779ac0a55f8bf74f6ef438977089187a14
-          SDK_MCP_HARD_TIMEOUT_PATCH: 07ddc5cd67a0c747f83ca0e26421cde71bd97d9d
         run: |
           git clone --filter=blob:none --no-checkout \
-            https://github.com/EliteaAI/elitea-sdk.git \
+            "${SDK_REPOSITORY}" \
             /tmp/elitea-sdk-current
           git -C /tmp/elitea-sdk-current checkout --detach "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current rev-parse HEAD)" = "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${SDK_ARCHIVE_SHA256}"
-          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_PREFLIGHT_PATCH}^{commit}"
-          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_HARD_TIMEOUT_PATCH}^{commit}"
-          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_PREFLIGHT_PATCH}"
-          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_HARD_TIMEOUT_PATCH}"
+          # The list is looped rather than named one patch at a time, so adding
+          # or removing a cherry-pick is a lock-file edit and nothing else. An
+          # empty list was already refused above; without that refusal this loop
+          # would apply nothing and report success.
+          for patch in ${SDK_PATCH_REVISIONS}; do
+            git -C /tmp/elitea-sdk-current cat-file -e "${patch}^{commit}"
+            git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${patch}"
+          done
 
       - name: Install the pinned worker and protocol packages
         run: |
@@ -157,8 +342,22 @@ jobs:
           # unrun since they were written (#424). The shell glob is the whole
           # point: it derives the list from the tree.
           contract_tests=(scripts/contract/test_*.py)
-          if [ "${#contract_tests[@]}" -lt 4 ]; then
-            echo "::error::found ${#contract_tests[@]} test files under scripts/contract/, expected at least 4 — the glob stopped matching, so this step would prove nothing"
+          # The glob keeps covering new files automatically. A COUNT alone does
+          # not keep covering the existing ones: the floor was -lt 4 while the
+          # directory held 5, so deleting one gate left 4 and this step stayed
+          # green. Name the files that must be present, so a delete or a bad
+          # merge fails here instead of passing quietly.
+          required_contract_tests=(
+            scripts/contract/test_sdk_budget_contract.py
+          )
+          for required in "${required_contract_tests[@]}"; do
+            if [ ! -f "$required" ]; then
+              echo "::error::$required is missing. It is a named compatibility gate, so its absence fails this step rather than reducing what is measured."
+              exit 1
+            fi
+          done
+          if [ "${#contract_tests[@]}" -lt "${#required_contract_tests[@]}" ]; then
+            echo "::error::found ${#contract_tests[@]} test files under scripts/contract/, expected at least ${#required_contract_tests[@]} — the glob stopped matching, so this step would prove nothing"
             exit 1
           fi
           python -m pytest \
@@ -166,6 +365,32 @@ jobs:
             services/elitea-worker-python/tests \
             "${contract_tests[@]}"
           elitea-worker conformance --suite runtime-v1
+
+      - name: elitea-sdk conformance — the SDK against the real gateway router
+        # TIER 2. Tier 1 (the contract test in the step above) compares the SDK
+        # source with the gateway source. It cannot see a defect the two sources
+        # agree on and the wire does not, and it cannot see a defect in which
+        # constant a call site USES: swap budgetErrorType for budgetCodeMember
+        # at the refusal and every tier 1 assertion still passes, because the
+        # constants themselves are unchanged. That is the shipped defect exactly.
+        #
+        # This step mounts the gateway's own chi router over the real llmproxy
+        # handler, produces REAL 402s from the real budget gate, and hands them
+        # to the installed SDK's own budget_exceeded_from. It also drives chat,
+        # embeddings and the Anthropic dialect end to end.
+        #
+        # It runs in THIS job because the SDK is already installed here. The
+        # script itself verifies that the checkout is the revision the gateway
+        # pin names, and that the INSTALLED package is that same tree, so a run
+        # against some other revision fails instead of reporting a compatibility
+        # claim it never measured.
+        env:
+          ELITEA_SDK_SOURCE_ROOT: /tmp/elitea-sdk-current
+          # The gateway is a standalone module; the parent workspace must never
+          # be consulted. run.sh exports this too — belt and braces, because a
+          # workspace resolution failure here reads as a missing package.
+          GOWORK: "off"
+        run: bash services/elitea-llm-gateway/scripts/sdk-conformance/run.sh
 
       - name: Compile Python sources
         run: python -m compileall -q services/elitea-worker-python/src libs/proto/gen/python
