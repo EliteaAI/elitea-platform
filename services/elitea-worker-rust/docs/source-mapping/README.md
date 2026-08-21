@@ -94,8 +94,9 @@ Maintained Rust runtime ownership registry:
   `AgentTool` buffers child events and cannot expose an exact nested hierarchy.
   Recursive direct-agent confirmation resume uses the root `SessionService`
   transcript and an invocation-scoped replay tree rather than another child
-  session or interrupt table. Pipeline Agent-node descendant streaming and
-  recursive pipeline checkpoint ownership remain separate gates;
+  session or interrupt table. Saved-pipeline Agent-node descendant streaming
+  and checkpoint hierarchy are instead owned by `graph/application.rs`,
+  `graph/node_events.rs` and the common event projector;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
@@ -141,9 +142,11 @@ Maintained Rust runtime ownership registry:
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
   prebuilt/static MCP, remote effects, child variables, nested static Printer
-  interrupts, incremental pipeline tool-progress chunks, hierarchy overlay for
-  nested saved-pipeline HITL cards, approved-effect receipts, arbitrary static
-  interrupts and production activation remain separate gates;
+  interrupts, incremental pipeline tool-progress chunks, approved-effect
+  receipts, arbitrary static interrupts and production activation remain
+  separate gates. Saved-pipeline child events and configured/sensitive HITL
+  cards use the existing wrapper hierarchy; the sensitive continuation keeps
+  the original call ID and executes no blocked provider tool;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;

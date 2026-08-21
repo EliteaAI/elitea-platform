@@ -385,6 +385,55 @@ fn pipeline_data_child_runtime() -> PipelineChildRuntime {
     )
 }
 
+fn pipeline_hitl_child_runtime() -> PipelineChildRuntime {
+    pipeline_runtime_cycles(
+        &json!({
+            "agent_type": "pipeline",
+            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: approve\nnodes:\n  - id: approve\n    type: hitl\n    input: [input]\n    user_message:\n      type: fstring\n      value: 'Approve {input}.'\n    routes:\n      approve: done\n      reject: END\n  - id: done\n    type: state_modifier\n    template: 'Approved: {{ input }}'\n    input: [input]\n    output: [answer]\n    transition: END\n",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": null
+        }),
+        Vec::new(),
+        2,
+    )
+}
+
+fn sensitive_pipeline_child_runtime() -> (PipelineChildRuntime, CapturedModelRequests) {
+    pipeline_runtime_cycles_with_capture(
+        &json!({
+            "agent_type": "pipeline",
+            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    input_mapping:\n      task: {type: variable, value: input}\n    input: [messages]\n    output: [answer, messages]\n    tool_names:\n      release intelligence: ['lookup_release']\n    transition: END\n",
+            "meta": {},
+            "variables": [],
+            "tools": [{
+                "id": 92,
+                "type": "mcp",
+                "toolkit_name": "release intelligence",
+                "settings": {
+                    "url": "https://mcp.example.invalid/v1/mcp",
+                    "headers": null,
+                    "client_id": null,
+                    "client_secret": null,
+                    "scopes": null,
+                    "timeout": 30,
+                    "selected_tools": ["lookup_release"],
+                    "enable_caching": true,
+                    "cache_ttl": 300,
+                    "ssl_verify": true
+                }
+            }],
+            "llm_settings": null
+        }),
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response("nested block handled")),
+        ],
+        2,
+    )
+}
+
 fn direct_agent_pipeline_runtime() -> PipelineChildRuntime {
     pipeline_runtime(
         &json!({
@@ -461,6 +510,14 @@ fn pipeline_runtime_cycles(
     outcomes: Vec<TestModelGatewayOutcome>,
     cycles: usize,
 ) -> PipelineChildRuntime {
+    pipeline_runtime_cycles_with_capture(version_details, outcomes, cycles).0
+}
+
+fn pipeline_runtime_cycles_with_capture(
+    version_details: &Value,
+    outcomes: Vec<TestModelGatewayOutcome>,
+    cycles: usize,
+) -> (PipelineChildRuntime, CapturedModelRequests) {
     let calls = Arc::new(AtomicUsize::new(0));
     let paths = Arc::new(Mutex::new(Vec::new()));
     let responses = (0..cycles)
@@ -481,7 +538,7 @@ fn pipeline_runtime_cycles(
             ]
         })
         .collect::<VecDeque<_>>();
-    pipeline_runtime_from_responses(responses, outcomes, calls, paths)
+    pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths)
 }
 
 fn pipeline_runtime_from_responses(
@@ -490,6 +547,15 @@ fn pipeline_runtime_from_responses(
     calls: Arc<AtomicUsize>,
     paths: Arc<Mutex<Vec<String>>>,
 ) -> PipelineChildRuntime {
+    pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths).0
+}
+
+fn pipeline_runtime_from_responses_with_capture(
+    responses: VecDeque<Response<Body>>,
+    outcomes: Vec<TestModelGatewayOutcome>,
+    calls: Arc<AtomicUsize>,
+    paths: Arc<Mutex<Vec<String>>>,
+) -> (PipelineChildRuntime, CapturedModelRequests) {
     let runtime = RuntimeContextClient::with_rpc(
         PipelineRuntimeContextFixture {
             responses: Mutex::new(responses),
@@ -504,13 +570,16 @@ fn pipeline_runtime_from_responses(
         },
     )
     .expect("pipeline runtime-context fixture");
-    let (gateway, _) = test_model_gateway_client(outcomes, test_model_gateway_config())
+    let (gateway, captured) = test_model_gateway_client(outcomes, test_model_gateway_config())
         .expect("unused pipeline model gateway");
     (
-        Arc::new(PlatformClient::new(Arc::new(runtime))),
-        Arc::new(ModelFacade::from_gateway(gateway)),
-        calls,
-        paths,
+        (
+            Arc::new(PlatformClient::new(Arc::new(runtime))),
+            Arc::new(ModelFacade::from_gateway(gateway)),
+            calls,
+            paths,
+        ),
+        captured,
     )
 }
 
@@ -1606,6 +1675,195 @@ async fn saved_data_pipeline_emits_wrapper_progress_without_an_llm_node() {
             .any(|event| event["content"] == "Child: Summarize the release")
     );
     assert_eq!(calls.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn saved_pipeline_hitl_projects_under_the_exact_wrapper_and_resumes() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, calls, _paths) = pipeline_hitl_child_runtime();
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade);
+    let mut request = agent_pipeline_request("release-agent", "pipeline");
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized interrupting saved-pipeline participant");
+    let (browser, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let interrupt = browser
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .expect("nested pipeline HITL card");
+    let expected_path = json!([{
+        "name": "release-agent",
+        "call_id": "pipeline:delegate:0",
+        "sibling_ordinal": 1,
+    }]);
+    assert_eq!(
+        interrupt["response_metadata"]["parent_agent_path"],
+        expected_path
+    );
+    assert_eq!(
+        interrupt["response_metadata"]["parent_agent_call_id"],
+        "pipeline:delegate:0"
+    );
+    assert_eq!(
+        interrupt["response_metadata"]["hitl_interrupts"][0]["parent_agent_path"],
+        expected_path
+    );
+    let public_interrupt_id = interrupt["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("public nested pipeline interrupt identity")
+        .to_owned();
+    let graph_interrupt = graph_interrupt.expect("private nested graph interruption");
+    let binding = pipeline_hitl_event_binding(&graph_interrupt, "elitea-agent", &private_thread)
+        .expect("root and child checkpoint binding");
+    assert_eq!(binding.interrupt_id(), public_interrupt_id);
+    assert_eq!(binding.nested_checkpoints().len(), 1);
+    assert_eq!(
+        binding.nested_checkpoints()[0].thread_id(),
+        format!("{private_thread}/delegate")
+    );
+    request.binding.request_content_digest = [6; 32];
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = Some("approve".to_owned());
+    request.payload.hitl_value = Some(String::new());
+    request.payload.hitl_decisions = vec![json!({
+        "interrupt_id": public_interrupt_id,
+        "tool_call_id": "",
+        "action": "approve",
+        "value": ""
+    })];
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("nested pipeline checkpoint continuation");
+    let resumed = collect_pipeline_completion(invocation).await;
+    assert!(
+        resumed
+            .iter()
+            .any(|event| event["content"] == "Approved: Summarize the release")
+    );
+    assert!(resumed.iter().any(|event| {
+        event["type"] == "agent_tool_end"
+            && event["response_metadata"]["tool_run_id"] == "pipeline:delegate:0"
+    }));
+    assert_eq!(calls.load(Ordering::Acquire), 4);
+}
+
+#[tokio::test]
+async fn saved_pipeline_sensitive_llm_keeps_call_identity_and_wrapper_hierarchy() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let ((platform, model_facade, context_calls, _paths), captured) =
+        sensitive_pipeline_child_runtime();
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(PipelineMcpConnector {
+        connections: Arc::new(AtomicUsize::new(0)),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    }))
+    .with_tool_policy(sensitive_pipeline_mcp_policy());
+    let mut request = agent_pipeline_request("release-agent", "pipeline");
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("sensitive saved-pipeline participant");
+    let (paused, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let interrupt = paused
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .expect("nested sensitive-tool card");
+    let expected_path = json!([{
+        "name": "release-agent",
+        "call_id": "pipeline:delegate:0",
+        "sibling_ordinal": 1,
+    }]);
+    assert_eq!(
+        interrupt["response_metadata"]["parent_agent_path"],
+        expected_path
+    );
+    let public_interrupt_id = interrupt["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("nested sensitive-tool identity")
+        .to_owned();
+    let graph_interrupt = graph_interrupt.expect("private nested tool interruption");
+    let binding = pipeline_tool_event_binding(&graph_interrupt, "elitea-agent", &private_thread)
+        .expect("root and nested tool checkpoint binding");
+    assert_eq!(binding.interrupt_id(), public_interrupt_id);
+    assert_eq!(binding.tool_call_id(), "call_mcp");
+    assert_eq!(binding.nested_checkpoints().len(), 1);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    request.binding.request_content_digest = [7; 32];
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = Some("block_with_comment".to_owned());
+    request.payload.hitl_value = Some("release is frozen".to_owned());
+    request.payload.hitl_decisions = vec![json!({
+        "interrupt_id": public_interrupt_id,
+        "tool_call_id": "call_mcp",
+        "action": "block_with_comment",
+        "value": "release is frozen"
+    })];
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("nested sensitive-tool continuation");
+    let resumed = collect_pipeline_completion(invocation).await;
+    assert_nested_sensitive_browser_completion(&resumed, &expected_path);
+    assert_llm_blocked_continuation(&captured, "release is frozen");
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(context_calls.load(Ordering::Acquire), 4);
+}
+
+fn assert_nested_sensitive_browser_completion(resumed: &[Value], expected_path: &Value) {
+    let tool_end = resumed
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_tool_end"
+                && event["response_metadata"]["tool_run_id"] == "call_mcp"
+        })
+        .expect("same nested tool-call completion");
+    assert_eq!(
+        &tool_end["response_metadata"]["parent_agent_path"],
+        expected_path
+    );
+    let browser_blocked: Value = serde_json::from_str(
+        tool_end["response_metadata"]["tool_output"]
+            .as_str()
+            .expect("nested browser block result"),
+    )
+    .expect("nested browser block result JSON");
+    assert_eq!(browser_blocked["type"], "sensitive_tool_blocked");
+    assert_eq!(browser_blocked["denial_reason"], "release is frozen");
+    assert!(
+        resumed
+            .iter()
+            .any(|event| event["content"] == "nested block handled")
+    );
+    let nested_model = resumed
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_llm_start"
+                && event["response_metadata"]["metadata"]["langgraph_node"] == "answer"
+        })
+        .expect("nested continuation model progress");
+    assert_eq!(
+        &nested_model["response_metadata"]["parent_agent_path"],
+        expected_path
+    );
 }
 
 #[tokio::test]

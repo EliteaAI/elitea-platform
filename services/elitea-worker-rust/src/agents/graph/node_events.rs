@@ -19,7 +19,10 @@ use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc};
 
 use super::yaml::valid_graph_id;
-use crate::agents::events::{DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY};
+use crate::agents::events::{
+    DESCENDANT_CHECKPOINT_THREAD_KEY, DESCENDANT_CONTAINER_INVOCATION_KEY,
+    DESCENDANT_PARENT_CALL_KEY,
+};
 
 const PIPELINE_NODE_EVENT_CHANNEL_CAPACITY: usize = 64;
 const ADK_LLM_REQUEST_METADATA_KEY: &str = "gcp.vertex.agent.llm_request";
@@ -31,6 +34,7 @@ pub(crate) const PIPELINE_NODE_METADATA_KEY: &str = "elitea.pipeline.node_name";
 /// the parent's invocation metadata into the child graph.
 pub(crate) const PIPELINE_NODE_EVENT_SCOPE_STATE_KEY: &str =
     "__elitea_pipeline_node_event_scope_v1";
+pub(crate) const PIPELINE_NODE_EVENT_SCOPE_WRAPPER_KEY: &str = "elitea_event_scope";
 const MAX_EVENT_SCOPE_IDENTITY_BYTES: usize = 480;
 
 struct PipelineNodeEventSignal {
@@ -47,13 +51,19 @@ struct PipelineNodeEventSignal {
 pub(crate) struct PipelineNodeEventScope {
     parent_call_id: String,
     agent_name: String,
+    checkpoint_thread_id: String,
 }
 
 impl PipelineNodeEventScope {
-    pub(crate) fn new(parent_call_id: &str, agent_name: &str) -> adk_rust::Result<Self> {
+    pub(crate) fn new(
+        parent_call_id: &str,
+        agent_name: &str,
+        checkpoint_thread_id: &str,
+    ) -> adk_rust::Result<Self> {
         let scope = Self {
             parent_call_id: parent_call_id.to_owned(),
             agent_name: agent_name.to_owned(),
+            checkpoint_thread_id: checkpoint_thread_id.to_owned(),
         };
         scope.validate()?;
         Ok(scope)
@@ -78,12 +88,30 @@ impl PipelineNodeEventScope {
         serde_json::to_value(self).map_err(|_| pipeline_node_event_channel_error())
     }
 
-    fn validate(&self) -> adk_rust::Result<()> {
-        if valid_event_identity(&self.parent_call_id) && valid_event_identity(&self.agent_name) {
+    pub(crate) fn validate(&self) -> adk_rust::Result<()> {
+        if valid_event_identity(&self.parent_call_id)
+            && valid_event_identity(&self.agent_name)
+            && valid_event_identity(&self.checkpoint_thread_id)
+        {
             Ok(())
         } else {
             Err(pipeline_node_event_channel_error())
         }
+    }
+
+    #[must_use]
+    pub(crate) fn parent_call_id(&self) -> &str {
+        &self.parent_call_id
+    }
+
+    #[must_use]
+    pub(crate) fn agent_name(&self) -> &str {
+        &self.agent_name
+    }
+
+    #[must_use]
+    pub(crate) fn checkpoint_thread_id(&self) -> &str {
+        &self.checkpoint_thread_id
     }
 }
 
@@ -343,6 +371,16 @@ fn pipeline_node_signal_event(
         event.invocation_id = format!("pipeline-child:{}", scope.parent_call_id);
         event.author = scope.agent_name;
         event.branch.clear();
+        if event
+            .provider_metadata
+            .insert(
+                DESCENDANT_CHECKPOINT_THREAD_KEY.to_owned(),
+                scope.checkpoint_thread_id,
+            )
+            .is_some()
+        {
+            return Err(pipeline_node_event_channel_error());
+        }
     } else {
         root_invocation_id.clone_into(&mut event.invocation_id);
         root_author.clone_into(&mut event.author);

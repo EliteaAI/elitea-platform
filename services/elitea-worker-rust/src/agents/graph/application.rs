@@ -24,7 +24,8 @@ use tracing::Instrument as _;
 use super::direct_tool::{ensure_state_type, pipeline_tool_context};
 use super::llm::render_fstring;
 use super::node_events::{
-    PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PipelineNodeEventScope, PipelineNodeEventSender,
+    PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PIPELINE_NODE_EVENT_SCOPE_WRAPPER_KEY,
+    PipelineNodeEventScope, PipelineNodeEventSender,
 };
 use super::yaml::{valid_graph_id, valid_output_key};
 use crate::agents::application_tools::nested_application_interrupt_ids;
@@ -328,6 +329,7 @@ impl ApplicationNode {
             "hitl_decisions",
             super::hitl::HITL_RESUME_STATE_KEY,
             super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY,
+            super::llm::LLM_TOOL_RESUME_STATE_KEY,
             PIPELINE_NODE_EVENT_SCOPE_STATE_KEY,
         ] {
             if node.graph().schema().channels.contains_key(channel) {
@@ -350,14 +352,17 @@ impl ApplicationNode {
             .ok_or_else(|| node_failure(self.name()))?;
         let mut state = context.state.clone();
         let call_id = format!("pipeline:{}:{}", self.name(), context.step);
+        let checkpoint_thread_id = format!("{}/{}", context.config.thread_id, self.name());
         state.insert(APPLICATION_TASK_STATE_KEY.to_owned(), json!(task));
         state.insert(
             APPLICATION_MESSAGES_STATE_KEY.to_owned(),
             json!([{"role": "user", "content": task}]),
         );
-        if let Some(events) = events {
-            let event_scope = PipelineNodeEventScope::new(&call_id, display_name)
-                .map_err(|_| node_failure(self.name()))?;
+        let event_scope = events
+            .map(|_| PipelineNodeEventScope::new(&call_id, display_name, &checkpoint_thread_id))
+            .transpose()
+            .map_err(|_| node_failure(self.name()))?;
+        if let (Some(events), Some(event_scope)) = (events, event_scope.as_ref()) {
             state.insert(
                 PIPELINE_NODE_EVENT_SCOPE_STATE_KEY.to_owned(),
                 event_scope
@@ -376,7 +381,8 @@ impl ApplicationNode {
             .execute(&child_context)
             .await?;
         if let Some(interrupt) = output.interrupt.as_mut() {
-            self.bind_child_checkpoint(context, interrupt).await?;
+            self.bind_child_checkpoint(context, interrupt, event_scope.as_ref())
+                .await?;
             return Ok(output);
         }
         if output.goto.is_some() || output.goto_parent.is_some() || !output.events.is_empty() {
@@ -403,6 +409,7 @@ impl ApplicationNode {
         &self,
         context: &NodeContext,
         interrupt: &mut adk_rust::graph::interrupt::Interrupt,
+        event_scope: Option<&PipelineNodeEventScope>,
     ) -> Result<(), GraphError> {
         let adk_rust::graph::interrupt::Interrupt::Dynamic {
             data: Some(data), ..
@@ -417,6 +424,7 @@ impl ApplicationNode {
         if wrapper.get("subgraph").and_then(Value::as_str) != Some(self.name())
             || wrapper.get("thread").and_then(Value::as_str) != Some(expected_thread.as_str())
             || wrapper.contains_key("checkpoint_id")
+            || wrapper.contains_key(PIPELINE_NODE_EVENT_SCOPE_WRAPPER_KEY)
         {
             return Err(node_failure(self.name()));
         }
@@ -433,6 +441,17 @@ impl ApplicationNode {
             "checkpoint_id".to_owned(),
             Value::String(checkpoint.checkpoint_id),
         );
+        if let Some(event_scope) = event_scope {
+            if event_scope.checkpoint_thread_id() != expected_thread {
+                return Err(node_failure(self.name()));
+            }
+            wrapper.insert(
+                PIPELINE_NODE_EVENT_SCOPE_WRAPPER_KEY.to_owned(),
+                event_scope
+                    .to_state_value()
+                    .map_err(|_| node_failure(self.name()))?,
+            );
+        }
         Ok(())
     }
 

@@ -401,10 +401,13 @@ owning pipeline node, never writes browser progress to graph state and avoids a
 duplicate terminal model turn. A saved-pipeline Agent node now emits the same
 Pipeline wrapper and call-bound child-node hierarchy as the current platform;
 ADK's missing subgraph metadata propagation is bridged by one private reserved
-state value, not by a new public event shape or table. Incremental tool-progress
-chunks and hierarchy overlay for nested saved-pipeline HITL cards remain
-separate gaps, and approved effects still require durable outcome
-reconciliation.
+state value, not by a new public event shape or table. The same bridge routes a
+child configured or sensitive-LLM HITL card through that hierarchy without
+changing the persisted root/child checkpoint decision identity. It forwards the
+LLM replay channel explicitly, so Block With Comment produces the structured
+same-call result and zero provider-tool dispatch before one child continuation.
+Incremental tool-progress chunks remain a separate gap, and approved effects
+still require durable outcome reconciliation.
 
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.

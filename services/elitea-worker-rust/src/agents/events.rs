@@ -26,7 +26,7 @@ use super::direct_hitl::sensitive_call_identity;
 use super::graph::{
     PIPELINE_APPLICATION_HITL_SCHEMA, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
     PIPELINE_COMPLETED_METADATA_VALUE, PIPELINE_NODE_METADATA_KEY, PRINTER_PAUSE_METADATA_KEY,
-    PipelineLlmReplayEnvelope, PrinterPauseMetadata,
+    PipelineLlmReplayEnvelope, PipelineNodeEventScope, PrinterPauseMetadata,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -56,6 +56,7 @@ pub(crate) const APPLICATION_BRANCH_ROOT: &str = "elitea.saved_applications";
 pub(crate) const DESCENDANT_CONTAINER_INVOCATION_KEY: &str =
     "elitea.descendant.container_invocation_id";
 pub(crate) const DESCENDANT_PARENT_CALL_KEY: &str = "elitea.descendant.parent_call_id";
+pub(crate) const DESCENDANT_CHECKPOINT_THREAD_KEY: &str = "elitea.descendant.checkpoint_thread_id";
 
 /// Stable, low-cardinality event projection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -410,6 +411,7 @@ impl AgentEventProjectionContext {
         &self,
         root_agent_name: String,
         model_name: String,
+        graph_checkpoint_thread_id: Option<String>,
     ) -> Result<Self, AgentEventProjectionError> {
         let context = Self {
             stream_id: self.stream_id.clone(),
@@ -422,7 +424,7 @@ impl AgentEventProjectionContext {
             root_agent_name,
             model_name,
             application_details: self.application_details.clone(),
-            graph_checkpoint_thread_id: None,
+            graph_checkpoint_thread_id,
             should_continue: self.should_continue,
             hitl_resume: self.hitl_resume,
             parallel_reconcile: self.parallel_reconcile,
@@ -657,25 +659,31 @@ impl AgentEventProjector {
         let has_descendant_call = event
             .provider_metadata
             .contains_key(DESCENDANT_PARENT_CALL_KEY);
+        let has_descendant_checkpoint = event
+            .provider_metadata
+            .contains_key(DESCENDANT_CHECKPOINT_THREAD_KEY);
+        if !(has_descendant_container || has_descendant_call)
+            && let Some(child_interrupt) = nested_pipeline_interrupt_child_event(
+                event,
+                &self.context.root_agent_name,
+                self.context.graph_checkpoint_thread_id.as_deref(),
+            )?
+        {
+            let batch = self.project_descendant_event(&child_interrupt.event)?;
+            return replace_nested_interrupt_identity(
+                batch,
+                &child_interrupt.interrupt_id,
+                &child_interrupt.call_digest,
+            );
+        }
         if has_descendant_container || has_descendant_call {
             if !(has_descendant_container && has_descendant_call) {
                 return Err(AgentEventProjectionError::invalid_state());
             }
-            let container_invocation_id = event
-                .provider_metadata
-                .get(DESCENDANT_CONTAINER_INVOCATION_KEY)
-                .filter(|value| valid_tool_identity(value))
-                .ok_or_else(AgentEventProjectionError::invalid_state)?
-                .clone();
-            let parent_call_id = event
-                .provider_metadata
-                .get(DESCENDANT_PARENT_CALL_KEY)
-                .filter(|value| valid_tool_identity(value))
-                .ok_or_else(AgentEventProjectionError::invalid_state)?
-                .clone();
-            return self
-                .route_descendant(event, &container_invocation_id, &parent_call_id)?
-                .ok_or_else(AgentEventProjectionError::invalid_state);
+            return self.project_descendant_event(event);
+        }
+        if has_descendant_checkpoint {
+            return Err(AgentEventProjectionError::invalid_state());
         }
         if pipeline_node_name(event)?.is_some() {
             self.saw_pipeline_node_events = true;
@@ -728,6 +736,24 @@ impl AgentEventProjector {
         Ok(batch)
     }
 
+    fn project_descendant_event(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        let container_invocation_id = event
+            .provider_metadata
+            .get(DESCENDANT_CONTAINER_INVOCATION_KEY)
+            .filter(|value| valid_tool_identity(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let parent_call_id = event
+            .provider_metadata
+            .get(DESCENDANT_PARENT_CALL_KEY)
+            .filter(|value| valid_tool_identity(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        self.route_descendant(event, container_invocation_id, parent_call_id)?
+            .ok_or_else(AgentEventProjectionError::invalid_state)
+    }
+
     fn route_descendant(
         &mut self,
         event: &Event,
@@ -768,10 +794,18 @@ impl AgentEventProjector {
             .application
             .clone()
             .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let checkpoint_thread_id = descendant_checkpoint_thread(
+            event,
+            &application,
+            self.context.graph_checkpoint_thread_id.as_deref(),
+            parent_call_id,
+        )?;
         if !self.descendants.contains_key(parent_call_id) {
-            let nested_context = self
-                .context
-                .nested(active.name.clone(), application.model_name.clone())?;
+            let nested_context = self.context.nested(
+                active.name.clone(),
+                application.model_name.clone(),
+                checkpoint_thread_id.clone(),
+            )?;
             let mut projector = Self::with_tool_catalogs(
                 nested_context,
                 application.sensitive_tools.clone(),
@@ -794,6 +828,9 @@ impl AgentEventProjector {
             .descendants
             .get_mut(parent_call_id)
             .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if descendant.projector.context.graph_checkpoint_thread_id != checkpoint_thread_id {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
         let mut child_event = event.clone();
         child_event
             .provider_metadata
@@ -801,6 +838,9 @@ impl AgentEventProjector {
         child_event
             .provider_metadata
             .remove(DESCENDANT_PARENT_CALL_KEY);
+        child_event
+            .provider_metadata
+            .remove(DESCENDANT_CHECKPOINT_THREAD_KEY);
         let batch = descendant.projector.project(&child_event)?;
         overlay_batch_hierarchy(batch, std::slice::from_ref(&descendant.tier))
     }
@@ -1774,6 +1814,8 @@ struct NestedPipelineInterruptData {
     subgraph: String,
     thread: String,
     checkpoint_id: String,
+    #[serde(default, rename = "elitea_event_scope")]
+    event_scope: Option<PipelineNodeEventScope>,
     data: Value,
 }
 
@@ -2356,6 +2398,142 @@ fn pipeline_application_event_binding_from_payload(
     })
 }
 
+struct NestedPipelineInterruptProjection {
+    event: Event,
+    interrupt_id: String,
+    call_digest: String,
+}
+
+fn nested_pipeline_interrupt_child_event(
+    event: &Event,
+    root_agent_name: &str,
+    root_thread_id: Option<&str>,
+) -> Result<Option<NestedPipelineInterruptProjection>, AgentEventProjectionError> {
+    if !event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY) {
+        return Ok(None);
+    }
+    let Some(root_thread_id) = root_thread_id else {
+        return Ok(None);
+    };
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let Some(raw) = payload.data.as_ref() else {
+        return Ok(None);
+    };
+    if raw.get("subgraph").is_none() {
+        return Ok(None);
+    }
+    let nested = serde_json::from_value::<NestedPipelineInterruptData>(raw.clone())
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    let Some(scope) = nested.event_scope.as_ref() else {
+        return Ok(None);
+    };
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    scope
+        .validate()
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    let expected_thread = format!("{root_thread_id}/{}", nested.subgraph);
+    let expected_message_prefix = format!("{}: ", nested.subgraph);
+    let child_message = payload
+        .message
+        .as_deref()
+        .and_then(|message| message.strip_prefix(&expected_message_prefix))
+        .filter(|message| !message.is_empty())
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != root_thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+        || !valid_pipeline_node_identity(&nested.subgraph)
+        || nested.thread != expected_thread
+        || !valid_graph_checkpoint_identity(&nested.checkpoint_id)
+        || scope.checkpoint_thread_id() != nested.thread
+        || pipeline_application_call_node(scope.parent_call_id()) != Some(nested.subgraph.as_str())
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let (raw_data, _) = pipeline_interrupt_data(&payload, root_thread_id)?;
+    let guardrail_type = raw_data
+        .get("guardrail_type")
+        .and_then(Value::as_str)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let Some((interrupt_id, call_digest)) = nested_pipeline_interrupt_identity(
+        event,
+        &payload,
+        root_agent_name,
+        root_thread_id,
+        guardrail_type,
+    )?
+    else {
+        return Ok(None);
+    };
+    let child_payload = GraphInterruptPayload {
+        kind: payload.kind,
+        node: None,
+        message: Some(child_message.to_owned()),
+        data: Some(nested.data),
+        thread_id: nested.thread,
+        checkpoint_id: nested.checkpoint_id,
+    };
+    let mut child_event = event.clone();
+    child_event.invocation_id = format!("pipeline-child:{}", scope.parent_call_id());
+    scope.agent_name().clone_into(&mut child_event.author);
+    child_event.branch.clear();
+    child_event.provider_metadata.clear();
+    child_event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        child_payload.to_metadata_value(),
+    );
+    child_event.provider_metadata.insert(
+        DESCENDANT_CONTAINER_INVOCATION_KEY.to_owned(),
+        event.invocation_id.clone(),
+    );
+    child_event.provider_metadata.insert(
+        DESCENDANT_PARENT_CALL_KEY.to_owned(),
+        scope.parent_call_id().to_owned(),
+    );
+    child_event.provider_metadata.insert(
+        DESCENDANT_CHECKPOINT_THREAD_KEY.to_owned(),
+        scope.checkpoint_thread_id().to_owned(),
+    );
+    Ok(Some(NestedPipelineInterruptProjection {
+        event: child_event,
+        interrupt_id,
+        call_digest,
+    }))
+}
+
+fn nested_pipeline_interrupt_identity(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    root_thread_id: &str,
+    guardrail_type: &str,
+) -> Result<Option<(String, String)>, AgentEventProjectionError> {
+    let identity = match guardrail_type {
+        "pipeline_hitl" => {
+            let binding = pipeline_hitl_event_binding_from_payload(
+                event,
+                payload,
+                root_agent_name,
+                root_thread_id,
+            )?;
+            (binding.interrupt_id, binding.call_digest)
+        }
+        "sensitive_tool" => {
+            let binding = pipeline_tool_event_binding_from_payload(
+                event,
+                payload,
+                root_agent_name,
+                root_thread_id,
+            )?;
+            (binding.interrupt_id, binding.call_digest)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(identity))
+}
+
 fn pipeline_interrupt_data(
     payload: &GraphInterruptPayload,
     parent_thread_id: &str,
@@ -2376,6 +2554,14 @@ fn pipeline_interrupt_data(
         if !valid_pipeline_node_identity(&nested.subgraph)
             || nested.thread != expected_thread
             || !valid_graph_checkpoint_identity(&nested.checkpoint_id)
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        if let Some(scope) = nested.event_scope.as_ref()
+            && (scope.validate().is_err()
+                || scope.checkpoint_thread_id() != nested.thread
+                || pipeline_application_call_node(scope.parent_call_id())
+                    != Some(nested.subgraph.as_str()))
         {
             return Err(AgentEventProjectionError::invalid_state());
         }
@@ -2763,6 +2949,83 @@ fn ordinary_text_parts(
     Ok((content, thinking))
 }
 
+fn replace_nested_interrupt_identity(
+    batch: ProjectedAgentEventBatch,
+    interrupt_id: &str,
+    call_digest: &str,
+) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+    if !valid_tool_identity(interrupt_id) || !valid_sha256_label(call_digest) {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let mut replaced = ProjectedAgentEventBatch::new();
+    let mut count = 0_usize;
+    for mut event in batch {
+        if event.r#type != "agent_hitl_interrupt" || count != 0 {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let mut metadata: Value = serde_json::from_slice(&event.response_metadata)
+            .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        let object = metadata
+            .as_object_mut()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let direct = object
+            .get_mut("hitl_interrupt")
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let direct_identity =
+            replace_pending_interrupt_identity(direct, interrupt_id, call_digest)?;
+        let pending = object
+            .get_mut("hitl_interrupts")
+            .and_then(Value::as_array_mut)
+            .filter(|pending| pending.len() == 1)
+            .and_then(|pending| pending.first_mut())
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let list_identity = replace_pending_interrupt_identity(pending, interrupt_id, call_digest)?;
+        if direct_identity != list_identity {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        event.response_metadata = serde_json::to_vec(&metadata)
+            .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        encode_current_node_event_json(&event).map_err(AgentEventProjectionError::output)?;
+        replaced.push(event)?;
+        count += 1;
+    }
+    if count != 1 {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok(replaced)
+}
+
+fn replace_pending_interrupt_identity(
+    pending: &mut Value,
+    interrupt_id: &str,
+    call_digest: &str,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let object = pending
+        .as_object_mut()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let previous_interrupt_id = object
+        .get("interrupt_id")
+        .and_then(Value::as_str)
+        .filter(|value| valid_tool_identity(value))
+        .ok_or_else(AgentEventProjectionError::invalid_state)?
+        .to_owned();
+    let previous_call_digest = object
+        .get("call_digest")
+        .and_then(Value::as_str)
+        .filter(|value| valid_sha256_label(value))
+        .ok_or_else(AgentEventProjectionError::invalid_state)?
+        .to_owned();
+    object.insert(
+        "interrupt_id".to_owned(),
+        Value::String(interrupt_id.to_owned()),
+    );
+    object.insert(
+        "call_digest".to_owned(),
+        Value::String(call_digest.to_owned()),
+    );
+    Ok((previous_interrupt_id, previous_call_digest))
+}
+
 fn overlay_batch_hierarchy(
     batch: ProjectedAgentEventBatch,
     prefix: &[AgentPathTier],
@@ -2991,6 +3254,42 @@ fn valid_tool_identity(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ADK_EVENT_ID_BYTES
         && !value.chars().any(char::is_control)
+}
+
+fn descendant_checkpoint_thread(
+    event: &Event,
+    application: &ApplicationToolPresentation,
+    parent_thread_id: Option<&str>,
+    parent_call_id: &str,
+) -> Result<Option<String>, AgentEventProjectionError> {
+    let marker = event
+        .provider_metadata
+        .get(DESCENDANT_CHECKPOINT_THREAD_KEY);
+    if application.agent_type != "pipeline" {
+        return if marker.is_none() {
+            Ok(None)
+        } else {
+            Err(AgentEventProjectionError::invalid_state())
+        };
+    }
+    let checkpoint_thread_id = marker
+        .filter(|value| valid_tool_identity(value))
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let parent_thread_id = parent_thread_id.ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let node_name = pipeline_application_call_node(parent_call_id)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    if checkpoint_thread_id != &format!("{parent_thread_id}/{node_name}") {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok(Some(checkpoint_thread_id.clone()))
+}
+
+fn pipeline_application_call_node(call_id: &str) -> Option<&str> {
+    let (node_name, step) = call_id.strip_prefix("pipeline:")?.rsplit_once(':')?;
+    (valid_pipeline_node_identity(node_name)
+        && !step.is_empty()
+        && step.bytes().all(|byte| byte.is_ascii_digit()))
+    .then_some(node_name)
 }
 
 fn validate_tool_event_value(value: &Value) -> Result<(), AgentEventProjectionError> {
