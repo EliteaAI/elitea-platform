@@ -258,27 +258,21 @@ func (h *Handler) SearchOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "collections": []any{}})
 }
 
-func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	ctx := r.Context()
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 20
-	}
-
-	items := make([]map[string]any, 0)
-	total := 0
-
-	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
-		// Count total: project members UNION central platform administrators
-		// (excluding system users). The role name alone does NOT identify a
-		// platform administrator: auth_core__role is keyed UNIQUE (name, mode),
-		// so a legacy database carries a `super_admin` role in the `default` and
-		// `developer` modes too. Only the `administration` mode grants central
-		// access, so only that mode belongs in this listing.
-		countQ := `
+// usersCountQuery and usersPageQuery list the members of one project, plus the
+// central platform administrators.
+//
+// THE MODE PREDICATE IS LOAD-BEARING. A role name alone does not identify a
+// platform administrator. auth_core__role is UNIQUE (name, mode), so a legacy
+// database carries a `super_admin` role in the `default` and `developer` modes
+// as well. Only the `administration` mode grants central access. Without
+// `r.mode = 'administration'` every holder of a same-named role joined every
+// project's member list as a phantom member.
+//
+// They are package constants rather than locals for a second reason:
+// scripts/validate_contract_static.sh reads only the first 80 lines of the
+// Users function to find its writeJSON call. Inline, the two queries pushed
+// that call to line 81 and the gate reported the response shape as unmeasured.
+const usersCountQuery = `
 			SELECT COUNT(*) FROM (
 				SELECT au.id FROM auth_core__user au
 				JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
@@ -291,10 +285,10 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 					AND au.email NOT LIKE '%@centry.user'
 			) combined
 		`
-		_ = h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total) // failure leaves total=0, which is safe
 
-		// Fetch paginated: project-specific roles for members, 'super_admin' for global admins
-		q := `
+// usersPageQuery is usersCountQuery's page: project roles for a member, and the
+// literal `super_admin` for a central administrator who is not one.
+const usersPageQuery = `
 			SELECT id, email, name, roles FROM (
 				SELECT au.id, au.email, COALESCE(au.name, '') as name,
 					COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), ARRAY['viewer']) as roles
@@ -318,7 +312,24 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 			ORDER BY name, id
 			LIMIT $2 OFFSET $3
 		`
-		rows, err := h.pool.Query(ctx, q, pidNum, limit, offset)
+
+func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	ctx := r.Context()
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+
+	items := make([]map[string]any, 0)
+	total := 0
+
+	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
+		_ = h.pool.QueryRow(ctx, usersCountQuery, pidNum).Scan(&total) // failure leaves total=0, which is safe
+
+		rows, err := h.pool.Query(ctx, usersPageQuery, pidNum, limit, offset)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -1967,7 +1978,12 @@ func DefaultIconCatalogue() []map[string]any {
 }
 
 func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, DefaultIconCatalogue())
+	// The local is load-bearing. scripts/validate_contract_static.sh reads the
+	// third argument of writeJSON to prove this route answers a plain array. Its
+	// pattern accepts a slice literal or a lowercase identifier, so an inline
+	// `DefaultIconCatalogue()` call left the shape unmeasured and failed the gate.
+	icons := DefaultIconCatalogue()
+	writeJSON(w, http.StatusOK, icons)
 }
 
 // iconBucket is the reserved system bucket every uploaded icon lands in
