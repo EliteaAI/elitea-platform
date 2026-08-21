@@ -1063,19 +1063,54 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 // IDEMPOTENT, and deliberately narrow about which failure it acts on. Only
 // ErrVaultAbsent — neither row present — permits a write. A vault that exists
 // and will not open is reported, never replaced.
+//
+// The write INSERTS and never updates. The ordinary vault write updates the
+// data row, and that is correct for it; here it is not. Two callers can both
+// read an absent vault, and the second one then overwrites whatever the first
+// one sealed in between with an empty object. The configurations write path
+// calls this on the first credential save of a project, so that race would
+// discard a provider credential the user had just saved.
 func (h *Handler) EnsureProjectVault(ctx context.Context, projectID string) error {
 	_, err := h.readVaultCtx(ctx, projectID)
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrVaultAbsent):
-		return h.writeVaultCtx(ctx, projectID, vaultData{
-			Secrets:       map[string]string{},
-			HiddenSecrets: map[string]string{},
-		})
+		return h.insertEmptyVault(ctx, dbKey(projectID))
 	default:
 		return err
 	}
+}
+
+// insertEmptyVault writes the two rows of a vault that has none, and leaves an
+// existing row alone.
+//
+// Both statements are INSERT ... ON CONFLICT DO NOTHING, so a concurrent
+// creator and a concurrent sealer both keep their result.
+func (h *Handler) insertEmptyVault(ctx context.Context, vaultID string) error {
+	fernetKey, err := h.vaultFernetKey(ctx, vaultID)
+	if err != nil {
+		return err
+	}
+	plaintext, err := json.Marshal(vaultData{
+		Secrets:       map[string]string{},
+		HiddenSecrets: map[string]string{},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal the empty %s vault data: %w", vaultID, err)
+	}
+	ciphertext, err := fernetEncrypt(fernetKey, plaintext)
+	if err != nil {
+		return fmt.Errorf("encrypt the empty %s vault data: %w", vaultID, err)
+	}
+	if _, err := h.pool.Exec(ctx,
+		`INSERT INTO centry.secrets_data (id, data) VALUES ($1, $2)
+		 ON CONFLICT (id) DO NOTHING`,
+		vaultID, ciphertext,
+	); err != nil {
+		return fmt.Errorf("write the empty %s secrets_data: %w", vaultID, err)
+	}
+	return nil
 }
 
 // RemoveProjectVault deletes a project's vault rows.

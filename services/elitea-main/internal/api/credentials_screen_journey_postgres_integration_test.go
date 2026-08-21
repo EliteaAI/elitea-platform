@@ -9,13 +9,17 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
@@ -110,15 +114,25 @@ func TestTheCredentialScreenWorksForASeededMemberAndForNoOtherProject(t *testing
 	}
 	configurationID := fmt.Sprintf("%v", created["id"])
 
-	// The write stored the api_key VERBATIM, and that is the finding this whole
-	// change is about rather than an assertion about the journey. The reference
-	// converts a password field into a `{{secret.NAME}}` reference before the
-	// INSERT; this path has no such step, so the row holds the provider key in
-	// plain text and any caller who could read the row read the key.
-	if data, ok := created["data"].(map[string]any); !ok || data["api_key"] != "sk-journey" {
-		t.Fatalf("the created credential's data = %v; this test asserts the platform's real "+
-			"storage shape, which is what makes the read gate load-bearing", created["data"])
-	}
+	// The write must NOT store the api_key verbatim. This assertion used to
+	// require the opposite, and it recorded the defect the sealing change
+	// closes: the handler marshalled the caller's `data` object into
+	// p_{project}.configuration as it arrived, so the row held the provider key
+	// in clear text, and migrations/shared/0072 grants the read of that column
+	// to the project VIEWER role.
+	//
+	// The three checks below are the whole contract:
+	//   1. the response carries a {{secret.NAME}} reference, not the key;
+	//   2. the stored row carries no trace of the plaintext;
+	//   3. the project vault holds the plaintext under that exact name.
+	//
+	// Check 3 also covers the fresh-install case this journey reproduces. The
+	// harness applies migrations/001_initial.sql and the migration corpus and
+	// runs no provisioner, so project 1 starts with NO vault rows — which is
+	// exactly the state of a first install. The seal must create the vault.
+	secretName := assertSealedAPIKey(t, created)
+	assertNoPlaintextInStoredRow(t, pool, configurationID)
+	assertVaultHoldsTheKey(t, pool, secretName, "sk-journey")
 
 	// ── the detail read the edit dialog makes ──────────────────────────────
 	detailPath := "/api/v2/configurations/configuration/1/" + configurationID
@@ -215,6 +229,99 @@ func TestTheCredentialScreenWorksForASeededMemberAndForNoOtherProject(t *testing
 	}
 }
 
+/* ── the sealing assertions ────────────────────────────────────────────── */
+
+// sealedReferencePattern is the shape newConfigurationSecretID produces:
+// `{{secret.}}` around 32 lowercase hexadecimal characters.
+var sealedReferencePattern = regexp.MustCompile(`^\{\{secret\.([0-9a-f]{32})\}\}$`)
+
+// assertSealedAPIKey checks the response the edit dialog reads back, and
+// returns the hidden-secret name the reference points at.
+func assertSealedAPIKey(t *testing.T, created map[string]any) string {
+	t.Helper()
+	data, ok := created["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("the created credential carries no data object: %v", created["data"])
+	}
+	// A field the schema does not call a password stays as it arrived. The seal
+	// must touch the password fields and nothing else.
+	if base, present := data["api_base"]; present && base != "https://api.openai.com/v1" {
+		t.Fatalf("the seal changed a field that is not a password: api_base = %v", base)
+	}
+	reference, ok := data["api_key"].(string)
+	if !ok {
+		t.Fatalf("the created credential's api_key is not a string: %v", data["api_key"])
+	}
+	match := sealedReferencePattern.FindStringSubmatch(reference)
+	if match == nil {
+		t.Fatalf("the created credential's api_key = %q, want a {{secret.NAME}} reference. "+
+			"A plaintext value here is the defect the project vault closes.", reference)
+	}
+	return match[1]
+}
+
+// assertNoPlaintextInStoredRow reads the column a project VIEWER can read.
+func assertNoPlaintextInStoredRow(t *testing.T, pool *pgxpool.Pool, configurationID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), credentialJourneyDeadline)
+	defer cancel()
+
+	var stored string
+	if err := pool.QueryRow(ctx,
+		`SELECT data::text FROM p_1.configuration WHERE uuid::text = $1 OR id::text = $1`,
+		configurationID).Scan(&stored); err != nil {
+		t.Fatalf("read the stored configuration row: %v", err)
+	}
+	if strings.Contains(stored, "sk-journey") {
+		t.Fatalf("p_1.configuration.data holds the provider key in clear text: %s", stored)
+	}
+}
+
+// assertVaultHoldsTheKey opens project 1's vault and looks the name up.
+//
+// It reads SECRETS_MASTER_KEY for the same reason the server does. BOTH states
+// are supported. An absent variable stores the project key as the plain
+// 44-byte Fernet encoding, and cmd/elitea-main only warns about it. A present
+// variable wraps that encoding, and deploy/docker-compose.yml requires one.
+func assertVaultHoldsTheKey(t *testing.T, pool *pgxpool.Pool, secretName, want string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), credentialJourneyDeadline)
+	defer cancel()
+
+	var projectKey, encryptedVault []byte
+	if err := pool.QueryRow(ctx, `
+SELECT k.data, d.data
+FROM centry.secrets_key AS k
+JOIN centry.secrets_data AS d ON d.id = k.id
+WHERE k.id = 'project-1'`).Scan(&projectKey, &encryptedVault); err != nil {
+		t.Fatalf("read project 1's vault rows: %v.\n"+
+			"  A fresh install has none, so the credential save must create the vault.", err)
+	}
+	vault, err := openJourneyVault(projectKey, encryptedVault)
+	if err != nil {
+		t.Fatalf("open project 1's vault: %v", err)
+	}
+	secret, err := vault.Lookup(secretName)
+	if err != nil {
+		t.Fatalf("look %s up in project 1's vault: %v", secretName, err)
+	}
+	if secret.Value != want {
+		t.Fatalf("the vault holds %q for %s, want the submitted key", secret.Value, secretName)
+	}
+	if !secret.Hidden {
+		t.Fatalf("%s is a regular secret; a sealed password field belongs to hidden_secrets", secretName)
+	}
+}
+
+// openJourneyVault opens the vault the way the running server opens it.
+func openJourneyVault(projectKey, encryptedVault []byte) (*centrysecrets.Vault, error) {
+	masterKey := os.Getenv(v2secrets.MasterKeyEnvVar)
+	if masterKey == "" {
+		return centrysecrets.OpenUnwrapped(projectKey, encryptedVault)
+	}
+	return centrysecrets.OpenWrapped([]byte(masterKey), projectKey, encryptedVault)
+}
+
 /* ── harness ───────────────────────────────────────────────────────────── */
 
 // credentialJourneyValidator returns a SESSION-shaped principal.
@@ -233,6 +340,16 @@ func (credentialJourneyValidator) ValidateToken(_ context.Context, token string)
 		UserID: fmt.Sprint(credentialJourneyUserID),
 		Email:  "journey-member@test.local",
 	}, nil
+}
+
+// decodeJourneyJSON decodes one response body into an object.
+func decodeJourneyJSON(t *testing.T, body string) map[string]any {
+	t.Helper()
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode the response body: %v. Body: %s", err, body)
+	}
+	return decoded
 }
 
 func serveJourney(t *testing.T, router http.Handler, method, path string, body map[string]any) (int, string) {

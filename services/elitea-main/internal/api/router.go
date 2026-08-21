@@ -2548,16 +2548,40 @@ func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {
 //
 // cmd/elitea-main validates SECRETS_MASTER_KEY at start-up and stops on a
 // malformed value, so the error branch here is the programmatic caller's case,
-// not an operator's.
+// not an operator's. An ABSENT variable is a supported state: the project key
+// is then stored unwrapped, and every path here reads it that way.
+//
+// The sealer also carries the vault creator, because a project can hold rows
+// and no vault. migrations/001_initial.sql inserts centry.project id 1 and
+// creates p_1 without calling the provisioner, so the default project of a
+// fresh install has no vault rows at all. Without the creator the first
+// credential save into that project answers 503, and the deployment can store
+// no provider credential.
+//
+// v2secrets.NewHandler is the creator because it is the ONE minter of a vault
+// key (#399). It reads the same SECRETS_MASTER_KEY this function reads, so the
+// creator and this writer share one key source.
 func configurationSecretSealer(pool *pgxpool.Pool) v2configs.SecretSealer {
 	if pool == nil {
 		return nil
 	}
-	masterKey, err := v2secrets.MasterKeyFromEnv(os.Getenv)
+	// MasterKeyFromEnv is the VALIDATOR here, not the source. It returns the
+	// DECODED 32 key bytes, and this repository takes the ENCODED 44-byte
+	// form — the same form loadOptionalFernetMasterKey reads out of
+	// ELITEA_VAULT_MASTER_KEY_FILE, and the same form centrysecrets decodes.
+	// Handing it the decoded bytes made NewCurrentSecretVaultRepository reject
+	// the key, which returned a nil sealer, which refused EVERY credential save
+	// with 503. deploy/docker-compose.yml REQUIRES the variable (`:?`), so that
+	// is the default deployment.
+	decoded, err := v2secrets.MasterKeyFromEnv(os.Getenv)
 	if err != nil {
 		return nil
 	}
-	sealer, err := dbrepos.NewCurrentSecretVaultRepository(pool, masterKey)
+	clear(decoded)
+	masterKey := []byte(os.Getenv(v2secrets.MasterKeyEnvVar))
+	sealer, err := dbrepos.NewCurrentSecretVaultRepository(pool, masterKey,
+		dbrepos.WithProjectVaultCreator(v2secrets.NewHandler(pool)))
+	clear(masterKey)
 	if err != nil || sealer == nil {
 		return nil
 	}
