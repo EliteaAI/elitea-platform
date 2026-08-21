@@ -25,8 +25,8 @@ use serde_json::{Value, json};
 use super::direct_hitl::sensitive_call_identity;
 use super::graph::{
     PIPELINE_APPLICATION_HITL_SCHEMA, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
-    PIPELINE_COMPLETED_METADATA_VALUE, PRINTER_PAUSE_METADATA_KEY, PipelineLlmReplayEnvelope,
-    PrinterPauseMetadata,
+    PIPELINE_COMPLETED_METADATA_VALUE, PIPELINE_NODE_METADATA_KEY, PRINTER_PAUSE_METADATA_KEY,
+    PipelineLlmReplayEnvelope, PrinterPauseMetadata,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -484,6 +484,7 @@ struct ActiveToolCall {
     timestamp_start: String,
     application: Option<ApplicationToolPresentation>,
     sibling_ordinal: Option<usize>,
+    pipeline_node_name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -577,6 +578,7 @@ pub(crate) struct AgentEventProjector {
     application_tools: ApplicationToolPresentationCatalog,
     descendants: BTreeMap<String, DescendantAgentProjector>,
     pipeline_result: Option<String>,
+    saw_pipeline_node_events: bool,
 }
 
 impl AgentEventProjector {
@@ -612,6 +614,7 @@ impl AgentEventProjector {
             application_tools,
             descendants: BTreeMap::new(),
             pipeline_result: None,
+            saw_pipeline_node_events: false,
         })
     }
 
@@ -673,6 +676,9 @@ impl AgentEventProjector {
             return self
                 .route_descendant(event, &container_invocation_id, &parent_call_id)?
                 .ok_or_else(AgentEventProjectionError::invalid_state);
+        }
+        if pipeline_node_name(event)?.is_some() {
+            self.saw_pipeline_node_events = true;
         }
         if self
             .invocation_id
@@ -1037,13 +1043,6 @@ impl AgentEventProjector {
         event: &Event,
         payload: &GraphInterruptPayload,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
-        if !matches!(
-            self.state,
-            ProjectionState::Started | ProjectionState::Complete(_)
-        ) || !self.active_tools.is_empty()
-        {
-            return Err(AgentEventProjectionError::invalid_state());
-        }
         let checkpoint_thread_id = self
             .context
             .graph_checkpoint_thread_id
@@ -1055,6 +1054,31 @@ impl AgentEventProjector {
             &self.context.root_agent_name,
             checkpoint_thread_id,
         )?;
+        if !matches!(
+            self.state,
+            ProjectionState::Started | ProjectionState::Complete(_)
+        ) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        if let Some(replay) = binding.llm_replay() {
+            let active = self
+                .active_tools
+                .get(binding.tool_call_id())
+                .filter(|active| active.name == binding.tool_name())
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            if !replay
+                .matches_pending_call(
+                    binding.tool_call_id(),
+                    binding.tool_name(),
+                    &active.arguments,
+                )
+                .map_err(|_| AgentEventProjectionError::invalid_state())?
+            {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+        } else if !self.active_tools.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
         let data = binding.data;
         let pending = json!({
             "type": "hitl",
@@ -1142,17 +1166,21 @@ impl AgentEventProjector {
             ProjectedAgentEventBatch::new()
         } else {
             self.pipeline_result = Some(text.clone());
-            self.project_model_event(
-                event,
-                OrdinaryModelEvent {
-                    content: text.clone(),
-                    thinking: String::new(),
-                    closes_turn: true,
-                    timestamp: event
-                        .timestamp
-                        .to_rfc3339_opts(SecondsFormat::AutoSi, false),
-                },
-            )?
+            if self.saw_pipeline_node_events {
+                ProjectedAgentEventBatch::new()
+            } else {
+                self.project_model_event(
+                    event,
+                    OrdinaryModelEvent {
+                        content: text.clone(),
+                        thinking: String::new(),
+                        closes_turn: true,
+                        timestamp: event
+                            .timestamp
+                            .to_rfc3339_opts(SecondsFormat::AutoSi, false),
+                    },
+                )?
+            }
         };
         self.state = ProjectionState::Complete(CompletedModelTurn);
         Ok(batch)
@@ -1229,6 +1257,7 @@ impl AgentEventProjector {
         }
 
         if model_event.closes_turn {
+            let (response_tool_name, response_tool_metadata) = model_step_presentation(event)?;
             let step = json!({
                 "tool_run_id": event_id,
                 "type": "ChatGeneration",
@@ -1238,8 +1267,8 @@ impl AgentEventProjector {
                 "timestamp_finish": timestamp,
                 "message": {"response_metadata": {
                     "model_name": self.context.model_name,
-                    "tool_name": Value::Null,
-                    "metadata": {},
+                    "tool_name": response_tool_name,
+                    "metadata": response_tool_metadata,
                 }},
             });
             batch.push(self.event(
@@ -1290,6 +1319,7 @@ impl AgentEventProjector {
             .to_rfc3339_opts(SecondsFormat::AutoSi, false);
         let mut ids = HashSet::with_capacity(calls.len());
         let mut pending = Vec::with_capacity(calls.len());
+        let pipeline_node_name = pipeline_node_name(event)?.map(str::to_owned);
         for (index, call) in calls.iter().enumerate() {
             let id = call
                 .call_id
@@ -1311,6 +1341,7 @@ impl AgentEventProjector {
                 timestamp_start: timestamp.clone(),
                 application: self.application_tools.get(call.name).cloned(),
                 sibling_ordinal: self.application_tools.get(call.name).map(|_| index + 1),
+                pipeline_node_name: pipeline_node_name.clone(),
             };
             let entry = tool_entry(id, &active, None, None, None, None);
             batch.push(self.event(
@@ -1425,14 +1456,26 @@ impl AgentEventProjector {
         event: &Event,
         timestamp: &str,
     ) -> Result<NodeEventV1, AgentEventProjectionError> {
+        let pipeline_node_name = pipeline_node_name(event)?;
+        let tool_name = pipeline_node_name.unwrap_or("Thinking step");
+        let metadata = pipeline_node_name.map_or_else(
+            || json!({"ls_model_name": self.context.model_name}),
+            |name| {
+                json!({
+                    "ls_model_name": self.context.model_name,
+                    "langgraph_node": name,
+                    "original_name": name,
+                })
+            },
+        );
         self.event(
             "agent_llm_start",
             &Value::Null,
             None,
             &json!({
-                "tool_name": "Thinking step",
+                "tool_name": tool_name,
                 "tool_run_id": event.id,
-                "metadata": {"ls_model_name": self.context.model_name},
+                "metadata": metadata,
                 "timestamp_start": timestamp,
                 "model_name": self.context.model_name,
             }),
@@ -1637,6 +1680,32 @@ fn validate_adk_event(
         return Err(AgentEventProjectionError::unsupported());
     }
     Ok(())
+}
+
+fn pipeline_node_name(event: &Event) -> Result<Option<&str>, AgentEventProjectionError> {
+    event
+        .provider_metadata
+        .get(PIPELINE_NODE_METADATA_KEY)
+        .map(|value| {
+            if valid_pipeline_node_identity(value) {
+                Ok(value.as_str())
+            } else {
+                Err(AgentEventProjectionError::invalid_state())
+            }
+        })
+        .transpose()
+}
+
+fn model_step_presentation(event: &Event) -> Result<(Value, Value), AgentEventProjectionError> {
+    Ok(pipeline_node_name(event)?.map_or_else(
+        || (Value::Null, json!({})),
+        |name| {
+            (
+                json!(name),
+                json!({"langgraph_node": name, "original_name": name}),
+            )
+        },
+    ))
 }
 
 fn validate_confirmation_event(
@@ -2895,6 +2964,22 @@ fn tool_entry(
             json!({
                 "name": active.name,
                 "display_name": application.display_name,
+                "metadata": metadata,
+            }),
+        );
+    } else if let Some(node_name) = active.pipeline_node_name.as_deref() {
+        let metadata = json!({
+            "langgraph_node": node_name,
+            "original_name": node_name,
+        });
+        let Value::Object(object) = &mut entry else {
+            return entry;
+        };
+        object.insert("metadata".to_owned(), metadata.clone());
+        object.insert(
+            "tool_meta".to_owned(),
+            json!({
+                "name": active.name,
                 "metadata": metadata,
             }),
         );

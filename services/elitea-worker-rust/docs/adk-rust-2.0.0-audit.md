@@ -395,7 +395,11 @@ Approval executes the selected real tool; denial swaps only that exact call for
 the shared no-effect adapter, so the continuation provider request receives
 `sensitive_tool_blocked` under the original call ID. There is no user-message
 workaround, second planning call or additional database table. Inner nested
-tool events still need an outer pipeline progress adapter, and approved effects
+model/tool lifecycle events cross a bounded invocation-local channel into the
+outer Runner stream. The adapter strips provider request metadata, stamps the
+owning pipeline node, never writes browser progress to graph state and avoids a
+duplicate terminal model turn. Incremental tool-progress chunks and nested
+saved-pipeline breadcrumb containers remain separate gaps, and approved effects
 still require durable outcome reconciliation.
 
 Physical-table accounting is therefore seven native runtime tables today: two

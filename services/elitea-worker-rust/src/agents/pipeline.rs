@@ -28,8 +28,8 @@ use super::graph::{
     ApplicationExecutionError, DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection,
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineApplicationResolver,
     PipelineApplicationSelection, PipelineDirectToolResolver, PipelineLlmAgentFactory,
-    PipelineLlmReplayEnvelope, ResolvedApplicationParticipant, ResolvedDirectTool,
-    prepare_pipeline_llm_replay,
+    PipelineLlmReplayEnvelope, PipelineNodeEventSender, ResolvedApplicationParticipant,
+    ResolvedDirectTool, pipeline_node_event_channel, prepare_pipeline_llm_replay,
 };
 use super::request::AgentExecutionRequest;
 use super::runtime::{
@@ -56,6 +56,11 @@ use crate::transport::runtime_context::ClaimScopedEliteaContext;
 const PIPELINE_TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PIPELINE_MATERIALIZED_TOOLS: usize = 1_024;
 const MAX_NESTED_PIPELINE_PARTICIPANTS: usize = 25;
+
+type PipelineApplicationBinding = (
+    Option<Arc<dyn PipelineApplicationResolver>>,
+    ApplicationRuntimeProjection,
+);
 
 struct SavedPipelineParticipantReference<'a> {
     alias: &'a str,
@@ -329,8 +334,10 @@ impl PipelineNativeAgentAssembler {
             return Ok(PipelineRuntimeBindings {
                 nodes: PipelineNodeRuntimes::default(),
                 applications: ApplicationRuntimeProjection::default(),
+                node_events: None,
             });
         }
+        let (node_event_sender, node_events) = pipeline_node_event_channel();
         let (context, model_facade) = if has_llm_nodes || has_application_nodes {
             let platform = self
                 .platform
@@ -372,6 +379,7 @@ impl PipelineNativeAgentAssembler {
                 runtime_context,
                 context.clone(),
                 model_facade.clone(),
+                node_event_sender.clone(),
             )
             .await?;
         let llm_factory = context.zip(model_facade).map(|(context, model_facade)| {
@@ -381,6 +389,7 @@ impl PipelineNativeAgentAssembler {
                 model_facade,
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
+                node_events: node_event_sender,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
         Ok(PipelineRuntimeBindings {
@@ -390,6 +399,7 @@ impl PipelineNativeAgentAssembler {
                 application_resolver,
             ),
             applications: application_runtime,
+            node_events: Some(node_events),
         })
     }
 
@@ -400,13 +410,8 @@ impl PipelineNativeAgentAssembler {
         runtime_context: &ClaimBoundRuntimeContextAuthority,
         context: Option<Arc<ClaimScopedEliteaContext>>,
         model_facade: Option<Arc<ModelFacade>>,
-    ) -> Result<
-        (
-            Option<Arc<dyn PipelineApplicationResolver>>,
-            ApplicationRuntimeProjection,
-        ),
-        NativeAgentAssemblyError,
-    > {
+        node_events: PipelineNodeEventSender,
+    ) -> Result<PipelineApplicationBinding, NativeAgentAssemblyError> {
         if !profile.definition().has_application_nodes() {
             return Ok((None, ApplicationRuntimeProjection::default()));
         }
@@ -488,6 +493,7 @@ impl PipelineNativeAgentAssembler {
                     runtime_context,
                     Arc::clone(&context),
                     Arc::clone(&model_facade),
+                    node_events.clone(),
                 )
                 .await?;
             if participants
@@ -501,10 +507,8 @@ impl PipelineNativeAgentAssembler {
         if actual != expected {
             return Err(invalid_pipeline_tool_scope());
         }
-        Ok((
-            Some(Arc::new(NativePipelineApplicationResolver { participants })),
-            projection,
-        ))
+        let resolver = Arc::new(NativePipelineApplicationResolver { participants });
+        Ok((Some(resolver), projection))
     }
 
     async fn materialize_saved_pipeline_participant(
@@ -514,6 +518,7 @@ impl PipelineNativeAgentAssembler {
         runtime_context: &ClaimBoundRuntimeContextAuthority,
         context: Arc<ClaimScopedEliteaContext>,
         model_facade: Arc<ModelFacade>,
+        node_events: PipelineNodeEventSender,
     ) -> Result<NativePipelineApplicationParticipant, NativeAgentAssemblyError> {
         if reference
             .project_id
@@ -545,7 +550,7 @@ impl PipelineNativeAgentAssembler {
         }
         let admitted = frozen.apply_policy(self.tool_policy.as_ref());
         let runtimes = self
-            .bind_nested_pipeline_runtimes(&child, admitted, context, model_facade)
+            .bind_nested_pipeline_runtimes(&child, admitted, context, model_facade, node_events)
             .await?;
         tracing::debug!(
             application_alias = reference.alias,
@@ -563,6 +568,7 @@ impl PipelineNativeAgentAssembler {
         snapshot: AdmittedToolSnapshot<'_>,
         context: Arc<ClaimScopedEliteaContext>,
         model_facade: Arc<ModelFacade>,
+        node_events: PipelineNodeEventSender,
     ) -> Result<PipelineNodeRuntimes, NativeAgentAssemblyError> {
         let aliases = profile.definition().runtime_toolkit_aliases();
         let selected = snapshot.retain_toolkit_names(&aliases);
@@ -582,6 +588,7 @@ impl PipelineNativeAgentAssembler {
                 model_facade,
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
+                node_events,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
         Ok(PipelineNodeRuntimes::new(
@@ -649,6 +656,7 @@ struct NativePipelineLlmAgentFactory {
     model_facade: Arc<ModelFacade>,
     toolsets: std::collections::BTreeMap<String, Arc<dyn Toolset>>,
     sensitive_tools: BTreeMap<String, SensitiveToolPolicy>,
+    node_events: PipelineNodeEventSender,
 }
 
 struct NativePipelineDirectToolResolver {
@@ -787,6 +795,10 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
 
     fn sensitive_policy(&self, tool_name: &str) -> Option<SensitiveToolPolicy> {
         self.sensitive_tools.get(tool_name).cloned()
+    }
+
+    fn event_sender(&self) -> Option<PipelineNodeEventSender> {
+        Some(self.node_events.clone())
     }
 }
 

@@ -46,7 +46,10 @@ use super::events::{
 };
 use super::graph::compiler::PipelineDefinition;
 use super::graph::resume::{PipelineResumeError, PipelineResumeErrorCode};
-use super::graph::{EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT};
+use super::graph::{
+    EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT, PipelineNodeEventReceiver,
+    PipelineNodeEventStreamingAgent,
+};
 use super::request::{AgentExecutionRequest, UserInput};
 use super::runtime::{
     AssembledNativeAgentInvocation, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
@@ -119,6 +122,7 @@ impl ApplicationRuntimeProjection {
 pub(crate) struct PipelineRuntimeBindings {
     pub(crate) nodes: super::graph::compiler::PipelineNodeRuntimes,
     pub(crate) applications: ApplicationRuntimeProjection,
+    pub(crate) node_events: Option<PipelineNodeEventReceiver>,
 }
 
 fn application_event_agent(
@@ -722,6 +726,7 @@ pub(crate) async fn assemble_pipeline_native(
     let PipelineRuntimeBindings {
         nodes: node_runtimes,
         applications: application_runtime,
+        node_events,
     } = runtime;
     let ApplicationRuntimeProjection {
         presentations: application_tools,
@@ -779,6 +784,9 @@ pub(crate) async fn assemble_pipeline_native(
         EliteaGraphAgent::new(graph)
             .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
     );
+    let agent = node_events.map_or(agent.clone(), |events| {
+        Arc::new(PipelineNodeEventStreamingAgent::new(agent, events)) as Arc<dyn Agent>
+    });
     let agent = application_events.map_or(agent.clone(), |events| {
         application_event_agent(agent, events, application_tools.clone())
     });

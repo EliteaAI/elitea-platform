@@ -21,6 +21,7 @@ mod hitl_tests;
 mod llm;
 #[cfg(test)]
 mod llm_tests;
+mod node_events;
 mod parallel;
 #[cfg(test)]
 mod parallel_tests;
@@ -51,6 +52,10 @@ pub(crate) use direct_tool::{
 pub(crate) use llm::{
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,
     PipelineLlmReplayEnvelope, prepare_pipeline_llm_replay,
+};
+pub(crate) use node_events::{
+    PIPELINE_NODE_METADATA_KEY, PipelineNodeEventReceiver, PipelineNodeEventSender,
+    PipelineNodeEventStreamingAgent, pipeline_node_event_channel,
 };
 
 pub use yaml::{

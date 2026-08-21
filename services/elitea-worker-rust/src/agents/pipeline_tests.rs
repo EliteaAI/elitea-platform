@@ -632,6 +632,34 @@ async fn collect_pipeline_pause(
     (browser_interrupts, graph_interrupt)
 }
 
+async fn collect_pipeline_pause_events(
+    mut invocation: AssembledNativeAgentInvocation<PipelineAgentCompletion>,
+) -> (Vec<Value>, Option<adk_rust::Event>) {
+    invocation
+        .project_start(timestamp(0))
+        .expect("pipeline pause browser start");
+    let (mut run, mut projector, _completion) = invocation.start().expect("pipeline pause start");
+    let mut browser_events = Vec::new();
+    let mut graph_interrupt = None;
+    while let Some(event) = run.next_event().await.expect("pipeline pause event") {
+        if event
+            .provider_metadata
+            .contains_key(adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY)
+        {
+            graph_interrupt = Some(event.clone());
+        }
+        browser_events.extend(
+            projector
+                .project(&event)
+                .expect("pipeline pause projection")
+                .into_iter()
+                .map(|event| current(&event)),
+        );
+    }
+    assert!(projector.is_paused());
+    (browser_events, graph_interrupt)
+}
+
 async fn collect_pipeline_completion(
     mut invocation: AssembledNativeAgentInvocation<PipelineAgentCompletion>,
 ) -> Vec<Value> {
@@ -639,21 +667,28 @@ async fn collect_pipeline_completion(
         .project_start(timestamp(1))
         .expect("pipeline resume browser start");
     let (mut run, mut projector, completion) = invocation.start().expect("pipeline resume start");
+    let mut browser = Vec::new();
     while let Some(event) = run.next_event().await.expect("pipeline resume event") {
-        let _ = projector
-            .project(&event)
-            .expect("pipeline resume projection");
+        browser.extend(
+            projector
+                .project(&event)
+                .expect("pipeline resume projection")
+                .into_iter()
+                .map(|event| current(&event)),
+        );
     }
     let completed = completion
         .select()
         .await
         .expect("pipeline resume completion");
-    projector
-        .finish_after_eos(completed, timestamp(2))
-        .expect("pipeline resumed browser completion")
-        .into_iter()
-        .map(|event| current(&event))
-        .collect()
+    browser.extend(
+        projector
+            .finish_after_eos(completed, timestamp(2))
+            .expect("pipeline resumed browser completion")
+            .into_iter()
+            .map(|event| current(&event)),
+    );
+    browser
 }
 
 fn pipeline_application_resume_request(
@@ -1608,8 +1643,8 @@ async fn run_llm_node_block(action: &str, comment: Option<&str>, expected_reason
         .assemble(authorized(&request))
         .await
         .expect("sensitive LLM-node invocation");
-    let (interrupts, graph_interrupt) = collect_pipeline_pause(invocation).await;
-    assert_eq!(interrupts.len(), 1);
+    let (pause_events, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let interrupts = assert_llm_node_pause_progress(&pause_events);
     let interrupt_id = interrupts[0]["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
         .as_str()
         .expect("LLM-node interrupt identity")
@@ -1643,8 +1678,79 @@ async fn run_llm_node_block(action: &str, comment: Option<&str>, expected_reason
             .any(|event| event["content"] == "continued after block")
     );
     assert_eq!(tool_calls.load(Ordering::Acquire), 0);
-
+    assert_llm_node_blocked_progress(&browser, expected_reason);
     assert_llm_blocked_continuation(&captured, expected_reason);
+}
+
+fn assert_llm_node_pause_progress(pause_events: &[Value]) -> Vec<Value> {
+    let interrupts = pause_events
+        .iter()
+        .filter(|event| event["type"] == "agent_hitl_interrupt")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(interrupts.len(), 1);
+    let model_start = pause_events
+        .iter()
+        .find(|event| event["type"] == "agent_llm_start")
+        .expect("pipeline LLM-node model start");
+    assert_eq!(model_start["response_metadata"]["tool_name"], "answer");
+    assert_eq!(
+        model_start["response_metadata"]["metadata"]["langgraph_node"],
+        "answer"
+    );
+    assert!(
+        model_start["response_metadata"]
+            .get("parent_agent_path")
+            .is_none()
+    );
+    let tool_start = pause_events
+        .iter()
+        .find(|event| event["type"] == "agent_tool_start")
+        .expect("pipeline LLM-node tool start");
+    assert_eq!(tool_start["response_metadata"]["tool_run_id"], "call_mcp");
+    assert_eq!(
+        tool_start["response_metadata"]["metadata"]["langgraph_node"],
+        "answer"
+    );
+    assert!(
+        tool_start["response_metadata"]
+            .get("parent_agent_path")
+            .is_none()
+    );
+    interrupts
+}
+
+fn assert_llm_node_blocked_progress(browser: &[Value], expected_reason: &str) {
+    let tool_end = browser
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_tool_end"
+                && event["response_metadata"]["tool_run_id"] == "call_mcp"
+        })
+        .expect("same-call blocked tool completion");
+    assert_eq!(
+        tool_end["response_metadata"]["metadata"]["langgraph_node"],
+        "answer"
+    );
+    let projected_blocked: Value = serde_json::from_str(
+        tool_end["response_metadata"]["tool_output"]
+            .as_str()
+            .expect("structured blocked browser tool result"),
+    )
+    .expect("blocked browser tool result JSON");
+    assert_eq!(projected_blocked["type"], "sensitive_tool_blocked");
+    assert_eq!(projected_blocked["denial_reason"], expected_reason);
+    assert_eq!(
+        browser
+            .iter()
+            .filter(|event| {
+                event["type"] == "agent_llm_start"
+                    && event["response_metadata"]["tool_name"] == "answer"
+            })
+            .count(),
+        2,
+        "replayed call and final answer must not gain a duplicate graph-completion turn"
+    );
 }
 
 fn sensitive_llm_node_assembler() -> (

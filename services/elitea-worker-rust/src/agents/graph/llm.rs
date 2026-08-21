@@ -25,6 +25,7 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 use tracing::Instrument as _;
 
+use super::PipelineNodeEventSender;
 use super::yaml::{valid_graph_id, valid_output_key};
 use crate::agents::direct_hitl::blocked_tool_result;
 use crate::agents::events::mask_sensitive_arguments;
@@ -590,6 +591,22 @@ impl PipelineLlmReplayEnvelope {
         replay_state_digest(predecessor).map(|digest| digest == self.predecessor_digest)
     }
 
+    pub(crate) fn matches_pending_call(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+        arguments: &Value,
+    ) -> Result<bool, LlmExecutionError> {
+        self.validate()?;
+        Ok(replay_calls(&self.pending_content)?
+            .into_iter()
+            .any(|call| {
+                call.call_id == call_id
+                    && call.tool_name == tool_name
+                    && call.arguments == arguments
+            }))
+    }
+
     pub(crate) fn resolve_decision(
         mut self,
         call_id: &str,
@@ -742,6 +759,10 @@ pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
     ) -> Result<Arc<dyn Agent>, LlmExecutionError>;
 
     fn sensitive_policy(&self, _tool_name: &str) -> Option<SensitiveToolPolicy> {
+        None
+    }
+
+    fn event_sender(&self) -> Option<PipelineNodeEventSender> {
         None
     }
 }
@@ -1014,7 +1035,7 @@ async fn run_model_agent(
     let mut pending_prefix = None;
     let mut pending_content = None;
     while let Some(event) = stream.next().await {
-        let event = event.map_err(|_| LlmExecutionError::Unavailable)?;
+        let mut event = event.map_err(|_| LlmExecutionError::Unavailable)?;
         if let Some(request) = event.actions.tool_confirmation.clone() {
             let pending_content = pending_content
                 .take()
@@ -1035,19 +1056,26 @@ async fn run_model_agent(
             )));
         }
         if !event.llm_response.partial
-            && let Some(content) = event.content()
+            && let Some(event_content) = event.llm_response.content.as_mut()
         {
-            let mut event_content = content.clone();
             if event_content
                 .parts
                 .iter()
                 .any(|part| matches!(part, Part::FunctionCall { .. }))
             {
-                normalize_replay_call_ids(&mut event_content, &event.invocation_id)?;
+                normalize_replay_call_ids(event_content, &event.invocation_id)?;
                 pending_prefix = Some(transcript.clone());
                 pending_content = Some(event_content.clone());
             }
-            transcript.push(event_content);
+            transcript.push(event_content.clone());
+        }
+        if event.tool_progress_stream().is_none()
+            && let Some(sender) = factory.event_sender()
+        {
+            sender
+                .send(definition.id(), event.clone())
+                .await
+                .map_err(|_| LlmExecutionError::Unavailable)?;
         }
         events.push(event);
     }

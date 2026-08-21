@@ -134,13 +134,16 @@ Maintained Rust runtime ownership registry:
   Block With Comment supplies the shared `sensitive_tool_blocked` result under
   the original provider call ID without a new user turn or model replanning.
   `src/agents/pipeline_tests.rs` owns the no-dispatch, same-ID and provider-call
-  count regression proof for that path.
+  count regression proof for that path. `src/agents/graph/node_events.rs`
+  forwards native model/tool lifecycle events through one bounded
+  invocation-local channel, strips provider request payloads, stamps the owning
+  pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
   prebuilt/static MCP, remote effects, child variables, nested static Printer
-  interrupts, inner pipeline-LLM tool progress projection, approved-effect
-  receipts, arbitrary static interrupts and production activation remain
-  separate gates;
+  interrupts, incremental pipeline tool-progress chunks, saved-pipeline child
+  breadcrumb containers, approved-effect receipts, arbitrary static interrupts
+  and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;
