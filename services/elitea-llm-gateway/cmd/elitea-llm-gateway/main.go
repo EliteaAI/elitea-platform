@@ -647,6 +647,18 @@ func gatewayMetrics() []gatewayMetric {
 			v:    expvar.Get(name),
 		})
 	}
+	// Issue #323: the audio money-path control. The cost tables price tokens,
+	// and an audio provider may bill by duration instead, so such a response is
+	// delivered and billed as zero. This counter is the only thing that says so
+	// out loud. The name comes from the package that publishes it.
+	for _, name := range llmproxy.AudioMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: "Count of audio responses the gateway could not price, because the provider reported no token usage. Each one billed zero.",
+			v:    expvar.Get(name),
+		})
+	}
 	// Issue #515: the budget-outage controls. A row that the recovery pass owns
 	// holds back the durable spend for its scope, and before these two lines
 	// nothing outside the log said so. The name and the value both come from

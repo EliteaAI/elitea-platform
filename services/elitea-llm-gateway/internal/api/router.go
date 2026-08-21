@@ -38,6 +38,14 @@ func NewRouter(h *llmproxy.Handler) http.Handler {
 		r.Post("/images/variations", h.ImageVariation)
 		r.Post("/images/generations", h.ImageGeneration)
 
+		// OpenAI dialect — audio. transcriptions/translations carry a
+		// multipart body and are decoded by the gateway itself, like the
+		// image edit/variation routes above. speech carries JSON and answers
+		// raw audio bytes (issue #323, llmproxy/audio.go).
+		r.Post("/audio/speech", h.Speech)
+		r.Post("/audio/transcriptions", h.Transcription)
+		r.Post("/audio/translations", h.Transcription)
+
 		// OpenAI dialect — explicit JSON routes.
 		r.Post("/chat/completions", h.Chat)
 		r.Post("/completions", h.TextCompletion)

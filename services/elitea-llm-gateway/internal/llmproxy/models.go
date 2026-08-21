@@ -212,14 +212,22 @@ type modelSection struct {
 // The order is precedence: a model id that two sections both carry resolves to
 // the first section in this list (see modelsSQL's ORDER BY).
 //
-// Keep this in step with the routes in internal/api/router.go. `asr` and `tts`
-// are deliberately absent — the gateway serves no audio route, so advertising
-// those models would name something no caller can reach. `vectorstorage` holds
-// no model at all. ADD THE PAIR HERE when you add a route that dispatches one.
+// Keep this in step with the routes in internal/api/router.go. `vectorstorage`
+// holds no model at all, so it is absent. ADD THE PAIR HERE when you add a
+// route that dispatches one.
+//
+// `asr` and `tts` joined the list with the audio routes (issue #323). While
+// they were absent the gateway had no way to dispatch a voice model even after
+// the routes existed: mapModel gates EVERY dialect against this one set, so
+// every /llm/v1/audio/* call would have answered 404 `model_not_found` for a
+// model the project had configured and whose credential resolved. That is the
+// same defect the `embedding` pair fixed one paragraph above.
 var addressableModelSections = []modelSection{
 	{section: "llm", typ: "llm_model"},                           // /chat/completions, /completions, /responses, /messages
 	{section: "embedding", typ: "embedding_model"},               // /embeddings
 	{section: "image_generation", typ: "image_generation_model"}, // /images/generations, /images/edits, /images/variations
+	{section: "asr", typ: "asr_model"},                           // /audio/transcriptions, /audio/translations
+	{section: "tts", typ: "tts_model"},                           // /audio/speech
 }
 
 // modelSectionArgs returns the two parallel arrays modelsSQL binds, in

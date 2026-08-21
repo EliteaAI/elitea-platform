@@ -242,6 +242,16 @@ func (m *MockRouter) ImageVariationRequest(_ *schemas.BifrostContext, _ *schemas
 	return &schemas.BifrostImageGenerationResponse{}, nil
 }
 
+func (m *MockRouter) SpeechRequest(_ *schemas.BifrostContext, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostSpeechResponse{}, nil
+}
+
+func (m *MockRouter) TranscriptionRequest(_ *schemas.BifrostContext, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostTranscriptionResponse{}, nil
+}
+
 // compile-time assertion: MockRouter must satisfy LLMRouter.
 var _ llmproxy.LLMRouter = (*MockRouter)(nil)
 

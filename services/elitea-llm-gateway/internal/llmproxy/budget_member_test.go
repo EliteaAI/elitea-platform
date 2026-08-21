@@ -127,8 +127,12 @@ func block402() failmode.Decision {
 	return failmode.Decision{Verdict: failmode.Block402, State: failmode.StateNATSHealthy}
 }
 
-// decodeErrorCode pulls the OpenAI-shaped error code out of a refusal body.
-func decodeErrorCode(t *testing.T, body []byte) string {
+// decodeErrorTypeAndCode pulls BOTH OpenAI-shaped error fields out of a refusal
+// body. Both are load-bearing and they carry different things: the type says
+// "this is a budget refusal" and the code says which budget. A helper that
+// collapsed them into one string could not tell a project refusal from a member
+// one once both carry the same type — which is exactly the shape the SDK reads.
+func decodeErrorTypeAndCode(t *testing.T, body []byte) (string, string) {
 	t.Helper()
 	var payload struct {
 		Error struct {
@@ -139,10 +143,7 @@ func decodeErrorCode(t *testing.T, body []byte) string {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode error body %q: %v", body, err)
 	}
-	if payload.Error.Type != "" {
-		return payload.Error.Type
-	}
-	return payload.Error.Code
+	return payload.Error.Type, payload.Error.Code
 }
 
 // TestMemberBudget_WithinCapProceeds is the NEGATIVE control for the refusal
@@ -199,8 +200,15 @@ func TestMemberBudget_OverCapRefused(t *testing.T) {
 	if router.called.Load() {
 		t.Fatal("provider was called for a member over their cap")
 	}
-	if code := decodeErrorCode(t, rec.Body.Bytes()); code != "member_budget_exceeded" {
-		t.Fatalf("error type = %q, want member_budget_exceeded", code)
+	// The SDK contract: the TYPE marks it as a budget refusal and the CODE
+	// carries the scope. A member refusal that puts the scope in the type is
+	// not recognised as a budget refusal at all (see budgetErrorType).
+	errType, code := decodeErrorTypeAndCode(t, rec.Body.Bytes())
+	if errType != "budget_exceeded" {
+		t.Fatalf("error type = %q, want budget_exceeded", errType)
+	}
+	if code != "member_budget_exceeded" {
+		t.Fatalf("error code = %q, want member_budget_exceeded", code)
 	}
 }
 
@@ -241,8 +249,12 @@ func TestMemberBudget_ProjectCeilingTakesPrecedence(t *testing.T) {
 	if rec.Code != http.StatusPaymentRequired {
 		t.Fatalf("status = %d, want 402", rec.Code)
 	}
-	if code := decodeErrorCode(t, rec.Body.Bytes()); code != "budget_exceeded" {
-		t.Fatalf("error type = %q, want budget_exceeded (the project ceiling)", code)
+	errType, code := decodeErrorTypeAndCode(t, rec.Body.Bytes())
+	if errType != "budget_exceeded" {
+		t.Fatalf("error type = %q, want budget_exceeded", errType)
+	}
+	if code != "insufficient_quota" {
+		t.Fatalf("error code = %q, want insufficient_quota (the project ceiling)", code)
 	}
 }
 

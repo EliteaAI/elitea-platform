@@ -418,11 +418,34 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   project seeded that way. Keep each model in its own section and make the
   gateway read them all.
 
-- **`asr` and `tts` are deliberately absent, and that is a routing fact.** The
-  gateway mounts no audio route, so admitting those sections would advertise a
-  model no caller can reach. `vectorstorage` holds no model. Add a pair to
-  `addressableModelSections` when, and only when, you add a route that
-  dispatches it — `model_sections_test.go` covers each pair on its own route.
+- **`asr` and `tts` joined the list with the audio routes (issue #323).** They
+  were absent while the gateway mounted no audio route, because admitting a
+  section with no route advertises a model no caller can reach. `vectorstorage`
+  holds no model and stays out. Add a pair to `addressableModelSections` when,
+  and only when, you add a route that dispatches it — `model_sections_test.go`
+  covers each pair on its own route.
+
+- **[2026-08-20, issue #323] The gateway serves `/llm/v1/audio/speech`,
+  `/audio/transcriptions` and `/audio/translations`.** *Finding:* the retired
+  LiteLLM proxy served the first two, and `pylon-indexer`'s voice paths call
+  them by absolute URL (`indexer_tts.py`, `indexer_asr_whisper.py`). Nothing
+  replaced them, so that image kept a LiteLLM process of its own to answer them
+  — a SECOND LLM data plane that applies no budget, bills nothing, and resolves
+  credentials from a registry (`runtime_interface_litellm`, in the deleted
+  pylon_main) that the platform no longer writes. The model registry it reads is
+  therefore empty, so those calls already fail. *Decision:* implement the two
+  routes here, on the same order every /llm route follows — decode, `mapModel`,
+  `checkBudget`, dispatch, `updateUsage` — so the audio path is governed like
+  every other. Two limits are deliberate and are stated in `audio.go`:
+
+  | Limit | Why |
+  |---|---|
+  | Neither route streams | A streaming speech route needs the detached-drain billing machinery the chat stream has. The pylon TTS client reads the body with `iter_content`, so a unary body still arrives chunked to it; it loses first-byte latency, not audio. |
+  | A duration-billed response bills zero | `cost.Calculator` prices TOKENS. `whisper-1` is billed per minute and reports `usage.type = "duration"`. A per-second price invented here would reach the authoritative budget counter as if it were measured. The condition is counted on `gateway_audio_unpriced_total` and logged, not hidden. |
+
+  **Realtime ASR is NOT covered.** `indexer_asr_realtime.py` opens a WebSocket
+  to `/v1/realtime`. bifrost/core carries a realtime surface, but a WebSocket
+  route needs its own budget and billing design, and no SDK caller uses it.
 
 - **The declared order is the precedence order.** `modelsSQL` joins the pairs
   with `WITH ORDINALITY` and orders by the ordinality before the row id, so a

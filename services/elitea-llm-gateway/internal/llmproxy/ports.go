@@ -116,6 +116,12 @@ type LLMRouter interface {
 	ImageEditRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError)
 	// ImageVariationRequest performs an image-variation request (multipart body).
 	ImageVariationRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError)
+	// SpeechRequest performs a text-to-speech request. Backs
+	// /llm/v1/audio/speech (issue #323).
+	SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError)
+	// TranscriptionRequest performs a speech-to-text request (multipart body).
+	// Backs /llm/v1/audio/transcriptions and /llm/v1/audio/translations.
+	TranscriptionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError)
 }
 
 // bifrostLLMRouter is the default LLMRouter backed by the embedded
@@ -170,6 +176,14 @@ func (r *bifrostLLMRouter) ImageEditRequest(ctx *schemas.BifrostContext, req *sc
 
 func (r *bifrostLLMRouter) ImageVariationRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return r.core.ImageVariationRequest(ctx, req)
+}
+
+func (r *bifrostLLMRouter) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	return r.core.SpeechRequest(ctx, req)
+}
+
+func (r *bifrostLLMRouter) TranscriptionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	return r.core.TranscriptionRequest(ctx, req)
 }
 
 // Compile-time assertions that both the concrete *bifrost.Bifrost method set

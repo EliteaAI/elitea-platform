@@ -31,9 +31,18 @@ topology `deploy/docker-compose.yml` already runs; it does not extend it.
 
 `RPC_HMAC_KEY` must hold the **same value** as
 `deploy/helm/elitea-scheduler`'s `secrets.RPC_HMAC_KEY` — the scheduler signs
-the RPC payloads this runtime verifies. Every key in the `secrets:` block is
-`optional: true` because Pylon starts without them, but that is a *downgrade*
-(unsigned messages, empty password), not a pass. Provision the Secret:
+the RPC payloads this runtime verifies.
+
+`SECRETS_MASTER_KEY` is `optional: false` and must hold the **same value**
+`elitea-main` is given. The two services share `centry.secrets_key` and
+`centry.secrets_data`; two different answers put two row formats in one table
+and neither service can read what the other wrote (issue #418). The container
+refuses to start on a missing or malformed value — see
+`services/pylon-indexer/entrypoint.sh`.
+
+Every other key in the `secrets:` block is `optional: true` because Pylon starts
+without them, but that is a *downgrade* (unsigned messages, empty password), not
+a pass. Provision the Secret:
 
 ```bash
 kubectl create secret generic pylon-indexer-secrets -n elitea \
@@ -42,7 +51,7 @@ kubectl create secret generic pylon-indexer-secrets -n elitea \
   --from-literal=indexer-hmac-key=… \
   --from-literal=event-hmac-key=… \
   --from-literal=rpc-hmac-key=… \
-  --from-literal=litellm-master-key=…
+  --from-literal=secrets-master-key=…
 ```
 
 ## Install

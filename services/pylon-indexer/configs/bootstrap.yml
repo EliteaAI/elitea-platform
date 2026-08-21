@@ -6,6 +6,25 @@ plugin_repo:
     add_source_data: true
     add_head_data: true
 
+# `runtime_engine_litellm` was here, and it is deliberately gone (issue #323).
+#
+# That plugin starts a LiteLLM proxy inside this container on 127.0.0.1:8081.
+# It was a SECOND LLM data plane: it applies no budget, bills nothing, and its
+# model registry is written by `runtime_interface_litellm`, which ran in
+# pylon_main. This platform has no pylon_main, so nothing writes that registry
+# and the proxy answers every call from an empty model set.
+#
+# The LLM data plane is elitea-llm-gateway, reached through elitea-main at
+# `{deployment}/llm/v1`. The SDK client already goes there for chat, embeddings
+# and images. The gateway now also serves `/llm/v1/audio/speech` and
+# `/llm/v1/audio/transcriptions`, which are the only two endpoints this
+# container used the local proxy for.
+#
+# ONE CHANGE IS STILL OUTSTANDING, IN THE `indexer_worker` PLUGIN REPOSITORY.
+# `indexer_asr_whisper.py`, `indexer_tts.py` and `indexer_asr_realtime.py` hold
+# the absolute URL `http://127.0.0.1:8081/v1/...`. Point the first two at the
+# deployment's `/llm/v1` instead. Both were already failing against the empty
+# registry, so this removal changes the failure, not the outcome.
 preordered_plugins:
   - shared
   - auth
@@ -13,5 +32,4 @@ preordered_plugins:
   - sdk_plugin
   - indexer_worker
   - provider_worker
-  - runtime_engine_litellm
   - tracing

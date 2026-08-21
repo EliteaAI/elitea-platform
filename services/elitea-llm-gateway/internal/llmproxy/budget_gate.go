@@ -51,6 +51,50 @@ const budgetScopeProject = failmode.ScopeProject
 // failmode.UserScopeID for why that shape is fixed.
 const budgetScopeUser = failmode.ScopeUser
 
+// The budget refusal wire contract. Every budget refusal this gateway writes
+// uses these three constants, and the SDK's reader is the reason they are what
+// they are.
+//
+// elitea-sdk `runtime/exceptions.py::budget_exceeded_from` is the ONE place any
+// SDK caller decides whether a 402 is a budget rejection. It does two things,
+// in this order:
+//
+//  1. It matches on error.TYPE only: `detail.get("type") == "budget_exceeded"`.
+//     A body whose type is anything else returns None from the same branch —
+//     it does NOT fall through to the message-text path below it.
+//  2. It reads the SCOPE out of error.CODE, and accepts exactly two values:
+//     "project_budget_exceeded" and "member_budget_exceeded". Any other code
+//     resolves to the default scope, which is the project one.
+//
+// So the type carries "this is a budget refusal" and the code carries "which
+// budget". A refusal that puts the scope in the type is not recognised as a
+// budget refusal at all: the SDK returns None, the handler treats the 402 as an
+// ordinary provider error, and the policy rejection is fed back to the model as
+// message content. The SDK's own docstring names that outcome as the thing the
+// typed exception exists to prevent.
+//
+// The scope also survives past the SDK: BudgetExceededError.scope becomes the
+// agent event's `budget_error_code`, which is what the front end keys its
+// member-versus-project message on (EliteaUI budgetError.constants.js). The
+// front end never sees this HTTP body.
+const (
+	// budgetErrorType is the ONLY error type a budget refusal may carry. It is
+	// the SDK's match key; see above.
+	budgetErrorType = "budget_exceeded"
+	// budgetCodeProject is the project-ceiling code. It stays the OpenAI
+	// canonical "insufficient_quota" rather than "project_budget_exceeded":
+	// a generic OpenAI client understands it, spec §2.5 and the cutover gate
+	// (cutover-ctl budget-check, BFF.9E) both assert it, and the SDK resolves
+	// an unrecognised code to the project scope anyway — which is the correct
+	// scope for this refusal. TestBudgetRefusalMatchesSDKContract pins that
+	// reliance so it cannot become accidental.
+	budgetCodeProject = "insufficient_quota"
+	// budgetCodeMember is the member-ceiling code. The member cap is an Elitea
+	// concept with no OpenAI equivalent, so there is no canonical code to keep
+	// here, and the SDK needs this exact spelling to report the member scope.
+	budgetCodeMember = "member_budget_exceeded"
+)
+
 // perImageFallbackNano is the fixed per-image billing cost in nano-USD used
 // when an image-generation response carries no token-based Usage field.
 // $0.040 per image (40_000_000 nano-USD) matches the DALL·E 3 Standard
@@ -190,8 +234,8 @@ func (h *Handler) checkBudget(
 		// so it is asked only after the project admits (issue #321).
 		return h.checkMemberBudget(w, ctx, pid, periodStart)
 	case failmode.Block402:
-		writeError(w, http.StatusPaymentRequired, "budget_exceeded",
-			"project budget exhausted for this billing period", "insufficient_quota")
+		writeError(w, http.StatusPaymentRequired, budgetErrorType,
+			"project budget exhausted for this billing period", budgetCodeProject)
 		return false
 	case failmode.Block503:
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
@@ -226,11 +270,21 @@ func (h *Handler) checkBudget(
 // would break every non-interactive caller. Those calls remain bounded by the
 // project ceiling, which is the ceiling they have always been bounded by.
 //
-// The refusal carries `member_budget_exceeded`, not `budget_exceeded`. The
-// front end has had a distinct message for that code since before the Go port
-// (EliteaUI budgetError.constants.js), and it deep-links to the member's own
-// Usage tab; collapsing the two would send a member who is over THEIR cap to a
-// project budget screen they cannot act on.
+// The refusal carries the member scope in error.CODE, and the shared
+// `budget_exceeded` type. The front end has had a distinct message for
+// `member_budget_exceeded` since before the Go port (EliteaUI
+// budgetError.constants.js), and it deep-links to the member's own Usage tab;
+// collapsing the two would send a member who is over THEIR cap to a project
+// budget screen they cannot act on.
+//
+// The scope moved from the type to the code in the SDK-compatibility pass. It
+// was in the type, and the front end never received it: EliteaUI does not read
+// this HTTP body. It reads the agent event's `budget_error_code`, which is
+// elitea-sdk's BudgetExceededError.scope, and the SDK derives that scope from
+// error.CODE after matching error.TYPE against `budget_exceeded` alone. A
+// member refusal typed `member_budget_exceeded` failed that match, so
+// budget_exceeded_from returned None, no typed exception was raised, and the
+// refusal reached the model as ordinary message content. See budgetErrorType.
 func (h *Handler) checkMemberBudget(
 	w http.ResponseWriter,
 	ctx context.Context,
@@ -269,8 +323,8 @@ func (h *Handler) checkMemberBudget(
 	case failmode.Block402:
 		h.logger.Info("budget gate: member budget exhausted",
 			"project_id", projectID, "user_id", uid, "state", dec.State.String())
-		writeError(w, http.StatusPaymentRequired, "member_budget_exceeded",
-			"member budget exhausted for this billing period", "insufficient_quota")
+		writeError(w, http.StatusPaymentRequired, budgetErrorType,
+			"member budget exhausted for this billing period", budgetCodeMember)
 		return false
 	case failmode.Block503:
 		writeError(w, http.StatusServiceUnavailable, "service_unavailable",

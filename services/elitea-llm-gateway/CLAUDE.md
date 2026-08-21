@@ -51,6 +51,15 @@ because each was a real bug found across 3 review rounds.
   `{"error":{"message","type","code"}}`. 402=budget_exceeded/insufficient_quota,
   429=rate_limit_error/rate_limit_exceeded, 503=service_unavailable/nats_unavailable.
   Do NOT emit Anthropic-shaped errors on /llm/v1/messages.
+- A budget refusal puts the SCOPE in `error.code` and always keeps
+  `error.type = "budget_exceeded"` (`budgetErrorType` /  `budgetCodeProject` /
+  `budgetCodeMember` in internal/llmproxy/budget_gate.go). elitea-sdk matches on
+  the type alone, then reads the scope from the code. A refusal typed with its
+  scope is not read as a budget refusal at all, and the SDK then feeds the
+  policy rejection back to the model as message content. The member ceiling is
+  the one refusal whose code is not the OpenAI canonical one; the project
+  ceiling keeps `insufficient_quota` because the cutover gate asserts it and the
+  SDK resolves an unknown code to the project scope.
 
 ## Security / trust boundary
 - The edge (elitea-main) trusts `X-Auth-*` / `X-Elitea-*` ONLY from a configured

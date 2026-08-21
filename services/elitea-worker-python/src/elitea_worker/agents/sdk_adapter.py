@@ -75,6 +75,33 @@ class SdkBudgetExceeded(Exception):
     """Data-free marker for an exact SDK budget policy rejection."""
 
 
+@contextmanager
+def _sdk_budget_boundary() -> Any:
+    """Turn the SDK's typed budget rejection into the worker's marker.
+
+    A budget rejection is a POLICY outcome, not a fault. The SDK raises
+    ``BudgetExceededError`` for it and states why it must never be swallowed:
+    there is no recovery from an exhausted budget, so continuing would feed a
+    policy rejection back into the model as if it were data.
+
+    Every SDK entry point this adapter owns needs the boundary, not only the
+    indexing one. Agent execution had no boundary, so an exhausted budget
+    reached the delivery catch-all as an unclassified exception and was
+    reported as ``InternalFailure`` — a retryable internal fault, for a
+    condition that no retry can clear.
+
+    The marker carries no message. The SDK's text names the budget and can
+    quote the proxy; the worker's public diagnostics stay data-free.
+    """
+
+    try:
+        yield
+    except Exception as error:
+        if _is_sdk_budget_exceeded(error):
+            raise SdkBudgetExceeded() from None
+        raise
+
+
 @dataclass(frozen=True, slots=True)
 class SdkConfigurationBinding:
     configuration_type: str
@@ -282,7 +309,7 @@ class EliteaSdkIndexingAdapter:
         )
         # Business-compatibility boundary: exactly the public SDK operation used
         # by the current indexer worker, exactly once per kernel invocation.
-        try:
+        with _sdk_budget_boundary():
             return self._client.test_toolkit_tool(
                 toolkit_config=invocation_toolkit_config,
                 tool_name="index_data",
@@ -292,10 +319,6 @@ class EliteaSdkIndexingAdapter:
                 llm_config=deepcopy(llm_config),
                 mcp_tokens=mcp_tokens,
             )
-        except Exception as error:
-            if _is_sdk_budget_exceeded(error):
-                raise SdkBudgetExceeded() from None
-            raise
 
 
 class EliteaSdkAgentAdapter:
@@ -354,7 +377,7 @@ class EliteaSdkAgentAdapter:
 
     def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        with self._execution_memory() as memory:
+        with self._execution_memory() as memory, _sdk_budget_boundary():
             application = payload.application
             version_details = deepcopy(application.get("version_details") or {})
             llm_kwargs = _llm_kwargs(payload.llm)
@@ -384,7 +407,7 @@ class EliteaSdkAgentAdapter:
 
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        with self._execution_memory() as memory:
+        with self._execution_memory() as memory, _sdk_budget_boundary():
             llm_kwargs = _llm_kwargs(payload.llm)
             llm = self._client.get_llm(
                 model_name=llm_kwargs.get("model"),

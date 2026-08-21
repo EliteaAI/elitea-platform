@@ -14,6 +14,10 @@
 package llmproxy
 
 import (
+	"bytes"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -27,8 +31,13 @@ type sectionCase struct {
 	typ     string
 	// path is the /llm route that carries a model of this kind.
 	path string
-	// body builds a minimal valid request for path.
+	// body builds a minimal valid JSON request for path. Exactly one of body
+	// and form is set.
 	body func(model string) string
+	// form builds a minimal valid multipart request for path, returning the
+	// Content-Type header and the encoded body. The transcription routes take
+	// an uploaded audio file, so they cannot be expressed as a JSON string.
+	form func(t *testing.T, model string) (string, []byte)
 	// title is the row's elitea_title, wire is its data.name. They differ, which
 	// is the normal shape: deploy/scripts/standalone-stack.sh seeds the embedding
 	// row as elitea_title 'standalone-embedding' with data.name
@@ -68,7 +77,61 @@ func addressableSectionCases() []sectionCase {
 			title: "Team images", wire: "openai/gpt-image-1",
 			wantProvider: "openai", wantModel: "gpt-image-1",
 		},
+		{
+			name: "asr", section: "asr", typ: "asr_model",
+			path: "/llm/v1/audio/transcriptions",
+			form: transcriptionForm,
+			title: "Voice in", wire: "openai/whisper-1",
+			wantProvider: "openai", wantModel: "whisper-1",
+		},
+		{
+			name: "tts", section: "tts", typ: "tts_model",
+			path: "/llm/v1/audio/speech",
+			body: func(m string) string { return `{"model":"` + m + `","input":"hi","voice":"alloy"}` },
+			title: "Voice out", wire: "openai/tts-1",
+			wantProvider: "openai", wantModel: "tts-1",
+		},
 	}
+}
+
+// transcriptionForm encodes the minimal valid multipart body for
+// /llm/v1/audio/transcriptions: a model field and one audio file part.
+func transcriptionForm(t *testing.T, model string) (string, []byte) {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if err := mw.WriteField("model", model); err != nil {
+		t.Fatalf("write model field: %v", err)
+	}
+	part, err := mw.CreateFormFile("file", "audio.wav")
+	if err != nil {
+		t.Fatalf("create file part: %v", err)
+	}
+	if _, err := part.Write([]byte("RIFF....WAVEfmt ")); err != nil {
+		t.Fatalf("write file part: %v", err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	return mw.FormDataContentType(), buf.Bytes()
+}
+
+// sendSection performs one request for c, choosing the JSON or multipart
+// encoding the route needs.
+func sendSection(t *testing.T, h http.Handler, c sectionCase, projectID, model string) *httptest.ResponseRecorder {
+	t.Helper()
+	if c.form != nil {
+		contentType, body := c.form(t, model)
+		req := httptest.NewRequest(http.MethodPost, c.path, bytes.NewReader(body))
+		req.Header.Set("Content-Type", contentType)
+		if projectID != "" {
+			req.Header.Set(headerProjectID, projectID)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	return postAs(t, h, c.path, projectID, c.body(model))
 }
 
 // sectionRows returns one configured row per addressable section.
@@ -98,7 +161,7 @@ func TestModelSections_EveryAddressableSectionDispatchesOnItsRoute(t *testing.T)
 	for _, c := range addressableSectionCases() {
 		t.Run(c.name, func(t *testing.T) {
 			h, spy := newMapHandler(t, sectionRows())
-			rec := postAs(t, h, c.path, mapProjectID, c.body(c.wire))
+			rec := sendSection(t, h, c, mapProjectID, c.wire)
 			if rec.Code != 200 {
 				t.Fatalf("POST %s: status = %d, want 200; body=%s", c.path, rec.Code, rec.Body.String())
 			}
@@ -121,7 +184,7 @@ func TestModelSections_EveryAddressableSectionResolvesItsAdvertisedTitle(t *test
 	for _, c := range addressableSectionCases() {
 		t.Run(c.name, func(t *testing.T) {
 			h, spy := newMapHandler(t, sectionRows())
-			rec := postAs(t, h, c.path, mapProjectID, c.body(c.title))
+			rec := sendSection(t, h, c, mapProjectID, c.title)
 			if rec.Code != 200 {
 				t.Fatalf("POST %s with the advertised title: status = %d, want 200; body=%s",
 					c.path, rec.Code, rec.Body.String())
@@ -166,33 +229,40 @@ func TestModelSections_ListAdvertisesEveryAddressableSection(t *testing.T) {
 }
 
 // TestModelSections_UnservedSectionIsNeitherListedNorDispatchable holds the
-// line the other way. `asr` and `tts` are model sections elitea-main writes, but
-// the gateway mounts no audio route for them, so admitting them would advertise
-// a model no caller can reach. `vectorstorage` is not a model at all.
+// line the other way. `vectorstorage` is a configuration section elitea-main
+// writes, and it holds no model at all — there is no route that could dispatch
+// one, so admitting it would advertise something no caller can reach.
+//
+// `asr` and `tts` were in this test until the audio routes existed (issue
+// #323). They moved to addressableSectionCases when their routes were mounted,
+// which is the rule this pair of tests enforces between them: a section is in
+// the set if and ONLY if a route dispatches it.
+//
+// What this test does NOT assert, because the gateway has never done it: that a
+// model resolves only on the route its own section belongs to. resolve() reads
+// one set across all sections, so an embedding id posted to /chat/completions
+// maps and dispatches, and the provider is what refuses it. Binding a section
+// to a route would be a new rule, not a regression fix.
 func TestModelSections_UnservedSectionIsNeitherListedNorDispatchable(t *testing.T) {
 	rows := append(sectionRows(),
-		fakeModelRow{title: "Voice in", data: []byte(`{"name":"whisper-1"}`), section: "asr", typ: "asr_model"},
-		fakeModelRow{title: "Voice out", data: []byte(`{"name":"tts-1"}`), section: "tts", typ: "tts_model"},
 		fakeModelRow{title: "elitea-pgvector", data: []byte(`{"name":"elitea-pgvector"}`), section: "vectorstorage", typ: "pgvector"},
 	)
 	h, spy := newMapHandler(t, rows)
 
 	for _, id := range listedIDs(t, h, mapProjectID) {
-		for _, unserved := range []string{"Voice in", "Voice out", "elitea-pgvector"} {
-			if id == unserved {
-				t.Fatalf("GET /llm/v1/models advertised %q, which no /llm route can dispatch", unserved)
-			}
+		if id == "elitea-pgvector" {
+			t.Fatalf("GET /llm/v1/models advertised %q, which no /llm route can dispatch", id)
 		}
 	}
 
 	before := spy.count()
 	rec := postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
-		`{"model":"whisper-1","messages":[{"role":"user","content":"hi"}]}`)
+		`{"model":"elitea-pgvector","messages":[{"role":"user","content":"hi"}]}`)
 	if rec.Code != 404 {
-		t.Fatalf("chat with an asr model: status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("chat with a vector-store row: status = %d, want 404; body=%s", rec.Code, rec.Body.String())
 	}
 	if spy.count() != before {
-		t.Fatalf("chat with an asr model reached the provider %d times, want 0", spy.count()-before)
+		t.Fatalf("chat with a vector-store row reached the provider %d times, want 0", spy.count()-before)
 	}
 }
 
