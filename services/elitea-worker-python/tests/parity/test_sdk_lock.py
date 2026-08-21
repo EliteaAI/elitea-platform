@@ -138,6 +138,12 @@ def test_worker_dependency_and_lock_share_one_sdk_identity() -> None:
     assert "/tmp/elitea-sdk-current/tests/runtime/test_mcp_discovery_hang.py" in worker_ci
     assert '"elitea-sdk @ file:///tmp/elitea-sdk-current"' in worker_ci
     assert '"./services/elitea-worker-python[agent-current,indexing-current,test]"' in worker_ci
+    # Tier 2 of the elitea-sdk compatibility gates. This line is the ONLY
+    # executable reference to the conformance driver in the tree; every other
+    # mention is prose. Assert the INVOCATION, not the step name: the string
+    # "elitea-sdk tier 3 wiring" survives deleting that step outright, because
+    # it also appears in a paths comment.
+    assert "services/elitea-llm-gateway/scripts/sdk-conformance/run.sh" in worker_ci
     assert lock["distribution_version"] == SDK_DISTRIBUTION_VERSION
     assert lock["source"]["revision"] == SDK_SOURCE_REVISION
     assert lock["source"]["git_archive_sha256"] == SDK_SOURCE_ARCHIVE_SHA256

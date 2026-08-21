@@ -3,10 +3,13 @@ package sdkharness
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // THESE TESTS CHECK THE HARNESS, NOT THE SDK CONTRACT.
@@ -32,6 +35,7 @@ func newTestServer(t *testing.T) (*Server, *httptest.Server) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(s.Close)
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts
@@ -212,5 +216,104 @@ func TestConfigRejectsAnUnusableIdentity(t *testing.T) {
 	}
 	if _, err := New(Config{ProjectID: 1, UserID: 0}); err == nil {
 		t.Fatal("New accepted a zero UserID, which makes the member ceiling unreachable")
+	}
+}
+
+// TestCloseStopsTheSweepGoroutine proves New's sweep loop is stoppable.
+//
+// Every New starts one reconciler sweep goroutine. It was bound to
+// context.Background(), so its <-ctx.Done() case could never fire and the
+// goroutine outlived every reference to the Server: 25 Servers leaked 25
+// goroutines that survived dropping all references and forcing GC. The leak was
+// invisible because this module has no goleak dependency and nothing counted
+// goroutines.
+//
+// The margin is deliberately loose. This asserts "the leak is bounded", not an
+// exact count: the race detector and the HTTP stack keep their own goroutines,
+// and a tight equality here would be flaky rather than strict.
+func TestCloseStopsTheSweepGoroutine(t *testing.T) {
+	const servers = 25
+
+	settle := func() {
+		for i := 0; i < 5; i++ {
+			runtime.GC()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	settle()
+	before := runtime.NumGoroutine()
+
+	for i := 0; i < servers; i++ {
+		s, err := New(Config{ProjectID: 4242, UserID: 77})
+		if err != nil {
+			t.Fatalf("New #%d: %v", i, err)
+		}
+		s.Close()
+	}
+
+	settle()
+	after := runtime.NumGoroutine()
+
+	if grown := after - before; grown >= servers {
+		t.Fatalf("built and closed %d servers and the goroutine count grew by %d "+
+			"(%d -> %d). Close does not stop the reconciler sweep loop, so every "+
+			"New leaks one goroutine for the life of the process.",
+			servers, grown, before, after)
+	}
+}
+
+// TestALargeBodyReachesTheHandlerIntact pins the boundary probeBody used to
+// corrupt.
+//
+// probeBody buffers the body to read three scalar fields, then puts it back. It
+// used to put back ONLY what it had read, capped at probeBodyLimit, so a body
+// over that limit reached the real router TRUNCATED. The router itself accepts
+// 32 MiB (llmproxy.maxRequestBody), which made this harness 32x stricter than
+// the thing it exists to represent, and the doc comment's claim that it
+// "RESTORES the body" was false above the limit.
+//
+// The measured boundary was exact: probeBodyLimit-1 bytes answered 200 and
+// probeBodyLimit+1 answered 400 "unexpected EOF".
+func TestALargeBodyReachesTheHandlerIntact(t *testing.T) {
+	_, ts := newTestServer(t)
+
+	// A valid chat request padded past probeBodyLimit with a long content
+	// string. The padding is inside the JSON, so a truncated body is invalid
+	// JSON and the router answers 400.
+	padding := strings.Repeat("x", probeBodyLimit+4096)
+	payload := map[string]any{
+		"model": "openai/gpt-4o",
+		"messages": []map[string]string{
+			{"role": "user", "content": padding},
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(encoded) <= probeBodyLimit {
+		t.Fatalf("the fixture is %d bytes, which does not exceed probeBodyLimit (%d); "+
+			"it would not exercise the truncation path", len(encoded), probeBodyLimit)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/llm/v1/chat/completions",
+		bytes.NewReader(encoded))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a %d-byte body answered HTTP %d (%s), want 200. probeBody handed the "+
+			"handler a truncated prefix instead of the whole body.",
+			len(encoded), resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 }

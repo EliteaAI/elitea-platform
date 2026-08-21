@@ -55,6 +55,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "sdk-conformance-harness: %v\n", err)
 		os.Exit(1)
 	}
+	// This process is short-lived, so the sweep goroutine would die with it
+	// anyway. Close it regardless: the leak is a property of New, and a caller
+	// that models the contract correctly is the one a reader copies.
+	defer server.Close()
 
 	listener, err := net.Listen("tcp", *addr)
 	if err != nil {

@@ -125,6 +125,11 @@ type Server struct {
 	cfg     Config
 	handler http.Handler
 
+	// stop cancels the reconciler's sweep loop. Without it every New() leaks
+	// one goroutine for the life of the process, because a background context
+	// can never fire the loop's <-ctx.Done() case. Callers must Close.
+	stop context.CancelFunc
+
 	stateMu sync.RWMutex
 	verdict Verdict
 
@@ -181,10 +186,13 @@ func New(cfg Config) (*Server, error) {
 			PGFreshness:      5 * time.Minute,
 			ExpectedReplicas: 1,
 		}, logger)
-	// The reconciler is bound to a background context, as the real composition
-	// root does. It never has work here: the fake counter's breaker is always
-	// closed and the fake transaction yields no outage rows.
-	gov.Start(context.Background())
+	// The reconciler is bound to a cancellable context, unlike the real
+	// composition root, which runs for the life of the process. It never has
+	// work here: the fake counter's breaker is always closed and the fake
+	// transaction yields no outage rows. It still needs stopping, because a
+	// test that builds many Servers otherwise leaks one goroutine per Server.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	gov.Start(sweepCtx)
 
 	router := preflight.NewMockRouter(preflight.MockRouterConfig{
 		EmbeddingResponse: cannedEmbedding(),
@@ -202,7 +210,21 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("/__harness/journal", s.handleJournal)
 	mux.Handle("/", s.edgeShim(api.NewRouter(handler)))
 	s.handler = mux
+	s.stop = stopSweep
 	return s, nil
+}
+
+// Close stops the reconciler's sweep loop. It is safe to call more than once.
+//
+// Every New starts one sweep goroutine. Without Close it runs for the life of
+// the process, so a suite that builds many Servers leaks one goroutine each.
+// The equivalent fixture one directory up (internal/preflight/harness.go)
+// already cancels its context through t.Cleanup; this is the same contract for
+// callers that are not holding a *testing.T.
+func (s *Server) Close() {
+	if s.stop != nil {
+		s.stop()
+	}
 }
 
 // Handler is the assembled http.Handler, ready for http.Serve or httptest.
@@ -367,12 +389,28 @@ func (s *Server) probeBody(r *http.Request) map[string]any {
 	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		return nil
 	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, probeBodyLimit))
+	// Read ONE byte past the limit, so an over-limit body is detectable rather
+	// than silently truncated at exactly the limit.
+	raw, err := io.ReadAll(io.LimitReader(r.Body, probeBodyLimit+1))
 	if err != nil {
 		return nil
 	}
 	// The handler has not read the body yet, so put it back before returning.
-	r.Body = io.NopCloser(bytes.NewReader(raw))
+	// Splice rather than replace: replacing r.Body with the bytes read here
+	// TRUNCATED any body over the limit and handed the corrupt prefix to the
+	// real router, which accepts 32 MiB (llmproxy.maxRequestBody). That made
+	// this harness 32x stricter than the router it exists to serve faithfully.
+	// MultiReader gives the handler the whole body back; the journal still
+	// buffers at most probeBodyLimit+1.
+	r.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(raw), r.Body), r.Body}
+	if len(raw) > probeBodyLimit {
+		// Over the limit: the body reaches the handler intact, but this probe
+		// records nothing rather than decoding a truncated prefix.
+		return nil
+	}
 	var decoded map[string]any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return nil
