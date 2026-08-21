@@ -39,6 +39,20 @@ const gatewayMigrationPath = "shared/0067_gateway_budget_schema.sql"
 // carrying only 0067 answers 42P01 on the billing path.
 const usageDimensionsMigrationPath = "shared/0084_budget_usage_dimensions.sql"
 
+// audioPricesMigrationPath is the THIRD file of the gateway price catalog: the
+// four per-1,000,000-unit audio price columns that /llm/v1/audio/transcriptions
+// and /llm/v1/audio/speech need.
+//
+// It is a separate file, not an edit of 0067, because a shipped migration is
+// content-checksummed and the ledger rejects any drift in it.
+//
+// It belongs beside the other two for the reason GatewayMigrationSQL() exists:
+// four Postgres integration suites build the gateway schema from that function
+// alone. A database built without this file has gateway.gateway_models with no
+// audio columns, and the price read answers 42703 at request time — a runtime
+// error on the billing path, not a red build.
+const audioPricesMigrationPath = "shared/0086_gateway_audio_prices.sql"
+
 // tokenBindingMigrationPath is the access-token project binding (ADR-0018,
 // spec-llm-project-scope §3), inside the LEDGERED corpus.
 //
@@ -68,6 +82,8 @@ const tokenBindingMigrationPath = "shared/0071_token_project_binding.sql"
 var dumpGuardExemptMigrations = []string{
 	gatewayMigrationPath,
 	usageDimensionsMigrationPath,
+	// After 0067: it adds columns to the table 0067 creates.
+	audioPricesMigrationPath,
 	tokenBindingMigrationPath,
 }
 
@@ -124,11 +140,12 @@ func ledgeredMigrationSQL(path string) (string, error) {
 // a hand-copied DDL and then fail against production. Runtime code must call
 // RunMigrations instead — this returns SQL, it does not run it.
 //
-// It returns BOTH files that make up that schema, in ledger order. Every caller
-// wants "the gateway tables", not "one particular migration", so a caller that
-// had to know a second file existed would be a caller that eventually forgets:
-// the usage-ledger table added by 0084 is written on the billing path, and a
-// test database missing it fails at runtime rather than at setup.
+// It returns ALL THREE files that make up that schema, in ledger order. Every
+// caller wants "the gateway tables", not "one particular migration", so a
+// caller that had to know the other files existed would be a caller that
+// eventually forgets: the usage-ledger table added by 0084 is written on the
+// billing path and the audio price columns added by 0086 are read on it, and a
+// test database missing either fails at runtime rather than at setup.
 func GatewayMigrationSQL() (string, error) {
 	base, err := ledgeredMigrationSQL(gatewayMigrationPath)
 	if err != nil {
@@ -138,10 +155,15 @@ func GatewayMigrationSQL() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	audio, err := ledgeredMigrationSQL(audioPricesMigrationPath)
+	if err != nil {
+		return "", err
+	}
 	// A newline between them: the ledgered runner executes each file separately,
 	// and concatenating without a separator would splice the last statement of
-	// one onto the first of the other.
-	return base + "\n" + dimensions, nil
+	// one onto the first of the next. 0086 comes last because it ALTERs the
+	// table 0067 creates.
+	return base + "\n" + dimensions + "\n" + audio, nil
 }
 
 // TokenBindingMigrationSQL returns the token project binding migration as SQL,

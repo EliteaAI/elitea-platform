@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 )
 
@@ -414,6 +415,28 @@ func (h *Handler) updateUsage(
 	projectIDStr string,
 	userIDStr string,
 ) billOutcome {
+	return h.updateUsageUnits(ctx, provider, model,
+		cost.Units{InputTokens: inputTokens, OutputTokens: outputTokens},
+		projectIDStr, userIDStr)
+}
+
+// updateUsageUnits is updateUsage over any denomination the catalog can price:
+// tokens, seconds (carried as milliseconds) or characters (issue #323). Only
+// the two audio routes call it directly. updateUsage is the token-only form,
+// and its eleven call sites are unchanged.
+//
+// It is one function and not two because everything after the price lookup —
+// the period bounds, the ledger dimensions, the drain guard, the member scope,
+// the soft alert — is identical for every basis. A second copy of that path is
+// a second place for the money to go missing.
+func (h *Handler) updateUsageUnits(
+	ctx context.Context,
+	provider string,
+	model string,
+	u cost.Units,
+	projectIDStr string,
+	userIDStr string,
+) billOutcome {
 	if h.budgetGate == nil || h.costCalc == nil {
 		return billNotBillable
 	}
@@ -431,7 +454,59 @@ func (h *Handler) updateUsage(
 	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 	defer costCancel()
 
-	actualCost := h.costCalc.Cost(costCtx, provider, model, inputTokens, outputTokens)
+	actualCost := h.costCalc.CostUnits(costCtx, provider, model, u)
+
+	// Report which rate paid, and refuse to let an UNPRICED audio request look
+	// like a cheap one. The two counters live in audio.go, where their names
+	// are published to /metrics.
+	//
+	// The test is written against the basis the UNITS ask for, not against
+	// Cost.Basis alone, and that is deliberate. A token-billed request whose
+	// price is zero is PRICED and costs nothing; reading Cost.Basis alone would
+	// make every zero-cost estimator stub look unpriced and would put the
+	// eleven token call sites on a path they never take today.
+	if u.Basis() != cost.BasisTokens {
+		if actualCost.Basis == "" {
+			// The provider reported seconds or characters and the catalog holds
+			// no rate for them. Billing zero here is unavoidable — inventing a
+			// rate would put a made-up figure on the authoritative counter — but
+			// it must not be silent. This is the number an operator alarms on.
+			audioUnpriced.Add(1)
+			h.logger.WarnContext(ctx, "audio: the catalog carries no rate for the units this response reported; the request bills zero",
+				"provider", provider, "model", model,
+				"unit_basis", u.Basis(), "metric", MetricAudioUnpriced)
+			return billNotBillable
+		}
+		audioNonTokenBasis.Add(1)
+		h.logger.InfoContext(ctx, "audio: a non-token rate priced this request",
+			"provider", provider, "model", model,
+			"basis", actualCost.Basis, "source", actualCost.Source,
+			"cost_nano", actualCost.TotalNanoUSD, "metric", MetricAudioNonTokenBasis)
+	} else if actualCost.TotalNanoUSD > 0 && !actualCost.FromCatalog() {
+		// The audio response reported TOKENS, and the token price did not come
+		// from the catalog.
+		//
+		// The seconds and characters bases cannot reach here: audioCost refuses
+		// a rate that is not from the catalog, so they bill a real price or
+		// nothing. The token basis is different — it falls back to the pylon
+		// default table like every other route, which is longstanding and
+		// disclosed. The consequence for AUDIO is what was silent: the amount is
+		// non-zero and plausible, so MetricAudioUnpriced cannot fire (a price
+		// was produced) and MetricAudioNonTokenBasis cannot fire (the basis is
+		// tokens). An invented figure reached the authoritative counter and left
+		// no trace.
+		//
+		// This does NOT refuse the request. Refusing would change the pricing
+		// policy of the token basis for one route, and that is a [human
+		// decision]. It makes the condition alarmable, which is what was
+		// missing.
+		audioDefaultPriced.Add(1)
+		h.logger.WarnContext(ctx, "audio: billed a token price the catalog did not supply",
+			"provider", provider, "model", model,
+			"source", actualCost.Source, "cost_nano", actualCost.TotalNanoUSD,
+			"metric", MetricAudioDefaultPriced)
+	}
+
 	if actualCost.TotalNanoUSD <= 0 {
 		return billNotBillable // nothing to bill
 	}
@@ -440,12 +515,16 @@ func (h *Handler) updateUsage(
 	// They are the values the billing path ALREADY has — the resolved provider
 	// and model it just priced, and the token counts the provider reported. No
 	// count is derived or estimated: an estimated token is not a billed one.
+	// The token columns stay the TOKEN counts. A seconds-billed or
+	// characters-billed request reports none, so they stay zero: writing a
+	// millisecond count into a column named prompt_tokens would put a duration
+	// on a page of token figures, and nothing downstream would say so.
 	dims := &failmode.UsageDimensions{
 		UserID:           optionalUserID(userIDStr),
 		Provider:         provider,
 		Model:            model,
-		PromptTokens:     inputTokens,
-		CompletionTokens: outputTokens,
+		PromptTokens:     u.InputTokens,
+		CompletionTokens: u.OutputTokens,
 		// The instant THIS gateway billed the request, taken from the same
 		// `now` the period bounds come from. The ledger row is written by the
 		// scheduler, minutes later or more, so a column default would date the

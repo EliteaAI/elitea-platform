@@ -80,7 +80,16 @@ type OpsEventPublisher interface {
 // CostEstimator resolves per-request LLM cost in int64 nano-USD.
 // *cost.Calculator satisfies it; tests may inject a zero-cost stub.
 type CostEstimator interface {
+	// Cost prices a token-billed request. It is the token-only form of
+	// CostUnits and every non-audio route uses it.
 	Cost(ctx context.Context, provider, model string, inputTokens, outputTokens int64) cost.Cost
+
+	// CostUnits prices a request in whichever denomination the provider
+	// reported: tokens, seconds (as milliseconds) or characters (issue #323).
+	// A returned Cost with an empty Basis is UNPRICED — the catalog carries no
+	// rate for those units — and must NOT be read as a request that cost
+	// nothing.
+	CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost
 }
 
 // LLMRouter is the seam over the embedded bifrost/core client. The handler

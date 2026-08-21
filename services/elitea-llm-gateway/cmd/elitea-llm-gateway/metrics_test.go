@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 )
@@ -262,6 +263,80 @@ func TestMetricsRoute_ServesTheBudgetOutageControls(t *testing.T) {
 	for _, name := range failmode.RecoveryMetricNames() {
 		if !strings.Contains(body, "\n"+name+" ") && !strings.HasPrefix(body, name+" ") {
 			t.Errorf("scrape carries no value line for %q:\n%s", name, body)
+		}
+	}
+}
+
+// TestMetricsRoute_ServesTheAudioCounters is the test AudioMetricNames lacked
+// (issue #323).
+//
+// The counters existed and the package listed their names, and nothing proved
+// a name on that list reaches a scrape. An expvar variable has NO route on this
+// process's mux: expvar registers /debug/vars on http.DefaultServeMux, which
+// this gateway never serves. A counter that gatewayMetrics does not carry is
+// therefore invisible, and an invisible counter reads to an alarm exactly like
+// a control reporting zero.
+//
+// The test iterates AudioMetricNames rather than naming the counters, so a
+// third counter added there is covered the moment it is published.
+func TestMetricsRoute_ServesTheAudioCounters(t *testing.T) {
+	names := llmproxy.AudioMetricNames()
+	if len(names) < 2 {
+		t.Fatalf("AudioMetricNames returned %d names; the unpriced and non-token counters are both required", len(names))
+	}
+
+	srv := newMetricsServer(t)
+	status, body := scrape(t, srv.URL+"/metrics")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	for _, name := range names {
+		if !strings.Contains(body, "# TYPE "+name+" counter") {
+			t.Errorf("scrape does not carry counter %q:\n%s", name, body)
+		}
+		// A TYPE line with no value line is an UNPUBLISHED variable dressed as
+		// a published one. Read the value too.
+		if !strings.Contains(body, "\n"+name+" ") && !strings.HasPrefix(body, name+" ") {
+			t.Errorf("scrape carries no value line for %q:\n%s", name, body)
+		}
+		if strings.Contains(body, "# UNPUBLISHED "+name) {
+			t.Errorf("metric %q is listed but not published:\n%s", name, body)
+		}
+	}
+}
+
+// TestMetricsRoute_ServesThePriceCatalogSchemaControls proves the schema-skew
+// controls reach a scrape.
+//
+// A gateway pod that rolls out ahead of elitea-migrate reads a gateway_models
+// table with no audio price columns. The catalog SELECT degrades so that TOKEN
+// pricing survives, and these two variables are the only non-per-model signal
+// that the window is open. A control with no route reads to an alarm exactly
+// like a control reporting zero.
+//
+// The test iterates cost.Metrics() and reads the KIND from the same source, so
+// a gauge cannot be listed here as a counter and a third variable added there
+// is covered the moment it is published.
+func TestMetricsRoute_ServesThePriceCatalogSchemaControls(t *testing.T) {
+	metrics := cost.Metrics()
+	if len(metrics) < 2 {
+		t.Fatalf("cost.Metrics() returned %d entries; the gauge and the counter are both required", len(metrics))
+	}
+
+	srv := newMetricsServer(t)
+	status, body := scrape(t, srv.URL+"/metrics")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	for _, m := range metrics {
+		if !strings.Contains(body, "# TYPE "+m.Name+" "+m.Kind) {
+			t.Errorf("scrape does not carry %q as a %s:\n%s", m.Name, m.Kind, body)
+		}
+		if !strings.Contains(body, "\n"+m.Name+" ") && !strings.HasPrefix(body, m.Name+" ") {
+			t.Errorf("scrape carries no value line for %q:\n%s", m.Name, body)
+		}
+		if strings.Contains(body, "# UNPUBLISHED "+m.Name) {
+			t.Errorf("metric %q is listed but not published:\n%s", m.Name, body)
 		}
 	}
 }

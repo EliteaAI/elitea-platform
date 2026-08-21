@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -40,12 +42,17 @@ func (r fakeRow) Scan(dest ...any) error {
 	return nil
 }
 
-// fakeTx records the args of every Exec (the UPSERT calls) for assertions.
+// fakeTx records the SQL and the args of every Exec (the UPSERT calls) for
+// assertions. The SQL text is recorded, not only the args, because the
+// insert-half/update-half pairing of the UPSERT is expressible ONLY in the
+// statement text: both halves send the same args, so an args-only fake cannot
+// see a column that was dropped from the ON CONFLICT set list.
 type fakeTx struct {
 	locked     bool
 	scanErr    error
 	execErr    error
 	commitErr  error
+	execSQL    []string
 	execArgs   [][]any
 	committed  bool
 	rolledBack bool
@@ -54,10 +61,11 @@ type fakeTx struct {
 func (t *fakeTx) QueryRow(_ context.Context, _ string, _ ...any) Row {
 	return fakeRow{locked: t.locked, scanErr: t.scanErr}
 }
-func (t *fakeTx) Exec(_ context.Context, _ string, args ...any) error {
+func (t *fakeTx) Exec(_ context.Context, sql string, args ...any) error {
 	if t.execErr != nil {
 		return t.execErr
 	}
+	t.execSQL = append(t.execSQL, sql)
 	t.execArgs = append(t.execArgs, args)
 	return nil
 }
@@ -107,8 +115,16 @@ func TestSyncUpsertsAndCommits(t *testing.T) {
 	if len(tx.execArgs) != 1 {
 		t.Fatalf("expected 1 upsert, got %d", len(tx.execArgs))
 	}
-	// arg order: provider, model, input1m, output1m, cacheCreate, cacheRead, above128k, source
+	// arg order: provider, model, input1m, output1m, cacheCreate, cacheRead,
+	// above128k, inSeconds, outSeconds, inChars, outChars, source
 	args := tx.execArgs[0]
+	// Fail, do not panic, when the arg list is short. An index panic aborts the
+	// whole package run, so the other tests never report — which is exactly how a
+	// dropped Exec argument hides the more precise failure in
+	// TestUpsertBindsEveryPlaceholder.
+	if len(args) != 12 {
+		t.Fatalf("upsert passes %d args, want 12 (provider..source)", len(args))
+	}
 	if args[0] != "openai" || args[1] != "gpt-4o" {
 		t.Errorf("bad key args: %v %v", args[0], args[1])
 	}
@@ -120,8 +136,158 @@ func TestSyncUpsertsAndCommits(t *testing.T) {
 	if !ok || out == nil || !almost(*out, 10.00) {
 		t.Errorf("output per-1M arg = %v, want 10.00", args[3])
 	}
-	if args[7] != "litellm" {
-		t.Errorf("source arg = %v, want litellm", args[7])
+	if args[11] != "litellm" {
+		t.Errorf("source arg = %v, want litellm", args[11])
+	}
+}
+
+// priceColumns lists every price column the UPSERT must carry. It is written out
+// by hand on purpose: a list derived from the statement under test would agree
+// with the statement no matter what the statement said.
+var priceColumns = []string{
+	"input_cost_per_1m_tokens",
+	"output_cost_per_1m_tokens",
+	"cache_creation_input_token_cost",
+	"cache_read_input_token_cost",
+	"input_cost_per_1m_tokens_above_128k",
+	"input_cost_per_1m_seconds",
+	"output_cost_per_1m_seconds",
+	"input_cost_per_1m_characters",
+	"output_cost_per_1m_characters",
+}
+
+// TestUpsertSQLCoversEveryPriceColumn pins the failure the upsert doc comment
+// describes: a price column named in only ONE half of the UPSERT. Such a column
+// is written when the model is first inserted and then never refreshed again
+// (or the reverse), and every log line still reports a successful sync. The test
+// splits the statement at ON CONFLICT and requires each column on both sides.
+func TestUpsertSQLCoversEveryPriceColumn(t *testing.T) {
+	src := &fakeSource{name: "litellm", denom: PerToken, raws: []RawModelPrice{
+		{Provider: "openai", ModelName: "whisper-1", InputCostPerSecond: fptr(0.0001)},
+	}}
+	tx := &fakeTx{locked: true}
+	s := NewSyncer(&fakeDB{tx: tx}, []PriceSource{src}, quietLogger())
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if len(tx.execSQL) != 1 {
+		t.Fatalf("want 1 upsert statement, got %d", len(tx.execSQL))
+	}
+	sql := tx.execSQL[0]
+
+	idx := strings.Index(sql, "ON CONFLICT")
+	if idx < 0 {
+		t.Fatalf("upsert statement has no ON CONFLICT clause:\n%s", sql)
+	}
+	insertHalf, updateHalf := sql[:idx], sql[idx:]
+
+	for _, col := range priceColumns {
+		if !strings.Contains(insertHalf, col) {
+			t.Errorf("column %q missing from the INSERT column list: a new model would store NULL there forever", col)
+		}
+		if !strings.Contains(updateHalf, "EXCLUDED."+col) {
+			t.Errorf("column %q missing from the ON CONFLICT DO UPDATE set list: an existing model would never be refreshed", col)
+		}
+	}
+}
+
+// TestUpsertBindsEveryPlaceholder pins the second half of the same hazard: the
+// column list, the VALUES placeholders and the Go argument list must agree in
+// COUNT. Adding a column to the statement and forgetting its argument shifts
+// every later argument by one — the price of one column silently lands in the
+// next column, and Postgres accepts it because the types match.
+func TestUpsertBindsEveryPlaceholder(t *testing.T) {
+	src := &fakeSource{name: "litellm", denom: PerToken, raws: []RawModelPrice{
+		{Provider: "openai", ModelName: "gpt-4o", InputCost: fptr(0.0000025)},
+	}}
+	tx := &fakeTx{locked: true}
+	s := NewSyncer(&fakeDB{tx: tx}, []PriceSource{src}, quietLogger())
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	sql, args := tx.execSQL[0], tx.execArgs[0]
+
+	highest := 0
+	for i := 1; i <= 99; i++ {
+		// Match "$N" only when the next character is not another digit, so "$1"
+		// does not match inside "$12".
+		ph := "$" + strconv.Itoa(i)
+		pos := strings.Index(sql, ph)
+		if pos < 0 {
+			continue
+		}
+		next := pos + len(ph)
+		if next < len(sql) && sql[next] >= '0' && sql[next] <= '9' {
+			continue
+		}
+		highest = i
+	}
+	if highest != len(args) {
+		t.Errorf("statement binds $1..$%d but Exec passes %d args: the columns and the args have drifted apart", highest, len(args))
+	}
+
+	// The last argument must still be the provenance string. If an added column
+	// pushed it out of place, the source column would receive a price.
+	if _, ok := args[len(args)-1].(string); !ok {
+		t.Errorf("last arg = %T, want the source string", args[len(args)-1])
+	}
+}
+
+// TestSyncCarriesAudioPricesToUpsert follows one audio-only model the whole way:
+// upstream per-second price → normalize → the UPSERT argument list. It is the
+// end-to-end guard that the four new fields are not dropped at a hand-off.
+func TestSyncCarriesAudioPricesToUpsert(t *testing.T) {
+	// whisper-1 bills audio duration: $0.0001 per second → $100 per 1M seconds.
+	src := &fakeSource{name: "litellm", denom: PerToken, raws: []RawModelPrice{{
+		Provider:               "openai",
+		ModelName:              "whisper-1",
+		InputCostPerSecond:     fptr(0.0001),
+		OutputCostPerSecond:    fptr(0.0002),
+		InputCostPerCharacter:  fptr(0.0000003),
+		OutputCostPerCharacter: fptr(0.000015),
+	}}}
+	tx := &fakeTx{locked: true}
+	s := NewSyncer(&fakeDB{tx: tx}, []PriceSource{src}, quietLogger())
+
+	n, err := s.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("audio-only model must be upserted, got n=%d", n)
+	}
+	args := tx.execArgs[0]
+
+	// The token price stays nil, because a second-billed model has no token
+	// price to record. The gateway does NOT discard such a row: cost.go
+	// lookupCatalog keeps it for its audio rates and fills the token pair from
+	// the pylon default table, so a caller that somehow reports tokens for
+	// whisper-1 still gets the legacy answer. Writing a token price here would
+	// therefore not be inert — it would override that default — so leaving the
+	// column NULL is the load-bearing part.
+	if tok, ok := args[2].(*float64); !ok || tok != nil {
+		t.Errorf("token input price = %v, want a nil *float64 for an audio-only model", args[2])
+	}
+	for _, c := range []struct {
+		idx  int
+		want float64
+		name string
+	}{
+		{7, 100, "input per 1M seconds"},
+		{8, 200, "output per 1M seconds"},
+		{9, 0.3, "input per 1M characters"},
+		{10, 15, "output per 1M characters"},
+	} {
+		got, ok := args[c.idx].(*float64)
+		if !ok || got == nil {
+			t.Errorf("%s arg = %v, want a non-nil price", c.name, args[c.idx])
+			continue
+		}
+		if !almost(*got, c.want) {
+			t.Errorf("%s = %v, want %v", c.name, *got, c.want)
+		}
 	}
 }
 

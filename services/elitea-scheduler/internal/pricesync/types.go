@@ -5,12 +5,19 @@
 // catalog — refreshed from one or more ordered PriceSource adapters.
 //
 // THE LOAD-BEARING INVARIANT (§7.1/§8.8): gateway.gateway_models stores prices
-// PER 1,000,000 TOKENS. Upstream feeds (LiteLLM, getbifrost.ai/datasheet) publish
-// prices PER SINGLE TOKEN. The Normalizer below is the SINGLE conversion point
-// that multiplies per-token → per-1M by ×1,000,000. Feeding a per-token value
-// straight into the per-1M schema is a silent 1,000,000× undercharge; skipping
-// or duplicating this multiply anywhere else re-opens the bug. Every source
-// declares its own Denomination and the Normalizer applies exactly one convert.
+// PER 1,000,000 BILLED UNITS. Upstream feeds (LiteLLM, getbifrost.ai/datasheet)
+// publish prices PER SINGLE UNIT. The Normalizer below is the SINGLE conversion
+// point that multiplies per-unit → per-1M by ×1,000,000. Feeding a per-unit
+// value straight into the per-1M schema is a silent 1,000,000× undercharge;
+// skipping or duplicating this multiply anywhere else re-opens the bug. Every
+// source declares its own Denomination and the Normalizer applies exactly one
+// convert.
+//
+// The billed unit is a TOKEN for a chat model, a SECOND of audio for
+// speech-to-text, and a CHARACTER for text-to-speech. All three ride the same
+// conversion, because the denomination is a COUNT and the count scale is the
+// same for all of them. They are stored in separate columns, because a price
+// per second must never be multiplied by a token count.
 package pricesync
 
 import (
@@ -18,19 +25,32 @@ import (
 	"fmt"
 )
 
-// Denomination is the token-cost unit a PriceSource publishes in. The zero value
-// is deliberately invalid so a source that forgets to declare one fails loudly
-// rather than defaulting to a wrong (and silently mis-scaled) unit.
+// Denomination is the BILLED-UNIT COUNT a PriceSource publishes prices against.
+// It is not specific to tokens. A model bills against one of three units — a
+// token (chat), a second of audio (speech-to-text), or a character of text
+// (text-to-speech) — and every upstream feed publishes ALL THREE at the same
+// count per price. LiteLLM, for example, publishes input_cost_per_token,
+// input_cost_per_second and input_cost_per_character all as the cost of ONE
+// unit, so one PerToken declaration scales all three correctly.
+//
+// Read the names below as "per single unit", "per 1,000 units", "per 1,000,000
+// units". A reader who reads them as tokens-only will think the audio columns
+// need a second, separate conversion; they do not, and adding one would be a
+// 1,000,000x overcharge on every audio row.
+//
+// The zero value is deliberately invalid so a source that forgets to declare one
+// fails loudly rather than defaulting to a wrong (and silently mis-scaled) unit.
 type Denomination int
 
 const (
 	// DenominationUnknown is the invalid zero value.
 	DenominationUnknown Denomination = iota
-	// PerToken — cost per single token (LiteLLM, bifrost-datasheet).
+	// PerToken — cost per SINGLE billed unit: one token, one second of audio, or
+	// one character (LiteLLM, bifrost-datasheet).
 	PerToken
-	// Per1K — cost per 1,000 tokens.
+	// Per1K — cost per 1,000 billed units.
 	Per1K
-	// Per1M — cost per 1,000,000 tokens (the canonical gateway_models schema).
+	// Per1M — cost per 1,000,000 billed units (the canonical gateway_models schema).
 	Per1M
 )
 
@@ -49,8 +69,10 @@ func (d Denomination) String() string {
 }
 
 // factorTo1M returns the multiplier that converts a value in this denomination
-// to the canonical per-1M denomination. It errors on an unknown denomination so
-// a mis-configured source cannot silently produce zero- or wrongly-scaled prices.
+// to the canonical per-1M denomination. The factor is a count ratio, so it is
+// the same for token, second and character prices. It errors on an unknown
+// denomination so a mis-configured source cannot silently produce zero- or
+// wrongly-scaled prices.
 func (d Denomination) factorTo1M() (float64, error) {
 	switch d {
 	case PerToken:
@@ -77,6 +99,21 @@ type RawModelPrice struct {
 	// InputCostAbove128k is the tiered above-128k-context input price when the
 	// source publishes one (LiteLLM's *_above_128k_tokens field).
 	InputCostAbove128k *float64
+	// The audio prices below bill against a unit that is NOT a token, which is
+	// why they are separate fields and not folded into InputCost/OutputCost. A
+	// speech-to-text model bills the AUDIO DURATION it consumed, and a
+	// text-to-speech model bills the CHARACTER COUNT it read. Mixing either into
+	// the token fields would price seconds at the token rate.
+	//
+	// InputCostPerSecond is the audio-duration input price (speech-to-text).
+	InputCostPerSecond *float64
+	// OutputCostPerSecond is the audio-duration output price (a model that
+	// returns audio).
+	OutputCostPerSecond *float64
+	// InputCostPerCharacter is the per-character input price.
+	InputCostPerCharacter *float64
+	// OutputCostPerCharacter is the per-character output price (text-to-speech).
+	OutputCostPerCharacter *float64
 }
 
 // NormalizedModelPrice is a RawModelPrice converted to the canonical per-1M
@@ -90,7 +127,15 @@ type NormalizedModelPrice struct {
 	CacheCreationPer1M *float64
 	CacheReadPer1M     *float64
 	InputCostAbove128k *float64
-	Source             string
+	// The four audio prices are per 1,000,000 SECONDS and per 1,000,000
+	// CHARACTERS respectively — the same count scale as the token columns, a
+	// different billed unit. The names carry the unit so a later reader cannot
+	// divide a seconds price by a token count.
+	InputCostPer1MSeconds     *float64
+	OutputCostPer1MSeconds    *float64
+	InputCostPer1MCharacters  *float64
+	OutputCostPer1MCharacters *float64
+	Source                    string
 }
 
 // key is the natural key mirroring the gateway_models UNIQUE(provider, model_name).
@@ -138,6 +183,15 @@ func (Normalizer) Normalize(raw RawModelPrice, denom Denomination, source string
 		CacheCreationPer1M: mul(raw.CacheCreationCost, factor),
 		CacheReadPer1M:     mul(raw.CacheReadCost, factor),
 		InputCostAbove128k: mul(raw.InputCostAbove128k, factor),
-		Source:             source,
+		// The audio prices convert through the SAME factor as the token prices.
+		// This is correct because the factor is a count ratio and the source
+		// publishes seconds, characters and tokens at the same count per price
+		// (see Denomination). Giving these their own factor here would break the
+		// single-conversion-point invariant this whole package exists to hold.
+		InputCostPer1MSeconds:     mul(raw.InputCostPerSecond, factor),
+		OutputCostPer1MSeconds:    mul(raw.OutputCostPerSecond, factor),
+		InputCostPer1MCharacters:  mul(raw.InputCostPerCharacter, factor),
+		OutputCostPer1MCharacters: mul(raw.OutputCostPerCharacter, factor),
+		Source:                    source,
 	}, nil
 }

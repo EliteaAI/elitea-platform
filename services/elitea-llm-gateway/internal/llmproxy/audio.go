@@ -33,34 +33,138 @@ package llmproxy
 
 import (
 	"expvar"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"strconv"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 )
 
 // MetricAudioUnpriced counts audio responses the gateway could not price.
 //
-// The cost calculator prices TOKENS. An audio provider may instead report
-// duration-based usage (`"type":"duration"` with a seconds count), or no usage
-// at all. Such a response is dispatched, delivered and billed as zero.
+// An audio provider reports its usage in whichever denomination it sells in:
+// tokens, a duration in seconds, or a character count. The gateway prices all
+// three (issue #323).
+//
+// The SECONDS and CHARACTERS bases are catalog-only: audioCost refuses a rate
+// that did not come from gateway_models, so those two can only ever bill a real
+// price or nothing. A response on those bases stays unpriced when the provider
+// reports NO usage at all, when the duration it reports is not a usable number,
+// or when the catalog holds no rate for the units it did report. Such a response
+// is dispatched, delivered and billed as zero, and counted here.
+//
+// The TOKEN basis is NOT catalog-only, and this counter does NOT see it. It
+// falls back to the pylon default table exactly like every other route on this
+// gateway — longstanding, disclosed behaviour (internal/cost/cost.go: "The token
+// basis never fails"). So an audio response that reports TOKENS can bill a
+// figure the gateway invented. That is a different defect from this one —
+// priced wrongly, rather than not priced at all — and it gets its own counter,
+// MetricAudioDefaultPriced, because an alarm on one must not stay silent about
+// the other.
 //
 // That is a real gap in the money path, so it gets a number an operator can
-// alarm on rather than a silent zero. Inventing a per-second price here would
-// be worse: it would put a made-up figure onto the authoritative counter, and
-// the counter is what the budget gate reads back.
+// alarm on rather than a silent zero. Inventing a per-second price would be
+// worse: it would put a made-up figure onto the authoritative counter, and the
+// counter is what the budget gate reads back.
 const MetricAudioUnpriced = "gateway_audio_unpriced_total"
 
-var audioUnpriced = expvar.NewInt(MetricAudioUnpriced)
+// MetricAudioDefaultPriced counts audio requests billed on a TOKEN price that
+// did not come from the catalog.
+//
+// gpt-4o-transcribe reports tokens and publishes a token price upstream; a
+// deployment whose catalog has not synced still bills, from the pylon default
+// table or from the ultimate 1.0/3.0 USD-per-1M fallback. The amount is non-zero
+// and plausible, so nothing else on this path reports it: MetricAudioUnpriced
+// cannot fire because a price WAS produced, and MetricAudioNonTokenBasis cannot
+// fire because the basis IS tokens.
+//
+// That silence is the whole reason this counter exists. "We could not price it"
+// and "we priced it with a number we made up" are different operator problems,
+// and only the second one reaches an invoice.
+const MetricAudioDefaultPriced = "gateway_audio_default_priced_total"
+
+// MetricAudioNonTokenBasis counts requests a NON-token rate paid for.
+//
+// Every other route on this gateway bills tokens, so until the audio routes
+// existed the basis was never in question. Now it is, and the wrong basis is
+// silent: a per-second rate applied to a millisecond count bills 1000x, and a
+// per-second rate applied where a token rate was meant bills a plausible wrong
+// number. This counter is how an operator sees that the seconds and characters
+// paths are live at all, and how many requests they carry.
+const MetricAudioNonTokenBasis = "gateway_audio_non_token_priced_total"
+
+var (
+	audioUnpriced      = expvar.NewInt(MetricAudioUnpriced)
+	audioNonTokenBasis = expvar.NewInt(MetricAudioNonTokenBasis)
+	audioDefaultPriced = expvar.NewInt(MetricAudioDefaultPriced)
+)
 
 // AudioMetricNames returns the names of this file's counters, in a fixed order,
 // for the composition root's /metrics allowlist. It mirrors
 // ModelMapMetricNames: a counter this package publishes reaches the scrape
 // surface through ONE named path, never a name copied into a second file.
+//
+// An expvar variable that is not listed here has NO route on this process's
+// mux: expvar registers /debug/vars on http.DefaultServeMux, which this gateway
+// never serves (CLAUDE.md, issue #465). Add a counter here when you publish it.
 func AudioMetricNames() []string {
-	return []string{MetricAudioUnpriced}
+	return []string{MetricAudioUnpriced, MetricAudioNonTokenBasis, MetricAudioDefaultPriced}
+}
+
+// maxBillableAudioSeconds bounds a provider-reported duration at 24 hours.
+//
+// The bound is not about overflow, which math/big already handles. It is about
+// a garbage field. A duration is the only number on this path that arrives as a
+// float, and a provider that reports 1e18 seconds — or a bug that reads a
+// millisecond field as seconds — would bill a project into a hard budget block
+// on one request. No real speech request is a day long, so a value past this
+// bound is not a long request; it is a broken field, and the honest answer is
+// UNPRICED.
+const maxBillableAudioSeconds = 24 * 60 * 60
+
+// secondsToMillis converts a provider-reported duration to integer
+// milliseconds. It is THE boundary between the fractional second count the
+// provider reports and the int64 the money path requires, and it is crossed
+// exactly ONCE per request.
+//
+// THE TWO CALL SITES DO NOT AGREE ON THE TYPE, and the doc here used to name
+// only one of them. TranscriptionUsage.Seconds is a *float64, so a transcription
+// really does arrive as a float (523.5). SpeechUsage.AudioSeconds is an INT,
+// widened at that call site: a generated clip shorter than one second reports 0
+// there, so it never reaches this function at all — speechUnits requires
+// AudioSeconds > 0 before it selects the seconds basis, and moves on to the
+// character count of the text instead. That is deliberate: bifrost gives the
+// speech route no sub-second figure to bill, and inventing one is not an option.
+//
+// ok is false for NaN, for either infinity, for a non-positive value, for
+// anything past maxBillableAudioSeconds, and for a duration that ROUNDS TO ZERO
+// milliseconds. The first four each reach the money path as a wrong number
+// rather than as an error: NaN and Inf convert to an unspecified int64, and a
+// negative duration would credit the project.
+//
+// The zero-millisecond case is an invariant and not a rounding detail: a
+// NON-EMPTY basis must imply a POSITIVE quantity in that basis. Returning
+// (0, true) for a 0.4 ms duration handed the caller a seconds basis with
+// all-zero Units; updateUsageUnits then re-derives the basis from those zeros,
+// reads tokens, and NEITHER audio counter moves — the request is neither billed
+// nor counted as unpriced. A duration under half a millisecond is UNPRICED, and
+// unpriced is a number an operator can see.
+func secondsToMillis(sec float64) (int64, bool) {
+	if math.IsNaN(sec) || math.IsInf(sec, 0) {
+		return 0, false
+	}
+	if sec <= 0 || sec > maxBillableAudioSeconds {
+		return 0, false
+	}
+	millis := int64(math.Round(sec * 1000))
+	if millis <= 0 {
+		return 0, false
+	}
+	return millis, true
 }
 
 // Speech handles POST /llm/v1/audio/speech (text-to-speech).
@@ -100,14 +204,20 @@ func (h *Handler) Speech(w http.ResponseWriter, r *http.Request) {
 
 	writeAudio(w, resp.Audio, speechContentType(req.ResponseFormat))
 
-	in, out := usageFromSpeechResponse(resp)
-	if in == 0 && out == 0 {
+	units, basis := speechUnits(resp)
+	if basis == "" {
+		// UNREACHABLE THROUGH BIFROST, kept for a router that is not bifrost.
+		// bifrost backfills Usage.InputChars on every speech response from the
+		// input it forwarded, and refuses an empty input earlier, so a real
+		// speech response always carries a billable quantity. The transcription
+		// route's copy of this branch is a different matter: nothing backfills
+		// there, and a provider that reports no usage really does land on it.
 		audioUnpriced.Add(1)
-		h.logger.WarnContext(ctx, "audio: the speech response carries no token usage; the request bills zero",
+		h.logger.WarnContext(ctx, "audio: the speech response carries no usable usage; the request bills zero",
 			"provider", provider, "model", model, "metric", MetricAudioUnpriced)
 		return
 	}
-	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
+	h.updateUsageUnits(ctx, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // Transcription handles POST /llm/v1/audio/transcriptions and
@@ -166,14 +276,14 @@ func (h *Handler) Transcription(w http.ResponseWriter, r *http.Request) {
 
 	writeTranscription(w, resp)
 
-	in, out := usageFromTranscriptionResponse(resp)
-	if in == 0 && out == 0 {
+	units, basis := transcriptionUnits(resp)
+	if basis == "" {
 		audioUnpriced.Add(1)
-		h.logger.WarnContext(ctx, "audio: the transcription response carries no token usage; the request bills zero",
+		h.logger.WarnContext(ctx, "audio: the transcription response carries no usable usage; the request bills zero",
 			"provider", provider, "model", model, "metric", MetricAudioUnpriced)
 		return
 	}
-	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
+	h.updateUsageUnits(ctx, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // buildTranscriptionRequest constructs an OpenAITranscriptionRequest from a
@@ -319,34 +429,137 @@ func providerModelFromTranscriptionReq(req *schemas.BifrostTranscriptionRequest)
 	return string(req.Provider), req.Model
 }
 
-// usageFromSpeechResponse extracts (inputTokens, outputTokens) from a speech
-// response. InputChars is deliberately NOT converted into tokens: the cost
-// tables price tokens, and a characters-to-tokens ratio invented here would
-// reach the authoritative budget counter as if it were measured.
-func usageFromSpeechResponse(resp *schemas.BifrostSpeechResponse) (int64, int64) {
+// transcriptionUsageTypeDuration is the ONE TranscriptionUsage.Type value that
+// changes how a response is billed: it says the Seconds field carries the
+// quantity and any token field on the same object is describing the audio, not
+// selling it. bifrost's other value is "tokens", and the field is a plain
+// string that no schema guarantees — a provider adapter may leave it empty.
+//
+// The gate is written against "duration" and not against "tokens" on purpose
+// (issue #323 review). Requiring Type == "tokens" before billing token counts
+// made a provider that reports counts and leaves Type empty bill ZERO and count
+// as UNPRICED. The baseline this route replaced billed on the counts alone, so
+// that reading was a revenue-losing change of behaviour, not a stricter rule.
+const transcriptionUsageTypeDuration = "duration"
+
+// speechUnits selects the ONE basis a speech response is billed on, and returns
+// the quantity for it. An empty basis means UNPRICED.
+//
+// THE PRECEDENCE IS FIXED, AND IT NEVER FALLS THROUGH:
+//
+//  1. Non-zero provider token counts  → tokens.
+//  2. Usage.AudioSeconds > 0          → seconds (the audio the model GENERATED,
+//     so it pays the OUTPUT per-second rate).
+//  3. Usage.InputChars > 0            → characters (the text sent IN, so it pays
+//     the INPUT per-character rate).
+//  4. otherwise                       → unpriced.
+//
+// It never sums two of them. gpt-4o-mini-tts publishes BOTH a token price and a
+// per-second price upstream, so one response can carry both quantities; billing
+// both charges the project twice for one request.
+//
+// A step that matches but whose rate the catalog does not carry ends the
+// selection: it does not slide down to the next basis. CostUnits returns an
+// unpriced Cost, and the caller counts it. That is the conservative answer —
+// falling through would let a response that reports a duration be billed on a
+// character rate that was never meant to price it.
+//
+// Step 2 is a whole-second test because SpeechUsage.AudioSeconds is an INT. A
+// generated clip under one second reports 0 there and the selection moves to
+// step 3. bifrost hands this route no sub-second figure, and the honest answer
+// is to bill the quantity that WAS reported rather than to invent a duration.
+//
+// WHERE InputChars COMES FROM, said plainly because it is not the same kind of
+// number as the other two. NO PROVIDER REPORTS IT. bifrost's
+// BifrostSpeechResponse.BackfillParams runs on every speech response and sets
+// Usage.InputChars = utf8.RuneCountInString(request.Input.Input): the rune count
+// of the text THIS GATEWAY forwarded. On the real router it is therefore never
+// absent and never zero, because bifrost refuses an empty input before it calls
+// a provider.
+//
+// It still bills, and this is why that is legitimate rather than an estimate. A
+// character-billed TTS provider charges for the input text it was sent. The
+// quantity of the sale is the text, and this is a count of that exact text, so
+// it is the billable quantity itself and not a guess at one. Contrast
+// BifrostTranscriptionResponse.Duration, which transcriptionUnits refuses forty
+// lines below: bifrost DERIVES that from word timestamps, so it is an
+// observation of something the provider never stated and never agreed to sell.
+// The rule is not "the gateway computed it, so it must not bill"; it is "bill
+// the quantity the sale is priced on, never an inference about it".
+//
+// Two consequences follow, both handled where they land rather than left to be
+// discovered:
+//
+//   - Against the real router steps 1 to 3 always match, so step 4 is
+//     unreachable through bifrost. It is kept as a guard for a router that is
+//     not bifrost — this package's own fake is one — and NOT as a defence
+//     against provider behaviour, which cannot produce it.
+//   - A speech model whose only character rate is the OUTPUT one is UNPRICED:
+//     nothing on this path produces cost.Units.OutputChars. See that field.
+func speechUnits(resp *schemas.BifrostSpeechResponse) (cost.Units, string) {
 	if resp == nil || resp.Usage == nil {
-		return 0, 0
+		return cost.Units{}, ""
 	}
-	return int64(resp.Usage.InputTokens), int64(resp.Usage.OutputTokens)
+	usage := resp.Usage
+	in, out := int64(usage.InputTokens), int64(usage.OutputTokens)
+	switch {
+	case in > 0 || out > 0:
+		return cost.Units{InputTokens: in, OutputTokens: out}, cost.BasisTokens
+	case usage.AudioSeconds > 0:
+		millis, ok := secondsToMillis(float64(usage.AudioSeconds))
+		if !ok {
+			return cost.Units{}, ""
+		}
+		return cost.Units{OutputMillis: millis}, cost.BasisSeconds
+	case usage.InputChars > 0:
+		return cost.Units{InputChars: int64(usage.InputChars)}, cost.BasisCharacters
+	default:
+		return cost.Units{}, ""
+	}
 }
 
-// usageFromTranscriptionResponse extracts (inputTokens, outputTokens) from a
-// transcription response.
+// transcriptionUnits selects the ONE basis a transcription response is billed
+// on. An empty basis means UNPRICED.
 //
-// The usage object carries a Type: "tokens" or "duration". Only the token form
-// can be priced here. A duration-billed response (whisper-1 is priced per
-// minute) reports Seconds and no tokens, and returns (0, 0) — the caller counts
-// that on MetricAudioUnpriced.
-func usageFromTranscriptionResponse(resp *schemas.BifrostTranscriptionResponse) (int64, int64) {
+// THE PRECEDENCE IS FIXED:
+//
+//  1. A non-zero token count, unless Usage.Type says "duration" → tokens.
+//  2. Usage.Seconds present and usable → seconds (the audio sent IN, so it pays
+//     the INPUT per-second rate).
+//  3. otherwise → unpriced.
+//
+// Step 1 reads the Type only to EXCLUDE a duration-billed response. bifrost
+// writes "duration" when the Seconds field carries the sale, and a provider
+// that also fills a token field on such a response is describing the audio. Any
+// other Type — "tokens", or the empty string a provider adapter may leave
+// behind — bills the counts the provider reported, because a reported count is
+// what the token rate prices.
+//
+// BifrostTranscriptionResponse.Duration is NOT read here, and must not be. For
+// several providers bifrost derives that field from word timestamps, so it is
+// an OBSERVED ESTIMATE of how long the audio was, not usage the provider
+// reported. Billing on it charges a project for a number the provider never
+// sent and never agreed to. Usage.Seconds is the reported figure; when it is
+// absent the honest answer is UNPRICED.
+func transcriptionUnits(resp *schemas.BifrostTranscriptionResponse) (cost.Units, string) {
 	if resp == nil || resp.Usage == nil {
-		return 0, 0
+		return cost.Units{}, ""
 	}
+	usage := resp.Usage
 	var in, out int64
-	if resp.Usage.InputTokens != nil {
-		in = int64(*resp.Usage.InputTokens)
+	if usage.InputTokens != nil {
+		in = int64(*usage.InputTokens)
 	}
-	if resp.Usage.OutputTokens != nil {
-		out = int64(*resp.Usage.OutputTokens)
+	if usage.OutputTokens != nil {
+		out = int64(*usage.OutputTokens)
 	}
-	return in, out
+	if usage.Type != transcriptionUsageTypeDuration && (in > 0 || out > 0) {
+		return cost.Units{InputTokens: in, OutputTokens: out}, cost.BasisTokens
+	}
+	if usage.Seconds != nil {
+		if millis, ok := secondsToMillis(*usage.Seconds); ok {
+			return cost.Units{InputMillis: millis}, cost.BasisSeconds
+		}
+	}
+	return cost.Units{}, ""
 }

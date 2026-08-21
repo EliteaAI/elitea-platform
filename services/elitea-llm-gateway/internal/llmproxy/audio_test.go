@@ -13,6 +13,7 @@ package llmproxy
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,8 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 )
 
 // audioHandler builds a handler with no model resolver, so mapModel forwards
@@ -244,28 +247,206 @@ func TestAudioRoutes_RefuseAnUnadvertisedModel(t *testing.T) {
 	}
 }
 
-// TestUsageFromTranscriptionResponse_DurationBilledIsZero pins the money-path
-// limit this surface has. whisper-1 is billed per minute, and the cost tables
-// price tokens, so a duration-only usage object yields no billable amount. The
-// handler counts that on MetricAudioUnpriced; it must never be turned into a
-// token count here, because an invented count reaches the authoritative budget
-// counter as if it were measured.
-func TestUsageFromTranscriptionResponse_DurationBilledIsZero(t *testing.T) {
-	seconds := 12.5
-	in, out := usageFromTranscriptionResponse(&schemas.BifrostTranscriptionResponse{
-		Usage: &schemas.TranscriptionUsage{Type: "duration", Seconds: &seconds},
+// TestTranscriptionUnits_SelectsOneBasis pins the fixed precedence for the
+// transcription route (issue #323).
+//
+// whisper-1 is sold by the second, so a duration-billed response must reach the
+// money path as MILLISECONDS on the seconds basis. It must never be turned into
+// a token count: an invented count reaches the authoritative budget counter as
+// if it were measured.
+func TestTranscriptionUnits_SelectsOneBasis(t *testing.T) {
+	sec := func(v float64) *float64 { return &v }
+	num := func(v int) *int { return &v }
+
+	cases := []struct {
+		name      string
+		usage     *schemas.TranscriptionUsage
+		wantBasis string
+		wantUnits cost.Units
+	}{{
+		name:      "duration usage bills seconds, converted once to millis",
+		usage:     &schemas.TranscriptionUsage{Type: "duration", Seconds: sec(12.5)},
+		wantBasis: cost.BasisSeconds,
+		wantUnits: cost.Units{InputMillis: 12_500},
+	}, {
+		name: "token usage bills tokens",
+		usage: &schemas.TranscriptionUsage{
+			Type: "tokens", InputTokens: num(30), OutputTokens: num(7),
+		},
+		wantBasis: cost.BasisTokens,
+		wantUnits: cost.Units{InputTokens: 30, OutputTokens: 7},
+	}, {
+		// The Type is load-bearing in ONE direction. A duration-billed response
+		// that also fills a token field is describing the audio, not selling it
+		// by the token.
+		name: "duration usage with a token field still bills seconds",
+		usage: &schemas.TranscriptionUsage{
+			Type: "duration", Seconds: sec(4), InputTokens: num(99),
+		},
+		wantBasis: cost.BasisSeconds,
+		wantUnits: cost.Units{InputMillis: 4_000},
+	}, {
+		// The revenue-losing case (issue #323 review). TranscriptionUsage.Type
+		// is a plain string that no schema guarantees, and a provider adapter
+		// may leave it empty while still reporting counts. Requiring
+		// Type == "tokens" billed such a response ZERO and counted it UNPRICED.
+		// A reported count is what the token rate prices, whatever the label
+		// beside it says.
+		name: "token counts with an EMPTY type still bill tokens",
+		usage: &schemas.TranscriptionUsage{
+			InputTokens: num(30), OutputTokens: num(7),
+		},
+		wantBasis: cost.BasisTokens,
+		wantUnits: cost.Units{InputTokens: 30, OutputTokens: 7},
+	}, {
+		// An empty Type with no counts and no duration is still unpriced: the
+		// widened gate bills what a provider reported, and this one reported
+		// nothing.
+		name:      "an empty type with nothing in it is unpriced",
+		usage:     &schemas.TranscriptionUsage{},
+		wantBasis: "",
+	}, {
+		name:      "no usage object at all is unpriced",
+		usage:     nil,
+		wantBasis: "",
+	}, {
+		name:      "an empty usage object is unpriced",
+		usage:     &schemas.TranscriptionUsage{Type: "duration"},
+		wantBasis: "",
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			units, basis := transcriptionUnits(&schemas.BifrostTranscriptionResponse{Usage: tc.usage})
+			if basis != tc.wantBasis {
+				t.Fatalf("basis = %q, want %q", basis, tc.wantBasis)
+			}
+			if units != tc.wantUnits {
+				t.Fatalf("units = %+v, want %+v", units, tc.wantUnits)
+			}
+		})
+	}
+}
+
+// TestTranscriptionUnits_IgnoresTheDurationField is the "observed estimate"
+// rule. For several providers bifrost derives BifrostTranscriptionResponse.
+// Duration from word timestamps, so it is the gateway's guess at how long the
+// audio was, not usage the provider reported. Billing on it charges a project
+// for a number the provider never sent.
+func TestTranscriptionUnits_IgnoresTheDurationField(t *testing.T) {
+	duration := 600.0
+	_, basis := transcriptionUnits(&schemas.BifrostTranscriptionResponse{
+		Duration: &duration,
+		Usage:    &schemas.TranscriptionUsage{Type: "duration"},
 	})
-	if in != 0 || out != 0 {
-		t.Fatalf("usage = (%d, %d), want (0, 0) for duration-based billing", in, out)
+	if basis != "" {
+		t.Fatalf("basis = %q, want \"\": Duration is an observed estimate and must not bill", basis)
+	}
+}
+
+// TestSecondsToMillis_RejectsAGarbageDuration guards the ONE float on the money
+// path. NaN and either infinity convert to an unspecified int64, and a negative
+// duration would credit the project.
+func TestSecondsToMillis_RejectsAGarbageDuration(t *testing.T) {
+	bad := []float64{
+		math.NaN(), math.Inf(1), math.Inf(-1),
+		0, -1, -0.5,
+		maxBillableAudioSeconds + 1,
+		1e18,
+		// A duration that rounds to zero milliseconds. (0, true) would hand the
+		// caller a SECONDS basis with all-zero Units; updateUsageUnits then
+		// re-derives the basis from those zeros, reads tokens, and neither
+		// audio counter moves — the request is neither billed nor counted.
+		// A non-empty basis must imply a positive quantity in that basis.
+		0.0004, 0.0000001,
+	}
+	for _, v := range bad {
+		if got, ok := secondsToMillis(v); ok {
+			t.Errorf("secondsToMillis(%v) = (%d, true), want ok=false", v, got)
+		}
 	}
 
-	tokensIn, tokensOut := 30, 7
-	in, out = usageFromTranscriptionResponse(&schemas.BifrostTranscriptionResponse{
-		Usage: &schemas.TranscriptionUsage{
-			Type: "tokens", InputTokens: &tokensIn, OutputTokens: &tokensOut,
-		},
-	})
-	if in != 30 || out != 7 {
-		t.Fatalf("usage = (%d, %d), want (30, 7)", in, out)
+	good := []struct {
+		sec  float64
+		want int64
+	}{
+		{0.001, 1},
+		{12.5, 12_500},
+		{1.0004, 1000}, // math.Round, not truncation
+		{1.0006, 1001}, // math.Round, not truncation
+		{maxBillableAudioSeconds, 86_400_000},
+	}
+	for _, tc := range good {
+		got, ok := secondsToMillis(tc.sec)
+		if !ok || got != tc.want {
+			t.Errorf("secondsToMillis(%v) = (%d, %v), want (%d, true)", tc.sec, got, ok, tc.want)
+		}
+	}
+}
+
+// TestSpeechUnits_SelectsOneBasis pins the fixed precedence for the speech
+// route: tokens, then generated seconds, then input characters, then unpriced.
+//
+// It never sums two of them. gpt-4o-mini-tts publishes BOTH a token price and a
+// per-second price upstream, so one response can carry both quantities.
+func TestSpeechUnits_SelectsOneBasis(t *testing.T) {
+	cases := []struct {
+		name      string
+		usage     *schemas.SpeechUsage
+		wantBasis string
+		wantUnits cost.Units
+	}{{
+		name:      "tokens win over everything else",
+		usage:     &schemas.SpeechUsage{InputTokens: 11, OutputTokens: 3, AudioSeconds: 30, InputChars: 500},
+		wantBasis: cost.BasisTokens,
+		wantUnits: cost.Units{InputTokens: 11, OutputTokens: 3},
+	}, {
+		name:      "generated seconds beat characters",
+		usage:     &schemas.SpeechUsage{AudioSeconds: 30, InputChars: 500},
+		wantBasis: cost.BasisSeconds,
+		wantUnits: cost.Units{OutputMillis: 30_000},
+	}, {
+		name:      "characters when that is all there is",
+		usage:     &schemas.SpeechUsage{InputChars: 500},
+		wantBasis: cost.BasisCharacters,
+		wantUnits: cost.Units{InputChars: 500},
+	}, {
+		// SpeechUsage.AudioSeconds is an INT. A clip shorter than one second
+		// reports 0, so the seconds basis cannot be selected for it and the
+		// character count of the forwarded text pays instead. That is
+		// deliberate: bifrost gives this route no sub-second figure, and a
+		// duration nobody reported must not be invented.
+		name:      "a sub-second clip reports zero seconds and bills the characters",
+		usage:     &schemas.SpeechUsage{AudioSeconds: 0, InputChars: 12},
+		wantBasis: cost.BasisCharacters,
+		wantUnits: cost.Units{InputChars: 12},
+	}, {
+		// THE NEXT TWO SHAPES BIFROST CANNOT PRODUCE, and they are here as a
+		// guard for a router that is not bifrost, not as a claim about provider
+		// behaviour. BifrostSpeechResponse.BackfillParams runs on every speech
+		// response and fills Usage.InputChars with the rune count of the input
+		// bifrost forwarded, and an empty input is refused before a provider is
+		// called. Through the real router a speech response always carries a
+		// billable quantity, so the unpriced answer below is only reachable
+		// from a fake — including this package's own.
+		name:      "an empty usage object is unpriced (no bifrost router produces one)",
+		usage:     &schemas.SpeechUsage{},
+		wantBasis: "",
+	}, {
+		name:      "no usage object at all is unpriced (no bifrost router produces one)",
+		usage:     nil,
+		wantBasis: "",
+	}}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			units, basis := speechUnits(&schemas.BifrostSpeechResponse{Usage: tc.usage})
+			if basis != tc.wantBasis {
+				t.Fatalf("basis = %q, want %q", basis, tc.wantBasis)
+			}
+			if units != tc.wantUnits {
+				t.Fatalf("units = %+v, want %+v", units, tc.wantUnits)
+			}
+		})
 	}
 }

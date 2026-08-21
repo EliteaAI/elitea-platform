@@ -55,7 +55,7 @@ func TestProxyCarriesAWebSocketUpgrade(t *testing.T) {
 			t.Errorf("backend hijack: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: probe\r\n\r\n")
 		_ = buf.Flush()
 		// Echo one line so we can prove the byte pipe is live in both directions.
@@ -76,7 +76,7 @@ func TestProxyCarriesAWebSocketUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial edge: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
 	req := "GET /llm/v1/realtime?model=m&intent=transcription HTTP/1.1\r\n" +

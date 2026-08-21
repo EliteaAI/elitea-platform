@@ -647,16 +647,32 @@ func gatewayMetrics() []gatewayMetric {
 			v:    expvar.Get(name),
 		})
 	}
-	// Issue #323: the audio money-path control. The cost tables price tokens,
-	// and an audio provider may bill by duration instead, so such a response is
-	// delivered and billed as zero. This counter is the only thing that says so
-	// out loud. The name comes from the package that publishes it.
+	// Issue #323: the audio money-path controls. An audio provider may sell by
+	// the second or by the character, not by the token. The gateway prices all
+	// three, but only from the catalog, so a model with no catalog audio rate is
+	// still delivered and billed as zero. These counters are the only things
+	// that say so out loud. The names come from the package that publishes them.
 	for _, name := range llmproxy.AudioMetricNames() {
 		metrics = append(metrics, gatewayMetric{
 			name: name,
 			kind: "counter",
-			help: "Count of audio responses the gateway could not price, because the provider reported no token usage. Each one billed zero.",
+			help: audioMetricHelp(name),
 			v:    expvar.Get(name),
+		})
+	}
+	// The price-catalog schema controls. A gateway pod that rolls out ahead of
+	// elitea-migrate reads a gateway_models table with no audio price columns.
+	// The catalog SELECT degrades to the pre-0086 statement so TOKEN pricing
+	// survives the skew, and these two say the skew is happening: without them
+	// the only signal is one log line per model per cache TTL. The name, the
+	// kind and the help all come from the package that publishes the variable,
+	// so a gauge cannot be scraped here as a counter.
+	for _, m := range cost.Metrics() {
+		metrics = append(metrics, gatewayMetric{
+			name: m.Name,
+			kind: m.Kind,
+			help: m.Help,
+			v:    expvar.Get(m.Name),
 		})
 	}
 	// Issue #515: the budget-outage controls. A row that the recovery pass owns
@@ -678,6 +694,24 @@ func gatewayMetrics() []gatewayMetric {
 		},
 	)
 	return metrics
+}
+
+// audioMetricHelp returns the help text for one audio counter.
+//
+// The default is a generic sentence and NOT an empty string on purpose. A new
+// counter that reaches AudioMetricNames before it reaches this switch must
+// still scrape: TestGatewayMetrics_EveryListedMetricIsPublished refuses an
+// empty help text, so an empty default would turn a missing sentence into a
+// red build for a control that works.
+func audioMetricHelp(name string) string {
+	switch name {
+	case llmproxy.MetricAudioUnpriced:
+		return "Count of audio responses the gateway could not price, because the provider reported no usable usage or the catalog carries no rate for the units it reported. Each one billed zero."
+	case llmproxy.MetricAudioNonTokenBasis:
+		return "Count of requests a non-token rate priced: a per-second or per-character catalog rate, not a per-token one."
+	default:
+		return "An audio money-path counter published by the llmproxy package."
+	}
 }
 
 // makeMetricsHandler answers GET /metrics with the given variables, in the

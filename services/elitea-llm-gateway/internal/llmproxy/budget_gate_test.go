@@ -162,6 +162,25 @@ type fakeCostEstimator struct {
 	mu         sync.Mutex
 	lastInput  int64
 	lastOutput int64
+	// lastUnits records the whole Units value CostUnits received, so an audio
+	// test can assert the BASIS the handler chose and not only the counts.
+	lastUnits cost.Units
+
+	// source is the provenance the fake reports on Cost.Source. It defaults to
+	// the CATALOG, because that is what almost every test means by "a price":
+	// leaving it empty would make every token-billed audio request look like one
+	// the gateway priced from a fabricated default, and trip
+	// MetricAudioDefaultPriced across the suite. A test that wants the
+	// fabricated case sets cost.SourceFallback explicitly.
+	source string
+}
+
+// costSource returns the provenance to stamp on a returned Cost.
+func (f *fakeCostEstimator) costSource() string {
+	if f.source == "" {
+		return cost.SourceCatalog
+	}
+	return f.source
 }
 
 func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, outputTokens int64) cost.Cost {
@@ -170,9 +189,64 @@ func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, ou
 	f.lastOutput = outputTokens
 	f.mu.Unlock()
 	if f.inputRateNano != 0 || f.outputRateNano != 0 {
-		return cost.Cost{TotalNanoUSD: inputTokens*f.inputRateNano + outputTokens*f.outputRateNano}
+		return cost.Cost{
+			TotalNanoUSD: inputTokens*f.inputRateNano + outputTokens*f.outputRateNano,
+			Basis:        cost.BasisTokens,
+			Source:       f.costSource(),
+		}
 	}
-	return cost.Cost{TotalNanoUSD: f.totalNano}
+	return cost.Cost{TotalNanoUSD: f.totalNano, Basis: cost.BasisTokens, Source: f.costSource()}
+}
+
+// CostUnits is the audio-capable form (issue #323). The fake prices seconds and
+// characters at the SAME per-unit rates it prices tokens at, and it records the
+// units it received, so a test can assert both the basis the handler chose and
+// the quantity it passed. A real rate table is the Calculator's job, not this
+// stub's.
+//
+// It answers a non-token basis with cost.Basis set, so the handler's
+// non-token accounting runs. audioUnpricedEstimator below is the stub for the
+// opposite case: units the catalog cannot price.
+func (f *fakeCostEstimator) CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost {
+	f.mu.Lock()
+	f.lastUnits = u
+	f.mu.Unlock()
+
+	basis := u.Basis()
+	if basis == cost.BasisTokens {
+		return f.Cost(ctx, provider, model, u.InputTokens, u.OutputTokens)
+	}
+	in, out := u.InputChars, u.OutputChars
+	if basis == cost.BasisSeconds {
+		in, out = u.InputMillis, u.OutputMillis
+	}
+	total := f.totalNano
+	if f.inputRateNano != 0 || f.outputRateNano != 0 {
+		total = in*f.inputRateNano + out*f.outputRateNano
+	}
+	return cost.Cost{TotalNanoUSD: total, Basis: basis, Source: f.costSource()}
+}
+
+func (f *fakeCostEstimator) getLastUnits() cost.Units {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUnits
+}
+
+// audioUnpricedEstimator answers every non-token basis with an UNPRICED cost:
+// an empty Basis and a zero total. It stands for the catalog that carries no
+// per-second or per-character rate for the model, which is the state every
+// model is in until the price sync writes one.
+type audioUnpricedEstimator struct{ fakeCostEstimator }
+
+func (a *audioUnpricedEstimator) CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost {
+	if u.Basis() == cost.BasisTokens {
+		return a.fakeCostEstimator.CostUnits(ctx, provider, model, u)
+	}
+	a.mu.Lock()
+	a.lastUnits = u
+	a.mu.Unlock()
+	return cost.Cost{}
 }
 
 func (f *fakeCostEstimator) getLastTokens() (input, output int64) {
