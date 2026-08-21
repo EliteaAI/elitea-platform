@@ -177,7 +177,12 @@ prints only fixed generic failures and never prints the file path or contents.
 
 Agent runtime and SDK execution engine. Uses the shared pylon base image and loads plugins dynamically from the [bootstrap](https://github.com/EliteaAI/bootstrap) repository at startup.
 
-**Plugins loaded:** worker_core, sdk_plugin, indexer_worker, provider_worker, runtime_engine_litellm, tracing
+**Plugins loaded:** shared, auth, worker_core, sdk_plugin, indexer_worker, provider_worker, tracing
+
+`runtime_engine_litellm` is deliberately absent (issue #323). It ran a LiteLLM
+proxy inside this container, which was a second LLM data plane with no budget
+and no billing. The LLM data plane is `elitea-llm-gateway`, reached through
+`elitea-main` at `/llm/v1`.
 
 **Key environment variables:**
 

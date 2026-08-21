@@ -123,7 +123,7 @@ const (
 // that a scheduled execution runs on resolved the EMPTY set. Every worker
 // callback answered 403, while the same run started by a human succeeded.
 //
-// migrations/shared/0088_central_system_role.sql seeds the central role and
+// migrations/shared/0089_central_system_role.sql seeds the central role and
 // grants it the worker callback surface. Read that file before you change the
 // name here: the two have to agree, and nothing checks the spelling for you
 // except migrations/administration_secret_and_system_role_grants_postgres_integration_test.go.

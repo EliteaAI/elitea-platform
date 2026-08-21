@@ -232,7 +232,6 @@ services:
       INDEXER_HMAC_KEY: ""
       EVENT_HMAC_KEY: ""
       RPC_HMAC_KEY: ""
-      LITELLM_MASTER_KEY: sk-elitea-litellm-dev
       # The SAME key elitea-main gets above (issue #418). configs/shared.yml
       # reads this variable and gives it no default, and entrypoint.sh refuses
       # to start without it.

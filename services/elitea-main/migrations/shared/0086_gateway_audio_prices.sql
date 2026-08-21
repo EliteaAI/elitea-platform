@@ -1,0 +1,71 @@
+-- 0086_gateway_audio_prices.sql
+--
+-- The price catalog columns for the audio routes: /llm/v1/audio/transcriptions
+-- (speech to text) and /llm/v1/audio/speech (text to speech). elitea-sdk calls
+-- both, and gateway.gateway_models had no column that could price either one.
+-- Without these columns every audio call is UNPRICED: the gateway counts it and
+-- bills nothing, so audio spend does not appear in a budget or on the cost
+-- breakdown, and a project with a hard limit keeps making audio calls after it
+-- passes that limit.
+--
+-- DENOMINATION — read this before you use these columns.
+--
+-- All four are USD PER 1,000,000 UNITS, the same family as the token columns
+-- 0067 declares (input_cost_per_1m_tokens and its neighbours). The unit differs
+-- per pair, the 1,000,000 scale does NOT:
+--
+--   input_cost_per_1m_seconds     USD per 1,000,000 SECONDS of input audio
+--   output_cost_per_1m_seconds    USD per 1,000,000 SECONDS of output audio
+--   input_cost_per_1m_characters  USD per 1,000,000 CHARACTERS of input text
+--   output_cost_per_1m_characters USD per 1,000,000 CHARACTERS of output text
+--
+-- "Per 1M SECONDS" is the half a reader gets wrong. Provider price sheets quote
+-- speech to text per MINUTE and text to speech per 1M characters, so a reader
+-- who sees a seconds column assumes the value is the price of one second and
+-- writes the sheet price straight in. A price sync that reads USD per minute
+-- must divide by 60 and THEN scale by 1,000,000 before it writes here.
+--
+-- Both steps make the number LARGER, so a step that is missed stores a price
+-- that is too small and the gateway UNDERCHARGES. That is the outcome the first
+-- paragraph describes, with a catalog row to hide it: the call is billed, it is
+-- billed at almost nothing, and the budget stays under its limit. Missing the
+-- 1,000,000 scale undercharges by 1,000,000x; writing the per-minute sheet
+-- price straight in undercharges by 1,000,000/60 = 16,667x. It is the same
+-- class of defect as the 1000x token bug 0067 lines 48-52 warn about.
+--
+-- WORKED EXAMPLE. A sheet rate of 0.006 USD per minute is 0.006/60 = 0.0001 USD
+-- per second, and 0.0001 x 1,000,000 = 100.00000000 in this column.
+-- NUMERIC(20,8) holds that with room: precision 20 minus scale 8 leaves 12
+-- integer digits, so this column tops out just below 1e12. The example value of
+-- 100 has 9 orders of magnitude of headroom; 1e12 and above is rejected by
+-- PostgreSQL with "numeric field overflow".
+--
+-- The columns are NULLABLE and stay nullable. NULL means "this model has no
+-- audio price in the catalog", which the gateway must treat as UNPRICED and
+-- count. A zero default would say "this model is free", and free is a price
+-- nobody published. Text models never carry an audio price, so most rows keep
+-- NULL forever.
+--
+-- No BEGIN/COMMIT: the ledgered runner executes each file inside one
+-- transaction with its ledger row (migrate/runner.go apply). A nested explicit
+-- block breaks that pairing.
+--
+-- Every statement is ADD COLUMN IF NOT EXISTS. internal/infra/db/migrate.go
+-- lists this file in dumpGuardExemptMigrations, so RunMigrations applies it
+-- with NO ledger row on dev and dump-loaded databases, and elitea-migrate
+-- applies it again later to record it. An unguarded ALTER makes that second
+-- apply fail with 42701.
+--
+-- Each statement below is on one line, and the guard no longer depends on that.
+-- internal/infra/db/gateway_migrations_test.go TestGatewayMigrationIdempotent
+-- normalises the corpus into whole statements before it scans, so an ALTER that
+-- wraps onto a second line — the way 0067 writes its own — is read exactly like
+-- a single-line one. The guard used to scan line by line, and a wrapped ALTER
+-- became two halves that each failed one half of the match: it reported a pass
+-- after it inspected nothing, and a missing IF NOT EXISTS reached a database
+-- and failed there with 42701 instead of failing the build.
+
+ALTER TABLE gateway.gateway_models ADD COLUMN IF NOT EXISTS input_cost_per_1m_seconds NUMERIC(20,8);
+ALTER TABLE gateway.gateway_models ADD COLUMN IF NOT EXISTS output_cost_per_1m_seconds NUMERIC(20,8);
+ALTER TABLE gateway.gateway_models ADD COLUMN IF NOT EXISTS input_cost_per_1m_characters NUMERIC(20,8);
+ALTER TABLE gateway.gateway_models ADD COLUMN IF NOT EXISTS output_cost_per_1m_characters NUMERIC(20,8);

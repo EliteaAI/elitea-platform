@@ -285,6 +285,16 @@ func main() {
 	// trailer can still be billed, with the concurrent drains bounded. Without
 	// this wiring a mid-stream disconnect is free inference — a hard-budget
 	// bypass; TestMainWiring asserts both are present.
+	// The realtime WebSocket route (issue #323 follow-up). Its four options are
+	// all load-bearing and TestMainWiring asserts each of them:
+	//   - WithRealtimeDialer      without it the route answers 501 and the
+	//                             pylon-indexer relay keeps its own LiteLLM.
+	//   - WithRealtimeBudgetRecheck  a session is otherwise gated ONCE for its
+	//                             whole life; bifrost's turn-start signal is one
+	//                             the only known caller never sends.
+	//   - WithRealtimeSessionLimit   a hijacked connection has no server-side
+	//                             timeout, so nothing else bounds the pool.
+	//   - WithRealtimeOrigins     a WebSocket handshake is not subject to CORS.
 	handlerOpts := append(
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
@@ -292,11 +302,16 @@ func main() {
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
 			llmproxy.WithEgressPolicy(egressPolicy),
+			llmproxy.WithRealtimeDialer(llmproxy.NewBifrostRealtimeDialer(srv.Core(), logger)),
+			llmproxy.WithRealtimeBudgetRecheck(cfg.RealtimeBudgetRecheck),
+			llmproxy.WithRealtimeSessionLimit(cfg.RealtimeMaxSessions),
+			llmproxy.WithRealtimeOrigins(cfg.RealtimeAllowedOrigins),
 		},
 		budgetOpts...,
 	)
 	logger.Info("stream disconnect billing configured",
 		"grace", cfg.StreamGrace, "drain_max_inflight", cfg.StreamDrainLimit)
+	logRealtimeMode(logger, cfg)
 	handler := llmproxy.NewHandler(
 		llmproxy.NewBifrostRouter(srv.Core()),
 		logger,
@@ -323,7 +338,7 @@ func main() {
 		slog.Info("shutdown signal received")
 	}
 
-	if err := shutdownSequence(context.Background(), handler, srv, handler, govStore); err != nil {
+	if err := shutdownSequence(context.Background(), handler, srv, handler, handler, govStore); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
 		failed = true
 	}
@@ -338,7 +353,12 @@ func main() {
 // os.Exit sitting between two calls, and missed a live regression.
 type (
 	streamGraceStopper interface{ StopStreamGrace() }
-	httpShutdowner     interface {
+	// realtimeCloser ends live WebSocket sessions. It is its OWN seam and not
+	// part of streamGraceStopper: a session is not a stream drain, and the two
+	// run in different phases for different reasons (llmproxy/realtime.go,
+	// CloseRealtimeSessions).
+	realtimeCloser interface{ CloseRealtimeSessions(context.Context) }
+	httpShutdowner interface {
 		ShutdownHTTP(context.Context) error
 		Close()
 	}
@@ -353,9 +373,12 @@ type (
 //  2. StopStreamGrace  — only now do in-flight drains stop waiting for provider
 //     usage trailers, so the grace cannot extend the pod's termination window
 //     past this point. Billing stays OPEN.
-//  3. drainForShutdown — billing goroutines, then the governance store's
+//  3. CloseRealtimeSessions — live WebSocket sessions end. They are hijacked
+//     connections, so ShutdownHTTP neither closed nor waited for them, and
+//     their last turn still has to bill.
+//  4. drainForShutdown — billing goroutines, then the governance store's
 //     persist goroutines.
-//  4. Close            — NATS last, once no further increment can be issued.
+//  5. Close            — NATS last, once no further increment can be issued.
 //
 // StopStreamGrace MUST NOT be hoisted above ShutdownHTTP. It both sets
 // drainsClosing and closes the drainClosing channel, so running it first gives
@@ -373,6 +396,7 @@ func shutdownSequence(
 	ctx context.Context,
 	grace streamGraceStopper,
 	srv httpShutdowner,
+	rt realtimeCloser,
 	h billingDrainer,
 	gov govDrainer,
 ) error {
@@ -385,6 +409,17 @@ func shutdownSequence(
 	}
 	if grace != nil {
 		grace.StopStreamGrace()
+	}
+	if rt != nil {
+		// AFTER ShutdownHTTP because http.Server.Shutdown neither closes nor
+		// waits for a hijacked connection, so nothing else ends a session.
+		// BEFORE the billing drain because a session's LAST turn spawns its
+		// billing goroutine as it closes, and that goroutine needs billing open
+		// and NATS live — the same reason a recovered stream trailer is billed
+		// before billing closes.
+		closeCtx, cancel := context.WithTimeout(ctx, llmproxy.RealtimeCloseTimeout)
+		rt.CloseRealtimeSessions(closeCtx)
+		cancel()
 	}
 	drainForShutdown(h, gov)
 	if srv != nil {
@@ -647,6 +682,47 @@ func gatewayMetrics() []gatewayMetric {
 			v:    expvar.Get(name),
 		})
 	}
+	// Issue #323: the audio money-path controls. An audio provider may sell by
+	// the second or by the character, not by the token. The gateway prices all
+	// three, but only from the catalog, so a model with no catalog audio rate is
+	// still delivered and billed as zero. These counters are the only things
+	// that say so out loud. The names come from the package that publishes them.
+	for _, name := range llmproxy.AudioMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: audioMetricHelp(name),
+			v:    expvar.Get(name),
+		})
+	}
+	// The price-catalog schema controls. A gateway pod that rolls out ahead of
+	// elitea-migrate reads a gateway_models table with no audio price columns.
+	// The catalog SELECT degrades to the pre-0086 statement so TOKEN pricing
+	// survives the skew, and these two say the skew is happening: without them
+	// the only signal is one log line per model per cache TTL. The name, the
+	// kind and the help all come from the package that publishes the variable,
+	// so a gauge cannot be scraped here as a counter.
+	for _, m := range cost.Metrics() {
+		metrics = append(metrics, gatewayMetric{
+			name: m.Name,
+			kind: m.Kind,
+			help: m.Help,
+			v:    expvar.Get(m.Name),
+		})
+	}
+	// The realtime session controls. gateway_realtime_turns_unpriced_total is
+	// the one that matters most: a transcription-intent turn reports usage that
+	// bifrost's own extractor cannot read, and a turn nobody could price must be
+	// a number an operator sees rather than a silent zero. The names come from
+	// the package that publishes them.
+	for _, name := range llmproxy.RealtimeMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: realtimeMetricHelp(name),
+			v:    expvar.Get(name),
+		})
+	}
 	// Issue #515: the budget-outage controls. A row that the recovery pass owns
 	// holds back the durable spend for its scope, and before these two lines
 	// nothing outside the log said so. The name and the value both come from
@@ -666,6 +742,75 @@ func gatewayMetrics() []gatewayMetric {
 		},
 	)
 	return metrics
+}
+
+// audioMetricHelp returns the help text for one audio counter.
+//
+// The default is a generic sentence and NOT an empty string on purpose. A new
+// counter that reaches AudioMetricNames before it reaches this switch must
+// still scrape: TestGatewayMetrics_EveryListedMetricIsPublished refuses an
+// empty help text, so an empty default would turn a missing sentence into a
+// red build for a control that works.
+func audioMetricHelp(name string) string {
+	switch name {
+	case llmproxy.MetricAudioUnpriced:
+		return "Count of audio responses the gateway could not price, because the provider reported no usable usage or the catalog carries no rate for the units it reported. Each one billed zero."
+	case llmproxy.MetricAudioNonTokenBasis:
+		return "Count of requests a non-token rate priced: a per-second or per-character catalog rate, not a per-token one."
+	default:
+		return "An audio money-path counter published by the llmproxy package."
+	}
+}
+
+// realtimeMetricHelp returns the help text for one realtime counter. Its
+// default is a generic sentence, never an empty string, for the reason
+// audioMetricHelp gives: a counter that reaches the name list before it reaches
+// this switch must still scrape.
+func realtimeMetricHelp(name string) string {
+	switch name {
+	case llmproxy.MetricRealtimeSessionsOpened:
+		return "Count of realtime WebSocket sessions that passed admission and completed the upgrade."
+	case llmproxy.MetricRealtimeRefusedUnpricedModel:
+		return "Count of realtime upgrades refused because the price catalogue holds no rate for the model. An unpriced session has no natural bound, so it is refused rather than billed as zero."
+	case llmproxy.MetricRealtimeRefusedCapacity:
+		return "Count of realtime upgrades refused because the global or per-project session pool was full."
+	case llmproxy.MetricRealtimeTurnsBilled:
+		return "Count of realtime turns whose usage reached the authoritative budget counter."
+	case llmproxy.MetricRealtimeTurnsUnpriced:
+		return "Count of realtime turns that ended with no usable usage, so nothing was billed for them."
+	case llmproxy.MetricRealtimeTurnsRefused:
+		return "Count of realtime turn starts the gateway did not forward to the provider because the budget gate did not admit them. Read gateway_realtime_frames_dropped_total beside it: the only known caller sends no turn-start event."
+	case llmproxy.MetricRealtimeSessionsClosedBudget:
+		return "Count of realtime sessions the budget gate closed: an exhausted budget, or too many consecutive gate outages."
+	case llmproxy.MetricRealtimeFramesDropped:
+		return "Count of client frames a realtime session did not forward to the provider because the budget gate was refusing. This is the number of frames a refusal really stopped; the turns counter cannot report it for a caller that sends no turn-start event."
+	case llmproxy.MetricRealtimeTurnBasisMismatch:
+		return "Count of realtime turns whose usage arrived on a price basis the catalogue does not carry for that model. Such a turn bills nothing, so this is the only signal that an admitted session bills zero."
+	case llmproxy.MetricRealtimeTurnsUnbilled:
+		return "Count of realtime turns whose provider-reported spend was dropped because billing was already draining."
+	case llmproxy.MetricRealtimeSessionsClosedModel:
+		return "Count of realtime sessions closed because a client frame asked the provider for a model that admission refused."
+	default:
+		return "A realtime session counter published by the llmproxy package."
+	}
+}
+
+// logRealtimeMode states the realtime route's operator settings once at
+// startup. The Origin policy is the half that must never be silent: an empty
+// allowlist is the SECURE default (same-origin only), and an operator who
+// widened it has to be able to see that from the log alone.
+func logRealtimeMode(logger *slog.Logger, cfg config.Config) {
+	if len(cfg.RealtimeAllowedOrigins) == 0 {
+		logger.Info("REALTIME ROUTE ARMED: browser origins are restricted to the gateway's own host "+
+			"(a WebSocket handshake is not subject to CORS, so this is the secure default). "+
+			"Set LLM_REALTIME_ALLOWED_ORIGINS to admit a browser origin.",
+			"budget_recheck", cfg.RealtimeBudgetRecheck, "max_sessions", cfg.RealtimeMaxSessions)
+		return
+	}
+	logger.Warn("REALTIME ROUTE ARMED WITH A WIDENED ORIGIN POLICY: the listed browser origins may open "+
+		"/llm/v1/realtime cross-site with the user's ambient credentials.",
+		"origins", strings.Join(cfg.RealtimeAllowedOrigins, ","),
+		"budget_recheck", cfg.RealtimeBudgetRecheck, "max_sessions", cfg.RealtimeMaxSessions)
 }
 
 // makeMetricsHandler answers GET /metrics with the given variables, in the

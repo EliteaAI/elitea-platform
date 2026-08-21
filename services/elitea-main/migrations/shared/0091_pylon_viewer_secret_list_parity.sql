@@ -1,4 +1,4 @@
--- 0090_pylon_viewer_secret_list_parity.sql — keep the #402 viewer split on a
+-- 0091_pylon_viewer_secret_list_parity.sql — keep the #402 viewer split on a
 -- Go-managed database, and withdraw it from a pylon-managed one.
 --
 -- THE DEFECT THIS FILE CORRECTS.

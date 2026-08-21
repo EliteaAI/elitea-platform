@@ -54,6 +54,13 @@ func (recordingRouter) ImageVariationRequest(_ *schemas.BifrostContext, _ *schem
 	return &schemas.BifrostImageGenerationResponse{}, nil
 }
 
+func (recordingRouter) SpeechRequest(_ *schemas.BifrostContext, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	return &schemas.BifrostSpeechResponse{Audio: []byte("audio")}, nil
+}
+func (recordingRouter) TranscriptionRequest(_ *schemas.BifrostContext, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	return &schemas.BifrostTranscriptionResponse{Text: "hello"}, nil
+}
+
 func testRouter() http.Handler {
 	h := llmproxy.NewHandler(recordingRouter{}, nil, nil)
 	return NewRouter(h)
@@ -108,6 +115,7 @@ func TestOpenAIRoutesResolve(t *testing.T) {
 		{"/llm/v1/embeddings", `{"model":"text-embedding-3-small","input":"hi"}`},
 		{"/llm/v1/responses", `{"model":"gpt-4o","input":"hi"}`},
 		{"/llm/v1/images/generations", `{"model":"dall-e-3","prompt":"a cat"}`},
+		{"/llm/v1/audio/speech", `{"model":"tts-1","input":"hi","voice":"alloy"}`},
 	}
 	r := testRouter()
 	for _, tc := range routes {

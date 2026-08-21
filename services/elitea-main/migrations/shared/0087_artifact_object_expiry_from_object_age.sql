@@ -1,4 +1,4 @@
--- 0086_artifact_object_expiry_from_object_age.sql — re-derive every
+-- 0087_artifact_object_expiry_from_object_age.sql — re-derive every
 -- elitea_storage.objects.expires_at from the object's OWN age.
 --
 -- THE DEFECT THIS REPAIRS. Both artifact write paths stamped a new object

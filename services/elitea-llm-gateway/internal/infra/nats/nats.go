@@ -311,14 +311,14 @@ func (c *Client) ensureAssets(ctx context.Context, prov assetProvisioner) error 
 	// outage window is deduplicated at the publish side. MaxMsgs/MaxBytes cap
 	// unbounded growth if the scheduler is lagging.
 	if _, err := prov.CreateOrUpdateStream(sctx, jetstream.StreamConfig{
-		Name:      DeltasStream,
-		Subjects:  []string{DeltaSubject},
-		Storage:   jetstream.FileStorage,
-		Replicas:  c.cfg.Replicas,
-		Retention: jetstream.LimitsPolicy,
+		Name:       DeltasStream,
+		Subjects:   []string{DeltaSubject},
+		Storage:    jetstream.FileStorage,
+		Replicas:   c.cfg.Replicas,
+		Retention:  jetstream.LimitsPolicy,
 		Duplicates: RecoveryDedupeWindow,
-		MaxMsgs:   500_000,
-		MaxBytes:  512 * 1024 * 1024, // 512 MiB
+		MaxMsgs:    500_000,
+		MaxBytes:   512 * 1024 * 1024, // 512 MiB
 	}); err != nil {
 		return fmt.Errorf("nats: ensure deltas stream: %w", err)
 	}

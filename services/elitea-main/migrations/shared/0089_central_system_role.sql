@@ -1,4 +1,4 @@
--- 0088_central_system_role.sql — the central DEFAULT-mode `system` role, and
+-- 0089_central_system_role.sql — the central DEFAULT-mode `system` role, and
 -- the callback permissions the per-project system identity needs.
 --
 -- WHY THIS FILE EXISTS. A scheduled index run does not carry a human's token.

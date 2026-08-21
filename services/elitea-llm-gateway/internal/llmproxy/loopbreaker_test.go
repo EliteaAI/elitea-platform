@@ -10,6 +10,7 @@ type testClock struct{ t time.Time }
 
 func (c *testClock) now() time.Time          { return c.t }
 func (c *testClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
 // The breaker's numbers became operator-settable in issue #12. These tests pin
 // its SEMANTICS — trip at the threshold, sliding window, cooldown, tuple-map
 // bounding — not the production defaults, so they construct the breaker with
@@ -400,5 +401,50 @@ func TestLoopBreaker_DefaultWindowIsEnforced(t *testing.T) {
 				"window — the window is wider than documented", i+1)
 		}
 		clk.advance(2 * time.Millisecond)
+	}
+}
+
+// TestLoopBreaker_ObserveReportsTheCircuitAndRecordsNothing pins the read-only
+// half of the breaker.
+//
+// WHY IT EXISTS. The realtime budget re-check runs on a ticker for the whole
+// life of every live session, and it used to call allow(). Every tick then
+// appended a timestamp to the tuple's sliding window, exactly as an arriving
+// request does, so long sessions on one (project, model) pair could open the
+// circuit for that project's REAL traffic. observe() must answer the same
+// question and leave the window alone.
+func TestLoopBreaker_ObserveReportsTheCircuitAndRecordsNothing(t *testing.T) {
+	c := &testClock{t: time.Unix(0, 0)}
+	b := newLoopBreaker(LoopBreakerParams{Threshold: 3, Window: time.Second, OpenFor: 5 * time.Second})
+	b.now = c.now
+
+	// A closed circuit admits, and 100 observations do not move it toward the
+	// threshold of 3.
+	for i := 0; i < 100; i++ {
+		if ok, retry := b.observe("p1", "m1"); !ok {
+			t.Fatalf("observe #%d refused a tuple with an empty window (retry=%v)", i, retry)
+		}
+	}
+	if got := len(b.hits["p1\x00m1"]); got != 0 {
+		t.Fatalf("the window holds %d hits after 100 observations, want 0: an observation is not an arrival", got)
+	}
+
+	// An arrival still counts, and the circuit still opens on the threshold.
+	for i := 0; i < 3; i++ {
+		b.allow("p1", "m1")
+	}
+	// An open circuit is REPORTED by observe. Losing that would leave a live
+	// session ungated by the backstop it is meant to respect.
+	ok, retry := b.observe("p1", "m1")
+	if ok {
+		t.Fatal("observe admitted a tuple whose circuit is open")
+	}
+	if retry <= 0 {
+		t.Fatalf("observe returned retryAfter=%v on an open circuit, want a positive wait", retry)
+	}
+
+	// A different tuple is untouched.
+	if ok, _ := b.observe("p1", "m2"); !ok {
+		t.Fatal("observe refused a tuple whose own circuit is closed")
 	}
 }

@@ -1,6 +1,6 @@
 package migrations_test
 
-// shared/0089_project_override_reconciliation.sql, and the rule that keeps it
+// shared/0090_project_override_reconciliation.sql, and the rule that keeps it
 // true.
 //
 // # The defect
@@ -39,7 +39,7 @@ import (
 )
 
 // reconciliationMigration is the file under test.
-const reconciliationMigration = "shared/0089_project_override_reconciliation.sql"
+const reconciliationMigration = "shared/0090_project_override_reconciliation.sql"
 
 // reconciliationHead is the last migration 0089 itself reconciles. A shared
 // migration numbered above this one must deliver its own grants.

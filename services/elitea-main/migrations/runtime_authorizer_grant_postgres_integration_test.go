@@ -74,7 +74,7 @@ import (
 var defaultModeRoles = []string{"admin", "editor", "viewer"}
 
 // machineModeRole is the default-mode role the per-project system identity
-// holds. shared/0088_central_system_role.sql seeds it. projectprovisioning
+// holds. shared/0089_central_system_role.sql seeds it. projectprovisioning
 // assigns the system user a project role of this name. legacyrbac resolves
 // such a role through the CENTRAL default-mode role of the same name. With no central row the scheduled-execution PAT resolved nothing
 // and every worker callback answered 403.

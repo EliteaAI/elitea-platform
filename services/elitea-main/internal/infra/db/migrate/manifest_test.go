@@ -102,27 +102,30 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// 85: shared/0085_project_member_and_role_listings_administration.sql, the
 	// two administration-mode listing grants #313 needs. It follows
 	// shared/0084_budget_usage_dimensions.sql above.
-	// 86: shared/0086_artifact_object_expiry_from_object_age.sql, the backfill
+	// 86: shared/0086_gateway_audio_prices.sql, the four per-1,000,000-unit
+	// audio price columns the /llm/v1/audio/* routes need. It arrived on main
+	// while the five below were in review, so they moved up one number each.
+	// 87: shared/0087_artifact_object_expiry_from_object_age.sql, the backfill
 	// that re-derives every artifact object's expires_at from its own
 	// created_at. Rows written before the fix carry the bucket's frozen
 	// deadline, and the ones already past it are swept within 15 minutes.
-	// 87: shared/0087_administration_secret_permissions.sql, the four
+	// 88: shared/0088_administration_secret_permissions.sql, the four
 	// administration-mode grants the global secret vault needs. Without them
 	// every global-vault route answered 403, a super_admin included.
-	// 88: shared/0088_central_system_role.sql, the central default-mode
+	// 89: shared/0089_central_system_role.sql, the central default-mode
 	// `system` role the per-project machine identity resolves through. With no
 	// such role the scheduled-execution PAT resolved the empty set and every
 	// worker callback answered 403.
-	// 89: shared/0089_project_override_reconciliation.sql, the one-time
+	// 90: shared/0090_project_override_reconciliation.sql, the one-time
 	// delivery of the corpus's default-mode grants to the projects whose own
 	// permission rows suppress the central fallback.
-	// 90: shared/0090_pylon_viewer_secret_list_parity.sql, which withdraws
+	// 91: shared/0091_pylon_viewer_secret_list_parity.sql, which withdraws
 	// 0083's `configuration.secrets.secret.list` grant from the default-mode
 	// `viewer` on a pylon-managed auth_core. 0083 states that no existing
 	// deployment gains anything; a pylon-backed database carries no per-project
 	// permission row, so the central fallback is live there and every project
 	// viewer did gain the secret listing.
-	require.EqualValues(t, 90, Head(shared))
+	require.EqualValues(t, 91, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
