@@ -855,7 +855,7 @@ func TestRealtime_AllZeroUsageIsUnpricedAndNotBilledAsZero(t *testing.T) {
 func TestRealtime_MidSessionOutageRefusesTurnsAndKeepsTheSocket(t *testing.T) {
 	// A slower re-check than the fixture default on purpose: this test is about
 	// the state BETWEEN outages, and the fixture's 25 ms would reach
-	// maxConsecutiveBudgetOutages and close the session while the assertions
+	// maxBudgetOutagesBeforeClose and close the session while the assertions
 	// were still running. TestRealtime_RepeatedOutagesCloseTheSession covers the
 	// close.
 	f := newRealtimeFixture(t, WithRealtimeBudgetRecheck(500*time.Millisecond))
@@ -943,7 +943,7 @@ func TestRealtime_RepeatedOutagesCloseTheSession(t *testing.T) {
 		}
 		if got := websocket.CloseStatus(err); got != websocket.StatusPolicyViolation {
 			t.Fatalf("close status = %v (err=%v), want 1008: after %d consecutive gate outages "+
-				"the session must close", got, err, maxConsecutiveBudgetOutages)
+				"the session must close", got, err, maxBudgetOutagesBeforeClose)
 		}
 		return
 	}
@@ -977,7 +977,7 @@ func TestRealtime_ExhaustedBudgetClosesTheSession(t *testing.T) {
 		// The CODE alone does not discriminate: the outage path closes with 1008
 		// too, and its refusal event carries the same budget type. The REASON is
 		// what says WHICH rule closed the session, and a 402 must close on the
-		// FIRST refusal rather than after maxConsecutiveBudgetOutages of them.
+		// FIRST refusal rather than after maxBudgetOutagesBeforeClose of them.
 		var closeErr websocket.CloseError
 		if !errors.As(err, &closeErr) {
 			t.Fatalf("the close was not a clean close frame: %v", err)
@@ -2205,7 +2205,7 @@ func TestRealtime_StalledBudgetStoreIsAnOutage(t *testing.T) {
 		if got := websocket.CloseStatus(rerr); got != websocket.StatusPolicyViolation {
 			t.Fatalf("close status = %v (err=%v), want 1008: a gate that never answers is an "+
 				"OUTAGE, and %d consecutive ones close the session (decision H1)",
-				got, rerr, maxConsecutiveBudgetOutages)
+				got, rerr, maxBudgetOutagesBeforeClose)
 		}
 		if !sawOutage {
 			t.Fatal("the session closed without ever telling the caller the gate was unreachable")
@@ -2452,6 +2452,87 @@ func TestRealtime_TurnOnAnUnpricedBasisIsCounted(t *testing.T) {
 	}
 }
 
+// secondsOnlyCatalogEstimator prices SECONDS from the catalogue and holds NO
+// token rate — the shape of a whisper-style transcription row.
+//
+// Its token arm is the part that matters: it returns a NON-ZERO cost whose
+// Source is the FALLBACK, which is exactly what the real calculator does. The
+// token basis never fails, because lookupCatalog fills NULL token columns from
+// defaultPrice, so an un-catalogued token price is an INVENTED 1.0/3.0
+// USD-per-1M figure rather than nothing.
+type secondsOnlyCatalogEstimator struct{}
+
+func (secondsOnlyCatalogEstimator) Cost(_ context.Context, _, _ string, in, out int64) cost.Cost {
+	// The fabricated fallback. Non-zero, plausible, and NOT from the catalogue.
+	return cost.Cost{TotalNanoUSD: in*1000 + out*3000, Basis: cost.BasisTokens, Source: cost.SourceFallback}
+}
+
+func (e secondsOnlyCatalogEstimator) CostUnits(ctx context.Context, p, m string, u cost.Units) cost.Cost {
+	if u.Basis() == cost.BasisSeconds {
+		return cost.Cost{TotalNanoUSD: u.InputMillis, Basis: cost.BasisSeconds, Source: cost.SourceCatalog}
+	}
+	return e.Cost(ctx, p, m, u.InputTokens, u.OutputTokens)
+}
+
+// TestRealtime_TurnOnAnUnpricedBasisIsNotBilledFromAFabricatedPrice is the
+// OTHER direction of the basis disagreement, and the one that costs money.
+//
+// A model the catalogue prices by SECONDS alone is admitted by H2. The provider
+// then reports TOKENS for a turn. Units.Basis() is tokens, so CostUnits takes
+// the token arm — and that arm never fails: NULL token columns are filled from
+// the pylon default table, so the turn prices at an invented rate. Counting the
+// mismatch and billing anyway put a made-up figure on the authoritative counter
+// of a socket the tenant holds open, which is the precise outcome decision H2
+// was taken to prevent at the upgrade.
+//
+// The turn must therefore bill NOTHING. The catalogue prices this model, but
+// not in the units this turn reported, so the gateway does not know what the
+// turn cost — and a number it does not know is never a number it invents.
+func TestRealtime_TurnOnAnUnpricedBasisIsNotBilledFromAFabricatedPrice(t *testing.T) {
+	beforeMismatch := realtimeTurnBasisMismatch.Value()
+	beforeBilled := realtimeTurnsBilled.Value()
+
+	prov := newFakeProviderSocket()
+	dialer := &fakeRealtimeDialer{sock: prov}
+	gate := newRecordingGate(failmode.Allow)
+	h := NewHandler(newDispatchSpy(), nil, nil,
+		WithRealtimeDialer(dialer),
+		WithBudgetGate(gate, secondsOnlyCatalogEstimator{}),
+		WithRealtimeBudgetRecheck(time.Hour))
+	srv := httptest.NewServer(h.route())
+	defer srv.Close()
+
+	conn, _, err := websocket.Dial(t.Context(),
+		"ws"+strings.TrimPrefix(srv.URL, "http")+"/llm/v1/realtime?model=whisper-realtime",
+		&websocket.DialOptions{HTTPHeader: http.Header{headerProjectID: []string{realtimeProjectID}}})
+	if err != nil {
+		t.Fatalf("a seconds-priced model must still be admitted (decision H2): %v", err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+
+	// response.done reports TOKENS, which this model has no catalogue rate for.
+	prov.send(t, responseDoneFrame(120, 40))
+	readEvent(t, conn, 3*time.Second)
+
+	deadline := time.After(3 * time.Second)
+	for realtimeTurnBasisMismatch.Value() == beforeMismatch {
+		select {
+		case <-deadline:
+			t.Fatal("a turn reported a basis the catalogue does not price for this model and the " +
+				"mismatch was never counted")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	// The counter having moved is not the point. THIS is:
+	if got := gate.projectUpdates(); len(got) != 0 {
+		t.Fatalf("the turn billed %d increment(s) from a price the catalogue never supplied; "+
+			"want 0 — decision H2 exists so a tenant-held socket cannot bill an invented rate", len(got))
+	}
+	if realtimeTurnsBilled.Value() != beforeBilled {
+		t.Fatal("the turn was reported as billed while its price came from the default table")
+	}
+}
+
 // TestRealtime_TurnOnAPricedBasisIsNotCounted is the discriminating half: the
 // mismatch counter must stay still on the ordinary path, or an operator cannot
 // alarm on it.
@@ -2689,7 +2770,7 @@ func TestRealtime_TheBudgetRecheckIsNotCountedAsARequest(t *testing.T) {
 // non-Allow verdicts decision H1 does NOT cover.
 //
 // THE DEFECT. regate's default branch counted EVERY non-Allow, non-402 verdict
-// toward maxConsecutiveBudgetOutages. H1 was authored for one condition: the
+// toward maxBudgetOutagesBeforeClose. H1 was authored for one condition: the
 // budget store did not answer. A tripped amplification backstop is a different
 // condition with a different lifetime — the circuit opens for 5 s by default —
 // so applying H1 to it tore down live calls under a policy nobody wrote for
@@ -2706,7 +2787,7 @@ func TestRealtime_ATrippedBackstopRefusesTurnsButKeepsTheSession(t *testing.T) {
 			// close again and make the session survive for the wrong reason.
 			OpenFor: time.Minute,
 		}),
-		// Fast enough that many more than maxConsecutiveBudgetOutages ticks run
+		// Fast enough that many more than maxBudgetOutagesBeforeClose ticks run
 		// inside the observation window.
 		WithRealtimeBudgetRecheck(5*time.Millisecond))
 	conn := f.dial(t)
@@ -2739,7 +2820,7 @@ func TestRealtime_ATrippedBackstopRefusesTurnsButKeepsTheSession(t *testing.T) {
 			"backstop refusal from a budget one", ev.Error.Code)
 	}
 
-	// Far more re-check ticks than maxConsecutiveBudgetOutages now run against
+	// Far more re-check ticks than maxBudgetOutagesBeforeClose now run against
 	// the open circuit. The session must survive every one of them.
 	ctx, cancel := context.WithTimeout(t.Context(), 400*time.Millisecond)
 	defer cancel()

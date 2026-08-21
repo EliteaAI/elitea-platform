@@ -517,10 +517,30 @@ func (h *Handler) updateUsage(
 	projectIDStr string,
 	userIDStr string,
 ) billOutcome {
-	return h.updateUsageUnits(ctx, provider, model,
+	return h.updateUsageUnits(ctx, surfaceAudio, provider, model,
 		cost.Units{InputTokens: inputTokens, OutputTokens: outputTokens},
 		projectIDStr, userIDStr)
 }
+
+// billingSurface names which /llm surface a billed request came from.
+//
+// It exists because the two non-token counters below are AUDIO controls, and a
+// realtime turn bills through this same function. Without the distinction a
+// live realtime session moved gateway_audio_non_token_basis_total and
+// gateway_audio_default_priced_total, and logged itself as "audio: …" — so an
+// operator alarming on the audio controls could not tell a whisper-1
+// transcription from a realtime session, and the realtime counters
+// under-reported the same events. Realtime publishes its own counters
+// (RealtimeMetricNames); these two stay the audio routes' own.
+type billingSurface int
+
+const (
+	// surfaceAudio is the unary /llm/v1/audio/* routes, and the token routes
+	// that reach here through updateUsage.
+	surfaceAudio billingSurface = iota
+	// surfaceRealtime is a turn of a /llm/v1/realtime session.
+	surfaceRealtime
+)
 
 // updateUsageUnits is updateUsage over any denomination the catalog can price:
 // tokens, seconds (carried as milliseconds) or characters (issue #323). Only
@@ -533,6 +553,7 @@ func (h *Handler) updateUsage(
 // a second place for the money to go missing.
 func (h *Handler) updateUsageUnits(
 	ctx context.Context,
+	surface billingSurface,
 	provider string,
 	model string,
 	u cost.Units,
@@ -567,7 +588,7 @@ func (h *Handler) updateUsageUnits(
 	// price is zero is PRICED and costs nothing; reading Cost.Basis alone would
 	// make every zero-cost estimator stub look unpriced and would put the
 	// eleven token call sites on a path they never take today.
-	if u.Basis() != cost.BasisTokens {
+	if surface == surfaceAudio && u.Basis() != cost.BasisTokens {
 		if actualCost.Basis == "" {
 			// The provider reported seconds or characters and the catalog holds
 			// no rate for them. Billing zero here is unavoidable — inventing a
@@ -584,7 +605,7 @@ func (h *Handler) updateUsageUnits(
 			"provider", provider, "model", model,
 			"basis", actualCost.Basis, "source", actualCost.Source,
 			"cost_nano", actualCost.TotalNanoUSD, "metric", MetricAudioNonTokenBasis)
-	} else if actualCost.TotalNanoUSD > 0 && !actualCost.FromCatalog() {
+	} else if surface == surfaceAudio && actualCost.TotalNanoUSD > 0 && !actualCost.FromCatalog() {
 		// The audio response reported TOKENS, and the token price did not come
 		// from the catalog.
 		//

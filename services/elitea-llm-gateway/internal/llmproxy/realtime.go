@@ -66,6 +66,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -117,9 +118,18 @@ const (
 	// upgrade, so it is still on the caller's HTTP request.
 	realtimeDialTimeout = 15 * time.Second
 
-	// maxConsecutiveBudgetOutages is the N of decision H1: after this many
-	// CONSECUTIVE re-checks that could not reach the budget store, the session
-	// is closed instead of merely refusing turns.
+	// maxBudgetOutagesBeforeClose is the N of decision H1: after this many
+	// re-checks that could not reach the budget store, the session is closed
+	// instead of merely refusing turns.
+	//
+	// IT COUNTS OUTAGES SINCE THE LAST ALLOW, not adjacent ones, and the name
+	// says so because an earlier one said "consecutive" and the code never did.
+	// Only an Allow resets the counter: a verdict that is neither an Allow nor
+	// an outage — the amplification backstop's 429 — leaves it untouched, on the
+	// reasoning that such a verdict says nothing about whether the store is
+	// reachable, so it neither proves an outage nor ends one. A 503, 429, 503
+	// sequence therefore reaches 2, which is the intended behaviour and not an
+	// accident of the name.
 	//
 	// 4 × DefaultRealtimeBudgetRecheck is about a minute. That is deliberately
 	// longer than a NATS reconnect or a leader election, which are seconds, so a
@@ -129,7 +139,7 @@ const (
 	// for as long as that ceiling would allow. Turns are refused throughout, so
 	// nothing reaches the provider during the minute either way — what the
 	// window buys is that the caller's session survives a blip.
-	maxConsecutiveBudgetOutages = 4
+	maxBudgetOutagesBeforeClose = 4
 
 	// RealtimeCloseTimeout bounds CloseRealtimeSessions during shutdown. A
 	// session that has been told to stop only has to finish the frame it is
@@ -151,7 +161,7 @@ const (
 	// SLOW, and that honours its context, still answers inside it; only a store
 	// that answers nothing at all reaches it. A timeout is an OUTAGE, so
 	// decision H1 applies: refuse the turn, keep the socket open, and count the
-	// tick toward maxConsecutiveBudgetOutages.
+	// tick toward maxBudgetOutagesBeforeClose.
 	realtimeGateTimeout = 2*budgetGateTimeout + time.Second
 
 	// realtimeCloseHandshakeBudget bounds how long a session waits for the
@@ -170,6 +180,11 @@ const (
 	// gets the close status. The abandoned library goroutine ends on its own
 	// 5 s bound, and the cancel that follows closes the connection under it.
 	realtimeCloseHandshakeBudget = time.Second
+
+	// maxRealtimeCloseReasonBytes is the close-reason budget. RFC 6455 allows
+	// 123 bytes; the margin leaves room for the rune-boundary back-off in
+	// wsSocket.Close without ever reaching the limit the library enforces.
+	maxRealtimeCloseReasonBytes = 120
 )
 
 // The realtime money-path and capacity counters.
@@ -437,13 +452,13 @@ func (h *Handler) Realtime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ONE ownership rule for the whole function: everything acquired below is
-	// released by cleanup, and cleanup runs unless the pump takes over. The pump
-	// then releases the same three things when the session ends. Splitting this
-	// into per-resource guards is how a slot or a wait-group entry leaks on the
-	// one refusal path somebody forgets.
+	// released by cleanup, and cleanup runs EXACTLY ONCE, on every path,
+	// including after the pump returns. Splitting this into per-resource guards
+	// is how a slot or a wait-group entry leaks on the one refusal path somebody
+	// forgets — and releasing the wait-group entry twice panics with a negative
+	// counter, so "exactly once" is the property to keep, not "at least once".
 	acquiredSlot := false
 	tracked := false
-	handedOff := false
 	cleanup := func() {
 		if acquiredSlot {
 			h.realtimeLimit.release(identityProjectFromCtx(ctx))
@@ -453,11 +468,7 @@ func (h *Handler) Realtime(w http.ResponseWriter, r *http.Request) {
 		}
 		sc.cancel()
 	}
-	defer func() {
-		if !handedOff {
-			cleanup()
-		}
-	}()
+	defer cleanup()
 
 	// The model rides in the query string, not in a body: a WebSocket handshake
 	// is a GET. The legacy relay sends `?model=…&intent=transcription`. `model`
@@ -561,7 +572,6 @@ func (h *Handler) Realtime(w http.ResponseWriter, r *http.Request) {
 		"client_subprotocol", client.Subprotocol(), "provider_subprotocol", up.Subprotocol,
 		"metric", MetricRealtimeSessionsOpened)
 
-	handedOff = true
 	admitted := realtimeModel{provider: string(provider), model: model, pricing: pricing}
 	s := &realtimeSession{
 		h:      h,
@@ -577,9 +587,10 @@ func (h *Handler) Realtime(w http.ResponseWriter, r *http.Request) {
 		projectID: projectID,
 		userID:    identityUserFromCtx(ctx),
 	}
-	defer cleanup()
 	// Blocking here is what keeps the hijacked connection owned by a live
-	// goroutine: net/http will not touch it again, so nothing else would.
+	// goroutine: net/http will not touch it again, so nothing else would. The
+	// single deferred cleanup above releases the slot, the wait-group entry and
+	// the context once run returns.
 	s.run()
 }
 
@@ -771,16 +782,12 @@ type realtimeSession struct {
 
 // currentResponseModel returns the model a response turn bills against.
 func (s *realtimeSession) currentResponseModel() realtimeModel {
-	s.modelMu.RLock()
-	defer s.modelMu.RUnlock()
-	return s.resp
+	return s.slotModel(realtimeSlotResponse)
 }
 
 // currentTranscriptionModel returns the model a transcription turn bills against.
 func (s *realtimeSession) currentTranscriptionModel() realtimeModel {
-	s.modelMu.RLock()
-	defer s.modelMu.RUnlock()
-	return s.asr
+	return s.slotModel(realtimeSlotTranscription)
 }
 
 // end is the ONE way a session ends from the inside, and the ORDER of its three
@@ -930,8 +937,22 @@ func (s *realtimeSession) uplink() {
 // count are different quantities and both are now published.
 func (s *realtimeSession) countDrop(raw []byte) {
 	realtimeFramesDropped.Add(1)
-	if ev, err := schemas.ParseRealtimeEvent(raw); err == nil && ev != nil &&
-		s.up.Codec.ShouldStartRealtimeTurn(ev) {
+	// Decode the TYPE alone, not the whole event. This runs for every frame a
+	// refusing session drops, which for the relay is roughly twenty a second,
+	// and each of those frames is mostly base64 audio. ParseRealtimeEvent
+	// materialises that payload — it keeps every unknown top-level field in
+	// ExtraParams — purely so a counter can be incremented. The classifier only
+	// ever reads Type, so that is all this builds. The same cheap decode is what
+	// realtimeTerminalEventType falls back to.
+	var env struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.Type == "" {
+		return
+	}
+	if s.up.Codec.ShouldStartRealtimeTurn(&schemas.BifrostRealtimeEvent{
+		Type: schemas.RealtimeEventType(env.Type),
+	}) {
 		realtimeTurnsRefused.Add(1)
 	}
 }
@@ -1223,11 +1244,11 @@ func (w *realtimeRefusalRecorder) verdict() budgetVerdict {
 // The channel is BUFFERED, so the abandoned goroutine can deliver its answer
 // and exit rather than leaking on a receiver that walked away. It writes no
 // session state, so a late answer changes nothing. A stalled store therefore
-// holds at most maxConsecutiveBudgetOutages goroutines per session, because the
+// holds at most maxBudgetOutagesBeforeClose goroutines per session, because the
 // session closes after that many silent re-checks.
 //
 // A timeout is an OUTAGE and reads as one: decision H1 refuses the turn, keeps
-// the socket, and counts it toward maxConsecutiveBudgetOutages.
+// the socket, and counts it toward maxBudgetOutagesBeforeClose.
 func (s *realtimeSession) gateVerdict(model string) budgetVerdict {
 	bound := s.h.realtimeGateBound
 	if bound <= 0 {
@@ -1367,7 +1388,7 @@ func (s *realtimeSession) ping(sock RealtimeSocket) error {
 //
 //	402 (any ceiling exhausted) → send the refusal event, CLOSE the session.
 //	503 (the store did not      → refuse turns, KEEP the socket open. After
-//	     answer)                  maxConsecutiveBudgetOutages consecutive ones,
+//	     answer)                  maxBudgetOutagesBeforeClose consecutive ones,
 //	                             close. This is decision H1, and 503 is the ONLY
 //	                             verdict H1 was written for.
 //	anything else refused       → refuse turns, KEEP the socket open, and count
@@ -1410,8 +1431,12 @@ func (s *realtimeSession) regate() {
 			// event reaches the provider while the close handshake runs. The
 			// refusal frame is written first, because a cancelled session
 			// cannot write one.
-			s.refusing.Store(true)
-			s.sendRefusalEvent(v)
+			// refuseTurns, not a bare Store: its compare-and-swap is what keeps
+			// a caller that is ALREADY refusing (an earlier outage tick sent it
+			// one error event) from receiving a second one. The close frame
+			// below still carries this verdict's own message, so the reason is
+			// not lost by sending one event instead of two.
+			s.refuseTurns(v)
 			s.end(RealtimeClosePolicy, v.message)
 			return
 		case v.status == http.StatusServiceUnavailable:
@@ -1421,7 +1446,7 @@ func (s *realtimeSession) regate() {
 			// silences close the session.
 			outages++
 			s.refuseTurns(v)
-			if outages >= maxConsecutiveBudgetOutages {
+			if outages >= maxBudgetOutagesBeforeClose {
 				realtimeSessionsClosedBudget.Add(1)
 				s.h.logger.Error("realtime: the budget gate has been unreachable for too long; closing the session",
 					"project_id", s.projectID, "model", model, "consecutive", outages,
@@ -1473,8 +1498,9 @@ func (s *realtimeSession) gateTurn() bool {
 		s.h.logger.Info("realtime: the budget is exhausted at turn start; closing the session",
 			"project_id", s.projectID, "model", model, "code", v.code,
 			"metric", MetricRealtimeSessionsClosedBudget)
-		s.refusing.Store(true)
-		s.sendRefusalEvent(v)
+		// See regate's 402 branch: refuseTurns deduplicates the error event, and
+		// the close frame still carries this verdict's message.
+		s.refuseTurns(v)
 		s.end(RealtimeClosePolicy, v.message)
 		return false
 	}
@@ -1631,19 +1657,30 @@ func (s *realtimeSession) billTurn(raw []byte, ev *schemas.BifrostRealtimeEvent)
 			"event", string(typ), "decoded", ev != nil, "metric", MetricRealtimeTurnsUnpriced)
 		return
 	}
-	// DECISION H2 admitted this model on EITHER price basis. The turn bills on
-	// whatever the provider reported, so the two can disagree — and when they
-	// do, updateUsageUnits finds no rate, bills nothing and answers
-	// billNotBillable, which no realtime counter would see. Count it here, or a
-	// session H2 admitted bills zero for its whole life in silence.
+	// DECISION H2 admitted this model on EITHER price basis, and the turn bills
+	// on whatever the provider reported — so the two can disagree.
+	//
+	// THE TURN IS NOT BILLED WHEN THEY DO, and that is the whole point. Only the
+	// seconds and character arms refuse a rate the catalogue did not supply; the
+	// TOKEN arm falls back to the pylon default table like every other route. So
+	// a model admitted on a per-second rate alone, reporting tokens, used to
+	// reach tokenCost and bill the invented 1.0/3.0 USD-per-1M fallback. H2
+	// exists because a socket the tenant holds open has no natural bound, and
+	// billing it from a made-up number is exactly what H2 refuses at the
+	// upgrade; letting a turn do it one frame later reinstates it.
+	//
+	// Refusing to bill is the honest answer: the catalogue prices this model,
+	// but not in the units this turn reported, so the gateway does not know what
+	// the turn cost. It is counted, never invented.
 	if !m.pricing.admits(units.Basis()) {
 		realtimeTurnBasisMismatch.Add(1)
 		s.h.logger.ErrorContext(s.ctx, "realtime: the turn reported a basis the catalogue does not price for this model; it bills nothing",
 			"project_id", s.projectID, "provider", m.provider, "model", m.model,
 			"reported_basis", units.Basis(), "priced_tokens", m.pricing.tokens,
 			"priced_seconds", m.pricing.seconds, "metric", MetricRealtimeTurnBasisMismatch)
+		return
 	}
-	switch s.h.updateUsageUnits(s.ctx, m.provider, m.model, units, s.projectID, s.userID) {
+	switch s.h.updateUsageUnits(s.ctx, surfaceRealtime, m.provider, m.model, units, s.projectID, s.userID) {
 	case billBilled:
 		realtimeTurnsBilled.Add(1)
 	case billRefused:
@@ -1845,10 +1882,22 @@ func (s *wsSocket) Write(ctx context.Context, frame []byte) error {
 func (s *wsSocket) Ping(ctx context.Context) error { return s.conn.Ping(ctx) }
 
 func (s *wsSocket) Close(code RealtimeCloseCode, reason string) {
-	// RFC 6455 caps the close reason at 123 bytes and the library refuses a
-	// longer one, which would turn a tidy close into an abrupt one.
-	if len(reason) > 120 {
-		reason = reason[:120]
+	// RFC 6455 caps the close reason at 123 BYTES and requires it to be valid
+	// UTF-8; the library refuses a reason that breaks either rule, which turns
+	// the tidy close this function exists to perform into an abrupt one.
+	//
+	// The cut is therefore taken back to a rune boundary. The reason carries
+	// caller-influenced text — a client frame naming an unknown model reaches
+	// writeModelNotFound, whose message embeds that name, and it arrives here as
+	// v.message — so a name in any multi-byte script could otherwise put the
+	// 120th byte in the middle of a rune and produce exactly the abrupt close
+	// the truncation was added to avoid.
+	if len(reason) > maxRealtimeCloseReasonBytes {
+		cut := maxRealtimeCloseReasonBytes
+		for cut > 0 && !utf8.RuneStart(reason[cut]) {
+			cut--
+		}
+		reason = reason[:cut]
 	}
 	// The library's Close writes the close FRAME and then waits, for a
 	// HARDCODED 5 s, to read the peer's reply — and it needs the connection's

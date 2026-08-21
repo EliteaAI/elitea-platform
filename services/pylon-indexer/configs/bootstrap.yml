@@ -20,11 +20,25 @@ plugin_repo:
 # `/llm/v1/audio/transcriptions`, which are the only two endpoints this
 # container used the local proxy for.
 #
-# ONE CHANGE IS STILL OUTSTANDING, IN THE `indexer_worker` PLUGIN REPOSITORY.
+# DEPLOY ORDERING. Land indexer_worker#88 BEFORE this file reaches an image, and
+# set `audio_llm_base_url` on the deployment.
+#
 # `indexer_asr_whisper.py`, `indexer_tts.py` and `indexer_asr_realtime.py` hold
-# the absolute URL `http://127.0.0.1:8081/v1/...`. Point the first two at the
-# deployment's `/llm/v1` instead. Both were already failing against the empty
-# registry, so this removal changes the failure, not the outcome.
+# the absolute URL `http://127.0.0.1:8081/v1/...`. indexer_worker#88 replaces it
+# with a configurable base, and that change is in a DIFFERENT repository, so it
+# is not carried by this commit.
+#
+# Removing the engine here changes the audio FAILURE MODE, and on one stack it
+# changes the outcome:
+#
+#   * On this platform the calls already failed. The registry is empty, so the
+#     proxy answered a decodable 400/404 naming the model; now the connection is
+#     refused instead, which reads as an infrastructure fault rather than a
+#     configuration one. Worse to diagnose, not newly broken.
+#   * On a centry-hybrid stack, audio WORKS today: pylon_main still serves the
+#     `litellm_resolve_model` RPC and still fills the registry. Removing the
+#     engine there breaks a working path outright. Do not upgrade a hybrid stack
+#     onto this image until #88 has landed and the base URL is set.
 preordered_plugins:
   - shared
   - auth

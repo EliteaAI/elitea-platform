@@ -217,7 +217,7 @@ func (h *Handler) Speech(w http.ResponseWriter, r *http.Request) {
 			"provider", provider, "model", model, "metric", MetricAudioUnpriced)
 		return
 	}
-	h.updateUsageUnits(ctx, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
+	h.updateUsageUnits(ctx, surfaceAudio, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // Transcription handles POST /llm/v1/audio/transcriptions and
@@ -283,7 +283,7 @@ func (h *Handler) Transcription(w http.ResponseWriter, r *http.Request) {
 			"provider", provider, "model", model, "metric", MetricAudioUnpriced)
 		return
 	}
-	h.updateUsageUnits(ctx, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
+	h.updateUsageUnits(ctx, surfaceAudio, provider, model, units, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // buildTranscriptionRequest constructs an OpenAITranscriptionRequest from a
