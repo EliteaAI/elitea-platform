@@ -27,7 +27,7 @@ import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
 
 /** `true` when the token service answered 503 — it is switched off, not busy. */
-export function isTokenServiceUnavailable(error: unknown): boolean {
+function isTokenServiceUnavailable(error: unknown): boolean {
   if (!(error instanceof EliteaApiError)) return false;
   const { failure } = error;
   return (failure.kind === 'http' || failure.kind === 'auth') && failure.status === 503;

@@ -41,7 +41,7 @@ const SECTIONS = [
 type Section = (typeof SECTIONS)[number];
 
 /** Map of section-name → flat list of configurations. */
-export type ConfigurationsBySection = Record<Section, ConfigurationItem[]>;
+type ConfigurationsBySection = Record<Section, ConfigurationItem[]>;
 
 export interface ConfigurationsBySectionResult {
   data: ConfigurationsBySection | null;

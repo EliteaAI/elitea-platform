@@ -142,7 +142,7 @@ export const UsersPageContent = memo(function UsersPageContent({
 /* ── sub-component: render body ───────────────────────────────────────── */
 
 /** The 1-based row window the pagination line reports. */
-export interface RowRange {
+interface RowRange {
   start: number;
   end: number;
 }
