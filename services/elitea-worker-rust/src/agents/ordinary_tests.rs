@@ -211,6 +211,47 @@ fn runtime_context_with_sensitive_child() -> (RuntimeContextClient, Arc<AtomicUs
     (client, calls)
 }
 
+fn runtime_context_with_recursive_sensitive_child(
+    cycles: usize,
+) -> (RuntimeContextClient, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let child_reference = stored_application_reference(45, 32, 42, "name-resolver");
+    let responses = (0..cycles)
+        .flat_map(|_| {
+            [
+                runtime_context_response(&serde_json::json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": TOKEN,
+                })),
+                application_version_response(
+                    31,
+                    41,
+                    nested_agent_version(
+                        "Delegate name resolution.",
+                        "orchestrator-model",
+                        23,
+                        vec![child_reference.clone()],
+                    ),
+                ),
+                application_version_response(
+                    32,
+                    42,
+                    nested_agent_version(
+                        "Resolve the delegated name.",
+                        "resolver-model",
+                        24,
+                        vec![remote_mcp_tool()],
+                    ),
+                ),
+            ]
+        })
+        .collect();
+    let client = runtime_context_client_from(responses, Arc::clone(&calls), paths);
+    (client, calls)
+}
+
 fn application_version_response(
     application_id: u64,
     version_id: u64,
@@ -268,9 +309,40 @@ fn nested_agent_call_response() -> Response<Body> {
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
+fn saved_agent_call_response(call_id: &str, tool_name: &str, task: &str) -> Response<Body> {
+    let arguments = serde_json::json!({"task": task}).to_string();
+    let chunk = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": arguments}
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+    let raw = format!(
+        "data: {chunk}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
 fn parallel_nested_agent_call_response() -> Response<Body> {
     let raw = concat!(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_olivia\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_31_v_41\",\"arguments\":\"{\\\"task\\\":\\\"Resolve Olivia Lovelace\\\"}\"}},{\"index\":1,\"id\":\"call_sasha\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_31_v_41\",\"arguments\":\"{\\\"task\\\":\\\"Resolve Sasha Grey\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn parallel_resolver_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_first\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_32_v_42\",\"arguments\":\"{\\\"task\\\":\\\"Resolve first name\\\"}\"}},{\"index\":1,\"id\":\"call_last\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_32_v_42\",\"arguments\":\"{\\\"task\\\":\\\"Resolve last name\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         "data: [DONE]\n\n",
@@ -283,6 +355,29 @@ fn text_response(text: &str) -> Response<Body> {
         "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":{text:?}}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
     );
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn model_response_for(model: &'static str, response: Response<Body>) -> TestModelGatewayOutcome {
+    TestModelGatewayOutcome::ResponseForModel { model, response }
+}
+
+fn recursive_sensitive_outcomes() -> Vec<TestModelGatewayOutcome> {
+    vec![
+        TestModelGatewayOutcome::Response(saved_agent_call_response(
+            "call_orchestrator",
+            "elitea_agent_31_v_41",
+            "Resolve Olivia Lovelace",
+        )),
+        TestModelGatewayOutcome::Response(saved_agent_call_response(
+            "call_resolver",
+            "elitea_agent_32_v_42",
+            "Resolve Olivia Lovelace",
+        )),
+        TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+        TestModelGatewayOutcome::Response(text_response("resolved leaf")),
+        TestModelGatewayOutcome::Response(text_response("resolved orchestrator")),
+        TestModelGatewayOutcome::Response(text_response("root recursive answer")),
+    ]
 }
 
 fn attach_local_gitlab_tool(request: &mut super::request::AgentExecutionRequest) {
@@ -415,6 +510,47 @@ impl Tool for AgentMcpTool {
             "release": arguments["release"],
             "risk": "low"
         }))
+    }
+}
+
+struct RecursiveSensitiveHarness {
+    assembler: OrdinaryNativeAgentAssembler,
+    sessions: Arc<InMemorySessionService>,
+    tool_calls: Arc<AtomicUsize>,
+    context_calls: Arc<AtomicUsize>,
+    connector: Arc<AgentMcpConnector>,
+    captured: Arc<Mutex<Vec<CapturedModelRequest>>>,
+}
+
+fn recursive_sensitive_harness(
+    cycles: usize,
+    outcomes: Vec<TestModelGatewayOutcome>,
+) -> RecursiveSensitiveHarness {
+    let (runtime_context, context_calls) = runtime_context_with_recursive_sensitive_child(cycles);
+    let (model_gateway, captured) =
+        test_model_gateway_client(outcomes, test_model_gateway_config())
+            .expect("recursive nested model gateway");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions = Arc::new(InMemorySessionService::new());
+    let injected_sessions: Arc<dyn SessionService> = sessions.clone();
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        sensitive_mcp_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(injected_sessions);
+    RecursiveSensitiveHarness {
+        assembler,
+        sessions,
+        tool_calls,
+        context_calls,
+        connector,
+        captured,
     }
 }
 
@@ -1243,6 +1379,206 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
     assert_persisted_nested_interrupts(&sessions, &user_id, &session_id, 2).await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn recursive_saved_agent_confirmation_persists_the_exact_two_tier_path() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let binding = AuthorizedNativeCommandBinding::fixture();
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("root application profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(&request, &profile, &binding)
+        .expect("root session plan");
+    let user_id = plan.user_id().to_owned();
+    let session_id = plan.session_id().to_owned();
+
+    let harness = recursive_sensitive_harness(2, recursive_sensitive_outcomes());
+    let RecursiveSensitiveHarness {
+        assembler,
+        sessions,
+        tool_calls,
+        context_calls,
+        connector,
+        captured,
+    } = harness;
+    let assembly =
+        AuthorizedNativeAssembly::new(&request, test_runtime_context_authority(), binding);
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("recursive nested sensitive assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("recursive nested start");
+    let (mut native, mut projector, _completion) = invocation.start().expect("native start");
+    let mut public_interrupt = None;
+    while let Some(event) = native.next_event().await.expect("recursive nested event") {
+        for projected in projector.project(&event).expect("recursive projection") {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected).expect("recursive browser event"),
+            )
+            .expect("recursive browser JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                public_interrupt = Some(value);
+            }
+        }
+    }
+
+    assert!(projector.is_paused());
+    let interrupt = public_interrupt.expect("recursive confirmation");
+    assert_eq!(
+        interrupt["response_metadata"]["parent_agent_path"],
+        serde_json::json!([
+            {"name": "release-risk-agent", "call_id": "call_orchestrator", "sibling_ordinal": 1},
+            {"name": "name-resolver", "call_id": "call_resolver", "sibling_ordinal": 1},
+        ])
+    );
+    let interrupt_id = interrupt["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("recursive interrupt identity")
+        .to_owned();
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(context_calls.load(Ordering::Acquire), 3);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 1);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 3);
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id,
+            session_id,
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("durable recursive root session");
+    let confirmation = stored
+        .events()
+        .all()
+        .into_iter()
+        .find(|event| event.actions.tool_confirmation.is_some())
+        .expect("persisted recursive confirmation");
+    assert_eq!(
+        confirmation.branch.split('.').count(),
+        4,
+        "root namespace plus two application branch segments"
+    );
+    assert_eq!(
+        confirmation
+            .provider_metadata
+            .get("elitea.descendant.parent_call_id")
+            .map(String::as_str),
+        Some("call_resolver")
+    );
+    let final_output = resume_recursive_nested_sensitive_call(&assembler, &interrupt_id).await;
+    assert_eq!(final_output, "root recursive answer");
+    assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 6);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recursive_parallel_saved_agents_resume_four_collision_safe_leaves() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let outcomes = vec![
+        model_response_for("fixture-model", parallel_nested_agent_call_response()),
+        model_response_for("orchestrator-model", parallel_resolver_call_response()),
+        model_response_for("orchestrator-model", parallel_resolver_call_response()),
+        model_response_for("resolver-model", mcp_tool_call_response()),
+        model_response_for("resolver-model", mcp_tool_call_response()),
+        model_response_for("resolver-model", mcp_tool_call_response()),
+        model_response_for("resolver-model", mcp_tool_call_response()),
+        model_response_for("resolver-model", text_response("resolved leaf")),
+        model_response_for("resolver-model", text_response("resolved leaf")),
+        model_response_for("resolver-model", text_response("resolved leaf")),
+        model_response_for("resolver-model", text_response("resolved leaf")),
+        model_response_for("orchestrator-model", text_response("resolved orchestrator")),
+        model_response_for("orchestrator-model", text_response("resolved orchestrator")),
+        model_response_for(
+            "fixture-model",
+            text_response("root recursive parallel answer"),
+        ),
+    ];
+    let RecursiveSensitiveHarness {
+        assembler,
+        sessions: _,
+        tool_calls,
+        context_calls,
+        connector,
+        captured,
+    } = recursive_sensitive_harness(2, outcomes);
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("recursive parallel assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("recursive parallel start");
+    let (mut native, mut projector, _completion) = invocation.start().expect("native start");
+    let mut interrupts = Vec::new();
+    while let Some(event) = native.next_event().await.expect("recursive parallel event") {
+        for projected in projector
+            .project(&event)
+            .expect("recursive parallel projection")
+        {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected)
+                    .expect("recursive parallel browser event"),
+            )
+            .expect("recursive parallel browser JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                interrupts.push(value);
+            }
+        }
+    }
+
+    assert!(projector.is_paused());
+    let interrupt_ids = assert_recursive_parallel_interrupts(&interrupts);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(context_calls.load(Ordering::Acquire), 3);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 1);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 7);
+    let output = resume_parallel_nested_sensitive_calls(&assembler, interrupt_ids).await;
+    assert_eq!(output, "root recursive parallel answer");
+    assert_eq!(tool_calls.load(Ordering::Acquire), 4);
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 14);
+}
+
+fn assert_recursive_parallel_interrupts(events: &[serde_json::Value]) -> Vec<String> {
+    assert_eq!(events.len(), 4);
+    let paths = events
+        .iter()
+        .map(|event| event["response_metadata"]["parent_agent_path"].clone())
+        .collect::<HashSet<_>>();
+    let mut expected = HashSet::new();
+    for (root_call, root_ordinal) in [("call_olivia", 1), ("call_sasha", 2)] {
+        for (child_call, child_ordinal) in [("call_first", 1), ("call_last", 2)] {
+            expected.insert(serde_json::json!([
+                {"name": "release-risk-agent", "call_id": root_call, "sibling_ordinal": root_ordinal},
+                {"name": "name-resolver", "call_id": child_call, "sibling_ordinal": child_ordinal},
+            ]));
+        }
+    }
+    assert_eq!(paths, expected);
+    let interrupt_ids = events
+        .iter()
+        .map(|event| {
+            event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+                .as_str()
+                .expect("recursive parallel interrupt identity")
+                .to_owned()
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(interrupt_ids.len(), 4);
+    interrupt_ids.into_iter().collect()
+}
+
 async fn assert_partial_nested_resume_is_rejected(
     assembler: &OrdinaryNativeAgentAssembler,
     interrupt_id: &str,
@@ -1322,6 +1658,24 @@ async fn resume_parallel_nested_sensitive_calls(
             })
         })
         .collect();
+    drain_nested_resume(assembler, request).await
+}
+
+async fn resume_recursive_nested_sensitive_call(
+    assembler: &OrdinaryNativeAgentAssembler,
+    interrupt_id: &str,
+) -> String {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    request.binding.request_content_digest = [7; 32];
+    attach_nested_agent(&mut request);
+    admit_approved_resume(&mut request, interrupt_id);
+    drain_nested_resume(assembler, request).await
+}
+
+async fn drain_nested_resume(
+    assembler: &OrdinaryNativeAgentAssembler,
+    request: super::request::AgentExecutionRequest,
+) -> String {
     let assembly = AuthorizedNativeAssembly::new(
         &request,
         test_runtime_context_authority(),

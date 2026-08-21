@@ -74,9 +74,12 @@ Maintained Rust runtime ownership registry:
   `{name,call_id,sibling_ordinal}` path at every exact container invocation.
   Provider call ID remains invocation identity and ordinal remains presentation
   metadata, so repeated names and concurrently active nested leaves stay
-  distinct for current UI grouping. A child confirmation currently fails the
-  parent stream closed because the invocation-local child session is not yet a
-  durable resumable lineage.
+  distinct for current UI grouping. Nested confirmations remain ordinary ADK
+  session events under isolated branches. A complete decision set reconstructs
+  the exact persisted parent-call chain, replays each admitted direct-agent tier
+  through the original call IDs and rejoins the root model. Identical child and
+  leaf call IDs under concurrent parents stay scoped by their owning invocation;
+  missing siblings, broken parent links and a fourth agent tier fail closed.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
@@ -88,8 +91,11 @@ Maintained Rust runtime ownership registry:
   assembly, model-visible delegation schema, nested sensitive-policy binding,
   typed descendant-event forwarding and the runtime-name-to-frozen-presentation
   join used by browser projection. The adapter exists because stock ADK
-  `AgentTool` buffers child events and cannot expose an exact nested hierarchy;
-  durable child-session/checkpoint ownership remains a separate gate;
+  `AgentTool` buffers child events and cannot expose an exact nested hierarchy.
+  Recursive direct-agent confirmation resume uses the root `SessionService`
+  transcript and an invocation-scoped replay tree rather than another child
+  session or interrupt table. Pipeline Agent-node descendant streaming and
+  recursive pipeline checkpoint ownership remain separate gates;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
@@ -117,8 +123,9 @@ Maintained Rust runtime ownership registry:
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
   prebuilt/static MCP, remote effects, pipeline-Agent descendant event
-  streaming, recursive direct-child rejoin, child variables, nested static Printer interrupts, LLM-node nested confirmation,
-  arbitrary static interrupts and production activation remain separate gates;
+  streaming, child variables, nested static Printer interrupts, LLM-node nested
+  confirmation, arbitrary static interrupts and production activation remain
+  separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;

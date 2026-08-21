@@ -88,35 +88,83 @@ pub(crate) struct ApplicationEventReceiver {
 
 #[derive(Clone, Default)]
 pub(crate) struct ApplicationResumeCoordinator {
-    inner: Arc<Mutex<Option<HashMap<String, ChildApplicationResume>>>>,
+    inner: Arc<Mutex<ApplicationResumeState>>,
+}
+
+#[derive(Default)]
+struct ApplicationResumeState {
+    root: Option<HashMap<String, ChildApplicationResume>>,
+    by_parent_invocation: HashMap<String, HashMap<String, ChildApplicationResume>>,
 }
 
 struct ChildApplicationResume {
     tool_name: String,
     arguments: Value,
+    ordinal: usize,
     history: Vec<Content>,
-    decision: ResolvedDirectHitlDecision,
+    action: ChildApplicationResumeAction,
+}
+
+enum ChildApplicationResumeAction {
+    Direct(Box<ResolvedDirectHitlDecision>),
+    Nested(HashMap<String, ChildApplicationResume>),
 }
 
 impl ApplicationResumeCoordinator {
-    async fn install(
+    async fn install_root(
         &self,
         calls: HashMap<String, ChildApplicationResume>,
     ) -> Result<(), NativeAgentAssemblyError> {
         let mut stored = self.inner.lock().await;
-        if stored.is_some() || calls.is_empty() {
+        if stored.root.is_some() || calls.is_empty() {
             return Err(invalid_configuration());
         }
-        *stored = Some(calls);
+        stored.root = Some(calls);
         Ok(())
     }
 
-    async fn take(&self, call_id: &str) -> Option<ChildApplicationResume> {
-        self.inner
-            .lock()
-            .await
-            .as_mut()
-            .and_then(|calls| calls.remove(call_id))
+    async fn install_children(
+        &self,
+        parent_invocation_id: String,
+        calls: HashMap<String, ChildApplicationResume>,
+    ) -> adk_rust::Result<()> {
+        let mut stored = self.inner.lock().await;
+        if calls.is_empty()
+            || stored
+                .by_parent_invocation
+                .insert(parent_invocation_id, calls)
+                .is_some()
+        {
+            return Err(application_event_channel_error());
+        }
+        Ok(())
+    }
+
+    async fn take(
+        &self,
+        parent_invocation_id: &str,
+        call_id: &str,
+    ) -> adk_rust::Result<Option<ChildApplicationResume>> {
+        let mut stored = self.inner.lock().await;
+        if let Some(calls) = stored.by_parent_invocation.get_mut(parent_invocation_id) {
+            let resume = calls
+                .remove(call_id)
+                .ok_or_else(application_event_channel_error)?;
+            if calls.is_empty() {
+                stored.by_parent_invocation.remove(parent_invocation_id);
+            }
+            return Ok(Some(resume));
+        }
+        let Some(calls) = stored.root.as_mut() else {
+            return Ok(None);
+        };
+        let resume = calls
+            .remove(call_id)
+            .ok_or_else(application_event_channel_error)?;
+        if calls.is_empty() {
+            stored.root = None;
+        }
+        Ok(Some(resume))
     }
 }
 
@@ -139,6 +187,25 @@ struct ApplicationReplayCall {
     arguments: Value,
 }
 
+struct ApplicationCallHop {
+    event_id: String,
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+    ordinal: usize,
+    owned_invocation_id: String,
+}
+
+struct ChildApplicationResumeBuilder {
+    tool_name: String,
+    arguments: Value,
+    ordinal: usize,
+    owned_invocation_id: String,
+    history: Vec<Content>,
+    decision: Option<ResolvedDirectHitlDecision>,
+    children: HashMap<String, ChildApplicationResumeBuilder>,
+}
+
 pub(crate) async fn prepare_nested_application_resume(
     events: &[Event],
     decisions: Vec<ResolvedDirectHitlDecision>,
@@ -146,84 +213,29 @@ pub(crate) async fn prepare_nested_application_resume(
     coordinator: &ApplicationResumeCoordinator,
     delegate: Arc<dyn Llm>,
 ) -> Result<PreparedNestedApplicationResume, NativeAgentAssemblyError> {
-    let mut child_resumes = HashMap::with_capacity(decisions.len());
+    let mut builders = HashMap::with_capacity(decisions.len());
     let mut root_event_id = None;
     let mut submitted_interrupt_ids = HashSet::with_capacity(decisions.len());
     for decision in decisions {
-        let route = decision
-            .application_route()
-            .filter(|route| one_level_application_branch(route.branch()))
-            .ok_or_else(unsupported_capability)?
-            .clone();
-        let (root_event, call) = exact_root_application_call(events, &route)?;
+        let chain = application_call_chain(events, &decision)?;
+        let root_call = chain.last().ok_or_else(invalid_configuration)?;
         if root_event_id
-            .get_or_insert_with(|| root_event.id.clone())
+            .get_or_insert_with(|| root_call.event_id.clone())
             .as_str()
-            != root_event.id
+            != root_call.event_id
         {
             return Err(unsupported_capability());
         }
-        if !applications.contains_runtime_tool(call.name) {
-            return Err(invalid_configuration());
-        }
-        let task = call
-            .args
-            .as_object()
-            .filter(|object| object.len() == 1)
-            .and_then(|object| object.get("task"))
-            .and_then(Value::as_str)
-            .filter(|task| !task.is_empty() && task.len() <= MAX_APPLICATION_TASK_BYTES)
-            .ok_or_else(invalid_configuration)?;
-        let mut history = vec![Content::new("user").with_text(task)];
-        history.extend(events.iter().filter_map(|event| {
-            (event.invocation_id == decision.invocation_id())
-                .then(|| event.content().cloned())
-                .flatten()
-        }));
-        if !submitted_interrupt_ids.insert(decision.interrupt_id().to_owned())
-            || child_resumes
-                .insert(
-                    route.parent_call_id().to_owned(),
-                    ChildApplicationResume {
-                        tool_name: call.name.to_owned(),
-                        arguments: call.args.clone(),
-                        history,
-                        decision,
-                    },
-                )
-                .is_some()
-        {
+        if !submitted_interrupt_ids.insert(decision.interrupt_id().to_owned()) {
             return Err(unsupported_capability());
         }
+        insert_resume_decision(&mut builders, &chain, events, applications, decision)?;
     }
     let root_event_id = root_event_id.ok_or_else(invalid_configuration)?;
-    let root_event = events
-        .iter()
-        .find(|event| event.id == root_event_id)
-        .ok_or_else(invalid_configuration)?;
-    validate_complete_nested_decision_set(
-        events,
-        root_event,
-        applications,
-        &submitted_interrupt_ids,
-    )?;
-    let calls = root_event
-        .tool_calls()
-        .into_iter()
-        .filter(|call| {
-            call.call_id
-                .is_some_and(|call_id| child_resumes.contains_key(call_id))
-        })
-        .map(|call| ApplicationReplayCall {
-            call_id: call.call_id.unwrap_or_default().to_owned(),
-            tool_name: call.name.to_owned(),
-            arguments: call.args.clone(),
-        })
-        .collect::<Vec<_>>();
-    if calls.len() != child_resumes.len() {
-        return Err(invalid_configuration());
-    }
-    coordinator.install(child_resumes).await?;
+    validate_complete_nested_decision_set(events, &root_event_id, &submitted_interrupt_ids)?;
+    let child_resumes = finish_resume_builders(builders)?;
+    let calls = application_replay_calls(&child_resumes)?;
+    coordinator.install_root(child_resumes).await?;
     let user_content = nested_resume_user_content(&submitted_interrupt_ids);
     Ok(PreparedNestedApplicationResume {
         model: Arc::new(ApplicationReplayModel {
@@ -237,26 +249,82 @@ pub(crate) async fn prepare_nested_application_resume(
     })
 }
 
-fn exact_root_application_call<'a>(
+fn application_call_chain(
+    events: &[Event],
+    decision: &ResolvedDirectHitlDecision,
+) -> Result<Vec<ApplicationCallHop>, NativeAgentAssemblyError> {
+    let route = decision
+        .application_route()
+        .ok_or_else(invalid_configuration)?;
+    application_call_chain_from(
+        events,
+        decision.invocation_id(),
+        route.container_invocation_id(),
+        route.parent_call_id(),
+        route.branch(),
+    )
+}
+
+fn application_call_chain_from(
+    events: &[Event],
+    leaf_invocation_id: &str,
+    first_container_invocation_id: &str,
+    first_parent_call_id: &str,
+    branch: &str,
+) -> Result<Vec<ApplicationCallHop>, NativeAgentAssemblyError> {
+    let expected_depth = application_branch_depth(branch).ok_or_else(invalid_configuration)?;
+    let mut owned_invocation_id = leaf_invocation_id.to_owned();
+    let mut container_invocation_id = first_container_invocation_id.to_owned();
+    let mut parent_call_id = first_parent_call_id.to_owned();
+    let mut child_branch = branch.to_owned();
+    let mut chain = Vec::with_capacity(expected_depth);
+    loop {
+        if chain.len() == MAX_AGENT_TIERS {
+            return Err(resource_exhausted());
+        }
+        let (event, call, ordinal) =
+            exact_application_call(events, &container_invocation_id, &parent_call_id)?;
+        let parent_branch =
+            application_parent_branch(&child_branch).ok_or_else(invalid_configuration)?;
+        if event.branch != parent_branch {
+            return Err(invalid_configuration());
+        }
+        chain.push(ApplicationCallHop {
+            event_id: event.id.clone(),
+            call_id: parent_call_id,
+            tool_name: call.name.to_owned(),
+            arguments: call.args.clone(),
+            ordinal,
+            owned_invocation_id,
+        });
+        child_branch = parent_branch.to_owned();
+        let Some((next_container, next_parent)) = persisted_parent_route(event)? else {
+            break;
+        };
+        owned_invocation_id = event.invocation_id.clone();
+        container_invocation_id = next_container;
+        parent_call_id = next_parent;
+    }
+    if chain.len() != expected_depth || child_branch != APPLICATION_BRANCH_ROOT {
+        return Err(invalid_configuration());
+    }
+    Ok(chain)
+}
+
+fn exact_application_call<'a>(
     events: &'a [Event],
-    route: &super::direct_hitl::DirectHitlApplicationRoute,
-) -> Result<(&'a Event, adk_rust::ToolCallView<'a>), NativeAgentAssemblyError> {
+    container_invocation_id: &str,
+    parent_call_id: &str,
+) -> Result<(&'a Event, adk_rust::ToolCallView<'a>, usize), NativeAgentAssemblyError> {
     let mut matched = None;
-    for event in events.iter().filter(|event| {
-        event.invocation_id == route.container_invocation_id()
-            && !event
-                .provider_metadata
-                .contains_key(DESCENDANT_CONTAINER_INVOCATION_KEY)
-            && !event
-                .provider_metadata
-                .contains_key(DESCENDANT_PARENT_CALL_KEY)
-    }) {
-        for call in event
-            .tool_calls()
-            .into_iter()
-            .filter(|call| call.call_id == Some(route.parent_call_id()))
-        {
-            if matched.replace((event, call)).is_some() {
+    for event in events
+        .iter()
+        .filter(|event| event.invocation_id == container_invocation_id)
+    {
+        for (ordinal, call) in event.tool_calls().into_iter().enumerate() {
+            if call.call_id == Some(parent_call_id)
+                && matched.replace((event, call, ordinal + 1)).is_some()
+            {
                 return Err(invalid_configuration());
             }
         }
@@ -264,49 +332,225 @@ fn exact_root_application_call<'a>(
     matched.ok_or_else(invalid_configuration)
 }
 
-fn one_level_application_branch(branch: &str) -> bool {
-    branch
-        .strip_prefix(APPLICATION_BRANCH_ROOT)
-        .and_then(|suffix| suffix.strip_prefix(".application_"))
-        .is_some_and(|ordinal| {
-            !ordinal.is_empty()
-                && !ordinal.contains('.')
-                && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+fn persisted_parent_route(
+    event: &Event,
+) -> Result<Option<(String, String)>, NativeAgentAssemblyError> {
+    let container = event
+        .provider_metadata
+        .get(DESCENDANT_CONTAINER_INVOCATION_KEY);
+    let parent = event.provider_metadata.get(DESCENDANT_PARENT_CALL_KEY);
+    match (container, parent) {
+        (None, None) if event.branch == APPLICATION_BRANCH_ROOT => Ok(None),
+        (Some(container), Some(parent))
+            if !container.is_empty()
+                && !parent.is_empty()
+                && event.branch != APPLICATION_BRANCH_ROOT =>
+        {
+            Ok(Some((container.clone(), parent.clone())))
+        }
+        _ => Err(invalid_configuration()),
+    }
+}
+
+fn application_branch_depth(branch: &str) -> Option<usize> {
+    let suffix = branch
+        .strip_prefix(APPLICATION_BRANCH_ROOT)?
+        .strip_prefix('.')?;
+    let mut depth = 0;
+    for segment in suffix.split('.') {
+        let ordinal = segment.strip_prefix("application_")?;
+        if ordinal.is_empty() || !ordinal.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        depth += 1;
+    }
+    (depth > 0 && depth < MAX_AGENT_TIERS).then_some(depth)
+}
+
+fn application_parent_branch(branch: &str) -> Option<&str> {
+    let (parent, segment) = branch.rsplit_once('.')?;
+    let ordinal = segment.strip_prefix("application_")?;
+    (!parent.is_empty() && !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(parent)
+}
+
+fn insert_resume_decision(
+    builders: &mut HashMap<String, ChildApplicationResumeBuilder>,
+    leaf_to_root_chain: &[ApplicationCallHop],
+    events: &[Event],
+    applications: &ApplicationToolPresentationCatalog,
+    decision: ResolvedDirectHitlDecision,
+) -> Result<(), NativeAgentAssemblyError> {
+    let mut current_builders = builders;
+    let mut current_catalog = applications;
+    let chain_length = leaf_to_root_chain.len();
+    for (index, hop) in leaf_to_root_chain.iter().rev().enumerate() {
+        let child_catalog = current_catalog
+            .child_tools(&hop.tool_name)
+            .ok_or_else(invalid_configuration)?;
+        let task = application_task(&hop.arguments)?;
+        let mut history = vec![Content::new("user").with_text(task)];
+        history.extend(events.iter().filter_map(|event| {
+            (event.invocation_id == hop.owned_invocation_id)
+                .then(|| event.content().cloned())
+                .flatten()
+        }));
+        let builder = current_builders
+            .entry(hop.call_id.clone())
+            .or_insert_with(|| ChildApplicationResumeBuilder {
+                tool_name: hop.tool_name.clone(),
+                arguments: hop.arguments.clone(),
+                ordinal: hop.ordinal,
+                owned_invocation_id: hop.owned_invocation_id.clone(),
+                history: history.clone(),
+                decision: None,
+                children: HashMap::new(),
+            });
+        if builder.tool_name != hop.tool_name
+            || builder.arguments != hop.arguments
+            || builder.ordinal != hop.ordinal
+            || builder.owned_invocation_id != hop.owned_invocation_id
+        {
+            return Err(invalid_configuration());
+        }
+        if index + 1 == chain_length {
+            let sensitive_tools = current_catalog
+                .nested_sensitive_tools(&hop.tool_name)
+                .ok_or_else(invalid_configuration)?;
+            if sensitive_tools.policy_for(decision.tool_name()).is_none()
+                || builder.decision.replace(decision).is_some()
+                || !builder.children.is_empty()
+            {
+                return Err(unsupported_capability());
+            }
+            return Ok(());
+        }
+        if builder.decision.is_some() {
+            return Err(unsupported_capability());
+        }
+        current_builders = &mut builder.children;
+        current_catalog = child_catalog;
+    }
+    Err(invalid_configuration())
+}
+
+fn application_task(arguments: &Value) -> Result<&str, NativeAgentAssemblyError> {
+    arguments
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .and_then(|object| object.get("task"))
+        .and_then(Value::as_str)
+        .filter(|task| {
+            !task.is_empty() && task.len() <= MAX_APPLICATION_TASK_BYTES && !task.contains('\0')
         })
+        .ok_or_else(invalid_configuration)
+}
+
+fn finish_resume_builders(
+    builders: HashMap<String, ChildApplicationResumeBuilder>,
+) -> Result<HashMap<String, ChildApplicationResume>, NativeAgentAssemblyError> {
+    builders
+        .into_iter()
+        .map(|(call_id, builder)| {
+            let action = match (builder.decision, builder.children.is_empty()) {
+                (Some(decision), true) => ChildApplicationResumeAction::Direct(Box::new(decision)),
+                (None, false) => {
+                    ChildApplicationResumeAction::Nested(finish_resume_builders(builder.children)?)
+                }
+                _ => return Err(unsupported_capability()),
+            };
+            Ok((
+                call_id,
+                ChildApplicationResume {
+                    tool_name: builder.tool_name,
+                    arguments: builder.arguments,
+                    ordinal: builder.ordinal,
+                    history: builder.history,
+                    action,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn application_replay_calls(
+    resumes: &HashMap<String, ChildApplicationResume>,
+) -> Result<Vec<ApplicationReplayCall>, NativeAgentAssemblyError> {
+    let mut calls = resumes
+        .iter()
+        .map(|(call_id, resume)| {
+            (
+                resume.ordinal,
+                ApplicationReplayCall {
+                    call_id: call_id.clone(),
+                    tool_name: resume.tool_name.clone(),
+                    arguments: resume.arguments.clone(),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    calls.sort_unstable_by_key(|(ordinal, _)| *ordinal);
+    if calls.windows(2).any(|window| window[0].0 == window[1].0) {
+        return Err(invalid_configuration());
+    }
+    Ok(calls.into_iter().map(|(_, call)| call).collect())
+}
+
+fn resume_interrupt_ids(
+    resumes: &HashMap<String, ChildApplicationResume>,
+) -> Result<HashSet<String>, NativeAgentAssemblyError> {
+    fn collect(
+        resumes: &HashMap<String, ChildApplicationResume>,
+        interrupt_ids: &mut HashSet<String>,
+    ) -> Result<(), NativeAgentAssemblyError> {
+        for resume in resumes.values() {
+            match &resume.action {
+                ChildApplicationResumeAction::Direct(decision) => {
+                    if !interrupt_ids.insert(decision.interrupt_id().to_owned()) {
+                        return Err(invalid_configuration());
+                    }
+                }
+                ChildApplicationResumeAction::Nested(children) => {
+                    collect(children, interrupt_ids)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut interrupt_ids = HashSet::new();
+    collect(resumes, &mut interrupt_ids)?;
+    if interrupt_ids.is_empty() {
+        return Err(invalid_configuration());
+    }
+    Ok(interrupt_ids)
 }
 
 fn validate_complete_nested_decision_set(
     events: &[Event],
-    root_event: &Event,
-    applications: &ApplicationToolPresentationCatalog,
+    root_event_id: &str,
     submitted_interrupt_ids: &HashSet<String>,
 ) -> Result<(), NativeAgentAssemblyError> {
-    let mut root_application_call_ids = HashSet::new();
-    for call in root_event
-        .tool_calls()
-        .into_iter()
-        .filter(|call| applications.contains_runtime_tool(call.name))
-    {
-        let call_id = call.call_id.ok_or_else(invalid_configuration)?;
-        if !root_application_call_ids.insert(call_id) {
-            return Err(invalid_configuration());
-        }
-    }
     let mut pending = HashSet::new();
-    for event in events.iter().filter(|event| {
-        event
-            .provider_metadata
-            .get(DESCENDANT_CONTAINER_INVOCATION_KEY)
-            == Some(&root_event.invocation_id)
-            && event.actions.tool_confirmation.is_some()
-    }) {
-        let parent_call_id = event
-            .provider_metadata
-            .get(DESCENDANT_PARENT_CALL_KEY)
-            .filter(|call_id| root_application_call_ids.contains(call_id.as_str()))
-            .ok_or_else(invalid_configuration)?;
-        if !one_level_application_branch(&event.branch) || parent_call_id.is_empty() {
-            return Err(unsupported_capability());
+    for event in events
+        .iter()
+        .filter(|event| event.actions.tool_confirmation.is_some())
+    {
+        let Some((container, parent)) = persisted_parent_route(event)? else {
+            continue;
+        };
+        let chain = application_call_chain_from(
+            events,
+            &event.invocation_id,
+            &container,
+            &parent,
+            &event.branch,
+        )?;
+        if chain
+            .last()
+            .is_none_or(|root_call| root_call.event_id != root_event_id)
+        {
+            continue;
         }
         let request = event
             .actions
@@ -1004,6 +1248,7 @@ struct PreparedChildApplicationResume {
     agent: Arc<dyn Agent>,
     user_content: Content,
     run_config: RunConfig,
+    children: Option<HashMap<String, ChildApplicationResume>>,
 }
 
 impl LazyNestedAgent {
@@ -1064,20 +1309,44 @@ impl LazyNestedAgent {
 
     fn prepare_resume(
         &self,
-        decision: ResolvedDirectHitlDecision,
+        action: ChildApplicationResumeAction,
         sensitive_tools: &SensitiveToolCatalog,
     ) -> adk_rust::Result<PreparedChildApplicationResume> {
-        let replay = decision
-            .into_direct_replay(sensitive_tools)
-            .map_err(direct_hitl_execution_error)?;
-        let prepared = replay.bind(self.bind_model()?);
-        let (model, run_input, toolsets) = prepared.into_parts(self.toolsets.clone());
-        let (user_content, run_config) = run_input.into_parts();
-        Ok(PreparedChildApplicationResume {
-            agent: self.build_agent(model, toolsets)?,
-            user_content,
-            run_config,
-        })
+        match action {
+            ChildApplicationResumeAction::Direct(decision) => {
+                let replay = (*decision)
+                    .into_direct_replay(sensitive_tools)
+                    .map_err(direct_hitl_execution_error)?;
+                let prepared = replay.bind(self.bind_model()?);
+                let (model, run_input, toolsets) = prepared.into_parts(self.toolsets.clone());
+                let (user_content, run_config) = run_input.into_parts();
+                Ok(PreparedChildApplicationResume {
+                    agent: self.build_agent(model, toolsets)?,
+                    user_content,
+                    run_config,
+                    children: None,
+                })
+            }
+            ChildApplicationResumeAction::Nested(children) => {
+                let calls =
+                    application_replay_calls(&children).map_err(nested_resume_execution_error)?;
+                let interrupt_ids =
+                    resume_interrupt_ids(&children).map_err(nested_resume_execution_error)?;
+                let user_content = nested_resume_user_content(&interrupt_ids);
+                let model: Arc<dyn Llm> = Arc::new(ApplicationReplayModel {
+                    delegate: self.bind_model()?,
+                    state: AtomicU8::new(REPLAY_APPLICATIONS_PENDING),
+                    calls,
+                    replay_marker: user_content.clone(),
+                });
+                Ok(PreparedChildApplicationResume {
+                    agent: self.build_agent(model, self.toolsets.clone())?,
+                    user_content,
+                    run_config: application_run_config(),
+                    children: Some(children),
+                })
+            }
+        }
     }
 }
 
@@ -1176,34 +1445,27 @@ impl ApplicationAgentTool {
         ctx: Arc<dyn ToolContext>,
         arguments: Value,
     ) -> adk_rust::Result<Value> {
-        let object = arguments.as_object().ok_or_else(tool_input_error)?;
-        if object.len() != 1 || !object.contains_key("task") {
-            return Err(tool_input_error());
-        }
-        let task = object
-            .get("task")
-            .and_then(Value::as_str)
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= MAX_APPLICATION_TASK_BYTES
-                    && !value.contains('\0')
-            })
-            .ok_or_else(tool_input_error)?;
+        let task = application_task(&arguments).map_err(|_| tool_input_error())?;
         let resume = match &self.resume {
-            Some(coordinator) => coordinator.take(ctx.function_call_id()).await,
+            Some(coordinator) => {
+                coordinator
+                    .take(ctx.invocation_id(), ctx.function_call_id())
+                    .await?
+            }
             None => None,
         };
-        let (agent, content, run_config, history) = match resume {
+        let (agent, content, run_config, history, children) = match resume {
             Some(resume) if resume.tool_name == self.name() && resume.arguments == arguments => {
                 let prepared = self
                     .application
                     .agent
-                    .prepare_resume(resume.decision, &self.application.sensitive_tools)?;
+                    .prepare_resume(resume.action, &self.application.sensitive_tools)?;
                 (
                     prepared.agent,
                     prepared.user_content,
                     prepared.run_config,
                     resume.history,
+                    prepared.children,
                 )
             }
             Some(_) => return Err(tool_input_error()),
@@ -1212,6 +1474,7 @@ impl ApplicationAgentTool {
                 Content::new("user").with_text(task),
                 application_run_config(),
                 Vec::new(),
+                None,
             ),
         };
         let child_context = Arc::new(ApplicationToolInvocationContext::with_resume(
@@ -1221,6 +1484,13 @@ impl ApplicationAgentTool {
             run_config,
             history,
         ));
+        if let Some(children) = children {
+            self.resume
+                .as_ref()
+                .ok_or_else(application_event_channel_error)?
+                .install_children(child_context.invocation_id().to_owned(), children)
+                .await?;
+        }
         let child_branch = child_context.branch().to_owned();
         let mut stream = agent.run(child_context.clone()).await?;
         let mut final_response = None;
@@ -1985,6 +2255,15 @@ fn direct_hitl_execution_error(_error: super::direct_hitl::DirectHitlError) -> A
     )
 }
 
+fn nested_resume_execution_error(_error: NativeAgentAssemblyError) -> AdkError {
+    AdkError::new(
+        ErrorComponent::Agent,
+        ErrorCategory::InvalidInput,
+        "elitea_nested_agent.invalid_recursive_resume",
+        "the recursive nested agent continuation is invalid",
+    )
+}
+
 fn snapshot_error(error: crate::toolkits::FrozenToolSnapshotError) -> NativeAgentAssemblyError {
     let code = match error.code() {
         FrozenToolSnapshotErrorCode::InvalidInput => NativeAgentAssemblyErrorCode::InvalidInput,
@@ -2047,4 +2326,118 @@ fn resource_exhausted() -> NativeAgentAssemblyError {
         NativeAgentAssemblyErrorCode::ResourceExhausted,
         "the nested application graph exceeds its approved limit",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn application_call_event(
+        id: &str,
+        invocation_id: &str,
+        branch: &str,
+        call_id: &str,
+        tool_name: &str,
+    ) -> Event {
+        let mut event = Event::with_id(id, invocation_id);
+        event.branch = branch.to_owned();
+        event.llm_response.content = Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::FunctionCall {
+                name: tool_name.to_owned(),
+                args: json!({"task": "Resolve the delegated name"}),
+                id: Some(call_id.to_owned()),
+                thought_signature: None,
+            }],
+        });
+        event
+    }
+
+    fn two_tier_application_events(parent_call_id: &str) -> Vec<Event> {
+        let root = application_call_event(
+            "root-call-event",
+            "root-invocation",
+            APPLICATION_BRANCH_ROOT,
+            "call-orchestrator",
+            "elitea_agent_31_v_41",
+        );
+        let mut child = application_call_event(
+            "child-call-event",
+            "orchestrator-invocation",
+            &format!("{APPLICATION_BRANCH_ROOT}.application_1"),
+            "call-resolver",
+            "elitea_agent_32_v_42",
+        );
+        child.provider_metadata.insert(
+            DESCENDANT_CONTAINER_INVOCATION_KEY.to_owned(),
+            "root-invocation".to_owned(),
+        );
+        child.provider_metadata.insert(
+            DESCENDANT_PARENT_CALL_KEY.to_owned(),
+            parent_call_id.to_owned(),
+        );
+        vec![root, child]
+    }
+
+    #[test]
+    fn recursive_application_route_requires_an_exact_parent_chain() {
+        let valid = application_call_chain_from(
+            &two_tier_application_events("call-orchestrator"),
+            "resolver-invocation",
+            "orchestrator-invocation",
+            "call-resolver",
+            &format!("{APPLICATION_BRANCH_ROOT}.application_1.application_2"),
+        )
+        .expect("exact two-tier application chain");
+        assert_eq!(valid.len(), 2);
+        assert_eq!(valid[0].call_id, "call-resolver");
+        assert_eq!(valid[1].call_id, "call-orchestrator");
+
+        let Err(error) = application_call_chain_from(
+            &two_tier_application_events("missing-root-call"),
+            "resolver-invocation",
+            "orchestrator-invocation",
+            "call-resolver",
+            &format!("{APPLICATION_BRANCH_ROOT}.application_1.application_2"),
+        ) else {
+            panic!("broken parent identity must fail closed");
+        };
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        );
+
+        let mut broken_branch = two_tier_application_events("call-orchestrator");
+        broken_branch[1].branch = format!("{APPLICATION_BRANCH_ROOT}.application_9");
+        let Err(error) = application_call_chain_from(
+            &broken_branch,
+            "resolver-invocation",
+            "orchestrator-invocation",
+            "call-resolver",
+            &format!("{APPLICATION_BRANCH_ROOT}.application_1.application_2"),
+        ) else {
+            panic!("a mismatched branch ancestry must fail closed");
+        };
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        );
+    }
+
+    #[test]
+    fn recursive_application_route_rejects_a_fourth_agent_tier() {
+        let Err(error) = application_call_chain_from(
+            &two_tier_application_events("call-orchestrator"),
+            "resolver-invocation",
+            "orchestrator-invocation",
+            "call-resolver",
+            &format!("{APPLICATION_BRANCH_ROOT}.application_1.application_2.application_3"),
+        ) else {
+            panic!("a fourth agent tier must fail closed");
+        };
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::InvalidConfiguration
+        );
+    }
 }

@@ -1699,6 +1699,10 @@ pub(crate) type CapturedModelRequests = Arc<Mutex<Vec<CapturedModelRequest>>>;
 #[cfg(test)]
 pub(crate) enum TestModelGatewayOutcome {
     Response(Response<Body>),
+    ResponseForModel {
+        model: &'static str,
+        response: Response<Body>,
+    },
     Unavailable,
     Pending,
 }
@@ -1730,16 +1734,45 @@ impl ModelGatewayTransport for TestModelGatewayTransport {
                 uri: parts.uri,
                 version: parts.version,
                 headers: parts.headers,
-                body,
+                body: body.clone(),
             });
-        let outcome = self
-            .outcomes
-            .lock()
-            .map_err(|_| ModelGatewayTransportError::Unavailable)?
-            .pop_front()
-            .ok_or(ModelGatewayTransportError::Unavailable)?;
+        let outcome = {
+            let mut outcomes = self
+                .outcomes
+                .lock()
+                .map_err(|_| ModelGatewayTransportError::Unavailable)?;
+            let has_model_routing = outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, TestModelGatewayOutcome::ResponseForModel { .. }));
+            if has_model_routing {
+                let model = serde_json::from_slice::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|body| body.get("model")?.as_str().map(str::to_owned))
+                    .ok_or(ModelGatewayTransportError::Unavailable)?;
+                let position = outcomes
+                    .iter()
+                    .position(|outcome| {
+                        matches!(
+                            outcome,
+                            TestModelGatewayOutcome::ResponseForModel {
+                                model: expected,
+                                ..
+                            } if *expected == model
+                        )
+                    })
+                    .ok_or(ModelGatewayTransportError::Unavailable)?;
+                outcomes
+                    .remove(position)
+                    .ok_or(ModelGatewayTransportError::Unavailable)?
+            } else {
+                outcomes
+                    .pop_front()
+                    .ok_or(ModelGatewayTransportError::Unavailable)?
+            }
+        };
         match outcome {
-            TestModelGatewayOutcome::Response(response) => Ok(response),
+            TestModelGatewayOutcome::Response(response)
+            | TestModelGatewayOutcome::ResponseForModel { response, .. } => Ok(response),
             TestModelGatewayOutcome::Unavailable => Err(ModelGatewayTransportError::Unavailable),
             TestModelGatewayOutcome::Pending => std::future::pending().await,
         }

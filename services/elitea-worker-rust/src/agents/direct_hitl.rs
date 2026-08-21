@@ -520,6 +520,10 @@ struct PersistedReplayState {
 }
 
 impl ResolvedDirectHitlDecision {
+    pub(crate) fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+
     /// Narrow one resolved decision to the safe direct replay boundary.
     ///
     /// Approved calls must be read-only until durable effect ownership exists.
@@ -982,11 +986,6 @@ impl ResolvedDirectHitlDecision {
     #[cfg(test)]
     pub(crate) fn call_id(&self) -> &str {
         &self.call_id
-    }
-
-    #[cfg(test)]
-    pub(crate) fn tool_name(&self) -> &str {
-        &self.tool_name
     }
 
     #[cfg(test)]

@@ -341,6 +341,16 @@ impl ApplicationToolPresentationCatalog {
         self.by_tool_name.contains_key(tool_name)
     }
 
+    pub(crate) fn child_tools(&self, tool_name: &str) -> Option<&Self> {
+        self.get(tool_name)
+            .map(|presentation| &presentation.child_tools)
+    }
+
+    pub(crate) fn nested_sensitive_tools(&self, tool_name: &str) -> Option<&SensitiveToolCatalog> {
+        self.get(tool_name)
+            .map(|presentation| &presentation.sensitive_tools)
+    }
+
     #[must_use]
     pub(crate) fn has_sensitive_descendant(&self) -> bool {
         self.by_tool_name.values().any(|presentation| {
