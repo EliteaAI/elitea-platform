@@ -517,7 +517,10 @@ nodes:
     assert_eq!(binding.node_name(), "approve");
     assert_eq!(binding.pending_node_name(), "delegate");
     assert_eq!(
-        binding.nested_checkpoint().map(|(thread, _)| thread),
+        binding
+            .nested_checkpoints()
+            .first()
+            .map(|checkpoint| checkpoint.thread_id()),
         Some("nested-resume/delegate")
     );
     let interrupt_id = binding.interrupt_id().to_owned();
@@ -568,6 +571,158 @@ nodes:
         panic!("completed nested interrupt was accepted twice");
     };
     assert_eq!(replay.code(), PipelineResumeErrorCode::StaleDecision);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)] // The complete two-subgraph checkpoint chain is the proof.
+async fn deeply_nested_pipeline_hitl_resumes_every_exact_child_checkpoint() {
+    const ROOT: &str = "pipeline-root";
+    const THREAD: &str = "deep-nested-resume";
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let leaf = Arc::new(
+        PipelineDefinition::from_yaml(
+            r#"
+state:
+  input: str
+  messages: list
+entry_point: approve
+nodes:
+  - id: approve
+    type: hitl
+    input: [input]
+    user_message:
+      type: fstring
+      value: "Approve {input}."
+    routes:
+      approve: END
+      reject: END
+"#,
+        )
+        .expect("interrupting leaf pipeline")
+        .compile_subgraph_with_runtime(checkpointer.clone(), &PipelineNodeRuntimes::default())
+        .expect("compiled interrupting leaf"),
+    );
+    let middle = Arc::new(
+        PipelineDefinition::from_yaml(
+            r#"
+state:
+  input: str
+  messages: list
+entry_point: specialist
+nodes:
+  - id: specialist
+    type: agent
+    tool: Research Agent
+    input_mapping:
+      task: {type: variable, value: input}
+    input: [input]
+    output: [messages]
+    transition: END
+"#,
+        )
+        .expect("middle pipeline")
+        .compile_subgraph_with_runtime(
+            checkpointer.clone(),
+            &PipelineNodeRuntimes::new(
+                None,
+                None,
+                Some(shared_pipeline_resolver(Arc::clone(&leaf))),
+            ),
+        )
+        .expect("compiled middle pipeline"),
+    );
+    let parent = PipelineDefinition::from_yaml(
+        r#"
+state:
+  messages: list
+entry_point: delegate
+nodes:
+  - id: delegate
+    type: agent
+    tool: Research Agent
+    input_mapping:
+      task: {type: fixed, value: deployment}
+    output: [messages]
+    transition: END
+"#,
+    )
+    .expect("parent pipeline");
+    let sessions = Arc::new(InMemorySessionService::new());
+    sessions
+        .create(CreateRequest {
+            app_name: "elitea".to_owned(),
+            user_id: "user-1".to_owned(),
+            session_id: Some(THREAD.to_owned()),
+            state: HashMap::new(),
+        })
+        .await
+        .expect("pipeline session");
+
+    let first_graph = parent
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            None,
+            &PipelineNodeRuntimes::new(
+                None,
+                None,
+                Some(shared_pipeline_resolver(Arc::clone(&middle))),
+            ),
+        )
+        .expect("first deeply nested graph");
+    let first_events = run_pipeline(first_graph, Arc::clone(&sessions), THREAD, "start").await;
+    assert_eq!(first_events.len(), 1);
+    let binding = pipeline_hitl_event_binding(&first_events[0], ROOT, THREAD)
+        .expect("deep public interrupt identity");
+    assert_eq!(binding.node_name(), "approve");
+    assert_eq!(binding.pending_node_name(), "delegate");
+    assert_eq!(binding.nested_checkpoints().len(), 2);
+    assert_eq!(
+        binding.nested_checkpoints()[0].thread_id(),
+        "deep-nested-resume/delegate"
+    );
+    assert_eq!(
+        binding.nested_checkpoints()[1].thread_id(),
+        "deep-nested-resume/delegate/specialist"
+    );
+    let interrupt_id = binding.interrupt_id().to_owned();
+    let session = get_pipeline_session(&sessions, THREAD).await;
+    let resume = PipelineHitlDecision::from_payload(&resume_payload(THREAD, &interrupt_id))
+        .expect("approved deep decision")
+        .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+        .await
+        .expect("root and both child checkpoints authorize resume");
+
+    let resumed_graph = parent
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            Some(resume),
+            &PipelineNodeRuntimes::new(
+                None,
+                None,
+                Some(shared_pipeline_resolver(Arc::clone(&middle))),
+            ),
+        )
+        .expect("resumed deeply nested graph");
+    let resumed_events =
+        run_pipeline(resumed_graph, Arc::clone(&sessions), THREAD, "continue").await;
+    assert!(
+        resumed_events
+            .iter()
+            .all(|event| !event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY))
+    );
+    for thread in [
+        "deep-nested-resume/delegate",
+        "deep-nested-resume/delegate/specialist",
+    ] {
+        let checkpoint = checkpointer
+            .load(thread)
+            .await
+            .expect("child checkpoint reload")
+            .expect("completed child checkpoint");
+        assert!(checkpoint.pending_nodes.is_empty());
+    }
 }
 
 #[tokio::test]

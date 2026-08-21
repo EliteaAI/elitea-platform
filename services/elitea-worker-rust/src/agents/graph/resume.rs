@@ -330,9 +330,9 @@ impl PipelineToolDecision {
         {
             return Err(PipelineResumeError::stale());
         }
-        validate_nested_checkpoint(
+        validate_nested_checkpoints(
             checkpointer,
-            binding.nested_checkpoint(),
+            binding.nested_checkpoints(),
             binding.node_name(),
             DIRECT_TOOL_RESUME_STATE_KEY,
         )
@@ -453,9 +453,9 @@ impl PipelineHitlDecision {
         {
             return Err(PipelineResumeError::stale());
         }
-        validate_nested_checkpoint(
+        validate_nested_checkpoints(
             checkpointer,
-            binding.nested_checkpoint(),
+            binding.nested_checkpoints(),
             binding.node_name(),
             HITL_RESUME_STATE_KEY,
         )
@@ -493,29 +493,31 @@ impl PipelineResume {
     }
 }
 
-async fn validate_nested_checkpoint(
+async fn validate_nested_checkpoints(
     checkpointer: &dyn Checkpointer,
-    nested: Option<(&str, &str)>,
-    pending_node: &str,
+    nested: &[crate::agents::events::NestedPipelineCheckpoint],
+    leaf_pending_node: &str,
     resume_state_key: &str,
 ) -> Result<(), PipelineResumeError> {
-    let Some((thread_id, checkpoint_id)) = nested else {
-        return Ok(());
-    };
-    let checkpoint = checkpointer
-        .load(thread_id)
-        .await
-        .map_err(|_| PipelineResumeError::dependency())?
-        .ok_or_else(PipelineResumeError::stale)?;
-    if checkpoint.thread_id != thread_id
-        || checkpoint.checkpoint_id != checkpoint_id
-        || checkpoint.pending_nodes.as_slice() != [pending_node]
-        || checkpoint
-            .state
-            .get(resume_state_key)
-            .is_some_and(|value| value != &json!({}))
-    {
-        return Err(PipelineResumeError::stale());
+    for (index, nested_checkpoint) in nested.iter().enumerate() {
+        let pending_node = nested
+            .get(index + 1)
+            .map_or(leaf_pending_node, |checkpoint| checkpoint.node_name());
+        let checkpoint = checkpointer
+            .load(nested_checkpoint.thread_id())
+            .await
+            .map_err(|_| PipelineResumeError::dependency())?
+            .ok_or_else(PipelineResumeError::stale)?;
+        if checkpoint.thread_id != nested_checkpoint.thread_id()
+            || checkpoint.checkpoint_id != nested_checkpoint.checkpoint_id()
+            || checkpoint.pending_nodes.as_slice() != [pending_node]
+            || checkpoint
+                .state
+                .get(resume_state_key)
+                .is_some_and(|value| value != &json!({}))
+        {
+            return Err(PipelineResumeError::stale());
+        }
     }
     Ok(())
 }

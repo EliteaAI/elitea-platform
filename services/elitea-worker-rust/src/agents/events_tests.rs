@@ -154,6 +154,56 @@ fn nested_pipeline_hitl_event(child_checkpoint_id: &str, child_thread: &str) -> 
     event
 }
 
+fn deeply_nested_pipeline_hitl_event(
+    first_checkpoint_id: &str,
+    second_checkpoint_id: &str,
+    second_thread: &str,
+) -> Event {
+    let message = "Review the generated answer.";
+    let payload = GraphInterruptPayload {
+        kind: "dynamic".to_owned(),
+        node: None,
+        message: Some(format!("delegate: specialist: {message}")),
+        data: Some(json!({
+            "subgraph": "delegate",
+            "thread": "thread-1/delegate",
+            "checkpoint_id": first_checkpoint_id,
+            "data": {
+                "subgraph": "specialist",
+                "thread": second_thread,
+                "checkpoint_id": second_checkpoint_id,
+                "data": {
+                    "schema_revision": "elitea.graph.hitl-interrupt.v1",
+                    "type": "hitl",
+                    "guardrail_type": "pipeline_hitl",
+                    "node_name": "review",
+                    "message": message,
+                    "available_actions": ["approve", "reject"],
+                    "routes": {"approve": "publish", "reject": "END"},
+                    "edit_state_key": null,
+                    "definition_digest": format!("sha256:{}", "3".repeat(64)),
+                }
+            }
+        })),
+        thread_id: "thread-1".to_owned(),
+        checkpoint_id: "parent-checkpoint-9".to_owned(),
+    };
+    let mut event = Event::with_id("deeply-nested-graph-interrupt", "invocation-1");
+    event.timestamp = timestamp(1);
+    event.author = "root-agent".to_owned();
+    event.llm_response.content = Some(Content {
+        role: "assistant".to_owned(),
+        parts: vec![Part::Text {
+            text: format!("Dynamic interrupt: delegate: specialist: {message}"),
+        }],
+    });
+    event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        payload.to_metadata_value(),
+    );
+    event
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // One ordered browser lifecycle is clearer as one trace.
 fn ordinary_stream_matches_current_text_lifecycle_without_a_heap_event_queue() {
@@ -614,6 +664,44 @@ fn nested_graph_hitl_rejects_an_unbound_child_thread() {
     let error = projection_error(projector.project(&nested_pipeline_hitl_event(
         "child-checkpoint-12",
         "different-thread/delegate",
+    )));
+    assert_eq!(error.code(), AgentEventProjectionErrorCode::InvalidState);
+}
+
+#[test]
+fn deeply_nested_graph_hitl_projects_without_leaking_checkpoint_chain() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected = projector
+        .project(&deeply_nested_pipeline_hitl_event(
+            "child-checkpoint-12",
+            "grandchild-checkpoint-4",
+            "thread-1/delegate/specialist",
+        ))
+        .expect("deep nested pipeline HITL projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 1);
+    let pending = &projected[0]["response_metadata"]["hitl_interrupt"];
+    assert_eq!(pending["node_name"], "review");
+    assert!(pending.get("checkpoint_id").is_none());
+    assert!(pending.get("child_thread").is_none());
+    assert!(pending.get("nested_checkpoints").is_none());
+}
+
+#[test]
+fn deeply_nested_graph_hitl_rejects_a_broken_descendant_thread_chain() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let error = projection_error(projector.project(&deeply_nested_pipeline_hitl_event(
+        "child-checkpoint-12",
+        "grandchild-checkpoint-4",
+        "thread-1/other/specialist",
     )));
     assert_eq!(error.code(), AgentEventProjectionErrorCode::InvalidState);
 }
