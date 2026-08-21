@@ -197,6 +197,19 @@ func TestMetricsRoute_IsServedByTheRunningGateway(t *testing.T) {
 		t.Fatalf("the running gateway does not report enforcement off:\n%s", body)
 	}
 
+	// The realtime counters must reach a REAL scrape, not merely a handler
+	// test. An expvar variable that no name list carries has no route at all on
+	// this process's mux, and a control with no route reads to an alarm exactly
+	// like a control reporting zero.
+	for _, name := range llmproxy.RealtimeMetricNames() {
+		if !strings.Contains(body, "\n"+name+" ") {
+			t.Errorf("the running gateway serves no value line for %q:\n%s", name, body)
+		}
+		if strings.Contains(body, "# UNPUBLISHED "+name) {
+			t.Errorf("metric %q is listed but not published by the running gateway", name)
+		}
+	}
+
 	// /debug/vars stays unmounted. expvar registers it on http.DefaultServeMux,
 	// which this process never serves, and the decision is to keep it that way.
 	if status, _ := scrape(t, "http://"+addr+"/debug/vars"); status != http.StatusNotFound {

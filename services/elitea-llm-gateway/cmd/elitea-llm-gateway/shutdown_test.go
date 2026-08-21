@@ -32,9 +32,12 @@ func (r *recordingLifecycle) record(name string) {
 }
 
 func (r *recordingLifecycle) StopStreamGrace() { r.record("StopStreamGrace") }
-func (r *recordingLifecycle) DrainBilling()    { r.record("DrainBilling") }
-func (r *recordingLifecycle) Drain()           { r.record("govDrain") }
-func (r *recordingLifecycle) Close()           { r.record("Close") }
+func (r *recordingLifecycle) CloseRealtimeSessions(context.Context) {
+	r.record("CloseRealtimeSessions")
+}
+func (r *recordingLifecycle) DrainBilling() { r.record("DrainBilling") }
+func (r *recordingLifecycle) Drain()        { r.record("govDrain") }
+func (r *recordingLifecycle) Close()        { r.record("Close") }
 func (r *recordingLifecycle) ShutdownHTTP(context.Context) error {
 	r.record("ShutdownHTTP")
 	return r.httpErr
@@ -58,12 +61,16 @@ func (r *recordingLifecycle) sequence() string {
 //   - The billing/governance drains before Close, or every increment they were
 //     moved to preserve lands on a closed NATS connection and diverts to the
 //     outage-delta path (review round 2, reproduced).
+//   - CloseRealtimeSessions after ShutdownHTTP, because http.Server.Shutdown
+//     neither closes nor waits for a hijacked connection, so a live WebSocket
+//     session outlives it; and BEFORE DrainBilling, because a session's last
+//     turn spawns its billing goroutine as it closes and needs billing open.
 func TestShutdownSequence(t *testing.T) {
 	r := &recordingLifecycle{}
-	if err := shutdownSequence(context.Background(), r, r, r, r); err != nil {
+	if err := shutdownSequence(context.Background(), r, r, r, r, r); err != nil {
 		t.Fatalf("shutdownSequence: %v", err)
 	}
-	const want = "ShutdownHTTP -> StopStreamGrace -> DrainBilling -> govDrain -> Close"
+	const want = "ShutdownHTTP -> StopStreamGrace -> CloseRealtimeSessions -> DrainBilling -> govDrain -> Close"
 	if got := r.sequence(); got != want {
 		t.Errorf("shutdown sequence =\n  %s\nwant\n  %s", got, want)
 	}
@@ -76,11 +83,11 @@ func TestShutdownSequence(t *testing.T) {
 func TestShutdownSequence_DrainsRunEvenWhenHTTPShutdownFails(t *testing.T) {
 	r := &recordingLifecycle{httpErr: errors.New("drain deadline exceeded")}
 
-	err := shutdownSequence(context.Background(), r, r, r, r)
+	err := shutdownSequence(context.Background(), r, r, r, r, r)
 	if err == nil {
 		t.Error("shutdownSequence swallowed the HTTP shutdown error; the caller must still see it")
 	}
-	const want = "ShutdownHTTP -> StopStreamGrace -> DrainBilling -> govDrain -> Close"
+	const want = "ShutdownHTTP -> StopStreamGrace -> CloseRealtimeSessions -> DrainBilling -> govDrain -> Close"
 	if got := r.sequence(); got != want {
 		t.Errorf("after a failed HTTP shutdown the sequence =\n  %s\nwant\n  %s\n"+
 			"(the billing and governance drains MUST still run — a timed-out drain is when "+

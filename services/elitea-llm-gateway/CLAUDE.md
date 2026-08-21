@@ -51,6 +51,37 @@ because each was a real bug found across 3 review rounds.
   `{"error":{"message","type","code"}}`. 402=budget_exceeded/insufficient_quota,
   429=rate_limit_error/rate_limit_exceeded, 503=service_unavailable/nats_unavailable.
   Do NOT emit Anthropic-shaped errors on /llm/v1/messages.
+- **A realtime session is gated MORE than once.** `/llm/v1/realtime` hijacks the
+  connection, so every admission step (mapModel, the price gate, `checkBudget`)
+  MUST run before `websocket.Accept` — after it there is no `http.ResponseWriter`
+  to refuse with. A live session re-asks the SAME verdict on a ticker
+  (`recheckVerdict`, `LLM_REALTIME_BUDGET_RECHECK_SEC`); that ticker is the
+  MANDATORY bound, because bifrost's turn-start signal is one the only known
+  caller never sends. Use `recheckVerdict` and NOT `admissionVerdict` for any
+  mid-session gate call: `admissionVerdict` records a hit in the loop breaker,
+  and a ticker that records one turns the gateway's own gating work into tenant
+  traffic (DECISIONS.md, 2026-08-20). Bill per TURN, never once per session. An UNPRICED
+  realtime model is refused at the upgrade (DECISIONS.md, human decision H2) and
+  a mid-session gate outage refuses the turn while keeping the socket open (H1).
+  H1's consecutive-outage counter counts a 503 and NOTHING else; a refusal that
+  is not an outage refuses turns and keeps the socket without counting.
+  Do NOT reuse `streamSettler`, `drainWg`, `drainClosing` or `StopStreamGrace`
+  for it — DECISIONS.md "Realtime sessions" says why each is wrong.
+- **Admission does not end at the upgrade.** A client `session.update` or
+  `transcription_session.update` can change the model the provider SERVES, so
+  `admitFrameModels` re-runs mapModel, the price gate and the budget gate for
+  the new name, adopts it when it passes, and closes the session when it does
+  not. Keep it: without it, H2 is bypassed one frame after the handshake. The
+  provider URL receives only the ALLOWLISTED caller query parameters
+  (`realtimeForwardedParams`; `intent` is on it, `model` is never).
+- **A session ends through `end()` only, in the order refuse → close → cancel.**
+  Do NOT reorder it. Cancelling first destroys the close frame, because
+  coder/websocket closes the connection abruptly when the read context fires,
+  and the caller then cannot tell a budget refusal from a crash (measured: 8
+  close frames delivered out of 30). Every mid-session gate call goes through
+  `gateVerdict`, which bounds it: a budget store that STALLS rather than fails
+  would otherwise park the re-check goroutine for ever and leave the session
+  un-gated.
 - A budget refusal puts the SCOPE in `error.code` and always keeps
   `error.type = "budget_exceeded"` (`budgetErrorType` /  `budgetCodeProject` /
   `budgetCodeMember` in internal/llmproxy/budget_gate.go). elitea-sdk matches on
@@ -62,6 +93,10 @@ because each was a real bug found across 3 review rounds.
   SDK resolves an unknown code to the project scope.
 
 ## Security / trust boundary
+- **CORS does not apply to a WebSocket handshake.** `/llm/v1/realtime` is the
+  first /llm path a browser could open cross-site. The accept-side Origin
+  allowlist (`LLM_REALTIME_ALLOWED_ORIGINS`) is EMPTY by default, which is the
+  same-origin rule and not "no policy". NEVER set `InsecureSkipVerify`.
 - The edge (elitea-main) trusts `X-Auth-*` / `X-Elitea-*` ONLY from a configured
   trusted proxy (`TRUSTED_PROXY_CIDRS`, checked against RemoteAddr, deny-by-default).
   Strip client-supplied Cookie/Authorization/X-Api-Key/X-Auth-*/X-Elitea-* before

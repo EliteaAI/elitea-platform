@@ -52,6 +52,15 @@ func NewRouter(h *llmproxy.Handler) http.Handler {
 		r.Post("/embeddings", h.Embeddings)
 		r.Post("/responses", h.Responses)
 
+		// OpenAI dialect — the realtime WebSocket surface (llmproxy/realtime.go).
+		// A WebSocket handshake is a GET, so GET is the route that matters; POST
+		// is mounted beside it because the legacy pylon relay and several
+		// hand-built clients post to the same path, and a 405 there is a
+		// mis-diagnosable failure for a route whose real errors are already
+		// hard to read.
+		r.Get("/realtime", h.Realtime)
+		r.Post("/realtime", h.Realtime)
+
 		// Synthetic models surface — resolved from Postgres per project, NOT
 		// routed through core (design §4.2, §3.4). The exact /models route is
 		// the list; /models/* is a single-model lookup (the wildcard lets model

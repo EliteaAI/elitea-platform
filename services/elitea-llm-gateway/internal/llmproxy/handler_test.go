@@ -39,6 +39,8 @@ func newTestRouter(h *Handler) http.Handler {
 		r.Post("/completions", h.TextCompletion)
 		r.Post("/embeddings", h.Embeddings)
 		r.Post("/responses", h.Responses)
+		r.Get("/realtime", h.Realtime)
+		r.Post("/realtime", h.Realtime)
 		r.Get("/models", h.Models)
 		r.Get("/models/*", h.Model)
 	})

@@ -222,11 +222,21 @@ type modelSection struct {
 // every /llm/v1/audio/* call would have answered 404 `model_not_found` for a
 // model the project had configured and whose credential resolved. That is the
 // same defect the `embedding` pair fixed one paragraph above.
+//
+// THE REALTIME ROUTE ADDS NO PAIR, and that is a finding rather than an
+// omission. /llm/v1/realtime dispatches a speech-to-text model, which is the
+// `asr` pair already on this list. elitea-main writes exactly five model types —
+// llm_model, embedding_model, asr_model, tts_model, image_generation_model
+// (internal/api/v2/configurations/handler.go) — and no `realtime` section
+// exists for a project to put a row in. Declaring one here would admit a pair
+// no row can ever carry, so every realtime call would answer 404 for a model
+// nobody could configure. Do NOT put a realtime model in `llm` either: those
+// rows ARE the chat catalogue the web model picker reads.
 var addressableModelSections = []modelSection{
 	{section: "llm", typ: "llm_model"},                           // /chat/completions, /completions, /responses, /messages
 	{section: "embedding", typ: "embedding_model"},               // /embeddings
 	{section: "image_generation", typ: "image_generation_model"}, // /images/generations, /images/edits, /images/variations
-	{section: "asr", typ: "asr_model"},                           // /audio/transcriptions, /audio/translations
+	{section: "asr", typ: "asr_model"},                           // /audio/transcriptions, /audio/translations, /realtime
 	{section: "tts", typ: "tts_model"},                           // /audio/speech
 }
 

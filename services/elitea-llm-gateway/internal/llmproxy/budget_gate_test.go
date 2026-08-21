@@ -1452,3 +1452,51 @@ func TestDrainBilling_NewRequestsRejectedAfterDrain(t *testing.T) {
 		t.Error("UpdateUsage was called after DrainBilling — billing goroutine was added after Wait")
 	}
 }
+
+// TestRecheckVerdict_ObservesTheBackstopWithoutFeedingIt pins the one difference
+// between an ARRIVAL and a RE-CHECK.
+//
+// THE DEFECT. A live realtime session re-asks this verdict on a ticker, and the
+// verdict recorded a hit in the per-(project, model) amplification backstop each
+// time. The gateway's own gating work therefore arrived in that window as if it
+// were tenant traffic, and enough long sessions on one pair opened the circuit
+// for that project's REAL /llm requests.
+//
+// The re-check must still RESPECT an open circuit. Dropping the read would leave
+// a live session outside a control every other path obeys.
+func TestRecheckVerdict_ObservesTheBackstopWithoutFeedingIt(t *testing.T) {
+	const threshold = 3
+	h := NewHandler(newDispatchSpy(), nil, nil,
+		WithLoopBreakerParams(LoopBreakerParams{
+			Threshold: threshold,
+			Window:    time.Minute,
+			OpenFor:   time.Minute,
+		}))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "42")
+
+	// Many more re-checks than the threshold, on one tuple.
+	for i := 0; i < 50; i++ {
+		if v := h.recheckVerdict(ctx, "gpt-4o"); !v.allow {
+			t.Fatalf("re-check #%d was refused with status %d; a re-check must not open the circuit it reads",
+				i, v.status)
+		}
+	}
+	// An arriving request is still admitted, which is the property that matters
+	// to a tenant: the sliding window holds none of the re-checks.
+	if v := h.admissionVerdict(ctx, "gpt-4o"); !v.allow {
+		t.Fatal("an arriving request was refused after 50 budget re-checks; the re-checks filled the window")
+	}
+
+	// A circuit that ARRIVALS open is still reported to a re-check.
+	for i := 0; i < threshold; i++ {
+		h.admissionVerdict(ctx, "gpt-4o")
+	}
+	v := h.recheckVerdict(ctx, "gpt-4o")
+	if v.allow {
+		t.Fatal("a re-check was admitted while the tuple's circuit was open; the read must not be dropped")
+	}
+	if v.status != http.StatusTooManyRequests || v.code != "rate_limit_exceeded" {
+		t.Fatalf("re-check verdict = status %d code %q, want 429 rate_limit_exceeded", v.status, v.code)
+	}
+}

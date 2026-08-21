@@ -161,11 +161,87 @@ func parseProjectID(s string) int {
 //
 // Returns (proceed=true) when the caller should continue; (proceed=false) means
 // the response has already been written and the caller must return immediately.
+//
+// It is a thin HTTP wrapper over admissionVerdict, which holds the whole
+// decision and touches no http.ResponseWriter. The split exists for the
+// realtime route (realtime.go): that route hijacks the connection, so after the
+// upgrade there is no ResponseWriter left to refuse a turn with, and it needs
+// the SAME verdict this function writes. Keeping one decision function is what
+// stops the realtime re-check from drifting into a second, weaker gate.
 func (h *Handler) checkBudget(
 	w http.ResponseWriter,
 	ctx context.Context,
 	model string,
 ) bool {
+	v := h.admissionVerdict(ctx, model)
+	if v.allow {
+		return true
+	}
+	if v.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(v.retryAfter/time.Second)+1, 10))
+	}
+	writeError(w, v.status, v.errType, v.message, v.code)
+	return false
+}
+
+// budgetVerdict is one admission decision, with no dependency on how it is
+// delivered. allow=true means dispatch; otherwise the four refusal fields carry
+// exactly what writeError would have written, so an HTTP caller and a WebSocket
+// caller refuse on identical terms.
+//
+// retryAfter is non-zero only for the loop-breaker refusal, which is the one
+// refusal that carries a Retry-After header on the HTTP path.
+type budgetVerdict struct {
+	allow      bool
+	status     int
+	errType    string
+	message    string
+	code       string
+	retryAfter time.Duration
+}
+
+// budgetAllowed is the verdict every admitted request gets.
+var budgetAllowed = budgetVerdict{allow: true}
+
+// admissionMode says whether an admission question comes from an ARRIVAL or
+// from a RE-CHECK of work already admitted.
+//
+// The two differ in ONE place: the amplification backstop. An arrival is a
+// request, so it is counted. A re-check is not, so it is only observed. See
+// loopBreaker.observe for the defect that split them.
+type admissionMode int
+
+const (
+	// admissionArrival is a request that just arrived. It COUNTS toward the
+	// per-(project, model) backstop.
+	admissionArrival admissionMode = iota
+	// admissionRecheck re-asks the question for work already admitted, such as
+	// a live realtime session's periodic budget re-check. It respects an open
+	// circuit but records no hit.
+	admissionRecheck
+)
+
+// admissionVerdict is checkBudget's decision, with the response writing removed.
+// The order of the three checks — loop breaker, project ceiling, member ceiling
+// — and every log line are unchanged from the single function this was split
+// out of.
+func (h *Handler) admissionVerdict(ctx context.Context, model string) budgetVerdict {
+	return h.admissionVerdictFor(ctx, model, admissionArrival)
+}
+
+// recheckVerdict answers the SAME admission question for work that is already
+// running, and it does NOT count as a request.
+//
+// It exists for the realtime route: a live session re-asks the budget on a
+// ticker, and that ticker used to feed the amplification backstop's sliding
+// window. Long sessions on one (project, model) pair could then open the
+// circuit for the project's real /llm traffic. The budget half of the answer is
+// identical; only the backstop half changes.
+func (h *Handler) recheckVerdict(ctx context.Context, model string) budgetVerdict {
+	return h.admissionVerdictFor(ctx, model, admissionRecheck)
+}
+
+func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode admissionMode) budgetVerdict {
 	// Circular-routing guard #2 (spec §2.6) runs BEFORE the budget gate and
 	// regardless of whether budget enforcement is wired: a routing loop must
 	// be contained even on a deployment without governance. The tuple key is
@@ -173,26 +249,35 @@ func (h *Handler) checkBudget(
 	// project are not tracked (they cannot form a stable loop tuple).
 	if h.loopGuard != nil && model != "" {
 		if projectID := identityProjectFromCtx(ctx); projectID != "" {
-			if ok, retryAfter := h.loopGuard.allow(projectID, model); !ok {
+			// observe READS the circuit; allow reads it AND records an arrival.
+			// A re-check is not an arrival, so it must never take the second
+			// path. See loopBreaker.observe.
+			consult := h.loopGuard.allow
+			if mode == admissionRecheck {
+				consult = h.loopGuard.observe
+			}
+			if ok, retryAfter := consult(projectID, model); !ok {
 				h.logger.Warn("loop breaker: circuit open for (project, model) tuple — possible circular routing",
 					"project_id", projectID, "model", model, "retry_after", retryAfter)
-				w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second)+1, 10))
-				writeError(w, http.StatusTooManyRequests, "rate_limit_error",
-					"Too many requests for this (project, model) pair; possible circular routing. Retry later.",
-					"rate_limit_exceeded")
-				return false
+				return budgetVerdict{
+					status:     http.StatusTooManyRequests,
+					errType:    "rate_limit_error",
+					message:    "Too many requests for this (project, model) pair; possible circular routing. Retry later.",
+					code:       "rate_limit_exceeded",
+					retryAfter: retryAfter,
+				}
 			}
 		}
 	}
 
 	if h.budgetGate == nil {
-		return true
+		return budgetAllowed
 	}
 
 	pid := parseProjectID(identityProjectFromCtx(ctx))
 	if pid < 0 {
 		// No resolvable project — treat as unlimited (no row = no cap).
-		return true
+		return budgetAllowed
 	}
 	scopeID := strconv.Itoa(pid)
 
@@ -214,9 +299,12 @@ func (h *Handler) checkBudget(
 		// enforcement.
 		h.logger.Error("budget gate: CheckBudget error; blocking request",
 			"project_id", pid, "err", err)
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service error; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service error; try again shortly",
+			code:    "nats_unavailable",
+		}
 	}
 
 	switch dec.Verdict {
@@ -233,15 +321,21 @@ func (h *Handler) checkBudget(
 		}
 		// The project has room. The member cap is a SECOND ceiling inside it,
 		// so it is asked only after the project admits (issue #321).
-		return h.checkMemberBudget(w, ctx, pid, periodStart)
+		return h.memberVerdict(ctx, pid, periodStart)
 	case failmode.Block402:
-		writeError(w, http.StatusPaymentRequired, budgetErrorType,
-			"project budget exhausted for this billing period", budgetCodeProject)
-		return false
+		return budgetVerdict{
+			status:  http.StatusPaymentRequired,
+			errType: budgetErrorType,
+			message: "project budget exhausted for this billing period",
+			code:    budgetCodeProject,
+		}
 	case failmode.Block503:
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service temporarily unavailable; try again shortly",
+			code:    "nats_unavailable",
+		}
 	default:
 		// Unknown verdict: fail open on the PROJECT ceiling (log and proceed).
 		// Should never happen. The member ceiling is still applied — a verdict
@@ -249,11 +343,11 @@ func (h *Handler) checkBudget(
 		// independent limit.
 		h.logger.Warn("budget gate: unknown verdict; allowing request",
 			"verdict", fmt.Sprintf("%v", dec.Verdict))
-		return h.checkMemberBudget(w, ctx, pid, periodStart)
+		return h.memberVerdict(ctx, pid, periodStart)
 	}
 }
 
-// checkMemberBudget is the per-member half of the admission check (issue #321).
+// memberVerdict is the per-member half of the admission check (issue #321).
 //
 // Until this existed, a project admin could set a member's monthly cap, get a
 // 200 back, watch the value round-trip through the API, and that member could
@@ -286,12 +380,11 @@ func (h *Handler) checkBudget(
 // member refusal typed `member_budget_exceeded` failed that match, so
 // budget_exceeded_from returned None, no typed exception was raised, and the
 // refusal reached the model as ordinary message content. See budgetErrorType.
-func (h *Handler) checkMemberBudget(
-	w http.ResponseWriter,
+func (h *Handler) memberVerdict(
 	ctx context.Context,
 	projectID int,
 	periodStart int64,
-) bool {
+) budgetVerdict {
 	raw := identityUserFromCtx(ctx)
 	uid := parseUserID(raw)
 	if uid < 0 {
@@ -303,7 +396,7 @@ func (h *Handler) checkMemberBudget(
 			h.logger.Warn("budget gate: member id is present but unusable; the member cap is not applied",
 				"project_id", projectID, "user_id_header", raw)
 		}
-		return true
+		return budgetAllowed
 	}
 	scopeID := failmode.UserScopeID(projectID, uid)
 
@@ -315,24 +408,33 @@ func (h *Handler) checkMemberBudget(
 		// skip the ceiling.
 		h.logger.Error("budget gate: member CheckBudget error; blocking request",
 			"project_id", projectID, "user_id", uid, "err", err)
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service error; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service error; try again shortly",
+			code:    "nats_unavailable",
+		}
 	}
 
 	switch dec.Verdict {
 	case failmode.Block402:
 		h.logger.Info("budget gate: member budget exhausted",
 			"project_id", projectID, "user_id", uid, "state", dec.State.String())
-		writeError(w, http.StatusPaymentRequired, budgetErrorType,
-			"member budget exhausted for this billing period", budgetCodeMember)
-		return false
+		return budgetVerdict{
+			status:  http.StatusPaymentRequired,
+			errType: budgetErrorType,
+			message: "member budget exhausted for this billing period",
+			code:    budgetCodeMember,
+		}
 	case failmode.Block503:
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service temporarily unavailable; try again shortly",
+			code:    "nats_unavailable",
+		}
 	default:
-		return true
+		return budgetAllowed
 	}
 }
 

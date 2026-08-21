@@ -83,6 +83,31 @@ env:
   # Ceiling on concurrently-detained streams; each holds a goroutine and an
   # open provider socket for up to LLM_STREAM_GRACE_MS.
   LLM_STREAM_DRAIN_MAX_INFLIGHT: "256"
+  # Realtime WebSocket sessions (/llm/v1/realtime).
+  #
+  # How often a LIVE session re-asks the budget gate. This is the ONLY thing
+  # that bounds a session's spend: an HTTP request is gated once because it
+  # ends, and a session does not end. bifrost reports a turn start for two
+  # events the pylon relay never sends, so a re-check armed on turn start alone
+  # would never fire at all. Lower it to cut the spend that can follow an
+  # exhausted budget; raise it to cut budget reads. A non-positive or
+  # unparsable value keeps the 15 s default.
+  LLM_REALTIME_BUDGET_RECHECK_SEC: "15"
+  # Ceiling on concurrent realtime sessions per replica; the per-project cap is
+  # this divided by 8 (floor 1). Each session pins four goroutines and two open
+  # sockets for as long as the caller talks, and a hijacked connection has its
+  # deadlines cleared, so no server timeout can ever reap one.
+  LLM_REALTIME_MAX_SESSIONS: "128"
+  # Browser origins that may open /llm/v1/realtime, comma-separated
+  # (e.g. "https://dev.elitea.ai"). EMPTY IS THE SECURE DEFAULT and it is not
+  # "no policy": a WebSocket handshake is NOT subject to CORS, so without an
+  # origin check any page could open this route with the user's ambient
+  # credentials. Empty admits only a handshake whose Origin matches the
+  # gateway's own host, or one with no Origin at all — which is every
+  # non-browser client, including the pylon-indexer relay this route exists
+  # for. Name a browser origin only on purpose; the startup log states which
+  # mode is armed.
+  LLM_REALTIME_ALLOWED_ORIGINS: ""
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
