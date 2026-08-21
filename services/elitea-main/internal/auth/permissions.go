@@ -25,7 +25,18 @@ const (
 var ErrPermissionDenied = errors.New("permission denied")
 
 type PermissionResolution struct {
-	UserID      int64
+	// UserID is the RESOLVED user, and an implementation returning a nil error
+	// must populate it with a positive id.
+	//
+	// It is not an echo of what the principal claimed. For a token principal
+	// the claimed id is the TOKEN's, and reporting the owning user is the whole
+	// point of resolving: callers use this field as a user foreign key and as
+	// the identity they display. A resolver that leaves it zero on success
+	// makes every such caller drop the resolution — silently, since there is
+	// nothing to log.
+	UserID int64
+	// Permissions may be empty. Empty means "this principal holds none in this
+	// mode", which is an ANSWER; a refusal is ErrPermissionDenied instead.
 	Permissions []string
 }
 

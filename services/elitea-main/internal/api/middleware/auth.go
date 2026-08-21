@@ -183,6 +183,28 @@ func writeJSONError(w http.ResponseWriter, status int, errType, code, message st
 	_ = json.NewEncoder(w).Encode(jsonError{Error: jsonErrorFields{Message: message, Type: errType, Code: code}})
 }
 
+// ForwardedIdentity reads the principal an authenticating edge projected onto
+// this request, or reports that there is none.
+//
+// Exported so the admin-UI HTML handler resolves the SAME identity this
+// middleware does. That handler used to read the `elitea_session` cookie and
+// nothing else, and the runtime deployment does not issue that cookie: the
+// browser logs in through /forward-auth/login, which stores an opaque
+// server-side session under `elitea_browser_auth` and projects the principal
+// onto the upstream request as X-Auth-* (deploy/runtime/platform-edge-dynamic
+// .yml `authResponseHeaders`). The handler therefore injected an empty
+// permission list into every admin page load, and the SPA — which hides a nav
+// item whose permission is absent — rendered a sidebar with no items at all.
+//
+// The verifier argument is not optional and a nil one yields no identity: the
+// headers are the whole credential, so accepting them without proof that the
+// request crossed the header-stripping ingress lets any caller pick a user ID
+// (#390). Callers must still validate the principal (or resolve permissions,
+// which reloads the user and refuses a suspended one) before acting on it.
+func ForwardedIdentity(r *http.Request, verifier ForwardedIdentityPeerVerifier) (auth.User, bool) {
+	return tryTraefikHeaders(r, verifier)
+}
+
 func tryTraefikHeaders(r *http.Request, verifier ForwardedIdentityPeerVerifier) (auth.User, bool) {
 	authType, typePresent, typeValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-Type")
 	authID, idPresent, idValid := uniqueForwardedIdentityHeader(r.Header, "X-Auth-ID")

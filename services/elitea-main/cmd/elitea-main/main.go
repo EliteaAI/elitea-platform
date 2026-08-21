@@ -1174,6 +1174,14 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			// admin list. The console then shows a rank-and-file user
 			// controls that the server refuses with 403 on each click.
 			Resolver: legacyrbac.NewPostgresResolver(pool),
+			// The runtime deployment authenticates the browser at
+			// /forward-auth/login, which sets `elitea_browser_auth` and projects
+			// the principal as X-Auth-*. Without this verifier the handler has
+			// no way to read that identity, injects an empty permission list,
+			// and the SPA renders a sidebar with no items — see adminui's
+			// ServeSPA. A nil verifier (no form graph) still degrades closed.
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			Emails:                    adminUIEmails{pool: pool},
 		}
 	}
 
