@@ -98,23 +98,96 @@ func TestSpeech_AnswersRawAudioNotJSON(t *testing.T) {
 // map, including the unknown format that must not be mislabelled as audio.
 func TestSpeech_ContentTypeFollowsResponseFormat(t *testing.T) {
 	cases := []struct {
-		format string
-		want   string
+		name     string
+		format   string
+		provider string
+		want     string
 	}{
-		{"", "audio/mpeg"}, // absent means mp3, the OpenAI default
-		{"mp3", "audio/mpeg"},
-		{"wav", "audio/wav"},
-		{"opus", "audio/opus"},
-		{"flac", "audio/flac"},
-		{"aac", "audio/aac"},
-		{"not-a-format", "application/octet-stream"},
+		{"default", "", "openai", "audio/mpeg"}, // absent means mp3, the OpenAI default
+		{"mp3", "mp3", "openai", "audio/mpeg"},
+		{"wav", "wav", "openai", "audio/wav"},
+		{"opus", "opus", "openai", "audio/opus"},
+		{"flac", "flac", "openai", "audio/flac"},
+		{"aac", "aac", "openai", "audio/aac"},
+		{"unknown", "not-a-format", "openai", "application/octet-stream"},
+
+		// THE RATE IS A PROPERTY OF THE PROVIDER, NOT OF THE FORMAT. OpenAI and
+		// Azure define pcm as 24 kHz, so the header may say so. bifrost maps the
+		// same "pcm" onto ElevenLabs' pcm_44100, and BifrostSpeechResponse
+		// reports no served format, so for anything else the gateway states no
+		// rate at all rather than a wrong one — a caller that trusted a wrong
+		// rate would play the audio at the wrong speed with no error anywhere.
+		{"pcm on openai", "pcm", "openai", "audio/L16; rate=24000; channels=1"},
+		{"pcm on azure", "pcm", "azure", "audio/L16; rate=24000; channels=1"},
+		{"pcm on elevenlabs", "pcm", "elevenlabs", "audio/L16; channels=1"},
+		{"pcm on an unknown provider", "pcm", "somebody-new", "audio/L16; channels=1"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.format, func(t *testing.T) {
-			if got := speechContentType(tc.format); got != tc.want {
-				t.Fatalf("speechContentType(%q) = %q, want %q", tc.format, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			if got := speechContentType(tc.format, tc.provider); got != tc.want {
+				t.Fatalf("speechContentType(%q, %q) = %q, want %q",
+					tc.format, tc.provider, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestSpeech_RefusesAStreamRequestByName covers a silent contract break.
+//
+// stream_format decodes into OpenAISpeechRequest and IsStreamingRequested()
+// reads it, but this route answers ONE complete audio body. Ignoring the field
+// looks like success to the caller: it gets a 200 with audio, and the SSE frame
+// loop it wrote never fires. A named refusal is the difference between "this
+// route cannot do that" and a client that appears to hang.
+func TestSpeech_RefusesAStreamRequestByName(t *testing.T) {
+	h := audioHandler(&fakeRouter{
+		speechResp: &schemas.BifrostSpeechResponse{Audio: []byte("unreachable")},
+	})
+
+	rec := postAudioJSON(t, h, "/llm/v1/audio/speech",
+		`{"model":"tts-1","input":"hi","voice":"alloy","stream_format":"sse"}`)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "streaming_unsupported") {
+		t.Fatalf("the refusal does not name the cause: %s", rec.Body.String())
+	}
+}
+
+// TestTranscription_RefusesAnOversizeUpload pins the ceiling.
+//
+// maxMultipartMemory is NOT a ceiling — it is the point at which the parser
+// starts spilling parts to temporary files. Without maxTranscriptionUpload an
+// unbounded body is accepted and written to the pod's disk before anything
+// examines it, and the refusal, when it finally comes, comes from the provider.
+func TestTranscription_RefusesAnOversizeUpload(t *testing.T) {
+	h := audioHandler(&fakeRouter{
+		transcriptionResp: &schemas.BifrostTranscriptionResponse{Text: "unreachable"},
+	})
+
+	oversize := bytes.Repeat([]byte("A"), int(maxTranscriptionUpload)+1<<10)
+	rec := postAudioFile(t, h, "/llm/v1/audio/transcriptions",
+		map[string]string{"model": "whisper-1"}, oversize)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "payload_too_large") {
+		t.Fatalf("the refusal does not name the cause: %s", rec.Body.String())
+	}
+}
+
+// TestTranscription_AcceptsABodyUnderTheCeiling is the discriminating half: a
+// ceiling that refused everything would pass the test above.
+func TestTranscription_AcceptsABodyUnderTheCeiling(t *testing.T) {
+	h := audioHandler(&fakeRouter{
+		transcriptionResp: &schemas.BifrostTranscriptionResponse{Text: "ok"},
+	})
+	rec := postAudioFile(t, h, "/llm/v1/audio/transcriptions",
+		map[string]string{"model": "whisper-1"}, bytes.Repeat([]byte("A"), 1<<20))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a 1 MiB upload was refused with %d; body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -37,6 +37,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -177,6 +178,16 @@ func (h *Handler) Speech(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	// stream_format decodes, and OpenAISpeechRequest.IsStreamingRequested() reads
+	// it — but this route is unary. Answering a caller that asked for SSE with a
+	// complete audio body is a silent contract break: it looks like success and
+	// the caller's frame loop never fires. Refuse it by name instead.
+	if req.IsStreamingRequested() {
+		writeError(w, http.StatusBadRequest, "invalid_request_error",
+			"`stream_format` is not supported on this route; /llm/v1/audio/speech answers one complete audio body",
+			"streaming_unsupported")
+		return
+	}
 	ctx, ok := h.newContext(w, r)
 	if !ok {
 		return
@@ -202,7 +213,7 @@ func (h *Handler) Speech(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeAudio(w, resp.Audio, speechContentType(req.ResponseFormat))
+	writeAudio(w, resp.Audio, speechContentType(req.ResponseFormat, provider))
 
 	units, basis := speechUnits(resp)
 	if basis == "" {
@@ -227,6 +238,19 @@ func (h *Handler) Speech(w http.ResponseWriter, r *http.Request) {
 // separately so a caller that posts to /translations gets an answer instead of
 // a 404; the request reaches the provider under the model the project
 // configured, and the provider decides what the model does with it.
+// maxTranscriptionUpload is the largest transcription body this route accepts.
+//
+// maxMultipartMemory is NOT a ceiling: it is the point at which ParseMultipartForm
+// stops buffering in memory and starts spilling parts to TEMPORARY FILES. Without
+// this, an unbounded upload is accepted, written to the pod's disk, and only then
+// refused by the provider — so the cost of a hostile or merely wrong caller is
+// paid before anything looks at the request.
+//
+// 25 MiB is OpenAI's own documented per-file transcription limit, so a body this
+// route accepts is one the provider will accept too. As audio it is generous:
+// 16-bit 16 kHz mono PCM runs 32,000 B/s, which is about thirteen minutes.
+const maxTranscriptionUpload int64 = 25 << 20
+
 func (h *Handler) Transcription(w http.ResponseWriter, r *http.Request) {
 	// The identity check runs BEFORE the body is parsed. newContext reads
 	// headers only, so the order is free, and an audio upload is the largest
@@ -239,6 +263,9 @@ func (h *Handler) Transcription(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The ceiling goes on BEFORE the parse, so an oversize body is refused while
+	// it is still on the wire rather than after it reaches the disk.
+	r.Body = http.MaxBytesReader(w, r.Body, maxTranscriptionUpload)
 	form, ok := parseMultipart(w, r)
 	if !ok {
 		return
@@ -354,29 +381,54 @@ func buildTranscriptionRequest(form *multipart.Form) (*openai.OpenAITranscriptio
 // speechAudioContentTypes maps an OpenAI speech `response_format` onto the MIME
 // type of the body the provider returns.
 //
-// "pcm" is headerless 24 kHz 16-bit little-endian mono, which has no registered
-// MIME type of its own; audio/L16 is the closest standard name and carries the
-// rate and channel count that a caller would otherwise have to assume.
+// "pcm" is headerless 16-bit little-endian mono, which has no registered MIME
+// type of its own; audio/L16 is the closest standard name.
+//
+// THE SAMPLE RATE IS NOT IN THIS TABLE, and that is the point. The rate is a
+// property of the PROVIDER, not of the format the caller asked for: OpenAI and
+// Azure serve pcm at 24 kHz, and bifrost maps the same "pcm" onto ElevenLabs'
+// pcm_44100 (core providers/elevenlabs/utils.go). This table used to answer
+// `rate=24000` for every one of them, so an ElevenLabs response was labelled at
+// 24 kHz while carrying 44.1 kHz audio — a caller that trusted the header played
+// it ~1.84x too slow, with no error anywhere.
+//
+// bifrost's BifrostSpeechResponse carries no served-format field, so the gateway
+// cannot read the real rate back. It therefore states the rate only for the
+// providers whose pcm rate is part of their contract, and says nothing for the
+// rest. Saying nothing is recoverable; saying the wrong number is not.
 var speechAudioContentTypes = map[string]string{
 	"mp3":  "audio/mpeg",
 	"opus": "audio/opus",
 	"aac":  "audio/aac",
 	"flac": "audio/flac",
 	"wav":  "audio/wav",
-	"pcm":  "audio/L16; rate=24000; channels=1",
+	"pcm":  "audio/L16; channels=1",
+}
+
+// pcmRate24kProviders are the providers whose "pcm" response format is defined
+// as 24 kHz. Add one only on the provider's documented contract, never on a
+// guess: a wrong rate here is inaudible to every test and obvious to every user.
+var pcmRate24kProviders = map[string]bool{
+	"openai": true,
+	"azure":  true,
 }
 
 // speechContentType resolves the response Content-Type for a speech request.
 // An absent format is mp3, which is the OpenAI default. An unrecognised format
 // is served as opaque bytes rather than mislabelled.
-func speechContentType(format string) string {
+func speechContentType(format, provider string) string {
 	if format == "" {
 		return speechAudioContentTypes["mp3"]
 	}
-	if ct, ok := speechAudioContentTypes[format]; ok {
-		return ct
+	ct, ok := speechAudioContentTypes[format]
+	if !ok {
+		return "application/octet-stream"
 	}
-	return "application/octet-stream"
+	// The rate is added only where it is a fact. See speechAudioContentTypes.
+	if format == "pcm" && pcmRate24kProviders[strings.ToLower(provider)] {
+		return "audio/L16; rate=24000; channels=1"
+	}
+	return ct
 }
 
 // transcriptionTextFormats are the transcription response formats whose body is

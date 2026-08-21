@@ -162,6 +162,9 @@ const (
 	// that answers nothing at all reaches it. A timeout is an OUTAGE, so
 	// decision H1 applies: refuse the turn, keep the socket open, and count the
 	// tick toward maxBudgetOutagesBeforeClose.
+	// KEEP realtimePingBound LARGER THAN THIS. gateTurn runs this bound on the
+	// uplink, which is the goroutine that reads the client socket and therefore
+	// the only one that can process a pong.
 	realtimeGateTimeout = 2*budgetGateTimeout + time.Second
 
 	// realtimeCloseHandshakeBudget bounds how long a session waits for the
@@ -180,6 +183,22 @@ const (
 	// gets the close status. The abandoned library goroutine ends on its own
 	// 5 s bound, and the cancel that follows closes the connection under it.
 	realtimeCloseHandshakeBudget = time.Second
+
+	// realtimePingBound is the deadline for ONE keepalive ping, and it MUST stay
+	// larger than realtimeGateTimeout.
+	//
+	// The uplink is the only goroutine that reads the CLIENT socket, and
+	// coder/websocket processes a PONG on that read path — there is no separate
+	// control-frame reader. gateTurn runs on the uplink and parks it for up to
+	// realtimeGateTimeout while it asks the budget store. A ping bound shorter
+	// than that reports a perfectly healthy caller as dead, and keepalive tears
+	// the whole session down for it: a stalled budget store would end every live
+	// call rather than merely refusing its turns, which is the opposite of what
+	// decision H1 chose.
+	//
+	// The margin is what keeps the two from meeting exactly. A genuinely dead
+	// peer is still detected, one keepalive period later.
+	realtimePingBound = realtimeGateTimeout + 5*time.Second
 
 	// maxRealtimeCloseReasonBytes is the close-reason budget. RFC 6455 allows
 	// 123 bytes; the margin leaves room for the rune-boundary back-off in
@@ -1373,7 +1392,7 @@ func (s *realtimeSession) pingPeers() (clientErr, providerErr error) {
 func (s *realtimeSession) ping(sock RealtimeSocket) error {
 	bound := s.h.realtimePingBound
 	if bound <= 0 {
-		bound = realtimeWriteTimeout
+		bound = realtimePingBound
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, bound)
 	defer cancel()
