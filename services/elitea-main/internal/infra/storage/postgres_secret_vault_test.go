@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
@@ -126,3 +127,59 @@ func TestPostgresSecretVaultLoaderReportsAnAbsentVaultDistinctly(t *testing.T) {
 	require.ErrorIs(t, err, ErrContentUnavailable)
 	require.NotErrorIs(t, err, ErrVaultAbsent)
 }
+
+// The failure log is gated to the first failure of each kind per vault, and
+// re-arms when that vault loads again.
+//
+// Every failure here is per-request and a model-picker page load asks for up to
+// three vaults across six sections, so an ungated log puts tens of identical
+// lines per page load per user into the log for as long as the deployment's
+// master key is wrong — burying the one line that names the cause.
+func TestPostgresSecretVaultLoaderReportsOneFailurePerVaultUntilItLoadsAgain(t *testing.T) {
+	var lines int
+	handler := slog.New(countingSlogHandler{count: &lines})
+	previous := slog.Default()
+	slog.SetDefault(handler)
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	broken := true
+	working := secretVaultQueryFixture(t, "project-2", storagePythonProjectKey)
+	loader, err := newPostgresSecretVaultLoader(contentQueryerFunc(
+		func(ctx context.Context, sql string, args ...any) pgx.Row {
+			if broken {
+				return contentRowFunc(func(...any) error { return errors.New("connection reset") })
+			}
+			return working.QueryRow(ctx, sql, args...)
+		}), nil)
+	require.NoError(t, err)
+
+	for range 5 {
+		_, err = loader.LoadProjectVault(context.Background(), 2)
+		require.ErrorIs(t, err, ErrContentUnavailable)
+	}
+	require.Equal(t, 1, lines, "five identical failures must be logged once")
+
+	// A different vault is a different subject and is reported on its own.
+	_, err = loader.LoadAdminVault(context.Background())
+	require.ErrorIs(t, err, ErrContentUnavailable)
+	require.Equal(t, 2, lines)
+
+	// After a recovery the vault is armed again, so a RECURRENCE is not lost.
+	broken = false
+	_, err = loader.LoadProjectVault(context.Background(), 2)
+	require.NoError(t, err)
+	broken = true
+	_, err = loader.LoadProjectVault(context.Background(), 2)
+	require.ErrorIs(t, err, ErrContentUnavailable)
+	require.Equal(t, 3, lines, "a failure after a successful load must be reported again")
+}
+
+type countingSlogHandler struct{ count *int }
+
+func (countingSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h countingSlogHandler) Handle(context.Context, slog.Record) error {
+	*h.count++
+	return nil
+}
+func (h countingSlogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h countingSlogHandler) WithGroup(string) slog.Handler      { return h }

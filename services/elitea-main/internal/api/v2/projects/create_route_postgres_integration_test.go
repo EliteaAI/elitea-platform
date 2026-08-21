@@ -84,12 +84,18 @@ const (
 
 // TestCreateProjectRouteGivesTheNewProjectAUsableSecretsVault is the #373 case.
 //
-// The vault is not decoration. storage.PostgresSecretVaultLoader.load joins
-// centry.secrets_key and centry.secrets_data and reports pgx.ErrNoRows as
-// ErrContentUnavailable; storage.CurrentModelDefaultsReader.Load fails the
-// WHOLE read on that error; and the configurations route turns it into a 500.
-// The model picker asks that route for its catalogue, so a project with no
-// vault rows presents to its owner as "the product has no models".
+// What #373 cost: storage.PostgresSecretVaultLoader.load joins
+// centry.secrets_key and centry.secrets_data and reported pgx.ErrNoRows as the
+// generic ErrContentUnavailable; storage.CurrentModelDefaultsReader.Load failed
+// the WHOLE read on that error; and the configurations route turned it into a
+// 500. The model picker asks that route for its catalogue, so a project with no
+// vault rows presented to its owner as "the product has no models".
+//
+// An absent vault is now a distinct answer (storage.ErrVaultAbsent) that those
+// readers treat as "never set", so a project with no vault no longer 500s and
+// this test is no longer what stands between a new project and an empty model
+// picker. It still pins the vault the route must create: the secrets API reads
+// it, and pylon provisions one with every project.
 func TestCreateProjectRouteGivesTheNewProjectAUsableSecretsVault(t *testing.T) {
 	pool := newOnboardingPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

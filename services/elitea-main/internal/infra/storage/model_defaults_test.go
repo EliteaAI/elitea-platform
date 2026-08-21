@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -348,15 +349,65 @@ func TestCurrentModelDefaultsReaderReadsAnAbsentVaultAsNoDefaults(t *testing.T) 
 // A vault that EXISTS and will not open keeps failing the read. Its values are
 // there and unread, so "no default has been chosen" would be a claim this
 // process cannot make.
+//
+// The failure is built the way the loader really builds it — wrapping
+// ErrContentUnavailable — because ErrVaultAbsent wraps that same sentinel, and
+// the two are told apart by which one errors.Is matches. An error that wraps
+// nothing passes this test no matter how the check is written, so it would not
+// notice the plausible simplification of broadening the absent branch to
+// errors.Is(err, ErrContentUnavailable). That broadening swallows every
+// undecryptable vault as "no defaults", which is the silent version of the
+// outage this file exists to prevent.
+//
+// Both loads are covered: the project load is checked inline, and the admin
+// load goes through loadFallbackVault, which is where the broadening would be
+// written.
 func TestCurrentModelDefaultsReaderStillFailsOnAnUnreadableVault(t *testing.T) {
-	unreadable := errors.New("open encrypted secret vault: " + ErrContentUnavailable.Error())
-	reader := currentModelDefaultsReaderForTest(t, &currentModelVaultLoaderStub{
-		loadProject: func(context.Context, int64) (SecretVault, error) { return nil, unreadable },
-		loadAdmin:   func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
-	})
-	if _, err := reader.Load(context.Background(), 7, 1, configurationapp.CurrentModelSectionLLM); !errors.Is(
-		err, ErrCurrentModelDefaultsUnavailable,
-	) {
-		t.Fatalf("err=%v", err)
+	unreadable := fmt.Errorf("open encrypted secret vault: %w", ErrContentUnavailable)
+	if !errors.Is(unreadable, ErrContentUnavailable) || errors.Is(unreadable, ErrVaultAbsent) {
+		t.Fatal("the fixture must be an unreadable vault, not an absent one")
+	}
+	empty := func() SecretVault {
+		return &fakeSecretVault{regular: map[string]string{}, hidden: map[string]string{}}
+	}
+	for _, test := range []struct {
+		name   string
+		loader SecretVaultLoader
+	}{
+		{
+			name: "project vault will not open",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(context.Context, int64) (SecretVault, error) { return nil, unreadable },
+				loadAdmin:   func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
+			},
+		},
+		{
+			name: "admin vault will not open",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(context.Context, int64) (SecretVault, error) { return empty(), nil },
+				loadAdmin:   func(context.Context) (SecretVault, error) { return nil, unreadable },
+			},
+		},
+		{
+			name: "public project vault will not open",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(_ context.Context, projectID int64) (SecretVault, error) {
+					if projectID == 1 {
+						return nil, unreadable
+					}
+					return empty(), nil
+				},
+				loadAdmin: func(context.Context) (SecretVault, error) { return empty(), nil },
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := currentModelDefaultsReaderForTest(t, test.loader)
+			if _, err := reader.Load(
+				context.Background(), 7, 1, configurationapp.CurrentModelSectionLLM,
+			); !errors.Is(err, ErrCurrentModelDefaultsUnavailable) {
+				t.Fatalf("err=%v", err)
+			}
+		})
 	}
 }
