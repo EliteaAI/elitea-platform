@@ -21,6 +21,7 @@ use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde_json::json;
 use thiserror::Error;
 
+use super::decision::{DecisionNode, DecisionNodeDefinition};
 use super::direct_tool::{
     DIRECT_TOOL_RESUME_STATE_KEY, DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition,
     DirectToolSelection, PipelineDirectToolResolver,
@@ -31,6 +32,7 @@ use super::printer::{
     PrinterInputMapping, PrinterNode, PrinterNodeDefinition, PrinterPauseCatalog, PrinterResetNode,
 };
 use super::resume::PipelineResume;
+use super::router::{RouterNode, RouterNodeDefinition};
 use super::state_modifier::{StateModifierNode, StateModifierNodeDefinition};
 use super::yaml::{valid_graph_id, valid_output_key};
 use super::{pipeline_completed_event, pipeline_result_event};
@@ -228,30 +230,36 @@ impl PipelineNodeRuntimes {
 
 #[derive(Clone)]
 enum PipelineNodeDefinition {
+    Decision(DecisionNodeDefinition),
     DirectTool(DirectToolNodeDefinition),
     Hitl(HitlNodeDefinition),
     Llm(LlmNodeDefinition),
     Printer(PrinterNodeDefinition),
+    Router(RouterNodeDefinition),
     StateModifier(StateModifierNodeDefinition),
 }
 
 impl PipelineNodeDefinition {
     fn id(&self) -> &str {
         match self {
+            Self::Decision(node) => node.id(),
             Self::DirectTool(node) => node.id(),
             Self::Hitl(node) => node.id(),
             Self::Llm(node) => node.id(),
             Self::Printer(node) => node.id(),
+            Self::Router(node) => node.id(),
             Self::StateModifier(node) => node.id(),
         }
     }
 
     fn input_keys(&self) -> &[String] {
         match self {
+            Self::Decision(node) => node.input_keys(),
             Self::DirectTool(node) => node.input_keys(),
             Self::Hitl(node) => node.input_keys(),
             Self::Llm(node) => node.input_keys(),
             Self::Printer(_) => &[],
+            Self::Router(node) => node.input_keys(),
             Self::StateModifier(node) => node.input_keys(),
         }
     }
@@ -259,7 +267,7 @@ impl PipelineNodeDefinition {
     fn output_keys(&self) -> &[String] {
         match self {
             Self::DirectTool(node) => node.output_keys(),
-            Self::Hitl(_) | Self::Printer(_) => &[],
+            Self::Decision(_) | Self::Hitl(_) | Self::Printer(_) | Self::Router(_) => &[],
             Self::Llm(node) => node.output_keys(),
             Self::StateModifier(node) => node.output_keys(),
         }
@@ -267,7 +275,12 @@ impl PipelineNodeDefinition {
 
     fn cleaned_keys(&self) -> &[String] {
         match self {
-            Self::DirectTool(_) | Self::Hitl(_) | Self::Llm(_) | Self::Printer(_) => &[],
+            Self::Decision(_)
+            | Self::DirectTool(_)
+            | Self::Hitl(_)
+            | Self::Llm(_)
+            | Self::Printer(_)
+            | Self::Router(_) => &[],
             Self::StateModifier(node) => node.variables_to_clean(),
         }
     }
@@ -275,26 +288,35 @@ impl PipelineNodeDefinition {
     fn edit_state_key(&self) -> Option<&str> {
         match self {
             Self::Hitl(node) => node.edit_state_key(),
-            Self::DirectTool(_) | Self::Llm(_) | Self::Printer(_) | Self::StateModifier(_) => None,
+            Self::Decision(_)
+            | Self::DirectTool(_)
+            | Self::Llm(_)
+            | Self::Printer(_)
+            | Self::Router(_)
+            | Self::StateModifier(_) => None,
         }
     }
 
     fn route_targets(&self) -> Vec<&str> {
         match self {
+            Self::Decision(node) => node.route_targets().collect(),
             Self::DirectTool(node) => node.transition().into_iter().collect(),
             Self::Hitl(node) => node.route_targets().collect(),
             Self::Llm(node) => node.transition().into_iter().collect(),
             Self::Printer(node) => [node.transition()].into_iter().collect(),
+            Self::Router(node) => node.route_targets().collect(),
             Self::StateModifier(node) => node.transition().into_iter().collect(),
         }
     }
 
     fn config_digest(&self) -> [u8; 32] {
         match self {
+            Self::Decision(node) => node.config_digest(),
             Self::DirectTool(node) => node.config_digest(),
             Self::Hitl(node) => node.config_digest(),
             Self::Llm(node) => node.config_digest(),
             Self::Printer(node) => node.config_digest(),
+            Self::Router(node) => node.config_digest(),
             Self::StateModifier(node) => node.config_digest(),
         }
     }
@@ -399,9 +421,11 @@ impl PipelineDefinition {
     pub(crate) fn llm_tool_selections(&self) -> impl Iterator<Item = &LlmToolkitSelection> {
         self.nodes.iter().flat_map(|node| match node {
             PipelineNodeDefinition::Llm(node) => node.tool_selections(),
-            PipelineNodeDefinition::DirectTool(_)
+            PipelineNodeDefinition::Decision(_)
+            | PipelineNodeDefinition::DirectTool(_)
             | PipelineNodeDefinition::Hitl(_)
             | PipelineNodeDefinition::Printer(_)
+            | PipelineNodeDefinition::Router(_)
             | PipelineNodeDefinition::StateModifier(_) => &[],
         })
     }
@@ -410,18 +434,23 @@ impl PipelineDefinition {
     pub(crate) fn direct_tool_selections(&self) -> impl Iterator<Item = &DirectToolSelection> {
         self.nodes.iter().filter_map(|node| match node {
             PipelineNodeDefinition::DirectTool(node) => Some(node.selection()),
-            PipelineNodeDefinition::Hitl(_)
+            PipelineNodeDefinition::Decision(_)
+            | PipelineNodeDefinition::Hitl(_)
             | PipelineNodeDefinition::Llm(_)
             | PipelineNodeDefinition::Printer(_)
+            | PipelineNodeDefinition::Router(_)
             | PipelineNodeDefinition::StateModifier(_) => None,
         })
     }
 
     #[must_use]
     pub(crate) fn has_llm_nodes(&self) -> bool {
-        self.nodes
-            .iter()
-            .any(|node| matches!(node, PipelineNodeDefinition::Llm(_)))
+        self.nodes.iter().any(|node| {
+            matches!(
+                node,
+                PipelineNodeDefinition::Decision(_) | PipelineNodeDefinition::Llm(_)
+            )
+        })
     }
 
     #[must_use]
@@ -568,6 +597,14 @@ impl PipelineDefinition {
         runtimes: &PipelineNodeRuntimes,
     ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
         Ok(match node {
+            PipelineNodeDefinition::Decision(node) => {
+                let Some(factory) = runtimes.llm.clone() else {
+                    return Err(PipelineConfigurationError::Unsupported(
+                        "the pipeline Decision runtime is not bound to this compiler",
+                    ));
+                };
+                builder.node(DecisionNode::new(node.clone(), factory))
+            }
             PipelineNodeDefinition::DirectTool(node) => {
                 let Some(resolver) = runtimes.direct_tool.clone() else {
                     return Err(PipelineConfigurationError::Unsupported(
@@ -629,6 +666,7 @@ impl PipelineDefinition {
                         },
                     )
             }
+            PipelineNodeDefinition::Router(node) => builder.node(RouterNode::new(node.clone())),
             PipelineNodeDefinition::StateModifier(node) => {
                 let transition = node.transition().map(ToOwned::to_owned);
                 let node_id = node.id().to_owned();
@@ -708,7 +746,10 @@ impl PipelineDefinition {
                 PipelineNodeDefinition::StateModifier(node) => {
                     (node.transition(), node.output_keys())
                 }
-                PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::Printer(_) => continue,
+                PipelineNodeDefinition::Decision(_)
+                | PipelineNodeDefinition::Hitl(_)
+                | PipelineNodeDefinition::Printer(_)
+                | PipelineNodeDefinition::Router(_) => continue,
             };
             if transition != Some("END") {
                 continue;
@@ -916,6 +957,9 @@ fn parse_pipeline_node(
     let encoded = serde_yaml_ng::to_string(raw_node)
         .map_err(|source| PipelineConfigurationError::MalformedYaml { source })?;
     match node_type {
+        "decision" => DecisionNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Decision)
+            .map_err(|_| PipelineConfigurationError::Invalid("a Decision node is invalid")),
         "toolkit" | "mcp" => DirectToolNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::DirectTool)
             .map_err(|_| PipelineConfigurationError::Invalid("a direct-tool node is invalid")),
@@ -928,6 +972,9 @@ fn parse_pipeline_node(
         "printer" => PrinterNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::Printer)
             .map_err(|_| PipelineConfigurationError::Invalid("a Printer node is invalid")),
+        "router" => RouterNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Router)
+            .map_err(|_| PipelineConfigurationError::Invalid("a Router node is invalid")),
         "state_modifier" => StateModifierNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::StateModifier)
             .map_err(|_| PipelineConfigurationError::Invalid("a state modifier node is invalid")),
@@ -993,7 +1040,10 @@ fn validate_node_state(
                 ));
             }
         }
-        PipelineNodeDefinition::Hitl(_) | PipelineNodeDefinition::StateModifier(_) => {}
+        PipelineNodeDefinition::Decision(_)
+        | PipelineNodeDefinition::Hitl(_)
+        | PipelineNodeDefinition::Router(_)
+        | PipelineNodeDefinition::StateModifier(_) => {}
     }
     if node
         .edit_state_key()
@@ -1167,12 +1217,14 @@ fn definition_digest(
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());
         let kind = match node {
+            PipelineNodeDefinition::Decision(_) => b"decision".as_slice(),
             PipelineNodeDefinition::DirectTool(node) => {
                 node.selection().kind().wire_name().as_bytes()
             }
             PipelineNodeDefinition::Hitl(_) => b"hitl".as_slice(),
             PipelineNodeDefinition::Llm(_) => b"llm".as_slice(),
             PipelineNodeDefinition::Printer(_) => b"printer".as_slice(),
+            PipelineNodeDefinition::Router(_) => b"router".as_slice(),
             PipelineNodeDefinition::StateModifier(_) => b"state_modifier".as_slice(),
         };
         digest_field(&mut context, kind);

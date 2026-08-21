@@ -77,7 +77,7 @@ Maintained Rust runtime ownership registry:
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
-- `src/agents/graph/{agent,compiler,resume,hitl,llm,direct_tool,printer,state_modifier,parallel,yaml}.rs`:
+- `src/agents/graph/{agent,compiler,resume,hitl,llm,direct_tool,printer,router,decision,state_modifier,parallel,yaml}.rs`:
   stored-pipeline event identity, complete-document active-node compilation,
   latest-event/checkpoint decision binding, bounded YAML contracts and the
   durable parallel-node core. Direct Toolkit and auth-free remote MCP reads use
@@ -86,8 +86,12 @@ Maintained Rust runtime ownership registry:
   SDK-formatted terminal chat message before `goto END` without nulling typed
   outputs. Printer uses a compiler-owned native `interrupt_after` checkpoint,
   publishes one bounded ordinary chat result, and resumes through the generated
-  reset node on the next ordinary user message. MCP OAuth/on-demand auth,
-  prebuilt/static MCP, remote effects, agent/router/decision compilation,
+  reset node on the next ordinary user message. Router evaluates bounded
+  state-driven conditions and Decision runs a no-tool claim-bound model; both
+  select only compiler-validated targets with an atomic ADK `goto`.
+  `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
+  fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
+  prebuilt/static MCP, remote effects, Agent-node compilation,
   LLM-node nested confirmation, arbitrary static interrupts and production
   activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,

@@ -227,6 +227,23 @@ impl LlmNodeDefinition {
         self.tool_execution_timeout
     }
 
+    /// Minimal no-tool definition used by the model-backed Decision node.
+    ///
+    /// The invocation still passes through the same claim-bound model factory;
+    /// only the node-specific prompt and route projection live elsewhere.
+    pub(super) fn for_decision(id: &str) -> Self {
+        Self {
+            id: id.to_owned(),
+            input_mapping: BTreeMap::new(),
+            input: Vec::new(),
+            output: Vec::new(),
+            tool_selections: Vec::new(),
+            structured_output: false,
+            tool_execution_timeout: DEFAULT_TOOL_TIMEOUT_SECONDS,
+            transition: None,
+        }
+    }
+
     /// Build the exact JSON Schema ADK validates before graph-state projection.
     pub(crate) fn output_schema(
         &self,
@@ -411,6 +428,14 @@ impl LlmExecutionInput {
     pub(crate) fn system(&self) -> &str {
         &self.system
     }
+
+    pub(super) fn for_decision(history: Vec<Content>, prompt: String) -> Self {
+        Self {
+            system: String::new(),
+            task: Content::new("user").with_text(prompt),
+            history,
+        }
+    }
 }
 
 /// Invocation-owned factory that binds a fresh model and exact node toolsets.
@@ -475,34 +500,15 @@ impl Node for LlmNode {
                 .map_execution_input(&context.state)
                 .map_err(|_| node_failure(self.name()))?;
             tracing::Span::current().record("stage", "agent_binding");
-            let agent = self
-                .factory
-                .build(
-                    &self.definition,
-                    &input,
-                    self.definition
-                        .output_schema(&self.state_types)
-                        .map_err(|_| node_failure(self.name()))?,
-                )
+            let schema = self
+                .definition
+                .output_schema(&self.state_types)
                 .map_err(|_| node_failure(self.name()))?;
-            let invocation = Arc::new(PipelineLlmInvocationContext::new(
-                &context.config.thread_id,
-                input,
-                agent.clone(),
-                context.config.parent_context.clone(),
-            ));
-            tracing::Span::current().record("stage", "model_tool_loop");
-            let stream = agent
-                .run(invocation)
-                .await
-                .map_err(|_| node_failure(self.name()))?;
-            tokio::pin!(stream);
-            let mut events = Vec::new();
-            while let Some(event) = stream.next().await {
-                events.push(event.map_err(|_| node_failure(self.name()))?);
-            }
+            let text =
+                run_model_agent_text(&self.definition, input, schema, &self.factory, context)
+                    .await
+                    .map_err(|_| node_failure(self.name()))?;
             tracing::Span::current().record("stage", "state_projection");
-            let text = last_model_text(&events).ok_or_else(|| node_failure(self.name()))?;
             let updates = self
                 .definition
                 .project_response(&text, &self.state_types)
@@ -525,6 +531,33 @@ impl Node for LlmNode {
     }
 }
 
+pub(super) async fn run_model_agent_text(
+    definition: &LlmNodeDefinition,
+    input: LlmExecutionInput,
+    output_schema: Option<Value>,
+    factory: &Arc<dyn PipelineLlmAgentFactory>,
+    context: &NodeContext,
+) -> Result<String, LlmExecutionError> {
+    let agent = factory.build(definition, &input, output_schema)?;
+    let invocation = Arc::new(PipelineLlmInvocationContext::new(
+        &context.config.thread_id,
+        input,
+        agent.clone(),
+        context.config.parent_context.clone(),
+    ));
+    tracing::Span::current().record("stage", "model_tool_loop");
+    let stream = agent
+        .run(invocation)
+        .await
+        .map_err(|_| LlmExecutionError::Unavailable)?;
+    tokio::pin!(stream);
+    let mut events = Vec::new();
+    while let Some(event) = stream.next().await {
+        events.push(event.map_err(|_| LlmExecutionError::Unavailable)?);
+    }
+    last_model_text(&events).ok_or(LlmExecutionError::Unavailable)
+}
+
 fn node_failure(node: &str) -> GraphError {
     GraphError::NodeExecutionFailed {
         node: node.to_owned(),
@@ -545,7 +578,7 @@ fn last_model_text(events: &[adk_rust::Event]) -> Option<String> {
     })
 }
 
-fn render_fstring(template: &str, state: &State) -> Result<String, LlmExecutionError> {
+pub(super) fn render_fstring(template: &str, state: &State) -> Result<String, LlmExecutionError> {
     let mut rendered = String::with_capacity(template.len());
     let mut cursor = 0;
     while let Some(relative_open) = template[cursor..].find('{') {
@@ -587,7 +620,7 @@ fn render_fstring(template: &str, state: &State) -> Result<String, LlmExecutionE
     Ok(rendered)
 }
 
-fn normalize_mapping_value(value: &Value) -> Result<String, LlmExecutionError> {
+pub(super) fn normalize_mapping_value(value: &Value) -> Result<String, LlmExecutionError> {
     match value {
         Value::String(value) => Ok(value.clone()),
         value => serde_json::to_string(value).map_err(|_| LlmExecutionError::InvalidInputMapping),
@@ -602,7 +635,7 @@ fn value_as_bounded_text(value: &Value) -> Result<String, LlmExecutionError> {
     Ok(text)
 }
 
-fn parse_messages(value: &Value) -> Result<Vec<Content>, LlmExecutionError> {
+pub(super) fn parse_messages(value: &Value) -> Result<Vec<Content>, LlmExecutionError> {
     let values = value
         .as_array()
         .ok_or(LlmExecutionError::InvalidInputMapping)?;

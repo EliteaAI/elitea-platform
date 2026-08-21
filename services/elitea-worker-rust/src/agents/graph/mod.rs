@@ -8,6 +8,7 @@ mod agent;
 pub(crate) mod compiler;
 #[cfg(test)]
 mod compiler_tests;
+mod decision;
 mod direct_tool;
 #[cfg(test)]
 mod direct_tool_tests;
@@ -24,6 +25,9 @@ mod printer;
 #[cfg(test)]
 mod printer_tests;
 pub(crate) mod resume;
+mod router;
+#[cfg(test)]
+mod routing_tests;
 mod state_modifier;
 #[cfg(test)]
 mod state_modifier_tests;
