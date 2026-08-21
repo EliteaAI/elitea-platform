@@ -22,6 +22,7 @@ use thiserror::Error;
 use tracing::Instrument as _;
 
 use super::yaml::{valid_graph_id, valid_output_key};
+use crate::agents::application_tools::PIPELINE_APPLICATION_NODE_METADATA_KEY;
 use crate::agents::events::mask_sensitive_arguments;
 use crate::toolkits::SensitiveToolPolicy;
 
@@ -809,11 +810,19 @@ struct PipelineToolContext {
 
 impl PipelineToolContext {
     fn new(parent: Arc<dyn InvocationContext>, function_call_id: String, tool_name: &str) -> Self {
+        let mut actions = EventActions::default();
+        actions.state_delta.insert(
+            PIPELINE_APPLICATION_NODE_METADATA_KEY.to_owned(),
+            json!({
+                "call_id": function_call_id,
+                "tool_name": tool_name,
+            }),
+        );
         Self {
             parent,
             function_call_id,
             tool_name: tool_name.to_owned(),
-            actions: Mutex::new(EventActions::default()),
+            actions: Mutex::new(actions),
         }
     }
 

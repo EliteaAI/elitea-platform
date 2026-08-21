@@ -116,6 +116,11 @@ impl ApplicationRuntimeProjection {
     }
 }
 
+pub(crate) struct PipelineRuntimeBindings {
+    pub(crate) nodes: super::graph::compiler::PipelineNodeRuntimes,
+    pub(crate) applications: ApplicationRuntimeProjection,
+}
+
 fn application_event_agent(
     agent: Arc<dyn Agent>,
     events: ApplicationEventReceiver,
@@ -712,8 +717,12 @@ pub(crate) async fn assemble_pipeline_native(
     session_authority: ClaimBoundSessionAuthority,
     state_writer_lease: Arc<dyn StateWriterLease>,
     backend: &NativePipelineStateBackend,
-    node_runtimes: super::graph::compiler::PipelineNodeRuntimes,
+    runtime: PipelineRuntimeBindings,
 ) -> Result<AssembledNativeAgentInvocation<PipelineAgentCompletion>, NativeAgentAssemblyError> {
+    let PipelineRuntimeBindings {
+        nodes: node_runtimes,
+        applications: application_runtime,
+    } = runtime;
     let state = backend
         .open(
             session_authority,
@@ -753,16 +762,30 @@ pub(crate) async fn assemble_pipeline_native(
         generation: _,
     } = plan;
     context_management.prepare_runner_composition();
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+        resume: _,
+    } = application_runtime;
+    let agent: Arc<dyn Agent> = Arc::new(
+        EliteaGraphAgent::new(graph)
+            .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
+    );
+    let agent = application_events.map_or(agent.clone(), |events| {
+        application_event_agent(agent, events, application_tools.clone())
+    });
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
-        .agent(Arc::new(
-            EliteaGraphAgent::new(graph)
-                .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
-        ))
+        .agent(agent)
         .session_service(state.sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::new(projection).map_err(projection_configuration)?;
+    let projector = AgentEventProjector::with_tool_catalogs(
+        projection,
+        SensitiveToolCatalog::default(),
+        application_tools,
+    )
+    .map_err(projection_configuration)?;
     let input = if printer_resume {
         user_content
     } else if is_resume {

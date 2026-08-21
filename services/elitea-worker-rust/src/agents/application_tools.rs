@@ -60,6 +60,8 @@ const MAX_PARALLEL_APPLICATION_CALLS: usize = 8;
 const ADK_LLM_REQUEST_METADATA_KEY: &str = "gcp.vertex.agent.llm_request";
 const ADK_LLM_RESPONSE_METADATA_KEY: &str = "gcp.vertex.agent.llm_response";
 const NESTED_INTERRUPT_RESULT_KEY: &str = "__elitea_nested_interrupt_v1";
+pub(crate) const PIPELINE_APPLICATION_NODE_METADATA_KEY: &str =
+    "elitea.pipeline.application_node.v1";
 
 type ApplicationIdentity = (u64, u64);
 type ApplicationFuture<'a> = Pin<
@@ -69,6 +71,7 @@ type ApplicationFuture<'a> = Pin<
 type ApplicationEventSender = mpsc::Sender<ApplicationEventSignal>;
 
 enum ApplicationEventSignal {
+    ContainerEvent(Box<Event>),
     Event {
         container_invocation_id: String,
         parent_call_id: String,
@@ -82,8 +85,9 @@ enum ApplicationEventFailure {
     ChildExecution,
 }
 
+#[derive(Clone)]
 pub(crate) struct ApplicationEventReceiver {
-    inner: Mutex<Option<mpsc::Receiver<ApplicationEventSignal>>>,
+    inner: Arc<Mutex<Option<mpsc::Receiver<ApplicationEventSignal>>>>,
 }
 
 #[derive(Clone, Default)]
@@ -806,6 +810,14 @@ pub(crate) struct MaterializedApplicationToolset {
     pub(crate) resume: ApplicationResumeCoordinator,
 }
 
+/// Selected saved-agent tools plus their invocation-owned event projection.
+pub(crate) struct MaterializedApplicationRuntime {
+    pub(crate) tools: Vec<MaterializedApplicationTool>,
+    pub(crate) presentations: ApplicationToolPresentationCatalog,
+    pub(crate) events: ApplicationEventReceiver,
+    pub(crate) resume: ApplicationResumeCoordinator,
+}
+
 /// Build the one nested-application toolset for the root direct agent.
 pub(crate) async fn materialize_application_toolset(
     snapshot: &AdmittedToolSnapshot<'_>,
@@ -813,8 +825,48 @@ pub(crate) async fn materialize_application_toolset(
     runtime_context: &ClaimBoundRuntimeContextAuthority,
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
-    mut dependencies: ApplicationToolDependencies,
+    dependencies: ApplicationToolDependencies,
 ) -> Result<Option<MaterializedApplicationToolset>, NativeAgentAssemblyError> {
+    let Some(runtime) = materialize_application_runtime(
+        snapshot,
+        platform,
+        runtime_context,
+        elitea_context,
+        fallback_profile,
+        dependencies,
+        None,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let MaterializedApplicationRuntime {
+        tools,
+        presentations,
+        events,
+        resume,
+    } = runtime;
+    Ok(Some(MaterializedApplicationToolset {
+        toolset: Arc::new(BasicToolset::new(
+            "elitea_nested_applications",
+            tools.into_iter().map(|entry| entry.tool).collect(),
+        )),
+        presentations,
+        events,
+        resume,
+    }))
+}
+
+/// Resolve selected saved agents with one typed descendant-event runtime.
+pub(crate) async fn materialize_application_runtime(
+    snapshot: &AdmittedToolSnapshot<'_>,
+    platform: &PlatformClient,
+    runtime_context: &ClaimBoundRuntimeContextAuthority,
+    elitea_context: Arc<ClaimScopedEliteaContext>,
+    fallback_profile: &OrdinaryNoToolProfile,
+    mut dependencies: ApplicationToolDependencies,
+    selected_aliases: Option<&BTreeSet<String>>,
+) -> Result<Option<MaterializedApplicationRuntime>, NativeAgentAssemblyError> {
     let (event_sender, event_receiver) = mpsc::channel(APPLICATION_EVENT_CHANNEL_CAPACITY);
     let resume = ApplicationResumeCoordinator::default();
     dependencies.event_sender = Some(event_sender);
@@ -826,7 +878,7 @@ pub(crate) async fn materialize_application_toolset(
         elitea_context,
         fallback_profile,
         dependencies,
-        None,
+        selected_aliases,
     )
     .await?;
     if materialized.is_empty() {
@@ -845,14 +897,11 @@ pub(crate) async fn materialize_application_toolset(
             )
             .map_err(|_| invalid_configuration())?;
     }
-    Ok(Some(MaterializedApplicationToolset {
-        toolset: Arc::new(BasicToolset::new(
-            "elitea_nested_applications",
-            materialized.into_iter().map(|entry| entry.tool).collect(),
-        )),
+    Ok(Some(MaterializedApplicationRuntime {
+        tools: materialized,
         presentations,
         events: ApplicationEventReceiver {
-            inner: Mutex::new(Some(event_receiver)),
+            inner: Arc::new(Mutex::new(Some(event_receiver))),
         },
         resume,
     }))
@@ -1446,6 +1495,10 @@ impl ApplicationAgentTool {
         arguments: Value,
     ) -> adk_rust::Result<Value> {
         let task = application_task(&arguments).map_err(|_| tool_input_error())?;
+        let pipeline_container = pipeline_application_container(ctx.as_ref(), self.name())?;
+        if pipeline_container {
+            self.send_container_call(ctx.as_ref(), &arguments).await?;
+        }
         let resume = match &self.resume {
             Some(coordinator) => {
                 coordinator
@@ -1491,6 +1544,20 @@ impl ApplicationAgentTool {
                 .install_children(child_context.invocation_id().to_owned(), children)
                 .await?;
         }
+        let result = self.drain_child(ctx.as_ref(), agent, child_context).await?;
+        if pipeline_container && !is_nested_interrupt_result(&result) {
+            self.send_container_result(ctx.as_ref(), result.clone())
+                .await?;
+        }
+        Ok(result)
+    }
+
+    async fn drain_child(
+        &self,
+        ctx: &dyn ToolContext,
+        agent: Arc<dyn Agent>,
+        child_context: Arc<ApplicationToolInvocationContext>,
+    ) -> adk_rust::Result<Value> {
         let child_branch = child_context.branch().to_owned();
         let mut stream = agent.run(child_context.clone()).await?;
         let mut final_response = None;
@@ -1514,7 +1581,7 @@ impl ApplicationAgentTool {
             }
             application_batch.observe_calls(&event, &self.application.child_tools)?;
             if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
-                self.send_event(ctx.as_ref(), event).await?;
+                self.send_event(ctx, event).await?;
                 return Ok(nested_interrupt_result());
             }
             if let Some(text) = event_text(&event) {
@@ -1525,11 +1592,11 @@ impl ApplicationAgentTool {
             }
             match application_batch.observe_results(&mut event)? {
                 ApplicationResultDisposition::Forward => {
-                    self.send_event(ctx.as_ref(), event).await?;
+                    self.send_event(ctx, event).await?;
                 }
                 ApplicationResultDisposition::Suppress => {}
                 ApplicationResultDisposition::ForwardAndPause => {
-                    self.send_event(ctx.as_ref(), event).await?;
+                    self.send_event(ctx, event).await?;
                     return Ok(nested_interrupt_result());
                 }
                 ApplicationResultDisposition::SuppressAndPause => {
@@ -1542,6 +1609,51 @@ impl ApplicationAgentTool {
                 .or(last_text)
                 .unwrap_or_else(|| "No response from agent".to_owned())
         }))
+    }
+
+    async fn send_container_call(
+        &self,
+        ctx: &dyn ToolContext,
+        arguments: &Value,
+    ) -> adk_rust::Result<()> {
+        let mut event = pipeline_application_event(ctx);
+        event.llm_response.content = Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::FunctionCall {
+                name: self.name().to_owned(),
+                args: arguments.clone(),
+                id: Some(ctx.function_call_id().to_owned()),
+                thought_signature: None,
+            }],
+        });
+        self.send_container_event(event).await
+    }
+
+    async fn send_container_result(
+        &self,
+        ctx: &dyn ToolContext,
+        result: Value,
+    ) -> adk_rust::Result<()> {
+        let mut event = pipeline_application_event(ctx);
+        event.llm_response.content = Some(Content {
+            role: "function".to_owned(),
+            parts: vec![Part::FunctionResponse {
+                function_response: adk_rust::FunctionResponseData::new(self.name(), result),
+                id: Some(ctx.function_call_id().to_owned()),
+                annotations: None,
+            }],
+        });
+        self.send_container_event(event).await
+    }
+
+    async fn send_container_event(&self, event: Event) -> adk_rust::Result<()> {
+        let Some(sender) = &self.event_sender else {
+            return Err(application_event_channel_error());
+        };
+        sender
+            .send(ApplicationEventSignal::ContainerEvent(Box::new(event)))
+            .await
+            .map_err(|_| application_event_channel_error())
     }
 
     async fn send_event(&self, ctx: &dyn ToolContext, event: Event) -> adk_rust::Result<()> {
@@ -1937,6 +2049,19 @@ impl InvocationContext for ApplicationRootInvocationContext {
 
 fn application_signal_event(signal: ApplicationEventSignal) -> adk_rust::Result<Event> {
     match signal {
+        ApplicationEventSignal::ContainerEvent(event) => {
+            let event = *event;
+            if event
+                .provider_metadata
+                .contains_key(DESCENDANT_CONTAINER_INVOCATION_KEY)
+                || event
+                    .provider_metadata
+                    .contains_key(DESCENDANT_PARENT_CALL_KEY)
+            {
+                return Err(application_event_channel_error());
+            }
+            Ok(event)
+        }
         ApplicationEventSignal::Event {
             container_invocation_id,
             parent_call_id,
@@ -1965,6 +2090,38 @@ fn application_signal_event(signal: ApplicationEventSignal) -> adk_rust::Result<
             Err(child_execution_error())
         }
     }
+}
+
+fn pipeline_application_container(
+    ctx: &dyn ToolContext,
+    tool_name: &str,
+) -> adk_rust::Result<bool> {
+    let actions = ctx.actions();
+    let Some(marker) = actions
+        .state_delta
+        .get(PIPELINE_APPLICATION_NODE_METADATA_KEY)
+    else {
+        return Ok(false);
+    };
+    let object = marker
+        .as_object()
+        .filter(|object| object.len() == 2)
+        .ok_or_else(application_event_channel_error)?;
+    if object.get("call_id").and_then(Value::as_str) != Some(ctx.function_call_id())
+        || object.get("tool_name").and_then(Value::as_str) != Some(tool_name)
+    {
+        return Err(application_event_channel_error());
+    }
+    Ok(true)
+}
+
+fn pipeline_application_event(ctx: &dyn ToolContext) -> Event {
+    let mut event = Event::new(ctx.invocation_id());
+    ctx.agent_name().clone_into(&mut event.author);
+    APPLICATION_BRANCH_ROOT.clone_into(&mut event.branch);
+    event.llm_response.finish_reason = Some(FinishReason::Stop);
+    event.llm_response.turn_complete = true;
+    event
 }
 
 struct ApplicationToolInvocationContext {

@@ -31,7 +31,10 @@ use crate::toolkits::{
     McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
 };
 use crate::transport::model_facade::ModelFacade;
-use crate::transport::model_gateway::{test_model_gateway_client, test_model_gateway_config};
+use crate::transport::model_gateway::{
+    TestModelGatewayOutcome, test_model_gateway_client, test_model_gateway_config,
+    test_model_gateway_response,
+};
 use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::{
     RuntimeContextClient, RuntimeContextConfig, RuntimeContextRpc, RuntimeContextTransportError,
@@ -325,6 +328,46 @@ type PipelineChildRuntime = (
 );
 
 fn pipeline_child_runtime() -> PipelineChildRuntime {
+    pipeline_runtime(
+        &json!({
+            "agent_type": "pipeline",
+            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: state_modifier\n    template: 'Child: {{ input }}'\n    input: [input]\n    output: [answer]\n    transition: END\n",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": null
+        }),
+        Vec::new(),
+    )
+}
+
+fn direct_agent_pipeline_runtime() -> PipelineChildRuntime {
+    pipeline_runtime(
+        &json!({
+            "agent_type": "agent",
+            "instructions": "Return the delegated release summary.",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": {
+                "model_name": "child-model",
+                "model_project_id": 23,
+                "max_tokens": 2048,
+                "reasoning_effort": null,
+                "temperature": 0.2,
+                "openai_compatible": true
+            }
+        }),
+        vec![TestModelGatewayOutcome::Response(pipeline_text_response(
+            "direct child summary",
+        ))],
+    )
+}
+
+fn pipeline_runtime(
+    version_details: &Value,
+    outcomes: Vec<TestModelGatewayOutcome>,
+) -> PipelineChildRuntime {
     let calls = Arc::new(AtomicUsize::new(0));
     let paths = Arc::new(Mutex::new(Vec::new()));
     let token = runtime_response(&json!({
@@ -337,14 +380,7 @@ fn pipeline_child_runtime() -> PipelineChildRuntime {
         "project_id": 17,
         "application_id": 3,
         "version_id": 4,
-        "version_details": {
-            "agent_type": "pipeline",
-            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: state_modifier\n    template: 'Child: {{ input }}'\n    input: [input]\n    output: [answer]\n    transition: END\n",
-            "meta": {},
-            "variables": [],
-            "tools": [],
-            "llm_settings": null
-        }
+        "version_details": version_details
     }));
     let runtime = RuntimeContextClient::with_rpc(
         PipelineRuntimeContextFixture {
@@ -360,7 +396,7 @@ fn pipeline_child_runtime() -> PipelineChildRuntime {
         },
     )
     .expect("pipeline runtime-context fixture");
-    let (gateway, _) = test_model_gateway_client(Vec::new(), test_model_gateway_config())
+    let (gateway, _) = test_model_gateway_client(outcomes, test_model_gateway_config())
         .expect("unused pipeline model gateway");
     (
         Arc::new(PlatformClient::new(Arc::new(runtime))),
@@ -368,6 +404,13 @@ fn pipeline_child_runtime() -> PipelineChildRuntime {
         calls,
         paths,
     )
+}
+
+fn pipeline_text_response(text: &str) -> Response<Body> {
+    let raw = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":{text:?}}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
 fn runtime_tool_policy(value: &Value) -> ToolAdmissionPolicy {
@@ -738,6 +781,81 @@ fn agent_node_scope_requires_one_exact_allowed_saved_application_or_pipeline() {
     assert_eq!(
         error.code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+}
+
+#[tokio::test]
+async fn direct_saved_agent_node_streams_one_exact_pipeline_hierarchy() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, calls, paths) = direct_agent_pipeline_runtime();
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade);
+    let request = agent_pipeline_request("release-agent", "agent");
+    let mut invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized direct-agent participant");
+    invocation
+        .project_start(timestamp(0))
+        .expect("browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("pipeline start");
+    let mut browser = Vec::new();
+    while let Some(event) = run.next_event().await.expect("pipeline Agent event") {
+        let projected = projector
+            .project(&event)
+            .expect("pipeline Agent projection");
+        browser.extend(projected.into_iter().map(|event| current(&event)));
+    }
+    let selected = completion
+        .select()
+        .await
+        .expect("pipeline Agent result selection");
+    browser.extend(
+        projector
+            .finish_after_eos(selected, timestamp(1))
+            .expect("pipeline Agent browser completion")
+            .into_iter()
+            .map(|event| current(&event)),
+    );
+
+    let nested = browser
+        .iter()
+        .filter(|event| {
+            event["response_metadata"]["parent_agent_path"]
+                .as_array()
+                .is_some_and(|path| !path.is_empty())
+        })
+        .collect::<Vec<_>>();
+    assert!(!nested.is_empty(), "missing nested hierarchy: {browser:?}");
+    for event in nested {
+        let path = event["response_metadata"]["parent_agent_path"]
+            .as_array()
+            .expect("nested Agent path");
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0]["name"], "release-agent");
+        assert_eq!(path[0]["sibling_ordinal"], 1);
+        assert!(
+            path[0]["call_id"]
+                .as_str()
+                .is_some_and(|call_id| call_id.starts_with("pipeline:delegate:"))
+        );
+    }
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "direct child summary")
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        paths.lock().expect("runtime paths").as_slice(),
+        [
+            "/executions/execution%2Fone/generations/2/runtime-context/elitea-client-token",
+            "/executions/execution%2Fone/generations/2/runtime-context/applications/3/versions/4"
+        ]
     );
 }
 

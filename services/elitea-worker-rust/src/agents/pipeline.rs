@@ -18,7 +18,9 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use tracing::Instrument as _;
 
-use super::application_tools::{ApplicationToolDependencies, materialize_application_tools};
+use super::application_tools::{
+    ApplicationToolDependencies, MaterializedApplicationRuntime, materialize_application_runtime,
+};
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
 use super::graph::compiler::PipelineNodeRuntimes;
 use super::graph::compiler::{PipelineConfigurationError, PipelineDefinition};
@@ -34,8 +36,8 @@ use super::runtime::{
     NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
 };
 use super::session::{
-    BoundOrdinaryAgentModel, NativePipelineStateBackend, PipelineAgentCompletion,
-    assemble_pipeline_native,
+    ApplicationRuntimeProjection, BoundOrdinaryAgentModel, NativePipelineStateBackend,
+    PipelineAgentCompletion, PipelineRuntimeBindings, assemble_pipeline_native,
 };
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::state::{CheckpointLimits, SessionLimits};
@@ -301,12 +303,15 @@ impl PipelineNativeAgentAssembler {
         profile: &PipelineExecutionProfile,
         toolsets: AdmittedToolSnapshot<'_>,
         runtime_context: &ClaimBoundRuntimeContextAuthority,
-    ) -> Result<PipelineNodeRuntimes, NativeAgentAssemblyError> {
+    ) -> Result<PipelineRuntimeBindings, NativeAgentAssemblyError> {
         let has_llm_nodes = profile.definition().has_llm_nodes();
         let has_direct_tool_nodes = profile.definition().has_direct_tool_nodes();
         let has_application_nodes = profile.definition().has_application_nodes();
         if !has_llm_nodes && !has_direct_tool_nodes && !has_application_nodes {
-            return Ok(PipelineNodeRuntimes::default());
+            return Ok(PipelineRuntimeBindings {
+                nodes: PipelineNodeRuntimes::default(),
+                applications: ApplicationRuntimeProjection::default(),
+            });
         }
         let (context, model_facade) = if has_llm_nodes || has_application_nodes {
             let platform = self
@@ -342,7 +347,7 @@ impl PipelineNativeAgentAssembler {
         materialized.append(&mut mcp);
         let toolsets = toolsets_by_alias(materialized)?;
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
-        let application_resolver = self
+        let (application_resolver, application_runtime) = self
             .build_application_resolver(
                 profile,
                 &selected_snapshot,
@@ -359,11 +364,14 @@ impl PipelineNativeAgentAssembler {
                 toolsets,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
-        Ok(PipelineNodeRuntimes::new(
-            llm_factory,
-            direct_tool_resolver,
-            application_resolver,
-        ))
+        Ok(PipelineRuntimeBindings {
+            nodes: PipelineNodeRuntimes::new(
+                llm_factory,
+                direct_tool_resolver,
+                application_resolver,
+            ),
+            applications: application_runtime,
+        })
     }
 
     async fn build_application_resolver(
@@ -373,9 +381,15 @@ impl PipelineNativeAgentAssembler {
         runtime_context: &ClaimBoundRuntimeContextAuthority,
         context: Option<Arc<ClaimScopedEliteaContext>>,
         model_facade: Option<Arc<ModelFacade>>,
-    ) -> Result<Option<Arc<dyn PipelineApplicationResolver>>, NativeAgentAssemblyError> {
+    ) -> Result<
+        (
+            Option<Arc<dyn PipelineApplicationResolver>>,
+            ApplicationRuntimeProjection,
+        ),
+        NativeAgentAssemblyError,
+    > {
         if !profile.definition().has_application_nodes() {
-            return Ok(None);
+            return Ok((None, ApplicationRuntimeProjection::default()));
         }
         let platform = self
             .platform
@@ -399,7 +413,7 @@ impl PipelineNativeAgentAssembler {
             .map(|reference| reference.toolkit_name().to_owned())
             .filter(|alias| expected.contains(alias))
             .collect::<BTreeSet<_>>();
-        let tools = materialize_application_tools(
+        let direct_runtime = materialize_application_runtime(
             snapshot,
             platform,
             runtime_context,
@@ -414,16 +428,26 @@ impl PipelineNativeAgentAssembler {
         )
         .await?;
         let mut participants = BTreeMap::new();
-        for entry in tools {
-            if participants
-                .insert(
-                    entry.alias,
-                    NativePipelineApplicationParticipant::Agent(entry.tool),
-                )
-                .is_some()
-            {
-                return Err(invalid_pipeline_tool_scope());
+        let mut projection = ApplicationRuntimeProjection::default();
+        if let Some(runtime) = direct_runtime {
+            let MaterializedApplicationRuntime {
+                tools,
+                presentations,
+                events,
+                resume,
+            } = runtime;
+            for entry in tools {
+                if participants
+                    .insert(
+                        entry.alias,
+                        NativePipelineApplicationParticipant::Agent(entry.tool),
+                    )
+                    .is_some()
+                {
+                    return Err(invalid_pipeline_tool_scope());
+                }
             }
+            projection = ApplicationRuntimeProjection::streaming(presentations, events, resume);
         }
         for reference in snapshot.iter().filter(|reference| {
             reference.kind() == FrozenToolKind::Application
@@ -458,9 +482,10 @@ impl PipelineNativeAgentAssembler {
         if actual != expected {
             return Err(invalid_pipeline_tool_scope());
         }
-        Ok(Some(Arc::new(NativePipelineApplicationResolver {
-            participants,
-        })))
+        Ok((
+            Some(Arc::new(NativePipelineApplicationResolver { participants })),
+            projection,
+        ))
     }
 
     async fn materialize_saved_pipeline_participant(

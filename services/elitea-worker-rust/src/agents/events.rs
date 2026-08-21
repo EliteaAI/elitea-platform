@@ -1064,7 +1064,10 @@ impl AgentEventProjector {
         event: &Event,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
         if self.context.graph_checkpoint_thread_id.is_none()
-            || !matches!(self.state, ProjectionState::Started)
+            || !matches!(
+                self.state,
+                ProjectionState::Started | ProjectionState::Complete(_)
+            )
             || !self.active_tools.is_empty()
         {
             return Err(AgentEventProjectionError::invalid_state());
