@@ -167,7 +167,11 @@ jobs:
           # Count OCCURRENCES, not matching lines: `grep -c` reports 1 for a
           # line that names the script twice, so the "exactly one call site"
           # rule below was not enforced for that shape.
-          calls="$(grep -v '^[[:space:]]*#' "$caller" | grep -o 'deploy/scripts/sdk-client-check\.sh' | wc -l | tr -d ' ')"
+          # `|| true` is load-bearing, NOT redundant: grep exits 1 on no match and
+          # `set -o pipefail` propagates that, so without it the ZERO-call-site
+          # case dies at this assignment and the step fails printing nothing at
+          # all — the one case whose diagnostic matters most.
+          calls="$(grep -v '^[[:space:]]*#' "$caller" | grep -o 'deploy/scripts/sdk-client-check\.sh' | wc -l | tr -d ' ' || true)"
           if [ "$calls" != "1" ]; then
             echo "::error::$caller INVOKES sdk-client-check.sh $calls time(s) outside comments, expected exactly 1."
             echo "::error::Zero means tier 3 is now unreachable: nothing else starts it, and the file would keep looking maintained."

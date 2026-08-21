@@ -47,6 +47,11 @@ func chat(t *testing.T, ts *httptest.Server, org string) (int, map[string]any) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// The SDK sends Authorization on every /llm call. Without it the journal
+	// assertion on the redaction branch short-circuits on `got != ""`, and
+	// snapshotHeaders' whole authorization case can be deleted with this suite
+	// green (measured).
+	req.Header.Set("Authorization", "Bearer harness-test-token")
 	if org != "" {
 		req.Header.Set(orgHeader, org)
 	}

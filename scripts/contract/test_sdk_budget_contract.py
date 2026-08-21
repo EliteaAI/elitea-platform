@@ -34,6 +34,7 @@ the skip message names the variable to set.
 from __future__ import annotations
 
 import ast
+from collections import Counter
 import json
 import os
 import re
@@ -1025,21 +1026,40 @@ EXPECTED_TESTS = frozenset(
 
 
 def test_every_gate_in_this_file_is_still_collected() -> None:
-    """Fail when a test in this file is renamed, removed, or un-collected.
+    """Fail when a test in this file is renamed, removed, or shadowed.
 
-    This test does NOT need the SDK, so it runs even when the others skip. It
-    reads the file with ast, not the imported module: a decorator that skips a
-    test still leaves the function bound, so introspecting globals() would not
-    see a test that pytest no longer runs.
+    This test does NOT need the SDK, so it runs even when the others skip.
+    Reading the file with ast rather than the imported module is what lets it
+    run at all when the SDK is absent: introspecting globals() would require
+    importing a module whose fixtures cannot resolve.
+
+    WHAT IT CANNOT SEE. A source-level check cannot tell whether pytest RAN a
+    test. A skip marker, an xfail, `-k`, `--deselect` and a collection error
+    all leave the `def` exactly where it is; a module-level
+    `pytestmark = pytest.mark.skip` makes this very floor skip itself and the
+    run still exits 0. Counting what pytest REPORTED is a different job, and
+    scripts/contract/conftest.py does it under CI.
     """
     source = Path(__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    collected = {
+    # Count the definitions, do not collapse them into a set. Python binds the
+    # LAST definition of a name, so a duplicate `def` makes every earlier body
+    # dead code that pytest never runs — and a set counts that name once and
+    # reports a pass for a gate whose body was replaced. That is this file's
+    # own failure class, and it applied to this floor.
+    defined = Counter(
         node.name
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and node.name.startswith("test_")
-    }
+    )
+    shadowed = sorted(name for name, count in defined.items() if count > 1)
+    assert not shadowed, (
+        "these test names are defined more than once in this file: {0}. Python "
+        "binds the LAST definition, so every earlier body is dead code that "
+        "pytest never runs.".format(shadowed)
+    )
+    collected = set(defined)
 
     missing = sorted(EXPECTED_TESTS - collected)
     assert not missing, (

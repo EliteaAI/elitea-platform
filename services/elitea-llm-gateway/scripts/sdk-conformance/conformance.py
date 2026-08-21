@@ -45,7 +45,7 @@ from pathlib import Path
 
 # Every assertion this file is written to make. Move this number when you add
 # or remove one; never lower it to make a run agree.
-EXPECTED_ASSERTIONS = 28
+EXPECTED_ASSERTIONS = 29
 
 # The two SDK files whose content this gate depends on. The installed package
 # must be byte-identical to the pinned source tree, or the run measured some
@@ -455,6 +455,30 @@ def assert_embeddings(result: Result, client, base_url: str) -> None:
         f"The whole point of this assertion is the base64 arm: with `float` on the wire the "
         f"vector above proves nothing about it, and the gateway's base64 path stays "
         f"unmeasured. Recorded requests: {json.dumps(rows)[:400]}",
+    )
+
+    # Pin the RESPONSE form too. The two decode assertions above measure a
+    # decode, not base64: swap the harness to answer a plain float array and
+    # they both still pass, because the SDK decodes whatever it is given. The
+    # request assertion above reads what the SDK ASKED for, which the harness
+    # can ignore. Only the wire settles it, so read it directly.
+    raw = harness_request(
+        base_url,
+        client.llm_path + "/embeddings",
+        method="POST",
+        payload={
+            "model": "openai/text-embedding-3-small",
+            "input": "tier 2 base64 fixture probe",
+            "encoding_format": "base64",
+        },
+    )
+    wire = (raw.get("data") or [{}])[0].get("embedding")
+    result.check(
+        isinstance(wire, str),
+        "the gateway answers the embeddings route in base64",
+        f"the embeddings response carried embedding={type(wire).__name__}, want a base64 "
+        f"str. The two decode assertions above only measure a decode WHILE base64 is on "
+        f"the wire; they pass unchanged against a plain float array.",
     )
 
 
