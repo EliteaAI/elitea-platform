@@ -117,7 +117,7 @@ Maintained Rust runtime ownership registry:
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
   prebuilt/static MCP, remote effects, pipeline-Agent descendant event
-  streaming, child variables, nested static Printer interrupts, LLM-node nested confirmation,
+  streaming, recursive direct-child rejoin, child variables, nested static Printer interrupts, LLM-node nested confirmation,
   arbitrary static interrupts and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded

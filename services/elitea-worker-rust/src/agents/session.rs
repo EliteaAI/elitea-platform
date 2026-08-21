@@ -29,10 +29,16 @@ use ring::digest;
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
-use super::application_tools::{ApplicationEventReceiver, ApplicationEventStreamingAgent};
+use super::application_tools::{
+    ApplicationEventReceiver, ApplicationEventStreamingAgent, ApplicationResumeCoordinator,
+    prepare_nested_application_resume,
+};
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
-use super::direct_hitl::{DirectHitlDecision, DirectHitlError, DirectHitlErrorCode};
+use super::direct_hitl::{
+    DirectHitlDecision, DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode,
+    DirectHitlRunInput, ResolvedDirectHitlStart,
+};
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
     AgentEventProjector, ApplicationToolPresentationCatalog, CompletedAgentBrowserOutput,
@@ -82,6 +88,7 @@ pub(crate) enum NativeToolExecutionMode {
 pub(crate) struct ApplicationRuntimeProjection {
     presentations: ApplicationToolPresentationCatalog,
     events: Option<ApplicationEventReceiver>,
+    resume: Option<ApplicationResumeCoordinator>,
 }
 
 impl ApplicationRuntimeProjection {
@@ -89,10 +96,12 @@ impl ApplicationRuntimeProjection {
     pub(crate) const fn streaming(
         presentations: ApplicationToolPresentationCatalog,
         events: ApplicationEventReceiver,
+        resume: ApplicationResumeCoordinator,
     ) -> Self {
         Self {
             presentations,
             events: Some(events),
+            resume: Some(resume),
         }
     }
 
@@ -102,6 +111,7 @@ impl ApplicationRuntimeProjection {
         Self {
             presentations,
             events: None,
+            resume: None,
         }
     }
 }
@@ -951,6 +961,7 @@ where
     let ApplicationRuntimeProjection {
         presentations: application_tools,
         events: application_events,
+        resume: _,
     } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
     let agent = application_events.map_or(agent.clone(), |events| {
@@ -993,12 +1004,7 @@ where
             user_id,
             session_id,
             user_content,
-            RunConfig::builder()
-                .tool_concurrency(ToolConcurrencyConfig {
-                    max_concurrency: Some(MAX_PARALLEL_APPLICATION_CALLS),
-                    ..ToolConcurrencyConfig::default()
-                })
-                .build(),
+            parallel_application_run_config(),
         )
     } else {
         NativeAgentInvocation::new(runner, user_id, session_id, user_content)
@@ -1008,6 +1014,15 @@ where
         projector,
         OrdinaryAgentCompletion { model, thread_id },
     ))
+}
+
+fn parallel_application_run_config() -> RunConfig {
+    RunConfig::builder()
+        .tool_concurrency(ToolConcurrencyConfig {
+            max_concurrency: Some(MAX_PARALLEL_APPLICATION_CALLS),
+            ..ToolConcurrencyConfig::default()
+        })
+        .build()
 }
 
 /// Rebuild one direct `LlmAgent` around an exact persisted sensitive call.
@@ -1035,7 +1050,7 @@ where
         toolsets,
         sensitive_tools,
         ApplicationRuntimeProjection::default(),
-        decision,
+        DirectHitlDecisionSet::single(decision),
         sessions,
     )
     .await
@@ -1048,7 +1063,7 @@ pub(crate) async fn assemble_direct_hitl_resume_with_sessions_and_applications<M
     toolsets: Vec<Arc<dyn Toolset>>,
     sensitive_tools: SensitiveToolCatalog,
     application_runtime: ApplicationRuntimeProjection,
-    decision: DirectHitlDecision,
+    decisions: DirectHitlDecisionSet,
     sessions: Arc<dyn SessionService>,
 ) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
 where
@@ -1083,28 +1098,57 @@ where
         })
         .await
         .map_err(|_| dependency_unavailable())?;
-    let resolved = decision
+    let resolved = decisions
         .resolve(stored.as_ref())
-        .and_then(|resolved| resolved.into_direct_replay(&sensitive_tools))
         .map_err(|error| direct_hitl_error(&error))?;
-    let prepared = resolved.bind(model.adk_model());
-    let (replay_model, run_input, toolsets) = prepared.into_parts(toolsets);
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+        resume,
+    } = application_runtime;
+    let (replay_model, run_input, toolsets, parallel_applications) = match resolved {
+        ResolvedDirectHitlStart::Direct(decision) => {
+            let replay = (*decision)
+                .into_direct_replay(&sensitive_tools)
+                .map_err(|error| direct_hitl_error(&error))?;
+            let prepared = replay.bind(model.adk_model());
+            let (replay_model, run_input, toolsets) = prepared.into_parts(toolsets);
+            (replay_model, run_input, toolsets, false)
+        }
+        ResolvedDirectHitlStart::Nested(decisions) => {
+            let coordinator = resume.as_ref().ok_or_else(invalid_configuration)?;
+            let prepared = prepare_nested_application_resume(
+                &stored.events().all(),
+                decisions,
+                &application_tools,
+                coordinator,
+                model.adk_model(),
+            )
+            .await?;
+            let (replay_model, user_content, run_config) = prepared.into_parts();
+            (
+                replay_model,
+                DirectHitlRunInput::from_parts(user_content, run_config),
+                toolsets,
+                true,
+            )
+        }
+    };
     let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
         .model(replay_model)
         .generate_content_config(generation_config)
         .max_iterations(max_iterations)
         .disallow_transfer_to_parent(true)
         .disallow_transfer_to_peers(true);
+    if parallel_applications {
+        builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
+    }
     for toolset in toolsets {
         builder = builder.toolset(toolset);
     }
     for tool_name in sensitive_tools.tool_names() {
         builder = builder.require_tool_confirmation(tool_name);
     }
-    let ApplicationRuntimeProjection {
-        presentations: application_tools,
-        events: application_events,
-    } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
     let agent = application_events.map_or(agent.clone(), |events| {
         application_event_agent(agent, events, application_tools.clone())

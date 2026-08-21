@@ -186,23 +186,28 @@ fn runtime_context_with_child() -> (
 fn runtime_context_with_sensitive_child() -> (RuntimeContextClient, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let paths = Arc::new(Mutex::new(Vec::new()));
-    let token = runtime_context_response(&serde_json::json!({
-        "schema_version": "elitea.runtime.elitea-client-token.v1",
-        "project_id": 17,
-        "token": TOKEN,
-    }));
-    let child = application_version_response(
-        31,
-        41,
-        nested_agent_version(
-            "Resolve only the delegated name.",
-            "child-model",
-            23,
-            vec![remote_mcp_tool()],
-        ),
-    );
-    let client =
-        runtime_context_client_from(VecDeque::from([token, child]), Arc::clone(&calls), paths);
+    let responses = (0..3)
+        .flat_map(|_| {
+            [
+                runtime_context_response(&serde_json::json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": TOKEN,
+                })),
+                application_version_response(
+                    31,
+                    41,
+                    nested_agent_version(
+                        "Resolve only the delegated name.",
+                        "child-model",
+                        23,
+                        vec![remote_mcp_tool()],
+                    ),
+                ),
+            ]
+        })
+        .collect();
+    let client = runtime_context_client_from(responses, Arc::clone(&calls), paths);
     (client, calls)
 }
 
@@ -1168,6 +1173,9 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
             TestModelGatewayOutcome::Response(parallel_nested_agent_call_response()),
             TestModelGatewayOutcome::Response(mcp_tool_call_response()),
             TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(text_response("resolved child")),
+            TestModelGatewayOutcome::Response(text_response("resolved child")),
+            TestModelGatewayOutcome::Response(text_response("root resumed answer")),
         ],
         test_model_gateway_config(),
     )
@@ -1214,16 +1222,50 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
     }
 
     assert!(projector.is_paused());
-    assert_parallel_nested_interrupts(&public_interrupts);
+    let interrupt_ids = assert_parallel_nested_interrupts(&public_interrupts);
     assert_eq!(tool_calls.load(Ordering::Acquire), 0);
     assert_eq!(context_calls.load(Ordering::Acquire), 2);
     assert_eq!(connector.calls.load(Ordering::Acquire), 1);
     assert_eq!(captured.lock().expect("captured model requests").len(), 3);
 
-    assert_persisted_nested_interrupts(&sessions, user_id, session_id).await;
+    assert_persisted_nested_interrupts(&sessions, &user_id, &session_id, 0).await;
+    assert_partial_nested_resume_is_rejected(&assembler, &interrupt_ids[0]).await;
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(context_calls.load(Ordering::Acquire), 4);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 3);
+    let final_output = resume_parallel_nested_sensitive_calls(&assembler, interrupt_ids).await;
+    assert_eq!(final_output, "root resumed answer");
+    assert_eq!(tool_calls.load(Ordering::Acquire), 2);
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 3);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 6);
+    assert_persisted_nested_interrupts(&sessions, &user_id, &session_id, 2).await;
 }
 
-fn assert_parallel_nested_interrupts(public_interrupts: &[serde_json::Value]) {
+async fn assert_partial_nested_resume_is_rejected(
+    assembler: &OrdinaryNativeAgentAssembler,
+    interrupt_id: &str,
+) {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    request.binding.request_content_digest = [8; 32];
+    attach_nested_agent(&mut request);
+    admit_approved_resume(&mut request, interrupt_id);
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let Err(error) = assembler.assemble(assembly).await else {
+        panic!("partial parallel nested resume must fail closed");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+}
+
+fn assert_parallel_nested_interrupts(public_interrupts: &[serde_json::Value]) -> Vec<String> {
     assert_eq!(public_interrupts.len(), 2);
     let paths = public_interrupts
         .iter()
@@ -1250,21 +1292,93 @@ fn assert_parallel_nested_interrupts(public_interrupts: &[serde_json::Value]) {
             event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
                 .as_str()
                 .expect("nested interrupt identity")
+                .to_owned()
         })
         .collect::<HashSet<_>>();
     assert_eq!(interrupt_ids.len(), 2);
+    interrupt_ids.into_iter().collect()
+}
+
+async fn resume_parallel_nested_sensitive_calls(
+    assembler: &OrdinaryNativeAgentAssembler,
+    mut interrupt_ids: Vec<String>,
+) -> String {
+    interrupt_ids.sort_unstable();
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    request.binding.request_content_digest = [9; 32];
+    attach_nested_agent(&mut request);
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = None;
+    request.payload.hitl_value = None;
+    request.payload.hitl_decisions = interrupt_ids
+        .into_iter()
+        .map(|interrupt_id| {
+            serde_json::json!({
+                "interrupt_id": interrupt_id,
+                "tool_call_id": "call_mcp",
+                "action": "approve",
+                "value": "",
+            })
+        })
+        .collect();
+    let assembly = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("parallel nested resume assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("parallel nested resume start");
+    let (mut native, mut projector, completion) = invocation.start().expect("resume native start");
+    while let Some(event) = native.next_event().await.expect("nested resume event") {
+        if let Err(error) = projector.project(&event) {
+            panic!(
+                "nested resume projection: {error:?}; author={}; branch={}; invocation={}; calls={:?}; results={:?}; confirmation={}",
+                event.author,
+                event.branch,
+                event.invocation_id,
+                event
+                    .tool_calls()
+                    .iter()
+                    .map(|call| (call.name, call.call_id))
+                    .collect::<Vec<_>>(),
+                event
+                    .tool_results()
+                    .iter()
+                    .map(|result| result.call_id)
+                    .collect::<Vec<_>>(),
+                event.actions.tool_confirmation.is_some(),
+            );
+        }
+    }
+    assert!(!projector.is_paused());
+    let completed = completion.select().await.expect("nested resume completion");
+    projector
+        .finish_after_eos(completed, chrono::Utc::now())
+        .expect("nested resume output")
+        .into_iter()
+        .find(|event| event.r#type == "full_message")
+        .and_then(|event| serde_json::from_slice::<serde_json::Value>(&event.content).ok())
+        .and_then(|content| content.as_str().map(str::to_owned))
+        .expect("nested resumed full message")
 }
 
 async fn assert_persisted_nested_interrupts(
     sessions: &InMemorySessionService,
-    user_id: String,
-    session_id: String,
+    user_id: &str,
+    session_id: &str,
+    expected_approved_results: usize,
 ) {
     let stored = sessions
         .get(GetRequest {
             app_name: "elitea-agent-v1".to_owned(),
-            user_id,
-            session_id,
+            user_id: user_id.to_owned(),
+            session_id: session_id.to_owned(),
             num_recent_events: None,
             after: None,
         })
@@ -1289,6 +1403,18 @@ async fn assert_persisted_nested_interrupts(
     }));
     let persisted = serde_json::to_string(&stored_events).expect("serialized root transcript");
     assert!(!persisted.contains("__elitea_nested_interrupt_v1"));
+    let approved_results = stored_events
+        .iter()
+        .filter(|event| {
+            event.actions.tool_confirmation_decision
+                == Some(adk_rust::ToolConfirmationDecision::Approve)
+                && event
+                    .tool_results()
+                    .iter()
+                    .any(|result| result.name == "lookup_release")
+        })
+        .count();
+    assert_eq!(approved_results, expected_approved_results);
 }
 
 #[tokio::test(flavor = "current_thread")]

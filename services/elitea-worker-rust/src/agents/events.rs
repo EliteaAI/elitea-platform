@@ -1550,6 +1550,13 @@ fn validate_adk_event(
     event: &Event,
     root_agent_name: &str,
 ) -> Result<(), AgentEventProjectionError> {
+    let confirmation_decision_is_tool_result =
+        event.actions.tool_confirmation_decision.is_some_and(|_| {
+            event.content().is_some_and(|content| {
+                content.parts.len() == 1
+                    && matches!(content.parts.first(), Some(Part::FunctionResponse { .. }))
+            })
+        });
     if event.author != root_agent_name
         || !valid_application_branch(&event.branch)
         || event.llm_response.interrupted
@@ -1561,7 +1568,8 @@ fn validate_adk_event(
         || event.actions.transfer_to_agent.is_some()
         || event.actions.escalate
         || event.actions.tool_confirmation.is_some()
-        || event.actions.tool_confirmation_decision.is_some()
+        || (event.actions.tool_confirmation_decision.is_some()
+            && !confirmation_decision_is_tool_result)
         || event.actions.compaction.is_some()
         || event.actions.route.is_some()
         || !event.actions.artifact_delta.is_empty()

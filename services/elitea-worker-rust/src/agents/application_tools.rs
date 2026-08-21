@@ -12,14 +12,15 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use adk_rust::agent::LlmAgentBuilder;
-use adk_rust::futures::StreamExt as _;
+use adk_rust::futures::{StreamExt as _, stream};
 use adk_rust::tool::BasicToolset;
 use adk_rust::{
     AdkError, Agent, Artifacts, CallbackContext, Content, ErrorCategory, ErrorComponent, Event,
-    EventStream, GenerateContentConfig, InvocationContext, Memory, ReadonlyContext, RunConfig,
+    EventStream, FinishReason, GenerateContentConfig, InvocationContext, Llm, LlmRequest,
+    LlmResponse, LlmResponseStream, Memory, Part, ReadonlyContext, RunConfig, SchemaAdapter,
     SecretRequest, Session, State, StreamingMode, Tool, ToolConcurrencyConfig, ToolContext,
     ToolExecutionStrategy, Toolset,
 };
@@ -29,6 +30,7 @@ use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument as _;
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
+use super::direct_hitl::{ResolvedDirectHitlDecision, sensitive_call_identity};
 use super::events::{
     APPLICATION_BRANCH_ROOT, ApplicationToolPresentationCatalog,
     DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
@@ -84,11 +86,438 @@ pub(crate) struct ApplicationEventReceiver {
     inner: Mutex<Option<mpsc::Receiver<ApplicationEventSignal>>>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct ApplicationResumeCoordinator {
+    inner: Arc<Mutex<Option<HashMap<String, ChildApplicationResume>>>>,
+}
+
+struct ChildApplicationResume {
+    tool_name: String,
+    arguments: Value,
+    history: Vec<Content>,
+    decision: ResolvedDirectHitlDecision,
+}
+
+impl ApplicationResumeCoordinator {
+    async fn install(
+        &self,
+        calls: HashMap<String, ChildApplicationResume>,
+    ) -> Result<(), NativeAgentAssemblyError> {
+        let mut stored = self.inner.lock().await;
+        if stored.is_some() || calls.is_empty() {
+            return Err(invalid_configuration());
+        }
+        *stored = Some(calls);
+        Ok(())
+    }
+
+    async fn take(&self, call_id: &str) -> Option<ChildApplicationResume> {
+        self.inner
+            .lock()
+            .await
+            .as_mut()
+            .and_then(|calls| calls.remove(call_id))
+    }
+}
+
+pub(crate) struct PreparedNestedApplicationResume {
+    model: Arc<dyn Llm>,
+    user_content: Content,
+    run_config: RunConfig,
+}
+
+impl PreparedNestedApplicationResume {
+    pub(crate) fn into_parts(self) -> (Arc<dyn Llm>, Content, RunConfig) {
+        (self.model, self.user_content, self.run_config)
+    }
+}
+
+#[derive(Clone)]
+struct ApplicationReplayCall {
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+}
+
+pub(crate) async fn prepare_nested_application_resume(
+    events: &[Event],
+    decisions: Vec<ResolvedDirectHitlDecision>,
+    applications: &ApplicationToolPresentationCatalog,
+    coordinator: &ApplicationResumeCoordinator,
+    delegate: Arc<dyn Llm>,
+) -> Result<PreparedNestedApplicationResume, NativeAgentAssemblyError> {
+    let mut child_resumes = HashMap::with_capacity(decisions.len());
+    let mut root_event_id = None;
+    let mut submitted_interrupt_ids = HashSet::with_capacity(decisions.len());
+    for decision in decisions {
+        let route = decision
+            .application_route()
+            .filter(|route| one_level_application_branch(route.branch()))
+            .ok_or_else(unsupported_capability)?
+            .clone();
+        let (root_event, call) = exact_root_application_call(events, &route)?;
+        if root_event_id
+            .get_or_insert_with(|| root_event.id.clone())
+            .as_str()
+            != root_event.id
+        {
+            return Err(unsupported_capability());
+        }
+        if !applications.contains_runtime_tool(call.name) {
+            return Err(invalid_configuration());
+        }
+        let task = call
+            .args
+            .as_object()
+            .filter(|object| object.len() == 1)
+            .and_then(|object| object.get("task"))
+            .and_then(Value::as_str)
+            .filter(|task| !task.is_empty() && task.len() <= MAX_APPLICATION_TASK_BYTES)
+            .ok_or_else(invalid_configuration)?;
+        let mut history = vec![Content::new("user").with_text(task)];
+        history.extend(events.iter().filter_map(|event| {
+            (event.invocation_id == decision.invocation_id())
+                .then(|| event.content().cloned())
+                .flatten()
+        }));
+        if !submitted_interrupt_ids.insert(decision.interrupt_id().to_owned())
+            || child_resumes
+                .insert(
+                    route.parent_call_id().to_owned(),
+                    ChildApplicationResume {
+                        tool_name: call.name.to_owned(),
+                        arguments: call.args.clone(),
+                        history,
+                        decision,
+                    },
+                )
+                .is_some()
+        {
+            return Err(unsupported_capability());
+        }
+    }
+    let root_event_id = root_event_id.ok_or_else(invalid_configuration)?;
+    let root_event = events
+        .iter()
+        .find(|event| event.id == root_event_id)
+        .ok_or_else(invalid_configuration)?;
+    validate_complete_nested_decision_set(
+        events,
+        root_event,
+        applications,
+        &submitted_interrupt_ids,
+    )?;
+    let calls = root_event
+        .tool_calls()
+        .into_iter()
+        .filter(|call| {
+            call.call_id
+                .is_some_and(|call_id| child_resumes.contains_key(call_id))
+        })
+        .map(|call| ApplicationReplayCall {
+            call_id: call.call_id.unwrap_or_default().to_owned(),
+            tool_name: call.name.to_owned(),
+            arguments: call.args.clone(),
+        })
+        .collect::<Vec<_>>();
+    if calls.len() != child_resumes.len() {
+        return Err(invalid_configuration());
+    }
+    coordinator.install(child_resumes).await?;
+    let user_content = nested_resume_user_content(&submitted_interrupt_ids);
+    Ok(PreparedNestedApplicationResume {
+        model: Arc::new(ApplicationReplayModel {
+            delegate,
+            state: AtomicU8::new(REPLAY_APPLICATIONS_PENDING),
+            calls,
+            replay_marker: user_content.clone(),
+        }),
+        user_content,
+        run_config: application_run_config(),
+    })
+}
+
+fn exact_root_application_call<'a>(
+    events: &'a [Event],
+    route: &super::direct_hitl::DirectHitlApplicationRoute,
+) -> Result<(&'a Event, adk_rust::ToolCallView<'a>), NativeAgentAssemblyError> {
+    let mut matched = None;
+    for event in events.iter().filter(|event| {
+        event.invocation_id == route.container_invocation_id()
+            && !event
+                .provider_metadata
+                .contains_key(DESCENDANT_CONTAINER_INVOCATION_KEY)
+            && !event
+                .provider_metadata
+                .contains_key(DESCENDANT_PARENT_CALL_KEY)
+    }) {
+        for call in event
+            .tool_calls()
+            .into_iter()
+            .filter(|call| call.call_id == Some(route.parent_call_id()))
+        {
+            if matched.replace((event, call)).is_some() {
+                return Err(invalid_configuration());
+            }
+        }
+    }
+    matched.ok_or_else(invalid_configuration)
+}
+
+fn one_level_application_branch(branch: &str) -> bool {
+    branch
+        .strip_prefix(APPLICATION_BRANCH_ROOT)
+        .and_then(|suffix| suffix.strip_prefix(".application_"))
+        .is_some_and(|ordinal| {
+            !ordinal.is_empty()
+                && !ordinal.contains('.')
+                && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+fn validate_complete_nested_decision_set(
+    events: &[Event],
+    root_event: &Event,
+    applications: &ApplicationToolPresentationCatalog,
+    submitted_interrupt_ids: &HashSet<String>,
+) -> Result<(), NativeAgentAssemblyError> {
+    let mut root_application_call_ids = HashSet::new();
+    for call in root_event
+        .tool_calls()
+        .into_iter()
+        .filter(|call| applications.contains_runtime_tool(call.name))
+    {
+        let call_id = call.call_id.ok_or_else(invalid_configuration)?;
+        if !root_application_call_ids.insert(call_id) {
+            return Err(invalid_configuration());
+        }
+    }
+    let mut pending = HashSet::new();
+    for event in events.iter().filter(|event| {
+        event
+            .provider_metadata
+            .get(DESCENDANT_CONTAINER_INVOCATION_KEY)
+            == Some(&root_event.invocation_id)
+            && event.actions.tool_confirmation.is_some()
+    }) {
+        let parent_call_id = event
+            .provider_metadata
+            .get(DESCENDANT_PARENT_CALL_KEY)
+            .filter(|call_id| root_application_call_ids.contains(call_id.as_str()))
+            .ok_or_else(invalid_configuration)?;
+        if !one_level_application_branch(&event.branch) || parent_call_id.is_empty() {
+            return Err(unsupported_capability());
+        }
+        let request = event
+            .actions
+            .tool_confirmation
+            .as_ref()
+            .ok_or_else(invalid_configuration)?;
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .ok_or_else(invalid_configuration)?;
+        let (interrupt_id, _) = sensitive_call_identity(
+            &event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )
+        .map_err(|_| invalid_configuration())?;
+        if !pending.insert(interrupt_id) {
+            return Err(invalid_configuration());
+        }
+    }
+    if &pending != submitted_interrupt_ids {
+        return Err(unsupported_capability());
+    }
+    Ok(())
+}
+
+fn nested_resume_user_content(interrupt_ids: &HashSet<String>) -> Content {
+    let mut interrupt_ids = interrupt_ids.iter().map(String::as_str).collect::<Vec<_>>();
+    interrupt_ids.sort_unstable();
+    Content::new("user").with_text(format!(
+        "[Elitea nested HITL {}] Resume the exact paused saved-agent calls.",
+        interrupt_ids.join(",")
+    ))
+}
+
+const REPLAY_APPLICATIONS_PENDING: u8 = 0;
+const REPLAY_APPLICATIONS_EMITTED: u8 = 1;
+const REPLAY_APPLICATIONS_DELEGATING: u8 = 2;
+
+struct ApplicationReplayModel {
+    delegate: Arc<dyn Llm>,
+    state: AtomicU8,
+    calls: Vec<ApplicationReplayCall>,
+    replay_marker: Content,
+}
+
+#[async_trait]
+impl Llm for ApplicationReplayModel {
+    fn name(&self) -> &str {
+        self.delegate.name()
+    }
+
+    fn schema_adapter(&self) -> &dyn SchemaAdapter {
+        self.delegate.schema_adapter()
+    }
+
+    fn uses_interactions_api(&self) -> bool {
+        self.delegate.uses_interactions_api()
+    }
+
+    async fn generate_content(
+        &self,
+        request: LlmRequest,
+        stream_response: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        match self.state.compare_exchange(
+            REPLAY_APPLICATIONS_PENDING,
+            REPLAY_APPLICATIONS_EMITTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {
+                self.validate_calls(&request, ApplicationReplayState::Pending)?;
+                let parts = self
+                    .calls
+                    .iter()
+                    .map(|call| Part::FunctionCall {
+                        name: call.tool_name.clone(),
+                        args: call.arguments.clone(),
+                        id: Some(call.call_id.clone()),
+                        thought_signature: None,
+                    })
+                    .collect();
+                let response = LlmResponse {
+                    content: Some(Content {
+                        role: "model".to_owned(),
+                        parts,
+                    }),
+                    finish_reason: Some(FinishReason::Stop),
+                    turn_complete: true,
+                    ..LlmResponse::default()
+                };
+                Ok(Box::pin(stream::once(async move { Ok(response) })))
+            }
+            Err(REPLAY_APPLICATIONS_EMITTED) => {
+                if self
+                    .state
+                    .compare_exchange(
+                        REPLAY_APPLICATIONS_EMITTED,
+                        REPLAY_APPLICATIONS_DELEGATING,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    self.validate_calls(&request, ApplicationReplayState::Completed)?;
+                }
+                self.delegate
+                    .generate_content(
+                        without_application_replay_marker(request, &self.replay_marker),
+                        stream_response,
+                    )
+                    .await
+            }
+            Err(_) => {
+                self.delegate
+                    .generate_content(
+                        without_application_replay_marker(request, &self.replay_marker),
+                        stream_response,
+                    )
+                    .await
+            }
+        }
+    }
+}
+
+impl ApplicationReplayModel {
+    fn validate_calls(
+        &self,
+        request: &LlmRequest,
+        expected: ApplicationReplayState,
+    ) -> adk_rust::Result<()> {
+        if self.calls.iter().all(|call| {
+            request.tools.contains_key(&call.tool_name)
+                && application_replay_state(request, call) == expected
+        }) {
+            return Ok(());
+        }
+        Err(application_event_channel_error())
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ApplicationReplayState {
+    Missing,
+    Pending,
+    Completed,
+}
+
+fn application_replay_state(
+    request: &LlmRequest,
+    expected: &ApplicationReplayCall,
+) -> ApplicationReplayState {
+    let mut call = None;
+    let mut result = None;
+    for (position, part) in request
+        .contents
+        .iter()
+        .flat_map(|content| &content.parts)
+        .enumerate()
+    {
+        match part {
+            Part::FunctionCall {
+                name,
+                args,
+                id: Some(call_id),
+                ..
+            } if call_id == &expected.call_id => {
+                call = Some((
+                    position,
+                    name == &expected.tool_name && args == &expected.arguments,
+                ));
+            }
+            Part::FunctionResponse {
+                function_response,
+                id: Some(call_id),
+                ..
+            } if call_id == &expected.call_id => {
+                result = Some((position, function_response.name == expected.tool_name));
+            }
+            _ => {}
+        }
+    }
+    let Some((call_position, true)) = call else {
+        return ApplicationReplayState::Missing;
+    };
+    match result {
+        Some((result_position, true)) if result_position > call_position => {
+            ApplicationReplayState::Completed
+        }
+        Some((result_position, _)) if result_position > call_position => {
+            ApplicationReplayState::Missing
+        }
+        _ => ApplicationReplayState::Pending,
+    }
+}
+
+fn without_application_replay_marker(mut request: LlmRequest, marker: &Content) -> LlmRequest {
+    request
+        .contents
+        .retain(|content| content.role != marker.role || content.parts != marker.parts);
+    request
+}
+
 pub(crate) struct ApplicationToolDependencies {
     pub(crate) model_facade: Arc<ModelFacade>,
     pub(crate) policy: Arc<ToolAdmissionPolicy>,
     pub(crate) mcp_connector: Arc<dyn McpConnector>,
     event_sender: Option<ApplicationEventSender>,
+    resume: Option<ApplicationResumeCoordinator>,
 }
 
 impl ApplicationToolDependencies {
@@ -103,6 +532,7 @@ impl ApplicationToolDependencies {
             policy,
             mcp_connector,
             event_sender: None,
+            resume: None,
         }
     }
 }
@@ -118,7 +548,7 @@ pub(crate) struct MaterializedApplicationTool {
 }
 
 struct BuiltApplication {
-    agent: Arc<dyn Agent>,
+    agent: Arc<LazyNestedAgent>,
     model_name: String,
     child_tools: ApplicationToolPresentationCatalog,
     sensitive_tools: SensitiveToolCatalog,
@@ -129,6 +559,7 @@ pub(crate) struct MaterializedApplicationToolset {
     pub(crate) toolset: Arc<dyn Toolset>,
     pub(crate) presentations: ApplicationToolPresentationCatalog,
     pub(crate) events: ApplicationEventReceiver,
+    pub(crate) resume: ApplicationResumeCoordinator,
 }
 
 /// Build the one nested-application toolset for the root direct agent.
@@ -141,7 +572,9 @@ pub(crate) async fn materialize_application_toolset(
     mut dependencies: ApplicationToolDependencies,
 ) -> Result<Option<MaterializedApplicationToolset>, NativeAgentAssemblyError> {
     let (event_sender, event_receiver) = mpsc::channel(APPLICATION_EVENT_CHANNEL_CAPACITY);
+    let resume = ApplicationResumeCoordinator::default();
     dependencies.event_sender = Some(event_sender);
+    dependencies.resume = Some(resume.clone());
     let materialized = materialize_application_tools(
         snapshot,
         platform,
@@ -177,6 +610,7 @@ pub(crate) async fn materialize_application_toolset(
         events: ApplicationEventReceiver {
             inner: Mutex::new(Some(event_receiver)),
         },
+        resume,
     }))
 }
 
@@ -206,6 +640,7 @@ pub(crate) async fn materialize_application_tools(
         resolving: HashSet::new(),
         hops: 0,
         event_sender: dependencies.event_sender,
+        resume: dependencies.resume,
     };
     let mut tools = Vec::with_capacity(references.len());
     for reference in references {
@@ -223,6 +658,7 @@ pub(crate) async fn materialize_application_tools(
                 application,
                 identity,
                 state.event_sender.clone(),
+                state.resume.clone(),
             )),
         });
     }
@@ -241,6 +677,7 @@ struct ApplicationAssemblyState<'a> {
     resolving: HashSet<ApplicationIdentity>,
     hops: usize,
     event_sender: Option<ApplicationEventSender>,
+    resume: Option<ApplicationResumeCoordinator>,
 }
 
 impl ApplicationAssemblyState<'_> {
@@ -342,6 +779,7 @@ impl ApplicationAssemblyState<'_> {
                     application.clone(),
                     identity,
                     self.event_sender.clone(),
+                    self.resume.clone(),
                 ));
                 child_tools
                     .insert_runtime(
@@ -372,7 +810,7 @@ impl ApplicationAssemblyState<'_> {
             .tool_names()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        let agent: Arc<dyn Agent> = Arc::new(LazyNestedAgent {
+        let agent = Arc::new(LazyNestedAgent {
             name: application_tool_name(reference.identity),
             description,
             profile,
@@ -557,6 +995,19 @@ impl Agent for LazyNestedAgent {
     }
 
     async fn run(&self, ctx: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let agent = self.build_agent(self.bind_model()?, self.toolsets.clone())?;
+        agent.run(ctx).await
+    }
+}
+
+struct PreparedChildApplicationResume {
+    agent: Arc<dyn Agent>,
+    user_content: Content,
+    run_config: RunConfig,
+}
+
+impl LazyNestedAgent {
+    fn bind_model(&self) -> adk_rust::Result<Arc<dyn adk_rust::Llm>> {
         let invocation = ModelInvocation {
             model_name: self.profile.model_name().to_owned(),
             system_instruction: self.profile.instructions().to_owned(),
@@ -569,18 +1020,25 @@ impl Agent for LazyNestedAgent {
             OrdinaryModelProvider::OpenAiChat => ModelAdapterKind::OpenAiCompatible,
             OrdinaryModelProvider::NativeAnthropic => ModelAdapterKind::Anthropic,
         };
-        let model = self
-            .model_facade
+        self.model_facade
             .bind(
                 adapter,
                 self.elitea_context.as_ref(),
                 self.profile.model_project_id(),
                 invocation,
             )
-            .map_err(model_error)?;
+            .map(|model| model.adk_model())
+            .map_err(model_error)
+    }
+
+    fn build_agent(
+        &self,
+        model: Arc<dyn adk_rust::Llm>,
+        toolsets: Vec<Arc<dyn Toolset>>,
+    ) -> adk_rust::Result<Arc<dyn Agent>> {
         let mut builder = LlmAgentBuilder::new(self.name.clone())
             .description(self.description.clone())
-            .model(model.adk_model())
+            .model(model)
             .generate_content_config(GenerateContentConfig {
                 temperature: self.profile.temperature(),
                 max_output_tokens: i32::try_from(self.profile.max_tokens()).ok(),
@@ -589,8 +1047,8 @@ impl Agent for LazyNestedAgent {
             .max_iterations(self.profile.step_limit())
             .disallow_transfer_to_parent(true)
             .disallow_transfer_to_peers(true);
-        for toolset in &self.toolsets {
-            builder = builder.toolset(toolset.clone());
+        for toolset in toolsets {
+            builder = builder.toolset(toolset);
         }
         for tool_name in &self.sensitive_tool_names {
             builder = builder.require_tool_confirmation(tool_name);
@@ -598,8 +1056,28 @@ impl Agent for LazyNestedAgent {
         if self.parallel_applications {
             builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
         }
-        let agent = builder.build().map_err(|_| agent_configuration_error())?;
-        agent.run(ctx).await
+        builder
+            .build()
+            .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
+            .map_err(|_| agent_configuration_error())
+    }
+
+    fn prepare_resume(
+        &self,
+        decision: ResolvedDirectHitlDecision,
+        sensitive_tools: &SensitiveToolCatalog,
+    ) -> adk_rust::Result<PreparedChildApplicationResume> {
+        let replay = decision
+            .into_direct_replay(sensitive_tools)
+            .map_err(direct_hitl_execution_error)?;
+        let prepared = replay.bind(self.bind_model()?);
+        let (model, run_input, toolsets) = prepared.into_parts(self.toolsets.clone());
+        let (user_content, run_config) = run_input.into_parts();
+        Ok(PreparedChildApplicationResume {
+            agent: self.build_agent(model, toolsets)?,
+            user_content,
+            run_config,
+        })
     }
 }
 
@@ -607,6 +1085,7 @@ struct ApplicationAgentTool {
     application: Arc<BuiltApplication>,
     identity: ApplicationIdentity,
     event_sender: Option<ApplicationEventSender>,
+    resume: Option<ApplicationResumeCoordinator>,
 }
 
 impl ApplicationAgentTool {
@@ -614,11 +1093,13 @@ impl ApplicationAgentTool {
         application: Arc<BuiltApplication>,
         identity: ApplicationIdentity,
         event_sender: Option<ApplicationEventSender>,
+        resume: Option<ApplicationResumeCoordinator>,
     ) -> Self {
         Self {
             application,
             identity,
             event_sender,
+            resume,
         }
     }
 }
@@ -672,80 +1153,10 @@ impl Tool for ApplicationAgentTool {
             outcome = tracing::field::Empty,
             error_code = tracing::field::Empty,
         );
-        let result = async {
-            let object = arguments.as_object().ok_or_else(tool_input_error)?;
-            if object.len() != 1 || !object.contains_key("task") {
-                return Err(tool_input_error());
-            }
-            let task = object
-                .get("task")
-                .and_then(Value::as_str)
-                .filter(|value| {
-                    !value.is_empty()
-                        && value.len() <= MAX_APPLICATION_TASK_BYTES
-                        && !value.contains('\0')
-                })
-                .ok_or_else(tool_input_error)?;
-            let content = Content::new("user").with_text(task);
-            let child_context = Arc::new(ApplicationToolInvocationContext::new(
-                ctx.clone(),
-                self.application.agent.clone(),
-                content,
-            ));
-            let child_branch = child_context.branch().to_owned();
-            let mut stream = self.application.agent.run(child_context.clone()).await?;
-            let mut final_response = None;
-            let mut last_text = None;
-            let mut application_batch = ApplicationCallBatch::default();
-            while let Some(result) = stream.next().await {
-                let mut event = match result {
-                    Ok(event) => event,
-                    Err(error) => {
-                        self.send_fatal(ApplicationEventFailure::ChildExecution)
-                            .await?;
-                        return Err(error);
-                    }
-                };
-                if event.branch.is_empty() {
-                    event.branch.clone_from(&child_branch);
-                } else if event.branch != child_branch {
-                    self.send_fatal(ApplicationEventFailure::ChildExecution)
-                        .await?;
-                    return Err(application_event_channel_error());
-                }
-                application_batch.observe_calls(&event, &self.application.child_tools)?;
-                if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
-                    self.send_event(ctx.as_ref(), event).await?;
-                    return Ok(nested_interrupt_result());
-                }
-                if let Some(text) = event_text(&event) {
-                    last_text = Some(text.clone());
-                    if event.is_final_response() {
-                        final_response = Some(text);
-                    }
-                }
-                match application_batch.observe_results(&mut event)? {
-                    ApplicationResultDisposition::Forward => {
-                        self.send_event(ctx.as_ref(), event).await?;
-                    }
-                    ApplicationResultDisposition::Suppress => {}
-                    ApplicationResultDisposition::ForwardAndPause => {
-                        self.send_event(ctx.as_ref(), event).await?;
-                        return Ok(nested_interrupt_result());
-                    }
-                    ApplicationResultDisposition::SuppressAndPause => {
-                        return Ok(nested_interrupt_result());
-                    }
-                }
-            }
-            Ok(json!({
-                "response": final_response
-                    .or(last_text)
-                    .unwrap_or_else(|| "No response from agent".to_owned())
-            }))
-        }
-        .instrument(span.clone())
-        .await;
+        let result = self
+            .invoke_child(ctx, arguments)
+            .instrument(span.clone())
+            .await;
         match &result {
             Ok(_) => {
                 span.record("outcome", "succeeded");
@@ -760,6 +1171,109 @@ impl Tool for ApplicationAgentTool {
 }
 
 impl ApplicationAgentTool {
+    async fn invoke_child(
+        &self,
+        ctx: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        let object = arguments.as_object().ok_or_else(tool_input_error)?;
+        if object.len() != 1 || !object.contains_key("task") {
+            return Err(tool_input_error());
+        }
+        let task = object
+            .get("task")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_APPLICATION_TASK_BYTES
+                    && !value.contains('\0')
+            })
+            .ok_or_else(tool_input_error)?;
+        let resume = match &self.resume {
+            Some(coordinator) => coordinator.take(ctx.function_call_id()).await,
+            None => None,
+        };
+        let (agent, content, run_config, history) = match resume {
+            Some(resume) if resume.tool_name == self.name() && resume.arguments == arguments => {
+                let prepared = self
+                    .application
+                    .agent
+                    .prepare_resume(resume.decision, &self.application.sensitive_tools)?;
+                (
+                    prepared.agent,
+                    prepared.user_content,
+                    prepared.run_config,
+                    resume.history,
+                )
+            }
+            Some(_) => return Err(tool_input_error()),
+            None => (
+                self.application.agent.clone() as Arc<dyn Agent>,
+                Content::new("user").with_text(task),
+                application_run_config(),
+                Vec::new(),
+            ),
+        };
+        let child_context = Arc::new(ApplicationToolInvocationContext::with_resume(
+            ctx.clone(),
+            Arc::clone(&agent),
+            content,
+            run_config,
+            history,
+        ));
+        let child_branch = child_context.branch().to_owned();
+        let mut stream = agent.run(child_context.clone()).await?;
+        let mut final_response = None;
+        let mut last_text = None;
+        let mut application_batch = ApplicationCallBatch::default();
+        while let Some(result) = stream.next().await {
+            let mut event = match result {
+                Ok(event) => event,
+                Err(error) => {
+                    self.send_fatal(ApplicationEventFailure::ChildExecution)
+                        .await?;
+                    return Err(error);
+                }
+            };
+            if event.branch.is_empty() {
+                event.branch.clone_from(&child_branch);
+            } else if event.branch != child_branch {
+                self.send_fatal(ApplicationEventFailure::ChildExecution)
+                    .await?;
+                return Err(application_event_channel_error());
+            }
+            application_batch.observe_calls(&event, &self.application.child_tools)?;
+            if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
+                self.send_event(ctx.as_ref(), event).await?;
+                return Ok(nested_interrupt_result());
+            }
+            if let Some(text) = event_text(&event) {
+                last_text = Some(text.clone());
+                if event.is_final_response() {
+                    final_response = Some(text);
+                }
+            }
+            match application_batch.observe_results(&mut event)? {
+                ApplicationResultDisposition::Forward => {
+                    self.send_event(ctx.as_ref(), event).await?;
+                }
+                ApplicationResultDisposition::Suppress => {}
+                ApplicationResultDisposition::ForwardAndPause => {
+                    self.send_event(ctx.as_ref(), event).await?;
+                    return Ok(nested_interrupt_result());
+                }
+                ApplicationResultDisposition::SuppressAndPause => {
+                    return Ok(nested_interrupt_result());
+                }
+            }
+        }
+        Ok(json!({
+            "response": final_response
+                .or(last_text)
+                .unwrap_or_else(|| "No response from agent".to_owned())
+        }))
+    }
+
     async fn send_event(&self, ctx: &dyn ToolContext, event: Event) -> adk_rust::Result<()> {
         let Some(sender) = &self.event_sender else {
             return Ok(());
@@ -1189,12 +1703,39 @@ struct ApplicationToolInvocationContext {
     user_content: Content,
     invocation_id: String,
     branch: String,
+    run_config: RunConfig,
     ended: AtomicBool,
     session: ApplicationToolSession,
 }
 
+fn application_run_config() -> RunConfig {
+    RunConfig::builder()
+        .streaming_mode(StreamingMode::None)
+        .tool_concurrency(ToolConcurrencyConfig {
+            max_concurrency: Some(MAX_PARALLEL_APPLICATION_CALLS),
+            ..ToolConcurrencyConfig::default()
+        })
+        .build()
+}
+
 impl ApplicationToolInvocationContext {
     fn new(parent_ctx: Arc<dyn ToolContext>, agent: Arc<dyn Agent>, user_content: Content) -> Self {
+        Self::with_resume(
+            parent_ctx,
+            agent,
+            user_content,
+            application_run_config(),
+            Vec::new(),
+        )
+    }
+
+    fn with_resume(
+        parent_ctx: Arc<dyn ToolContext>,
+        agent: Arc<dyn Agent>,
+        user_content: Content,
+        run_config: RunConfig,
+        history: Vec<Content>,
+    ) -> Self {
         static NEXT_INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let ordinal = NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed);
         let invocation_id = format!("elitea-child-{ordinal}");
@@ -1209,12 +1750,14 @@ impl ApplicationToolInvocationContext {
                 invocation_id.clone(),
                 parent_ctx.app_name().to_owned(),
                 parent_ctx.user_id().to_owned(),
+                history,
             ),
             parent_ctx,
             agent,
             user_content,
             invocation_id,
             branch,
+            run_config,
             ended: AtomicBool::new(false),
         }
     }
@@ -1277,16 +1820,7 @@ impl InvocationContext for ApplicationToolInvocationContext {
     }
 
     fn run_config(&self) -> &RunConfig {
-        static CONFIG: std::sync::OnceLock<RunConfig> = std::sync::OnceLock::new();
-        CONFIG.get_or_init(|| {
-            RunConfig::builder()
-                .streaming_mode(StreamingMode::None)
-                .tool_concurrency(ToolConcurrencyConfig {
-                    max_concurrency: Some(MAX_PARALLEL_APPLICATION_CALLS),
-                    ..ToolConcurrencyConfig::default()
-                })
-                .build()
-        })
+        &self.run_config
     }
 
     fn end_invocation(&self) {
@@ -1322,15 +1856,17 @@ struct ApplicationToolSession {
     app_name: String,
     user_id: String,
     state: std::sync::RwLock<HashMap<String, Value>>,
+    history: Vec<Content>,
 }
 
 impl ApplicationToolSession {
-    fn new(id: String, app_name: String, user_id: String) -> Self {
+    fn new(id: String, app_name: String, user_id: String, history: Vec<Content>) -> Self {
         Self {
             id,
             app_name,
             user_id,
             state: std::sync::RwLock::new(HashMap::new()),
+            history,
         }
     }
 }
@@ -1353,7 +1889,7 @@ impl Session for ApplicationToolSession {
     }
 
     fn conversation_history(&self) -> Vec<Content> {
-        Vec::new()
+        self.history.clone()
     }
 }
 
@@ -1437,6 +1973,15 @@ fn child_execution_error() -> AdkError {
         ErrorCategory::Unavailable,
         "elitea_nested_agent.execution_failed",
         "the nested agent execution failed",
+    )
+}
+
+fn direct_hitl_execution_error(_error: super::direct_hitl::DirectHitlError) -> AdkError {
+    AdkError::new(
+        ErrorComponent::Agent,
+        ErrorCategory::InvalidInput,
+        "elitea_nested_agent.invalid_resume",
+        "the nested agent continuation is invalid",
     )
 }
 

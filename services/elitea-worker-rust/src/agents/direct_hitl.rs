@@ -16,6 +16,7 @@
 
 #![allow(dead_code)] // Resume execution remains capability-gated.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -33,6 +34,7 @@ use ring::digest;
 use serde::Deserialize;
 use serde_json::Value;
 
+use super::events::{DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY};
 use super::request::AgentExecutionPayload;
 use super::sensitive_tools::SensitiveToolCatalog;
 
@@ -40,6 +42,7 @@ const MAX_IDENTITY_BYTES: usize = 512;
 const MAX_COMMENT_BYTES: usize = 2_000;
 const MAX_CALL_VALUE_BYTES: usize = 40 * 1_024;
 const MAX_JSON_DEPTH: usize = 64;
+const MAX_DIRECT_HITL_DECISIONS: usize = 16;
 const HITL_DIGEST_DOMAIN: &[u8] = b"elitea.sensitive-tool-interrupt.v1\0";
 const BLOCKED_TOOL_RESULT_TYPE: &str = "sensitive_tool_blocked";
 const BLOCKED_TOOL_DEFAULT_REASON: &str = "denied by user";
@@ -73,7 +76,7 @@ pub(crate) struct DirectHitlError {
 }
 
 impl DirectHitlError {
-    const fn new(code: DirectHitlErrorCode) -> Self {
+    pub(crate) const fn new(code: DirectHitlErrorCode) -> Self {
         Self { code }
     }
 
@@ -130,38 +133,117 @@ pub(crate) struct DirectHitlDecision {
     comment: Option<String>,
 }
 
-impl DirectHitlDecision {
-    /// Admit the current direct-sensitive-tool continuation shape.
+/// One atomic Main-authorized decision set.
+///
+/// Main persists and consumes every visible card in one transaction. Keeping
+/// the same bound here prevents the worker from silently resuming only a
+/// subset of a parallel pause.
+pub(crate) struct DirectHitlDecisionSet {
+    decisions: Vec<DirectHitlDecision>,
+}
+
+impl DirectHitlDecisionSet {
+    pub(crate) fn single(decision: DirectHitlDecision) -> Self {
+        Self {
+            decisions: vec![decision],
+        }
+    }
+
     pub(crate) fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, DirectHitlError> {
         if !payload.should_continue
             || !payload.hitl_resume
             || payload.auto_approve_sensitive_actions
-            || payload.hitl_decisions.len() != 1
+            || payload.hitl_decisions.is_empty()
+            || payload.hitl_decisions.len() > MAX_DIRECT_HITL_DECISIONS
         {
             return Err(DirectHitlError::new(
                 DirectHitlErrorCode::UnsupportedCapability,
             ));
         }
-        let raw = serde_json::from_value::<RawDirectHitlDecision>(
-            payload
-                .hitl_decisions
-                .first()
-                .cloned()
-                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?,
-        )
-        .map_err(|_| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
-        if !valid_identity(&raw.interrupt_id)
-            || (!raw.tool_call_id.is_empty() && !valid_identity(&raw.tool_call_id))
-        {
+        let multiple = payload.hitl_decisions.len() > 1;
+        if multiple && (payload.hitl_action.is_some() || payload.hitl_value.is_some()) {
             return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
         }
-        let expected_action = match raw.action {
-            DirectHitlAction::Approve => "approve",
-            DirectHitlAction::Reject => "reject",
-            DirectHitlAction::BlockWithComment => "block_with_comment",
-        };
-        if payload.hitl_action.as_deref() != Some(expected_action)
-            || payload.hitl_value.as_deref() != Some(raw.value.as_str())
+        let mut interrupt_ids = HashSet::with_capacity(payload.hitl_decisions.len());
+        let mut decisions = Vec::with_capacity(payload.hitl_decisions.len());
+        for value in &payload.hitl_decisions {
+            let raw = serde_json::from_value::<RawDirectHitlDecision>(value.clone())
+                .map_err(|_| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
+            let decision = DirectHitlDecision::from_raw(raw)?;
+            if !interrupt_ids.insert(decision.interrupt_id.clone()) {
+                return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
+            }
+            decisions.push(decision);
+        }
+        if !multiple {
+            let decision = decisions
+                .first()
+                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
+            if payload.hitl_action.as_deref() != Some(decision.action.as_str())
+                || payload.hitl_value.as_deref() != Some(decision.raw_value())
+            {
+                return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
+            }
+        }
+        Ok(Self { decisions })
+    }
+
+    pub(crate) fn into_single(mut self) -> Result<DirectHitlDecision, DirectHitlError> {
+        if self.decisions.len() != 1 {
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        self.decisions
+            .pop()
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))
+    }
+
+    pub(crate) fn resolve(
+        self,
+        session: &dyn adk_rust::session::Session,
+    ) -> Result<ResolvedDirectHitlStart, DirectHitlError> {
+        let events = session.events().all();
+        let mut resolved = Vec::with_capacity(self.decisions.len());
+        for decision in self.decisions {
+            let index = matching_confirmation_index(&events, &decision.interrupt_id)?;
+            let nested = application_route(&events[index])?.is_some();
+            resolved.push(decision.resolve_at(&events, index, nested)?);
+        }
+        let nested_count = resolved
+            .iter()
+            .filter(|decision| decision.application_route.is_some())
+            .count();
+        if nested_count == 0 {
+            if resolved.len() != 1 {
+                return Err(DirectHitlError::new(
+                    DirectHitlErrorCode::UnsupportedCapability,
+                ));
+            }
+            return resolved
+                .pop()
+                .map(Box::new)
+                .map(ResolvedDirectHitlStart::Direct)
+                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
+        }
+        if nested_count != resolved.len() {
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        Ok(ResolvedDirectHitlStart::Nested(resolved))
+    }
+}
+
+impl DirectHitlDecision {
+    /// Admit the current direct-sensitive-tool continuation shape.
+    pub(crate) fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, DirectHitlError> {
+        DirectHitlDecisionSet::from_payload(payload)?.into_single()
+    }
+
+    fn from_raw(raw: RawDirectHitlDecision) -> Result<Self, DirectHitlError> {
+        if !valid_identity(&raw.interrupt_id)
+            || (!raw.tool_call_id.is_empty() && !valid_identity(&raw.tool_call_id))
         {
             return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
         }
@@ -184,6 +266,10 @@ impl DirectHitlDecision {
         })
     }
 
+    fn raw_value(&self) -> &str {
+        self.comment.as_deref().unwrap_or("")
+    }
+
     /// Resolve this decision against the latest persisted ADK confirmation.
     pub(crate) fn resolve(
         self,
@@ -194,6 +280,15 @@ impl DirectHitlDecision {
             .iter()
             .rposition(|event| event.actions.tool_confirmation.is_some())
             .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))?;
+        self.resolve_at(&events, confirmation_index, false)
+    }
+
+    fn resolve_at(
+        self,
+        events: &[Event],
+        confirmation_index: usize,
+        nested: bool,
+    ) -> Result<ResolvedDirectHitlDecision, DirectHitlError> {
         let confirmation_event = &events[confirmation_index];
         let request = confirmation_event
             .actions
@@ -246,15 +341,31 @@ impl DirectHitlDecision {
             }
         };
         let user_content = replay_user_content(&interrupt_id, decision);
-        let persisted = persisted_replay_state(
-            &events[confirmation_index + 1..],
-            &user_content,
-            call_id,
-            &request.tool_name,
-            &request.args,
-            decision,
-        )?;
+        let persisted = if nested {
+            validate_unadvanced_nested_confirmation(
+                &events[confirmation_index + 1..],
+                confirmation_event,
+            )?;
+            PersistedReplayState {
+                mode: ReplayResumeMode::ExecuteCall,
+                result: None,
+            }
+        } else {
+            persisted_replay_state(
+                &events[confirmation_index + 1..],
+                &user_content,
+                call_id,
+                &request.tool_name,
+                &request.args,
+                decision,
+            )?
+        };
+        let application_route = application_route(confirmation_event)?;
+        if nested != application_route.is_some() {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
         Ok(ResolvedDirectHitlDecision {
+            invocation_id: confirmation_event.invocation_id.clone(),
             interrupt_id,
             call_digest,
             call_id: call_id.to_owned(),
@@ -266,8 +377,88 @@ impl DirectHitlDecision {
             user_content,
             resume_mode: persisted.mode,
             persisted_result: persisted.result,
+            application_route,
         })
     }
+}
+
+impl DirectHitlAction {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+            Self::BlockWithComment => "block_with_comment",
+        }
+    }
+}
+
+fn matching_confirmation_index(
+    events: &[Event],
+    submitted_interrupt_id: &str,
+) -> Result<usize, DirectHitlError> {
+    let mut matched = None;
+    for (index, event) in events.iter().enumerate() {
+        let Some(request) = event.actions.tool_confirmation.as_ref() else {
+            continue;
+        };
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_identity(value))
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::CorruptSession))?;
+        if !valid_identity(&event.invocation_id)
+            || !valid_identity(&request.tool_name)
+            || encoded_value_len(&request.args)? > MAX_CALL_VALUE_BYTES
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
+        let (interrupt_id, _) = sensitive_call_identity(
+            &event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )?;
+        if interrupt_id == submitted_interrupt_id && matched.replace(index).is_some() {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
+    }
+    matched.ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))
+}
+
+fn application_route(event: &Event) -> Result<Option<DirectHitlApplicationRoute>, DirectHitlError> {
+    let container = event
+        .provider_metadata
+        .get(DESCENDANT_CONTAINER_INVOCATION_KEY);
+    let parent_call = event.provider_metadata.get(DESCENDANT_PARENT_CALL_KEY);
+    match (container, parent_call) {
+        (None, None) => Ok(None),
+        (Some(container_invocation_id), Some(parent_call_id))
+            if valid_identity(container_invocation_id)
+                && valid_identity(parent_call_id)
+                && valid_identity(&event.branch) =>
+        {
+            Ok(Some(DirectHitlApplicationRoute {
+                container_invocation_id: container_invocation_id.clone(),
+                parent_call_id: parent_call_id.clone(),
+                branch: event.branch.clone(),
+            }))
+        }
+        _ => Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession)),
+    }
+}
+
+fn validate_unadvanced_nested_confirmation(
+    later_events: &[Event],
+    confirmation: &Event,
+) -> Result<(), DirectHitlError> {
+    if later_events
+        .iter()
+        .filter(|event| semantic_event(event))
+        .any(|event| event.invocation_id == confirmation.invocation_id)
+    {
+        return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+    }
+    Ok(())
 }
 
 /// Exact, session-proven call plus its one browser decision.
@@ -276,6 +467,7 @@ impl DirectHitlDecision {
 /// `Clone` nor `Debug` because arguments and the readable ADK fingerprint can
 /// contain credentials.
 pub(crate) struct ResolvedDirectHitlDecision {
+    invocation_id: String,
     interrupt_id: String,
     call_digest: String,
     call_id: String,
@@ -287,6 +479,19 @@ pub(crate) struct ResolvedDirectHitlDecision {
     user_content: Content,
     resume_mode: ReplayResumeMode,
     persisted_result: Option<Value>,
+    application_route: Option<DirectHitlApplicationRoute>,
+}
+
+pub(crate) enum ResolvedDirectHitlStart {
+    Direct(Box<ResolvedDirectHitlDecision>),
+    Nested(Vec<ResolvedDirectHitlDecision>),
+}
+
+#[derive(Clone)]
+pub(crate) struct DirectHitlApplicationRoute {
+    container_invocation_id: String,
+    parent_call_id: String,
+    branch: String,
 }
 
 /// One exact call prepared for native ADK replay.
@@ -448,6 +653,13 @@ impl PreparedDirectHitlReplay {
 }
 
 impl DirectHitlRunInput {
+    pub(crate) fn from_parts(user_content: Content, run_config: RunConfig) -> Self {
+        Self {
+            user_content,
+            run_config,
+        }
+    }
+
     pub(super) fn into_parts(self) -> (Content, RunConfig) {
         (self.user_content, self.run_config)
     }
@@ -750,9 +962,16 @@ fn latest_call_state(
 }
 
 impl ResolvedDirectHitlDecision {
-    #[cfg(test)]
     pub(crate) fn interrupt_id(&self) -> &str {
         &self.interrupt_id
+    }
+
+    pub(crate) fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+
+    pub(crate) const fn application_route(&self) -> Option<&DirectHitlApplicationRoute> {
+        self.application_route.as_ref()
     }
 
     #[cfg(test)]
@@ -793,6 +1012,20 @@ impl ResolvedDirectHitlDecision {
     #[cfg(test)]
     pub(crate) const fn has_persisted_result(&self) -> bool {
         matches!(self.resume_mode, ReplayResumeMode::ContinueAfterResult)
+    }
+}
+
+impl DirectHitlApplicationRoute {
+    pub(crate) fn container_invocation_id(&self) -> &str {
+        &self.container_invocation_id
+    }
+
+    pub(crate) fn parent_call_id(&self) -> &str {
+        &self.parent_call_id
+    }
+
+    pub(crate) fn branch(&self) -> &str {
+        &self.branch
     }
 }
 

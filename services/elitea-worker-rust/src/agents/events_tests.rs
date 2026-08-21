@@ -1,5 +1,5 @@
 use adk_rust::graph::interrupt::{GraphInterruptPayload, INTERRUPT_METADATA_KEY};
-use adk_rust::{Content, Event, FinishReason, Part};
+use adk_rust::{Content, Event, FinishReason, Part, ToolConfirmationDecision};
 use chrono::{TimeZone, Utc};
 use serde_json::{Value, json};
 
@@ -488,6 +488,7 @@ fn tool_calls_and_results_follow_the_current_browser_lifecycle() {
             annotations: None,
         }],
     });
+    result.actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Approve);
     let finish = projector
         .project(&result)
         .expect("tool result")
@@ -499,6 +500,29 @@ fn tool_calls_and_results_follow_the_current_browser_lifecycle() {
     assert_eq!(
         finish[0]["response_metadata"]["tool_output"],
         "{\"title\":\"Bounded result\"}"
+    );
+}
+
+#[test]
+fn confirmation_decision_without_one_correlated_tool_result_fails_closed() {
+    let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+        .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let mut malformed = event(
+        "decision-without-result",
+        1,
+        false,
+        true,
+        vec![Part::Text {
+            text: "not a tool result".to_owned(),
+        }],
+    );
+    malformed.actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Approve);
+
+    let error = projection_error(projector.project(&malformed));
+    assert_eq!(
+        error.code(),
+        AgentEventProjectionErrorCode::UnsupportedCapability
     );
 }
 

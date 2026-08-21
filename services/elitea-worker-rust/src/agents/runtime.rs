@@ -20,7 +20,7 @@ use chrono::{DateTime, Utc};
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::direct_hitl::{
-    DirectHitlDecision, DirectHitlError, DirectHitlErrorCode, DirectHitlRunInput,
+    DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode, DirectHitlRunInput,
 };
 use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
@@ -353,7 +353,7 @@ impl<'a> AdmittedPipelineNativeAssembly<'a> {
 /// The only two direct-agent start modes admitted before PAT redemption.
 pub(crate) enum AdmittedNativeStart {
     Fresh,
-    DirectHitl(DirectHitlDecision),
+    DirectHitl(DirectHitlDecisionSet),
 }
 
 impl AdmittedNativeStart {
@@ -469,7 +469,7 @@ fn admit_native_start(
     if !has_continuation(request) {
         return Ok(AdmittedNativeStart::Fresh);
     }
-    DirectHitlDecision::from_payload(payload)
+    DirectHitlDecisionSet::from_payload(payload)
         .map(AdmittedNativeStart::DirectHitl)
         .map_err(|error| direct_hitl_admission_error(&error))
 }

@@ -150,6 +150,7 @@ impl OrdinaryNativeAgentAssembler {
             application_runtime = ApplicationRuntimeProjection::streaming(
                 materialized.presentations,
                 materialized.events,
+                materialized.resume,
             );
         }
         tracing::Span::current().record("materialized_toolset_count", toolsets.len());

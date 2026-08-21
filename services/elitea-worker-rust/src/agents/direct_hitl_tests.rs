@@ -3,8 +3,8 @@ use serde_json::{Value, json};
 
 use super::assembly_tests::ordinary_request;
 use super::direct_hitl::{
-    DirectHitlDecision, DirectHitlError, DirectHitlErrorCode, ResolvedDirectHitlDecision,
-    sensitive_call_identity,
+    DirectHitlDecision, DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode,
+    ResolvedDirectHitlDecision, sensitive_call_identity,
 };
 use super::request::AgentExecutionKind;
 use super::sensitive_tools::SensitiveToolCatalog;
@@ -81,6 +81,13 @@ fn sensitive_catalog(read_only: bool) -> SensitiveToolCatalog {
 fn admission_error(result: Result<DirectHitlDecision, DirectHitlError>) -> DirectHitlError {
     match result {
         Ok(_) => panic!("decision admission unexpectedly succeeded"),
+        Err(error) => error,
+    }
+}
+
+fn decision_set_error(result: Result<DirectHitlDecisionSet, DirectHitlError>) -> DirectHitlError {
+    match result {
+        Ok(_) => panic!("decision-set admission unexpectedly succeeded"),
         Err(error) => error,
     }
 }
@@ -353,5 +360,46 @@ fn direct_decision_admission_is_strict_and_bounded() {
         )))
         .code(),
         DirectHitlErrorCode::InvalidInput
+    );
+}
+
+#[test]
+fn parallel_decision_set_is_bounded_unique_and_has_no_scalar_alias() {
+    let mut payload = direct_payload("approve", "", "hitl_e1:one");
+    payload.hitl_action = None;
+    payload.hitl_value = None;
+    payload.hitl_decisions.push(json!({
+        "interrupt_id": "hitl_e1:two",
+        "tool_call_id": "call-1",
+        "action": "block_with_comment",
+        "value": "retain this record",
+    }));
+    DirectHitlDecisionSet::from_payload(&payload).expect("parallel decision set");
+
+    payload.hitl_action = Some("approve".to_owned());
+    assert_eq!(
+        decision_set_error(DirectHitlDecisionSet::from_payload(&payload)).code(),
+        DirectHitlErrorCode::InvalidInput
+    );
+    payload.hitl_action = None;
+    payload.hitl_decisions[1]["interrupt_id"] = json!("hitl_e1:one");
+    assert_eq!(
+        decision_set_error(DirectHitlDecisionSet::from_payload(&payload)).code(),
+        DirectHitlErrorCode::InvalidInput
+    );
+
+    payload.hitl_decisions = (0..17)
+        .map(|ordinal| {
+            json!({
+                "interrupt_id": format!("hitl_e1:{ordinal}"),
+                "tool_call_id": "call-1",
+                "action": "approve",
+                "value": "",
+            })
+        })
+        .collect();
+    assert_eq!(
+        decision_set_error(DirectHitlDecisionSet::from_payload(&payload)).code(),
+        DirectHitlErrorCode::UnsupportedCapability
     );
 }
