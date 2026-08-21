@@ -23,10 +23,10 @@ use super::request::{AgentExecutionKind, UserInput};
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
-    AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, NativeSessionBackend,
-    NativeToolExecutionMode, OrdinaryNativeAgentPlan, assemble_direct_hitl_resume_with_sessions,
-    assemble_ordinary_native, assemble_ordinary_native_with_sessions,
-    assemble_ordinary_native_with_sessions_and_options,
+    ApplicationRuntimeProjection, AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel,
+    NativeSessionBackend, NativeToolExecutionMode, OrdinaryNativeAgentPlan,
+    assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native,
+    assemble_ordinary_native_with_sessions, assemble_ordinary_native_with_sessions_and_options,
 };
 use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -495,7 +495,7 @@ async fn application_only_agent_dispatches_repeated_participant_calls_concurrent
         plan,
         vec![toolset],
         SensitiveToolCatalog::default(),
-        applications,
+        ApplicationRuntimeProjection::presentations(applications),
         NativeToolExecutionMode::ParallelApplications,
         sessions,
     )

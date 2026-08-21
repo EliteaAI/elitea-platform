@@ -15,7 +15,6 @@ use tracing::Instrument as _;
 
 use super::application_tools::{ApplicationToolDependencies, materialize_application_toolset};
 use super::assembly::{OrdinaryModelProvider, ReasoningEffort};
-use super::events::ApplicationToolPresentationCatalog;
 use super::runtime::{
     AdmittedNativeStart, AssembledNativeAgentInvocation, AuthorizedNativeAssembly,
     NativeAgentAssembler, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
@@ -23,8 +22,9 @@ use super::runtime::{
 };
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
 use super::session::{
-    NativeSessionBackend, NativeToolExecutionMode, OrdinaryAgentCompletion,
-    assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native_with_sessions_and_options,
+    ApplicationRuntimeProjection, NativeSessionBackend, NativeToolExecutionMode,
+    OrdinaryAgentCompletion, assemble_direct_hitl_resume_with_sessions_and_applications,
+    assemble_ordinary_native_with_sessions_and_options,
 };
 use crate::state::SessionLimits;
 use crate::toolkits::{
@@ -128,23 +128,26 @@ impl OrdinaryNativeAgentAssembler {
             &self.tool_policy,
         )
         .await?;
-        let mut application_tools = ApplicationToolPresentationCatalog::default();
+        let mut application_runtime = ApplicationRuntimeProjection::default();
         if let Some(materialized) = materialize_application_toolset(
             &tool_snapshot,
             self.platform.as_ref(),
             &runtime_context,
             context.clone(),
             &profile,
-            ApplicationToolDependencies {
-                model_facade: self.model_facade.clone(),
-                policy: self.tool_policy.clone(),
-                mcp_connector: self.mcp_connector.clone(),
-            },
+            ApplicationToolDependencies::new(
+                self.model_facade.clone(),
+                self.tool_policy.clone(),
+                self.mcp_connector.clone(),
+            ),
         )
         .await?
         {
             toolsets.push(materialized.toolset);
-            application_tools = materialized.presentations;
+            application_runtime = ApplicationRuntimeProjection::streaming(
+                materialized.presentations,
+                materialized.events,
+            );
         }
         tracing::Span::current().record("materialized_toolset_count", toolsets.len());
         let model = self.bind_model(&profile, context.as_ref())?;
@@ -175,7 +178,7 @@ impl OrdinaryNativeAgentAssembler {
                     plan,
                     toolsets,
                     sensitive_tools,
-                    application_tools,
+                    application_runtime,
                     execution_mode,
                     sessions,
                 )
@@ -183,11 +186,12 @@ impl OrdinaryNativeAgentAssembler {
             }
             AdmittedNativeStart::DirectHitl(decision) => {
                 tracing::Span::current().record("tool_execution_mode", "direct_hitl_resume");
-                assemble_direct_hitl_resume_with_sessions(
+                assemble_direct_hitl_resume_with_sessions_and_applications(
                     model,
                     plan,
                     toolsets,
                     sensitive_tools,
+                    application_runtime,
                     decision,
                     sessions,
                 )

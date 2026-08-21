@@ -68,17 +68,28 @@ Maintained Rust runtime ownership registry:
   marker is removed before provider dispatch. A fresh direct agent whose
   complete frozen root tool set consists only of saved Applications uses
   ADK-native bounded parallel tool dispatch; mixed tool batches stay sequential.
-  Application wrapper events retain provider call ID as invocation identity and
-  carry frozen display name plus sibling ordinal for current UI grouping.
+  The same rule is applied recursively when a saved direct child owns only
+  saved Applications. A bounded typed event bus forwards descendant ADK events
+  into the parent stream; the projector extends an ordered
+  `{name,call_id,sibling_ordinal}` path at every exact container invocation.
+  Provider call ID remains invocation identity and ordinal remains presentation
+  metadata, so repeated names and concurrently active nested leaves stay
+  distinct for current UI grouping. A child confirmation currently fails the
+  parent stream closed because the invocation-local child session is not yet a
+  durable resumable lineage.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
   frozen `agent_type=pipeline` applications, compiles their complete YAML before
   provider/state construction and retains the authorized state inputs for the
   graph assembler;
-- `src/agents/application_tools.rs`: exact saved child application/version to
-  ADK `AgentTool` composition, recursion, model-visible delegation schema and
-  the runtime-name-to-frozen-presentation join used by browser projection;
+- `src/agents/application_tools.rs`: exact saved child application/version to a
+  native child `LlmAgent` behind an ADK-compatible tool, bounded recursive
+  assembly, model-visible delegation schema, nested sensitive-policy binding,
+  typed descendant-event forwarding and the runtime-name-to-frozen-presentation
+  join used by browser projection. The adapter exists because stock ADK
+  `AgentTool` buffers child events and cannot expose an exact nested hierarchy;
+  durable child-session/checkpoint ownership remains a separate gate;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
@@ -96,7 +107,7 @@ Maintained Rust runtime ownership registry:
   state-driven conditions and Decision runs a no-tool claim-bound model; both
   select only compiler-validated targets with an atomic ADK `goto`. Agent nodes
   map one task to an exact frozen saved participant; direct saved agents reuse
-  the claim-bound native `AgentTool` assembly and project their final response;
+  the claim-bound child-agent assembly and project their final response;
   saved pipelines compile as isolated native `SubgraphNode` values over the
   same claim-fenced Checkpointer. A nested dynamic HITL binds one public
   `interrupt_id` to a bounded exact descendant checkpoint chain, resumes every
@@ -105,8 +116,8 @@ Maintained Rust runtime ownership registry:
   pipeline level and fails closed if that child declares another Agent node.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
-  prebuilt/static MCP, remote effects, recursive child participants, child
-  variables, nested static Printer interrupts, LLM-node nested confirmation,
+  prebuilt/static MCP, remote effects, pipeline-Agent descendant event
+  streaming, child variables, nested static Printer interrupts, LLM-node nested confirmation,
   arbitrary static interrupts and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded

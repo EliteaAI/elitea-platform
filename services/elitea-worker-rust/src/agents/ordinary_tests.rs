@@ -518,6 +518,30 @@ fn assert_nested_agent_model_requests(captured: &[CapturedModelRequest]) {
     );
 }
 
+fn assert_streamed_child_model_event(public_events: &[serde_json::Value]) {
+    let child_model = public_events
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_llm_start"
+                && event["response_metadata"]["parent_agent_path"]
+                    .as_array()
+                    .is_some_and(|path| !path.is_empty())
+        })
+        .expect("streamed child model event");
+    assert_eq!(
+        child_model["response_metadata"]["parent_agent_path"],
+        serde_json::json!([{
+            "name": "release-risk-agent",
+            "call_id": "call_child",
+            "sibling_ordinal": 1,
+        }])
+    );
+    assert_eq!(
+        child_model["response_metadata"]["parent_agent_call_id"],
+        "call_child"
+    );
+}
+
 fn anthropic_response() -> Response<Body> {
     let raw = concat!(
         "event: message_start\n",
@@ -1082,6 +1106,7 @@ async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
         "call_child"
     );
     assert_eq!(wrapper["response_metadata"]["sibling_ordinal"], 1);
+    assert_streamed_child_model_event(&public_events);
 
     let captured = captured.lock().expect("captured model requests");
     assert_nested_agent_model_requests(&captured);

@@ -27,11 +27,12 @@ const MAX_CONFIRMED_TOOLS: usize = 1_024;
 /// Keys are the exact model-visible ADK function names. Values contain only
 /// bounded public policy presentation; raw call arguments and interrupt
 /// authority do not exist until the model emits a call.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SensitiveToolCatalog {
     entries: BTreeMap<Box<str>, SensitiveToolEntry>,
 }
 
+#[derive(Clone)]
 struct SensitiveToolEntry {
     policy: SensitiveToolPolicy,
     read_only: bool,

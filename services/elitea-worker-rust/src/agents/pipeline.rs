@@ -405,11 +405,11 @@ impl PipelineNativeAgentAssembler {
             runtime_context,
             Arc::clone(&context),
             profile.shell(),
-            ApplicationToolDependencies {
-                model_facade: Arc::clone(&model_facade),
-                policy: Arc::clone(&self.tool_policy),
-                mcp_connector: Arc::clone(&self.mcp_connector),
-            },
+            ApplicationToolDependencies::new(
+                Arc::clone(&model_facade),
+                Arc::clone(&self.tool_policy),
+                Arc::clone(&self.mcp_connector),
+            ),
             Some(&direct_aliases),
         )
         .await?;

@@ -50,6 +50,10 @@ const MAX_NESTED_PIPELINE_CHECKPOINTS: usize = 3;
 const MAX_PIPELINE_INTERRUPT_MESSAGE_BYTES: usize = MAX_PIPELINE_HITL_MESSAGE_BYTES
     + MAX_NESTED_PIPELINE_CHECKPOINTS * (MAX_PIPELINE_NODE_IDENTITY_BYTES + 2);
 const MAX_PIPELINE_NODE_IDENTITY_BYTES: usize = 128;
+const MAX_AGENT_PATH_TIERS: usize = 3;
+pub(crate) const DESCENDANT_CONTAINER_INVOCATION_KEY: &str =
+    "elitea.descendant.container_invocation_id";
+pub(crate) const DESCENDANT_PARENT_CALL_KEY: &str = "elitea.descendant.parent_call_id";
 
 /// Stable, low-cardinality event projection failures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -259,6 +263,9 @@ pub(crate) struct ApplicationToolPresentationCatalog {
 struct ApplicationToolPresentation {
     display_name: String,
     agent_type: String,
+    model_name: String,
+    child_tools: ApplicationToolPresentationCatalog,
+    sensitive_tools: SensitiveToolCatalog,
 }
 
 impl ApplicationToolPresentation {
@@ -278,11 +285,33 @@ impl ApplicationToolPresentationCatalog {
         display_name: String,
         agent_type: String,
     ) -> Result<(), AgentEventProjectionError> {
+        self.insert_runtime(
+            tool_name,
+            display_name,
+            agent_type,
+            "nested-model".to_owned(),
+            Self::default(),
+            SensitiveToolCatalog::default(),
+        )
+    }
+
+    pub(crate) fn insert_runtime(
+        &mut self,
+        tool_name: String,
+        display_name: String,
+        agent_type: String,
+        model_name: String,
+        child_tools: Self,
+        sensitive_tools: SensitiveToolCatalog,
+    ) -> Result<(), AgentEventProjectionError> {
         if !valid_tool_identity(&tool_name)
             || display_name.is_empty()
             || display_name.len() > MAX_CONTEXT_TEXT_BYTES
             || display_name.chars().any(char::is_control)
             || !matches!(agent_type.as_str(), "agent" | "pipeline")
+            || model_name.is_empty()
+            || model_name.len() > MAX_CONTEXT_TEXT_BYTES
+            || model_name.chars().any(char::is_control)
             || self
                 .by_tool_name
                 .insert(
@@ -290,6 +319,9 @@ impl ApplicationToolPresentationCatalog {
                     ApplicationToolPresentation {
                         display_name,
                         agent_type,
+                        model_name,
+                        child_tools,
+                        sensitive_tools,
                     },
                 )
                 .is_some()
@@ -348,6 +380,33 @@ impl AgentEventProjectionContext {
         validate_context(&context)?;
         Ok(context)
     }
+
+    fn nested(
+        &self,
+        root_agent_name: String,
+        model_name: String,
+    ) -> Result<Self, AgentEventProjectionError> {
+        let context = Self {
+            stream_id: self.stream_id.clone(),
+            message_id: self.message_id.clone(),
+            execution_generation: self.execution_generation.clone(),
+            sio_event: self.sio_event.clone(),
+            thread_id: self.thread_id.clone(),
+            project_id: self.project_id.clone(),
+            chat_project_id: self.chat_project_id.clone(),
+            root_agent_name,
+            model_name,
+            application_details: self.application_details.clone(),
+            graph_checkpoint_thread_id: None,
+            should_continue: self.should_continue,
+            hitl_resume: self.hitl_resume,
+            parallel_reconcile: self.parallel_reconcile,
+            invoked_skills: Vec::new(),
+            applied_skills: Vec::new(),
+        };
+        validate_context(&context)?;
+        Ok(context)
+    }
 }
 
 #[cfg(test)]
@@ -400,6 +459,18 @@ struct ActiveToolCall {
     timestamp_start: String,
     application: Option<ApplicationToolPresentation>,
     sibling_ordinal: Option<usize>,
+}
+
+#[derive(Clone)]
+struct AgentPathTier {
+    name: String,
+    call_id: String,
+    sibling_ordinal: Option<usize>,
+}
+
+struct DescendantAgentProjector {
+    tier: AgentPathTier,
+    projector: Box<AgentEventProjector>,
 }
 
 /// Sanitized completion selected by the application/ad-hoc assembler.
@@ -479,6 +550,7 @@ pub(crate) struct AgentEventProjector {
     active_tools: BTreeMap<String, ActiveToolCall>,
     sensitive_tools: SensitiveToolCatalog,
     application_tools: ApplicationToolPresentationCatalog,
+    descendants: BTreeMap<String, DescendantAgentProjector>,
     pipeline_result: Option<String>,
 }
 
@@ -513,6 +585,7 @@ impl AgentEventProjector {
             active_tools: BTreeMap::new(),
             sensitive_tools,
             application_tools,
+            descendants: BTreeMap::new(),
             pipeline_result: None,
         })
     }
@@ -550,6 +623,32 @@ impl AgentEventProjector {
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
         validate_event_id(&event.id)?;
         validate_invocation_id(&event.invocation_id)?;
+        let has_descendant_container = event
+            .provider_metadata
+            .contains_key(DESCENDANT_CONTAINER_INVOCATION_KEY);
+        let has_descendant_call = event
+            .provider_metadata
+            .contains_key(DESCENDANT_PARENT_CALL_KEY);
+        if has_descendant_container || has_descendant_call {
+            if !(has_descendant_container && has_descendant_call) {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+            let container_invocation_id = event
+                .provider_metadata
+                .get(DESCENDANT_CONTAINER_INVOCATION_KEY)
+                .filter(|value| valid_tool_identity(value))
+                .ok_or_else(AgentEventProjectionError::invalid_state)?
+                .clone();
+            let parent_call_id = event
+                .provider_metadata
+                .get(DESCENDANT_PARENT_CALL_KEY)
+                .filter(|value| valid_tool_identity(value))
+                .ok_or_else(AgentEventProjectionError::invalid_state)?
+                .clone();
+            return self
+                .route_descendant(event, &container_invocation_id, &parent_call_id)?
+                .ok_or_else(AgentEventProjectionError::invalid_state);
+        }
         if self
             .invocation_id
             .as_deref()
@@ -596,6 +695,83 @@ impl AgentEventProjector {
         }
         self.bind_invocation_id(event);
         Ok(batch)
+    }
+
+    fn route_descendant(
+        &mut self,
+        event: &Event,
+        container_invocation_id: &str,
+        parent_call_id: &str,
+    ) -> Result<Option<ProjectedAgentEventBatch>, AgentEventProjectionError> {
+        if self.invocation_id.as_deref() == Some(container_invocation_id) {
+            return self
+                .project_immediate_descendant(event, parent_call_id)
+                .map(Some);
+        }
+        for descendant in self.descendants.values_mut() {
+            let Some(batch) = descendant.projector.route_descendant(
+                event,
+                container_invocation_id,
+                parent_call_id,
+            )?
+            else {
+                continue;
+            };
+            return overlay_batch_hierarchy(batch, std::slice::from_ref(&descendant.tier))
+                .map(Some);
+        }
+        Ok(None)
+    }
+
+    fn project_immediate_descendant(
+        &mut self,
+        event: &Event,
+        parent_call_id: &str,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        let active = self
+            .active_tools
+            .get(parent_call_id)
+            .cloned()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let application = active
+            .application
+            .clone()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if !self.descendants.contains_key(parent_call_id) {
+            let nested_context = self
+                .context
+                .nested(active.name.clone(), application.model_name.clone())?;
+            let mut projector = Self::with_tool_catalogs(
+                nested_context,
+                application.sensitive_tools.clone(),
+                application.child_tools.clone(),
+            )?;
+            let _start = projector.start(event.timestamp)?;
+            self.descendants.insert(
+                parent_call_id.to_owned(),
+                DescendantAgentProjector {
+                    tier: AgentPathTier {
+                        name: application.display_name,
+                        call_id: parent_call_id.to_owned(),
+                        sibling_ordinal: active.sibling_ordinal,
+                    },
+                    projector: Box::new(projector),
+                },
+            );
+        }
+        let descendant = self
+            .descendants
+            .get_mut(parent_call_id)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let mut child_event = event.clone();
+        child_event
+            .provider_metadata
+            .remove(DESCENDANT_CONTAINER_INVOCATION_KEY);
+        child_event
+            .provider_metadata
+            .remove(DESCENDANT_PARENT_CALL_KEY);
+        let batch = descendant.projector.project(&child_event)?;
+        overlay_batch_hierarchy(batch, std::slice::from_ref(&descendant.tier))
     }
 
     fn project_graph_interrupt(
@@ -2263,6 +2439,164 @@ fn ordinary_text_parts(
         }
     }
     Ok((content, thinking))
+}
+
+fn overlay_batch_hierarchy(
+    batch: ProjectedAgentEventBatch,
+    prefix: &[AgentPathTier],
+) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+    let mut overlaid = ProjectedAgentEventBatch::new();
+    for mut event in batch {
+        overlay_event_hierarchy(&mut event, prefix)?;
+        overlaid.push(event)?;
+    }
+    Ok(overlaid)
+}
+
+fn overlay_event_hierarchy(
+    event: &mut NodeEventV1,
+    prefix: &[AgentPathTier],
+) -> Result<(), AgentEventProjectionError> {
+    if prefix.is_empty() || prefix.len() > MAX_AGENT_PATH_TIERS {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let mut metadata: Value = serde_json::from_slice(&event.response_metadata)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    overlay_hierarchy_value(&mut metadata, prefix, 0)?;
+    event.response_metadata =
+        serde_json::to_vec(&metadata).map_err(|_| AgentEventProjectionError::invalid_state())?;
+    encode_current_node_event_json(event).map_err(AgentEventProjectionError::output)?;
+    Ok(())
+}
+
+fn overlay_hierarchy_value(
+    value: &mut Value,
+    prefix: &[AgentPathTier],
+    depth: usize,
+) -> Result<(), AgentEventProjectionError> {
+    if depth > 4 {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let Value::Object(object) = value else {
+        return Ok(());
+    };
+    overlay_hierarchy_object(object, prefix)?;
+    for key in ["metadata", "tool_meta", "hitl_interrupt", "message"] {
+        if let Some(child) = object.get_mut(key) {
+            overlay_hierarchy_value(child, prefix, depth + 1)?;
+        }
+    }
+    for key in ["thinking_steps", "hitl_interrupts"] {
+        if let Some(Value::Array(children)) = object.get_mut(key) {
+            for child in children {
+                overlay_hierarchy_value(child, prefix, depth + 1)?;
+            }
+        }
+    }
+    if let Some(Value::Object(tool_calls)) = object.get_mut("tool_calls") {
+        for child in tool_calls.values_mut() {
+            overlay_hierarchy_value(child, prefix, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn overlay_hierarchy_object(
+    object: &mut serde_json::Map<String, Value>,
+    prefix: &[AgentPathTier],
+) -> Result<(), AgentEventProjectionError> {
+    let mut path = prefix.to_vec();
+    if let Some(existing) = object.get("parent_agent_path") {
+        let Value::Array(existing) = existing else {
+            return Err(AgentEventProjectionError::invalid_state());
+        };
+        for tier in existing {
+            path.push(parse_agent_path_tier(tier)?);
+        }
+    }
+    if path.len() > MAX_AGENT_PATH_TIERS {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let owner = path
+        .last()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    object.insert(
+        "parent_agent_path".to_owned(),
+        Value::Array(path.iter().map(agent_path_tier_value).collect()),
+    );
+    insert_or_validate_hierarchy_string(object, "parent_agent_name", &owner.name, false)?;
+    insert_or_validate_hierarchy_string(object, "parent_agent_call_id", &owner.call_id, true)?;
+    Ok(())
+}
+
+fn insert_or_validate_hierarchy_string(
+    object: &mut serde_json::Map<String, Value>,
+    key: &str,
+    fallback: &str,
+    tool_identity: bool,
+) -> Result<(), AgentEventProjectionError> {
+    match object.get(key) {
+        None | Some(Value::Null) => {
+            object.insert(key.to_owned(), Value::String(fallback.to_owned()));
+        }
+        Some(Value::String(value))
+            if if tool_identity {
+                valid_tool_identity(value)
+            } else {
+                !value.is_empty()
+                    && value.len() <= MAX_CONTEXT_TEXT_BYTES
+                    && !value.chars().any(char::is_control)
+            } => {}
+        Some(_) => return Err(AgentEventProjectionError::invalid_state()),
+    }
+    Ok(())
+}
+
+fn parse_agent_path_tier(value: &Value) -> Result<AgentPathTier, AgentEventProjectionError> {
+    let object = value
+        .as_object()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let name = object
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= MAX_CONTEXT_TEXT_BYTES
+                && !value.chars().any(char::is_control)
+        })
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let call_id = object
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|value| valid_tool_identity(value))
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    let sibling_ordinal = object
+        .get("sibling_ordinal")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| *value > 0 && *value <= MAX_TOOL_CALLS_PER_MODEL_TURN)
+                .ok_or_else(AgentEventProjectionError::invalid_state)
+        })
+        .transpose()?;
+    Ok(AgentPathTier {
+        name: name.to_owned(),
+        call_id: call_id.to_owned(),
+        sibling_ordinal,
+    })
+}
+
+fn agent_path_tier_value(tier: &AgentPathTier) -> Value {
+    let mut value = json!({
+        "name": tier.name,
+        "call_id": tier.call_id,
+    });
+    if let Some(sibling_ordinal) = tier.sibling_ordinal {
+        value["sibling_ordinal"] = json!(sibling_ordinal);
+    }
+    value
 }
 
 fn tool_entry(

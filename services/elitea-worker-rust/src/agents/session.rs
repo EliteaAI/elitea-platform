@@ -19,7 +19,7 @@ use adk_rust::session::{
     AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, SessionService,
 };
 use adk_rust::{
-    AdkIdentity, Content, Event, GenerateContentConfig, Llm, RunConfig, SessionId,
+    AdkIdentity, Agent, Content, Event, GenerateContentConfig, Llm, RunConfig, SessionId,
     ToolConcurrencyConfig, ToolExecutionStrategy, Toolset, UserId,
 };
 use async_trait::async_trait;
@@ -29,6 +29,7 @@ use ring::digest;
 use serde_json::{Map, Value};
 use sqlx::PgPool;
 
+use super::application_tools::{ApplicationEventReceiver, ApplicationEventStreamingAgent};
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
 use super::direct_hitl::{DirectHitlDecision, DirectHitlError, DirectHitlErrorCode};
@@ -75,6 +76,34 @@ pub(crate) enum NativeToolExecutionMode {
     Sequential,
     /// Every model-callable root tool is a saved Application participant.
     ParallelApplications,
+}
+
+#[derive(Default)]
+pub(crate) struct ApplicationRuntimeProjection {
+    presentations: ApplicationToolPresentationCatalog,
+    events: Option<ApplicationEventReceiver>,
+}
+
+impl ApplicationRuntimeProjection {
+    #[must_use]
+    pub(crate) const fn streaming(
+        presentations: ApplicationToolPresentationCatalog,
+        events: ApplicationEventReceiver,
+    ) -> Self {
+        Self {
+            presentations,
+            events: Some(events),
+        }
+    }
+
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) const fn presentations(presentations: ApplicationToolPresentationCatalog) -> Self {
+        Self {
+            presentations,
+            events: None,
+        }
+    }
 }
 
 /// Non-authority command fields needed by local ADK and browser projection.
@@ -849,7 +878,7 @@ where
         plan,
         toolsets,
         sensitive_tools,
-        ApplicationToolPresentationCatalog::default(),
+        ApplicationRuntimeProjection::default(),
         NativeToolExecutionMode::Sequential,
         sessions,
     )
@@ -862,7 +891,7 @@ pub(crate) async fn assemble_ordinary_native_with_sessions_and_options<M>(
     plan: OrdinaryNativeAgentPlan,
     toolsets: Vec<Arc<dyn Toolset>>,
     sensitive_tools: SensitiveToolCatalog,
-    application_tools: ApplicationToolPresentationCatalog,
+    application_runtime: ApplicationRuntimeProjection,
     execution_mode: NativeToolExecutionMode,
     sessions: Arc<dyn SessionService>,
 ) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
@@ -907,7 +936,14 @@ where
     for tool_name in sensitive_tools.tool_names() {
         builder = builder.require_tool_confirmation(tool_name);
     }
-    let agent = builder.build().map_err(|_| invalid_configuration())?;
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+    } = application_runtime;
+    let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
+    let agent = application_events.map_or(agent.clone(), |events| {
+        Arc::new(ApplicationEventStreamingAgent::new(agent, events)) as Arc<dyn Agent>
+    });
     let (session, created) =
         restore_or_create_session(sessions.as_ref(), &user_id, &session_id).await?;
     let identity = session
@@ -932,7 +968,7 @@ where
     );
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
-        .agent(Arc::new(agent))
+        .agent(agent)
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
@@ -975,6 +1011,31 @@ pub(crate) async fn assemble_direct_hitl_resume_with_sessions<M>(
     plan: OrdinaryNativeAgentPlan,
     toolsets: Vec<Arc<dyn Toolset>>,
     sensitive_tools: SensitiveToolCatalog,
+    decision: DirectHitlDecision,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
+    assemble_direct_hitl_resume_with_sessions_and_applications(
+        model,
+        plan,
+        toolsets,
+        sensitive_tools,
+        ApplicationRuntimeProjection::default(),
+        decision,
+        sessions,
+    )
+    .await
+}
+
+/// Resume one direct confirmation while retaining saved-participant streaming.
+pub(crate) async fn assemble_direct_hitl_resume_with_sessions_and_applications<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
+    application_runtime: ApplicationRuntimeProjection,
     decision: DirectHitlDecision,
     sessions: Arc<dyn SessionService>,
 ) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
@@ -1028,15 +1089,23 @@ where
     for tool_name in sensitive_tools.tool_names() {
         builder = builder.require_tool_confirmation(tool_name);
     }
-    let agent = builder.build().map_err(|_| invalid_configuration())?;
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+    } = application_runtime;
+    let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
+    let agent = application_events.map_or(agent.clone(), |events| {
+        Arc::new(ApplicationEventStreamingAgent::new(agent, events)) as Arc<dyn Agent>
+    });
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
-        .agent(Arc::new(agent))
+        .agent(agent)
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
-        .map_err(projection_configuration)?;
+    let projector =
+        AgentEventProjector::with_tool_catalogs(projection, sensitive_tools, application_tools)
+            .map_err(projection_configuration)?;
     Ok(AssembledNativeAgentInvocation::new(
         NativeAgentInvocation::new_direct_hitl(runner, user_id, session_id, run_input),
         projector,

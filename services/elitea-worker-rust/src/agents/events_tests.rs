@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionErrorCode, AgentEventProjector,
     ApplicationToolPresentationCatalog, CompletedAgentBrowserOutput,
+    DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
 };
 use super::graph::pipeline_result_event;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
@@ -50,6 +51,61 @@ fn event(id: &str, second: u32, partial: bool, complete: bool, parts: Vec<Part>)
         event.llm_response.finish_reason = Some(FinishReason::Stop);
     }
     event
+}
+
+fn descendant_model_event(
+    id: &str,
+    invocation_id: &str,
+    author: &str,
+    second: u32,
+    parts: Vec<Part>,
+    container_invocation_id: &str,
+    parent_call_id: &str,
+) -> Event {
+    let mut event = Event::with_id(id, invocation_id);
+    event.timestamp = timestamp(second);
+    event.author = author.to_owned();
+    event.llm_response.content = Some(Content {
+        role: "model".to_owned(),
+        parts,
+    });
+    event.llm_response.turn_complete = true;
+    event.llm_response.finish_reason = Some(FinishReason::Stop);
+    event.provider_metadata.insert(
+        DESCENDANT_CONTAINER_INVOCATION_KEY.to_owned(),
+        container_invocation_id.to_owned(),
+    );
+    event.provider_metadata.insert(
+        DESCENDANT_PARENT_CALL_KEY.to_owned(),
+        parent_call_id.to_owned(),
+    );
+    event
+}
+
+fn nested_application_catalog() -> ApplicationToolPresentationCatalog {
+    let mut children = ApplicationToolPresentationCatalog::default();
+    children
+        .insert_runtime(
+            "elitea_agent_18_v_4".to_owned(),
+            "Name Resolver".to_owned(),
+            "agent".to_owned(),
+            "child-model".to_owned(),
+            ApplicationToolPresentationCatalog::default(),
+            super::sensitive_tools::SensitiveToolCatalog::default(),
+        )
+        .expect("child presentation");
+    let mut applications = ApplicationToolPresentationCatalog::default();
+    applications
+        .insert_runtime(
+            "elitea_agent_17_v_9".to_owned(),
+            "Full Name Resolver".to_owned(),
+            "agent".to_owned(),
+            "orchestrator-model".to_owned(),
+            children,
+            super::sensitive_tools::SensitiveToolCatalog::default(),
+        )
+        .expect("root presentation");
+    applications
 }
 
 fn terminal_event_without_content(id: &str, second: u32) -> Event {
@@ -507,6 +563,109 @@ fn repeated_application_calls_project_distinct_stable_ui_invocations() {
             expected_id
         );
     }
+}
+
+#[test]
+fn descendant_events_extend_the_exact_invocation_hierarchy() {
+    let mut projector = AgentEventProjector::with_tool_catalogs(
+        AgentEventProjectionContext::fixture(json!({})),
+        super::sensitive_tools::SensitiveToolCatalog::default(),
+        nested_application_catalog(),
+    )
+    .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    projector
+        .project(&event(
+            "root-delegation",
+            1,
+            false,
+            true,
+            vec![Part::FunctionCall {
+                name: "elitea_agent_17_v_9".to_owned(),
+                args: json!({"task": "Resolve Olivia Lovelace"}),
+                id: Some("root-call-1".to_owned()),
+                thought_signature: None,
+            }],
+        ))
+        .expect("root delegation");
+
+    let nested_call = descendant_model_event(
+        "nested-delegation",
+        "child-invocation-1",
+        "elitea_agent_17_v_9",
+        2,
+        vec![Part::FunctionCall {
+            name: "elitea_agent_18_v_4".to_owned(),
+            args: json!({"task": "Resolve Olivia"}),
+            id: Some("child-call-1".to_owned()),
+            thought_signature: None,
+        }],
+        "invocation-1",
+        "root-call-1",
+    );
+    let nested = projector
+        .project(&nested_call)
+        .expect("nested delegation")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    let nested_wrapper = nested
+        .iter()
+        .find(|event| event["type"] == "agent_tool_start")
+        .expect("nested wrapper event");
+    assert_eq!(
+        nested_wrapper["response_metadata"]["parent_agent_path"],
+        json!([{
+            "name": "Full Name Resolver",
+            "call_id": "root-call-1",
+            "sibling_ordinal": 1,
+        }])
+    );
+    assert_eq!(
+        nested_wrapper["response_metadata"]["parent_agent_call_id"],
+        "child-call-1"
+    );
+
+    let leaf = descendant_model_event(
+        "leaf-answer",
+        "child-invocation-2",
+        "elitea_agent_18_v_4",
+        3,
+        vec![Part::Text {
+            text: "Olivia".to_owned(),
+        }],
+        "child-invocation-1",
+        "child-call-1",
+    );
+    let leaf = projector
+        .project(&leaf)
+        .expect("leaf response")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    let leaf_start = leaf
+        .iter()
+        .find(|event| event["type"] == "agent_llm_start")
+        .expect("leaf model start");
+    assert_eq!(
+        leaf_start["response_metadata"]["parent_agent_path"],
+        json!([
+            {
+                "name": "Full Name Resolver",
+                "call_id": "root-call-1",
+                "sibling_ordinal": 1,
+            },
+            {
+                "name": "Name Resolver",
+                "call_id": "child-call-1",
+                "sibling_ordinal": 1,
+            }
+        ])
+    );
+    assert_eq!(
+        leaf_start["response_metadata"]["parent_agent_call_id"],
+        "child-call-1"
+    );
 }
 
 #[test]
