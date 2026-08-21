@@ -42,7 +42,12 @@ installWebStorageShim();
 
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
-/** Every permission the Go handler injects for a valid admin session. */
+/**
+ * Every permission any nav item asks for. Derived from the nav, so it is a
+ * "this session carries everything" probe for the RENDERING tests below, never
+ * a statement about what the server issues. The two catalogues further down
+ * carry that.
+ */
 const ALL_PERMISSIONS = adminNavGroups().flatMap((group) =>
   group.items.flatMap((item) => item.anyPermission),
 );
@@ -139,79 +144,130 @@ describe('every nav target is a real route', () => {
 /* ── permission filtering (presentation only) ──────────────────────────── */
 
 /**
- * The permission strings `services/elitea-main/internal/api/adminui/handler.go`
- * injects for a session it accepts, verbatim.
+ * The administration-mode permissions THIS platform seeds, transcribed from
+ * `services/elitea-main/internal/db`'s `internal/infra/db/migrations/
+ * 001_initial.sql` and `services/elitea-main/migrations/shared/*.sql`.
  *
  * Duplicated here on purpose, and it is the one hand-written list in this file
  * — because it is not a restatement of this app's own data (the drift gate
  * above reads the ROUTER for that), it is the SERVER's contract. A nav item
- * asking for a permission the platform issues to nobody is hidden from every
- * operator forever, with no error and nothing on screen to explain it: the same
- * "hidden by an unsatisfiable gate" shape as a control wired to nothing.
+ * that no seeded grant can satisfy is hidden from every operator forever, with
+ * no error and nothing on screen to explain it: the same "hidden by an
+ * unsatisfiable gate" shape as a control wired to nothing.
  *
- * Found by mutation testing, not by review. Every permission string in the nav
- * survived being corrupted, because the only tests that named one either
- * injected their own probe or derived the expected set from the nav itself —
- * self-consistent, and blind to a permission id that does not exist.
+ * This list replaces the 37 strings `adminui/handler.go` used to HARDCODE for
+ * every session it accepted. That handler resolves the caller's real grants
+ * now, so the old list stopped describing anything. It also stopped catching
+ * the defect it was written for: it carried the reference's invented section
+ * names, so the `projects` and `service-descriptors` gates passed here and hid
+ * both items in the browser.
  */
-const HANDLER_ISSUED_PERMISSIONS = new Set([
+const PLATFORM_ISSUED_PERMISSIONS = new Set([
+  // 001_initial.sql, administration mode, super_admin and admin.
   'admin.auth.users',
   'admin.auth.users.super_admin',
-  'configuration',
-  'configuration.roles',
+  'admin.moderation',
   'configuration.roles.permissions.view',
+  'configuration.roles.user_project_permissions.edit',
+  'configuration.roles.user_project_permissions.view',
+  'models.admin.project_budgets.edit',
+  'models.admin.project_budgets.view',
+  'modes.users',
+  'projects.projects.project.create',
+  'projects.projects.project.delete',
+  'projects.projects.projects.view',
+  'provider_hub.descriptor.register',
+  'runtime.admin.published_agents',
+  'runtime.airun.serviceproviders',
+  'runtime.plugins',
+  // migrations/shared/0082_admin_panel_permissions.sql.
+  'admin.moderation.edit',
+  'configuration.governance',
   'configuration.roles.permissions.edit',
-  'configuration.roles.roles.view',
-  'configuration.roles.roles.create',
-  'configuration.roles.roles.edit',
-  'configuration.roles.roles.delete',
-  'configuration.users',
-  'configuration.users.users.view',
+  'configuration.scheduling.schedules.edit',
+  'configuration.scheduling.schedules.view',
   'configuration.users.users.create',
   'configuration.users.users.edit',
-  'configuration.users.users.delete',
+  'models.admin.audit_trail.view',
+  'projects.projects.projects.edit',
+  // migrations/shared/0085_project_member_and_role_listings_administration.sql.
+  'configuration.roles.roles.view',
+  'configuration.users.users.view',
+  // migrations/shared/0087_administration_secret_permissions.sql.
+  'configuration.secrets.secret.create',
+  'configuration.secrets.secret.delete',
+  'configuration.secrets.secret.edit',
+  'configuration.secrets.secret.view',
+]);
+
+/**
+ * The names the nav also asks for that NO administration-mode seed in this
+ * repository grants.
+ *
+ * Six are the reference sidebar's pylon SECTION names. One,
+ * `admin.moderation.view`, this platform does seed — in the DEFAULT mode
+ * (`migrations/shared/0077_moderation_permissions.sql`), which the admin
+ * console never resolves.
+ *
+ * They stay in the nav because a pylon-backed deployment registers them, and
+ * the Go handler resolves whatever `auth_core__role_permission` holds there.
+ * They are listed here so each one is a DECISION rather than a typo, and so an
+ * item that names ONLY these fails the test above.
+ */
+const NOT_SEEDED_IN_ADMINISTRATION = new Set([
+  'admin.moderation.view',
+  'configuration',
+  'configuration.roles',
+  'configuration.secrets.secret.list',
+  'configuration.service_descriptors',
   'projects',
   'projects.projects',
-  'projects.projects.projects.view',
-  'projects.projects.projects.edit',
-  'configuration.secrets.secret.list',
-  'configuration.secrets.secret.create',
-  'configuration.secrets.secret.edit',
-  'configuration.secrets.secret.delete',
-  'configuration.litellm',
-  'configuration.litellm.edit',
-  'configuration.advanced',
-  'configuration.service_descriptors',
-  'runtime',
-  'runtime.plugins',
-  'configuration.scheduling.schedules.view',
-  'configuration.scheduling.schedules.edit',
-  'models.admin.audit_trail.view',
-  'admin.moderation',
-  'admin.moderation.view',
-  'admin.moderation.create',
-  'admin.moderation.edit',
 ]);
 
 describe('permission gates name permissions the platform issues', () => {
-  it('asks only for permissions the admin handler actually grants', () => {
+  it('gives every item a permission a seeded administration role holds', () => {
+    // The assertion the old HANDLER_ISSUED_PERMISSIONS list could not make.
+    // An item gated ONLY on pylon section names renders on a pylon deployment
+    // and on no Go-native one, and nothing else in the repo would notice.
+    for (const group of adminNavGroups()) {
+      for (const item of group.items) {
+        const issued = item.anyPermission.filter((permission) =>
+          PLATFORM_ISSUED_PERMISSIONS.has(permission),
+        );
+        expect(
+          issued,
+          `nav item "${item.id}" gates only on ${item.anyPermission.join(', ')}, which no administration-mode seed grants — the item is invisible on this platform`,
+        ).not.toHaveLength(0);
+      }
+    }
+  });
+
+  it('spells every permission the way one of the two catalogues spells it', () => {
     for (const group of adminNavGroups()) {
       for (const item of group.items) {
         for (const permission of item.anyPermission) {
           expect(
-            HANDLER_ISSUED_PERMISSIONS,
-            `nav item "${item.id}" gates on "${permission}", which adminui/handler.go never issues — the item would be invisible to everyone`,
-          ).toContain(permission);
+            PLATFORM_ISSUED_PERMISSIONS.has(permission) || NOT_SEEDED_IN_ADMINISTRATION.has(permission),
+            `nav item "${item.id}" gates on "${permission}", which neither this platform nor pylon issues`,
+          ).toBe(true);
         }
       }
     }
   });
 
-  it('leaves every item visible to a session the handler accepts', () => {
-    // The end-to-end consequence of the test above: the operator this platform
-    // actually produces sees all ten. An item can still be hidden by a NARROWER
-    // deployment — that is the feature — but not by a typo here.
-    const groups = visibleAdminNavGroups((permission) => HANDLER_ISSUED_PERMISSIONS.has(permission));
+  it('leaves every item visible to the operator this platform seeds', () => {
+    // The end-to-end consequence of the two tests above: a Go-native
+    // administrator sees all ten. A NARROWER deployment can still hide an item
+    // — that is the feature — but a name no seed grants cannot.
+    const groups = visibleAdminNavGroups((permission) => PLATFORM_ISSUED_PERMISSIONS.has(permission));
+    const visible = groups.flatMap((group) => group.items.map((item) => item.id));
+    const all = adminNavGroups().flatMap((group) => group.items.map((item) => item.id));
+    expect(visible).toEqual(all);
+  });
+
+  it('leaves every item visible to a pylon-backed deployment too', () => {
+    const both = new Set([...PLATFORM_ISSUED_PERMISSIONS, ...NOT_SEEDED_IN_ADMINISTRATION]);
+    const groups = visibleAdminNavGroups((permission) => both.has(permission));
     const visible = groups.flatMap((group) => group.items.map((item) => item.id));
     const all = adminNavGroups().flatMap((group) => group.items.map((item) => item.id));
     expect(visible).toEqual(all);

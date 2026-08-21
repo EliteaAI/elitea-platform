@@ -46,11 +46,12 @@
  *
  * ## `permissions` here is PRESENTATION, never authorisation
  *
- * `./adminUiConfig.ts`'s header has the full account: the Go handler HARDCODES
- * the permission array and hands the same list to anyone with a valid session,
- * so nothing derived from it can be a gate. Hiding an item whose page would 403
- * is good UX and is all that happens here; the server refuses the request either
- * way, and typing the URL still reaches the page (and still gets refused).
+ * `./adminUiConfig.ts`'s header has the full account. The Go handler resolves
+ * the caller's real administration-mode grants, and it injects an empty list
+ * when the resolver refuses. The array is a hint about what to render. It is
+ * not a gate. Hiding an item whose page would answer 403 is good UX, and it is
+ * all that happens here. The server refuses the request either way, and a typed
+ * URL still reaches the page (and still gets refused).
  */
 import type { ComponentType } from 'react';
 
@@ -108,7 +109,7 @@ const ADMIN_INDEX_ROUTE_ID = '/';
 const INDEX_ALIAS_ITEM_ID = 'users';
 
 /**
- * The reference's `SIDEBAR_PERMISSIONS`, with two corrections.
+ * The reference's `SIDEBAR_PERMISSIONS`, with three corrections.
  *
  * `app-requests` there requires `PERMISSIONS.users.section` (`admin.auth.users`)
  * — a copy-paste from the Users entry that predates the moderation permissions.
@@ -118,11 +119,28 @@ const INDEX_ALIAS_ITEM_ID = 'users';
  *
  * `service-descriptors` has no reference entry at all (no nav item to gate).
  * `configuration.service_descriptors` is the permission the reference's
- * Configuration SECTION for the same subsystem uses (`CONFIG_SECTION_PERMISSIONS`),
- * and it is one the platform issues; the LISTING endpoint additionally gates on
- * `runtime.airun.serviceproviders`, which this platform issues to nobody, so
- * gating the nav on that would hide the item from every operator and tell none
- * of them why.
+ * Configuration SECTION for the same subsystem uses
+ * (`CONFIG_SECTION_PERMISSIONS`).
+ *
+ * ## Every item names a permission THIS platform issues, as well
+ *
+ * The reference gates four items on pylon SECTION names — `projects`,
+ * `projects.projects`, `configuration`, `configuration.roles` — and one on
+ * `configuration.service_descriptors`. Pylon registers those names, so they stay
+ * here for a pylon-backed deployment. This platform's own administration mode
+ * registers none of them: `001_initial.sql` and `migrations/shared/*` seed
+ * fully-qualified names only.
+ *
+ * The nav read that as "the operator lacks the permission" and hid the item.
+ * `projects` and `service-descriptors` disappeared from every Go-native admin
+ * console, silently, with nothing on screen to explain it. Both now name the
+ * permission `internal/api/router.go` resolves for the page they open, beside
+ * the pylon name. `roles`, `configuration` and `features` already did.
+ *
+ * The defect stayed invisible while `adminui/handler.go` HARDCODED a 37-string
+ * permission list that echoed the reference's section names back to the browser.
+ * That handler resolves the operator's real grants now, so an unissuable name
+ * hides an item for good. Add no gate whose permission no seed grants.
  */
 function navGroups(): readonly AdminNavGroup[] {
   return [
@@ -148,7 +166,11 @@ function navGroups(): readonly AdminNavGroup[] {
           path: '/projects',
           label: t('pages.admin.nav.projects', 'Projects'),
           icon: FolderOutlinedIcon,
-          anyPermission: ['projects', 'projects.projects'],
+          // `projects` and `projects.projects` are pylon SECTION names. This
+          // platform's administration mode issues neither. It issues
+          // `projects.projects.projects.view`, which is also the permission
+          // `router.go` resolves for the admin project listing this item opens.
+          anyPermission: ['projects', 'projects.projects', 'projects.projects.projects.view'],
         },
         {
           id: 'secrets',
@@ -188,7 +210,13 @@ function navGroups(): readonly AdminNavGroup[] {
           path: '/service-descriptors',
           label: t('pages.admin.nav.serviceDescriptors', 'Service Descriptors'),
           icon: HubOutlinedIcon,
-          anyPermission: ['configuration.service_descriptors'],
+          // `configuration.service_descriptors` is a pylon CONFIGURATION-SECTION
+          // name, and this platform issues it to nobody.
+          // `runtime.airun.serviceproviders` is the permission `router.go`
+          // resolves for the listing, and 001_initial.sql grants it to both
+          // administration-mode admin roles. Keep both: the section name still
+          // reaches a pylon-backed deployment.
+          anyPermission: ['configuration.service_descriptors', 'runtime.airun.serviceproviders'],
         },
         {
           id: 'audit',
