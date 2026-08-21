@@ -97,6 +97,8 @@ func statusForCode(code string) int {
 		return http.StatusForbidden
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "RangeNotSatisfiable":
+		return http.StatusRequestedRangeNotSatisfiable
 	case "DigestMismatch", "MediaTypeMismatch":
 		return http.StatusConflict
 	default:
@@ -106,10 +108,11 @@ func statusForCode(code string) int {
 
 // writeStorageError maps a storage.ObjectStore error onto the typed error
 // envelope, choosing both the HTTP status and the error code from the same
-// sentinel classification.
-func writeStorageError(w http.ResponseWriter, err error) {
-	code := storageErrorCode(err)
-	writeError(w, statusForCode(code), code, err.Error())
+// sentinel classification. An unclassified cause never reaches the caller —
+// see classifyStorageError.
+func (h *Handler) writeStorageError(ctx context.Context, w http.ResponseWriter, op string, err error) {
+	code, message := h.classifyStorageError(ctx, op, err)
+	writeError(w, statusForCode(code), code, message)
 }
 
 // isMaxBytesError reports whether err (or something it wraps) is
@@ -143,7 +146,7 @@ func (h *Handler) requireBucket(w http.ResponseWriter, r *http.Request, projectI
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NotFound", "bucket not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "Internal", "get bucket: "+err.Error())
+			h.writeInternal(w, r, "get bucket", err)
 		}
 		return repos.BucketRow{}, false
 	}
@@ -273,10 +276,10 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	page, err := h.listBucketObjects(r.Context(), projectIDStr, bucket, q)
 	if err != nil {
 		if errors.Is(err, errInvalidBucketRef) {
-			writeError(w, http.StatusInternalServerError, "Internal", "list objects: "+err.Error())
+			h.writeInternal(w, r, "list objects", err)
 			return
 		}
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "list objects", err)
 		return
 	}
 
@@ -371,23 +374,31 @@ func (h *Handler) storeObject(ctx context.Context, in storeObjectInput) (storage
 		if isMaxBytesError(err) {
 			return storage.ObjectInfo{}, "TooLarge", "object exceeds the project's max_object_bytes limit"
 		}
-		return storage.ObjectInfo{}, storageErrorCode(err), err.Error()
+		code, message := h.classifyStorageError(ctx, "put object", err)
+		return storage.ObjectInfo{}, code, message
 	}
 
+	// The object's own retention window starts now. It does not inherit the
+	// bucket's frozen expires_at — see computeExpiresAt. An overwrite
+	// restarts the window, because UpsertArtifactObject's ON CONFLICT branch
+	// refreshes expires_at; that matches an S3 lifecycle rule, which also
+	// measures age from the newest version.
 	if _, err := h.repo.UpsertObject(ctx, repos.NewObjectInput{
 		BucketID:   in.bucketRow.ID,
 		Key:        info.Key,
 		ByteLength: info.Size,
 		MediaType:  in.contentType,
-		ExpiresAt:  in.bucketRow.ExpiresAt,
+		ExpiresAt:  computeExpiresAt(in.bucketRow.RetentionDays),
 	}); err != nil {
-		return storage.ObjectInfo{}, "Internal", "record object metadata: " + err.Error()
+		h.logInternal(ctx, "record object metadata", err)
+		return storage.ObjectInfo{}, "Internal", "record object metadata"
 	}
 
 	if in.policy.MaxTotalBytes != nil {
 		total, err := h.repo.SumProjectBytes(ctx, in.projectID)
 		if err != nil {
-			return storage.ObjectInfo{}, "Internal", "sum project bytes: " + err.Error()
+			h.logInternal(ctx, "sum project bytes", err)
+			return storage.ObjectInfo{}, "Internal", "sum project bytes"
 		}
 		if total > *in.policy.MaxTotalBytes {
 			_ = h.repo.DeleteObjects(ctx, in.bucketRow.ID, []string{info.Key})
@@ -425,7 +436,7 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 
 	policy, maxObjectBytes, err := h.resolveObjectSizeLimit(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
+		h.writeInternal(w, r, "get project storage policy", err)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
@@ -492,7 +503,7 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "AlreadyExists", "key already exists; pass overwrite=true to replace it")
 			return
 		} else if !errors.Is(statErr, storage.ErrNotFound) {
-			writeStorageError(w, statErr)
+			h.writeStorageError(r.Context(), w, "stat object", statErr)
 			return
 		}
 	}
@@ -564,7 +575,7 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	if len(refs) > 0 {
 		result, err := h.store.DeleteBatch(r.Context(), refs)
 		if err != nil {
-			writeStorageError(w, err)
+			h.writeStorageError(r.Context(), w, "delete objects", err)
 			return
 		}
 		deleted = result.Deleted
@@ -572,11 +583,12 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 			deleted = []string{}
 		}
 		for _, f := range result.Failed {
-			failed = append(failed, batchDeleteFailure{Key: f.Key, Code: storageErrorCode(f.Err), Message: f.Err.Error()})
+			code, message := h.classifyStorageError(r.Context(), "delete object "+f.Key, f.Err)
+			failed = append(failed, batchDeleteFailure{Key: f.Key, Code: code, Message: message})
 		}
 		if len(deleted) > 0 {
 			if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, deleted); err != nil {
-				writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+				h.writeInternal(w, r, "delete object metadata", err)
 				return
 			}
 		}
@@ -616,7 +628,7 @@ func (h *Handler) streamObject(w http.ResponseWriter, r *http.Request, ref stora
 
 	body, info, err := h.store.Get(r.Context(), ref, rng)
 	if err != nil {
-		return storageErrorCode(err), err.Error()
+		return h.classifyStorageError(r.Context(), "get object", err)
 	}
 	defer func() { _ = body.Close() }()
 
@@ -631,9 +643,31 @@ func (h *Handler) streamObject(w http.ResponseWriter, r *http.Request, ref stora
 		contentType = mimeFromExtension(key)
 	}
 	w.Header().Set("Content-Type", contentType)
+	// Advertise range support on every download, not only on a 206. A client
+	// that probes with a HEAD or a first full GET decides from this header
+	// whether it may resume.
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	if info.ETag != "" {
 		w.Header().Set("ETag", info.ETag)
+	}
+	if rng != nil {
+		// RFC 7233 makes Content-Range mandatory on a 206. Without it a
+		// browser media element cannot place the bytes in the timeline and
+		// aborts, and a resuming downloader fails.
+		total := info.TotalSize
+		if total <= 0 {
+			total = rng.Start + info.Size
+		}
+		if info.Size <= 0 || rng.Start >= total {
+			// An unsatisfiable range answers 416 and states the current
+			// length. The caller renders the body; this header survives,
+			// because writeError has not written the head yet.
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(total, 10))
+			return "RangeNotSatisfiable", "requested range is not satisfiable"
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.Start, rng.Start+info.Size-1, total))
 	}
 	w.WriteHeader(status)
 	_, _ = io.Copy(w, body)
@@ -699,6 +733,9 @@ func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {
 		contentType = mimeFromExtension(key)
 	}
 	w.Header().Set("Content-Type", contentType)
+	// A client that HEADs first to decide whether it may resume never sees
+	// the download response's headers, so this one belongs here too.
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	if info.ETag != "" {
 		w.Header().Set("ETag", info.ETag)
@@ -734,17 +771,17 @@ func (h *Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.store.Stat(r.Context(), ref); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "stat object", err)
 		return
 	}
 
 	if err := h.store.Delete(r.Context(), ref); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "delete object", err)
 		return
 	}
 
 	if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{key}); err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+		h.writeInternal(w, r, "delete object metadata", err)
 		return
 	}
 

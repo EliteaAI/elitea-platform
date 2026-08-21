@@ -3,6 +3,7 @@ import { waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -16,10 +17,14 @@ const TRIGGER_URL = `${BASE}/elitea_core/pipeline_trigger/prompt_lib/${PROJECT_I
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
+  // Schedule and Webhook are hidden while the trigger route is unmounted —
+  // see `shared/config/backendCapabilities`.
+  setBackendCapabilityForTests('pipelineTriggers', true);
 });
 
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
 });
 
 describe('TriggerTypeSelector', () => {
@@ -54,6 +59,27 @@ describe('TriggerTypeSelector', () => {
     const select = await findByRole('combobox');
     await userEvent.setup().click(select);
     // Only the Chat Message option is offered — no Schedule/Webhook rows exist.
+    expect(document.querySelectorAll('[data-value="schedule"]').length).toBe(0);
+    expect(document.querySelectorAll('[data-value="webhook"]').length).toBe(0);
+  });
+
+  /**
+   * The trigger route is not mounted, so a Schedule or Webhook selection can
+   * only 404. Chat Message calls no endpoint and stays — see
+   * `shared/config/backendCapabilities`.
+   */
+  it('offers Chat Message only while the trigger route is unmounted', async () => {
+    resetBackendCapabilitiesForTests();
+    const { findByRole } = renderWithRouterAndProject(
+      <TriggerTypeSelector
+        projectId={PROJECT_ID}
+        versionId={VERSION_ID}
+      />,
+      PROJECT_ID,
+    );
+
+    const select = await findByRole('combobox');
+    await userEvent.setup().click(select);
     expect(document.querySelectorAll('[data-value="schedule"]').length).toBe(0);
     expect(document.querySelectorAll('[data-value="webhook"]').length).toBe(0);
   });

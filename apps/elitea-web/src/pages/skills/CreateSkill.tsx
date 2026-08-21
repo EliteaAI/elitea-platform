@@ -16,6 +16,7 @@ import {
   type SkillDraft,
   type SkillWriteInput,
 } from '@/features/skills';
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
@@ -30,6 +31,11 @@ export function CreateSkill(): ReactNode {
   const [showErrors, setShowErrors] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(false);
   const [error, setError] = useState<string>();
+
+  // `SkillForm` renders the Generate button only when it receives
+  // `onGenerate`. The draft endpoint is not mounted, so it receives nothing —
+  // see `shared/config/backendCapabilities`.
+  const generateProps = hasBackendCapability('aiGeneration') ? { onGenerate: () => setGenerateOpen(true) } : {};
 
   const save = (): void => {
     setShowErrors(true);
@@ -65,7 +71,7 @@ export function CreateSkill(): ReactNode {
           onChange={setValue}
           disabled={mutations.create.isPending}
           showErrors={showErrors}
-          onGenerate={() => setGenerateOpen(true)}
+          {...generateProps}
         />
       </Box>
       <GenerateSkillModal

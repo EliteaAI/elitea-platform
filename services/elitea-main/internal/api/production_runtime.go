@@ -6,6 +6,7 @@ import (
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 var ErrInvalidProductionRuntimeRoutes = errors.New("invalid production runtime routes")
@@ -61,7 +62,7 @@ func NewProductionRuntimeRoutes(
 func requireRuntimePrincipal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if _, ok := auth.RuntimePrincipalFromContext(request.Context()); !ok {
-			http.Error(writer, `{"error":"runtime authentication required"}`, http.StatusUnauthorized)
+			apierr.WriteStatus(writer, http.StatusUnauthorized, "runtime authentication required")
 			return
 		}
 		next.ServeHTTP(writer, request)

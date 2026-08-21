@@ -65,6 +65,7 @@ export function UserIconItem({
         {onDelete && (
           <IconButton
             color="error"
+            aria-label={t('entities.projectContext.userIcon.deleteAriaLabel', 'Delete the icon')}
             onClick={handleDeleteClick}
             sx={sx.deleteButton}
           >

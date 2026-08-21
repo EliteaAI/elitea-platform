@@ -141,8 +141,12 @@ func newArtifactRetentionPostgresSweep(t *testing.T) (*artifactRetentionSweep, *
 	if err != nil {
 		t.Fatalf("NewArtifactRetentionNotificationRepository: %v", err)
 	}
+	grants, err := repos.NewArtifactTransferGrantsRepository(pool)
+	if err != nil {
+		t.Fatalf("NewArtifactTransferGrantsRepository: %v", err)
+	}
 	store := newArtifactRetentionIntegrationFakeStore()
-	sweep, err := newArtifactRetentionSweep(objects, buckets, notifications, store)
+	sweep, err := newArtifactRetentionSweep(objects, buckets, notifications, grants, store)
 	if err != nil {
 		t.Fatalf("newArtifactRetentionSweep: %v", err)
 	}

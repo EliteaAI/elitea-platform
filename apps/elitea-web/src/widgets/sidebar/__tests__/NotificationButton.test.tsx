@@ -21,7 +21,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { installTestEventSource, type TestEventSourceRegistry } from '@/shared/api/sse/testing';
@@ -182,6 +182,56 @@ describe('NotificationButton — trigger + unread badge', () => {
       sse.emit('notifications_ready');
     });
     expect(await screen.findByTestId('sidebar-notification-unread-dot')).toBeInTheDocument();
+  });
+
+  /*
+   * DEFECT: a dead notifications stream had no fallback at all.
+   *
+   * `useNotificationsSSE` only wrote a `console.warn` on failure. Nothing
+   * reopened the stream. This widget's own doc comment claimed the badge
+   * "keeps working" off a polling query that did not exist. `refetchInterval`
+   * appeared nowhere in the app. After a 429 from the per-principal admission
+   * cap, the unread dot stopped changing until the window regained focus or
+   * the widget remounted.
+   *
+   * This test asserts the WIRING, not the hook: the hook can report the stream
+   * dead and the widget can still ignore it.
+   */
+  it('polls the badge query once every SSE reconnect attempt is spent', async () => {
+    let listCalls = 0;
+    server.use(
+      http.get(LIST_PATH, () => {
+        listCalls += 1;
+        return HttpResponse.json({ rows: [], total: 0 });
+      }),
+    );
+    await renderNotificationButton({ personalProjectId: '7' });
+    await waitFor(() => expect(listCalls).toBe(1));
+
+    vi.useFakeTimers();
+    try {
+      // Spend the shared 1/2/4/8 s ladder, then fail once more so the budget
+      // is genuinely exhausted.
+      for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+        act(() => {
+          sse.fail();
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(delay);
+        });
+      }
+      act(() => {
+        sse.fail();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => expect(listCalls).toBeGreaterThan(1));
   });
 
   it('opens no stream and still renders when there is no personal project to scope it to', async () => {

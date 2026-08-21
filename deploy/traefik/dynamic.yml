@@ -2,8 +2,33 @@
 # path rules remain prototype wiring and must not be treated as cutover routes.
 http:
   routers:
+    # `/icons/` and `/avatars/` are root-mounted in the Go router
+    # (internal/api/router.go: DownloadIcon and DownloadAvatar) and must stay on
+    # this list. An uploaded project icon is stored and returned as
+    # `/icons/<projectID>/<file>`. A browser <img src="..."> sends no
+    # Authorization header, so both reads are public by design. Without the two
+    # prefixes below no router matches them, and traefik answers its own 404.
+    # Every uploaded icon and avatar then renders as a broken image. They keep
+    # the strip-client-identity middleware of this router.
+    #
+    # /readyz and /startupz are deliberately NOT here. Nothing probes them
+    # through an edge. The Helm probes hit the pod, and the compose healthcheck
+    # curls 127.0.0.1 in the container. The readiness body names each
+    # dependency's state, which is not for a public browser entrypoint.
+    #
+    # The two /app static prefixes are Go file servers, not SPA paths
+    # (internal/api/router.go: application_icon and application_tool_icon).
+    # apps/elitea-web builds those URLs in entities/toolkit/model/toolForm.ts,
+    # so the `app` router below sent every tool icon to the SPA container.
+    #
+    # /llm is the OpenAI-compatible surface. The settings page shows
+    # `<origin>/llm/v1` for the user to copy, so the edge must forward it.
+    #
+    # services/elitea-main/tests/deployedge/edge_root_routes_test.go walks the
+    # real Go router. It fails if a route the router serves matches no rule
+    # here and no entry in its `notAtTheBrowserEdge` list.
     api:
-      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`)"
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/icons/`) || PathPrefix(`/avatars/`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`) || PathPrefix(`/app/application_icon/`) || PathPrefix(`/app/application_tool_icon/`) || PathPrefix(`/llm/`)"
       service: elitea-main
       entryPoints:
         - web
@@ -94,8 +119,14 @@ http:
 
     redirect-to-app:
       redirectRegex:
-        regex: "^(https?://[^/]*)/$"
-        replacement: "${1}/app/"
+        # The `(\\?.*)?` group is load-bearing. `redirectRegex` matches the whole
+        # request URI, query string included, and traefik passes a request that
+        # does not match straight to the next handler. With the regex anchored
+        # at `/$`, a link of the form `https://<host>/?utm_source=x` therefore
+        # skipped the redirect. The request reached the SPA container at path
+        # `/`. Its nginx does not serve that path.
+        regex: "^(https?://[^/]*)/(\\?.*)?$"
+        replacement: "${1}/app/${2}"
         permanent: false
 
   services:

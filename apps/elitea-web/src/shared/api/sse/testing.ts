@@ -35,12 +35,25 @@ export interface TestEventSource {
    */
   emit(name: string, data?: string, lastEventId?: string): void;
   /**
-   * Simulate a failed connection or a mid-stream drop — the `error` event a
-   * real `EventSource` fires on a non-2xx status (429/403/503 from both Go
-   * SSE routes), a wrong content type, or a dropped socket. Note the real
-   * object does NOT retry after an HTTP-status failure, so this is terminal.
+   * The WHATWG `readyState`: 0 CONNECTING, 1 OPEN, 2 CLOSED. A caller reads
+   * it to tell a permanent failure from a mid-stream drop, because those two
+   * fire the SAME `error` event and need opposite handling.
+   */
+  readonly readyState: number;
+  /**
+   * Simulate a connection that FAILED. This is the `error` event a real
+   * `EventSource` fires on a non-2xx status (429/403/503 from both Go SSE
+   * routes). It also fires on a wrong content type. The real object does not retry after an
+   * HTTP status, so `readyState` goes to CLOSED and the caller owns the
+   * reopen.
    */
   fail(): void;
+  /**
+   * Simulate a mid-stream DROP — the same `error` event, but the browser is
+   * already reconnecting on its own, so `readyState` stays CONNECTING. A
+   * caller that reopens here would run two streams for one principal.
+   */
+  drop(): void;
 }
 
 /** @public Test-only: the handle `installTestEventSource()` returns. */
@@ -53,16 +66,24 @@ export interface TestEventSourceRegistry {
   emit(name: string, data?: string, lastEventId?: string): number;
   /** Fail every still-open connection. Returns how many were failed. */
   fail(): number;
+  /** Drop every still-open connection mid-stream. Returns how many were dropped. */
+  drop(): number;
   /** Restore whatever `globalThis.EventSource` was before install (usually: absent). */
   restore(): void;
 }
 
 const globals = globalThis as unknown as Record<string, unknown>;
 
+/** WHATWG `EventSource` ready states. */
+const CONNECTING = 0;
+const OPEN = 1;
+const CLOSED = 2;
+
 class FakeEventSource implements TestEventSource {
   readonly url: string;
   readonly withCredentials: boolean;
   closed = false;
+  readyState = CONNECTING;
   private readonly listeners = new Map<string, Set<(event: MessageEvent) => void>>();
 
   constructor(url: string, init?: { withCredentials?: boolean }) {
@@ -85,10 +106,15 @@ class FakeEventSource implements TestEventSource {
 
   close(): void {
     this.closed = true;
+    this.readyState = CLOSED;
     this.listeners.clear();
   }
 
   emit(name: string, data = '', lastEventId = ''): void {
+    // `open` is what moves a real connection to OPEN, so the double does the
+    // same. A caller's `onOpen` uses that transition as its "this was a real
+    // stream" signal.
+    if (name === 'open') this.readyState = OPEN;
     // Snapshot: a handler is free to unsubscribe while the batch is being
     // delivered, and mutating a Set mid-iteration is exactly the kind of
     // bug a double should not invent.
@@ -98,6 +124,14 @@ class FakeEventSource implements TestEventSource {
   }
 
   fail(): void {
+    this.readyState = CLOSED;
+    for (const handler of Array.from(this.listeners.get('error') ?? [])) {
+      handler(new MessageEvent('error'));
+    }
+  }
+
+  drop(): void {
+    this.readyState = CONNECTING;
     for (const handler of Array.from(this.listeners.get('error') ?? [])) {
       handler(new MessageEvent('error'));
     }
@@ -133,6 +167,11 @@ export function installTestEventSource(): TestEventSourceRegistry {
     fail: () => {
       const open = sources.filter((source) => !source.closed);
       for (const source of open) source.fail();
+      return open.length;
+    },
+    drop: () => {
+      const open = sources.filter((source) => !source.closed);
+      for (const source of open) source.drop();
       return open.length;
     },
     restore: () => {

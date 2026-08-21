@@ -77,6 +77,14 @@ type fakeStore struct {
 	// request will itself call back into these same methods.
 	beforeCompleteMultipart func()
 	beforeAbortMultipart    func()
+
+	// failKeys names the object keys DeleteBatch must refuse. A real
+	// backend reports such a key in BatchResult.Failed. It still deletes
+	// the rest of the batch. S3 answers a per-key AccessDenied for an
+	// object under an object-lock, for example. The fake deleted every
+	// key unconditionally, so no test could reach DeleteBucket's
+	// partial-failure path at all.
+	failKeys map[string]bool
 }
 
 // firstReadRecorder wraps an io.Reader and calls onFirstRead exactly once,
@@ -188,7 +196,11 @@ func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader
 	return info, nil
 }
 
-func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, _ *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {
+// Get honours rng, like every real backend. An earlier version ignored it
+// and always returned the whole object with the whole object's Size, which
+// made the handler's 206 path untestable: a missing Content-Range and a
+// Content-Length that did not match the body both looked correct here.
+func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, rng *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")
@@ -196,7 +208,21 @@ func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, _ *storage.Byt
 	if !ok {
 		return nil, storage.ObjectInfo{}, storage.ErrNotFound
 	}
-	return io.NopCloser(bytes.NewReader(s.data[storageKey])), info, nil
+	data := s.data[storageKey]
+	info.TotalSize = int64(len(data))
+	if rng != nil {
+		start := rng.Start
+		if start > int64(len(data)) {
+			start = int64(len(data))
+		}
+		end := int64(len(data))
+		if rng.End >= 0 && rng.End+1 < end {
+			end = rng.End + 1
+		}
+		data = data[start:end]
+		info.Size = int64(len(data))
+	}
+	return io.NopCloser(bytes.NewReader(data)), info, nil
 }
 
 func (s *fakeStore) Stat(_ context.Context, ref storage.ObjectRef) (storage.ObjectInfo, error) {
@@ -223,6 +249,12 @@ func (s *fakeStore) DeleteBatch(_ context.Context, refs []storage.ObjectRef) (st
 	defer s.mu.Unlock()
 	result := storage.BatchResult{}
 	for _, ref := range refs {
+		if s.failKeys[ref.Key()] {
+			result.Failed = append(result.Failed, storage.BatchError{
+				Key: ref.Key(), Err: fmt.Errorf("fakeStore: delete refused for %q", ref.Key()),
+			})
+			continue
+		}
 		storageKey := ref.StorageKey("")
 		delete(s.objects, storageKey)
 		delete(s.data, storageKey)

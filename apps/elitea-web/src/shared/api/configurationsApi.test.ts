@@ -20,6 +20,7 @@ import {
   getAvailableConfigurationsType,
   getConfigurationsList,
   listModels,
+  updateConfiguration,
 } from './configurationsApi';
 
 const BASE = '/api/v2';
@@ -130,5 +131,42 @@ describe('listModels', () => {
     await listModels({ projectId: '1', include_shared: true });
 
     expect(new URL(seenUrl).searchParams.get('include_shared')).toBe('true');
+  });
+});
+
+describe('updateConfiguration', () => {
+  it('PUTs the detail path with the project id and the configuration id', async () => {
+    // DEFECT: the client built `PUT /configurations/configurations/{configId}`.
+    // That is the LIST path, and it holds the PROJECT id in its one segment.
+    // The Go router registers only GET and POST there
+    // (production_router.go:139,146), so chi answered 405 Method Not Allowed.
+    // Every save on Settings > Environment and Settings > Service Prompts
+    // failed, and every "restore to default" failed with it. PUT is registered
+    // on CurrentConfigurationDetailsPath only:
+    // `/api/v2/configurations/configuration/{projectID}/{configID}`.
+    //
+    // The LIST path is registered here as a TRAP. A request that goes back to
+    // it fails this test instead of passing on a plausible 200.
+    let listPathCalled = false;
+    let seenBody: unknown;
+    server.use(
+      http.put(`${BASE}/configurations/configurations/:configId`, () => {
+        listPathCalled = true;
+        return HttpResponse.json({ ok: true });
+      }),
+      http.put(`${BASE}/configurations/configuration/1/42`, async ({ request }) => {
+        seenBody = await request.json();
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+
+    await updateConfiguration({
+      projectId: '1',
+      configId: '42',
+      body: { label: 'env', shared: false, data: { KEY: 'value' } },
+    });
+
+    expect(listPathCalled, 'update must not target the list path').toBe(false);
+    expect(seenBody).toEqual({ label: 'env', shared: false, data: { KEY: 'value' } });
   });
 });

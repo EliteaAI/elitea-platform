@@ -38,9 +38,22 @@ export interface NormalizedNotificationPage {
 
 /* ── API-167 ───────────────────────────────────────────────────────────── */
 
+/**
+ * `refetchInterval` is opt-in per call site, and defaults to off.
+ *
+ * The live SSE stream is the normal source of freshness. A caller that has
+ * lost that stream for good (`useNotificationsSSE`'s `streamDead`) can turn
+ * its OWN query into a slow poll. Setting an interval inside this hook would
+ * poll for every caller, including the popover list and every user whose
+ * stream is healthy.
+ */
 export function useNotificationsList(
   params: ListNotificationsParams,
-  options: { readonly enabled?: boolean } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly refetchInterval?: number | false;
+    readonly refetchIntervalInBackground?: boolean;
+  } = {},
 ): UseQueryResult<NormalizedNotificationPage> {
   return useQuery({
     queryKey: [...NOTIFICATIONS_QUERY_ROOT, 'list', params],
@@ -49,6 +62,8 @@ export function useNotificationsList(
       return { rows: normalizeNotificationList(page.rows), total: page.total };
     },
     enabled: options.enabled ?? true,
+    refetchInterval: options.refetchInterval ?? false,
+    refetchIntervalInBackground: options.refetchIntervalInBackground ?? false,
   });
 }
 

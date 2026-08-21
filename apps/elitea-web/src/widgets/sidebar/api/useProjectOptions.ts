@@ -13,7 +13,7 @@
 import { useMemo } from 'react';
 
 import { useListProjects } from '@/shared/api/generated/applications/applications';
-import type { Project as GeneratedProject } from '@/shared/api/generated/model';
+import type { ProjectWithGroups as GeneratedProject } from '@/shared/api/generated/model';
 import type { Project } from '@/entities/project';
 
 import { orderedProjectOptions } from '../lib/projectOptions';
@@ -24,22 +24,21 @@ export interface ProjectOptionsResult {
 }
 
 /**
- * The generated `Project` (zod-inferred, `description?`/`role?` typed as
- * `T | undefined` under `exactOptionalPropertyTypes`) and `entities/
- * project`'s hand-authored `Project` (`description?`/`role?` typed as
- * plain `T`, no explicit `undefined` in the union) are structurally close
- * but not assignment-compatible under `exactOptionalPropertyTypes` — the
- * generated shape may carry an explicit `undefined` value the hand-typed
- * one forbids. An explicit field-by-field map, not a cast, is the
- * type-safe boundary crossing.
+ * The generated `ProjectWithGroups` carries five more fields than the switcher
+ * renders (`owner_id`, `plugins`, `keycloak_groups`, `create_success`,
+ * `groups`). An explicit field-by-field map, not a cast, is the type-safe
+ * boundary crossing: it keeps `entities/project`'s `Project` to what this
+ * widget reads, and it fails to compile if the wire shape loses a field.
+ *
+ * The listing used to copy a `status` field too. The spec declared it required
+ * but internal/api/v2/projects/handler.go never emitted it, so every project
+ * here carried `status: undefined` under a type that promised
+ * `'active' | 'suspended'`. `suspended` is the real flag.
  */
 function toEntityProject(project: GeneratedProject): Project {
   return {
     id: project.id,
     name: project.name,
-    ...(project.description !== undefined ? { description: project.description } : {}),
-    status: project.status,
-    ...(project.role !== undefined ? { role: project.role } : {}),
     suspended: project.suspended,
   };
 }

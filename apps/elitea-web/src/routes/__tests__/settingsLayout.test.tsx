@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
 import CssBaseline from '@mui/material/CssBaseline';
 import { ThemeProvider } from '@mui/material/styles';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
@@ -96,6 +96,37 @@ describe('settings nested layout', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('tab', { name: 'OpenAI Template' })).toBeInTheDocument();
+    });
+  });
+  /**
+   * NAVIGATION GOES THROUGH THE ROUTER.
+   *
+   * The drawer used to move between tabs with
+   * `window.history.replaceState(null, '', `/settings/${tabId}`)`. That wrote
+   * a path with no base. So on a deployment served under /app/ the address bar
+   * read `/settings/secrets`. nginx answers that URL with `404 page not found`
+   * on reload, bookmark or share. It also replaced the history entry, so Back
+   * could not return to the previous tab.
+   *
+   * The router's own location is the check: it only changes when the router
+   * performed the navigation.
+   */
+  it('moves between tabs through the router, and keeps a history entry behind', async () => {
+    const router = mountAt('/settings/model-configuration');
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'OpenAI Template' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Secrets' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/secrets');
+    });
+
+    // push, not replace: the tab the user came from is still one step back.
+    router.history.back();
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/settings/model-configuration');
     });
   });
 });

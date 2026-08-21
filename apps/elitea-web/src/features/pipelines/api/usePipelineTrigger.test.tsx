@@ -2,6 +2,7 @@ import { waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -15,10 +16,15 @@ const URL = `${BASE}/elitea_core/pipeline_trigger/prompt_lib/${PROJECT_ID}/pipel
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
+  // The hook issues nothing while the capability is off — see
+  // `shared/config/backendCapabilities`. These cases are about the requests
+  // it makes once the routes are mounted, so they turn it on.
+  setBackendCapabilityForTests('pipelineTriggers', true);
 });
 
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
 });
 
 describe('usePipelineTrigger', () => {

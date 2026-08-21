@@ -75,8 +75,15 @@ function buildTestRouter(initialPath: string, projectId: string | undefined): An
   const appsTabRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/apps/$tab',
+    // Mirrors the production `view` schema (`src/routes/-search/params.ts`:
+    // `z.enum(['grid','list']).catch('grid').prefault('grid')`) instead of
+    // leaving the key `undefined`. The earlier stub hid a real divergence:
+    // with a prefault the key is NEVER absent. `searchForAppsTab`'s
+    // "nothing to strip" exit could therefore never be reached. Every
+    // Catalog-tab mount fired a pointless replace-navigation. Keep the
+    // prefault here.
     validateSearch: (search: Record<string, unknown>) => ({
-      view: typeof search.view === 'string' ? search.view : undefined,
+      view: search.view === 'list' ? 'list' : 'grid',
     }),
     component: () => (
       <ExclusiveTabOutlet>
@@ -128,10 +135,22 @@ export interface RenderAppsRouteResult extends RenderResult {
 
 export function renderAppsRoute(
   initialPath: string,
-  options: { projectId?: string; queryClient?: QueryClient } = {},
+  options: {
+    projectId?: string;
+    queryClient?: QueryClient;
+    /**
+     * Runs after the router exists but before the first render, so a test can
+     * observe navigations that happen during mount. The router rewrites
+     * `location.searchStr` from the `validateSearch` output on its own, so the
+     * URL alone cannot tell a component-issued redirect from plain search
+     * normalisation.
+     */
+    onRouterCreated?: (router: AnyRouter) => void;
+  } = {},
 ): RenderAppsRouteResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
   const router = buildTestRouter(initialPath, options.projectId);
+  options.onRouterCreated?.(router);
 
   const view = render(
     <QueryClientProvider client={queryClient}>

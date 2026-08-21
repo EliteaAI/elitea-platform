@@ -171,6 +171,69 @@ describe('behaviour 4 — crypto.randomUUID state', () => {
     h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf()) });
     await flight;
   });
+
+  /**
+   * DEFECT: the popup URL was built from the module constant
+   * `OIDC_LOGIN_PATH` with no plane input at all.
+   * `services/elitea-main/internal/api/router.go` registers
+   * `/forward-auth/auth_oidc/login` inside `if cfg.OIDCHandler != nil`, so a
+   * form-auth deployment does not have that route. The popup loaded
+   * `404 page not found`. `/app/auth-callback` never ran. No result reached
+   * the opener on postMessage, on the BroadcastChannel or in the fallback
+   * key. Every request behind the single-flight slot stayed pending. The
+   * flight settled only when the user noticed the window and closed it, and
+   * then it rejected `popup_closed`. Session recovery was impossible.
+   *
+   * `/forward-auth/login` is the form plane's own entry point: it opens a
+   * login transaction (`browserauth.beginLogin`) and
+   * `browserflow.CanonicalReturnTarget` preserves the `?auth_state=` query,
+   * so the flight completes there.
+   */
+  it('opens the login path the caller supplies, so the form plane works', async () => {
+    const h = harness({
+      baseOrigin: 'https://backend.example',
+      basePath: '/app',
+      loginPath: '/forward-auth/login',
+    });
+    const flight = h.controller.reauthenticate();
+    const url = h.openedUrls[0] ?? '';
+    const target = `/app/auth-callback?auth_state=${h.stateOf()}`;
+    expect(url).toBe(
+      `https://backend.example/forward-auth/login?target_to=${encodeURIComponent(target)}`,
+    );
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf()) });
+    await flight;
+  });
+
+  /**
+   * The plane is read from the `/forward-auth/info` probe, and the controller
+   * is built before the first probe answers. A login path resolved at
+   * construction time is therefore always the OIDC default on both planes,
+   * which is the defect above. The getter must run per flight.
+   */
+  it('reads the login path once per flight, not once per controller', async () => {
+    let plane = 'oidc';
+    const h = harness({
+      baseOrigin: 'https://backend.example',
+      basePath: '/app',
+      loginPath: () =>
+        plane === 'form' ? '/forward-auth/login' : '/forward-auth/auth_oidc/login',
+    });
+
+    // The probe has not answered yet: the first flight uses the default.
+    const first = h.controller.reauthenticate();
+    expect(h.openedUrls[0]).toContain('/forward-auth/auth_oidc/login');
+    h.channels[0]?.onmessage?.({ data: resultMessage(h.stateOf(0)) });
+    await first;
+
+    // The probe answered 404, so the app now knows it is the form plane.
+    plane = 'form';
+    const second = h.controller.reauthenticate();
+    expect(h.openedUrls[1]).toContain('/forward-auth/login');
+    expect(h.openedUrls[1]).not.toContain('/auth_oidc/');
+    h.channels[1]?.onmessage?.({ data: resultMessage(h.stateOf(1)) });
+    await second;
+  });
 });
 
 describe('state verification on delivery', () => {

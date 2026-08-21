@@ -49,7 +49,9 @@ export const TransferGrantResponse = zod.object({
     .describe(
       "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
     ),
-  method: zod.enum(["GET", "PUT"]),
+  method: zod
+    .enum(["PUT"])
+    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
   expires_at: zod.iso.datetime({ offset: true }),
   content_type: zod.string(),
   max_bytes: zod.int(),

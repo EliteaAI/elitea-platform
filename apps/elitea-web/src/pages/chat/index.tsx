@@ -34,13 +34,69 @@
  * doc comment for who actually supplies real (non-no-op) callbacks here.
  */
 import { memo, useEffect, useState } from 'react';
-import { useParams } from '@tanstack/react-router';
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 
+import { conversationNavigation, useChatSessionStore } from '@/entities/conversation';
 import type { Participant } from '@/entities/participant';
 import { useLocalActiveParticipant } from '@/features/chat-participants';
 import { ChatBox } from '@/widgets/chat-box';
 
 import { useChatPageData } from './useChatPageData';
+
+/** The two deep-link search params a notification href carries — `src/features/notifications/lib/routes.ts`'s `chatHref`. */
+interface ChatDeepLinkSearch {
+  readonly conversation?: string;
+  readonly message_id?: string;
+}
+
+/**
+ * Resolves the conversation from the path param OR from the
+ * `?conversation=` search param, then canonicalises the URL.
+ *
+ * A notification link (`chatHref`) points at
+ * `/{projectId}/chat?conversation=<id>&message_id=<id>`. The project splat
+ * strips the project segment and lands on `/chat?conversation=<id>`, which
+ * has NO path param. Reading only the path param therefore opened an empty
+ * new chat. `resolveConversationIdFromUrl` is the ported baseline rule:
+ * the path param wins, the search param is the fallback.
+ *
+ * After the fallback resolves, this replaces the URL with the canonical
+ * `/chat/<id>` form. It also drops the consumed `conversation` param. A later
+ * in-page navigation therefore cannot restore a stale conversation. TanStack drops
+ * every search param unless the caller returns them, so `message_id` is
+ * carried over explicitly here.
+ */
+function useDeepLinkedConversationId(routeConversationId: string | undefined): { readonly conversationId: string | undefined; readonly messageId: string | undefined } {
+  const navigate = useNavigate();
+  const search = useSearch({ strict: false }) as ChatDeepLinkSearch;
+  const conversationId = conversationNavigation.resolveConversationIdFromUrl(routeConversationId, search.conversation);
+  const messageId = search.message_id || undefined;
+
+  useEffect(() => {
+    if (routeConversationId || !conversationId) return;
+    void navigate({ to: '/chat/$conversationId', params: { conversationId }, search: (prev: ChatDeepLinkSearch) => ({ ...prev, conversation: undefined }), replace: true });
+  }, [navigate, routeConversationId, conversationId]);
+
+  return { conversationId, messageId };
+}
+
+/**
+ * Publishes the deep link's `?message_id=` into `chatSessionStore`, which is
+ * what `ChatMessageList`/`useHighlightUserMessage` scroll to and highlight.
+ * Both of those consumers existed already. Nothing ever wrote a real id into
+ * the store. The "jump to the message you were mentioned in" half of a
+ * notification link therefore did nothing. Mirrors the baseline `NewChat.jsx`.
+ */
+function useMessageIdToView(messageId: string | undefined, loadedConversationId: string | undefined): void {
+  useEffect(() => {
+    if (!messageId || !loadedConversationId) return;
+    useChatSessionStore.getState().setMessageIdToView(messageId);
+  }, [messageId, loadedConversationId]);
+}
+
+function conversationIdOf(activeConversation: unknown): string | undefined {
+  return (activeConversation as { readonly id?: string } | undefined)?.id;
+}
 
 function findParticipantById(participants: readonly unknown[] | undefined, id: string | undefined): unknown {
   if (!id) return undefined;
@@ -61,9 +117,11 @@ export interface ChatPageProps {
 }
 
 const ChatPage = memo(({ editorCallbacks }: ChatPageProps) => {
-  const { conversationId } = useParams({ strict: false }) as { conversationId?: string };
+  const { conversationId: routeConversationId } = useParams({ strict: false }) as { conversationId?: string };
+  const { conversationId, messageId } = useDeepLinkedConversationId(routeConversationId);
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
   const { getLocalActiveParticipant, setLocalActiveParticipant } = useLocalActiveParticipant();
+  useMessageIdToView(messageId, conversationIdOf(activeConversation));
 
   const [activeParticipant, setActiveParticipant] = useState<unknown>(undefined);
 

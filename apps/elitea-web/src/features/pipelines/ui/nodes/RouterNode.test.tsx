@@ -1,5 +1,5 @@
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, type RenderResult } from '@testing-library/react';
 
 import { SocketClientContext } from '@/shared/api/socket/client';
@@ -12,6 +12,20 @@ import { buildFlowEditorContextValue, renderWithRouterAndProject } from '../../_
 import { FlowEditorContext, type FlowEditorContextValue } from '../../lib/flow-editor/flowEditorContext';
 import type { YamlConditionSpec, YamlPipelineDocument } from '../../lib/flow-editor/helpers/pipelineFlow.types';
 import { RouterNode, type RouterNodeProps } from './RouterNode';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
+
+// The AI Assistant trigger POSTs `predict_llm`, which the Go router mounts in
+// no profile, so `AIAssistantInput` hides it by default. See
+// `shared/config/backendCapabilities`. These tests assert the trigger's own
+// behaviour, so they turn the capability on.
+beforeEach(() => {
+  setBackendCapabilityForTests('aiGeneration', true);
+});
+
+afterEach(() => {
+  resetBackendCapabilitiesForTests();
+});
+
 
 installCodeMirrorTestPolyfills();
 

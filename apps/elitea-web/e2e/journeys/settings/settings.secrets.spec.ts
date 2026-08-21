@@ -32,7 +32,7 @@
  * SECRET HYGIENE: the only secret value this file ever handles is a literal
  * created by the test itself. It is never printed, never asserted on by
  * value except as a NEGATIVE (`toHaveCount(0)` — "this must not be on
- * screen"), and every `autotest_*-<engine>-sec` secret is deleted by the
+ * screen"), and every `autotest_*_<engine>_sec` secret is deleted by the
  * `afterAll` sweep at the bottom of this file.
  */
 import { test, expect } from '@playwright/test';
@@ -61,14 +61,14 @@ const CLIENT_LIST_GLOB = '**/api/v2/secrets/secrets/default/*';
 /**
  * The served paths, used by the cleanup sweep. These MUST track the URLs
  * above: a sweep aimed at a path the server does not serve 404s silently
- * and leaves every `autotest_*-sec` secret behind.
+ * and leaves every `autotest_*_sec` secret behind.
  */
 const SERVED_BASE = CLIENT_LIST_URL;
 const SERVED_ITEM = (name: string): string =>
   `${API_BASE}/secrets/secret/default/${DEFAULT_PROJECT_ID}/${encodeURIComponent(name)}`;
 
 /**
- * Unique per run, per file (`-sec`) AND per Playwright project, so concurrent
+ * Unique per run, per file (`_sec`) AND per Playwright project, so concurrent
  * agents and concurrent ENGINES never collide.
  *
  * The engine tag is not decoration. `chromium` and `webkit` both match
@@ -80,11 +80,14 @@ const SERVED_ITEM = (name: string): string =>
  * `toContain(name)` server check, non-deterministically. The tag partitions
  * the namespace so each engine's sweep can only reach its own secrets.
  *
- * `-sec` stays the LAST segment — it is this file's marker, matching the
- * `-tok`/`-usr` convention the sibling settings specs use.
+ * `_sec` stays the LAST segment. It is this file's marker. The sibling
+ * settings specs write `-tok`/`-usr`, but a secret name accepts only letters,
+ * digits and underscores. The server refuses a hyphen with HTTP 400
+ * (`internal/api/v2/secrets`, `acceptableSecretName`), so this marker uses
+ * underscores.
  */
 const engineSuffix = (projectName: string): string =>
-  `-${projectName.replace(/[^a-z0-9]+/gi, '').toLowerCase()}-sec`;
+  `_${projectName.replace(/[^a-z0-9]+/gi, '').toLowerCase()}_sec`;
 
 const secretName = (projectName: string): string =>
   `${AUTOTEST_PREFIX}j21_${Date.now()}${engineSuffix(projectName)}`;
@@ -263,10 +266,10 @@ test('J21: settings: create secret', async ({ page }, testInfo) => {
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * Session-scoped safety net: sweep the `autotest_*-<engine>-sec` secrets
+ * Session-scoped safety net: sweep the `autotest_*_<engine>_sec` secrets
  * THIS Playwright project left behind, through whichever path is served.
  *
- * Scoped to this project's engine suffix, not to the bare `autotest_`/`-sec`
+ * Scoped to this project's engine suffix, not to the bare `autotest_`/`_sec`
  * pair. The unscoped version deleted every matching secret in the shared
  * project 1 — including the one the other engine, running this same spec
  * concurrently, had just created and not yet asserted on. Each engine sweeps

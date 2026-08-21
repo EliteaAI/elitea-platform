@@ -48,17 +48,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
+  continueAgentExecution,
   startAgentExecution,
   stopChatTask,
   type AgentExecutionStart,
+  type ContinueAgentExecutionParams,
   type StartAgentExecutionParams,
   type StopChatTaskParams,
 } from '@/entities/conversation/api/conversationApi';
 import { streamReconnectDelayMs, useExecutionEventStream, withResumeCursor, type ExecutionEventData } from '@/shared/api/sse';
 
+import { settleInFlight } from '../lib/chatStreamSettle';
 import { applyChatStreamFrame, type ChatStreamContext } from '../lib/chatStreamReducer';
-import { isChatStreamFrame, SocketMessageType, type ChatStreamFrame } from '../lib/chatStreamFrame';
+import { isChatStreamFrame } from '../lib/chatStreamFrame';
 import { shouldForwardAgentEvent } from '../lib/agentGraphEvents';
+import { isTurnTerminalFrame } from '../lib/chatStreamTurnEnd';
 
 import type { ChatMessage } from '../lib/convertMessagesToChatHistory';
 
@@ -97,6 +101,18 @@ export interface UseChatStreamTransportResult {
    * `chat_predict`. `false` ⇒ the backend serves no replay stream; fall back.
    */
   readonly start: (params: StartAgentExecutionParams) => Promise<boolean>;
+  /**
+   * Resume a run this backend PAUSED, and take ownership of its stream.
+   *
+   * `true` ⇒ the route accepted the resume and the caller must NOT emit
+   * `chat_continue_predict`; a second resume would run the agent twice.
+   * `false` ⇒ the route refused or does not exist; fall back to the socket.
+   *
+   * A 200 that carries no `events_url` still answers `true`. The run IS live
+   * again server-side, which is the half that must not be repeated; only the
+   * live view of it is missing.
+   */
+  readonly resume: (params: ContinueAgentExecutionParams) => Promise<boolean>;
   /** Whether a stream is currently subscribed — drives the composer's Stop affordance. */
   readonly isStreaming: boolean;
   /**
@@ -118,21 +134,6 @@ export interface UseChatStreamTransportResult {
 }
 
 /**
- * Is this the last frame of the turn?
- *
- * Only used to decide whether a subsequent disconnect deserves a reconnect —
- * the reducer, not this predicate, owns what a frame does to the message. The
- * two signals are the reducer's own: `pipeline_finish` (terminal for the whole
- * execution) and an `agent_response` carrying a `finish_reason` (the model
- * saying why it stopped). A response WITHOUT one is an intermediate answer in
- * a multi-step pipeline and must not end the stream.
- */
-function isTurnTerminalFrame(frame: ChatStreamFrame): boolean {
-  if (frame.type === SocketMessageType.PipelineFinish) return true;
-  return frame.type === SocketMessageType.AgentResponse && Boolean(frame.response_metadata?.finish_reason);
-}
-
-/**
  * One subscription to one run: the URL currently open, and the cursor-free URL
  * a resume rebuilds from.
  *
@@ -145,29 +146,6 @@ function isTurnTerminalFrame(frame: ChatStreamFrame): boolean {
 interface StreamConnection {
   readonly baseUrl: string;
   readonly url: string | null;
-}
-
-/**
- * Clear the in-flight flags on whatever is still streaming.
- *
- * A transport failure leaves the run's message spinning forever otherwise:
- * the frames that would have ended it are exactly the ones that stopped
- * arriving.
- */
-function settleInFlight(history: readonly ChatMessage[], exception?: unknown): readonly ChatMessage[] {
-  let changed = false;
-  const next = history.map((message) => {
-    if (!message.isStreaming && !message.isLoading) return message;
-    changed = true;
-    return {
-      ...message,
-      isStreaming: false,
-      isLoading: false,
-      isRegenerating: false,
-      ...(exception !== undefined ? { exception } : {}),
-    };
-  });
-  return changed ? next : history;
 }
 
 export function useChatStreamTransport(params: UseChatStreamTransportParams): UseChatStreamTransportResult {
@@ -327,6 +305,40 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   // `source.close()` teardown, which the unmount test does pin.
   useEffect(() => clearRetry, [clearRetry]);
 
+  /**
+   * Subscribe to the stream one accepted run answered with.
+   *
+   * `start` and `resume` share it: both own the run from this point, and both
+   * must apply the same #328 ownership rule and the same cancel binding.
+   * Returns `false` only when the answer carries no stream to watch.
+   */
+  const subscribeToRun = useCallback(
+    (accepted: AgentExecutionStart, conversationUuid: string, projectId: string | number): boolean => {
+      if (!accepted.events_url) return false;
+      // The user left this conversation while the POST was in flight. The run
+      // EXISTS server-side now, so nothing subscribes: those frames belong to
+      // a transcript that is no longer on screen, and the durable log replays
+      // them when it is reopened (#328).
+      const active = activeConversationRef.current;
+      if (active !== undefined && active !== conversationUuid) return true;
+      clearRetry();
+      cursorRef.current = null;
+      attemptRef.current = 0;
+      doneRef.current = false;
+      ownerRef.current = conversationUuid;
+      // `response_message_id` is what the cancel route addresses
+      // (`DELETE .../task/prompt_lib/{projectID}/{responseMessageID}`). Without
+      // one there is nothing to cancel and Stop can only detach.
+      cancelRef.current =
+        typeof accepted.response_message_id === 'string' && accepted.response_message_id !== ''
+          ? { projectId, messageGroupUuid: accepted.response_message_id }
+          : null;
+      setConnection({ baseUrl: accepted.events_url, url: accepted.events_url });
+      return true;
+    },
+    [clearRetry],
+  );
+
   const start = useCallback(async (startParams: StartAgentExecutionParams): Promise<boolean> => {
     let started: AgentExecutionStart;
     try {
@@ -338,29 +350,23 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
     }
     // A 200 with no events_url is the same signal — an older backend answering
     // the same route. Treating it as success would leave the run unwatched.
-    if (!started.events_url) return false;
-    // The user left this conversation while the POST was in flight. The run
-    // EXISTS server-side now, so the answer is still `true` — the caller must
-    // not fall back to `chat_predict` and run the agent twice — but nothing
-    // subscribes: those frames belong to a transcript that is no longer on
-    // screen, and the durable log replays them when it is reopened (#328).
-    const active = activeConversationRef.current;
-    if (active !== undefined && active !== startParams.conversationUuid) return true;
-    clearRetry();
-    cursorRef.current = null;
-    attemptRef.current = 0;
-    doneRef.current = false;
-    ownerRef.current = startParams.conversationUuid;
-    // `response_message_id` is what the cancel route addresses
-    // (`DELETE .../task/prompt_lib/{projectID}/{responseMessageID}`). Without
-    // one there is nothing to cancel and Stop can only detach.
-    cancelRef.current =
-      typeof started.response_message_id === 'string' && started.response_message_id !== ''
-        ? { projectId: startParams.projectId, messageGroupUuid: started.response_message_id }
-        : null;
-    setConnection({ baseUrl: started.events_url, url: started.events_url });
+    return subscribeToRun(started, startParams.conversationUuid, startParams.projectId);
+  }, [subscribeToRun]);
+
+  const resume = useCallback(async (resumeParams: ContinueAgentExecutionParams): Promise<boolean> => {
+    let resumed: AgentExecutionStart;
+    try {
+      resumed = await continueAgentExecution(resumeParams);
+    } catch {
+      // The route refused the resume, or this backend does not serve it. The
+      // caller falls back to `chat_continue_predict`.
+      return false;
+    }
+    // The route ACCEPTED the resume. The run is live again whether or not the
+    // answer named a stream, so the caller must not resume it a second time.
+    subscribeToRun(resumed, resumeParams.conversationUuid, resumeParams.projectId);
     return true;
-  }, [clearRetry]);
+  }, [subscribeToRun]);
 
   const stop = useCallback(() => {
     // Nothing of this hook's is running — the run was already stopped, already
@@ -381,7 +387,7 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   }, [detach, setChatHistory, ownsRun]);
 
   return useMemo(
-    () => ({ start, isStreaming: connection !== null, close: detach, stop }),
-    [start, connection, detach, stop],
+    () => ({ start, resume, isStreaming: connection !== null, close: detach, stop }),
+    [start, resume, connection, detach, stop],
   );
 }

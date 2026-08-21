@@ -34,7 +34,24 @@
 export interface AuthUser {
   readonly id?: string;
   readonly personal_project_id?: string;
+  /**
+   * The permission names the user HAS in `permissionsProjectId` — the
+   * `enabled: true` subset of `GET /auth/permissions/prompt_lib/{projectId}`,
+   * never the raw list. Every other reader of that endpoint
+   * (`widgets/sidebar/api/usePermissionSet.ts`,
+   * `features/agents/lib/useHasPermission.ts`) filters on `enabled` too, so a
+   * raw copy here would grant access on a DISABLED permission.
+   *
+   * `undefined` means "not resolved yet", which every guard treats as
+   * "do not block". See `routes/-guards/requirePermission.ts`.
+   */
   readonly permissions?: readonly string[];
+  /**
+   * The project `permissions` was read for. A permission list is per project,
+   * so a guard must not judge project B with project A's list. When this does
+   * not match the current selection the guard defers instead.
+   */
+  readonly permissionsProjectId?: string;
   readonly publicPermissions?: readonly string[];
 }
 

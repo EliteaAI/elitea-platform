@@ -23,6 +23,13 @@ export interface FolderConversationRef {
   readonly isPrivate?: boolean;
   readonly updatedAt?: string;
   readonly createdAt?: string;
+  /**
+   * Owner of the conversation. The grouped-list wire carries it as
+   * `author_id`, an integer. The sidebar row menu needs it. The menu disables
+   * Delete and Edit on another member's conversation. The normaliser dropped
+   * this field before, so that check compared two `undefined` values.
+   */
+  readonly authorId?: string | undefined;
   /** Needed to compute `genConversationId` parity — see `lib/normalise.ts`. */
   readonly isPlayback?: boolean;
 }

@@ -165,7 +165,21 @@ func (h *Handler) ModesAssign(w http.ResponseWriter, r *http.Request) {
 	// applied here too: this endpoint reaches the same auth_core__user_role
 	// table, so without it `modes.users` would be a second, unguarded way to
 	// grant the platform's highest role.
-	if mode == auth.PermissionModeAdministration {
+	//
+	// The GRANT arm runs for EVERY accepted mode, not only `administration`.
+	// The mode arrives in the request body. auth_core__role is UNIQUE
+	// (name, mode). A legacy database therefore also carries a `super_admin`
+	// role in the `developer` mode.
+	//
+	// A body of {"mode":"developer","role":"super_admin"}
+	// therefore reached the INSERT with no escalation check at all.
+	//
+	// The DEMOTION arm stays scoped to `administration`. currentAdminRole
+	// (users.go) reads the administration-mode role only, and the DELETE below
+	// removes assignments in the requested mode only. A developer-mode write
+	// leaves the administration super_admin assignment untouched, so it demotes
+	// nobody. An unscoped arm refused that write for no gain.
+	{
 		current, err := h.currentAdminRole(ctx, userID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -176,7 +190,9 @@ func (h *Handler) ModesAssign(w http.ResponseWriter, r *http.Request) {
 				map[string]any{"error": "failed to read current role"})
 			return
 		}
-		if role == "super_admin" || (current == "super_admin" && role != "super_admin") {
+		demotesAdministrationSuperAdmin := mode == auth.PermissionModeAdministration &&
+			current == "super_admin" && role != "super_admin"
+		if role == "super_admin" || demotesAdministrationSuperAdmin {
 			allowed, err := h.callerHasPermission(ctx, r, permissionSuperAdmin)
 			if err != nil || !allowed {
 				writeJSON(w, http.StatusForbidden, map[string]any{
@@ -277,7 +293,10 @@ func (h *Handler) ModesRemove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	if mode == auth.PermissionModeAdministration && role == "super_admin" {
+	// The guard covers every accepted mode. A legacy database carries a
+	// `super_admin` role in the `developer` mode too, because auth_core__role
+	// is UNIQUE (name, mode).
+	if role == "super_admin" {
 		allowed, err := h.callerHasPermission(ctx, r, permissionSuperAdmin)
 		if err != nil || !allowed {
 			writeJSON(w, http.StatusForbidden, map[string]any{

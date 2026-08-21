@@ -10,11 +10,14 @@ package oapiserver_test
 // Forward direction (asserted here): every operationId in v2.yaml must
 // resolve to a registered route.
 //
-// Reverse direction (hook only, by design): the spec covers ~23% of the
+// Reverse direction (manifest-driven, by design): the spec covers ~23% of the
 // router surface on purpose, so there is no global router→spec assertion.
-// The manifest-driven reverse check activates automatically once unit P1
-// lands apps/elitea-web/parity/manifest.json — see the manifest_reverse_check
-// subtest below and oapiserver.MissingFromSpec.
+// The reverse check reads the new UI's endpoint manifest (spec §5.3). That
+// manifest is apps/elitea-web/src/shared/api/endpoints.manifest.json. The
+// check requires v2.yaml to cover every endpoint the app calls. The
+// hand-written Wave-2 endpoints are held in testdata/reverse_check_allowlist.txt,
+// which may only shrink — see the manifest_reverse_check subtest below and
+// oapiserver.MissingFromSpec.
 
 import (
 	"encoding/json"
@@ -42,20 +45,36 @@ import (
 const (
 	// specPath is api/openapi/v2.yaml relative to this package directory.
 	specPath = "../../../api/openapi/v2.yaml"
-	// manifestPath is where unit P1 will land the new UI's parity manifest,
-	// relative to this package directory (repo root is five levels up).
-	manifestPath = "../../../../../apps/elitea-web/parity/manifest.json"
+	// manifestPath is the new UI's endpoint manifest, relative to this package
+	// directory (repo root is five levels up). It is git-tracked.
+	//
+	// DEFECT this constant fixes: it named apps/elitea-web/parity/manifest.json,
+	// which is the parity SHARD INDEX. That file holds only version /
+	// generatedFrom / shards, and its schema forbids extra keys, so the
+	// `endpoints` field never existed. json.Unmarshal left the slice nil, the
+	// reverse check looped over nothing, and the subtest reported PASS while it
+	// measured zero endpoints.
+	manifestPath = "../../../../../apps/elitea-web/src/shared/api/endpoints.manifest.json"
+	// allowlistPath holds the endpoint ids the spec does not describe yet.
+	allowlistPath = "testdata/reverse_check_allowlist.txt"
 
-	// Sanity floors: the spec has 78 operationIds (84 before the W1 drift
-	// removals and waivers W-008/W-009; +1 for W3's getBrandingBootstrap).
+	// Sanity floors: the spec has 152 operationIds today (it had 78 when this
+	// floor was first written, and the floor was never raised with it).
 	// chi.Walk over the full-surface test config yields 313 method+pattern
 	// registrations, 277 after the compat-shim exclusion in CollectRoutes
 	// (4 shim patterns x 9 methods). It was 325/289 until #126 deleted the
 	// twelve routes gated on the retired prototype indexer transport.
 	// If either input collapses, the conformance loop would vacuously pass —
 	// so guard the inputs themselves.
-	minSpecOperations = 75
+	minSpecOperations = 145
 	minRouterRoutes   = 270
+	// minManifestEndpoints guards the reverse check's own input. The manifest
+	// holds 179 endpoints. A moved, renamed or reshaped file must fail loudly,
+	// not silently measure nothing.
+	minManifestEndpoints = 170
+	// maxAllowlistEntries pins the committed size of the allowlist. The number
+	// may only go down. A new undocumented endpoint must fail the gate.
+	maxAllowlistEntries = 94
 )
 
 // buildFullSurfaceConfig returns a RouterConfig for the real production
@@ -93,6 +112,59 @@ func buildFullSurfaceConfig() api.RouterConfig {
 	}
 }
 
+// loadManifestEndpoints reads the UI endpoint manifest and guards its shape.
+//
+// The file is git-tracked, so its absence is a breakage, not a unit that has
+// not landed. The floor catches a reshaped or emptied file, which is how this
+// check went inert before: a nil slice makes the loop below assert nothing.
+func loadManifestEndpoints(t *testing.T) []oapiserver.ManifestEndpoint {
+	t.Helper()
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", manifestPath, err)
+	}
+	var manifest struct {
+		Endpoints []oapiserver.ManifestEndpoint `json:"endpoints"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parsing %s: %v", manifestPath, err)
+	}
+	if len(manifest.Endpoints) < minManifestEndpoints {
+		t.Fatalf("%s yielded only %d endpoints (want >= %d) — did the file move or change shape?",
+			manifestPath, len(manifest.Endpoints), minManifestEndpoints)
+	}
+	return manifest.Endpoints
+}
+
+// loadReverseCheckAllowlist reads the ids of the hand-written endpoints that
+// the spec does not describe yet. One id per line. `#` starts a comment.
+func loadReverseCheckAllowlist(t *testing.T) map[string]struct{} {
+	t.Helper()
+	data, err := os.ReadFile(allowlistPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v", allowlistPath, err)
+	}
+	allowed := make(map[string]struct{})
+	for _, line := range strings.Split(string(data), "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, duplicate := allowed[line]; duplicate {
+			t.Errorf("%s lists %q twice", allowlistPath, line)
+		}
+		allowed[line] = struct{}{}
+	}
+	if len(allowed) > maxAllowlistEntries {
+		t.Fatalf("%s holds %d ids (max %d). The allowlist may only shrink: describe the new endpoint in api/openapi/v2.yaml instead.",
+			allowlistPath, len(allowed), maxAllowlistEntries)
+	}
+	return allowed
+}
+
 func TestSpecRouterConformance(t *testing.T) {
 	router := api.NewRouter(buildFullSurfaceConfig())
 
@@ -112,47 +184,59 @@ func TestSpecRouterConformance(t *testing.T) {
 		t.Fatalf("spec declares only %d operations (want >= %d) — v2.yaml truncated?", len(ops), minSpecOperations)
 	}
 
+	// EVERY candidate must resolve, not just one.
+	//
+	// DEFECT this guards: the spec declared a second server base,
+	// `/api/v2/elitea_core`, that no operation resolves under, because every
+	// path already carries its own plugin prefix. A generated client takes
+	// the first server as its default base, so every call 404'd. This loop
+	// stopped at the first candidate that matched. The good `/api/v2` base
+	// always rescued the bogus one. The check therefore passed for a spec no
+	// generator could use.
+	//
+	// A base that serves no operation is a defect,
+	// however many bases the document declares.
 	t.Run("every_spec_operation_resolves_to_a_route", func(t *testing.T) {
 		var unmatched []string
 		for _, op := range ops {
-			matched := false
+			var dead []string
 			for _, cand := range op.CandidatePaths() {
-				if routes.Resolves(op.Method, cand) {
-					matched = true
-					break
+				if !routes.Resolves(op.Method, cand) {
+					dead = append(dead, cand)
 				}
 			}
-			if !matched {
+			if len(dead) > 0 {
 				unmatched = append(unmatched, fmt.Sprintf(
-					"  %-28s %-6s %s\n    tried: %s",
+					"  %-28s %-6s %s\n    no route for: %s",
 					op.OperationID, op.Method, op.Path,
-					strings.Join(op.CandidatePaths(), " , ")))
+					strings.Join(dead, " , ")))
 			}
 		}
 		if len(unmatched) > 0 {
-			t.Errorf("%d of %d spec operations in api/openapi/v2.yaml do not resolve to any registered chi route:\n%s\n\nEither register the route in internal/api/router.go or remove/fix the spec entry (spec §5.1).",
+			t.Errorf("%d of %d spec operations in api/openapi/v2.yaml do not resolve to a registered chi route under every declared server base:\n%s\n\nEither register the route in internal/api/router.go, or fix the spec entry or the `servers:` base (spec §5.1).",
 				len(unmatched), len(ops), strings.Join(unmatched, "\n"))
 		}
 	})
 
-	// The reverse check is manifest-driven by design (spec covers ~23% of the
-	// router). This subtest self-activates when unit P1 lands the manifest.
+	// The reverse check is manifest-driven by design (the spec covers ~23% of
+	// the router). It gates what the new UI actually calls.
 	t.Run("manifest_reverse_check", func(t *testing.T) {
-		data, err := os.ReadFile(manifestPath)
-		if os.IsNotExist(err) {
-			t.Skipf("apps/elitea-web/parity/manifest.json not present yet (unit P1); reverse check activates when it lands")
+		endpoints := loadManifestEndpoints(t)
+		allowed := loadReverseCheckAllowlist(t)
+
+		stillMissing := make(map[string]struct{}, len(allowed))
+		for _, ep := range oapiserver.MissingFromSpec(ops, endpoints) {
+			if _, ok := allowed[ep.ID]; ok {
+				stillMissing[ep.ID] = struct{}{}
+				continue
+			}
+			t.Errorf("manifest endpoint %s (%s %s, operationId=%q) is not covered by api/openapi/v2.yaml.\nDescribe it in the spec, or add its id to %s and raise nothing — the allowlist may only shrink (spec §5.3).",
+				ep.ID, ep.Method, ep.Path, ep.OperationID, allowlistPath)
 		}
-		if err != nil {
-			t.Fatalf("reading manifest: %v", err)
-		}
-		var manifest struct {
-			Endpoints []oapiserver.ManifestEndpoint `json:"endpoints"`
-		}
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			t.Fatalf("parsing manifest: %v", err)
-		}
-		for _, ep := range oapiserver.MissingFromSpec(ops, manifest.Endpoints) {
-			t.Errorf("manifest endpoint %s (%s %s, operationId=%q) is not covered by api/openapi/v2.yaml", ep.ID, ep.Method, ep.Path, ep.OperationID)
+		for id := range allowed {
+			if _, ok := stillMissing[id]; !ok {
+				t.Errorf("%s lists %q, but the spec now covers that endpoint. Delete the line.", allowlistPath, id)
+			}
 		}
 	})
 

@@ -43,6 +43,68 @@ function singlePauseRaw(frame: ChatStreamFrame): Record<string, unknown> {
   };
 }
 
+/** Which of the three pause shapes an `agent_hitl_interrupt` frame carries. */
+interface HitlPauseShape {
+  /** One child of a fan-out paused; its siblings keep running on the same stream. */
+  readonly isFanoutChild: boolean;
+  /** N paused sub-agents in ONE frame, each labelled with its parent. */
+  readonly isParallelAggregate: boolean;
+}
+
+/**
+ * Classify an `agent_hitl_interrupt` frame.
+ *
+ * The reducer below needs the shape to decide the message's streaming state,
+ * and `isTerminalPauseFrame` needs it to decide whether the run has ended. Both
+ * read it from here, because a second copy of the rule drifts from this one.
+ */
+function classifyHitlPause(frame: ChatStreamFrame): HitlPauseShape {
+  const responseMetadata = frame.response_metadata;
+  const hitlMeta = (responseMetadata?.metadata ?? {}) as Record<string, unknown>;
+  const childThreadId = typeof hitlMeta['child_thread_id'] === 'string' ? hitlMeta['child_thread_id'] : '';
+  // Fan-out child: the indexer stamped the child's own thread and its parent's
+  // name into event metadata.
+  const isFanoutChild = Boolean(hitlMeta['parent_agent_name'] && childThreadId);
+  const rawInterrupts = Array.isArray(responseMetadata?.hitl_interrupts) ? responseMetadata.hitl_interrupts : [];
+  // In-process parallel aggregate: no child thread of its own.
+  const isParallelAggregate = !isFanoutChild && rawInterrupts.some((raw) => Boolean(raw?.['parent_agent_name']));
+  return { isFanoutChild, isParallelAggregate };
+}
+
+/**
+ * Is this pause frame the LAST frame of the run, or progress inside it?
+ *
+ * The worker ends a paused run with `agent_hitl_interrupt` or
+ * `mcp_authorization_required` and emits no `pipeline_finish` and no
+ * `agent_response`. The stream transport must release the connection on those
+ * frames. If it does not, the composer stays disabled for the rest of the
+ * session. The stream also holds a server admission slot.
+ *
+ * Neither type is terminal on its own, so a blanket type test would truncate a
+ * live stream:
+ *
+ * - `mcp_authorization_required` is emitted twice for one run — once as
+ *   progress from the tool-error path, once as the execution terminal. Only
+ *   the terminal one carries the `authorization_requests` array.
+ * - a FAN-OUT CHILD pause keeps the stream open. The child runs as its own
+ *   task and streams onto the PARENT's message. Its siblings still send
+ *   frames on the SAME stream, and only the reconciled parent ends the run.
+ *
+ * An in-process PARALLEL AGGREGATE is terminal, unlike a fan-out child.
+ * One invoke spawns the sub-agents in one process. It returns their pauses in
+ * one frame, and the worker then emits that frame as the execution terminal
+ * (`emit_terminal`, agent_events.py:293-330). Nothing follows it. Vetoing it
+ * here left the composer disabled for the rest of the session — the very
+ * defect this predicate exists to remove.
+ */
+export function isTerminalPauseFrame(frame: ChatStreamFrame): boolean {
+  if (frame.type === SocketMessageType.McpAuthorizationRequired) {
+    return Array.isArray(frame.response_metadata?.['authorization_requests']);
+  }
+  if (frame.type !== SocketMessageType.AgentHitlInterrupt) return false;
+  return !classifyHitlPause(frame).isFanoutChild;
+}
+
 /**
  * Reduce one interrupt frame, or return `undefined` for a frame this family
  * does not own so the dispatcher can offer it to the next one.
@@ -91,17 +153,10 @@ export function reduceInterruptFrame(
       const responseMetadata = frame.response_metadata;
       const hitlMeta = (responseMetadata?.metadata ?? {}) as Record<string, unknown>;
       const childThreadId = typeof hitlMeta['child_thread_id'] === 'string' ? hitlMeta['child_thread_id'] : '';
-
-      // Fan-out child: the indexer stamped the child's own thread and its
-      // parent's name into event metadata. One child of many pauses while its
-      // siblings keep running.
-      const isFanoutChild = Boolean(hitlMeta['parent_agent_name'] && childThreadId);
-
       const rawInterrupts = Array.isArray(responseMetadata?.hitl_interrupts) ? responseMetadata.hitl_interrupts : [];
-      // In-process parallel aggregate: N paused sub-agents in ONE frame, each
-      // labelled with its parent but with no child thread of its own.
-      const isParallelAggregate =
-        !isFanoutChild && rawInterrupts.some((raw) => Boolean(raw?.['parent_agent_name']));
+      // `classifyHitlPause` owns the three shapes. `isTerminalPauseFrame`
+      // reads the same classification, but only its `isFanoutChild` half.
+      const { isFanoutChild, isParallelAggregate } = classifyHitlPause(frame);
 
       // Only a plain single pause ends the run's activity. Both parallel shapes
       // keep `isStreaming` true, and that is load-bearing rather than cosmetic:

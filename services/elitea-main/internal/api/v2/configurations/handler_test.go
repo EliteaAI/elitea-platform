@@ -873,7 +873,23 @@ func TestListModels_Success(t *testing.T) {
 
 // ---- SetDefaultModel --------------------------------------------------------
 
-func TestSetDefaultModel_Success(t *testing.T) {
+// The defect: SetDefaultModel decoded the body and answered 200 with
+// {"items":[],"total":0}. It wrote nothing.
+//
+// The evidence: the whole body was a decode and a writeJSON. The route that
+// really writes a project's default model is model_default.go, and the
+// production router registers it only when the composition root supplies it.
+// The composition root builds it under ELITEA_CONFIGURATIONS_ENABLED, and
+// deploy/helm/elitea-main/values.yaml ships that variable as "false".
+//
+// The failure: on a default install an administrator sets a default model and
+// receives a success. Nothing is stored. The screen refetches and shows the old
+// default, and no response distinguishes that from a save that worked.
+//
+// The old test asserted the 200, so the suite pinned the defect instead of
+// catching it. TTSVoices had the same shape and was corrected the same way
+// under #466.
+func TestSetDefaultModelRefusesInsteadOfReportingASuccessItDidNotPerform(t *testing.T) {
 	r := setupConfigRouter()
 
 	payload, err := json.Marshal(map[string]string{"model": "gpt-4", "section": "llm"})
@@ -885,8 +901,39 @@ func TestSetDefaultModel_Success(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var answer map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&answer); err != nil {
+		t.Fatalf("failed to decode the refusal: %v", err)
+	}
+	reason, ok := answer["error"].(string)
+	if !ok || !strings.Contains(reason, "ELITEA_CONFIGURATIONS_ENABLED") {
+		t.Fatalf("the refusal must name the variable that turns the capability on; got %v", answer)
+	}
+	if _, present := answer["items"]; present {
+		t.Fatal("the refusal must not carry an item list, which a caller reads as a result")
+	}
+}
+
+// The mode-ful twin serves the same body and must refuse the same way. No
+// client in the workspace calls it, but it is registered. It must therefore
+// not stay the one path that still reports a success it did not perform.
+func TestSetDefaultModelRefusesOnTheModeTwin(t *testing.T) {
+	r := setupConfigRouter()
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/models/administration/proj-1",
+		bytes.NewReader([]byte(`{"model":"gpt-4"}`)),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d; body: %s", rec.Code, rec.Body.String())
 	}
 }
 

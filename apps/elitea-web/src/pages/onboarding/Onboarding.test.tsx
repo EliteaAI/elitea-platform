@@ -12,9 +12,16 @@
  *    (finding 3)
  *  - warning: the mock poll actually resolves, so "workspace is ready" is
  *    reachable (finding 4)
+ *
+ * Plus one later regression: "Jump in" left the SPA entirely — see the
+ * `describe('Onboarding jump in')` block's own comment.
  */
-import { act, fireEvent, screen } from '@testing-library/react';
+import { ThemeProvider } from '@mui/material/styles';
+import { Outlet, RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 
 import { installWebStorageShim } from '@/test/webstorage';
 
@@ -127,5 +134,67 @@ describe('Onboarding', () => {
     }
 
     expect(screen.getByRole('button', { name: /Jump in now!/i })).toBeInTheDocument();
+  });
+});
+
+/**
+ * DEFECT: "Jump in" ended a brand-new account's very first action on a 404.
+ *
+ * `handleJumpIn` assigned `window.location.href = '/chat'` — a root-relative
+ * full-page navigation. The router runs under `basepath: getAppBasename()`
+ * (`/app/` in every real deployment), and nginx serves only `/app/...`. The
+ * browser therefore left the SPA, and `GET /chat` reached the API. The API
+ * answers a bare `404 page not found`. The module header claimed no route
+ * mounted this page, which was stale. `src/routes/_shell/onboarding.tsx`
+ * mounts it. The index guard redirects a user with no `personal_project_id`
+ * straight to it.
+ *
+ * This case walks the real flow to the "Jump in now!" button and asserts the
+ * router moved, so a raw `window.location` assignment fails here.
+ */
+describe('Onboarding jump in', () => {
+  const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
+
+  function renderInRouter() {
+    const rootRoute = createRootRoute({
+      component: () => (
+        <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+          <Outlet />
+        </ThemeProvider>
+      ),
+    });
+    const onboardingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/onboarding', component: Onboarding });
+    const chatRoute = createRoute({ getParentRoute: () => rootRoute, path: '/chat', component: () => <div>chat</div> });
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([onboardingRoute, chatRoute]),
+      history: createMemoryHistory({ initialEntries: ['/app/onboarding'] }),
+      basepath: '/app',
+    });
+    render(<RouterProvider router={router as never} />);
+    return router;
+  }
+
+  it('navigates through the router, so the app basename is kept', async () => {
+    const router = renderInRouter();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    vi.useFakeTimers();
+
+    fireEvent.click(screen.getByRole('button', { name: /Sure, let.s go!/i }));
+    for (let i = 0; i < 20; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /Jump in now!/i }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(router.state.location.pathname).toBe('/chat');
+    // The basename the raw `window.location.href = '/chat'` dropped.
+    expect(router.history.location.pathname).toBe('/app/chat');
   });
 });

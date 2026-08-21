@@ -12,6 +12,7 @@ import { useFormikContext } from 'formik';
 import { createContextStrategyFormData, type ProfileFormValues } from '@/features/settings/lib/profile/profileUtils';
 import ContextStrategySummarization from './context-budget/ContextStrategySummarization';
 import { handleConvertToNumberChange } from '@/features/settings/lib/profile/context-budget/validation';
+import { t } from '@/shared/i18n';
 
 export interface ProfileSummarizationProps {
   modelList: Array<{
@@ -84,7 +85,7 @@ export const ProfileSummarization = memo(({ modelList: _modelList }: ProfileSumm
       slotSx={{ accordion: { background: 'transparent' } }}
       items={[
         {
-          title: 'Default Summarization',
+          title: t('settings.profile.summarization.title', 'Default Summarization'),
           content: (
             <Box sx={styles.accordionContent}>
               <ContextStrategySummarization

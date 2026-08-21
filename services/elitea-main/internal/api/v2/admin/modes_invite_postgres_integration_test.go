@@ -474,3 +474,115 @@ func TestUserInviteRejectsIncompleteInput(t *testing.T) {
 		t.Fatalf("user count moved from %d to %d across five rejected invites", before, after)
 	}
 }
+
+// TestModesRefusesSuperAdminEscalationInEveryMode closes the second route to
+// the platform's highest role.
+//
+// DEFECT: the escalation guard in ModesAssign ran only when the request body
+// named the `administration` mode. The matching guard in ModesRemove ran only
+// when the body named `administration` too. `public.auth_core__role` is keyed UNIQUE
+// (name, mode), so a database restored from a legacy dump also carries a
+// `super_admin` role in the `developer` mode
+// (testdata/postgres/legacy-rbac-matrix.json). A caller who held `modes.users`
+// but not `admin.auth.users.super_admin` could therefore POST
+// {"mode":"developer","role":"super_admin"}: the INSERT found the role row and
+// wrote the assignment, and the guard never ran.
+func TestModesRefusesSuperAdminEscalationInEveryMode(t *testing.T) {
+	pool, router, _, memberID := newModesEnvironment(t, grantingResolver("modes.users"))
+
+	// The role row a legacy dump carries beside the administration-mode one.
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO public.auth_core__role (name, mode) VALUES ('super_admin', 'developer')`); err != nil {
+		t.Fatalf("seed developer-mode super_admin role: %v", err)
+	}
+
+	recorder := adminDo(t, router, http.MethodPost, "/admin/modes/administration",
+		map[string]any{"user_id": memberID, "mode": "developer", "role": "super_admin"})
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("POST developer-mode super_admin status = %d, want 403 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if roles := storedModeRoles(t, pool, memberID, "developer"); len(roles) != 0 {
+		t.Fatalf("stored developer roles = %v after a refused escalation, want none", roles)
+	}
+}
+
+// TestModesRemoveRefusesADeveloperModeSuperAdmin covers the DELETE half of the
+// same widening. The composite id names the mode, so the guard has to key on
+// the role name alone.
+func TestModesRemoveRefusesADeveloperModeSuperAdmin(t *testing.T) {
+	pool, router, _, memberID := newModesEnvironment(t, grantingResolver("modes.users"))
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO public.auth_core__role (name, mode) VALUES ('super_admin', 'developer')`); err != nil {
+		t.Fatalf("seed developer-mode super_admin role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO public.auth_core__user_role (user_id, role_id)
+SELECT $1, role.id FROM public.auth_core__role role
+WHERE role.mode = 'developer' AND role.name = 'super_admin'`, memberID); err != nil {
+		t.Fatalf("seed developer-mode assignment: %v", err)
+	}
+
+	target := fmt.Sprintf("/admin/modes/administration?id=%d:developer:super_admin", memberID)
+	recorder := adminDo(t, router, http.MethodDelete, target, nil)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("DELETE developer-mode super_admin status = %d, want 403 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if roles := storedModeRoles(t, pool, memberID, "developer"); len(roles) != 1 {
+		t.Fatalf("stored developer roles = %v after a refused removal, want the assignment intact", roles)
+	}
+}
+
+// TestModesAssignScopesTheDemotionGuardToAdministration pins the OTHER half of
+// the guard, the arm that protects an existing super_admin from a demotion.
+//
+// currentAdminRole reads the administration-mode role only, and the DELETE in
+// ModesAssign removes assignments in the REQUESTED mode only. A developer-mode
+// write therefore demotes nobody. An unscoped demotion arm refused that write
+// and gave nothing back: fail-closed, but wrong.
+func TestModesAssignScopesTheDemotionGuardToAdministration(t *testing.T) {
+	pool, router, _, memberID := newModesEnvironment(t, grantingResolver("modes.users"))
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO public.auth_core__role (name, mode) VALUES ('editor', 'developer')`); err != nil {
+		t.Fatalf("seed developer-mode editor role: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO public.auth_core__user_role (user_id, role_id)
+SELECT $1, role.id FROM public.auth_core__role role
+WHERE role.mode = 'administration' AND role.name = 'super_admin'`, memberID); err != nil {
+		t.Fatalf("seed administration super_admin: %v", err)
+	}
+
+	// The caller holds `modes.users` but NOT `admin.auth.users.super_admin`.
+	recorder := adminDo(t, router, http.MethodPost, "/admin/modes/administration",
+		map[string]any{"user_id": memberID, "mode": "developer", "role": "editor"})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST developer-mode editor status = %d, want 200 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if roles := storedModeRoles(t, pool, memberID, "developer"); len(roles) != 1 || roles[0] != "editor" {
+		t.Fatalf("stored developer roles = %v, want [editor]", roles)
+	}
+	// The administration assignment the guard protects never moved.
+	if roles := storedModeRoles(t, pool, memberID, "administration"); len(roles) != 1 ||
+		roles[0] != "super_admin" {
+		t.Fatalf("stored administration roles = %v, want [super_admin]", roles)
+	}
+
+	// The same caller still cannot demote that user INSIDE administration.
+	recorder = adminDo(t, router, http.MethodPost, "/admin/modes/administration",
+		map[string]any{"user_id": memberID, "mode": "administration", "role": "admin"})
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("POST administration demotion status = %d, want 403 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if roles := storedModeRoles(t, pool, memberID, "administration"); len(roles) != 1 ||
+		roles[0] != "super_admin" {
+		t.Fatalf("stored administration roles = %v after a refused demotion, want [super_admin]", roles)
+	}
+}

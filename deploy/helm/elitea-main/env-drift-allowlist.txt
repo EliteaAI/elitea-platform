@@ -39,6 +39,7 @@ OIDC_REDIRECT_URI
 # --- Filesystem paths baked into the container image (Containerfile), not
 # --- per-deployment configuration.
 ADMIN_UI_STATIC_DIR
+DEFAULT_ICON_DATA_DIR
 ICONS_DATA_DIR
 ICON_DATA_DIR
 TOOL_ICON_DATA_DIR

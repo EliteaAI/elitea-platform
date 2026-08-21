@@ -43,6 +43,8 @@ export interface AdditionalDefaultSetting {
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
+  /** Message from the last failed save of this select's default model. */
+  error?: string | undefined;
 }
 
 interface ConfigurationSectionProps {
@@ -58,6 +60,10 @@ interface ConfigurationSectionProps {
   defaultSettingValue?: string;
   defaultSettingOptions?: Array<{ value: string; label: string }>;
   onChangeDefaultSetting?: (value: string) => void;
+  /** Message from the last failed save of this section's default model.
+   * Without it a failed save shows nothing: the select is controlled from
+   * query data, so it silently returns to the previous default. */
+  defaultSettingError?: string | undefined;
   additionalDefaultSettings?: AdditionalDefaultSetting[];
   groupTheModelsByProvider?: boolean;
 }
@@ -161,6 +167,7 @@ export default memo(function ConfigurationSection({
   defaultSettingValue = '',
   defaultSettingOptions = [],
   onChangeDefaultSetting,
+  defaultSettingError,
   additionalDefaultSettings = [],
   groupTheModelsByProvider = false,
 }: ConfigurationSectionProps) {
@@ -201,6 +208,7 @@ export default memo(function ConfigurationSection({
         label: defaultSettingLabel,
         options: defaultSettingOptions,
         onChange: onChangeDefaultSetting,
+        error: defaultSettingError,
         additional: additionalDefaultSettings,
       }}
       grouping={{
@@ -218,6 +226,7 @@ interface ConfigurationSectionDefaultSetting {
   label?: React.ReactNode;
   options?: Array<{ value: string; label: string }>;
   onChange?: (value: string) => void;
+  error?: string;
   additional?: AdditionalDefaultSetting[];
 }
 
@@ -248,6 +257,7 @@ function ConfigurationSectionBody({
           defaultSettingLabel={defaultSetting.label}
           defaultSettingOptions={defaultSetting.options}
           onChangeDefaultSetting={defaultSetting.onChange}
+          defaultSettingError={defaultSetting.error}
           additionalDefaultSettings={defaultSetting.additional}
         />
       )}
@@ -284,13 +294,14 @@ function ConfigurationSectionBody({
 
 function DefaultSettingsSelects({
   canEdit, defaultSettingValue, defaultSettingLabel, defaultSettingOptions,
-  onChangeDefaultSetting, additionalDefaultSettings,
+  onChangeDefaultSetting, defaultSettingError, additionalDefaultSettings,
 }: {
   canEdit: boolean;
   defaultSettingValue: string;
   defaultSettingLabel?: React.ReactNode;
   defaultSettingOptions?: Array<{ value: string; label: string }>;
   onChangeDefaultSetting?: (value: string) => void;
+  defaultSettingError?: string;
   additionalDefaultSettings?: AdditionalDefaultSetting[];
 }) {
   return (
@@ -301,6 +312,7 @@ function DefaultSettingsSelects({
         onChange={onChangeDefaultSetting || (() => {})}
         options={defaultSettingOptions ?? []}
         disabled={!canEdit}
+        error={defaultSettingError ?? ''}
       />
       {additionalDefaultSettings
         ?.filter((s): s is NonNullable<typeof s> => Boolean(s))
@@ -312,6 +324,7 @@ function DefaultSettingsSelects({
             onChange={setting.onChange ?? (() => {})}
             options={setting.options ?? []}
             disabled={!canEdit}
+            error={setting.error ?? ''}
           />
         ))}
     </Box>

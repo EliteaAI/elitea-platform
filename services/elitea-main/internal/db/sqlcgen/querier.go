@@ -29,6 +29,30 @@ type Querier interface {
 	// statement; reconciliation happens outside the database transaction.
 	ClaimConfigurationLifecycleEvents(ctx context.Context, arg ClaimConfigurationLifecycleEventsParams) ([]ClaimConfigurationLifecycleEventsRow, error)
 	ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error)
+	// Claims a bounded batch of expired, unconsumed grants for the retention
+	// sweeper, and returns what it needs to reclaim the bytes.
+	//
+	// WHY THIS EXISTS. CreateArtifactTransferGrant hands out a presigned PUT and
+	// writes only this row. The elitea_storage.objects row appears at commit and
+	// nowhere else. A caller who uploads to the signed URL and never commits
+	// therefore leaves bytes with no metadata row: SumArtifactProjectBytes cannot
+	// count them against max_total_bytes, and ListExpiredArtifactObjects cannot
+	// see them, because both read only the objects table. Nothing time-driven
+	// reclaimed them.
+	//
+	// WHY IT CLAIMS INSTEAD OF SELECTING. Setting consumed_at in the same
+	// statement that selects the row is what makes the sweep safe against a
+	// commit in flight. MarkArtifactTransferGrantConsumed already carries
+	// `AND consumed_at IS NULL`, so a commit that races a claimed grant loses the
+	// mark and answers 409. A plain SELECT followed by a delete has the opposite
+	// outcome. The commit writes a metadata row. The sweeper then deletes the
+	// bytes underneath it. The project is charged for an object that no longer
+	// exists, and no later sweep can heal that.
+	//
+	// FOR UPDATE SKIP LOCKED lets two replicas sweep at the same time without
+	// either waiting on the other. The row itself is kept, not deleted, so a late
+	// commit still sees the 409 rather than a 404.
+	ClaimExpiredArtifactTransferGrants(ctx context.Context, arg ClaimExpiredArtifactTransferGrantsParams) ([]ClaimExpiredArtifactTransferGrantsRow, error)
 	ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error)
 	ClaimScheduledJobCursor(ctx context.Context, arg ClaimScheduledJobCursorParams) (int64, error)
 	ClaimScheduledOccurrence(ctx context.Context, arg ClaimScheduledOccurrenceParams) (int64, error)
@@ -105,6 +129,16 @@ type Querier interface {
 	// The token binding rides along on the row the validator already reads, so a
 	// bound token costs no additional round trip on the request path
 	// (spec-llm-project-scope §3.2). Do not split it into a second lookup.
+	//
+	// bound_project_active carries the lifecycle state of the bound project on the
+	// same row, for the same reason. Suspension is a reversible boolean on
+	// centry.project and revokes no binding, so a bound token kept spending a
+	// suspended project's budget and credentials. The middleware re-checks the
+	// state here instead (spec-llm-project-scope §7 invariant 3).
+	//
+	// BOTH joins must stay LEFT joins. Most personal access tokens carry no
+	// binding, and an inner join on centry.project would drop every one of those
+	// rows. That breaks authentication for the majority of callers.
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveProjectSystemPAT(ctx context.Context, projectID int32) (GetActiveProjectSystemPATRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)

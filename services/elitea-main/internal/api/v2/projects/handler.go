@@ -13,6 +13,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 type Handler struct {
@@ -144,7 +145,7 @@ type Project struct {
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	publicProjectID, err := parseInt32(chi.URLParam(r, "projectID"))
 	if err != nil || publicProjectID <= 0 {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	h.getCurrentProjects(w, r, publicProjectID)
@@ -160,27 +161,27 @@ func (h *Handler) GetCurrentProjectList(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, publicProjectID int32) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	userID, ok := user.OwningUserID()
 	if !ok || userID > int64(^uint32(0)>>1) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if h.projects == nil {
-		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "service unavailable")
 		return
 	}
 
 	limit, err := optionalInt32(r, "limit")
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	offset, err := optionalInt32(r, "offset")
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -198,7 +199,7 @@ func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, pub
 		Limit:           limit,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -268,13 +269,13 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var g Group
 		if err := rows.Scan(&g.ID, &g.Name); err != nil {
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		groups = append(groups, g)
 	}
 	if err := rows.Err(); err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if groups == nil {
@@ -291,7 +292,7 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	payload, err := json.Marshal(v)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	payload = append(payload, '\n')

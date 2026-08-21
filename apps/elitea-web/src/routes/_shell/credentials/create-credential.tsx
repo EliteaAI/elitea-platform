@@ -29,6 +29,7 @@ import { useCallback } from 'react';
 
 import { CreateCredential } from '@/pages/credentials/CreateCredential';
 
+import { pickParams } from '../../-search/params';
 import { useCredentialFormContext } from '../../-lib/useCredentialFormContext';
 import { RouteError, RoutePending } from '../../-ui/RouteStatus';
 
@@ -36,6 +37,14 @@ function CreateCredentialRoute() {
   const navigate = useNavigate();
   const context = useCredentialFormContext();
   const { credentialType } = useParams({ strict: false });
+  /**
+   * DEFECT: this route declared none of PARAM-037/039/041/043/045 and read
+   * none of them, so every one was dropped. `CredentialWarningBanner` builds
+   * `/credentials/create-credential/{type}?prefill_id=...&prefill_name=...
+   * &section=...`; the form then opened with an empty name and read the type
+   * catalogue for every section instead of the one the link named.
+   */
+  const { prefill_id: prefillId, prefill_name: prefillName, section } = Route.useSearch();
   const leave = useCallback(() => {
     void navigate({ to: '/credentials' });
   }, [navigate]);
@@ -57,6 +66,9 @@ function CreateCredentialRoute() {
       <CreateCredential
         context={context}
         {...(credentialType !== undefined ? { credentialType } : {})}
+        {...(prefillId !== '' ? { prefillId } : {})}
+        {...(prefillName !== '' ? { prefillName } : {})}
+        {...(section !== '' ? { section } : {})}
         onCreated={leave}
         onCancelled={leave}
         onTypeChosen={chooseType}
@@ -67,6 +79,7 @@ function CreateCredentialRoute() {
 }
 
 export const Route = createFileRoute('/_shell/credentials/create-credential')({
+  validateSearch: pickParams('forceCustom', 'from', 'prefill_id', 'prefill_name', 'section'),
   pendingComponent: RoutePending,
   errorComponent: RouteError,
   component: CreateCredentialRoute,

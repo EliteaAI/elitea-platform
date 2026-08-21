@@ -179,6 +179,90 @@ func TestLocalValidatorIgnoresTokenAndPrincipalNamesForBinding(t *testing.T) {
 	}
 }
 
+// TestLocalValidatorReportsBoundProjectLifecycleState covers the validator half
+// of the suspension fix. The middleware refuses a bound token whose project is
+// suspended, and it reads that state from auth.User.TokenProjectActive only.
+// The middleware tests build auth.User by hand, so nothing else proves that
+// this validator fills the field from the row.
+//
+// The UNBOUND row is the important one. GetActivePATPrincipalByUUID scans
+// bound_project_active into a non-nullable bool, so an unbound row always
+// carries false. A validator that copied that false into the identity would
+// mark every unbound caller as bound to a suspended project. The edge would
+// then refuse each one. Unbound must stay nil, which means "not determined".
+func TestLocalValidatorReportsBoundProjectLifecycleState(t *testing.T) {
+	const (
+		secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		uuid   = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
+	)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, tokenClaims{UUID: uuid})
+	encoded, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, test := range map[string]struct {
+		stored *int32
+		active bool
+		want   *bool
+	}{
+		// The row an unbound token produces: no binding, and the LEFT JOIN
+		// scans false into the lifecycle column.
+		"unbound reports no lifecycle state": {stored: nil, active: false, want: nil},
+		"bound and live":                     {stored: int32Address(42), active: true, want: boolAddress(true)},
+		"bound and suspended":                {stored: int32Address(42), active: false, want: boolAddress(false)},
+		// A stored value that names no project reads as unbound, exactly as
+		// tokenProjectID reads it.
+		"zero binding reports no lifecycle state":     {stored: int32Address(0), active: true, want: nil},
+		"negative binding reports no lifecycle state": {stored: int32Address(-1), active: true, want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookups := 0
+			validator := &LocalValidator{
+				secretKey: []byte(secret),
+				queries: activePATQueriesFunc(func(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error) {
+					lookups++
+					return sqlcgen.GetActivePATPrincipalByUUIDRow{
+						TokenID:            42,
+						UserID:             7,
+						Email:              "owner@example.test",
+						ProjectID:          test.stored,
+						BoundProjectActive: test.active,
+					}, nil
+				}),
+			}
+
+			principal, err := validator.ValidateToken(context.Background(), encoded)
+			if err != nil {
+				t.Fatalf("the token must still authenticate: %v", err)
+			}
+			if lookups != 1 {
+				t.Fatalf("database lookups = %d, want 1; the lifecycle state rides on the row the validator already reads", lookups)
+			}
+			if principal.UserID != "7" || principal.TokenID != "42" {
+				t.Fatalf("principal identity = %+v", principal)
+			}
+			assertBoundProjectActive(t, principal.TokenProjectActive, test.want)
+		})
+	}
+}
+
+func assertBoundProjectActive(t *testing.T, got, want *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("bound project active = %t, want nil", *got)
+	case want != nil && got == nil:
+		t.Fatalf("bound project active = nil, want %t", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("bound project active = %t, want %t", *got, *want)
+	}
+}
+
+func boolAddress(value bool) *bool {
+	return &value
+}
+
 func int32Address(value int32) *int32 {
 	return &value
 }

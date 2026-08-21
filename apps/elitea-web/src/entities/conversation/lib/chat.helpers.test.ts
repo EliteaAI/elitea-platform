@@ -158,6 +158,43 @@ describe('getSelectedConversationModel', () => {
     expect(getSelectedConversationModel({ participants: [] }, [{ name: 'gpt-4' }], 'u1')).toBeNull();
     expect(getSelectedConversationModel(conversation, [], 'u1')).toBeNull();
   });
+
+  /**
+   * DEFECT 1: the user-participant lookup compared a numeric `entity_meta.id`
+   * with a string `userId` under `===`. It therefore never matched. The
+   * composer silently fell back to the project default model on every reopen.
+   *
+   * DEFECT 2: a conversation this app creates persists the picked model on the
+   * `dummy` participant only (`useChatBoxSend.ts`'s `adhocParticipants`), never
+   * on the `user` participant this function reads. So even with defect 1 fixed,
+   * a conversation created here reopened on the default model.
+   */
+  it('matches a user participant whose id is a number', () => {
+    const numericIdConversation = {
+      participants: [{ entity_name: 'user', entity_meta: { id: 5 }, entity_settings: { llm_settings: { model_name: 'gpt-4' } } }],
+    };
+    expect(getSelectedConversationModel(numericIdConversation, [{ name: 'gpt-4' }], '5')).toEqual({ name: 'gpt-4' });
+  });
+
+  it('falls back to the dummy participant when the user participant carries no llm settings', () => {
+    const dummyOnly = {
+      participants: [
+        { entity_name: 'user', entity_meta: { id: 5 } },
+        { entity_name: 'dummy', entity_meta: { name: 'gpt-4' }, entity_settings: { llm_settings: { model_name: 'gpt-4', stream: true } } },
+      ],
+    };
+    expect(getSelectedConversationModel(dummyOnly, [{ name: 'gpt-4' }], '5')).toEqual({ name: 'gpt-4' });
+  });
+
+  it('prefers the user participant over the dummy one', () => {
+    const both = {
+      participants: [
+        { entity_name: 'user', entity_meta: { id: 5 }, entity_settings: { llm_settings: { model_name: 'user-model' } } },
+        { entity_name: 'dummy', entity_settings: { llm_settings: { model_name: 'dummy-model' } } },
+      ],
+    };
+    expect(getSelectedConversationModel(both, [{ name: 'user-model' }, { name: 'dummy-model' }], '5')).toEqual({ name: 'user-model' });
+  });
 });
 
 describe('getModelSettings', () => {

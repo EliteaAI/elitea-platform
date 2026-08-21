@@ -157,6 +157,33 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			"variable", v2secrets.MasterKeyEnvVar)
 	}
 
+	// APPLICATION_SECRET_KEY signs personal access tokens. internal/api/router.go
+	// passes it to v2auth.WithTokenSigningKey, and tokens.go answers 503
+	// `{"error":"token service is not configured"}` to every /api/v2/auth/token
+	// route while it is empty.
+	//
+	// Nothing else reported that. The service started. The Settings > Personal
+	// Tokens screen rendered "No tokens yet — create your first API token".
+	// Pressing Generate answered "The system did not create the token. Try
+	// again." — advice that can never succeed. The whole OpenAI-compatible /llm
+	// path goes with it, because a caller there authenticates with a personal
+	// token. Observed on a live deployment.
+	//
+	// It stays a warning rather than a hard stop, for the reason the vault key
+	// above gives: a deployment that never issues personal tokens is a real
+	// shape and must still start. It must not be silent, though.
+	//
+	// One exception: a deployment with ELITEA_AUTH_CONFIG_FILE signs and
+	// validates a personal access token with credentials.pat_signing_key_file
+	// instead. See patSigner below. The warning below can therefore be noise on
+	// that shape, and the route still works there.
+	if os.Getenv("APPLICATION_SECRET_KEY") == "" && os.Getenv("ELITEA_AUTH_CONFIG_FILE") == "" {
+		logger.Warn("no application secret key: personal access tokens are DISABLED, "+
+			"every /api/v2/auth/token route answers 503, and the OpenAI-compatible "+
+			"/llm path has no credential a caller can present",
+			"variable", "APPLICATION_SECRET_KEY")
+	}
+
 	// Observability (issue #250): exports elitea-main's own request spans to
 	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
 	// traces to, so the ingest pipeline is self-verifying — every request
@@ -1114,11 +1141,22 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// which is also the only place formGraph is set. Without it a deactivated
 	// user's unexpired session cookie reached every route in the group (#370).
 	// See apiGroupAuthConfig.
+	//
+	// sessionTokens is the personal-access-token validator for the same branch.
+	// APPLICATION_SECRET_KEY signs the tokens the /api/v2/auth/token route
+	// issues, so the validator must read them back with that exact key.
+	// The variable stays a nil interface when the key is absent: a boxed nil
+	// pointer would read as "configured" downstream (#86).
+	var sessionTokens apimw.TokenValidator
+	if secretKey := os.Getenv("APPLICATION_SECRET_KEY"); secretKey != "" && pool != nil {
+		sessionTokens = authsvc.NewLocalValidator(pool, secretKey)
+	}
 	apiGroupAuth := apiGroupAuthConfig(
 		formGraph,
 		principalValidator,
 		forwardedIdentityVerifier,
 		authsvc.NewPrincipalValidator(pool),
+		sessionTokens,
 		os.Getenv("APPLICATION_SECRET_KEY"),
 		oidcSessionHandler != nil,
 	)
@@ -1130,6 +1168,12 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ViteServerURL: "/api/v2",
 			BasePath:      "/admin/app",
 			SecretKey:     os.Getenv("APPLICATION_SECRET_KEY"),
+			// The admin SPA needs the operator's REAL administration-mode
+			// permissions. Without a resolver the handler injects an empty
+			// list, which hides every control. It must never inject a fixed
+			// admin list. The console then shows a rank-and-file user
+			// controls that the server refuses with 403 on each click.
+			Resolver: legacyrbac.NewPostgresResolver(pool),
 		}
 	}
 
@@ -1178,6 +1222,21 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return fmt.Errorf("compose current toolkit settings definitions: %w", err)
 	}
 
+	// patSigner signs the personal access tokens /api/v2/auth/token returns.
+	//
+	// The form graph validates a personal access token with the bytes of
+	// credentials.pat_signing_key_file. APPLICATION_SECRET_KEY is a different
+	// value, so a token signed with it failed the signature check on first use
+	// and the user kept a dead credential. The graph now signs it.
+	//
+	// The variable stays a nil interface when there is no graph: the OIDC-only
+	// shape signs and validates with APPLICATION_SECRET_KEY, and boxing a nil
+	// *FormGraph would read as "configured" downstream (#86).
+	var patSigner v2auth.TokenSigner
+	if formGraph != nil {
+		patSigner = formGraph
+	}
+
 	r := api.NewRouter(api.RouterConfig{
 		AdminUI:                    adminUICfg,
 		Pool:                       pool,
@@ -1190,6 +1249,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		AuthValidator:      apiGroupAuth.Validator,
 		PrincipalValidator: apiGroupAuth.PrincipalValidator,
 		SessionSecret:      apiGroupAuth.SessionSecret,
+		PATSigner:          patSigner,
 		Auth: api.AuthDeps{
 			ForwardedIdentityVerifier: apiGroupAuth.ForwardedIdentityVerifier,
 			SessionHandler:            oidcSessionHandler,

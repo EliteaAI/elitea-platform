@@ -37,6 +37,14 @@ interface SessionState {
    */
   probeStatus: number | undefined;
   fetchSession: () => Promise<void>;
+  /**
+   * Re-reads the permission list for the CURRENT project selection.
+   *
+   * Called by `App.tsx` after a project switch. It clears `permissions`
+   * first. A guard that runs while the new list is in flight therefore
+   * defers. It does not judge the new project with the old project's answers.
+   */
+  refreshPermissions: () => Promise<void>;
 }
 
 interface SessionInfoResponse {
@@ -117,6 +125,88 @@ async function fetchPersonalProjectId(apiBaseUrl: string | undefined): Promise<s
 }
 
 /**
+ * One entry of `GET /auth/permissions/prompt_lib/{projectId}` — a plain array
+ * of `{name, enabled}` (see the generated client's own NOTE(W2) on
+ * `permissionList`).
+ */
+interface PermissionEntry {
+  name?: string;
+  enabled?: boolean;
+}
+
+/** `GET /auth/permissions/prompt_lib/{projectId}` — the same route `usePermissionSet` reads. */
+function permissionsPath(projectId: string): string {
+  return `/auth/permissions/prompt_lib/${encodeURIComponent(projectId)}`;
+}
+
+/**
+ * The permission names the caller HAS in `projectId`.
+ *
+ * DEFECT this repairs. `routes/-guards/requirePermission.ts` reads
+ * `context.auth.getUser()?.permissions`. It returns early when that value is
+ * falsy. Nothing ever wrote the field. `requireChatPermission` and
+ * `requireArtifactsPermission` could therefore never redirect. A user without
+ * `models.chat.folders.get` opened `/chat` and got an empty conversation rail.
+ * The spec §8.1 redirect to `/onboarding` never ran.
+ *
+ * This function keeps only the `enabled: true` entries. The endpoint returns
+ * every known permission with a flag. A raw copy of `name` would grant access
+ * on a disabled permission. Two other readers filter the same way:
+ * `widgets/sidebar/api/usePermissionSet.ts` and
+ * `features/agents/lib/useHasPermission.ts`.
+ *
+ * This function uses `createHttpClient`, not the generated `permissionList`.
+ * The two probes above give the reason. This code runs in the boot sequence.
+ * There, a 401 is an answer. The generated client turns a 401 into the
+ * re-authentication popup.
+ *
+ * Returns `undefined` on any failure. `undefined` means "not resolved". That
+ * answer keeps the guards on their non-blocking path.
+ */
+async function fetchEnabledPermissions(
+  apiBaseUrl: string | undefined,
+  projectId: string | undefined,
+): Promise<readonly string[] | undefined> {
+  if (apiBaseUrl === undefined || projectId === undefined || projectId === '') return undefined;
+
+  const http = createHttpClient({ baseUrl: apiBaseUrl });
+  const result = await http.get<PermissionEntry[]>(permissionsPath(projectId));
+  if (!result.ok || !Array.isArray(result.data)) return undefined;
+
+  return result.data
+    .filter((entry) => entry.enabled === true && typeof entry.name === 'string' && entry.name !== '')
+    .map((entry) => entry.name as string);
+}
+
+/** Drops a stale permission answer, so a guard defers instead of judging with it. */
+function stripPermissions(user: AuthUser): AuthUser {
+  const { permissions: _permissions, permissionsProjectId: _projectId, ...rest } = user;
+  return rest;
+}
+
+/**
+ * The project a permission list is read for: the current selection, or the
+ * personal project when nothing is selected yet.
+ */
+function permissionProjectId(user: AuthUser): string | undefined {
+  const persisted = readPersistedProject();
+  if (persisted !== null && persisted.id !== '') return persisted.id;
+  return user.personal_project_id;
+}
+
+/**
+ * Adds the resolved permission list to a user. The project id travels with
+ * the list: a permission list is per project, and a guard must never judge
+ * project B with project A's answers.
+ */
+async function withPermissions(user: AuthUser, apiBaseUrl: string | undefined): Promise<AuthUser> {
+  const projectId = permissionProjectId(user);
+  const permissions = await fetchEnabledPermissions(apiBaseUrl, projectId);
+  if (permissions === undefined || projectId === undefined) return user;
+  return { ...user, permissions, permissionsProjectId: projectId };
+}
+
+/**
  * The API base for the author probe. Resolved at CALL time, not at store
  * construction: `getConfig()` reads `window.elitea_ui_config`, which
  * `/app/config.js` installs before the bundle runs, and R-S2 forbids doing
@@ -148,10 +238,27 @@ export interface CreateSessionStoreOptions {
   readonly apiBaseUrl?: string;
 }
 
+/**
+ * The Form-plane user, with its permission list, or `undefined` when
+ * `/social/author` cannot name one.
+ *
+ * Split out of `fetchSession` to keep that function under the §3.5
+ * complexity budget.
+ */
+async function formPlaneUser(apiBaseUrl: string | undefined): Promise<AuthUser | undefined> {
+  const author = await fetchAuthorSession(apiBaseUrl);
+  if (author === undefined) return undefined;
+  const user: AuthUser = {
+    id: author.id,
+    ...(author.personalProjectId !== undefined ? { personal_project_id: author.personalProjectId } : {}),
+  };
+  return withPermissions(user, apiBaseUrl);
+}
+
 export function createSessionStore(options: CreateSessionStoreOptions = {}): SessionStore {
   const http = createHttpClient({ baseUrl: '/' });
 
-  return create<SessionState>((set) => ({
+  return create<SessionState>((set, get) => ({
     user: undefined,
     loaded: false,
     probeStatus: undefined,
@@ -171,23 +278,9 @@ export function createSessionStore(options: CreateSessionStoreOptions = {}): Ses
         // cookie. Ask the endpoint that answers on both planes before
         // concluding "not logged in" — otherwise a logged-in user is sent back
         // to the login form on every load.
-        if (probeStatus === 404) {
-          const author = await fetchAuthorSession(options.apiBaseUrl ?? resolveApiBaseUrl());
-          if (author !== undefined) {
-            set({
-              user: {
-                id: author.id,
-                ...(author.personalProjectId !== undefined
-                  ? { personal_project_id: author.personalProjectId }
-                  : {}),
-              },
-              loaded: true,
-              probeStatus,
-            });
-            return;
-          }
-        }
-        set({ user: undefined, loaded: true, probeStatus });
+        const apiBaseUrl = options.apiBaseUrl ?? resolveApiBaseUrl();
+        const fallbackUser = probeStatus === 404 ? await formPlaneUser(apiBaseUrl) : undefined;
+        set({ user: fallbackUser, loaded: true, probeStatus });
         return;
       }
       // `/forward-auth/info` (services/elitea-main/internal/api/v2/auth/
@@ -198,14 +291,27 @@ export function createSessionStore(options: CreateSessionStoreOptions = {}): Ses
       // then opened its SSE subscription against it and was refused with a
       // 403, terminal for EventSource. The real source is `/social/author`.
       const personalProjectId = await fetchPersonalProjectId(options.apiBaseUrl ?? resolveApiBaseUrl());
+      const user: AuthUser = {
+        id: result.data.user_id,
+        ...(personalProjectId !== undefined ? { personal_project_id: personalProjectId } : {}),
+      };
       set({
-        user: {
-          id: result.data.user_id,
-          ...(personalProjectId !== undefined ? { personal_project_id: personalProjectId } : {}),
-        },
+        user: await withPermissions(user, options.apiBaseUrl ?? resolveApiBaseUrl()),
         loaded: true,
         probeStatus,
       });
+    },
+    refreshPermissions: async () => {
+      const current = get().user;
+      if (current === undefined) return;
+      set({ user: stripPermissions(current) });
+      const refreshed = await withPermissions(
+        stripPermissions(current),
+        options.apiBaseUrl ?? resolveApiBaseUrl(),
+      );
+      // The session may have been replaced while the request was in flight.
+      if (get().user?.id !== current.id) return;
+      set({ user: refreshed });
     },
   }));
 }

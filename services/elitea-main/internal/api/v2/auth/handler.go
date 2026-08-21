@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -11,10 +12,21 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
+// TokenSigner signs the bearer of a personal access token.
+//
+// The signer must hold the SAME key that the deployment's token validator
+// reads a token back with. A deployment that authenticates through an
+// authentication configuration file keeps that key in
+// credentials.pat_signing_key_file, never in APPLICATION_SECRET_KEY.
+type TokenSigner interface {
+	SignPAT(tokenUUID *string, expiresAt *time.Time) (string, error)
+}
+
 type Handler struct {
 	permissions     auth.PermissionResolver
 	tokens          tokenRepository
 	tokenSigningKey []byte
+	tokenSigner     TokenSigner
 }
 
 type Option func(*Handler)
@@ -25,9 +37,24 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	}
 }
 
+// WithTokenSigningKey signs personal access tokens with one raw key.
+//
+// Use it only when the deployment validates a token with that same key. The
+// OIDC-only shape does: APPLICATION_SECRET_KEY signs the token and
+// authsvc.NewLocalValidator reads it back. A deployment with a form
+// authentication graph must use WithTokenSigner instead.
 func WithTokenSigningKey(secret string) Option {
 	return func(handler *Handler) {
 		handler.tokenSigningKey = []byte(secret)
+	}
+}
+
+// WithTokenSigner signs personal access tokens through the deployment's own
+// authentication graph, which holds the key its validator uses. It takes
+// precedence over WithTokenSigningKey.
+func WithTokenSigner(signer TokenSigner) Option {
+	return func(handler *Handler) {
+		handler.tokenSigner = signer
 	}
 }
 

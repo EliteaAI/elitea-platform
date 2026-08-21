@@ -1,4 +1,3 @@
-/* oxlint-disable eslint/no-restricted-globals -- Wave-2 backend-gap: spec §6.5 — the OpenAPI spec only declares ?category, and (contrary to this rule's original wording) the handler reads ONLY that one param; page/pageSize/statuses/agents_type/trend_start_period/sort_by/sort_order/my_liked are sent for forward-compat/documented intent but are silently ignored server-side today (see the module doc comment below). REMOVER: when spec is updated and typed client is generated. */
 /**
  * Agent Hub data hook — local port of the old Redux-based `useAgentHubData`.
  *
@@ -6,9 +5,10 @@
  * client-side by their category tag. Special buckets (Trending, My Liked)
  * still use their own targeted requests.
  *
- * Uses the generated `listPublicApplications` API + custom fetch for
- * trending/my-liked (which need additional params not yet in the OpenAPI
- * spec — a documented backend gap, spec §6.5).
+ * Every request goes through `eliteaFetch`. The generated
+ * `listPublicApplications` is NOT used. `ListPublicApplicationsParams` models
+ * only `category`. The query string is therefore still built by hand for the
+ * trending/my-liked params (a documented backend gap, spec §6.5).
  *
  * ── Confirmed, disclosed backend defects (adversarial-review fixes,
  *    cluster A13-agents-hub, findings 5 & 6) — NOT fixable from this file ──
@@ -57,7 +57,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   useGetAgentCategories,
 } from '@/shared/api/generated/applications/applications';
+import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { getConfig } from '@/shared/config';
+import type { PublicApplicationList } from '@/shared/api/generated/model';
 import type { ApplicationData } from './types';
 
 import {
@@ -96,23 +98,47 @@ function resolvePublicProjectId(): string {
  * forward-compat / documented intent) but silently ignored server-side
  * today. See this module's top-of-file doc comment for the full,
  * confirmed defect writeup.
+ *
+ * DEFECT, fixed here — two bugs in one function, each enough to empty the
+ * whole hub:
+ *  1. It called `fetch` with a bare `/elitea_core/...` path. Only the shared
+ *     HTTP client adds the `/api/v2` base, so the request 404'd and the
+ *     function threw. Every category rendered empty.
+ *  2. It read `json.data?.rows`. The handler answers `{"rows":[],"total":0}`
+ *     at the TOP level (`internal/api/v2/eliteacore/handler.go`), so `rows`
+ *     was `undefined` and the `|| []` fallback emptied a good 200 response.
+ * `eliteaFetch` resolves the base and returns orval's `{data,...}` envelope,
+ * so the body is read from `envelope.data`.
  */
 async function fetchAllApplications(params: Record<string, string>): Promise<{ rows: ApplicationData[]; total: number }> {
   const qs = new URLSearchParams(params);
-  const resp = await fetch(`/elitea_core/public_applications/prompt_lib?${qs.toString()}`);
-  if (!resp.ok) throw new Error(`public_applications: ${resp.status}`);
-  const json = (await resp.json()) as { data?: { rows: ApplicationData[]; total: number } };
-  return { rows: json.data?.rows || [], total: json.data?.total || 0 };
+  const envelope = await eliteaFetch<{ data: PublicApplicationList }>(
+    `/elitea_core/public_applications/prompt_lib?${qs.toString()}`,
+    { method: 'GET' },
+  );
+  const body = envelope.data;
+  return { rows: body.rows ?? [], total: body.total ?? 0 };
+}
+
+/**
+ * Normalise a rejection into an `Error`.
+ *
+ * `eliteaFetch` always rejects with an `EliteaApiError`, but a defensive
+ * conversion keeps the state type honest for any other throw.
+ */
+function toLoadError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
 }
 
 /* ── Hook ─────────────────────────────────────────────────────────────── */
 
 export function useAgentHubData(_selectedTagNames: string[]) {
   const publicProjectId = resolvePublicProjectId();
-  const { data: categoriesData, isFetching: isFetchingCategories } = useGetAgentCategories(
-    publicProjectId,
-    { query: { enabled: true } },
-  );
+  const {
+    data: categoriesData,
+    isFetching: isFetchingCategories,
+    error: categoriesError,
+  } = useGetAgentCategories(publicProjectId, { query: { enabled: true } });
 
   const categoryNames = useMemo(() => {
     if (!categoriesData || categoriesData.status !== 200) return [];
@@ -123,10 +149,22 @@ export function useAgentHubData(_selectedTagNames: string[]) {
   const [totalCountsByTag, setTotalCountsByTag] = useState<Record<string, number>>({});
   const [loadingTags, setLoadingTags] = useState<Set<string>>(new Set());
   const [refreshingTags, setRefreshingTags] = useState<Set<string>>(new Set());
+  /**
+   * DEFECT, fixed here: the three fetches below used `try { … } finally { … }`
+   * with NO `catch`. The effect also discarded each promise with `void`. Any
+   * refusal (a 403 on `models.applications.application.list`, a network drop)
+   * became an unhandled promise rejection. The loading flag still cleared, so
+   * the hub rendered a complete page with every category empty. The user got
+   * the normal "No agents found" empty state. The user got no sign that the
+   * request was refused. This state carries the failure out of the hook. The
+   * page can then tell "refused" apart from "nothing published".
+   */
+  const [loadError, setLoadError] = useState<Error | null>(null);
 
   // ── Bulk fetch: one request for all, bucket client-side ──────────────
   const fetchAllAndCategorize = useCallback(async () => {
     setLoadingTags(prev => new Set(prev).add('bulk'));
+    setLoadError(null);
     try {
       const result = await fetchAllApplications({
         page: '0',
@@ -143,6 +181,8 @@ export function useAgentHubData(_selectedTagNames: string[]) {
       setTotalCountsByTag(
         Object.fromEntries(Object.entries(buckets).map(([k, v]) => [k, v.length])),
       );
+    } catch (cause) {
+      setLoadError(toLoadError(cause));
     } finally {
       setLoadingTags(prev => {
         const s = new Set(prev);
@@ -155,6 +195,7 @@ export function useAgentHubData(_selectedTagNames: string[]) {
   // ── Trending: sorted by likes ────────────────────────────────────────
   const fetchTrending = useCallback(async () => {
     setLoadingTags(prev => new Set(prev).add(TRENDING_CATEGORY));
+    setLoadError(null);
     try {
       const result = await fetchAllApplications({
         pageSize: String(PAGE_SIZE),
@@ -170,6 +211,8 @@ export function useAgentHubData(_selectedTagNames: string[]) {
         ...prev,
         [TRENDING_CATEGORY]: result.total,
       }));
+    } catch (cause) {
+      setLoadError(toLoadError(cause));
     } finally {
       setLoadingTags(prev => {
         const s = new Set(prev);
@@ -182,6 +225,7 @@ export function useAgentHubData(_selectedTagNames: string[]) {
   // ── My Liked ─────────────────────────────────────────────────────────
   const fetchMyLiked = useCallback(async () => {
     setLoadingTags(prev => new Set(prev).add(MY_LIKED_CATEGORY));
+    setLoadError(null);
     try {
       const result = await fetchAllApplications({
         pageSize: String(PAGE_SIZE),
@@ -196,6 +240,8 @@ export function useAgentHubData(_selectedTagNames: string[]) {
         ...prev,
         [MY_LIKED_CATEGORY]: result.total,
       }));
+    } catch (cause) {
+      setLoadError(toLoadError(cause));
     } finally {
       setLoadingTags(prev => {
         const s = new Set(prev);
@@ -222,6 +268,18 @@ export function useAgentHubData(_selectedTagNames: string[]) {
   const isFetching = useMemo(
     () => loadingTags.size > 0 || isFetchingCategories,
     [loadingTags.size, isFetchingCategories],
+  );
+
+  /**
+   * The categories query fails on its own path. `categoryNames` is then
+   * empty, the fetch effect above returns early, and `loadError` stays
+   * `null`. A refused `agent_categories` request therefore also produced a
+   * silent empty hub. Both failures are folded into one value the page
+   * renders.
+   */
+  const error = useMemo<Error | null>(
+    () => loadError ?? (categoriesError instanceof Error ? categoriesError : null),
+    [loadError, categoriesError],
   );
 
   // ── State updates ────────────────────────────────────────────────────
@@ -256,6 +314,12 @@ export function useAgentHubData(_selectedTagNames: string[]) {
     }));
   }, []);
 
+  /**
+   * Each fetch below handles its own rejection, so this promise always
+   * settles. That matters here. `onRefresh` runs from a click handler. A
+   * rejection there would escape as an unhandled rejection instead of an
+   * error the section can show.
+   */
   const onRefresh = useCallback(
     async (category: string) => {
       setRefreshingTags(prev => new Set(prev).add(category));
@@ -296,6 +360,7 @@ export function useAgentHubData(_selectedTagNames: string[]) {
     loadingTags,
     refreshingTags,
     isFetching,
+    error,
     updateApplicationInState,
     addToMyLiked,
     removeFromMyLiked,

@@ -42,6 +42,7 @@ type recordedAttachmentObject struct {
 	Key        string
 	ByteLength int64
 	MediaType  string
+	ExpiresAt  *time.Time
 }
 
 func newFakeAttachmentStore() *fakeAttachmentStore {
@@ -55,22 +56,24 @@ func (f *fakeAttachmentStore) AttachmentPolicy(context.Context, int64) (string, 
 	return f.bucketName, f.maxFileBytes, f.retentionDays, nil
 }
 
-func (f *fakeAttachmentStore) RequireAttachmentBucket(_ context.Context, projectID int64, bucketName string, _ int32) (int64, *time.Time, error) {
+func (f *fakeAttachmentStore) RequireAttachmentBucket(_ context.Context, projectID int64, bucketName string, _ int32) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := fmt.Sprintf("%d/%s", projectID, bucketName)
 	if id, ok := f.buckets[key]; ok {
-		return id, nil, nil
+		return id, nil
 	}
 	f.nextBucketID++
 	f.buckets[key] = f.nextBucketID
-	return f.nextBucketID, nil, nil
+	return f.nextBucketID, nil
 }
 
-func (f *fakeAttachmentStore) RecordAttachmentObject(_ context.Context, bucketID int64, key string, byteLength int64, mediaType string, _ *time.Time) error {
+func (f *fakeAttachmentStore) RecordAttachmentObject(_ context.Context, bucketID int64, key string, byteLength int64, mediaType string, expiresAt *time.Time) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.recorded = append(f.recorded, recordedAttachmentObject{BucketID: bucketID, Key: key, ByteLength: byteLength, MediaType: mediaType})
+	f.recorded = append(f.recorded, recordedAttachmentObject{
+		BucketID: bucketID, Key: key, ByteLength: byteLength, MediaType: mediaType, ExpiresAt: expiresAt,
+	})
 	return nil
 }
 
@@ -527,5 +530,50 @@ func TestArtifactAttachmentJSONBodyStillUpdatesConversationMeta(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("repo.AddAttachments was never called for a JSON request")
+	}
+}
+
+// TestArtifactAttachmentUploadStampsItsOwnExpiry pins the retention rule for
+// a chat attachment.
+//
+// DEFECT: RequireAttachmentBucket returned the system bucket's expires_at,
+// and the upload handler stamped that one value onto every attachment it
+// ever recorded. The bucket's expires_at is computed once, when the bucket
+// row is created on the project's FIRST attachment. So
+// ARTIFACT_ATTACHMENT_RETENTION_DAYS days after that first attachment, every
+// new attachment was recorded with a deadline in the past. The artifact
+// retention sweeper then deleted it within 15 minutes of a successful 201.
+//
+// The fake store returns a bucket id only, which is the shape that makes the
+// defect unrepresentable: there is no frozen deadline left to copy.
+func TestArtifactAttachmentUploadStampsItsOwnExpiry(t *testing.T) {
+	attStore := newFakeAttachmentStore()
+	retention := int32(7)
+	attStore.retentionDays = &retention
+	objStore := newFakeAttachmentObjectStore()
+	h := newAttachmentTestHandler(t, attStore, objStore)
+
+	before := time.Now()
+	rec := doAttachmentUpload(t, h, nil, "notes.txt", []byte("hello attachment"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
+	}
+
+	if len(attStore.recorded) != 1 {
+		t.Fatalf("RecordAttachmentObject calls = %+v, want one", attStore.recorded)
+	}
+	got := attStore.recorded[0].ExpiresAt
+	if got == nil {
+		t.Fatal("attachment recorded with a nil ExpiresAt, want now + retention_days")
+	}
+	// The sweeper deletes anything already past its deadline. A fresh
+	// attachment must never be born in that set.
+	if !got.After(time.Now()) {
+		t.Fatalf("attachment ExpiresAt = %v is not in the future; the sweeper deletes it on the next tick", *got)
+	}
+	wantLow := before.AddDate(0, 0, int(retention))
+	wantHigh := time.Now().AddDate(0, 0, int(retention))
+	if got.Before(wantLow) || got.After(wantHigh) {
+		t.Errorf("attachment ExpiresAt = %v, want between %v and %v", *got, wantLow, wantHigh)
 	}
 }

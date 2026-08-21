@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -175,7 +176,12 @@ func TestCurrentIndexScheduleRouteRejectsSuspendedPrincipalAndCrossProjectAccess
 				if projectID != "8" {
 					t.Fatalf("project=%q", projectID)
 				}
-				return auth.PermissionResolution{}, errors.New("not a project member")
+				// A REFUSAL must carry auth.ErrPermissionDenied. The real
+				// resolver returns that sentinel when the caller is not a
+				// member. Any other error is an infrastructure failure and
+				// answers 500.
+				return auth.PermissionResolution{}, fmt.Errorf(
+					"not a project member: %w", auth.ErrPermissionDenied)
 			}),
 			wantStatus: http.StatusForbidden,
 		},

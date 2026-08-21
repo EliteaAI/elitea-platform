@@ -95,6 +95,7 @@ export const MaxTokensSection = memo(
                     {!isAuto && (
                       <IconButton
                         size="small"
+                        aria-label={t('widgets.llmModelSelector.maxTokens.clearAriaLabel', 'Clear the max tokens value')}
                         onClick={handleClear}
                         edge="end"
                       >

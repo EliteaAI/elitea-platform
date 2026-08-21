@@ -96,12 +96,19 @@ func TestCleanDatabaseGrantsEveryStringTheThreeProjectSurfacesGateOn(t *testing.
 	pool := newMigratedPool(t)
 
 	for _, permission := range projectSurfaceReadStrings {
+		// The configuration listing is also on the machine role's callback
+		// surface (shared/0088): the worker reads the model catalogue with the
+		// project-system PAT.
+		want := defaultModeRoles
+		if permission == surfaceListPermission {
+			want = withMachineRole(defaultModeRoles...)
+		}
 		holders := defaultModeGrantHolders(t, pool, permission)
-		if !slices.Equal(holders, defaultModeRoles) {
+		if !slices.Equal(holders, want) {
 			t.Errorf("default-mode holders of %s = %v, want %v.\n"+
 				"  #496 gates a route on this string and adds no migration for it. Without the\n"+
 				"  grant that route answers 403 to every caller on a clean deployment.",
-				permission, holders, defaultModeRoles)
+				permission, holders, want)
 		}
 	}
 	for _, permission := range projectSurfaceWriteStrings {

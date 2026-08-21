@@ -15,6 +15,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // CreateProjectPermission gates the create route.
@@ -102,11 +103,11 @@ type createProjectResponse struct {
 // CreateProject serves `POST /api/v2/projects/project/{mode}`.
 func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if chi.URLParam(r, "mode") != administrationMode {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "not found")
 		return
 	}
 	if h.provisioner == nil {
-		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "service unavailable")
 		return
 	}
 
@@ -115,24 +116,24 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	// the user id on the context by the time this runs.
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	ownerID, ok := user.OwningUserID()
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
 	var body createProjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if strings.TrimSpace(body.Name) == "" {
 		// ProjectCreatePD declares `name: constr(min_length=1)`, so an empty
 		// name is a validation failure there too.
-		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "name is required")
 		return
 	}
 
@@ -193,23 +194,23 @@ type deleteProjectResponse struct {
 // answers 404 for any other `{mode}`.
 func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	if chi.URLParam(r, "mode") != administrationMode {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "not found")
 		return
 	}
 	if h.provisioner == nil {
-		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "service unavailable")
 		return
 	}
 	projectID, err := strconv.ParseInt(chi.URLParam(r, "projectID"), 10, 64)
 	if err != nil || projectID <= 0 {
-		http.Error(w, `{"error":"invalid project id"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
 
 	result, err := h.provisioner.Deprovision(r.Context(), projectID)
 	switch {
 	case errors.Is(err, projectprovisioning.ErrProjectNotFound):
-		http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "project not found")
 		return
 	case err != nil:
 		// The reference answers 200 even when every step failed. Reporting a

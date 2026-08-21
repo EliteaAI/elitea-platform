@@ -88,6 +88,42 @@ describe('Apps (ROUTE-036/039)', () => {
     expect(screen.getByText('Inventory')).toBeInTheDocument();
   });
 
+  // DEFECT: `searchForAppsTab` only returned the same object reference when
+  // `view` was absent. The route schema prefaults `view` to `'grid'`, so the
+  // key is always present. Every Catalog-tab mount therefore produced a
+  // new object. `Apps.tsx`'s reference-equality guard then fired a replace
+  // navigation with `view` stripped. `validateSearch` put `view=grid`
+  // straight back into the URL. Evidence: the URL grew a `?view=grid` query
+  // that the user never asked for, one history replace per mount.
+  it('issues no redirect on a Catalog-tab mount when `view` is already the default', async () => {
+    server.use(getListApplicationsMockHandler(applicationsList(0)));
+    const navigations: unknown[] = [];
+    const { router } = renderAppsRoute('/apps/catalog', {
+      projectId: 'proj-1',
+      onRouterCreated: (created) => {
+        const navigate = created.navigate.bind(created);
+        created.navigate = ((options: never) => {
+          navigations.push(options);
+          return navigate(options);
+        }) as typeof created.navigate;
+      },
+    });
+
+    expect(await screen.findByText('Wikis')).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.pathname).toBe('/apps/catalog'));
+    expect(navigations).toEqual([]);
+  });
+
+  // The reset itself must survive: a non-default `view` carried onto the
+  // Catalog tab is still normalised back to the default.
+  it('resets a non-default `view` on the Catalog tab', async () => {
+    server.use(getListApplicationsMockHandler(applicationsList(0)));
+    const { router } = renderAppsRoute('/apps/catalog?view=list', { projectId: 'proj-1' });
+
+    await waitFor(() => expect(router.state.location.searchStr).not.toContain('list'));
+    expect(router.state.location.pathname).toBe('/apps/catalog');
+  });
+
   it('renders the (composition-gap) Applications tab panel at /apps/applications without crashing', async () => {
     server.use(getListApplicationsMockHandler(applicationsList(1)));
     renderAppsRoute('/apps/applications', { projectId: 'proj-1' });

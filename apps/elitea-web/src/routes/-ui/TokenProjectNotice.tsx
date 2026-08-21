@@ -19,6 +19,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { tokenProjectErrorCode } from '@/entities/token/model/selectors';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
 
 /* ── create-failure copy (§4 error contract) ──────────────────────────── */
@@ -34,6 +35,24 @@ import { t } from '@/shared/i18n';
  * selector is the only project control the flow has.
  */
 export function createTokenFailureMessage(error: unknown): string {
+  /*
+   * "Try again" IS WRONG ADVICE FOR A 503 HERE.
+   *
+   * elitea-main answers every /api/v2/auth/token route with 503
+   * `{"error":"token service is not configured"}` while APPLICATION_SECRET_KEY
+   * is empty — the key that signs personal tokens. Retrying can never succeed;
+   * only an operator can fix it. A live deployment sat in exactly that state
+   * and told the user to try again.
+   */
+  if (error instanceof EliteaApiError) {
+    const { failure } = error;
+    if ((failure.kind === 'http' || failure.kind === 'auth') && failure.status === 503) {
+      return t(
+        'entities.token.form.serviceUnavailable',
+        'Personal tokens are turned off on this deployment. Ask your administrator to configure the token service.',
+      );
+    }
+  }
   const code = tokenProjectErrorCode(error);
   if (code === 'project_forbidden') {
     return t(

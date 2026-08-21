@@ -40,9 +40,29 @@ beforeEach(() => {
   useSelectedProjectStore.setState({ project: null });
   useSidebarCollapsedStore.setState({ collapsed: false });
   server.use(
+    // The wire body is ProjectWithGroups: internal/api/v2/projects/handler.go
+    // marshals these eight keys and no `status` field.
     getListProjectsMockHandler([
-      { id: 11, name: 'Public', status: 'active', suspended: false },
-      { id: 2, name: 'Acme', status: 'active', suspended: false },
+      {
+        id: 11,
+        name: 'Public',
+        owner_id: 1,
+        plugins: [],
+        keycloak_groups: {},
+        create_success: true,
+        suspended: false,
+        groups: [],
+      },
+      {
+        id: 2,
+        name: 'Acme',
+        owner_id: 1,
+        plugins: [],
+        keycloak_groups: {},
+        create_success: true,
+        suspended: false,
+        groups: [],
+      },
     ]),
     getPermissionListMockHandler([{ name: 'models.chat.folders.get', enabled: true }]),
     authorHandler(),

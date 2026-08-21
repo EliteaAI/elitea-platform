@@ -34,12 +34,33 @@ import (
 // apimw.TokenValidator interface, for the same reason: both make the nil
 // handling visible at the call site. A nil *FormGraph assigned to an interface
 // field yields a non-nil interface holding a nil pointer, and `!= nil`
-// downstream then reads as "configured" (#86).
+// downstream then reads as "configured" (#86). sessionTokens obeys the same
+// rule: the call site must leave the interface nil when it cannot build a
+// validator, and must never box a nil pointer into it.
 //
 // The call site passes authsvc.NewPrincipalValidator(pool) for
 // sessionPrincipals and NOT main.go's `principalValidator` variable: that
 // variable is assigned only inside the `authEnabled` block, so it is nil in
 // exactly the branch that needs it. Issue #314 records that trap.
+//
+// The OIDC-only branch must ALSO carry a token validator. The same
+// sessionSecret is the personal-access-token signing key (router.go passes it
+// to v2auth.WithTokenSigningKey), so a non-empty secret turns the token
+// creation route ON. Without a validator, apimw.validateToken finds both
+// Validator and Client nil and answers 401 for every Bearer and X-API-Key
+// credential. The deployment then issues personal access tokens that no route
+// can accept. sessionTokens is the pool-backed validator that reads the same
+// tokens back.
+//
+// This is a DELIBERATE widening, and the only one in this function. An
+// OIDC-only deployment now accepts a personal access token on every /api/v2
+// route. Each such credential answered 401 before.
+//
+// Three properties bound the new surface. sessionTokens reads a live token row
+// from the database on every request. That row's owner must not be suspended.
+// A session cookie carries no `uuid` claim, so no caller can replay a cookie
+// as a bearer token. TestAPIGroupOIDCOnlyAuthAcceptsAPersonalAccessToken holds
+// this behavior.
 //
 // A deployment with neither credential plane gets the zero AuthConfig, which
 // admits nothing.
@@ -48,6 +69,7 @@ func apiGroupAuthConfig(
 	principalValidator apimw.PrincipalValidator,
 	forwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier,
 	sessionPrincipals apimw.PrincipalValidator,
+	sessionTokens apimw.TokenValidator,
 	sessionSecret string,
 	oidcSessionEnabled bool,
 ) apimw.AuthConfig {
@@ -61,6 +83,7 @@ func apiGroupAuthConfig(
 	}
 	if oidcSessionEnabled {
 		return apimw.AuthConfig{
+			Validator:          sessionTokens,
 			SessionSecret:      sessionSecret,
 			PrincipalValidator: sessionPrincipals,
 		}

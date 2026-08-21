@@ -44,3 +44,28 @@ describe('SidebarFooter — Agent HUB pill (R1)', () => {
     expect(screen.getByTestId('sidebar-agent-hub-button')).not.toHaveAttribute('aria-current');
   });
 });
+
+/**
+ * ARIA-CURRENT ON A NON-EXACT ACTIVE LINK.
+ *
+ * TanStack's <Link> sets aria-current only when the path matches EXACTLY. The
+ * Settings link points at /settings/model-configuration but is styled active
+ * for every /settings/* route. On /settings/secrets the sidebar therefore
+ * showed it selected. Assistive technology was told nothing was current.
+ */
+describe('SidebarFooter — the active page is announced, not only styled', () => {
+  it('marks Settings as the current page on a settings child route', async () => {
+    await renderAtPath('/settings/secrets', <SidebarFooter collapsed={false} />);
+    expect(screen.getByText('Settings').closest('a')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('does not mark Settings as current on an unrelated route', async () => {
+    await renderAtPath('/chat', <SidebarFooter collapsed={false} />);
+    expect(screen.getByText('Settings').closest('a')).not.toHaveAttribute('aria-current');
+  });
+
+  it('marks Help Center as the current page on /help-center', async () => {
+    await renderAtPath('/help-center', <SidebarFooter collapsed={false} />);
+    expect(screen.getByText('Help Center').closest('a')).toHaveAttribute('aria-current', 'page');
+  });
+});

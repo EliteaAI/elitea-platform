@@ -37,7 +37,17 @@ const (
 	// left unverifiable at commit.
 	grantDigestAlgorithm = "sha256"
 
-	methodGet = "GET"
+	// methodPut is the only transfer method a grant can carry.
+	//
+	// DEFECT, fixed here: "GET" was accepted too. A grant always derives its
+	// storage key from a freshly generated grant id. No request field names
+	// an existing object. A GET grant therefore presigned a key that by
+	// construction held nothing. Every download URL it issued answered 404.
+	//
+	// A GET request is now refused at creation. An authenticated download
+	// already has an endpoint: GET
+	// /api/v2/artifacts/objects/{projectID}/{bucket}/{key} (objects.go's
+	// DownloadObject).
 	methodPut = "PUT"
 
 	// multipartThreshold is S16's "objects above 64 MiB" gate: a PUT grant
@@ -137,11 +147,14 @@ func looksLikeGrantID(id string) bool {
 	return true
 }
 
-// CreateTransferGrant issues a short-lived, single-use (for PUT) transfer
-// grant bound to a server-derived key — the caller never supplies one
-// directly, matching S9's upload path convention of deriving identity from
-// server state rather than trusting client input for anything that becomes
-// a storage key. See docs/plans/storage-migration-plan.md S15.
+// CreateTransferGrant issues a short-lived, single-use upload grant bound to
+// a server-derived key. The caller never supplies a key directly. That matches
+// S9's upload path convention of deriving identity from server state rather
+// than trusting client input for anything that becomes a storage key. See
+// docs/plans/storage-migration-plan.md S15.
+//
+// A grant is always an upload. A download grant is refused, because the key
+// a grant reserves is new and therefore empty — see methodPut.
 func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -160,8 +173,8 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid request body")
 		return
 	}
-	if req.Method != methodGet && req.Method != methodPut {
-		writeError(w, http.StatusBadRequest, "InvalidArgument", "method must be GET or PUT")
+	if req.Method != methodPut {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", "method must be PUT")
 		return
 	}
 	if req.ContentType == "" {
@@ -180,12 +193,12 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 
 	grantID, err := generateGrantID()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "generate grant id: "+err.Error())
+		h.writeInternal(w, r, "generate grant id", err)
 		return
 	}
 	ref, err := storage.NewObjectRef(projectIDStr, bucket, grantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "build object ref: "+err.Error())
+		h.writeInternal(w, r, "build object ref", err)
 		return
 	}
 	expiresAt := time.Now().Add(defaultGrantTTL)
@@ -198,18 +211,18 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 	// endpoint, same request shape, different response.
 	var url string
 	var uploadID *string
-	if req.Method == methodPut && req.MaxBytes > multipartThreshold && h.store.Capabilities().NativeMultipart {
+	if req.MaxBytes > multipartThreshold && h.store.Capabilities().NativeMultipart {
 		id, err := h.store.StartMultipart(r.Context(), ref, storage.PutOptions{ContentType: req.ContentType})
 		if err != nil {
-			writeStorageError(w, err)
+			h.writeStorageError(r.Context(), w, "start multipart upload", err)
 			return
 		}
 		idStr := string(id)
 		uploadID = &idStr
 	} else {
-		url, err = h.grantURL(r.Context(), ref, req.Method, req.ContentType, projectIDStr, bucket, grantID)
+		url, err = h.grantURL(r.Context(), ref, req.ContentType, projectIDStr, bucket)
 		if err != nil {
-			writeStorageError(w, err)
+			h.writeStorageError(r.Context(), w, "presign transfer grant", err)
 			return
 		}
 	}
@@ -241,7 +254,7 @@ func (h *Handler) CreateTransferGrant(w http.ResponseWriter, r *http.Request) {
 			// handling).
 			_ = h.store.AbortMultipart(r.Context(), ref, storage.UploadID(*uploadID))
 		}
-		writeError(w, http.StatusInternalServerError, "Internal", "create transfer grant: "+err.Error())
+		h.writeInternal(w, r, "create transfer grant", err)
 		return
 	}
 
@@ -297,29 +310,24 @@ func parseGrantDigest(w http.ResponseWriter, req transferGrantRequest) (alg *str
 // URL when the backend supports it, or the streaming facade's own endpoint
 // otherwise (S15: "return the facade URL, not an error").
 //
-// For a PUT facade fallback, the returned URL is this same package's
-// existing multipart upload endpoint (objects.go's UploadObject) — it does
-// not itself pin the key the grant reserved, since that endpoint derives
-// its key from the multipart request's own Content-Disposition filename,
-// not the URL. A client using the facade path must upload with grantID as
-// that filename for the object to land at the key CommitTransferGrant will
-// verify; this is a real, deliberate limitation of the fallback, not a
-// bug — presign-capable backends do not have it, since the key is baked
-// into the signed URL itself.
-func (h *Handler) grantURL(ctx context.Context, ref storage.ObjectRef, method, contentType, projectIDStr, bucket, grantID string) (string, error) {
-	presign := h.store.Capabilities().Presign
-	switch method {
-	case methodPut:
-		if presign {
-			return h.store.PresignPut(ctx, ref, defaultGrantTTL, storage.PutOptions{ContentType: contentType})
-		}
-		return fmt.Sprintf("/api/v2/artifacts/objects/%s/%s", projectIDStr, bucket), nil
-	default: // methodGet
-		if presign {
-			return h.store.PresignGet(ctx, ref, defaultGrantTTL)
-		}
-		return fmt.Sprintf("/api/v2/artifacts/objects/%s/%s/%s", projectIDStr, bucket, grantID), nil
+// For a facade fallback, the returned URL is this same package's existing
+// multipart upload endpoint (objects.go's UploadObject). That URL does not
+// itself pin the key the grant reserved. That endpoint derives its key from
+// the multipart request's own Content-Disposition filename, not the URL.
+//
+// A client using the facade path must upload with grantID as that filename.
+// The object then lands at the key CommitTransferGrant will verify. This
+// limitation of the fallback is real and deliberate, not a bug.
+// Presign-capable backends do not have it, because the key is baked into the
+// signed URL itself.
+//
+// There is no download branch. See methodPut for why a GET grant cannot
+// address an object.
+func (h *Handler) grantURL(ctx context.Context, ref storage.ObjectRef, contentType, projectIDStr, bucket string) (string, error) {
+	if h.store.Capabilities().Presign {
+		return h.store.PresignPut(ctx, ref, defaultGrantTTL, storage.PutOptions{ContentType: contentType})
 	}
+	return fmt.Sprintf("/api/v2/artifacts/objects/%s/%s", projectIDStr, bucket), nil
 }
 
 // rejectCommit deletes the uploaded object and writes the typed error
@@ -332,11 +340,17 @@ func (h *Handler) grantURL(ctx context.Context, ref storage.ObjectRef, method, c
 // rows, and this object never gets one).
 func (h *Handler) rejectCommit(ctx context.Context, w http.ResponseWriter, ref storage.ObjectRef, status int, code, message string) {
 	if delErr := h.store.Delete(ctx, ref); delErr != nil {
+		// The cause goes to the log, not to the caller: an unclassified
+		// object-store error carries the endpoint and the provider text.
+		// The caller only needs to know that the rejected upload is still
+		// present.
+		h.logInternal(ctx, "delete rejected upload", delErr)
+		_, cleanupMessage := h.classifyStorageError(ctx, "delete rejected upload", delErr)
 		writeJSON(w, status, map[string]any{
 			"error": map[string]any{
 				"code":    code,
 				"message": message,
-				"details": map[string]any{"cleanup_error": delErr.Error()},
+				"details": map[string]any{"cleanup_error": cleanupMessage},
 			},
 		})
 		return
@@ -376,7 +390,7 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get transfer grant: "+err.Error())
+		h.writeInternal(w, r, "get transfer grant", err)
 		return
 	}
 	if grant.Method != methodPut {
@@ -394,13 +408,13 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 
 	bucketRow, err := h.repo.GetBucketByID(r.Context(), grant.BucketID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get grant bucket: "+err.Error())
+		h.writeInternal(w, r, "get grant bucket", err)
 		return
 	}
 	projectIDStr := strconv.FormatInt(projectID, 10)
 	ref, err := storage.NewObjectRef(projectIDStr, bucketRow.Name, grant.Key)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "build object ref: "+err.Error())
+		h.writeInternal(w, r, "build object ref", err)
 		return
 	}
 
@@ -424,7 +438,7 @@ func (h *Handler) CommitTransferGrant(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter, projectID int64, grant repos.TransferGrantRow, bucketRow repos.BucketRow, ref storage.ObjectRef, claimed bool) {
 	body, info, err := h.store.Get(ctx, ref, nil)
 	if err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(ctx, w, "get uploaded object", err)
 		return
 	}
 	defer func() { _ = body.Close() }()
@@ -442,7 +456,7 @@ func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter
 	hasher := sha256.New()
 	n, err := io.Copy(hasher, body)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "read uploaded object: "+err.Error())
+		h.writeInternalCtx(ctx, w, "read uploaded object", err)
 		return
 	}
 
@@ -470,14 +484,16 @@ func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter
 		}
 	}
 
+	// Same rule as storeObject: the retention window starts at the write,
+	// not at the bucket's frozen expires_at. See computeExpiresAt.
 	if _, err := h.repo.UpsertObject(ctx, repos.NewObjectInput{
 		BucketID:   grant.BucketID,
 		Key:        grant.Key,
 		ByteLength: n,
 		MediaType:  grant.ContentType,
-		ExpiresAt:  bucketRow.ExpiresAt,
+		ExpiresAt:  computeExpiresAt(bucketRow.RetentionDays),
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "record object metadata: "+err.Error())
+		h.writeInternalCtx(ctx, w, "record object metadata", err)
 		return
 	}
 
@@ -490,13 +506,13 @@ func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter
 	// run after UpsertObject, not before it.
 	policy, err := h.repo.GetProjectStoragePolicy(ctx, projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
+		h.writeInternalCtx(ctx, w, "get project storage policy", err)
 		return
 	}
 	if policy.MaxTotalBytes != nil {
 		total, err := h.repo.SumProjectBytes(ctx, projectID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Internal", "sum project bytes: "+err.Error())
+			h.writeInternalCtx(ctx, w, "sum project bytes", err)
 			return
 		}
 		if total > *policy.MaxTotalBytes {
@@ -512,7 +528,7 @@ func (h *Handler) finalizeGrantCommit(ctx context.Context, w http.ResponseWriter
 				writeError(w, http.StatusConflict, "AlreadyExists", "grant has already been committed")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "Internal", "mark transfer grant consumed: "+err.Error())
+			h.writeInternalCtx(ctx, w, "mark transfer grant consumed", err)
 			return
 		}
 	}

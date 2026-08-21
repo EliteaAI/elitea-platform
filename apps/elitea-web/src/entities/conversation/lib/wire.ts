@@ -23,7 +23,14 @@
 export interface ChatParticipantWire {
   readonly id?: string;
   readonly entity_name?: string;
-  readonly entity_meta?: { readonly id?: string; readonly [key: string]: unknown };
+  /**
+   * `id` is `string | number`: the backend stores it as a JSON number (the
+   * legacy pydantic participant model declares `id: int`), while the app's
+   * `userId` is a string. It was declared `string` alone, which hid a strict
+   * `===` comparison that could never match. See `isSameUser` in
+   * `./newConversation.helpers.ts`.
+   */
+  readonly entity_meta?: { readonly id?: string | number; readonly [key: string]: unknown };
   readonly entity_settings?: {
     readonly llm_settings?: Readonly<Record<string, unknown>>;
     readonly agent_type?: string;

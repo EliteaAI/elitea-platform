@@ -9,18 +9,17 @@
  */
 import { memo } from 'react';
 
+import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
-import IconButton from '@mui/material/IconButton';
-import SvgIcon from '@mui/material/SvgIcon';
-import Typography from '@mui/material/Typography';
+import Button from '@mui/material/Button';
 
 import type { UserRecord } from '@/shared/api/generated/model';
 import type { EditUsersButtonProps } from '@/shared/ui/settings/EditUsersButton';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
 import { InviteUserDialog } from '@/shared/ui/settings/InviteUserDialog';
-import { ArrowLeftIcon } from '@/shared/ui/icons/arrow-left-icon';
-import { ArrowRightIcon } from '@/shared/ui/icons/arrow-right-icon';
 import { UsersTable } from './UsersTable';
 import { UsersPageHeader } from './UsersPageHeader';
+import { UsersPagePagination } from './UsersPagePagination';
 import { t } from '@/shared/i18n';
 import { usersPageStyles } from './UsersPage.styles';
 
@@ -72,6 +71,21 @@ interface PermissionState {
   canDelete: boolean;
 }
 
+/**
+ * Whether the member list can be shown at all, and why not.
+ *
+ * `permissionsResolved` is separate from `permissions.canView` on purpose:
+ * `usePermissionSet` answers an EMPTY set while the permission request is
+ * still in flight, so `canView === false` means "denied OR not known yet".
+ * Without this flag every user sees the no-permission banner flash before
+ * the table arrives.
+ */
+interface StatusState {
+  isError: boolean;
+  permissionsResolved: boolean;
+  onRetry: () => void;
+}
+
 interface DialogActions {
   inviteOpen: boolean;
   actions: { edit: EditUsersButtonProps | null; delete: Record<string, unknown> };
@@ -91,14 +105,21 @@ export interface UsersPageContentProps {
   toast: ToastState;
   dialogs: DialogActions;
   permissions: PermissionState;
+  status: StatusState;
   isLoading?: boolean;
 }
 
 export const UsersPageContent = memo(function UsersPageContent({
-  data, pagination, tableActions, sorting, search, toast, dialogs, permissions, isLoading,
+  data, pagination, tableActions, sorting, search, toast, dialogs, permissions, status, isLoading,
 }: UsersPageContentProps) {
   const startRow = pagination.page * pagination.rowsPerPage + 1;
-  const endRow = Math.min(startRow + pagination.rowsPerPage - 1, data.total);
+  // ONE prop, not two. `startRow` and `endRow` are a single range, and the
+  // §3.5 component-props budget is 12. Passing them apart put UsersPageBody at
+  // 13 and failed `scripts/check-budgets.mjs`.
+  const rowRange: RowRange = {
+    start: startRow,
+    end: Math.min(startRow + pagination.rowsPerPage - 1, data.total),
+  };
 
   return (
     <UsersPageBody
@@ -111,14 +132,20 @@ export const UsersPageContent = memo(function UsersPageContent({
       toast={toast}
       dialogs={dialogs}
       permissions={permissions}
+      status={status}
       isLoading={isLoading}
-      startRow={startRow}
-      endRow={endRow}
+      rowRange={rowRange}
     />
   );
 });
 
 /* ── sub-component: render body ───────────────────────────────────────── */
+
+/** The 1-based row window the pagination line reports. */
+export interface RowRange {
+  start: number;
+  end: number;
+}
 
 interface UsersPageBodyProps {
   styles: typeof import('./UsersPage.styles').usersPageStyles;
@@ -130,14 +157,14 @@ interface UsersPageBodyProps {
   toast: ToastState;
   dialogs: DialogActions;
   permissions: PermissionState;
+  status: StatusState;
   isLoading?: boolean;
-  startRow: number;
-  endRow: number;
+  rowRange: RowRange;
 }
 
 function UsersPageBody({
-  styles, data, pagination, tableActions, sorting, search, toast, dialogs, permissions,
-  isLoading, startRow, endRow,
+  styles, data, pagination, tableActions, sorting, search, toast, dialogs, permissions, status,
+  isLoading, rowRange,
 }: UsersPageBodyProps) {
   return (
     <Box sx={styles.container}>
@@ -151,38 +178,18 @@ function UsersPageBody({
         permissions={permissions}
       />
       <UsersPageToast message={toast.toastMessage} toastType={toast.toastType} />
-      {permissions.canView && (
-        <>
-          <UsersPageTable
-            usersPageStyles={styles}
-            users={data.users}
-            pagination={{
-              total: data.total,
-              rowsPerPage: pagination.rowsPerPage,
-              page: pagination.page,
-              onSelectPage: tableActions.onSelectPage,
-            }}
-            selectedUsers={data.selectedUsers}
-            onSelectRow={tableActions.onSelectRow}
-            sort={{ field: sorting.sortField, direction: sorting.sortDirection, onSort: tableActions.onSort }}
-            actions={dialogs.actions}
-            canEdit={permissions.canEdit}
-            isLoading={isLoading}
-          />
-          {data.total > 0 && (
-            <UsersPagePagination
-              usersPageStyles={styles}
-              startRow={startRow}
-              endRow={endRow}
-              pageSize={pagination.pageSize}
-              page={pagination.page}
-              total={data.total}
-              onPageSizeChange={tableActions.onPageSizeChange}
-              onChangePage={tableActions.onChangePage}
-            />
-          )}
-        </>
-      )}
+      <UsersPageMain
+        styles={styles}
+        data={data}
+        pagination={pagination}
+        tableActions={tableActions}
+        sorting={sorting}
+        dialogs={dialogs}
+        permissions={permissions}
+        status={status}
+        isLoading={isLoading}
+        rowRange={rowRange}
+      />
       <UsersPageDialogs
         rolesOptions={dialogs.rolesOptions}
         onSetInviteOpen={dialogs.onSetInviteOpen}
@@ -190,6 +197,86 @@ function UsersPageBody({
         inviteOpen={dialogs.inviteOpen}
       />
     </Box>
+  );
+}
+
+/**
+ * The member list, or the reason there is no member list.
+ *
+ * The table block used to be wrapped in a bare `{permissions.canView && (…)}`
+ * with no `else`, and the page never read `isError`. Both a 403 and a failed
+ * request therefore rendered as blank space under the header: the user could
+ * not tell whether the project has no members, whether they lack access, or
+ * whether the request failed. The error branch REPLACES the table on purpose.
+ * `UsersTable` renders its "No users" placeholder for an empty list. That
+ * placeholder states a fact that is not known to be true when the fetch
+ * failed.
+ */
+function UsersPageMain({
+  styles, data, pagination, tableActions, sorting, dialogs, permissions, status,
+  isLoading, rowRange,
+}: Omit<UsersPageBodyProps, 'search' | 'toast'>) {
+  if (!status.permissionsResolved) return null;
+
+  if (!permissions.canView) {
+    return (
+      <BannerMessage
+        variant="info"
+        message={t('shared.ui.settings.users.noAccess', 'You do not have permission to view the project members.')}
+      />
+    );
+  }
+
+  if (status.isError) {
+    return (
+      <Alert
+        severity="error"
+        action={(
+          <Button
+            color="inherit"
+            size="small"
+            onClick={status.onRetry}
+          >
+            {t('shared.ui.settings.users.retry', 'Retry')}
+          </Button>
+        )}
+      >
+        {t('shared.ui.settings.users.loadFailed', 'The system did not load the project members.')}
+      </Alert>
+    );
+  }
+
+  return (
+    <>
+      <UsersPageTable
+        usersPageStyles={styles}
+        users={data.users}
+        pagination={{
+          total: data.total,
+          rowsPerPage: pagination.rowsPerPage,
+          page: pagination.page,
+          onSelectPage: tableActions.onSelectPage,
+        }}
+        selectedUsers={data.selectedUsers}
+        onSelectRow={tableActions.onSelectRow}
+        sort={{ field: sorting.sortField, direction: sorting.sortDirection, onSort: tableActions.onSort }}
+        actions={dialogs.actions}
+        canEdit={permissions.canEdit}
+        isLoading={isLoading}
+      />
+      {data.total > 0 && (
+        <UsersPagePagination
+          usersPageStyles={styles}
+          startRow={rowRange.start}
+          endRow={rowRange.end}
+          pageSize={pagination.pageSize}
+          page={pagination.page}
+          total={data.total}
+          onPageSizeChange={tableActions.onPageSizeChange}
+          onChangePage={tableActions.onChangePage}
+        />
+      )}
+    </>
   );
 }
 
@@ -248,64 +335,6 @@ function UsersPageTable({
         canEdit={canEdit}
         isLoading={isLoading}
       />
-    </Box>
-  );
-}
-
-function UsersPagePagination({
-  usersPageStyles, startRow, endRow, pageSize, page, total,
-  onPageSizeChange, onChangePage,
-}: {
-  usersPageStyles: typeof import('./UsersPage.styles').usersPageStyles;
-  startRow: number;
-  endRow: number;
-  pageSize: number;
-  page: number;
-  total: number;
-  onPageSizeChange: (size: number) => void;
-  onChangePage: (page: number) => void;
-}) {
-  const isFirstPage = page <= 0;
-  const isLastPage = (page + 1) * pageSize >= total;
-
-  return (
-    <Box sx={usersPageStyles.pagination}>
-      <Typography variant="bodySmall" color="text.secondary">
-        {t('shared.ui.settings.users.paginationInfo', `Showing ${startRow}–${endRow} of ${total}`, { startRow, endRow, total })}
-      </Typography>
-      <Box sx={usersPageStyles.pageSizeSelectContainer}>
-        <Typography variant="bodySmall" sx={{ mr: 1 }}>
-          {t('shared.ui.settings.users.rowsPerPage', 'Rows per page:')}
-        </Typography>
-        <select
-          value={pageSize}
-          onChange={(e) => onPageSizeChange(Number(e.target.value))}
-          style={usersPageStyles.pageSizeSelect}
-          aria-label={t('shared.ui.settings.users.pageSize', 'Rows per page')}
-        >
-          {[10, 20, 50, 100].map((size) => (
-            <option key={size} value={size}>{size}</option>
-          ))}
-        </select>
-        <Box sx={usersPageStyles.paginationButtons}>
-          <IconButton
-            size="small"
-            onClick={() => onChangePage(page - 1)}
-            disabled={isFirstPage}
-            aria-label={t('shared.ui.settings.users.prevPage', 'Previous page')}
-          >
-            <SvgIcon component={ArrowLeftIcon} inheritViewBox sx={{ width: '0.875rem', height: '0.875rem' }} />
-          </IconButton>
-          <IconButton
-            size="small"
-            onClick={() => onChangePage(page + 1)}
-            disabled={isLastPage}
-            aria-label={t('shared.ui.settings.users.nextPage', 'Next page')}
-          >
-            <SvgIcon component={ArrowRightIcon} inheritViewBox sx={{ width: '0.875rem', height: '0.875rem' }} />
-          </IconButton>
-        </Box>
-      </Box>
     </Box>
   );
 }

@@ -39,10 +39,18 @@ info:
     "Contract coverage (§5.1)" step of ci-web.yml's `gates` job.
 
 servers:
-  - url: /api/v2/elitea_core
-    description: Core platform API server (prompt_lib scope)
+  # DEFECT, fixed here: a first server `/api/v2/elitea_core` sat above this
+  # one. Every path in this document already carries its own plugin prefix
+  # (`/elitea_core/...`, `/admin/...`, `/artifacts/...`). That base joined
+  # with any path produced a doubled segment — `/api/v2/elitea_core/
+  # elitea_core/applications/prompt_lib/{id}`. The router never registers
+  # that segment, and no compatibility shim rewrites it. A generator takes
+  # `servers[0]` as its default base, so every operation of a generated
+  # client answered 404. The single base below is correct for all of them:
+  # the router mounts the whole surface under `/api/v2`
+  # (internal/api/router.go).
   - url: /api/v2
-    description: Admin and auxiliary APIs
+    description: Elitea Platform API root (all operations)
 
 security:
   - BearerAuth: []
@@ -1738,26 +1746,104 @@ components:
         NOTE(W2): internal/api/v2/eliteacore/handler.go:283, with global
         defaults admin/editor/viewer when the project has no roles (:289-295).
 
-    ModerationStatusResponse:
+    # DEFECT, fixed here: `ModerationStatusResponse` ({status}) and
+    # `IgnoredRequestBody` described the RETIRED static stub. Both schemas are
+    # replaced by the three below, which model what
+    # internal/api/v2/moderation/requests.go really sends and accepts. The old
+    # pair typed `entity_id` as an integer. The generated TypeScript client
+    # therefore forced apps/elitea-web to hash its string catalogue keys into
+    # numbers. A request filed there and a request filed by the legacy UI
+    # addressed two different rows for one catalogue entry.
+    ModerationRequestRow:
       type: object
-      required: [status]
+      required: [id, user_id, user_email, project_id, issue_type, entity_id,
+                 description, status, rejection_comment, created_at, updated_at]
       properties:
+        id: { type: integer, format: int64 }
+        user_id:
+          type: integer
+          format: int64
+          description: The author. Taken from the authenticated principal, never from the request body.
+        user_email:
+          type: string
+          description: >
+            LEFT JOIN on the auth user, so a row whose author was deleted
+            still lists, with an empty address.
+        project_id: { type: integer, format: int64 }
+        issue_type:
+          type: string
+          description: The label the requesting client showed for the catalogue entry.
+        entity_id:
+          type: string
+          description: >
+            The catalogue key, an arbitrary string — `centry.moderation_state.entity_id`
+            is VARCHAR (migrations/001_initial.sql:243), e.g. "inventory".
+        description:
+          type: string
+          description: The requester's own justification.
         status:
           type: string
-          description: Always "approved" in the current stub.
+          enum: [pending, approved, rejected]
+        rejection_comment:
+          type: string
+          nullable: true
+          description: Required when a moderator rejects, null otherwise.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
       description: >
-        NOTE(W2): internal/api/v2/eliteacore/handler.go:1586-1588 — static
-        stub; GET and POST return the same body and the POST body is ignored.
+        NOTE(W2): one `centry.moderation_state` row as
+        internal/api/v2/moderation/requests.go's `requestRow` marshals it
+        (:163-175).
 
-    IgnoredRequestBody:
+    ModerationRequestList:
       type: object
-      additionalProperties: true
-      x-elitea-passthrough: >-
-        NOTE(W2): the handler never reads the request body — Users
-        (internal/api/v2/eliteacore/handler.go:190-264) and ModerationStatus
-        (:1586-1588) accept and discard arbitrary JSON. Documented as the
-        old-SPA-sent shape for parity only.
-      description: Request body accepted but ignored by the Go handler.
+      required: [total, rows]
+      properties:
+        total:
+          type: integer
+          description: >
+            On the per-entity route this is `len(rows)`, not a page total —
+            the route answers with the caller's own rows for one entity and
+            takes no paging parameters
+            (internal/api/v2/moderation/requests.go:594).
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModerationRequestRow'
+          description: Newest first, so the current state is `rows[0]`.
+      description: >
+        NOTE(W2): internal/api/v2/moderation/requests.go:594 —
+        `{"total": len(rows), "rows": rows}`.
+
+    ModerationRequestCreate:
+      type: object
+      required: [issue_type, description]
+      properties:
+        issue_type:
+          type: string
+          maxLength: 256
+          description: >
+            The label of the catalogue entry. Required; a longer value is
+            refused with 400 because the column is VARCHAR(256).
+        description:
+          type: string
+          description: The requester's justification. Required.
+        status:
+          type: string
+          enum: [pending]
+          description: >
+            Accepted only as "pending", and refused with 400 otherwise — a
+            requester may not file an already-approved request. The value is
+            never applied: the server always stores "pending"
+            (internal/api/v2/moderation/requests.go:666-681).
+      description: >
+        NOTE(W2): the fields internal/api/v2/moderation/requests.go's
+        `requestCreateBody` (:602-608) reads. Two more fields are decoded only
+        so they can be refused, and neither is modeled here because no client
+        should send one: `user_id` is refused with 400 (the author is the
+        authenticated caller), and a non-empty `meta` is refused with 400 (an
+        absent, null or empty one is tolerated for the two shipped clients).
+        `project_id` and `entity_id` come from the path.
 
     PlatformSettings:
       type: object
@@ -2490,22 +2576,6 @@ components:
         endpoint switches to SSE (handler.go:51-53) and this JSON body is not
         produced.
 
-    Project:
-      type: object
-      required: [id, name, status, suspended]
-      properties:
-        id: { type: integer }
-        name: { type: string }
-        description: { type: string }
-        status:
-          type: string
-          enum: [active, suspended]
-        role: { type: string }
-        suspended: { type: boolean }
-      description: >
-        NOTE(W2): internal/api/v2/projects/handler.go:33-40 (json tags;
-        description/role omitempty) and :84-99.
-
     GroupsListResponse:
       type: object
       required: [items, total]
@@ -2812,7 +2882,13 @@ components:
       properties:
         method:
           type: string
-          enum: [GET, PUT]
+          enum: [PUT]
+          description: >
+            Upload only. "GET" used to be accepted and was removed: a grant
+            derives its storage key from a newly generated grant id and no
+            field names an existing object, so a download grant always
+            presigned an empty key and answered 404. Download an object with
+            GET /artifacts/objects/{projectID}/{bucket}/{key} instead.
         display_name:
           type: string
           description: >
@@ -2850,7 +2926,8 @@ components:
             via POST .../grants/{projectID}/{grantID}/parts/{partNumber}.
         method:
           type: string
-          enum: [GET, PUT]
+          enum: [PUT]
+          description: Always "PUT" — see CreateTransferGrantRequest.method.
         expires_at: { type: string, format: date-time }
         content_type: { type: string }
         max_bytes: { type: integer, format: int64 }
@@ -4002,6 +4079,61 @@ components:
 
     # ---- MCP (issue 252) ---------------------------------------------------
 
+    McpRegisteredServerTool:
+      type: object
+      required: [name, description, inputSchema]
+      description: >
+        NOTE(W2): internal/mcpregistry/registry.go:41-45 — the Tool struct, as
+        `tools_list` serialises it. `inputSchema` keeps pylon's camelCase
+        spelling. That spelling is the wire contract the Python SDK reads
+        (elitea_sdk toolkits/tools.py, _init_single_mcp_tool), so do not rename
+        it.
+      properties:
+        name: { type: string }
+        description: { type: string }
+        inputSchema:
+          type: object
+          additionalProperties: true
+          description: JSON Schema of the tool's arguments.
+          x-elitea-passthrough: >-
+            NOTE(W2): internal/mcpregistry/registry.go:44 — the column holds the
+            JSON Schema an MCP server published for its own tool. The shape
+            belongs to that server, and this service stores and returns it
+            unchanged.
+
+    McpRegisteredServer:
+      type: object
+      required: [name, tools, project_id, sio_sid, timeout_tools_list, timeout_tools_call, group]
+      description: >
+        NOTE(W2): internal/mcpregistry/registry.go:59-67 — the Server struct,
+        which is pylon's `McpServer` shape. `tools_list` returns a bare array
+        of it, with no envelope.
+      properties:
+        name: { type: string }
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/McpRegisteredServerTool' }
+        project_id:
+          type: integer
+          format: int64
+          nullable: true
+        sio_sid:
+          type: string
+          nullable: true
+          description: >
+            Always null here. The field is the socket.io session id of the
+            client that registered the server, and this service runs no
+            socket.io server. It stays in the body because pylon produces it.
+        timeout_tools_list:
+          type: integer
+          description: Seconds. Defaults to 90 (mcpregistry.DefaultTimeoutSeconds).
+        timeout_tools_call:
+          type: integer
+          description: Seconds. Defaults to 90 (mcpregistry.DefaultTimeoutSeconds).
+        group:
+          type: string
+          description: Defaults to "Other" (mcpregistry.DefaultGroup).
+
     McpToolCallRequest:
       type: object
       required: [server, tool_call_id, params]
@@ -4249,9 +4381,14 @@ components:
       type: object
       required: [id, name, owner_id, plugins, keycloak_groups, create_success, suspended, groups]
       description: >
-        NOTE(W2): internal/api/v2/projects/groups.go:295-330 — the body all
-        three group writes return, mirroring the reference's ProjectListModel,
-        so a client re-renders the group chips without re-fetching.
+        NOTE(W2): two producers write this body. The three group writes return
+        it from internal/api/v2/projects/groups.go:295-330. The project listing
+        returns an array of it from internal/api/v2/projects/handler.go:134-143
+        (the Project struct) assembled at :226-251. Both mirror the reference's
+        ProjectListModel, so a client re-renders the group chips without
+        re-fetching. The struct has no `status`, `description` or `role` field:
+        handler_test.go:145-150 pins the eight-key golden body and fails on a
+        non-baseline key.
       properties:
         id: { type: integer }
         name: { type: string }
@@ -4479,6 +4616,82 @@ components:
         value: { type: string }
       required: [value]
 
+    # ---- Secrets, administration mode (the GLOBAL vault) -------------------
+    #
+    # The administration handler is a SECOND handler over a different store
+    # (internal/api/v2/secrets/admin.go, vault row id "admin"). It ignores the
+    # {projectID} segment, and its bodies are pylon's admin bodies, not the
+    # project ones above.
+    AdminSecretListItem:
+      type: object
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/admin.go:116-127 — one row of
+        the administration listing. `secret` is always the literal mask
+        "******"; the listing never carries plaintext.
+      properties:
+        name: { type: string }
+        secret:
+          type: string
+          description: Always the literal mask "******".
+      required: [name, secret]
+
+    AdminSecretValue:
+      type: object
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/admin.go:190-209 — the
+        administration single-secret GET. An unknown name is `{"secret": null}`
+        with 200, as in pylon.
+      properties:
+        secret:
+          type: string
+          nullable: true
+          description: The plaintext value, or null when the name is unknown.
+      required: [secret]
+
+    AdminSecretCreateRequest:
+      type: object
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/admin.go:227-235 — the body of
+        the administration-mode create. The name comes from the path.
+      properties:
+        secret: { type: string }
+      required: [secret]
+
+    AdminSecretUpdateRequest:
+      type: object
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/admin.go:129-135 — the NESTED
+        body pylon's admin PUT takes. `old_name` selects the entry to replace
+        and the path `{name}` is what it becomes, so a rename is
+        `old_name != name`. An empty `old_name` means the path name.
+      properties:
+        secret:
+          type: object
+          properties:
+            old_name: { type: string }
+            value: { type: string }
+          required: [value]
+      required: [secret]
+
+    AdminMessageResponse:
+      type: object
+      description: >
+        NOTE(issue 151): every administration-mode message and error body is
+        `{"message": "..."}` (internal/api/v2/secrets/admin.go), NOT the
+        `{"error": "..."}` of ErrorResponse.
+      properties:
+        message: { type: string }
+      required: [message]
+
+    SecretsModeErrorBody:
+      description: >
+        NOTE(issue 151): the error body of a mode-ful /secrets route. `default`
+        writes {"error": "..."}; `administration` writes {"message": "..."}.
+        The two modes are separate handlers, so the envelope follows the mode.
+      oneOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - $ref: '#/components/schemas/AdminMessageResponse'
+
   responses:
     400:
       description: Bad request
@@ -4521,6 +4734,16 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
+    # The mode-ful /secrets routes serve two handlers with two error envelopes.
+    # `default` writes {"error": "..."}; `administration` writes
+    # {"message": "..."} (internal/api/v2/secrets/admin.go).
+    SecretsModeError:
+      description: Error, in the envelope the selected mode's handler writes
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SecretsModeErrorBody'
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -4965,53 +5188,80 @@ paths:
   # ADMIN — moderation
   # ==========================================================================
   /admin/moderation_status/default/{project_id}/{entity_id}:
+    # DEFECT, fixed here: both operations described the retired static stub —
+    # `entity_id` typed integer, a POST body "accepted but ignored", and a
+    # 200 {"status":"approved"} from both. The live handlers are
+    # internal/api/v2/moderation/requests.go (router.go mounts Requests and
+    # RequestCreate here): the GET answers {total, rows}, the POST answers 201
+    # with the created row and REQUIRES issue_type and description. The
+    # integer `entity_id` was the costly part: the generated client typed the
+    # path parameter as a number. apps/elitea-web therefore hashed its string
+    # catalogue keys ("inventory") into integers, while the legacy UI sent the
+    # key itself. One catalogue entry got two rows, and neither client saw the
+    # other's request.
     parameters:
       - $ref: '#/components/parameters/ProjectId'
       - name: entity_id
         in: path
         required: true
         schema:
-          type: integer
+          type: string
+        description: >
+          The catalogue key, an arbitrary string. Read with chi.URLParam and
+          stored in a VARCHAR column
+          (internal/api/v2/moderation/requests.go:578, 622).
 
     get:
       operationId: moderationStatus
-      summary: Get moderation status for an entity
+      summary: List the caller's own moderation requests for an entity
       description: |
-        NOTE(W2): static stub — always {"status":"approved"}
-        (internal/api/v2/eliteacore/handler.go:1586-1588).
+        NOTE(W2): internal/api/v2/moderation/requests.go:561-595. Scoped to
+        the authenticated caller in SQL — the answer is "what have I asked
+        for", never "what has anyone asked for". Rows come newest first, so
+        the current state is `rows[0]`. The optional `issue_type` query
+        parameter narrows the list to one label.
       tags: [admin]
+      parameters:
+        - name: issue_type
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Narrow the list to one issue type.
       responses:
         '200':
-          description: Moderation status
+          description: The caller's requests for this entity, newest first
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ModerationStatusResponse'
+                $ref: '#/components/schemas/ModerationRequestList'
+        '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
 
     post:
       operationId: createModerationRequest
-      summary: Submit a moderation request for an entity
+      summary: File a moderation request for an entity
       description: |
-        NOTE(W2): same stub as GET — the body is ignored and
-        {"status":"approved"} is returned
-        (internal/api/v2/eliteacore/handler.go:1586-1588).
+        NOTE(W2): internal/api/v2/moderation/requests.go:612-664. Creates one
+        `centry.moderation_state` row and answers 201 with it. The row is
+        always authored by the authenticated caller and always starts
+        `pending`; a body that sets `user_id`, a `status` other than
+        "pending", or a non-empty `meta` is refused with 400.
       tags: [admin]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/IgnoredRequestBody'
+              $ref: '#/components/schemas/ModerationRequestCreate'
       responses:
-        '200':
-          description: Moderation status (request body ignored)
+        '201':
+          description: The created request
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ModerationStatusResponse'
+                $ref: '#/components/schemas/ModerationRequestRow'
         '400': { $ref: '#/components/responses/400' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
@@ -5055,13 +5305,12 @@ paths:
         '401': { $ref: '#/components/responses/401' }
 
   /branding/bootstrap.js:
-    # NOTE(W3): served under /api/v2 (not the elitea_core scope) and OUTSIDE
-    # the auth group — the SPA shell loads this script before a session
-    # exists (UI reimplementation spec §4.3 delivery channel C, §9.3 W3;
-    # route registered at internal/api/router.go, root level).
-    servers:
-      - url: /api/v2
-        description: Admin and auxiliary APIs
+    # NOTE(W3): served OUTSIDE the auth group — the SPA shell loads this
+    # script before a session exists (UI reimplementation spec §4.3 delivery
+    # channel C, §9.3 W3; route registered at internal/api/router.go, root
+    # level). The `servers:` override that used to sit here only escaped the
+    # bogus `/api/v2/elitea_core` default base; the root server is now
+    # correct for this path too.
     get:
       operationId: getBrandingBootstrap
       summary: Branding bootstrap script (window.elitea_brand)
@@ -7202,15 +7451,23 @@ paths:
       operationId: listProjects
       summary: List projects accessible to the caller
       description: |
-        NOTE(W2): PLAIN ARRAY of Project,
-        internal/api/v2/projects/handler.go:47-102; check_public_role is
-        accepted but not read.
+        NOTE(W2): PLAIN ARRAY of ProjectWithGroups. The route is
+        internal/api/v2/projects/handler.go:157 (GetCurrentProjectList), which
+        calls getCurrentProjects at :161. The Project struct is at :134-143.
+        assembleProjects at :227-252 collapses the joined rows into one item
+        per project.
+
+        The handler reads `check_public_role` as presence only. Any value, also
+        `false`, sets the flag true. The flag reaches the query, which then
+        hides the public project from a caller who is not an admin of it.
       tags: [applications]
       parameters:
         - name: check_public_role
           in: query
           schema: { type: boolean }
-          description: Old-SPA parameter; accepted but not read.
+          description: >
+            Presence-only flag. The handler ignores the value, so
+            `check_public_role=false` also switches the check on.
       responses:
         '200':
           description: Accessible projects
@@ -7219,7 +7476,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Project'
+                  $ref: '#/components/schemas/ProjectWithGroups'
         '401': { $ref: '#/components/responses/401' }
 
   /projects/groups/prompt_lib:
@@ -7549,6 +7806,13 @@ paths:
   # compatibility. All 13 operations below live under the default /api/v2
   # server (no per-path override): unlike the old /artifacts/s3 surface this
   # replaces, none of this is root-mounted.
+  #
+  # Every 404 below is written by the handler, not by a middleware, so it
+  # carries the nested `Error` envelope {"error":{"code","message"}} from
+  # internal/api/v2/artifacts/handler.go writeError. It does NOT carry the
+  # flat ErrorResponse {"error": "..."} of #/components/responses/404. The
+  # 401 and the plain 403 stay on the shared components: the project
+  # authorization middleware writes those, and it does emit the flat shape.
   # ==========================================================================
   /artifacts/buckets/{projectID}:
     parameters:
@@ -7628,7 +7892,11 @@ paths:
                 $ref: '#/components/schemas/Bucket'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
     patch:
       operationId: updateBucket
@@ -7665,7 +7933,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
     delete:
       operationId: deleteBucket
@@ -7679,7 +7951,11 @@ paths:
           description: Deleted (no content)
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /artifacts/objects/{projectID}/{bucket}:
     parameters:
@@ -7718,7 +7994,11 @@ paths:
                 $ref: '#/components/schemas/ListObjectsResponse'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
     post:
       operationId: uploadObject
@@ -7760,7 +8040,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: Key already exists and overwrite=false
           content:
@@ -7810,7 +8094,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /artifacts/objects/{projectID}/{bucket}/{key}:
     # The router registers the three operations below on a trailing chi `/*`
@@ -7855,7 +8143,11 @@ paths:
               schema: { type: string, format: binary }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
     head:
       operationId: statObject
@@ -7866,7 +8158,11 @@ paths:
           description: Metadata headers (Content-Length, Content-Type, ETag, Last-Modified)
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
     delete:
       operationId: deleteObject
@@ -7877,7 +8173,11 @@ paths:
           description: Deleted (no content)
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /artifacts/grants/{projectID}/{bucket}:
     parameters:
@@ -7917,7 +8217,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /artifacts/grants/{projectID}/{grantID}:commit:
     parameters:
@@ -7950,7 +8254,11 @@ paths:
                 $ref: '#/components/schemas/UploadObjectResponse'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: Digest or media-type mismatch, or the grant was already consumed
           content:
@@ -8013,7 +8321,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: The grant was already committed or aborted
           content:
@@ -8071,7 +8383,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: Digest or media-type mismatch, or the grant was already consumed
           content:
@@ -8125,7 +8441,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '404': { $ref: '#/components/responses/404' }
+        '404':
+          description: Not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: The grant was already committed or aborted
           content:
@@ -9614,9 +9934,15 @@ paths:
   # every MCP result. The protocol they speak is the Model Context Protocol
   # specification, and internal/api/v2/mcp/server.go is the implementation note.
   #
-  # `mode` is pylon's dispatch key, not decoration: tools_list and tools_call
-  # register `default` only and internal_mcp_pat_status registers `prompt_lib`
-  # only, so those are the literal segments here rather than a {mode} parameter.
+  # `mode` is pylon's dispatch key, not decoration: tools_call registers
+  # `default` only and internal_mcp_pat_status registers `prompt_lib` only, so
+  # those are the literal segments here rather than a {mode} parameter.
+  #
+  # tools_list registers TWO paths on the same handler (router.go:2040-2041):
+  # `/tools_list/{projectID}` and `/tools_list/default/{projectID}`. The
+  # mode-less form is the one the Python SDK calls. Only the `default` form is
+  # documented, because both forms serve the same body and a second operation
+  # would give the generated clients a duplicate.
   # ==========================================================================
   /elitea_core/tools_list/default/{project_id}:
     parameters:
@@ -9626,20 +9952,37 @@ paths:
       operationId: listRegisteredMcpServers
       summary: List MCP servers registered into the project by an MCP client
       description: |
-        Always answers 501 with a stated reason. This endpoint does NOT list
-        this platform's own tools — that is the MCP server at
-        /app/{project_id}/mcp. It reports the MCP servers an Elitea MCP CLIENT
-        has registered INTO the project, which the reference implementation
-        keeps in an in-process dict populated over socket.io and keyed by the
-        client's socket id. There is no table behind that dict, and this
-        service runs no socket.io server, so there is nothing to list.
+        Lists the MCP servers an Elitea MCP CLIENT has registered INTO the
+        project. This endpoint does NOT list this platform's own tools — that
+        is the MCP server at /app/{project_id}/mcp.
 
-        An empty array is deliberately not returned: it would assert that no
-        client is connected, which this service has no way to know. See
-        internal/api/v2/mcp/registry.go for the full reason string, which is
-        also what the response body carries.
+        Issue 335 replaced the earlier 501 with a durable read. The listing
+        comes from elitea_mcp.registered_servers and elitea_mcp.registered_tools
+        (shared migration 0073), unioned with the caller's personal project. A
+        personal entry wins a name collision, so a server a user registers in
+        their own project follows them into every project they work in
+        (internal/api/v2/mcp/registry.go:116-129).
+
+        The body is a bare array, which is pylon's shape. An empty array is now
+        an honest read of the rows: it means the project has no registered
+        server. A read failure answers 503 instead, because reporting an empty
+        toolset would make an agent answer without its tools.
       tags: [toolkits]
       responses:
+        '200':
+          description: Registered MCP servers (an empty array means none is registered)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/McpRegisteredServer'
+        '400':
+          description: The project id in the path is not a positive integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401': { $ref: '#/components/responses/401' }
         '403':
           description: |
@@ -9650,8 +9993,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '501':
-          description: Not implemented, with the reason in `error`
+        '503':
+          description: |
+            The registry is not composed, or a registry read failed. The reason
+            is in `error` (internal/api/v2/mcp/registry.go:99,111,123).
           content:
             application/json:
               schema:
@@ -9773,11 +10118,18 @@ paths:
   # `mode` is a real dispatch key, not decoration: pylon's
   # APIBase.proxy_method looks it up in mode_handlers and abort(404)s on a
   # miss. Only two modes exist — `default` (project vault) and
-  # `administration` (the GLOBAL vault, a different handler with different
-  # shapes). elitea-main implements `default`; it answers `administration`
-  # with 501 rather than serving project 0's vault in the global vault's
-  # place, and any other mode with 404. See requireMode in
-  # internal/api/v2/secrets/handler.go.
+  # `administration` (the GLOBAL vault). elitea-main implements BOTH, and any
+  # other mode is a 404. See withModes in internal/api/v2/secrets/handler.go.
+  #
+  # The two modes are separate handlers over separate stores with separate
+  # bodies. `administration` reads and writes the global vault (row id
+  # "admin", internal/api/v2/secrets/admin.go) and IGNORES the {projectID}
+  # segment, so admin_ui sends the placeholder `0` there. Each operation below
+  # therefore states both shapes.
+  #
+  # ONE administration branch stays unimplemented: POST
+  # /secrets/{mode}/{projectID}, which replaces the whole global vault in a
+  # single call. It has no caller in the workspace, so it answers 501.
   # ==========================================================================
   /secrets/secrets/{mode}/{projectID}:
     parameters:
@@ -9792,11 +10144,13 @@ paths:
 
     get:
       operationId: listSecrets
-      summary: List a project's secret names
+      summary: List secret names
       description: >
-        Values are never returned here — only `{{secret.<name>}}`
-        placeholders. A project with no vault yet returns `[]` with 200,
-        not a 404 (handler.go's List).
+        Values are never returned here. `default` returns
+        `{{secret.<name>}}` placeholders; `administration` returns the
+        literal mask "******" in each row's `secret`. A vault that does not
+        exist yet returns `[]` with 200, not a 404 (handler.go's List,
+        admin.go's AdminList).
       tags: [secrets]
       responses:
         '200':
@@ -9804,18 +10158,19 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: '#/components/schemas/SecretListItem' }
+                # Use anyOf here. An empty array satisfies both branches.
+                # A vault that does not exist yet returns [], and oneOf rejects it.
+                anyOf:
+                  - type: array
+                    items: { $ref: '#/components/schemas/SecretListItem' }
+                    description: '`default` mode — the project vault.'
+                  - type: array
+                    items: { $ref: '#/components/schemas/AdminSecretListItem' }
+                    description: '`administration` mode — the global vault.'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-        '501':
-          description: >
-            `administration` mode — the global vault, not implemented by
-            elitea-main.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '500': { $ref: '#/components/responses/SecretsModeError' }
 
     post:
       operationId: createSecret
@@ -9841,7 +10196,12 @@ paths:
         '404': { $ref: '#/components/responses/404' }
         '500': { $ref: '#/components/responses/500' }
         '501':
-          description: '`administration` mode — not implemented.'
+          description: >
+            `administration` mode. This ONE branch is not implemented: it
+            replaces the whole global vault in a single call and has no
+            caller in the workspace (handler.go's notImplementedBulkReplace).
+            Create global secrets one at a time through
+            POST /secrets/secret/administration/{projectID}/{name}.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
@@ -9864,71 +10224,119 @@ paths:
     get:
       operationId: showSecret
       summary: Read one secret, including its plaintext value
+      description: >
+        `default` returns the full SecretDetail. `administration` returns only
+        `{"secret": "<value>"}`, and answers 200 with `{"secret": null}` for an
+        unknown name (admin.go's AdminGet).
       tags: [secrets]
       responses:
         '200':
           description: The secret
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SecretDetail' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SecretDetail'
+                  - $ref: '#/components/schemas/AdminSecretValue'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-        '501':
-          description: '`administration` mode — not implemented.'
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '500': { $ref: '#/components/responses/SecretsModeError' }
+
+    post:
+      operationId: createSecretInMode
+      summary: Create one secret — administration mode only
+      description: >
+        NOTE(issue 151): internal/api/v2/secrets/handler.go registers this POST
+        with an administration branch only (admin.go's AdminCreate). `default`
+        answers 405, because pylon's project API defines only get/put/delete on
+        this path. The name comes from the path and must match
+        `^[A-Za-z0-9_]+$`. A duplicate name is a 400, never an overwrite.
+      tags: [secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminSecretCreateRequest' }
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMessageResponse' }
+        '400':
+          description: Invalid name, missing value, or a name that already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMessageResponse' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '405':
+          description: '`default` mode — the project vault has no create on this path.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '500':
+          description: The global vault is unreadable, or the write failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminMessageResponse' }
 
     put:
       operationId: updateSecret
       summary: Rename and/or re-value a secret
       description: >
         BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's
-        Update). A rename to an existing name overwrites it silently — the
-        duplicate check exists only on create.
+        Update). A rename to a name that the project vault already holds, in
+        `secrets` or in `hidden_secrets`, is refused with 400: the vault is one
+        encrypted blob with no history, so an overwrite there is unrecoverable.
+
+        The two modes take DIFFERENT bodies. `default` takes the flat
+        SecretUpdateRequest. `administration` takes the nested
+        AdminSecretUpdateRequest, where `old_name` selects the entry to
+        replace (admin.go's AdminUpdate). `administration` also answers 404
+        for a missing secret, where `default` answers 400.
       tags: [secrets]
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/SecretUpdateRequest' }
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/SecretUpdateRequest'
+                - $ref: '#/components/schemas/AdminSecretUpdateRequest'
       responses:
         '200':
           description: Updated
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/SecretListItem' }
-        '400': { $ref: '#/components/responses/400' }
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/SecretListItem'
+                  - $ref: '#/components/schemas/AdminMessageResponse'
+        '400': { $ref: '#/components/responses/SecretsModeError' }
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-        '500': { $ref: '#/components/responses/500' }
-        '501':
-          description: '`administration` mode — not implemented.'
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '500': { $ref: '#/components/responses/SecretsModeError' }
 
     delete:
       operationId: deleteSecret
       summary: Delete a secret
       description: >
-        Idempotent: deleting a name that does not exist — or a project with
-        no vault at all — is still a 204 (handler.go's Delete). Removes the
-        name from both `secrets` and `hidden_secrets`.
+        Idempotent in BOTH modes: deleting a name that does not exist — or a
+        vault that does not exist at all — is still a 204 (handler.go's
+        Delete, admin.go's AdminDelete). `default` removes the name from both
+        `secrets` and `hidden_secrets`.
       tags: [secrets]
       responses:
         '204':
           description: Deleted
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-        '501':
-          description: '`administration` mode — not implemented.'
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '500': { $ref: '#/components/responses/SecretsModeError' }
 
   /secrets/hide/{mode}/{projectID}/{name}:
     parameters:
@@ -9949,14 +10357,19 @@ paths:
       operationId: hideSecret
       summary: Move a secret into hidden_secrets
       description: >
-        A hidden secret disappears from the list endpoint but is still
-        readable by name through the single-secret GET, which reports
-        `is_hidden: true`. BUG-FOR-BUG: a missing secret is a 400, not a
-        404 (handler.go's Hide) — matching pylon's hide.py.
+        `default` mode only. A hidden secret disappears from the list
+        endpoint but is still readable by name through the single-secret GET,
+        which reports `is_hidden: true`. BUG-FOR-BUG: a missing secret is a
+        400, not a 404 (handler.go's Hide) — matching pylon's hide.py.
+
+        `administration` mode ALWAYS answers 401. The global vault has no
+        hidden section, so pylon refuses the call with that sentence and
+        admin.go's AdminHide reproduces it. The admin page renders no hide
+        control at all.
       tags: [secrets]
       responses:
         '200':
-          description: Hidden
+          description: Hidden (`default` mode)
           content:
             application/json:
               schema:
@@ -9965,15 +10378,17 @@ paths:
                   message: { type: string }
                 required: [message]
         '400': { $ref: '#/components/responses/400' }
-        '401': { $ref: '#/components/responses/401' }
-        '403': { $ref: '#/components/responses/403' }
-        '404': { $ref: '#/components/responses/404' }
-        '500': { $ref: '#/components/responses/500' }
-        '501':
-          description: '`administration` mode — not implemented.'
+        '401':
+          description: >
+            Unauthenticated, OR `administration` mode, which always refuses
+            with {"message": "There are no hidden secrets in administration
+            mode"} (admin.go's AdminHide).
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ErrorResponse' }
+              schema: { $ref: '#/components/schemas/SecretsModeErrorBody' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/SecretsModeError' }
+        '500': { $ref: '#/components/responses/SecretsModeError' }
 
   /secrets/secret/{projectID}/{name}:
     parameters:

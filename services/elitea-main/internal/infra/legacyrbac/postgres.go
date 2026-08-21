@@ -13,7 +13,10 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
-var ErrPermissionDenied = errors.New("legacy rbac permission resolution denied")
+// ErrPermissionDenied is the refusal sentinel of the auth.PermissionResolver
+// contract. It is an alias, so a caller that tests errors.Is(err,
+// auth.ErrPermissionDenied) separates a refusal from a database failure.
+var ErrPermissionDenied = auth.ErrPermissionDenied
 
 type postgresStore interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)

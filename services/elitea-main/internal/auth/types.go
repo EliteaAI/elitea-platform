@@ -46,6 +46,28 @@ type User struct {
 	// would be self-service authorization over another project's budget and
 	// provider credentials (spec §7 invariant 2).
 	TokenProjectID *int64 `json:"token_project_id,omitempty"`
+	// TokenProjectActive reports whether the bound project is still active. It
+	// is a tri-state on purpose:
+	//
+	//   nil   — the validator did not determine the state. Treat the binding
+	//           as usable, which is the behaviour of every validator that
+	//           reads no storage.
+	//   true  — the bound project exists, is created, and is not suspended.
+	//   false — the bound project is suspended, not created, or gone. The
+	//           edge MUST refuse the request.
+	//
+	// A binding must not outlive membership (spec-llm-project-scope §7
+	// invariant 3). Suspension revokes no binding, so the state is re-checked
+	// here at resolution time. Only a credential validator that read the
+	// project row from storage may set this field.
+	TokenProjectActive *bool `json:"token_project_active,omitempty"`
+}
+
+// BoundProjectRefused reports a binding whose project is no longer usable.
+// The caller must refuse the request rather than fall back to another project:
+// a fallback moves the spend the suspension was meant to stop.
+func (u User) BoundProjectRefused() bool {
+	return u.TokenProjectID != nil && u.TokenProjectActive != nil && !*u.TokenProjectActive
 }
 
 // OwningUserID returns the database user that owns the authenticated identity.

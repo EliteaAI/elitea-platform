@@ -17,6 +17,7 @@
  * import.
  */
 import { getConfig } from '@/shared/config';
+import { normalizeBasename } from '@/shared/lib/basename';
 
 import { exchangeMcpOAuthToken } from '../api/mcpOAuthClient';
 import type { McpOAuthTokenResponse } from '../api/mcpOAuthClient';
@@ -31,10 +32,19 @@ import { createAuthorizationMonitor, navigateAuthPopup, openAuthPopup } from './
 
 const MCP_AUTH_CALLBACK_PATH = '/mcp-auth-callback';
 
+/**
+ * The basename, normalized so the join below cannot make an empty path
+ * segment. `vite_base_uri` ships as `/app/`, and the raw value produced
+ * `https://host/app//mcp-auth-callback`. An authorization server compares the
+ * `redirect_uri` as a simple string (RFC 6749 3.1.2.3). That URI therefore
+ * never matched a callback registered as
+ * `https://host/app/mcp-auth-callback`. The flow ended in
+ * `redirect_uri_mismatch`.
+ */
 function getMcpAuthCallbackBasename(): string {
   if (import.meta.env.DEV) return '';
   const result = getConfig();
-  return result.status === 'ok' ? result.config.vite_base_uri : '';
+  return result.status === 'ok' ? normalizeBasename(result.config.vite_base_uri) : '';
 }
 
 function getRedirectUri(): string {

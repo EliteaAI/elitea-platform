@@ -33,6 +33,7 @@ import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { credentialDisplayName, credentialScope, sortCredentialsPinnedFirst } from '@/entities/credential';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
@@ -43,10 +44,62 @@ import { CredentialsTypesPanel } from './CredentialsTypesPanel';
 
 const PAGE_SIZE = 20;
 
+/** `EliteaApiError`'s 403 case, the same test `pages/settings/Secrets.tsx` applies. */
+function isForbiddenError(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError)) return false;
+  const { failure } = error;
+  return (failure.kind === 'http' || failure.kind === 'auth') && failure.status === 403;
+}
+
 export interface CredentialsListProps {
   readonly projectId: string;
   readonly onSelectCredential: (id: string) => void;
   readonly onCreateNew: () => void;
+}
+
+interface ListStatusProps {
+  readonly isLoading: boolean;
+  readonly isError: boolean;
+  readonly error: unknown;
+  readonly rowCount: number;
+  readonly isSearching: boolean;
+}
+
+/**
+ * The one line the list shows when it has no rows to show.
+ *
+ * A FAILED LIST IS NOT AN EMPTY LIST. Without the error branch a 403 or a 500
+ * fell through to "You have no credentials.". The screen told the user their
+ * project was empty when the request never returned a list at all. Observed on
+ * a live deployment: the credentials screen read as empty while
+ * GET /api/v2/configurations/configurations/1 answered 403 on every attempt.
+ *
+ * Split out of `CredentialsList` so the page component stays inside the §3.5
+ * complexity budget.
+ */
+function ListStatus({ isLoading, isError, error, rowCount, isSearching }: ListStatusProps): ReactNode {
+  if (isLoading) {
+    return <Typography variant="bodyMedium">{t('credentials.list.loading', 'Loading…')}</Typography>;
+  }
+  if (isError) {
+    return (
+      <Typography
+        variant="bodyMedium"
+        role="alert"
+        sx={(theme: Theme) => ({ color: theme.vars.palette.error.main })}
+      >
+        {isForbiddenError(error)
+          ? t('credentials.list.forbidden', 'You do not have permission to read the credentials of this project.')
+          : t('credentials.list.loadFailed', 'The credentials could not be loaded.')}
+      </Typography>
+    );
+  }
+  if (rowCount > 0) return null;
+  return (
+    <Typography variant="bodyMedium">
+      {isSearching ? t('credentials.list.nothingFound', 'Nothing found.') : t('credentials.list.empty', 'You have no credentials.')}
+    </Typography>
+  );
 }
 
 export function CredentialsList({ projectId, onSelectCredential, onCreateNew }: CredentialsListProps): ReactNode {
@@ -109,12 +162,13 @@ export function CredentialsList({ projectId, onSelectCredential, onCreateNew }: 
             {t('credentials.list.create', 'New credential')}
           </BaseBtn>
         </Box>
-        {list.isLoading && <Typography variant="bodyMedium">{t('credentials.list.loading', 'Loading…')}</Typography>}
-        {!list.isLoading && allRows.length === 0 && (
-          <Typography variant="bodyMedium">
-            {query ? t('credentials.list.nothingFound', 'Nothing found.') : t('credentials.list.empty', 'You have no credentials.')}
-          </Typography>
-        )}
+        <ListStatus
+          isLoading={list.isLoading}
+          isError={list.isError}
+          error={list.error}
+          rowCount={allRows.length}
+          isSearching={query !== ''}
+        />
         {allRows.length > 0 && (
           <List>
             {allRows.map((row) => (
