@@ -661,7 +661,9 @@ async fn sensitive_toolkit_graph_resumes_exact_checkpoint_and_executes_once_afte
     .expect("approved Toolkit decision")
     .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
     .await
-    .expect("checkpoint-bound Toolkit resume");
+    .expect("checkpoint-bound Toolkit resume")
+    .into_parts()
+    .0;
     let resumed = definition
         .compile_with_runtime(
             ROOT,

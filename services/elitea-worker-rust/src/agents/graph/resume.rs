@@ -2,6 +2,7 @@
 
 #![allow(dead_code)] // Production pipeline assembly remains capability-gated.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY;
@@ -15,8 +16,13 @@ use super::hitl::HITL_RESUME_STATE_KEY;
 use super::printer::{
     PRINTER_OUTPUT_STATE_KEY, PRINTER_PAUSE_SCHEMA, PrinterPauseCatalog, PrinterPauseMetadata,
 };
+use crate::agents::direct_hitl::{
+    DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode, ResolvedDirectHitlDecision,
+    ResolvedDirectHitlStart,
+};
 use crate::agents::events::{
-    pipeline_hitl_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
+    pipeline_application_event_binding, pipeline_hitl_event_binding,
+    pipeline_printer_event_binding, pipeline_tool_event_binding,
 };
 use crate::agents::request::AgentExecutionPayload;
 
@@ -191,7 +197,10 @@ pub(crate) struct PipelineHitlDecision {
 /// Either configured graph HITL or one direct Toolkit-node confirmation.
 pub(crate) enum PipelineContinuationDecision {
     Node(PipelineHitlDecision),
-    Tool(PipelineToolDecision),
+    Sensitive {
+        application: DirectHitlDecisionSet,
+        tool: Option<PipelineToolDecision>,
+    },
 }
 
 impl PipelineContinuationDecision {
@@ -208,7 +217,12 @@ impl PipelineContinuationDecision {
         if raw.is_empty() {
             PipelineHitlDecision::from_payload(payload).map(Self::Node)
         } else {
-            PipelineToolDecision::from_payload(payload).map(Self::Tool)
+            let application = DirectHitlDecisionSet::from_payload(payload)
+                .map_err(|error| direct_hitl_resume_error(&error))?;
+            let tool = (payload.hitl_decisions.len() == 1)
+                .then(|| PipelineToolDecision::from_payload(payload))
+                .transpose()?;
+            Ok(Self::Sensitive { application, tool })
         }
     }
 
@@ -218,19 +232,87 @@ impl PipelineContinuationDecision {
         checkpointer: &dyn Checkpointer,
         root_agent_name: &str,
         thread_id: &str,
-    ) -> Result<PipelineResume, PipelineResumeError> {
+    ) -> Result<ResolvedPipelineContinuation, PipelineResumeError> {
         match self {
-            Self::Node(decision) => {
-                decision
+            Self::Node(decision) => decision
+                .resolve(session, checkpointer, root_agent_name, thread_id)
+                .await
+                .map(ResolvedPipelineContinuation::graph),
+            Self::Sensitive { application, tool } => {
+                let events = session.events().all();
+                let interrupt = events.last().ok_or_else(PipelineResumeError::stale)?;
+                if let Ok(binding) =
+                    pipeline_application_event_binding(interrupt, root_agent_name, thread_id)
+                {
+                    let checkpoint = checkpointer
+                        .load(thread_id)
+                        .await
+                        .map_err(|_| PipelineResumeError::dependency())?
+                        .ok_or_else(PipelineResumeError::stale)?;
+                    if checkpoint.thread_id != thread_id
+                        || checkpoint.checkpoint_id != binding.checkpoint_id()
+                        || checkpoint.pending_nodes.as_slice() != [binding.node_name()]
+                    {
+                        return Err(PipelineResumeError::stale());
+                    }
+                    let ResolvedDirectHitlStart::Nested(decisions) =
+                        application
+                            .resolve(session)
+                            .map_err(|error| direct_hitl_resume_error(&error))?
+                    else {
+                        return Err(PipelineResumeError::corrupt());
+                    };
+                    let submitted = decisions
+                        .iter()
+                        .map(ResolvedDirectHitlDecision::interrupt_id)
+                        .collect::<BTreeSet<_>>();
+                    let expected = binding
+                        .interrupt_ids()
+                        .iter()
+                        .map(String::as_str)
+                        .collect::<BTreeSet<_>>();
+                    if submitted != expected {
+                        return Err(PipelineResumeError::stale());
+                    }
+                    return Ok(ResolvedPipelineContinuation::application(
+                        PipelineResume::empty(),
+                        decisions,
+                    ));
+                }
+                tool.ok_or_else(PipelineResumeError::corrupt)?
                     .resolve(session, checkpointer, root_agent_name, thread_id)
                     .await
-            }
-            Self::Tool(decision) => {
-                decision
-                    .resolve(session, checkpointer, root_agent_name, thread_id)
-                    .await
+                    .map(ResolvedPipelineContinuation::graph)
             }
         }
+    }
+}
+
+pub(crate) struct ResolvedPipelineContinuation {
+    resume: PipelineResume,
+    application_decisions: Option<Vec<ResolvedDirectHitlDecision>>,
+}
+
+impl ResolvedPipelineContinuation {
+    fn graph(resume: PipelineResume) -> Self {
+        Self {
+            resume,
+            application_decisions: None,
+        }
+    }
+
+    fn application(
+        resume: PipelineResume,
+        application_decisions: Vec<ResolvedDirectHitlDecision>,
+    ) -> Self {
+        Self {
+            resume,
+            application_decisions: Some(application_decisions),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (PipelineResume, Option<Vec<ResolvedDirectHitlDecision>>) {
+        (self.resume, self.application_decisions)
     }
 }
 
@@ -488,8 +570,27 @@ pub(crate) struct PipelineResume {
 }
 
 impl PipelineResume {
+    fn empty() -> Self {
+        Self {
+            state: State::new(),
+        }
+    }
+
     pub(super) fn into_state(self) -> State {
         self.state
+    }
+}
+
+fn direct_hitl_resume_error(error: &DirectHitlError) -> PipelineResumeError {
+    match error.code() {
+        DirectHitlErrorCode::InvalidInput | DirectHitlErrorCode::ResourceExhausted => {
+            PipelineResumeError::invalid()
+        }
+        DirectHitlErrorCode::UnsupportedCapability => {
+            PipelineResumeError::new(PipelineResumeErrorCode::UnsupportedCapability)
+        }
+        DirectHitlErrorCode::StaleDecision => PipelineResumeError::stale(),
+        DirectHitlErrorCode::CorruptSession => PipelineResumeError::corrupt(),
     }
 }
 

@@ -31,7 +31,7 @@ use sqlx::PgPool;
 
 use super::application_tools::{
     ApplicationEventReceiver, ApplicationEventStreamingAgent, ApplicationResumeCoordinator,
-    prepare_nested_application_resume,
+    install_nested_application_resume, prepare_nested_application_resume,
 };
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
@@ -723,6 +723,11 @@ pub(crate) async fn assemble_pipeline_native(
         nodes: node_runtimes,
         applications: application_runtime,
     } = runtime;
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+        resume: application_resume,
+    } = application_runtime;
     let state = backend
         .open(
             session_authority,
@@ -733,7 +738,15 @@ pub(crate) async fn assemble_pipeline_native(
         .await?;
     let printer_catalog = definition.printer_pause_catalog();
     let printer_resume = matches!(&start, PipelineNativeStart::Printer(_));
-    let resume = resolve_pipeline_start(start, &state, &plan, &printer_catalog).await?;
+    let resume = resolve_pipeline_start(
+        start,
+        &state,
+        &plan,
+        &printer_catalog,
+        &application_tools,
+        application_resume.as_ref(),
+    )
+    .await?;
     let is_resume = resume.is_some();
     let graph = definition
         .compile_with_runtime(
@@ -762,11 +775,6 @@ pub(crate) async fn assemble_pipeline_native(
         generation: _,
     } = plan;
     context_management.prepare_runner_composition();
-    let ApplicationRuntimeProjection {
-        presentations: application_tools,
-        events: application_events,
-        resume: _,
-    } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(
         EliteaGraphAgent::new(graph)
             .with_printer_interrupts(Arc::clone(&state.checkpointer), printer_catalog),
@@ -805,6 +813,8 @@ async fn resolve_pipeline_start(
     state: &PipelineStateServices,
     plan: &OrdinaryNativeAgentPlan,
     printer_catalog: &super::graph::PrinterPauseCatalog,
+    application_tools: &ApplicationToolPresentationCatalog,
+    application_resume: Option<&ApplicationResumeCoordinator>,
 ) -> Result<Option<super::graph::resume::PipelineResume>, NativeAgentAssemblyError> {
     Ok(match start {
         PipelineNativeStart::Fresh => {
@@ -837,17 +847,27 @@ async fn resolve_pipeline_start(
                 })
                 .await
                 .map_err(|_| dependency_unavailable())?;
-            Some(
-                decision
-                    .resolve(
-                        session.as_ref(),
-                        state.checkpointer.as_ref(),
-                        ROOT_AGENT_NAME,
-                        plan.session_id.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| pipeline_resume_error(&error))?,
-            )
+            let resolved = decision
+                .resolve(
+                    session.as_ref(),
+                    state.checkpointer.as_ref(),
+                    ROOT_AGENT_NAME,
+                    plan.session_id.as_ref(),
+                )
+                .await
+                .map_err(|error| pipeline_resume_error(&error))?;
+            let (resume, application_decisions) = resolved.into_parts();
+            if let Some(decisions) = application_decisions {
+                let coordinator = application_resume.ok_or_else(invalid_configuration)?;
+                install_nested_application_resume(
+                    &session.events().all(),
+                    decisions,
+                    application_tools,
+                    coordinator,
+                )
+                .await?;
+            }
+            Some(resume)
         }
         PipelineNativeStart::Printer(continuation) => {
             let session = state

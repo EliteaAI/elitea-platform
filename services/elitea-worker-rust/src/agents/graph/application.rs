@@ -24,6 +24,7 @@ use tracing::Instrument as _;
 use super::direct_tool::{ensure_state_type, pipeline_tool_context};
 use super::llm::render_fstring;
 use super::yaml::{valid_graph_id, valid_output_key};
+use crate::agents::application_tools::nested_application_interrupt_ids;
 
 const MAX_NODE_YAML_BYTES: usize = 64 * 1024;
 const MAX_MAPPING_VALUE_BYTES: usize = 240 * 1024;
@@ -31,6 +32,10 @@ const MAX_NODE_VARIABLES: usize = 64;
 const MAX_APPLICATION_ALIAS_BYTES: usize = 1_024;
 const MAX_RESULT_BYTES: usize = 512 * 1024;
 const CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.application.config.v1\0";
+pub(crate) const PIPELINE_APPLICATION_HITL_SCHEMA: &str =
+    "elitea.graph.application-tool-confirmation.v1";
+const PIPELINE_APPLICATION_HITL_MESSAGE: &str =
+    "The saved agent is waiting for sensitive-tool approval.";
 pub(super) const APPLICATION_TASK_STATE_KEY: &str = "__elitea_application_task_v1";
 pub(super) const APPLICATION_MESSAGES_STATE_KEY: &str = "__elitea_application_messages_v1";
 pub(super) const APPLICATION_RESULT_STATE_KEY: &str = "__elitea_application_result_v1";
@@ -213,6 +218,10 @@ impl ApplicationNodeDefinition {
             self.transition.as_deref().unwrap_or_default().as_bytes(),
         );
         copy_digest(context.finish().as_ref())
+    }
+
+    fn digest_label(&self) -> String {
+        format!("sha256:{}", hex(&self.config_digest()))
     }
 
     fn map_task(&self, state: &State) -> Result<String, ApplicationExecutionError> {
@@ -444,9 +453,25 @@ impl Node for ApplicationNode {
                 ResolvedApplicationParticipant::Agent(tool) => {
                     let tool_context = pipeline_tool_context(context, self.name(), tool.name());
                     let result = tool
-                        .execute(tool_context, json!({"task": task}))
+                        .execute(Arc::clone(&tool_context), json!({"task": task}))
                         .await
                         .map_err(|_| node_failure(self.name()))?;
+                    if let Some(interrupt_ids) = nested_application_interrupt_ids(&result) {
+                        return Ok(NodeOutput::interrupt_with_data(
+                            PIPELINE_APPLICATION_HITL_MESSAGE,
+                            json!({
+                                "schema_revision": PIPELINE_APPLICATION_HITL_SCHEMA,
+                                "type": "hitl_checkpoint",
+                                "guardrail_type": "application_sensitive_tool",
+                                "node_name": self.name(),
+                                "message": PIPELINE_APPLICATION_HITL_MESSAGE,
+                                "definition_digest": self.definition.digest_label(),
+                                "application_call_id": tool_context.function_call_id(),
+                                "application_tool_name": tool.name(),
+                                "interrupt_ids": interrupt_ids,
+                            }),
+                        ));
+                    }
                     let response = result
                         .as_object()
                         .filter(|object| object.len() == 1)
@@ -542,6 +567,16 @@ fn digest_field(context: &mut digest::Context, value: &[u8]) {
 fn copy_digest(value: &[u8]) -> [u8; 32] {
     let mut output = [0_u8; 32];
     output.copy_from_slice(value);
+    output
+}
+
+fn hex(value: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(value.len() * 2);
+    for byte in value {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
     output
 }
 

@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 
 use super::direct_hitl::sensitive_call_identity;
 use super::graph::{
-    PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY, PIPELINE_COMPLETED_METADATA_VALUE,
-    PRINTER_PAUSE_METADATA_KEY, PrinterPauseMetadata,
+    PIPELINE_APPLICATION_HITL_SCHEMA, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
+    PIPELINE_COMPLETED_METADATA_VALUE, PRINTER_PAUSE_METADATA_KEY, PrinterPauseMetadata,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -818,8 +818,46 @@ impl AgentEventProjector {
         match guardrail_type {
             "pipeline_hitl" => self.project_pipeline_hitl(event, &payload),
             "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload),
+            "application_sensitive_tool" => {
+                self.project_pipeline_application_confirmation(event, &payload)
+            }
             _ => Err(AgentEventProjectionError::unsupported()),
         }
+    }
+
+    fn project_pipeline_application_confirmation(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let binding = pipeline_application_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            checkpoint_thread_id,
+        )?;
+        let _active = self
+            .active_tools
+            .get(binding.application_call_id())
+            .filter(|active| {
+                active.name == binding.application_tool_name() && active.application.is_some()
+            })
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let descendant = self
+            .descendants
+            .get(binding.application_call_id())
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if !matches!(self.state, ProjectionState::Complete(_)) || !descendant.projector.is_paused()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        self.state = ProjectionState::Paused;
+        Ok(ProjectedAgentEventBatch::new())
     }
 
     fn project_sensitive_confirmation(
@@ -1765,6 +1803,48 @@ struct PipelineToolHitlData {
     policy_message: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineApplicationHitlData {
+    schema_revision: String,
+    #[serde(rename = "type")]
+    interrupt_type: String,
+    guardrail_type: String,
+    node_name: String,
+    message: String,
+    definition_digest: String,
+    application_call_id: String,
+    application_tool_name: String,
+    interrupt_ids: Vec<String>,
+}
+
+impl PipelineApplicationHitlData {
+    fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
+        if self.schema_revision != PIPELINE_APPLICATION_HITL_SCHEMA
+            || self.interrupt_type != "hitl_checkpoint"
+            || self.guardrail_type != "application_sensitive_tool"
+            || self.message != graph_message
+            || !valid_pipeline_node_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || !valid_tool_identity(&self.application_call_id)
+            || !valid_tool_identity(&self.application_tool_name)
+            || self.interrupt_ids.is_empty()
+            || self.interrupt_ids.len() > 16
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let mut ids = HashSet::with_capacity(self.interrupt_ids.len());
+        if self
+            .interrupt_ids
+            .iter()
+            .any(|identity| !valid_tool_identity(identity) || !ids.insert(identity.as_str()))
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        Ok(())
+    }
+}
+
 impl PipelineToolHitlData {
     fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
         if self.schema_revision != PIPELINE_TOOL_HITL_SCHEMA
@@ -1813,6 +1893,43 @@ pub(crate) struct PipelineToolHitlEventBinding {
     checkpoint_id: String,
     nested_checkpoints: Vec<NestedPipelineCheckpoint>,
     data: PipelineToolHitlData,
+}
+
+pub(crate) struct PipelineApplicationHitlEventBinding {
+    checkpoint_id: String,
+    data: PipelineApplicationHitlData,
+}
+
+impl PipelineApplicationHitlEventBinding {
+    #[must_use]
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    #[must_use]
+    pub(crate) fn node_name(&self) -> &str {
+        &self.data.node_name
+    }
+
+    #[must_use]
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.data.definition_digest
+    }
+
+    #[must_use]
+    pub(crate) fn application_call_id(&self) -> &str {
+        &self.data.application_call_id
+    }
+
+    #[must_use]
+    pub(crate) fn application_tool_name(&self) -> &str {
+        &self.data.application_tool_name
+    }
+
+    #[must_use]
+    pub(crate) fn interrupt_ids(&self) -> &[String] {
+        &self.data.interrupt_ids
+    }
 }
 
 /// Exact private identity for one compiler-owned static Printer checkpoint.
@@ -1968,6 +2085,18 @@ pub(crate) fn pipeline_tool_event_binding(
     pipeline_tool_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
 }
 
+/// Validate and bind an internal graph checkpoint for descendant Application
+/// confirmations. The child confirmation events remain the only public cards.
+pub(crate) fn pipeline_application_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineApplicationHitlEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_application_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
 /// Validate and bind one persisted static Printer interruption.
 pub(crate) fn pipeline_printer_event_binding(
     event: &Event,
@@ -2090,6 +2219,38 @@ fn pipeline_tool_event_binding_from_payload(
     })
 }
 
+fn pipeline_application_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineApplicationHitlEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let message = payload
+        .message
+        .as_deref()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    validate_pipeline_interrupt_envelope_message(message)?;
+    let (raw_data, nested_checkpoints) = pipeline_interrupt_data(payload, thread_id)?;
+    if !nested_checkpoints.is_empty() {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let data = serde_json::from_value::<PipelineApplicationHitlData>(raw_data)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    data.validate(message)?;
+    Ok(PipelineApplicationHitlEventBinding {
+        checkpoint_id: payload.checkpoint_id.clone(),
+        data,
+    })
+}
+
 fn pipeline_interrupt_data(
     payload: &GraphInterruptPayload,
     parent_thread_id: &str,
@@ -2152,7 +2313,7 @@ fn validate_graph_interrupt_event_with_metadata_count(
     metadata_count: usize,
 ) -> Result<(), AgentEventProjectionError> {
     if event.author != root_agent_name
-        || !event.branch.is_empty()
+        || (!event.branch.is_empty() && event.branch != APPLICATION_BRANCH_ROOT)
         || event.provider_metadata.len() != metadata_count
         || event.llm_response.partial
         || event.llm_response.turn_complete

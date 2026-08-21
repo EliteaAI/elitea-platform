@@ -1,10 +1,10 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adk_rust::graph::{Checkpointer, MemoryCheckpointer};
-use adk_rust::session::{InMemorySessionService, SessionService};
+use adk_rust::session::{GetRequest, InMemorySessionService, SessionService};
 use adk_rust::tool::{BasicToolset, SimpleToolContext};
 use adk_rust::{Tool, ToolContext, Toolset};
 use async_trait::async_trait;
@@ -16,14 +16,16 @@ use serde_json::{Value, json};
 use tonic::body::Body;
 
 use super::assembly_tests::ordinary_request;
-use super::events::pipeline_hitl_event_binding;
+use super::events::{pipeline_application_event_binding, pipeline_hitl_event_binding};
 use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, StrictNodeToolset};
 use super::request::AgentExecutionKind;
 use super::runtime::{
-    AuthorizedNativeAssembly, NativeAgentAssembler, NativeAgentAssemblyErrorCode,
-    NativeAgentCompletionSelector,
+    AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
+    NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector,
 };
-use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
+use super::session::{
+    AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan, PipelineAgentCompletion,
+};
 use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -364,27 +366,91 @@ fn direct_agent_pipeline_runtime() -> PipelineChildRuntime {
     )
 }
 
+fn sensitive_direct_agent_pipeline_runtime() -> PipelineChildRuntime {
+    pipeline_runtime_cycles(
+        &json!({
+            "agent_type": "agent",
+            "instructions": "Read the release evidence and summarize it.",
+            "meta": {},
+            "variables": [],
+            "tools": [{
+                "id": 92,
+                "type": "mcp",
+                "toolkit_name": "release intelligence",
+                "settings": {
+                    "url": "https://mcp.example.invalid/v1/mcp",
+                    "headers": null,
+                    "client_id": null,
+                    "client_secret": null,
+                    "scopes": null,
+                    "timeout": 30,
+                    "selected_tools": ["lookup_release"],
+                    "enable_caching": true,
+                    "cache_ttl": 300,
+                    "ssl_verify": true
+                }
+            }],
+            "llm_settings": {
+                "model_name": "child-model",
+                "model_project_id": 23,
+                "max_tokens": 2048,
+                "reasoning_effort": null,
+                "temperature": 0.2,
+                "openai_compatible": true
+            }
+        }),
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response("child resumed summary")),
+        ],
+        2,
+    )
+}
+
 fn pipeline_runtime(
     version_details: &Value,
     outcomes: Vec<TestModelGatewayOutcome>,
 ) -> PipelineChildRuntime {
+    pipeline_runtime_cycles(version_details, outcomes, 1)
+}
+
+fn pipeline_runtime_cycles(
+    version_details: &Value,
+    outcomes: Vec<TestModelGatewayOutcome>,
+    cycles: usize,
+) -> PipelineChildRuntime {
     let calls = Arc::new(AtomicUsize::new(0));
     let paths = Arc::new(Mutex::new(Vec::new()));
-    let token = runtime_response(&json!({
-        "schema_version": "elitea.runtime.elitea-client-token.v1",
-        "project_id": 17,
-        "token": "ephemeral-pipeline-token"
-    }));
-    let child = runtime_response(&json!({
-        "schema_version": "elitea.runtime.application-version.v1",
-        "project_id": 17,
-        "application_id": 3,
-        "version_id": 4,
-        "version_details": version_details
-    }));
+    let responses = (0..cycles)
+        .flat_map(|_| {
+            [
+                runtime_response(&json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": "ephemeral-pipeline-token"
+                })),
+                runtime_response(&json!({
+                    "schema_version": "elitea.runtime.application-version.v1",
+                    "project_id": 17,
+                    "application_id": 3,
+                    "version_id": 4,
+                    "version_details": version_details
+                })),
+            ]
+        })
+        .collect::<VecDeque<_>>();
+    pipeline_runtime_from_responses(responses, outcomes, calls, paths)
+}
+
+fn pipeline_runtime_from_responses(
+    responses: VecDeque<Response<Body>>,
+    outcomes: Vec<TestModelGatewayOutcome>,
+    calls: Arc<AtomicUsize>,
+    paths: Arc<Mutex<Vec<String>>>,
+) -> PipelineChildRuntime {
     let runtime = RuntimeContextClient::with_rpc(
         PipelineRuntimeContextFixture {
-            responses: Mutex::new(VecDeque::from([token, child])),
+            responses: Mutex::new(responses),
             calls: Arc::clone(&calls),
             paths: Arc::clone(&paths),
         },
@@ -404,6 +470,248 @@ fn pipeline_runtime(
         calls,
         paths,
     )
+}
+
+fn recursive_sensitive_pipeline_runtime() -> PipelineChildRuntime {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let responses = (0..3)
+        .flat_map(|_| {
+            [
+                runtime_response(&json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": "ephemeral-pipeline-token"
+                })),
+                application_runtime_response(
+                    3,
+                    4,
+                    &json!({
+                        "agent_type": "agent",
+                        "instructions": "Delegate the two release checks in parallel.",
+                        "meta": {},
+                        "variables": [],
+                        "tools": [saved_application_tool(32, 42, "name-resolver")],
+                        "llm_settings": {
+                            "model_name": "orchestrator-model",
+                            "model_project_id": 23,
+                            "max_tokens": 2048,
+                            "reasoning_effort": null,
+                            "temperature": 0.2,
+                            "openai_compatible": true
+                        }
+                    }),
+                ),
+                application_runtime_response(
+                    32,
+                    42,
+                    &json!({
+                        "agent_type": "agent",
+                        "instructions": "Read release evidence and return one result.",
+                        "meta": {},
+                        "variables": [],
+                        "tools": [{
+                            "id": 92,
+                            "type": "mcp",
+                            "toolkit_name": "release intelligence",
+                            "settings": {
+                                "url": "https://mcp.example.invalid/v1/mcp",
+                                "headers": null,
+                                "client_id": null,
+                                "client_secret": null,
+                                "scopes": null,
+                                "timeout": 30,
+                                "selected_tools": ["lookup_release"],
+                                "enable_caching": true,
+                                "cache_ttl": 300,
+                                "ssl_verify": true
+                            }
+                        }],
+                        "llm_settings": {
+                            "model_name": "resolver-model",
+                            "model_project_id": 24,
+                            "max_tokens": 2048,
+                            "reasoning_effort": null,
+                            "temperature": 0.2,
+                            "openai_compatible": true
+                        }
+                    }),
+                ),
+            ]
+        })
+        .collect::<VecDeque<_>>();
+    let outcomes = vec![
+        model_response_for(
+            "orchestrator-model",
+            pipeline_parallel_saved_agent_call_response(),
+        ),
+        model_response_for("resolver-model", pipeline_mcp_tool_call_response()),
+        model_response_for("resolver-model", pipeline_mcp_tool_call_response()),
+        model_response_for(
+            "resolver-model",
+            pipeline_text_response("first resolved leaf"),
+        ),
+        model_response_for(
+            "resolver-model",
+            pipeline_text_response("second resolved leaf"),
+        ),
+        model_response_for(
+            "orchestrator-model",
+            pipeline_text_response("parallel orchestrator summary"),
+        ),
+    ];
+    pipeline_runtime_from_responses(responses, outcomes, calls, paths)
+}
+
+fn application_runtime_response(
+    application_id: u64,
+    version_id: u64,
+    version_details: &Value,
+) -> Response<Body> {
+    runtime_response(&json!({
+        "schema_version": "elitea.runtime.application-version.v1",
+        "project_id": 17,
+        "application_id": application_id,
+        "version_id": version_id,
+        "version_details": version_details
+    }))
+}
+
+async fn collect_pipeline_pause(
+    mut invocation: AssembledNativeAgentInvocation<PipelineAgentCompletion>,
+) -> (Vec<Value>, Option<adk_rust::Event>) {
+    invocation
+        .project_start(timestamp(0))
+        .expect("pipeline pause browser start");
+    let (mut run, mut projector, _completion) = invocation.start().expect("pipeline pause start");
+    let mut browser_interrupts = Vec::new();
+    let mut graph_interrupt = None;
+    while let Some(event) = run.next_event().await.expect("pipeline pause event") {
+        if event
+            .provider_metadata
+            .contains_key(adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY)
+        {
+            graph_interrupt = Some(event.clone());
+        }
+        browser_interrupts.extend(
+            projector
+                .project(&event)
+                .expect("pipeline pause projection")
+                .into_iter()
+                .map(|event| current(&event))
+                .filter(|event| event["type"] == "agent_hitl_interrupt"),
+        );
+    }
+    assert!(projector.is_paused());
+    (browser_interrupts, graph_interrupt)
+}
+
+async fn collect_pipeline_completion(
+    mut invocation: AssembledNativeAgentInvocation<PipelineAgentCompletion>,
+) -> Vec<Value> {
+    invocation
+        .project_start(timestamp(1))
+        .expect("pipeline resume browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("pipeline resume start");
+    while let Some(event) = run.next_event().await.expect("pipeline resume event") {
+        let _ = projector
+            .project(&event)
+            .expect("pipeline resume projection");
+    }
+    let completed = completion
+        .select()
+        .await
+        .expect("pipeline resume completion");
+    projector
+        .finish_after_eos(completed, timestamp(2))
+        .expect("pipeline resumed browser completion")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect()
+}
+
+fn pipeline_application_resume_request(
+    interrupt_ids: Vec<String>,
+    action: &str,
+    value: &str,
+    digest: [u8; 32],
+) -> super::request::AgentExecutionRequest {
+    let single = interrupt_ids.len() == 1;
+    let mut resume = agent_pipeline_request("release-agent", "agent");
+    resume.binding.request_content_digest = digest;
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = single.then(|| action.to_owned());
+    resume.payload.hitl_value = single.then(|| value.to_owned());
+    resume.payload.hitl_decisions = interrupt_ids
+        .into_iter()
+        .map(|interrupt_id| {
+            json!({
+                "interrupt_id": interrupt_id,
+                "tool_call_id": "call_mcp",
+                "action": action,
+                "value": value,
+            })
+        })
+        .collect();
+    resume
+}
+
+fn saved_application_tool(application_id: u64, version_id: u64, alias: &str) -> Value {
+    json!({
+        "id": 45,
+        "type": "application",
+        "name": alias,
+        "description": "Resolve one release name.",
+        "author_id": 11,
+        "settings": {
+            "application_id": application_id,
+            "application_version_id": version_id
+        },
+        "meta": {},
+        "created_at": "2026-08-21T10:00:00Z",
+        "toolkit_name": alias,
+        "author": null,
+        "agent_type": "agent",
+        "online": null,
+        "icon_meta": null,
+        "variables": [],
+        "is_pinned": false,
+        "indexes_count": null
+    })
+}
+
+fn model_response_for(model: &'static str, response: Response<Body>) -> TestModelGatewayOutcome {
+    TestModelGatewayOutcome::ResponseForModel { model, response }
+}
+
+fn pipeline_parallel_saved_agent_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_first\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_32_v_42\",\"arguments\":\"{\\\"task\\\":\\\"Resolve first release\\\"}\"}},{\"index\":1,\"id\":\"call_last\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_32_v_42\",\"arguments\":\"{\\\"task\\\":\\\"Resolve second release\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn pipeline_mcp_tool_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn sensitive_pipeline_mcp_policy() -> Arc<ToolAdmissionPolicy> {
+    Arc::new(runtime_tool_policy(&json!({
+        "toolkit_security": {
+            "sensitive_tools": {"mcp": ["lookup_release"]},
+            "sensitive_action_company_name": "Example Org"
+        }
+    })))
 }
 
 fn pipeline_text_response(text: &str) -> Response<Body> {
@@ -857,6 +1165,236 @@ async fn direct_saved_agent_node_streams_one_exact_pipeline_hierarchy() {
             "/executions/execution%2Fone/generations/2/runtime-context/applications/3/versions/4"
         ]
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn direct_saved_agent_node_resumes_exact_descendant_confirmation_from_graph_checkpoint() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, context_calls, _paths) = sensitive_direct_agent_pipeline_runtime();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(PipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    });
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(connector)
+    .with_tool_policy(sensitive_pipeline_mcp_policy());
+    let request = agent_pipeline_request("release-agent", "agent");
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized sensitive direct-agent participant");
+    let (browser_interrupts, graph_interrupt) = collect_pipeline_pause(invocation).await;
+    assert_eq!(browser_interrupts.len(), 1);
+    let public = &browser_interrupts[0];
+    assert_eq!(
+        public["response_metadata"]["parent_agent_path"],
+        json!([{
+            "name": "release-agent",
+            "call_id": "pipeline:delegate:0",
+            "sibling_ordinal": 1,
+        }])
+    );
+    let interrupt_id = public["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("descendant interrupt identity")
+        .to_owned();
+    let graph_interrupt = graph_interrupt.expect("internal graph checkpoint event");
+    let binding =
+        pipeline_application_event_binding(&graph_interrupt, "elitea-agent", &private_thread)
+            .expect("pipeline Application checkpoint binding");
+    assert_eq!(binding.node_name(), "delegate");
+    assert_eq!(binding.application_call_id(), "pipeline:delegate:0");
+    assert_eq!(binding.interrupt_ids(), [interrupt_id.as_str()]);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let resume = pipeline_application_resume_request(vec![interrupt_id], "approve", "", [8; 32]);
+    let invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("checkpoint-bound descendant resume");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "child resumed summary")
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    assert_eq!(context_calls.load(Ordering::Acquire), 4);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_agent_node_resumes_parallel_nested_confirmations_without_identity_collisions() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, context_calls, _paths) = recursive_sensitive_pipeline_runtime();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(PipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    }))
+    .with_tool_policy(sensitive_pipeline_mcp_policy());
+    let request = agent_pipeline_request("release-agent", "agent");
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("recursive pipeline Agent participant");
+    let (interrupts, graph_interrupt) = collect_pipeline_pause(invocation).await;
+    assert!(graph_interrupt.is_some());
+    assert_eq!(interrupts.len(), 2);
+    let paths = interrupts
+        .iter()
+        .map(|event| event["response_metadata"]["parent_agent_path"].clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        paths,
+        HashSet::from([
+            json!([
+                {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+                {"name": "name-resolver", "call_id": "call_first", "sibling_ordinal": 1},
+            ]),
+            json!([
+                {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+                {"name": "name-resolver", "call_id": "call_last", "sibling_ordinal": 2},
+            ]),
+        ])
+    );
+    let mut interrupt_ids = interrupts
+        .iter()
+        .map(|event| {
+            event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+                .as_str()
+                .expect("parallel descendant interrupt identity")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    interrupt_ids.sort_unstable();
+    assert_ne!(interrupt_ids[0], interrupt_ids[1]);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let partial =
+        pipeline_application_resume_request(vec![interrupt_ids[0].clone()], "approve", "", [5; 32]);
+    let partial = assembler.assemble(authorized(&partial)).await;
+    let Err(partial) = partial else {
+        panic!("partial parallel descendant decision set resumed the graph");
+    };
+    assert_eq!(partial.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let resume = pipeline_application_resume_request(interrupt_ids, "approve", "", [7; 32]);
+    let invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("parallel descendant checkpoint resume");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "parallel orchestrator summary")
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 2);
+    assert_eq!(connections.load(Ordering::Acquire), 3);
+    assert_eq!(context_calls.load(Ordering::Acquire), 9);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_agent_node_block_preserves_same_call_structured_result_without_dispatch() {
+    let sessions = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, _context_calls, _paths) =
+        sensitive_direct_agent_pipeline_runtime();
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        sessions.clone(),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(PipelineMcpConnector {
+        connections: Arc::new(AtomicUsize::new(0)),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    }))
+    .with_tool_policy(sensitive_pipeline_mcp_policy());
+    let request = agent_pipeline_request("release-agent", "agent");
+    let profile = PipelineExecutionProfile::validate(&request, false).expect("pipeline profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized_pipeline(
+        &request,
+        profile.shell(),
+        &AuthorizedNativeCommandBinding::fixture(),
+        false,
+        false,
+    )
+    .expect("pipeline identity plan");
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("blocking pipeline Agent participant");
+    let (interrupts, _) = collect_pipeline_pause(invocation).await;
+    let interrupt_id = interrupts[0]["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("blocked descendant interrupt identity")
+        .to_owned();
+    let resume = pipeline_application_resume_request(
+        vec![interrupt_id],
+        "block_with_comment",
+        "keep customer data private",
+        [6; 32],
+    );
+    let invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("blocked descendant checkpoint resume");
+    let _browser = collect_pipeline_completion(invocation).await;
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id: plan.user_id().to_owned(),
+            session_id: plan.session_id().to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("blocked pipeline session");
+    let blocked = stored
+        .events()
+        .all()
+        .into_iter()
+        .find_map(|event| {
+            (event.actions.tool_confirmation_decision
+                == Some(adk_rust::ToolConfirmationDecision::Deny))
+            .then(|| {
+                event
+                    .tool_results()
+                    .into_iter()
+                    .find(|result| {
+                        result.call_id == Some("call_mcp") && result.name == "lookup_release"
+                    })
+                    .map(|result| result.response.clone())
+            })
+            .flatten()
+        })
+        .expect("same-call structured blocked result");
+    assert_eq!(blocked["type"], "sensitive_tool_blocked");
+    assert_eq!(blocked["blocked_tool_name"], "lookup_release");
+    assert_eq!(blocked["denial_reason"], "keep customer data private");
 }
 
 #[tokio::test]

@@ -298,6 +298,13 @@ impl PipelineNativeAgentAssembler {
         self
     }
 
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_tool_policy(mut self, policy: Arc<ToolAdmissionPolicy>) -> Self {
+        self.tool_policy = policy;
+        self
+    }
+
     async fn bind_node_runtimes(
         &self,
         profile: &PipelineExecutionProfile,

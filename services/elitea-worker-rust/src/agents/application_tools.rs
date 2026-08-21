@@ -217,6 +217,38 @@ pub(crate) async fn prepare_nested_application_resume(
     coordinator: &ApplicationResumeCoordinator,
     delegate: Arc<dyn Llm>,
 ) -> Result<PreparedNestedApplicationResume, NativeAgentAssemblyError> {
+    let (child_resumes, submitted_interrupt_ids) =
+        build_nested_application_resume(events, decisions, applications)?;
+    let calls = application_replay_calls(&child_resumes)?;
+    coordinator.install_root(child_resumes).await?;
+    let user_content = nested_resume_user_content(&submitted_interrupt_ids);
+    Ok(PreparedNestedApplicationResume {
+        model: Arc::new(ApplicationReplayModel {
+            delegate,
+            state: AtomicU8::new(REPLAY_APPLICATIONS_PENDING),
+            calls,
+            replay_marker: user_content.clone(),
+        }),
+        user_content,
+        run_config: application_run_config(),
+    })
+}
+
+pub(crate) async fn install_nested_application_resume(
+    events: &[Event],
+    decisions: Vec<ResolvedDirectHitlDecision>,
+    applications: &ApplicationToolPresentationCatalog,
+    coordinator: &ApplicationResumeCoordinator,
+) -> Result<(), NativeAgentAssemblyError> {
+    let (child_resumes, _) = build_nested_application_resume(events, decisions, applications)?;
+    coordinator.install_root(child_resumes).await
+}
+
+fn build_nested_application_resume(
+    events: &[Event],
+    decisions: Vec<ResolvedDirectHitlDecision>,
+    applications: &ApplicationToolPresentationCatalog,
+) -> Result<(HashMap<String, ChildApplicationResume>, HashSet<String>), NativeAgentAssemblyError> {
     let mut builders = HashMap::with_capacity(decisions.len());
     let mut root_event_id = None;
     let mut submitted_interrupt_ids = HashSet::with_capacity(decisions.len());
@@ -238,19 +270,7 @@ pub(crate) async fn prepare_nested_application_resume(
     let root_event_id = root_event_id.ok_or_else(invalid_configuration)?;
     validate_complete_nested_decision_set(events, &root_event_id, &submitted_interrupt_ids)?;
     let child_resumes = finish_resume_builders(builders)?;
-    let calls = application_replay_calls(&child_resumes)?;
-    coordinator.install_root(child_resumes).await?;
-    let user_content = nested_resume_user_content(&submitted_interrupt_ids);
-    Ok(PreparedNestedApplicationResume {
-        model: Arc::new(ApplicationReplayModel {
-            delegate,
-            state: AtomicU8::new(REPLAY_APPLICATIONS_PENDING),
-            calls,
-            replay_marker: user_content.clone(),
-        }),
-        user_content,
-        run_config: application_run_config(),
-    })
+    Ok((child_resumes, submitted_interrupt_ids))
 }
 
 fn application_call_chain(
@@ -1581,8 +1601,9 @@ impl ApplicationAgentTool {
             }
             application_batch.observe_calls(&event, &self.application.child_tools)?;
             if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
+                let interrupt_ids = confirmation_interrupt_ids(&event)?;
                 self.send_event(ctx, event).await?;
-                return Ok(nested_interrupt_result());
+                return Ok(nested_interrupt_result(&interrupt_ids));
             }
             if let Some(text) = event_text(&event) {
                 last_text = Some(text.clone());
@@ -1597,10 +1618,10 @@ impl ApplicationAgentTool {
                 ApplicationResultDisposition::Suppress => {}
                 ApplicationResultDisposition::ForwardAndPause => {
                     self.send_event(ctx, event).await?;
-                    return Ok(nested_interrupt_result());
+                    return Ok(nested_interrupt_result(application_batch.interrupt_ids()));
                 }
                 ApplicationResultDisposition::SuppressAndPause => {
-                    return Ok(nested_interrupt_result());
+                    return Ok(nested_interrupt_result(application_batch.interrupt_ids()));
                 }
             }
         }
@@ -1702,6 +1723,7 @@ fn event_text(event: &Event) -> Option<String> {
 struct ApplicationCallBatch {
     pending: HashSet<String>,
     interrupted: bool,
+    interrupt_ids: BTreeSet<String>,
 }
 
 enum ApplicationResultDisposition {
@@ -1751,19 +1773,24 @@ impl ApplicationCallBatch {
                 result.call_id.map(|call_id| {
                     (
                         call_id.to_owned(),
-                        is_nested_interrupt_result(result.response),
+                        nested_application_interrupt_ids(result.response),
                     )
                 })
             })
             .collect::<Vec<_>>();
         let mut suppressed_ids = HashSet::new();
-        for (call_id, interrupted) in results {
+        for (call_id, interrupt_ids) in results {
             if !self.pending.remove(&call_id) {
                 continue;
             }
-            if interrupted {
+            if let Some(interrupt_ids) = interrupt_ids {
                 if !suppressed_ids.insert(call_id) {
                     return Err(application_event_channel_error());
+                }
+                for interrupt_id in interrupt_ids {
+                    if !self.interrupt_ids.insert(interrupt_id) {
+                        return Err(application_event_channel_error());
+                    }
                 }
                 self.interrupted = true;
             }
@@ -1800,16 +1827,56 @@ impl ApplicationCallBatch {
             (true, true) => ApplicationResultDisposition::SuppressAndPause,
         })
     }
+
+    fn interrupt_ids(&self) -> &BTreeSet<String> {
+        &self.interrupt_ids
+    }
 }
 
-fn nested_interrupt_result() -> Value {
-    json!({NESTED_INTERRUPT_RESULT_KEY: true})
+fn confirmation_interrupt_ids(event: &Event) -> adk_rust::Result<BTreeSet<String>> {
+    let request = event
+        .actions
+        .tool_confirmation
+        .as_ref()
+        .ok_or_else(application_event_channel_error)?;
+    let call_id = request
+        .function_call_id
+        .as_deref()
+        .ok_or_else(application_event_channel_error)?;
+    let (interrupt_id, _) = sensitive_call_identity(
+        &event.invocation_id,
+        call_id,
+        &request.tool_name,
+        &request.args,
+    )
+    .map_err(|_| application_event_channel_error())?;
+    Ok(BTreeSet::from([interrupt_id]))
+}
+
+fn nested_interrupt_result(interrupt_ids: &BTreeSet<String>) -> Value {
+    json!({NESTED_INTERRUPT_RESULT_KEY: interrupt_ids})
+}
+
+pub(crate) fn nested_application_interrupt_ids(value: &Value) -> Option<BTreeSet<String>> {
+    let object = value.as_object().filter(|object| object.len() == 1)?;
+    let values = object.get(NESTED_INTERRUPT_RESULT_KEY)?.as_array()?;
+    if values.is_empty() || values.len() > 16 {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    for value in values {
+        let identity = value.as_str().filter(|identity| {
+            !identity.is_empty() && identity.len() <= 512 && !identity.chars().any(char::is_control)
+        })?;
+        if !ids.insert(identity.to_owned()) {
+            return None;
+        }
+    }
+    Some(ids)
 }
 
 fn is_nested_interrupt_result(value: &Value) -> bool {
-    value.as_object().is_some_and(|object| {
-        object.len() == 1 && object.get(NESTED_INTERRUPT_RESULT_KEY) == Some(&Value::Bool(true))
-    })
+    nested_application_interrupt_ids(value).is_some()
 }
 
 pub(crate) struct ApplicationEventStreamingAgent {

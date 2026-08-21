@@ -41,8 +41,8 @@ pub(crate) use agent::{
     PIPELINE_COMPLETED_METADATA_VALUE, pipeline_completed_event, pipeline_result_event,
 };
 pub(crate) use application::{
-    ApplicationExecutionError, PipelineApplicationResolver, PipelineApplicationSelection,
-    ResolvedApplicationParticipant,
+    ApplicationExecutionError, PIPELINE_APPLICATION_HITL_SCHEMA, PipelineApplicationResolver,
+    PipelineApplicationSelection, ResolvedApplicationParticipant,
 };
 pub(crate) use direct_tool::{
     DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection, PipelineDirectToolResolver,
