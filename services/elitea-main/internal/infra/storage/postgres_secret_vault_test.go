@@ -93,3 +93,36 @@ func secretVaultQueryFixture(t *testing.T, expectedVaultID, storedKey string) co
 		})
 	})
 }
+
+// A vault with no rows is ABSENT, and says so distinctly.
+//
+// Absence is the normal state of a fresh deployment: no project has stored a
+// secret and nobody has written an admin one. A caller that reads the vault
+// for a DEFAULT — the model catalogue, the chat configuration, the index
+// staleness timeout — must be able to tell that from a vault it could not
+// open, or every one of those reads fails on a clean install. The sentinel
+// still satisfies errors.Is(ErrContentUnavailable), so a caller that does not
+// distinguish the two is unaffected.
+func TestPostgresSecretVaultLoaderReportsAnAbsentVaultDistinctly(t *testing.T) {
+	loader, err := newPostgresSecretVaultLoader(contentQueryerFunc(func(context.Context, string, ...any) pgx.Row {
+		return contentRowFunc(func(...any) error { return pgx.ErrNoRows })
+	}), nil)
+	require.NoError(t, err)
+
+	_, err = loader.LoadProjectVault(context.Background(), 2)
+	require.ErrorIs(t, err, ErrVaultAbsent)
+	require.ErrorIs(t, err, ErrContentUnavailable)
+
+	_, err = loader.LoadAdminVault(context.Background())
+	require.ErrorIs(t, err, ErrVaultAbsent)
+
+	// A vault that exists and will not open is NOT absent.
+	unreadable, err := newPostgresSecretVaultLoader(
+		secretVaultQueryFixture(t, "project-2", storagePythonProjectKey),
+		[]byte(storagePythonMasterKey),
+	)
+	require.NoError(t, err)
+	_, err = unreadable.LoadProjectVault(context.Background(), 2)
+	require.ErrorIs(t, err, ErrContentUnavailable)
+	require.NotErrorIs(t, err, ErrVaultAbsent)
+}

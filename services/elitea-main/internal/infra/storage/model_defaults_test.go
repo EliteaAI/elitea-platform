@@ -290,3 +290,73 @@ func currentModelDefaultsReaderForTest(t *testing.T, vaults SecretVaultLoader) *
 	}
 	return reader
 }
+
+// TestCurrentModelDefaultsReaderReadsAnAbsentVaultAsNoDefaults pins the answer
+// a FRESH deployment gets.
+//
+// A project that has stored no secret has no vault row, and a deployment where
+// nobody has written an admin secret has no admin vault. Both loads then
+// answer ErrVaultAbsent. That used to fail the read, and because the model
+// catalogue asks for these defaults on every request, GET
+// /api/v2/configurations/models/{projectID} answered 500 for every section on
+// a deployment whose model rows were all present — the model picker was empty
+// and no cause reached any log.
+func TestCurrentModelDefaultsReaderReadsAnAbsentVaultAsNoDefaults(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		loader SecretVaultLoader
+	}{
+		{
+			name: "no vault anywhere",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(context.Context, int64) (SecretVault, error) { return nil, ErrVaultAbsent },
+				loadAdmin:   func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
+			},
+		},
+		{
+			name: "project vault only",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(context.Context, int64) (SecretVault, error) {
+					return &fakeSecretVault{regular: map[string]string{}, hidden: map[string]string{}}, nil
+				},
+				loadAdmin: func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
+			},
+		},
+		{
+			name: "admin vault only",
+			loader: &currentModelVaultLoaderStub{
+				loadProject: func(context.Context, int64) (SecretVault, error) { return nil, ErrVaultAbsent },
+				loadAdmin: func(context.Context) (SecretVault, error) {
+					return &fakeSecretVault{regular: map[string]string{}, hidden: map[string]string{}}, nil
+				},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reader := currentModelDefaultsReaderForTest(t, test.loader)
+			defaults, err := reader.Load(context.Background(), 7, 1, configurationapp.CurrentModelSectionLLM)
+			if err != nil {
+				t.Fatalf("an absent vault must read as no defaults, got %v", err)
+			}
+			if defaults != (configurationapp.CurrentModelCatalogDefaults{}) {
+				t.Fatalf("defaults=%#v", defaults)
+			}
+		})
+	}
+}
+
+// A vault that EXISTS and will not open keeps failing the read. Its values are
+// there and unread, so "no default has been chosen" would be a claim this
+// process cannot make.
+func TestCurrentModelDefaultsReaderStillFailsOnAnUnreadableVault(t *testing.T) {
+	unreadable := errors.New("open encrypted secret vault: " + ErrContentUnavailable.Error())
+	reader := currentModelDefaultsReaderForTest(t, &currentModelVaultLoaderStub{
+		loadProject: func(context.Context, int64) (SecretVault, error) { return nil, unreadable },
+		loadAdmin:   func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
+	})
+	if _, err := reader.Load(context.Background(), 7, 1, configurationapp.CurrentModelSectionLLM); !errors.Is(
+		err, ErrCurrentModelDefaultsUnavailable,
+	) {
+		t.Fatalf("err=%v", err)
+	}
+}

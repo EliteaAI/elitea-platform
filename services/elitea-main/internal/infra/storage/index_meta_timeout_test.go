@@ -139,3 +139,23 @@ func (s *currentIndexMetaVaultStub) LookupRegularProjectID(string) (centrysecret
 func (s *currentIndexMetaVaultStub) LookupRegularInteger(name string) (centrysecrets.Secret, error) {
 	return s.LookupRegular(name)
 }
+
+// A project that has stored no secret has no vault. That is the same answer as
+// a vault without the key: the timeout was never overridden. It used to fail
+// the read instead, on every fresh project.
+func TestCurrentIndexMetaTimeoutReaderReadsAnAbsentVaultAsTheDefault(t *testing.T) {
+	resolver, err := NewCurrentIndexMetaTimeoutResolver(&currentModelVaultLoaderStub{
+		loadProject: func(context.Context, int64) (SecretVault, error) { return nil, ErrVaultAbsent },
+		loadAdmin:   func(context.Context) (SecretVault, error) { return nil, ErrVaultAbsent },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeout, err := resolver.ResolveCurrentIndexMetaStaleTimeout(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("an absent vault must read as the default timeout: %v", err)
+	}
+	if timeout != defaultCurrentIndexMetaStaleTimeout {
+		t.Fatalf("timeout=%s", timeout)
+	}
+}

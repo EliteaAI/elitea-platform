@@ -939,9 +939,20 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		apierr.WriteStatus(w, http.StatusBadRequest, "invalid configuration data")
 		return
 	}
-	metaBytes, err := json.Marshal(body["meta"])
-	if err != nil {
-		apierr.WriteStatus(w, http.StatusBadRequest, "invalid configuration metadata")
+	// `meta` follows the same rule the partial UPDATE applies: an absent key
+	// and a present JSON null both store `{}`.
+	//
+	// It used to be `json.Marshal(body["meta"])`, and the UI never sends the
+	// key. json.Marshal(nil) is the four bytes `null`, so every configuration
+	// created through this route stored `meta = 'null'::jsonb` — a value the
+	// column's own default (`'{}'`) exists to prevent, and one the typed
+	// reader refuses ("decode current configuration metadata: JSON object is
+	// required"). The create answered 201 and the list of that section then
+	// answered 500 for every member of the project, permanently: one row made
+	// the whole credentials screen unreachable.
+	metaBytes, metaReason := createdMetadataColumn(body)
+	if metaReason != "" {
+		apierr.WriteStatus(w, http.StatusBadRequest, metaReason)
 		return
 	}
 	shared, _ := body["shared"].(bool)
@@ -1276,6 +1287,17 @@ func validateUpdatedConfigurationData(body map[string]any) *configurationWriteFa
 		return &configurationWriteFailure{status: http.StatusBadRequest, message: err.Error()}
 	}
 	return nil
+}
+
+// createdMetadataColumn encodes the `meta` column of a CREATE, applying the
+// rule the partial UPDATE already applies: an absent key and a present JSON
+// null both store `{}`.
+//
+// The column holds a dictionary in the reference model and in every reader, so
+// a null there is off-contract and no reader accepts it.
+func createdMetadataColumn(body map[string]any) (encoded []byte, reason string) {
+	encoded, _, reason = updatedObjectColumn(map[string]any{"meta": body["meta"]}, "meta")
+	return encoded, reason
 }
 
 // updatedObjectColumn encodes one jsonb column of a partial UPDATE.

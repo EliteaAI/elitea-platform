@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
@@ -13,6 +14,17 @@ import (
 )
 
 const currentAdminVaultID = "admin"
+
+// ErrVaultAbsent reports that the vault does not exist: neither centry row is
+// present for that id.
+//
+// It is a DIFFERENT answer from ErrContentUnavailable, and it still satisfies
+// errors.Is for that sentinel, so a caller that does not distinguish the two
+// keeps its behaviour unchanged. A fresh deployment holds no `admin` vault and
+// no project vault until something writes a secret, so "absent" is the normal
+// state of a new install, not a failure. Treating it as one made every read
+// that consults the vault for a DEFAULT answer 500 on a clean deployment.
+var ErrVaultAbsent = fmt.Errorf("%w: the vault does not exist", ErrContentUnavailable)
 
 // SecretVault exposes only exact-name reads. The ProjectID variants are the
 // narrow string-or-integer compatibility path for current default-model keys;
@@ -96,9 +108,16 @@ FROM centry.secrets_key AS k
 JOIN centry.secrets_data AS d ON d.id = k.id
 WHERE k.id = $1`, vaultID).Scan(&storedProjectKey, &encryptedVault)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrContentUnavailable
+		return nil, ErrVaultAbsent
 	}
 	if err != nil {
+		// The cause is logged rather than returned: callers must keep seeing
+		// one opaque sentinel, but an operator reading the service log needs
+		// to tell a dropped connection from a vault that will not decrypt.
+		// Without this line the only symptom is a 500 with no cause anywhere,
+		// which is how the model catalogue's outage had to be diagnosed from a
+		// database dump.
+		slog.ErrorContext(ctx, "secret vault read failed", "vault_id", vaultID, "error", err)
 		return nil, fmt.Errorf("load encrypted secret vault: %w", ErrContentUnavailable)
 	}
 	defer clearContentBytes(storedProjectKey)
@@ -111,6 +130,13 @@ WHERE k.id = $1`, vaultID).Scan(&storedProjectKey, &encryptedVault)
 		vault, err = centrysecrets.OpenWrapped(l.masterKey, storedProjectKey, encryptedVault)
 	}
 	if err != nil {
+		// A vault that EXISTS and will not open is the opposite answer from an
+		// absent one, and the two must never be confused: absence means "no
+		// secrets have been stored yet", while this means "the secrets are
+		// there and this process cannot read them" — a wrong master key, most
+		// often. Only the reason class is logged; no stored value can reach a
+		// log line.
+		slog.ErrorContext(ctx, "secret vault did not open", "vault_id", vaultID, "error", err)
 		return nil, fmt.Errorf("open encrypted secret vault: %w", ErrContentUnavailable)
 	}
 	return vault, nil

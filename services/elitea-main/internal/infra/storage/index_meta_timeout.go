@@ -42,6 +42,11 @@ func (r *CurrentIndexMetaTimeoutResolver) ResolveCurrentIndexMetaStaleTimeout(
 	}
 
 	vault, err := r.vaults.LoadProjectVault(ctx, int64(projectID))
+	// A project that has stored no secret has no vault. That is the same
+	// answer as a vault without this key: the timeout was never overridden.
+	if errors.Is(err, ErrVaultAbsent) {
+		return defaultCurrentIndexMetaStaleTimeout, nil
+	}
 	if err != nil || vault == nil {
 		return 0, currentIndexMetaTimeoutError(ctx, err)
 	}
