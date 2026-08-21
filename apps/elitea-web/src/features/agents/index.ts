@@ -30,9 +30,21 @@
  * layer will need the same entry point for.
  */
 export { CreateAgentForm } from './ui/CreateAgentForm';
-export type { CreateAgentFormProps } from './ui/CreateAgentForm';
 
 export { VersionReplacementModal } from './ui/VersionReplacementModal';
+
+/**
+ * `pages/agents-hub`'s `AgentModal` shows the agent instructions in this
+ * dialog. Baseline: `AgentModal.jsx:263-269`. A page must enter the slice
+ * through this file (`.dependency-cruiser.cjs` `no-deep-slice-import`).
+ *
+ * `CreateAgentFormProps` gave up the slot. The §3.5 budget is 20 symbols,
+ * and the list was full. No file outside this slice imported that type; one
+ * doc comment in `pages/agents/CreateApplication.tsx` names it, and a doc
+ * comment is not an import. Restore it here if a real consumer appears, and
+ * retire another symbol for it.
+ */
+export { StyledShowContextModal } from './ui/StyledShowContextModal';
 
 /**
  * #134 — `AgentVersionControls` (the agent editor's version dropdown +

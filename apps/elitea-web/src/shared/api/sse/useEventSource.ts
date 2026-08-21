@@ -55,8 +55,18 @@ type EventSourceHandlers = Readonly<Record<string, (event: MessageEvent) => void
  * back, warn, or retry. Every caller should pass one.
  */
 interface EventSourceOptions {
-  /** Fired on a failed connection or a mid-stream drop. The stream is NOT retried automatically — decide here. */
-  readonly onError?: ((event: Event) => void) | undefined;
+  /**
+   * Fired on a failed connection or a mid-stream drop. The stream is NOT
+   * retried automatically — decide here.
+   *
+   * `readyState` is the source's WHATWG state at the moment of the error, and
+   * it is the only thing that separates the two cases: `CLOSED` (2) means the
+   * connection failed for good and a caller that wants it back must reopen it;
+   * `CONNECTING` (0) means the browser is already reconnecting by itself. A
+   * caller that reopens then runs two streams for one principal. It burns the
+   * server's per-principal admission cap twice as fast.
+   */
+  readonly onError?: ((event: Event, readyState: number) => void) | undefined;
   /**
    * Fired once the connection is actually established (the WHATWG `open`
    * event — readyState transitions to OPEN). Distinct from a frame ever
@@ -118,7 +128,7 @@ export function useEventSource(url: string | null | undefined, handlers: EventSo
       onOpenRef.current?.(event);
     });
     source.addEventListener('error', (event) => {
-      onErrorRef.current?.(event);
+      onErrorRef.current?.(event, source.readyState);
     });
     return () => source.close();
   }, [url, eventNamesKey]);

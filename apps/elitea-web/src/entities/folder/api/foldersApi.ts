@@ -52,6 +52,8 @@ interface FolderConversationRefWire {
   readonly id: string;
   readonly name?: string;
   readonly is_private?: boolean;
+  /** Integer on the wire (`folders` handler `conversationItem.AuthorID`). */
+  readonly author_id?: number | string;
   readonly updated_at?: string;
   readonly created_at?: string;
   readonly isPlayback?: boolean;
@@ -63,6 +65,11 @@ function normaliseFolderConversationRef(wire: FolderConversationRefWire): Folder
     id: wire.id,
     ...(wire.name !== undefined ? { name: wire.name } : {}),
     ...(wire.is_private !== undefined ? { isPrivate: wire.is_private } : {}),
+    // Keep the value as a string. Every consumer compares it against a
+    // string user id. The normaliser dropped this field before. The row
+    // menu's author guard then compared `undefined` with `undefined`. Delete
+    // and Edit stayed enabled on another member's conversation.
+    ...(wire.author_id !== undefined ? { authorId: String(wire.author_id) } : {}),
     ...(wire.updated_at !== undefined ? { updatedAt: wire.updated_at } : {}),
     ...(wire.created_at !== undefined ? { createdAt: wire.created_at } : {}),
     ...(wire.isPlayback !== undefined ? { isPlayback: wire.isPlayback } : {}),

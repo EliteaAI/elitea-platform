@@ -3,7 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { server } from '../../../test/setup';
 import { installWebStorageShim } from '../../../test/webstorage';
@@ -15,6 +15,20 @@ import { createTestSocketClient } from '@/shared/api/socket/testing';
 
 import { AIAssistantInput } from './AIAssistantInput';
 import type { AIAssistantInputProps } from './AIAssistantInput';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
+
+// The AI Assistant trigger POSTs `predict_llm`, which the Go router mounts in
+// no profile, so `AIAssistantInput` hides it by default. See
+// `shared/config/backendCapabilities`. These tests assert the trigger's own
+// behaviour, so they turn the capability on.
+beforeEach(() => {
+  setBackendCapabilityForTests('aiGeneration', true);
+});
+
+afterEach(() => {
+  resetBackendCapabilitiesForTests();
+});
+
 
 installCodeMirrorTestPolyfills();
 installWebStorageShim();
@@ -102,5 +116,23 @@ describe('AIAssistantInput', () => {
 
     expect(onChange).toHaveBeenCalled();
     expect(onInput).not.toHaveBeenCalled();
+  });
+  /*
+   * THE GATE LIVES ON THIS COMPONENT, not only on its call sites.
+   *
+   * The modal posts to `/elitea_core/predict_llm/...`, which the Go router
+   * registers in no profile, so the trigger can only ever 404.
+   * `settings/SimpleLLMInputItem.tsx` was gated first, but `nodes/PrinterNode`,
+   * `nodes/ConditionNode` and `settings/PipelineSettings` render this component
+   * directly and kept a live button. This case pins the gate here, so a later
+   * call site cannot reintroduce the 404 by forgetting its own check.
+   */
+  it('renders no AI Assistant trigger while the predict_llm backend is absent', () => {
+    resetBackendCapabilitiesForTests();
+    const ui = renderInput({ value: 'draft' });
+
+    expect(ui.queryByRole('button', { name: 'AI Assistant' })).not.toBeInTheDocument();
+    // The field itself must still work; only the trigger goes.
+    expect(ui.getByDisplayValue('draft')).toBeInTheDocument();
   });
 });

@@ -28,7 +28,7 @@ export interface DeleteEntityModalContentOptions {
   custom?: ReactNode;
 }
 
-/** @public shared/ui component API — consumed once a features/widgets/pages caller exists (none does yet in this pass). */
+/** @public shared/ui component API for the delete-confirmation modal. */
 export interface DeleteEntityModalProps {
   open: boolean;
   onClose: () => void;
@@ -192,11 +192,15 @@ export function DeleteEntityModal({
   const resolvedCopy = resolveCopy(copy);
   const confirmDisabled = isConfirmDisabled(shouldRequestInputName, name, inputName);
 
+  // `BaseModal` attaches this handler to the MUI `Dialog` root. Enter therefore
+  // bubbles here from every child control.
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
-    if (event.key === 'Enter' && !confirmDisabled) {
-      event.preventDefault();
-      onConfirm();
-    }
+    if (event.key !== 'Enter' || confirmDisabled) return;
+    // Enter goes to a focused button first. Let the browser activate that button.
+    // Enter on Cancel or Close must not confirm the destructive action.
+    if (event.target instanceof HTMLElement && event.target.closest('button') !== null) return;
+    event.preventDefault();
+    onConfirm();
   };
 
   const body = content?.custom ?? (

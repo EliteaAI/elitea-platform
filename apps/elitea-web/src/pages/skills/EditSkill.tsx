@@ -22,6 +22,7 @@ import {
   type SkillVersion,
   type SkillWriteInput,
 } from '@/features/skills';
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { BaseModal } from '@/shared/ui/BaseModal';
@@ -145,6 +146,10 @@ export function EditSkill(): ReactNode {
 
   useEffect(() => setValue(initialValue), [initialValue]);
 
+  // The test run POSTs `predict_llm`, which no router mounts, so the pane
+  // stays hidden — see `shared/config/backendCapabilities`.
+  const canTestSkill = hasBackendCapability('aiGeneration');
+
   const isDirty = JSON.stringify(value) !== JSON.stringify(initialValue);
   const versions = detail.data?.versions ?? [];
 
@@ -213,7 +218,7 @@ export function EditSkill(): ReactNode {
             showErrors={showErrors}
           />
         </Box>
-        {projectId && (
+        {projectId && canTestSkill && (
           <Box sx={testPaneSx}>
             <SkillTestPanel
               projectId={projectId}

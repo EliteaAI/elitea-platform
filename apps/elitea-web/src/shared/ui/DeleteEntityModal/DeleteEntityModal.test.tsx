@@ -215,4 +215,54 @@ describe('DeleteEntityModal', () => {
       expect((getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('');
     });
   });
+
+  describe('Enter key', () => {
+    /**
+     * `BaseModal` attaches the modal's `onKeyDown` to the MUI `Dialog` root.
+     * An Enter press on any child therefore bubbles into the confirm branch.
+     * The confirm branch also calls `preventDefault()`, so it suppressed the
+     * focused button's own activation. Enter on Cancel then ran the
+     * destructive confirm instead of the dismiss. A modal without
+     * `shouldRequestInputName` is the worst case. `confirmDisabled` stays
+     * false there, and MUI puts initial focus on a button.
+     */
+    it('activates the focused Cancel button instead of confirming', async () => {
+      const user = userEvent.setup();
+      const onConfirm = vi.fn();
+      const onClose = vi.fn();
+      const { getByRole } = renderWithTheme(
+        <DeleteEntityModal
+          open
+          onClose={onClose}
+          onConfirm={onConfirm}
+          name="prod-db"
+        />,
+      );
+
+      getByRole('button', { name: 'Cancel' }).focus();
+      await user.keyboard('{Enter}');
+
+      expect(onConfirm).not.toHaveBeenCalled();
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('confirms on Enter from the dialog body, where no button has focus', async () => {
+      const user = userEvent.setup();
+      const onConfirm = vi.fn();
+      const { getByRole } = renderWithTheme(
+        <DeleteEntityModal
+          open
+          onClose={() => {}}
+          onConfirm={onConfirm}
+          name="prod-db"
+          content={{ custom: <input aria-label="Note" /> }}
+        />,
+      );
+
+      getByRole('textbox', { name: 'Note' }).focus();
+      await user.keyboard('{Enter}');
+
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+  });
 });

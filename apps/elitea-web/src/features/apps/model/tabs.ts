@@ -66,23 +66,39 @@ export function isApplicationsTab(tab: AppsTab): boolean {
 }
 
 /**
+ * The default `view` value. `src/routes/-search/params.ts:156` declares
+ * `view` as `z.enum(['grid','list']).catch('grid').prefault('grid')`, so a
+ * parsed search object ALWAYS carries a `view` key. An absent key and the
+ * value `'grid'` therefore mean the same thing, and both count as "already
+ * canonical" here.
+ */
+const APPS_VIEW_DEFAULT = 'grid';
+
+/**
  * Ported from `Apps.jsx:44-52`'s `getSearchForAppsTab` — operates on the
  * already-parsed search OBJECT (TanStack Router's `validateSearch` output)
  * rather than a raw `URLSearchParams`/query string, since PARAM-022/023's
  * `view` schema (`src/routes/-search/params.ts`) already owns string
  * parsing. The `view` toggle only applies to the Applications tab's
- * card/table switch (`ViewToggle`); switching to the Catalog tab drops any
- * `view` value already in the URL, same as the baseline.
+ * card/table switch (`ViewToggle`); switching to the Catalog tab resets any
+ * `view` value already in the URL to the default, same as the baseline.
  *
- * Returns the SAME object reference when there is nothing to strip
+ * Returns the SAME object reference when the value is already canonical
  * (deliberately, not just an equal-by-value copy) — `pages/apps/Apps.tsx`
  * relies on reference equality to decide whether a redirect is needed at
  * all, the same way the baseline's `normalizedSearch === location.search`
  * check does with a real, single canonical string.
+ *
+ * The `search.view === undefined` test alone is not sufficient. The route
+ * schema prefaults `view` to `'grid'`, so the key is never absent in the
+ * running app. This function therefore returned a new object on every
+ * Catalog-tab mount. `Apps.tsx` then issued a replace-navigation that could
+ * not change anything, because `validateSearch` put the default straight
+ * back.
  */
 export function searchForAppsTab<T extends { view?: string }>(tab: AppsTab, search: T): T {
   if (tab !== AppsTabs[1]) return search;
-  if (search.view === undefined) return search;
+  if (search.view === undefined || search.view === APPS_VIEW_DEFAULT) return search;
   const { view: _view, ...rest } = search;
   return rest as T;
 }

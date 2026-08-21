@@ -72,10 +72,15 @@ import { BUTTON_VARIANTS, BaseBtn } from '@/shared/ui/BaseBtn';
  *
  * **Graceful degradation:** no personal project id, no runtime config, or
  * a runtime with no `EventSource` at all ⇒ the hook no-ops and the widget
- * still renders fully. The on-mount/refetch-driven badge keeps working;
- * only the "flip on immediately from a live push" half is unavailable —
- * the same degradation shape the socket version had with no provider
- * mounted.
+ * still renders fully. Only the "flip on immediately from a live push" half
+ * is unavailable — the same degradation shape the socket version had with no
+ * provider mounted.
+ *
+ * With no live stream the badge query is NOT polled by default: the app sets
+ * no `refetchInterval` anywhere, so it refreshes on refocus and on remount
+ * only. That is why this widget turns the badge query into a slow poll once
+ * `useNotificationsSSE` reports every reconnect attempt spent. The poll is
+ * scoped to this one query, and it stops while the tab is in the background.
  *
  * **Graceful degradation, no personal project:** matches the old app's own
  * `onClickNotificationButton` exactly — `navigate(RouteDefinitions.Chat)`
@@ -119,6 +124,13 @@ function selectPersonalProjectId(context: unknown): string | undefined {
 /** Old app: `NotificationList.jsx`'s `POPOVER_PAGE_SIZE = 5`. */
 const POPOVER_PAGE_SIZE = 5;
 
+/**
+ * How often the badge query polls once the live stream is gone for good. One
+ * minute is slow enough to cost nothing and fast enough that the dot is not
+ * stale for a whole session.
+ */
+const DEAD_STREAM_POLL_MS = 60_000;
+
 export function NotificationButton(): ReactNode {
   const navigate = useNavigate();
   const routeContext: unknown = useRouteContext({ strict: false });
@@ -126,6 +138,15 @@ export function NotificationButton(): ReactNode {
 
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   const [hasUnread, setHasUnread] = useState(false);
+
+  // Live push, now over SSE (issue #92 — see this file's header). No-ops
+  // without a personal project id, without runtime config, or in a runtime
+  // with no `EventSource`; `notifications_ready` inside the hook also
+  // invalidates the list query, so the authoritative effect below re-runs.
+  // Declared BEFORE the badge query because `streamDead` decides whether
+  // that query polls.
+  const handleNotify = useCallback(() => setHasUnread(true), []);
+  const { streamDead } = useNotificationsSSE(personalProjectId, handleNotify);
 
   // Badge-only signal: the real API has no dedicated "count only" param
   // (`features/notifications/api/notifications.ts`'s `ListNotificationsParams`
@@ -135,7 +156,13 @@ export function NotificationButton(): ReactNode {
   // `only_new: true, only_total: true, pageSize: 1` query shape.
   const { data, dataUpdatedAt } = useNotificationsList(
     { projectId: personalProjectId ?? '', pageSize: 1, params: { only_new: true } },
-    { enabled: !!personalProjectId },
+    {
+      enabled: !!personalProjectId,
+      // The fallback for a stream that will not come back. See this file's
+      // header: without it the dot only changes on refocus or remount.
+      refetchInterval: streamDead ? DEAD_STREAM_POLL_MS : false,
+      refetchIntervalInBackground: false,
+    },
   );
 
   // Old app: `useEffect(() => { if (data !== undefined) setHasMessages(!!data
@@ -162,13 +189,6 @@ export function NotificationButton(): ReactNode {
   useEffect(() => {
     if (data !== undefined) setHasUnread(!!data.total);
   }, [data, dataUpdatedAt]);
-
-  // Live push, now over SSE (issue #92 — see this file's header). No-ops
-  // without a personal project id, without runtime config, or in a runtime
-  // with no `EventSource`; `notifications_ready` inside the hook also
-  // invalidates the list query, so the effect above re-runs authoritatively.
-  const handleNotify = useCallback(() => setHasUnread(true), []);
-  useNotificationsSSE(personalProjectId, handleNotify);
 
   const handleClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {

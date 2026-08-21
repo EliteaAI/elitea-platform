@@ -7,8 +7,9 @@ import type { Conversation } from '@/entities/conversation';
  * back to `ConversationItem.tsx` (which itself imports FROM `.menu.tsx`/
  * `.row.tsx`).
  *
- * `entities/conversation`'s `Conversation` doesn't model `author_id`/
- * `users_count`/`isNew` — a disclosed gap already flagged by this same
+ * `entities/conversation`'s `Conversation` now models `authorId`. The row
+ * menu's author-only guard needs it, and the normaliser used to drop it. It
+ * still does not model `users_count`/`isNew` — a disclosed gap already flagged by this same
  * feature's own `lib/hooks/useQueryFoldersList.hooks.ts` module doc
  * (`toConversation`'s doc comment, citing `ConversationItem.jsx:57-66`:
  * "destructures `name`/`is_private`/`users_count`/`author_id`/… directly
@@ -26,7 +27,6 @@ import type { Conversation } from '@/entities/conversation';
  * `ConversationItem.jsx:63,78,323-351,469-503`).
  */
 export interface ConversationWithOwnerMeta extends Conversation {
-  readonly authorId?: string | undefined;
   readonly usersCount?: number | undefined;
   readonly isNew?: boolean | undefined;
 }

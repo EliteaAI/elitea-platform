@@ -23,13 +23,33 @@ export function extractFirstName(fullName: string | undefined): string {
   return fullName.split(' ')[0] ?? '';
 }
 
+/**
+ * True when `participant` is the chat participant row for `userId`.
+ *
+ * The comparison is on the STRING form of both ids on purpose. The participant
+ * row carries `entity_meta.id` as a JSON number (`useChatBoxSend.ts` writes
+ * `Number(userId)`, and the legacy pydantic model declares `id: int`), while
+ * every caller supplies `userId` as a string (`/social/author` answers
+ * `{"id":"5"}`). A strict `===` between the two is false for every row, so the
+ * saved per-conversation model was never restored.
+ *
+ * The `undefined` guards are necessary. `String(undefined) === String(undefined)`
+ * is true, so without them a participant with no `entity_meta.id` matches while
+ * the author query is still loading.
+ */
+function isSameUser(participant: ChatParticipantWire, userId: string | undefined): boolean {
+  if (participant.entity_name !== ChatParticipantType.Users) return false;
+  const participantId = participant.entity_meta?.id;
+  if (participantId === undefined || participantId === null || userId === undefined) return false;
+  return String(participantId) === String(userId);
+}
+
 /** `newConversation.helpers.js:25-28`. */
 export function getChatUserSettings(
   conversation: ConversationForHelpers | undefined,
   userId: string | undefined,
 ): Readonly<Record<string, unknown>> | undefined {
-  return conversation?.participants?.find((p) => p.entity_name === ChatParticipantType.Users && p.entity_meta?.id === userId)?.entity_settings
-    ?.llm_settings;
+  return conversation?.participants?.find((p) => isSameUser(p, userId))?.entity_settings?.llm_settings;
 }
 
 /** `newConversation.helpers.js:30-45`. */
@@ -39,7 +59,7 @@ export function setUserLLmSettings(
   llmSettings: Readonly<Record<string, unknown>>,
 ): ChatParticipantWire[] {
   return (participants ?? []).map((p) => {
-    if (p.entity_name !== ChatParticipantType.Users || p.entity_meta?.id !== userId) return p;
+    if (!isSameUser(p, userId)) return p;
     return {
       ...p,
       entity_settings: {

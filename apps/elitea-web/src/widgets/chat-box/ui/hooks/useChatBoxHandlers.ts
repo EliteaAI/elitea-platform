@@ -18,16 +18,42 @@
  * (session-only) IS ported. `continueHitl`'s Track-1 "parallel fan-out"
  * decision-batching isn't ported (each decision resumes independently);
  * Track-2's independent fan-out-child resume IS (routes on `childThreadId`).
+ *
+ * CONTINUATION TRANSPORT. `continueHitl` resumes over REST first — `POST
+ * /api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}`
+ * with `execution_contract=agent.continue.hitl.v1` — and emits
+ * `chat_continue_predict` only when that route refuses or is absent. The order
+ * matters: the socket client is a no-op stub whenever `vite_socket_server` is
+ * empty. That is what the shipped deployment serves. So the socket alone left
+ * every approval paused server-side. It never emits after a route that
+ * ACCEPTED the resume; that would run the agent twice.
+ *
+ * THE OTHER TWO STAY ON THE SOCKET, and that is the backend's shape, not an
+ * omission here:
+ *
+ *  - `continueTokenLimit` has NO contract. `Continue` admits exactly
+ *    `agent.continue.hitl.v1` and `agent.continue.authorization.v1`, and 400s
+ *    on anything else.
+ *  - `resumeMcpFlow` would need `agent.continue.authorization.v1`, which
+ *    REQUIRES an `authorization_request_id`. Nothing in this app captures that
+ *    field off the `mcp_authorization_required` frame yet, and the same
+ *    contract refuses the non-empty `user_declined_mcp_servers` this handler
+ *    sends.
+ *
+ * Both still revert their optimistic patch when no transport takes the resume,
+ * so neither spins for the session.
  */
 
 import type { conversationApi } from '@/entities/conversation';
 import type { ChatMessage } from '@/features/chat-messages';
+import { t } from '@/shared/i18n';
 import { ToolActionStatus } from '@/shared/lib/chat';
 
 import {
   buildChatContinuePayload,
   buildDeclinedServersList,
   buildDefaultMessagePayload,
+  buildFailedTurnMessage,
   buildOptimisticUserMessage,
   buildRegeneratePayload,
   buildSendResult,
@@ -36,16 +62,20 @@ import {
   findQuestionForAnswer,
   findQuestionText,
   maybeSetStreamingInfo,
+  NO_STREAM_TRANSPORT,
   readServerUrl,
   regeneratingPatch,
   resolveConversationForSend,
   resolveParticipantId,
   resolveUploadConversationId,
+  revertContinuation,
   toProjectIdString,
   trackMcpAuthDecision,
+  tryEmit,
   uploadPendingAttachments,
   UPLOAD_FAILED,
 } from './useChatBoxHandlers.helpers';
+import { buildHitlContinueBody, findHitlInterruptId } from './useChatBoxHandlers.hitl';
 import type {
   ChatBoxHandlerDeps,
   HitlInterruptAction,
@@ -80,6 +110,36 @@ export type {
   UseChatBoxHandlersResult,
 } from './useChatBoxHandlers.helpers';
 
+/** Shown when neither the REST transport nor the socket accepted the turn. */
+const undeliveredText = (): string =>
+  t('widgets.chatBox.turnNotDelivered', 'The message was not sent: no chat connection is available. Reload the page and try again.');
+
+/**
+ * Hands ONE turn to the REST transport, then to the socket.
+ *
+ * Returns `undefined` when a transport took the turn, or the text to show the
+ * user when NONE did. Exactly one of the two starts may run: a started REST
+ * execution is already live server-side, and emitting `chat_predict` as well
+ * would run the agent a second time.
+ */
+async function deliverTurn(
+  deps: ChatBoxHandlerDeps,
+  params: { readonly conversationUuid: string; readonly payload: Record<string, unknown> },
+): Promise<string | undefined> {
+  const outcome = deps.startStreamedExecution
+    ? await deps.startStreamedExecution({ conversationUuid: params.conversationUuid, payload: params.payload })
+    : NO_STREAM_TRANSPORT;
+  if (outcome.started) return undefined;
+  // A route that ANSWERED and refused this turn must not be retried over the
+  // socket: the second start cannot succeed either, and it hides the reason.
+  if (outcome.reason === 'rejected') return outcome.message;
+  const emitted = tryEmit(
+    () => deps.emitSocket('chat_predict', { ...params.payload, conversation_uuid: params.conversationUuid, project_id: toProjectIdString(deps.projectId) }),
+    'chat_predict',
+  );
+  return emitted ? undefined : undeliveredText();
+}
+
 /** Creates a bundle of imperative action handlers for the ChatBox, each a closure over caller-injected `deps`. */
 export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlersResult {
   const { emitSocket, setChatHistory, isStreamingNow, setStreamingInfo, generateMessagePayload, triggerRegenerate, triggerDeleteMessage, triggerDeleteAllMessages, conversationUuid, conversationId, projectId } = deps;
@@ -104,24 +164,18 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     // Only start once a conversation UUID actually exists — baseline:
     // `ChatBox.jsx:928` `if (conversationUuid) { emit(...) }`.
     //
-    // SSE FIRST, socket as fallback (issue #93). The streaming reducer this
-    // needed now exists, so the run starts over REST and its answer streams
-    // back over `execution.node_event`. Exactly ONE of the two starts may
-    // run: `startStreamedExecution` resolving true means the execution is
-    // already live server-side, and emitting `chat_predict` as well would run
-    // the agent a second time. It resolves false only when the backend serves
-    // no replay stream, which is when the socket path is still correct.
-    if (resolvedConversationUuid) {
-      const streamed = deps.startStreamedExecution
-        ? await deps.startStreamedExecution({ conversationUuid: resolvedConversationUuid, payload })
-        : false;
-      if (!streamed) {
-        try {
-          emitSocket('chat_predict', { ...payload, conversation_uuid: resolvedConversationUuid, project_id: toProjectIdString(projectId) });
-        } catch (error) {
-          console.warn('[useChatBoxHandlers] chat_predict emit failed:', error);
-        }
-      }
+    // SSE FIRST, socket as fallback (issue #93). Every outcome of that pair is
+    // now REPORTED. Before, a turn that reached no transport left the
+    // optimistic user bubble on screen. It produced no answer, no error and
+    // nothing the user could act on. That is the normal case on a deployment
+    // whose `vite_socket_server` is empty. There the injected socket client is
+    // the no-op stub whose `emit` returns false.
+    const failure = resolvedConversationUuid
+      ? await deliverTurn(deps, { conversationUuid: resolvedConversationUuid, payload })
+      : t('widgets.chatBox.conversationNotCreated', 'The message was not sent: this chat could not be created.');
+    if (failure !== undefined) {
+      setChatHistory((prev) => [...prev, buildFailedTurnMessage(questionId, failure)]);
+      return { success: false };
     }
     return buildSendResult(createdConversation);
   };
@@ -215,16 +269,42 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     const withValue = action.action === 'edit' || action.action === 'block_with_comment' ? { hitl_value: action.value ?? '' } : {};
     return { ...base, hitl_resume: true, hitl_action: action.action, ...withValue };
   };
-  const continueHitl = (action: HitlInterruptAction): void => {
+  /**
+   * Resumes the pause over REST when the route can express it.
+   *
+   * Returns `true` when the run is live again — the socket must then stay
+   * quiet, because a second resume runs the agent twice.
+   */
+  const resumeHitlOverRest = async (message: ChatMessage, action: HitlInterruptAction): Promise<boolean> => {
+    if (!deps.continueStreamedExecution || !deps.conversationUuid) return false;
+    const body = buildHitlContinueBody({
+      projectId: deps.projectId,
+      conversationUuid: deps.conversationUuid,
+      messageId: message.id,
+      threadId: action.childThreadId || message.threadId,
+      action,
+      interruptId: findHitlInterruptId(message, action.toolCallId),
+    });
+    if (body === undefined) return false;
+    const outcome = await deps.continueStreamedExecution({ conversationUuid: deps.conversationUuid, body });
+    return outcome.started;
+  };
+  const continueHitl = async (action: HitlInterruptAction): Promise<void> => {
     const message = [...deps.chatHistory].reverse().find((item) => Boolean(item.hitlInterrupt) || Boolean(item.hitlInterrupts?.length));
     if (!message) return;
     const payload = buildHitlPayload(message, action);
     applyHitlOptimisticUpdate(message.id, action);
     setStreamingInfo(message.questionId ?? message.id);
-    try {
-      emitSocket('chat_continue_predict', payload);
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] continueHitl emit failed:', error);
+    // REST first, socket second — the same order the START path takes. The
+    // Go continuation route is the only one a shipped deployment serves: the
+    // socket client is a no-op stub whenever `vite_socket_server` is empty.
+    if (await resumeHitlOverRest(message, action)) return;
+    // The optimistic patch above is irreversible unless the emit is checked:
+    // the approval card is already gone and the bubble already spinning. So a
+    // continuation that reached no transport left the run paused server-side,
+    // with no way back on screen.
+    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'continueHitl')) {
+      revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
   const resumeMcpFlow = (messageId: string, addToIgnoreList = false): void => {
@@ -245,10 +325,8 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
       ),
     );
     setStreamingInfo(message.questionId ?? messageId);
-    try {
-      emitSocket('chat_continue_predict', payload);
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] resumeMcpFlow emit failed:', error);
+    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'resumeMcpFlow')) {
+      revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
   const continueTokenLimit = (messageId: string): void => {
@@ -258,10 +336,8 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     const payload = buildChatContinuePayload(deps, { messageId, threadId: message.threadId, question });
     setChatHistory((prev) => prev.map((msg) => (msg.id !== messageId ? msg : { ...msg, isLoading: true, isStreaming: true })));
     setStreamingInfo(message.questionId ?? messageId);
-    try {
-      emitSocket('chat_continue_predict', payload);
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] continueTokenLimit emit failed:', error);
+    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'continueTokenLimit')) {
+      revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
   return { sendQuestion, copyToClipboard, regenerateAnswer, deleteAnswer, clearChat, continueHitl, resumeMcpFlow, continueTokenLimit };

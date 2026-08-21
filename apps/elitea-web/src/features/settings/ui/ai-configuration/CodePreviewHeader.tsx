@@ -81,7 +81,11 @@ export default memo(function CodePreviewHeader({
           disabled={false}
         />
         {showCloseButton && (
-          <IconButton color="secondary" onClick={onClose}>
+          <IconButton
+            color="secondary"
+            aria-label={t('common.closeAriaLabel', 'Close')}
+            onClick={onClose}
+          >
             <CloseIcon sx={{ width: '1rem', height: '1rem' }} />
           </IconButton>
         )}

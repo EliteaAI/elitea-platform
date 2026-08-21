@@ -51,6 +51,26 @@ function mountAt(path: string) {
   return router;
 }
 
+/**
+ * The search every component sees, which is the MATCH search, not
+ * `location.search`.
+ *
+ * `__root.tsx` runs `stripSearchParams(PARAM_DEFAULTS)`, so a value that
+ * falls back to its default is deleted from the committed LOCATION. That is
+ * the whole point of the middleware. That is why these four assertions read
+ * the matches instead. The fallback itself is unchanged: `validateSearch`
+ * still produces the documented default, `useSearch()` still returns it, and
+ * only the address bar loses the redundant key. Read
+ * `searchParamsUrlHygiene.test.tsx` before moving these back to
+ * `location.search`.
+ */
+function resolvedSearch(router: ReturnType<typeof mountAt>): Record<string, unknown> {
+  return router.state.matches.reduce<Record<string, unknown>>(
+    (all, match) => ({ ...all, ...(match.search as Record<string, unknown>) }),
+    {},
+  );
+}
+
 async function expectNoCrash(router: ReturnType<typeof mountAt>) {
   await waitFor(() => {
     expect(router.state.status).toBe('idle');
@@ -64,24 +84,24 @@ describe('malformed search params never crash the route (R1 adversarial-verifica
   it('/settings/secrets?createSecret=open falls back to createSecret\'s default ("0"), no throw', async () => {
     const router = mountAt('/settings/secrets?createSecret=open');
     await expectNoCrash(router);
-    expect(router.state.location.search).toMatchObject({ createSecret: '0' });
+    expect(resolvedSearch(router)).toMatchObject({ createSecret: '0' });
   });
 
   it('/settings/secrets?createSecret=null falls back to createSecret\'s default ("0"), no throw', async () => {
     const router = mountAt('/settings/secrets?createSecret=null');
     await expectNoCrash(router);
-    expect(router.state.location.search).toMatchObject({ createSecret: '0' });
+    expect(resolvedSearch(router)).toMatchObject({ createSecret: '0' });
   });
 
   it("/agents/latest?sort_order=bogus falls back to 'desc', no throw", async () => {
     const router = mountAt('/agents/latest?sort_order=bogus');
     await expectNoCrash(router);
-    expect(router.state.location.search).toMatchObject({ sort_order: 'desc' });
+    expect(resolvedSearch(router)).toMatchObject({ sort_order: 'desc' });
   });
 
   it("/help-center?view=bogus falls back to 'grid', no throw", async () => {
     const router = mountAt('/help-center?view=bogus');
     await expectNoCrash(router);
-    expect(router.state.location.search).toMatchObject({ view: 'grid' });
+    expect(resolvedSearch(router)).toMatchObject({ view: 'grid' });
   });
 });

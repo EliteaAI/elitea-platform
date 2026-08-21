@@ -44,6 +44,12 @@ export interface Conversation {
   readonly participants?: readonly ConversationParticipantRef[];
   readonly total?: number;
   readonly offset?: number;
+  /**
+   * Owner of the conversation (`author_id` on the wire, normalised to a
+   * string). The chat sidebar disables Delete and Edit on a conversation the
+   * current user does not own, and that check needs this value.
+   */
+  readonly authorId?: string | undefined;
   /** Client-only: set by usePinConversation, not a wire field. */
   readonly isPinned?: boolean;
   /** Client-only: playback/replay mode flag, not a wire field. */

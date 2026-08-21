@@ -34,7 +34,38 @@ import {
   useQueryFoldersList,
   useReorderFolders,
 } from '@/features/chat-conversation-list';
+import type { SocialAuthorProfile } from '@/shared/api/generated/model';
+import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { getConfig } from '@/shared/config';
 import { useSelectedProject } from '@/widgets/app-shell';
+
+/**
+ * The SPA's mount point, for the absolute share link `ConversationItem`
+ * copies to the clipboard.
+ *
+ * Without it, `ConversationItem` fell back to `basename: ''` and Share copied
+ * `https://host/{projectId}/chat/{id}?...` — a hard 404 for the recipient in
+ * every deployment where `vite_base_uri` is not `/`, because only `/app/**`
+ * is served by the SPA. Dev hid it: `import.meta.env.DEV` resolves the
+ * basename to `''` there.
+ *
+ * Resolved locally against `shared/config` rather than imported from
+ * `app/providers/basename.ts`: `.dependency-cruiser.cjs`'s
+ * `no-upward-from-processes` forbids `processes/` -> `app/`. Four other
+ * slices carry the same 3-line copy for the same reason
+ * (`features/agents/lib/basename.ts`, `features/notifications/lib/routes.ts`,
+ * `features/mcps/lib/oauthFlow.ts`, `routes/$projectId.$.tsx`).
+ *
+ * The trailing slash is trimmed. `vite_base_uri` is `/app/` and
+ * `ConversationItem` already concatenates a leading `/`, so keeping it
+ * produces `https://host/app//5/chat/...`, whose doubled slash survives the
+ * router's basepath strip.
+ */
+function chatBasename(): string {
+  if (import.meta.env.DEV) return '';
+  const result = getConfig();
+  return result.status === 'ok' ? result.config.vite_base_uri.replace(/\/$/, '') : '';
+}
 
 /** What the component needs beyond the `Conversations` prop bundle itself. */
 export interface UseConversationSidebarResult {
@@ -58,6 +89,21 @@ export function useConversationSidebar(): UseConversationSidebarResult {
   const navigate = useNavigate();
   const { project } = useSelectedProject();
   const projectId = project?.id;
+
+  /*
+   * The current user's id, for the row menu's author-only guard on Delete and
+   * Edit. `Conversations` accepts `currentUserId` as an optional prop, and
+   * this composition root never set it, so the guard compared `undefined`
+   * with `undefined` and denied nothing.
+   *
+   * Resolved the same way `features/chat-conversation-list`'s own
+   * `FolderItem` resolves it (`useGetCurrentAuthor`), and reactively, so the
+   * menu re-renders when the profile lands. The declared response type is a
+   * union whose 401 branch is unreachable here. `eliteaFetch` throws on a
+   * non-2xx answer. The cast follows that established precedent.
+   */
+  const currentAuthor = useGetCurrentAuthor();
+  const currentUserId = (currentAuthor.data?.data as SocialAuthorProfile | undefined)?.id;
 
   // ── The state containers every hook in the slice writes through ─────────
   const [folders, setFolders] = useState<readonly FolderListItem[]>([]);
@@ -274,7 +320,9 @@ export function useConversationSidebar(): UseConversationSidebarResult {
     onSearchQueryChange: setSearchQuery,
     isLoadConversations: foldersList.isLoadFolders,
     isFolderOperationInProgress: isFolderUpdate || foldersList.isLoadFolders || foldersList.isLoadMoreFolders,
+    basename: chatBasename(),
     ...(projectId !== undefined ? { projectId } : {}),
+    ...(currentUserId !== undefined ? { currentUserId } : {}),
   };
 
   return { conversationsProps, errorMessage, onDismissError };

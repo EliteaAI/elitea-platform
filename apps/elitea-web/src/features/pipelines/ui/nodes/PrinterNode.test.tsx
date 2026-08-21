@@ -1,5 +1,6 @@
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, waitFor, type RenderResult } from '@testing-library/react';
 
 import { SocketClientContext } from '@/shared/api/socket/client';
@@ -27,8 +28,15 @@ beforeAll(() => {
   }
 });
 
+beforeEach(() => {
+  // The AI Assistant triggers are hidden while `predict_llm` is unmounted —
+  // see `shared/config/backendCapabilities`.
+  setBackendCapabilityForTests('aiGeneration', true);
+});
+
 afterEach(() => {
   cleanup();
+  resetBackendCapabilitiesForTests();
 });
 
 function renderPrinterNode(flowEditorOverrides: Partial<FlowEditorContextValue> = {}, edges: Edge[] = []): RenderResult {

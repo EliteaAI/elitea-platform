@@ -42,6 +42,9 @@ RUN apk upgrade --no-cache
 
 COPY --from=builder /build/dist/app /usr/share/nginx/html/spa
 COPY apps/elitea-web/nginx/spa.conf /etc/nginx/conf.d/default.conf
+# Included by every location block in spa.conf. nginx add_header does not merge
+# across levels, so the set must be included, not inherited.
+COPY apps/elitea-web/nginx/security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY apps/elitea-web/docker-entrypoint.sh /docker-entrypoint-config.sh
 RUN chmod +x /docker-entrypoint-config.sh
 

@@ -2,6 +2,8 @@
  * Model configuration helpers for the AI Configuration feature.
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/lib/helpers/modelConfiguration.helpers.js`.
  */
+import { toAbsoluteApiUrl, toOpenAiBaseUrl } from '@/shared/lib/api-url';
+
 
 export const removeDuplicateModels = <T extends { id?: string; name?: string; project_id?: string }>(
   models: T[] | undefined,
@@ -199,8 +201,11 @@ export const buildConfigurationData = ({
 
   return {
     project_configuration: {
-      server_url: userApiUrl || 'Not configured',
-      base_url: userApiUrl ? `${userApiUrl.replace('/api/v2', '')}/llm/v1` : 'Not configured',
+      // Absolute, not relative: these two land inside a generated SDK snippet
+      // the user copies out of the browser, where a bare `/api/v2` path
+      // addresses nothing. See `shared/lib/api-url.ts`.
+      server_url: userApiUrl ? toAbsoluteApiUrl(userApiUrl) : 'Not configured',
+      base_url: userApiUrl ? toOpenAiBaseUrl(userApiUrl) : 'Not configured',
       project_id: projectId || 'Not configured',
     },
     configuration_options: {

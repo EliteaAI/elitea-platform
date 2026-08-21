@@ -14,10 +14,11 @@ import { isPublicProject } from '@/entities/project';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
+import { useDefaultModelSaving } from '../../lib/ai-configuration/useDefaultModelSaving';
+
 import {
   EMPTY_MODELS_RESPONSE,
   useModelsQuery,
-  useSetProjectDefaultModelMutation,
   type ModelsApiResponse,
 } from '../../api/ai-configuration/api';
 import AddModelButton from './AddModelButton';
@@ -53,13 +54,13 @@ function buildOptions(configs: readonly Record<string, unknown>[]): Array<{ valu
  * `<<>>`-joined value shape `buildOptions` produces, so the Select can
  * find the currently-selected option by value equality. */
 function defaultValueOf(data: ModelsApiResponse): string {
-  return `${data.default_model_name}<<>>${data.default_model_project_id}`;
+  return `${data.default_model_name ?? ''}<<>>${data.default_model_project_id ?? ''}`;
 }
 
 /** Low/high-tier defaults are optional — old app guards both halves being
  * present before building the `<<>>` value (`ModelConfiguration.jsx:168-180`),
  * otherwise leaves the Select unset rather than showing `"<<>>"`. */
-function tierDefaultValueOf(name: string, tierProjectId: string): string {
+function tierDefaultValueOf(name: string | undefined, tierProjectId: string | undefined): string {
   if (!name || !tierProjectId) return '';
   return `${name}<<>>${tierProjectId}`;
 }
@@ -84,15 +85,6 @@ function computeProjectGating(projectId: string): { includeShared: boolean; canC
     includeShared: !isPublic,
     canCreateConfiguration: result.config.allow_project_own_llms !== false || isPublic,
   };
-}
-
-/** Parses a `<<>>`-joined Select value back into `name`/`targetProjectId`,
- * mirroring old app's `const [modelName, project_id] = value.split('<<>>')`
- * (`ModelConfiguration.jsx:211`). Returns `null` for an empty/unset value. */
-function parseDefaultModelValue(value: string): { name: string; targetProjectId: string } | null {
-  const [name, targetProjectId] = value.split('<<>>');
-  if (!name) return null;
-  return { name, targetProjectId: targetProjectId ?? '' };
 }
 
 /** `useModelsQuery` resolves to `undefined` before the fetch settles —
@@ -137,7 +129,7 @@ export default memo(function ConfigurationsPanel({
   const asrDefaults = withDefaultModels(useModelsQuery(projectId, 'asr', includeShared).data);
   const ttsDefaults = withDefaultModels(useModelsQuery(projectId, 'tts', includeShared).data);
 
-  const setDefaultModel = useSetProjectDefaultModelMutation(projectId);
+  const { saveErrors, handleDefaultChange } = useDefaultModelSaving(projectId);
 
   /* Default-setting labels with optional info tooltips (porting old-app pattern) */
   const renderInfoLabel = useCallback(
@@ -170,18 +162,6 @@ export default memo(function ConfigurationsPanel({
   const asrOptions = buildOptions(asrConfigs);
   const ttsOptions = buildOptions(ttsConfigs);
 
-  /* Persist the project's default model for a section — old app:
-     `onChangeDefaultModel(section) => value => setProjectDefaultModel(...).unwrap().catch(...)`
-     (`ModelConfiguration.jsx:208-220`). */
-  const handleDefaultChange = useCallback(
-    (section: string) => (value: string) => {
-      const parsed = parseDefaultModelValue(value);
-      if (!parsed) return;
-      setDefaultModel.mutate({ ...parsed, section });
-    },
-    [setDefaultModel],
-  );
-
   /* LLM section needs extra low-tier / high-tier selects */
   const llmAdditionalSettings: AdditionalDefaultSetting[] = useMemo(
     () => [
@@ -191,6 +171,7 @@ export default memo(function ConfigurationsPanel({
         value: tierDefaultValueOf(llmDefaults.high_tier_default_model_name, llmDefaults.high_tier_default_model_project_id),
         options: highTierOptions,
         onChange: handleDefaultChange('llm_high_tier'),
+        ...(saveErrors['llm_high_tier'] !== undefined ? { error: saveErrors['llm_high_tier'] } : {}),
       },
       {
         key: 'low-tier-model',
@@ -198,9 +179,10 @@ export default memo(function ConfigurationsPanel({
         value: tierDefaultValueOf(llmDefaults.low_tier_default_model_name, llmDefaults.low_tier_default_model_project_id),
         options: lowTierOptions,
         onChange: handleDefaultChange('llm_low_tier'),
+        ...(saveErrors['llm_low_tier'] !== undefined ? { error: saveErrors['llm_low_tier'] } : {}),
       },
     ],
-    [renderInfoLabel, highTierOptions, lowTierOptions, handleDefaultChange, llmDefaults],
+    [renderInfoLabel, highTierOptions, lowTierOptions, handleDefaultChange, llmDefaults, saveErrors],
   );
 
   return (
@@ -227,6 +209,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(llmDefaults)}
         defaultSettingOptions={modelOptions}
         onChangeDefaultSetting={handleDefaultChange('llm')}
+        defaultSettingError={saveErrors['llm']}
         additionalDefaultSettings={llmAdditionalSettings}
       />
 
@@ -241,6 +224,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(embeddingDefaults)}
         defaultSettingOptions={embeddingOptions}
         onChangeDefaultSetting={handleDefaultChange('embedding')}
+        defaultSettingError={saveErrors['embedding']}
       />
 
       {/* Vector Storage */}
@@ -254,6 +238,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(vectorStorageDefaults)}
         defaultSettingOptions={vectorStorageOptions}
         onChangeDefaultSetting={handleDefaultChange('vectorstorage')}
+        defaultSettingError={saveErrors['vectorstorage']}
       />
 
       {/* Image Generation */}
@@ -267,6 +252,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(imageDefaults)}
         defaultSettingOptions={imageOptions}
         onChangeDefaultSetting={handleDefaultChange('image_generation')}
+        defaultSettingError={saveErrors['image_generation']}
       />
 
       {/* Speech Recognition (ASR) */}
@@ -280,6 +266,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(asrDefaults)}
         defaultSettingOptions={asrOptions}
         onChangeDefaultSetting={handleDefaultChange('asr')}
+        defaultSettingError={saveErrors['asr']}
       />
 
       {/* Text to Speech (TTS) */}
@@ -293,6 +280,7 @@ export default memo(function ConfigurationsPanel({
         defaultSettingValue={defaultValueOf(ttsDefaults)}
         defaultSettingOptions={ttsOptions}
         onChangeDefaultSetting={handleDefaultChange('tts')}
+        defaultSettingError={saveErrors['tts']}
       />
 
       {/* AI Credentials */}

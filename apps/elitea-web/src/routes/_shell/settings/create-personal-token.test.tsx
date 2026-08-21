@@ -237,6 +237,27 @@ describe('project binding — the §4 error contract', () => {
     );
   });
 
+  /*
+   * "Try again" IS WRONG ADVICE FOR A 503. elitea-main answers every
+   * /api/v2/auth/token route with 503 `{"error":"token service is not
+   * configured"}` while APPLICATION_SECRET_KEY is empty. Retrying can never
+   * succeed; only an operator can fix it. A live deployment sat in that state
+   * and told the user to try again.
+   */
+  it('names the operator, not a retry, when the token service is not configured', async () => {
+    selectProject('42', 'Marketing');
+    mockCreateFailure(503, { error: 'token service is not configured' });
+    mount();
+
+    await submit(userEvent.setup());
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'Personal tokens are turned off on this deployment. Ask your administrator to configure the token service.',
+    );
+    expect(alert).not.toHaveTextContent('Try again.');
+  });
+
   it('falls back to the generic message for the FLAT error envelope every other failure uses', async () => {
     selectProject('42', 'Marketing');
     mockCreateFailure(500, { error: 'internal server error' });

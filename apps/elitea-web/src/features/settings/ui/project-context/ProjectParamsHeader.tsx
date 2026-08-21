@@ -73,6 +73,7 @@ export function ProjectParamsHeader({
           {canEdit && (
             <IconButton
               sx={sx.editButton}
+              aria-label={t('entities.projectContext.header.editIconAriaLabel', 'Edit the project icon')}
               onClick={handleOpenIconDialog}
             >
               <EditIcon sx={sx.editIcon} />

@@ -6,6 +6,7 @@ import Typography from '@mui/material/Typography';
 
 import { AccordionConstants } from '@/shared/lib/constants';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
+import { t } from '@/shared/i18n';
 
 export function ProfileLongTermMemory() {
   return (
@@ -19,11 +20,11 @@ export function ProfileLongTermMemory() {
       }}
       items={[
         {
-          title: 'Long-term Memory',
+          title: t('settings.profile.longTermMemory.title', 'Long-term Memory'),
           content: (
             <Box sx={styles.accordionContent}>
               <Typography variant="bodyMedium" color="text.primary">
-                Coming soon — Manage what the AI remembers about you across conversations.
+                {t('settings.profile.longTermMemory.comingSoon', 'Coming soon — Manage what the AI remembers about you across conversations.')}
               </Typography>
             </Box>
           ),

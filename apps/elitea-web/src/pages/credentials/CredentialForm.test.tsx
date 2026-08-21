@@ -601,3 +601,144 @@ describe('CredentialForm — configuration mode (ROUTE-063..065)', () => {
     expect(screen.queryByText('Credential', { selector: 'h3, h4, h5, h6' })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * DEFECT: the controller asked for the type catalogue with no `section` at
+ * all — `useAvailableConfigurationsType(prefill?.section !== undefined ? ... : {})`
+ * fell back to `{}` on every normal entry point, and
+ * `buildAvailableConfigurationsTypeUrl` emitted `/configurations/available/?`
+ * with an empty query. The server answers an empty section list with EVERY
+ * section: 49 descriptors, 136,007 bytes, uncompressed, with no
+ * `Cache-Control` or `ETag`.
+ *
+ * The picker is the visible half. `CredentialForm` passes
+ * `availableTypes.data` straight to `<CredentialTypeSelector>`. Create
+ * Credential therefore also offered the 17 non-credential types: `llm_model`,
+ * `s3`, `environment_settings` and the rest. None of those types carries a
+ * `hidden` flag that anything downstream filters on.
+ */
+describe('CredentialForm — type catalogue scope', () => {
+  const LLM_MODEL_TYPE = {
+    type: 'llm_model',
+    section: 'llm',
+    config_schema: { title: 'LLM Model', properties: { data: { properties: {} } } },
+  };
+
+  function captureSections(respondWith: readonly unknown[]): { readonly seen: string[][] } {
+    const seen: string[][] = [];
+    server.use(
+      http.get(`${BASE}/configurations/available/`, ({ request }) => {
+        seen.push(new URL(request.url).searchParams.getAll('section'));
+        return HttpResponse.json(respondWith);
+      }),
+    );
+    return { seen };
+  }
+
+  it('asks for the credentials section only, and offers nothing outside it', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    const { seen } = captureSections([OPENAI_TYPE, LLM_MODEL_TYPE]);
+
+    renderForm(
+      <CredentialForm context={CONTEXT} mode={{ kind: 'create' }} onSaved={vi.fn()} onDiscarded={vi.fn()} />,
+    );
+
+    expect(await screen.findByText('OpenAI')).toBeInTheDocument();
+    expect(seen).toEqual([['credentials']]);
+  });
+
+  /*
+   * The same component serves `/settings/create-configuration`, whose picker
+   * needs the model and provider sections. Hardcoding `credentials` would
+   * empty that screen — baseline `CreateCredential.jsx:41-51`.
+   */
+  it('asks for the model and provider sections in configuration mode', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    const { seen } = captureSections([LLM_MODEL_TYPE]);
+
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'create', configurationMode: true }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('LLM Model')).toBeInTheDocument();
+    expect(seen).toEqual([
+      ['llm', 'embedding', 'vectorstorage', 'ai_credentials', 'image_generation', 'asr', 'tts'],
+    ]);
+  });
+
+  it('asks for the section a deep link names', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    const { seen } = captureSections([OPENAI_TYPE]);
+
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'create' }}
+        prefill={{ section: 'service_prompts' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(seen).toEqual([['service_prompts']]));
+  });
+
+  /**
+   * REGRESSION guard. On edit the section comes from the loaded detail. A
+   * detail body without one gave an empty section list, and an empty list
+   * disabled the catalogue query for ever. The descriptor never resolved,
+   * so the form showed the Name box and an enabled Save button, and no
+   * schema field at all. The edit path must fall back to the unfiltered
+   * catalogue instead.
+   */
+  it('renders the schema fields on edit when the detail body names no section', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    const { seen } = captureSections([OPENAI_TYPE, LLM_MODEL_TYPE]);
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({ uid: 'abc', type: 'openai', label: 'No section row', data: { api_key: 'sk-existing' } }),
+      ),
+    );
+
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText('API Key')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('sk-existing')).toBeInTheDocument();
+    // One request, and it names no section: the unfiltered catalogue.
+    expect(seen).toEqual([[]]);
+  });
+
+  /** The normal edit path still asks for the one section the detail names. */
+  it('asks for the section the loaded detail names on edit', async () => {
+    configureGeneratedClient({ baseUrl: BASE });
+    const { seen } = captureSections([OPENAI_TYPE]);
+    server.use(
+      http.get(`${BASE}/configurations/configuration/7/abc`, () =>
+        HttpResponse.json({ uid: 'abc', type: 'openai', section: 'credentials', label: 'Sectioned row', data: {} }),
+      ),
+    );
+
+    renderForm(
+      <CredentialForm
+        context={CONTEXT}
+        mode={{ kind: 'edit', configId: 'abc' }}
+        onSaved={vi.fn()}
+        onDiscarded={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(seen).toEqual([['credentials']]));
+  });
+});

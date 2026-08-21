@@ -192,11 +192,9 @@ export function NormalAttachment({
               </IconButtonAny>
             </Tooltip>
           )}
-          /* eslint-disable-next-line i18next/no-literal-string */
           <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickDownload} aria-label="Download attachment">
             ↓
           </IconButtonAny>
-          /* eslint-disable-next-line i18next/no-literal-string */
           <IconButtonAny variant="elitea" color="tertiary" size="small" onClick={onClickRemove} aria-label="Remove attachment">
             ✕
           </IconButtonAny>

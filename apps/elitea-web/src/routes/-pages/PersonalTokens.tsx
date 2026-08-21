@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * The page component for `/settings/tokens` (issue #493), and the reference
  * header for the two siblings in this directory.
@@ -41,7 +40,6 @@
 import { useCallback, useMemo, useState } from 'react';
 
 import Box from '@mui/material/Box';
-import CircularProgress from '@mui/material/CircularProgress';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import Paper from '@mui/material/Paper';
@@ -57,6 +55,7 @@ import { TokensSection } from '@/features/settings/ui/personal-tokens/TokensSect
 import { SettingsPreview } from '@/features/settings/ui/personal-tokens/SettingsPreview';
 import { t } from '@/shared/i18n';
 import { useListTokensQuery } from '@/entities/token/api/tokenApi';
+import { TokenListStatus } from '@/routes/-ui/TokenListStatus';
 import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { useProjectOptions } from '@/widgets/sidebar';
 import { getConfig } from '@/shared/config';
@@ -126,7 +125,7 @@ export function PersonalTokensPage() {
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
   const routeContext: unknown = useRouteContext({ strict: false });
   const personalProjectId = selectPersonalProjectId(routeContext);
-  const { data: tokens = [], isFetching } = useListTokensQuery({
+  const { data: tokens = [], isPending, isError, error, refetch } = useListTokensQuery({
     enabled: !!personalProjectId,
   });
   const { data: modelsData, isFetching: isFetchingModels } = useListModelsQuery(
@@ -197,11 +196,25 @@ export function PersonalTokensPage() {
 
   /* ── empty state ────────────────────────────────────────────────────── */
 
-  if (isFetching) {
+  /*
+   * A FAILED READ IS NOT AN EMPTY LIST, and neither is a read that never
+   * ran. This page used to branch on `tokens.length === 0` alone. A 503 from
+   * `/auth/token/` therefore rendered the confident headline "No tokens yet"
+   * over a user's real tokens. A user with no `personal_project_id` saw the
+   * same screen, because that query is disabled and therefore never errors.
+   * `TokenListStatus` answers all three states; see its own doc comment.
+   */
+  if (!personalProjectId || isError || isPending) {
     return (
-      <Box sx={styles.loadingContainer}>
-        <CircularProgress />
-      </Box>
+      <TokenListStatus
+        personalProjectId={personalProjectId}
+        isError={isError}
+        error={error}
+        onRetry={() => void refetch()}
+        containerSx={styles.emptyStateContainer}
+        buttonSx={styles.emptyStateButton}
+        loadingSx={styles.loadingContainer}
+      />
     );
   }
 

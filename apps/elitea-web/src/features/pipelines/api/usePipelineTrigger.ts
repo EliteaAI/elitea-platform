@@ -21,8 +21,12 @@ export interface UsePipelineTriggerResult {
  * step 1 deleted the routes behind them — they were gated on a
  * `RouterConfig.PipelineRunner` nothing ever assigned, so they answered 404 in
  * every deployment. `entities/pipeline`'s hand-written client issues the exact
- * same requests, so this hook behaves as it always has; see #192/#193 for the
- * product gaps that have to be filled before it can do anything else.
+ * same requests; see #192/#193 for the product gaps that have to be filled
+ * before it can do anything else.
+ *
+ * The read is disabled and the two writing trigger types are hidden while
+ * the `pipelineTriggers` capability is off
+ * (`shared/config/backendCapabilities`), so this hook now issues nothing.
  */
 export function usePipelineTrigger(projectId: string | undefined, versionId: number | undefined): UsePipelineTriggerResult {
   const queryClient = useQueryClient();

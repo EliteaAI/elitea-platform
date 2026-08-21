@@ -172,6 +172,23 @@ describe('ConversationItem', () => {
     expect(labels).toEqual(['Delete', 'Edit']);
   });
 
+  /*
+   * DEFECT: the author-only guard compared two `undefined` values with
+   * `String()`, so it denied nothing. This case renders exactly that state:
+   * no author id and no current user id. The guard now fails closed.
+   * `ConversationItem.menu.test.tsx` holds the full truth table.
+   */
+  it('disables Delete and Edit when neither the author nor the current user is known', async () => {
+    const user = userEvent.setup();
+    renderItem({ conversation: baseConversation({ authorId: undefined }), currentUserId: undefined });
+
+    await user.hover(screen.getByText('My conversation'));
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
+
+    expect(await screen.findByRole('menuitem', { name: 'Delete' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('menuitem', { name: 'Edit' })).toHaveAttribute('aria-disabled', 'true');
+  });
+
   it('disables the "Move to" item when the folder create/update permissions are both missing', async () => {
     mockPermissions(false);
     const user = userEvent.setup();

@@ -5,7 +5,8 @@
  * Source: `apps/elitea-ui/src/api/configurations.js` — RTK Query endpoints
  * (`getConfigurationsList` / `getAvailableConfigurationsType` /
  * `createConfiguration` / `updateConfiguration`). Every route maps to real
- * Go handlers under `/configurations/configurations/{project_id}`.
+ * Go handlers. The list path is `/configurations/configurations/{project_id}`.
+ * The detail path is `/configurations/configuration/{project_id}/{config_id}`.
  *
  * The generated `admin.ts` does NOT include these endpoints (they live on
  * a different route namespace), so this is a handwritten client following
@@ -99,10 +100,19 @@ export interface UpdateConfigurationBody {
 /* ── transport helpers ────────────────────────────────────────────────── */
 
 /* The Go handler mounts at /configurations with inner routes /configurations/…
-   (handler.go:37-40), so the full API path is /configurations/configurations/{id}.
+   (handler.go:37-40), so the full API path is /configurations/configurations/{project_id}.
    The old app does NOT use a mode prefix for configurations. */
 function configurationsPath(projectId: string): string {
   return `/configurations/configurations/${projectId}`;
+}
+
+/* The DETAIL path is singular and carries both identifiers:
+   `/configurations/configuration/{project_id}/{config_id}`
+   (CurrentConfigurationDetailsPath in
+   services/elitea-main/internal/api/v2/configurations/read.go).
+   PUT and DELETE are registered on this path only. */
+function configurationDetailPath(projectId: string, configId: string): string {
+  return `/configurations/configuration/${projectId}/${configId}`;
 }
 
 /* The MODEL CATALOGUE, which is a different route from the configuration list
@@ -213,19 +223,25 @@ export function useCreateConfigurationMutation(
   });
 }
 
-/* ── updateConfiguration — PUT /configurations/configurations/{id} ────────── */
+/* ── updateConfiguration — PUT /configurations/configuration/{project_id}/{config_id} ── */
 /* manifest: configurations.update */
 
+/** Arguments the caller gives to the update mutation. */
 export interface UpdateConfigurationArgs {
   readonly configId: string;
   readonly body: UpdateConfigurationBody;
 }
 
+/** Arguments the update request needs. The hook adds the project id. */
+export interface UpdateConfigurationRequest extends UpdateConfigurationArgs {
+  readonly projectId: string;
+}
+
 export async function updateConfiguration(
-  { configId, body }: UpdateConfigurationArgs,
+  { projectId, configId, body }: UpdateConfigurationRequest,
 ): Promise<void> {
   await eliteaFetch<unknown>(
-    `/configurations/configurations/${configId}`,
+    configurationDetailPath(projectId, configId),
     {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -240,7 +256,7 @@ export function useUpdateConfigurationMutation(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: UpdateConfigurationArgs) =>
-      updateConfiguration({ configId: args.configId, body: args.body }),
+      updateConfiguration({ projectId, configId: args.configId, body: args.body }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'configurations', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });

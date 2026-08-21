@@ -160,6 +160,30 @@ function buildMoveAndExportItems(params: MenuItemsParams, isEditingActive: boole
 }
 
 /**
+ * Returns true when the current user is not the author of this conversation.
+ * The row menu then keeps Delete and Edit disabled.
+ *
+ * The former test was `String(currentUserId) !== String(conversation.authorId)`.
+ * Both operands were always `undefined` in the running app. The folders wire
+ * normaliser dropped `author_id`. The composition root never passed
+ * `currentUserId`. The test was therefore always false, and any project member
+ * could delete another member's conversation.
+ *
+ * The test now fails closed. An unknown identity on either side denies the
+ * action.
+ *
+ * The `isNew` branch is the one exemption. No production code sets `isNew` on
+ * a sidebar row today. `isDraftConversation` in `Conversations.helpers.ts`
+ * reads the same absent field. Keep the branch, because a local draft has no
+ * author id and belongs to the current user.
+ */
+function isNotAuthorOf(conversation: ConversationWithOwnerMeta, currentUserId: string | undefined): boolean {
+  if (conversation.isNew === true) return false;
+  if (currentUserId === undefined || conversation.authorId === undefined) return true;
+  return String(currentUserId) !== String(conversation.authorId);
+}
+
+/**
  * The full, non-playback menu (`ConversationItem.jsx:166-263`). `alertTitle`/
  * `alarm` (baseline Delete item) have no `ControlsDropdownConfirmConfig`
  * equivalent — `shared/ui/ControlsDropdown.tsx`'s own doc comment already
@@ -173,8 +197,7 @@ function buildMoveAndExportItems(params: MenuItemsParams, isEditingActive: boole
 export function buildActiveMenuItems(params: MenuItemsParams): ControlsDropdownItem[] {
   const { conversation, isActive, isEditingCanvas, currentUserId, isPublicOrPersonal, isPersonal, theme } = params;
   const isEditingActive = isActive && isEditingCanvas;
-  const isNotAuthor = String(currentUserId) !== String(conversation.authorId);
-  const deleteEditDisabled = isNotAuthor || isEditingActive;
+  const deleteEditDisabled = isNotAuthorOf(conversation, currentUserId) || isEditingActive;
   const secondaryFillSx: SxProps<Theme> = { svg: { path: { fill: theme.vars.palette.secondary.main } } };
 
   const items: ControlsDropdownItem[] = [...buildDeleteEditItems(params, deleteEditDisabled, secondaryFillSx), ...buildMoveAndExportItems(params, isEditingActive)];

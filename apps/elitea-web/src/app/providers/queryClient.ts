@@ -1,5 +1,30 @@
 import { QueryClient, type DefaultOptions } from '@tanstack/react-query';
 
+import { EliteaApiError } from '@/shared/api/generated/mutator';
+
+/**
+ * The HTTP status a rejected query carries, or `undefined` when the rejection
+ * is not an HTTP answer (a network error, an abort, a thrown TypeError).
+ */
+function httpStatusOf(error: unknown): number | undefined {
+  if (!(error instanceof EliteaApiError)) return undefined;
+  const { failure } = error;
+  return failure.kind === 'http' || failure.kind === 'auth' ? failure.status : undefined;
+}
+
+/**
+ * `true` when the server has already given its final answer, so repeating the
+ * request cannot change it.
+ *
+ * 408 (Request Timeout) and 429 (Too Many Requests) are excluded: both are 4xx
+ * codes that explicitly invite the caller to try again.
+ */
+function isFinalClientAnswer(error: unknown): boolean {
+  const status = httpStatusOf(error);
+  if (status === undefined) return false;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
 /**
  * TanStack Query defaults (spec §2.3 "Server state"; §9.3 unit R2).
  *
@@ -60,8 +85,24 @@ export const QUERY_DEFAULT_OPTIONS: DefaultOptions = {
      * the final attempt) delays error UI by several seconds against a truly
      * down endpoint; 1 retry still absorbs a single transient blip without
      * that cost.
+     *
+     * A PLAIN `retry: 1` STILL REPEATS A 4xx. TanStack Query's retry count
+     * applies to every rejection, whatever its cause, so a 403 was requested
+     * twice before the screen could show anything. That is measurable: a HAR
+     * of one page load against a live deployment holds 32 requests to
+     * /api/v2/configurations/configurations/1, all 403, and 10 to
+     * /api/v2/configurations/models/1. Half of each set is this retry.
+     *
+     * A 4xx is the server's final answer to the request as sent. Repeating it
+     * byte for byte cannot change the result; it only doubles the load on a
+     * failing endpoint and doubles the delay before the user sees the error.
+     * Retry now covers exactly what it was reasoned for above: a network
+     * error, an abort, or a 5xx.
      */
-    retry: 1,
+    retry: (failureCount: number, error: unknown): boolean => {
+      if (isFinalClientAnswer(error)) return false;
+      return failureCount < 1;
+    },
     /**
      * Kept equal to the library default (`true`), pinned for the same
      * "don't silently inherit" reason as gcTime. Desirable for a

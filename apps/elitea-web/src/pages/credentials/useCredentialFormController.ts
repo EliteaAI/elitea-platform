@@ -23,6 +23,7 @@ import { t } from '@/shared/i18n';
 import type { ConfigSchemaNode, ConfigurationTypeDescriptor } from '@/features/credentials';
 
 import { useCredentialDeleteGuard } from './useCredentialDeleteGuard';
+import { useTypeSections } from './useTypeSections';
 
 export interface CredentialFormContext {
   readonly projectId: string;
@@ -232,8 +233,12 @@ export function useCredentialFormController(props: CredentialFormControllerProps
   const [testResult, setTestResult] = useState<'idle' | 'success' | 'failure'>('idle');
   const [testMessage, setTestMessage] = useState('');
 
-  const availableTypes = useAvailableConfigurationsType(prefill?.section !== undefined ? { section: prefill.section } : {});
   const detail = useConfigurationDetail(context.projectId, mode.configId, { enabled: mode.kind === 'edit' });
+  const typeQuery = useTypeSections(mode, prefill?.section, detail.data?.section, detail.data !== undefined);
+  const availableTypes = useAvailableConfigurationsType(
+    { section: typeQuery.sections },
+    { enabled: typeQuery.enabled },
+  );
 
   /**
    * On create, the chosen type comes from `mode.credentialType` — which the

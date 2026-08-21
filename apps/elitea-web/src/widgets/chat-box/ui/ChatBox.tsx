@@ -171,7 +171,7 @@ const ChatBoxInner = memo(function ChatBox({
   // create-conversation-first and upload-attachments-first adapters.
   // `startStreamedExecution` reports whether the transport took the run, so
   // `sendQuestion` knows not to ALSO emit `chat_predict`.
-  const { startStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
+  const { startStreamedExecution, continueStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
@@ -203,7 +203,7 @@ const ChatBoxInner = memo(function ChatBox({
     projectId,
     socketId: socketClient.socket.id,
     sessionDeclinedMcpServersRef,
-    startStreamedExecution,
+    startStreamedExecution, continueStreamedExecution,
   });
 
   // Delete confirmation (single message / clear-all) — baseline:

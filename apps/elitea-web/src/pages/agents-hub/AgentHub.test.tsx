@@ -58,11 +58,15 @@ function mockAgentsHubData(): void {
     }),
   );
   server.use(
-    http.get('*/elitea_core/public_applications/prompt_lib', ({ request }) => {
+    // Full `/api/v2` path and the real top-level `{rows, total}` body.
+    // The `*` wildcard used to hide the raw-fetch URL bug in
+    // `useAgentHubData.ts`. The `data` wrapper used to hide the envelope
+    // misread in the same file.
+    http.get('/api/v2/elitea_core/public_applications/prompt_lib', ({ request }) => {
       const params = new URL(request.url).searchParams;
       const isBulk = !params.has('sort_by') && !params.has('my_liked');
       const rows = isBulk ? ROWS : [];
-      return HttpResponse.json({ data: { rows, total: rows.length } }, { status: 200 });
+      return HttpResponse.json({ rows, total: rows.length }, { status: 200 });
     }),
   );
   server.use(getGetPublicApplicationMockHandler());
@@ -143,6 +147,33 @@ describe('AgentHub', () => {
     await user.type(screen.getByPlaceholderText('Search for agents'), 'nonexistent agent');
 
     expect(await screen.findByText('No agents found')).toBeInTheDocument();
+  });
+
+  /*
+   * DEFECT this guards: the hub reports a refused list through
+   * `useAgentHubData`'s `error`. No component reads it. The page shows
+   * "No agents found". A broken hub then looks like an empty catalogue.
+   */
+  it('shows a load error instead of the empty state when the list request is refused', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    server.use(
+      getGetAgentCategoriesMockHandler({
+        categories: [{ name: 'Productivity', is_default: true }],
+        total: 1,
+      }),
+    );
+    server.use(
+      http.get('/api/v2/elitea_core/public_applications/prompt_lib', () =>
+        HttpResponse.json({ error: 'forbidden' }, { status: 403 }),
+      ),
+    );
+
+    withProviders(<AgentHub />);
+
+    expect(
+      await screen.findByText('The agent list did not load. Reload the page to try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No agents found')).not.toBeInTheDocument();
   });
 
   it('auto-opens the deep-linked agent\'s modal once it appears in the fetched data (adversarial-review fix, finding 8)', async () => {

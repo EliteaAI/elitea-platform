@@ -1,9 +1,10 @@
-import { Outlet } from '@tanstack/react-router';
+import { Outlet, useNavigate } from '@tanstack/react-router';
 
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { performLogout } from '@/shared/api/auth';
+import { t } from '@/shared/i18n';
 import { SETTINGS_LAYOUT } from '@/shared/ui/settings/settings.constants';
 import { type SettingsSection, SettingsDrawer } from '@/shared/ui/settings/SettingsDrawer';
 import { SettingsRedirect } from '@/shared/ui/settings/SettingsRedirect';
@@ -22,6 +23,7 @@ import { SettingsRedirect } from '@/shared/ui/settings/SettingsRedirect';
 const LOGOUT_TAB_ID = 'logout';
 
 export function SettingsLayout() {
+  const navigate = useNavigate();
   const sections: SettingsSection[] = [
     {
       section: 'PROJECT',
@@ -91,13 +93,26 @@ export function SettingsLayout() {
       performLogout();
       return;
     }
-    // For now, navigate to the tab route. Later: add permissions, public project,
-    // and analytics checks here, same as the old app's `useMemo` filter.
-    window.history.replaceState(
-      null,
-      '',
-      `/settings/${tabId}`,
-    );
+    // NAVIGATE THROUGH THE ROUTER, NOT window.history.
+    //
+    // This used to be `window.history.replaceState(null, '', `/settings/${tabId}`)`,
+    // which broke three things at once:
+    //
+    //  1. It wrote a path with no base. The SPA is served under `/app/`, so
+    //     clicking "Secrets" put `/settings/secrets` in the address bar.
+    //     Reloading, bookmarking or sharing that URL reached nginx, which
+    //     serves the shell only under /app/, and answered `404 page not
+    //     found`. Verified against a live deployment: GET /settings/secrets
+    //     is 404, GET /app/settings/secrets is 200.
+    //  2. replaceState REPLACES the history entry, so Back could never return
+    //     to the tab the user came from.
+    //  3. It dropped the search parameters the route validates.
+    //
+    // `navigate` resolves the route's own path, keeps the base, pushes a real
+    // entry, and carries the current search through.
+    // Later: add permissions, public project, and analytics checks here, same
+    // as the old app's `useMemo` filter.
+    void navigate({ to: '/settings/$tab', params: { tab: tabId }, search: (previous) => previous });
   };
 
   return (
@@ -108,8 +123,16 @@ export function SettingsLayout() {
           onItemClick={handleItemClick}
         />
       </Box>
+      {/* A <section>, not a second <main>. `widgets/app-shell/ui/AppShell.tsx`
+        * already wraps this whole route in the page's one <main> landmark.
+        * So `component="main"` here nested a landmark inside itself, which is
+        * invalid. It also left assistive technology with two "main" regions to
+        * choose between. Verified on a live deployment:
+        * document.querySelector('main main') was non-null on every shell
+        * page. */}
       <Box
-        component="main"
+        component="section"
+        aria-label={t('shared.ui.settings.drawer.title', 'Settings')}
         sx={styles.mainContent}
       >
         <Outlet />
