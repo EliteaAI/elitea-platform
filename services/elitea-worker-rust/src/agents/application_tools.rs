@@ -30,8 +30,8 @@ use tracing::Instrument as _;
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
 use super::events::{
-    ApplicationToolPresentationCatalog, DESCENDANT_CONTAINER_INVOCATION_KEY,
-    DESCENDANT_PARENT_CALL_KEY,
+    APPLICATION_BRANCH_ROOT, ApplicationToolPresentationCatalog,
+    DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
 };
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
@@ -57,6 +57,7 @@ const APPLICATION_EVENT_CHANNEL_CAPACITY: usize = 64;
 const MAX_PARALLEL_APPLICATION_CALLS: usize = 8;
 const ADK_LLM_REQUEST_METADATA_KEY: &str = "gcp.vertex.agent.llm_request";
 const ADK_LLM_RESPONSE_METADATA_KEY: &str = "gcp.vertex.agent.llm_response";
+const NESTED_INTERRUPT_RESULT_KEY: &str = "__elitea_nested_interrupt_v1";
 
 type ApplicationIdentity = (u64, u64);
 type ApplicationFuture<'a> = Pin<
@@ -76,7 +77,6 @@ enum ApplicationEventSignal {
 
 #[derive(Clone, Copy)]
 enum ApplicationEventFailure {
-    NestedInterrupt,
     ChildExecution,
 }
 
@@ -323,6 +323,7 @@ impl ApplicationAssemblyState<'_> {
         let capabilities = configured_capabilities(&frozen);
         let (mut toolsets, sensitive_tools) =
             self.materialize_non_application_toolsets(&frozen).await?;
+        let has_non_application_tools = !toolsets.is_empty();
         let nested_references = application_references(&frozen, None)?;
         let parallel_applications = !nested_references.is_empty()
             && frozen
@@ -361,6 +362,9 @@ impl ApplicationAssemblyState<'_> {
                 ),
                 nested_tools,
             )));
+        }
+        if has_non_application_tools && child_tools.has_sensitive_descendant() {
+            return Err(unsupported_capability());
         }
         let description = application_description(&reference, &capabilities);
         let model_name = profile.model_name().to_owned();
@@ -688,11 +692,13 @@ impl Tool for ApplicationAgentTool {
                 self.application.agent.clone(),
                 content,
             ));
-            let mut stream = self.application.agent.run(child_context).await?;
+            let child_branch = child_context.branch().to_owned();
+            let mut stream = self.application.agent.run(child_context.clone()).await?;
             let mut final_response = None;
             let mut last_text = None;
+            let mut application_batch = ApplicationCallBatch::default();
             while let Some(result) = stream.next().await {
-                let event = match result {
+                let mut event = match result {
                     Ok(event) => event,
                     Err(error) => {
                         self.send_fatal(ApplicationEventFailure::ChildExecution)
@@ -700,10 +706,17 @@ impl Tool for ApplicationAgentTool {
                         return Err(error);
                     }
                 };
-                if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
-                    self.send_fatal(ApplicationEventFailure::NestedInterrupt)
+                if event.branch.is_empty() {
+                    event.branch.clone_from(&child_branch);
+                } else if event.branch != child_branch {
+                    self.send_fatal(ApplicationEventFailure::ChildExecution)
                         .await?;
-                    return Err(nested_interrupt_error());
+                    return Err(application_event_channel_error());
+                }
+                application_batch.observe_calls(&event, &self.application.child_tools)?;
+                if event.llm_response.interrupted || event.actions.tool_confirmation.is_some() {
+                    self.send_event(ctx.as_ref(), event).await?;
+                    return Ok(nested_interrupt_result());
                 }
                 if let Some(text) = event_text(&event) {
                     last_text = Some(text.clone());
@@ -711,7 +724,19 @@ impl Tool for ApplicationAgentTool {
                         final_response = Some(text);
                     }
                 }
-                self.send_event(ctx.as_ref(), event).await?;
+                match application_batch.observe_results(&mut event)? {
+                    ApplicationResultDisposition::Forward => {
+                        self.send_event(ctx.as_ref(), event).await?;
+                    }
+                    ApplicationResultDisposition::Suppress => {}
+                    ApplicationResultDisposition::ForwardAndPause => {
+                        self.send_event(ctx.as_ref(), event).await?;
+                        return Ok(nested_interrupt_result());
+                    }
+                    ApplicationResultDisposition::SuppressAndPause => {
+                        return Ok(nested_interrupt_result());
+                    }
+                }
             }
             Ok(json!({
                 "response": final_response
@@ -777,15 +802,138 @@ fn event_text(event: &Event) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
+#[derive(Default)]
+struct ApplicationCallBatch {
+    pending: HashSet<String>,
+    interrupted: bool,
+}
+
+enum ApplicationResultDisposition {
+    Forward,
+    Suppress,
+    ForwardAndPause,
+    SuppressAndPause,
+}
+
+impl ApplicationCallBatch {
+    fn observe_calls(
+        &mut self,
+        event: &Event,
+        applications: &ApplicationToolPresentationCatalog,
+    ) -> adk_rust::Result<()> {
+        let calls = event.tool_calls();
+        let application_calls = calls
+            .iter()
+            .filter(|call| applications.contains_runtime_tool(call.name))
+            .collect::<Vec<_>>();
+        if application_calls.is_empty() {
+            return Ok(());
+        }
+        if !self.pending.is_empty() || self.interrupted {
+            return Err(application_event_channel_error());
+        }
+        for call in application_calls {
+            let call_id = call
+                .call_id
+                .filter(|value| !value.is_empty())
+                .ok_or_else(application_event_channel_error)?;
+            if !self.pending.insert(call_id.to_owned()) {
+                return Err(application_event_channel_error());
+            }
+        }
+        Ok(())
+    }
+
+    fn observe_results(
+        &mut self,
+        event: &mut Event,
+    ) -> adk_rust::Result<ApplicationResultDisposition> {
+        let results = event
+            .tool_results()
+            .into_iter()
+            .filter_map(|result| {
+                result.call_id.map(|call_id| {
+                    (
+                        call_id.to_owned(),
+                        is_nested_interrupt_result(result.response),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut suppressed_ids = HashSet::new();
+        for (call_id, interrupted) in results {
+            if !self.pending.remove(&call_id) {
+                continue;
+            }
+            if interrupted {
+                if !suppressed_ids.insert(call_id) {
+                    return Err(application_event_channel_error());
+                }
+                self.interrupted = true;
+            }
+        }
+        if !suppressed_ids.is_empty() {
+            let content = event
+                .llm_response
+                .content
+                .as_mut()
+                .ok_or_else(application_event_channel_error)?;
+            content.parts.retain(|part| {
+                !matches!(
+                    part,
+                    adk_rust::Part::FunctionResponse {
+                        function_response,
+                        id: Some(call_id),
+                        ..
+                    } if suppressed_ids.contains(call_id)
+                        && is_nested_interrupt_result(&function_response.response)
+                )
+            });
+        }
+        let suppress = !suppressed_ids.is_empty()
+            && event
+                .llm_response
+                .content
+                .as_ref()
+                .is_none_or(|content| content.parts.is_empty());
+        let pause = self.interrupted && self.pending.is_empty();
+        Ok(match (suppress, pause) {
+            (false, false) => ApplicationResultDisposition::Forward,
+            (true, false) => ApplicationResultDisposition::Suppress,
+            (false, true) => ApplicationResultDisposition::ForwardAndPause,
+            (true, true) => ApplicationResultDisposition::SuppressAndPause,
+        })
+    }
+}
+
+fn nested_interrupt_result() -> Value {
+    json!({NESTED_INTERRUPT_RESULT_KEY: true})
+}
+
+fn is_nested_interrupt_result(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.len() == 1 && object.get(NESTED_INTERRUPT_RESULT_KEY) == Some(&Value::Bool(true))
+    })
+}
+
 pub(crate) struct ApplicationEventStreamingAgent {
     inner: Arc<dyn Agent>,
     events: ApplicationEventReceiver,
+    applications: ApplicationToolPresentationCatalog,
 }
 
 impl ApplicationEventStreamingAgent {
     #[must_use]
-    pub(crate) fn new(inner: Arc<dyn Agent>, events: ApplicationEventReceiver) -> Self {
-        Self { inner, events }
+    pub(crate) fn new(
+        inner: Arc<dyn Agent>,
+        events: ApplicationEventReceiver,
+        applications: ApplicationToolPresentationCatalog,
+    ) -> Self {
+        Self {
+            inner,
+            events,
+            applications,
+        }
     }
 }
 
@@ -811,8 +959,14 @@ impl Agent for ApplicationEventStreamingAgent {
             .await
             .take()
             .ok_or_else(application_event_channel_error)?;
-        let mut root_events = self.inner.run(ctx).await?;
+        let root_ctx = Arc::new(ApplicationRootInvocationContext {
+            inner: ctx,
+            branch: APPLICATION_BRANCH_ROOT.to_owned(),
+        });
+        let mut root_events = self.inner.run(root_ctx).await?;
+        let applications = self.applications.clone();
         let stream = async_stream::stream! {
+            let mut application_batch = ApplicationCallBatch::default();
             loop {
                 tokio::select! {
                     biased;
@@ -838,7 +992,39 @@ impl Agent for ApplicationEventStreamingAgent {
                                     }
                                 }
                             }
-                            yield event;
+                            let mut event = match event {
+                                Ok(event) => event,
+                                Err(error) => {
+                                    yield Err(error);
+                                    return;
+                                }
+                            };
+                            if event.branch.is_empty() {
+                                APPLICATION_BRANCH_ROOT.clone_into(&mut event.branch);
+                            } else if event.branch != APPLICATION_BRANCH_ROOT {
+                                yield Err(application_event_channel_error());
+                                return;
+                            }
+                            if let Err(error) = application_batch.observe_calls(&event, &applications) {
+                                yield Err(error);
+                                return;
+                            }
+                            let disposition = match application_batch.observe_results(&mut event) {
+                                Ok(disposition) => disposition,
+                                Err(error) => {
+                                    yield Err(error);
+                                    return;
+                                }
+                            };
+                            match disposition {
+                                ApplicationResultDisposition::Forward => yield Ok(event),
+                                ApplicationResultDisposition::Suppress => {}
+                                ApplicationResultDisposition::ForwardAndPause => {
+                                    yield Ok(event);
+                                    return;
+                                }
+                                ApplicationResultDisposition::SuppressAndPause => return,
+                            }
                         } else {
                             while let Ok(signal) = child_events.try_recv() {
                                 match application_signal_event(signal) {
@@ -856,6 +1042,112 @@ impl Agent for ApplicationEventStreamingAgent {
             }
         };
         Ok(Box::pin(stream))
+    }
+}
+
+struct ApplicationRootInvocationContext {
+    inner: Arc<dyn InvocationContext>,
+    branch: String,
+}
+
+#[async_trait]
+impl ReadonlyContext for ApplicationRootInvocationContext {
+    fn invocation_id(&self) -> &str {
+        self.inner.invocation_id()
+    }
+
+    fn agent_name(&self) -> &str {
+        self.inner.agent_name()
+    }
+
+    fn user_id(&self) -> &str {
+        self.inner.user_id()
+    }
+
+    fn app_name(&self) -> &str {
+        self.inner.app_name()
+    }
+
+    fn session_id(&self) -> &str {
+        self.inner.session_id()
+    }
+
+    fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    fn user_content(&self) -> &Content {
+        self.inner.user_content()
+    }
+}
+
+#[async_trait]
+impl CallbackContext for ApplicationRootInvocationContext {
+    fn artifacts(&self) -> Option<Arc<dyn Artifacts>> {
+        self.inner.artifacts()
+    }
+
+    fn tool_outcome(&self) -> Option<adk_rust::ToolOutcome> {
+        self.inner.tool_outcome()
+    }
+
+    fn tool_name(&self) -> Option<&str> {
+        self.inner.tool_name()
+    }
+
+    fn tool_input(&self) -> Option<&Value> {
+        self.inner.tool_input()
+    }
+
+    fn shared_state(&self) -> Option<Arc<adk_rust::SharedState>> {
+        self.inner.shared_state()
+    }
+}
+
+#[async_trait]
+impl InvocationContext for ApplicationRootInvocationContext {
+    fn agent(&self) -> Arc<dyn Agent> {
+        self.inner.agent()
+    }
+
+    fn memory(&self) -> Option<Arc<dyn Memory>> {
+        self.inner.memory()
+    }
+
+    fn session(&self) -> &dyn Session {
+        self.inner.session()
+    }
+
+    fn run_config(&self) -> &RunConfig {
+        self.inner.run_config()
+    }
+
+    fn end_invocation(&self) {
+        self.inner.end_invocation();
+    }
+
+    fn ended(&self) -> bool {
+        self.inner.ended()
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled()
+    }
+
+    fn user_scopes(&self) -> Vec<String> {
+        self.inner.user_scopes()
+    }
+
+    fn request_metadata(&self) -> HashMap<String, Value> {
+        self.inner.request_metadata()
+    }
+
+    async fn get_secret(&self, name: &str) -> adk_rust::Result<Option<String>> {
+        self.inner.get_secret(name).await
+    }
+
+    async fn get_secret_for(&self, request: &SecretRequest) -> adk_rust::Result<Option<String>> {
+        self.inner.get_secret_for(request).await
     }
 }
 
@@ -885,9 +1177,6 @@ fn application_signal_event(signal: ApplicationEventSignal) -> adk_rust::Result<
                 .insert(DESCENDANT_PARENT_CALL_KEY.to_owned(), parent_call_id);
             Ok(event)
         }
-        ApplicationEventSignal::Fatal(ApplicationEventFailure::NestedInterrupt) => {
-            Err(nested_interrupt_error())
-        }
         ApplicationEventSignal::Fatal(ApplicationEventFailure::ChildExecution) => {
             Err(child_execution_error())
         }
@@ -899,6 +1188,7 @@ struct ApplicationToolInvocationContext {
     agent: Arc<dyn Agent>,
     user_content: Content,
     invocation_id: String,
+    branch: String,
     ended: AtomicBool,
     session: ApplicationToolSession,
 }
@@ -908,6 +1198,12 @@ impl ApplicationToolInvocationContext {
         static NEXT_INVOCATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let ordinal = NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed);
         let invocation_id = format!("elitea-child-{ordinal}");
+        let parent_branch = if parent_ctx.branch().is_empty() {
+            APPLICATION_BRANCH_ROOT
+        } else {
+            parent_ctx.branch()
+        };
+        let branch = format!("{parent_branch}.application_{ordinal}");
         Self {
             session: ApplicationToolSession::new(
                 invocation_id.clone(),
@@ -918,6 +1214,7 @@ impl ApplicationToolInvocationContext {
             agent,
             user_content,
             invocation_id,
+            branch,
             ended: AtomicBool::new(false),
         }
     }
@@ -945,8 +1242,8 @@ impl ReadonlyContext for ApplicationToolInvocationContext {
         self.session.id()
     }
 
-    fn branch(&self) -> &'static str {
-        ""
+    fn branch(&self) -> &str {
+        &self.branch
     }
 
     fn user_content(&self) -> &Content {
@@ -1131,15 +1428,6 @@ fn application_event_channel_error() -> AdkError {
         ErrorCategory::Internal,
         "elitea_nested_agent.event_channel_unavailable",
         "the nested agent event channel is unavailable",
-    )
-}
-
-fn nested_interrupt_error() -> AdkError {
-    AdkError::new(
-        ErrorComponent::Agent,
-        ErrorCategory::Unsupported,
-        "elitea_nested_agent.interrupt_not_durable",
-        "the nested agent interrupt requires a durable child session",
     )
 }
 

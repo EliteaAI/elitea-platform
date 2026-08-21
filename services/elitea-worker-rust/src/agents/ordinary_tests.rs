@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adk_rust::session::{InMemorySessionService, SessionService};
+use adk_rust::session::{GetRequest, InMemorySessionService, SessionService};
 use adk_rust::tool::BasicToolset;
 use adk_rust::{Tool, ToolContext, Toolset};
 use async_trait::async_trait;
@@ -13,6 +14,7 @@ use http::{Request, Response, StatusCode, Version};
 use http_body_util::Full;
 use tonic::body::Body;
 
+use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::{current_text_history, ordinary_request};
 use super::ordinary::OrdinaryNativeAgentAssembler;
 use super::request::AgentExecutionKind;
@@ -20,7 +22,7 @@ use super::runtime::{
     AuthorizedNativeAssembly, NativeAgentAssembler, NativeAgentAssemblyErrorCode,
     NativeAgentCompletionSelector,
 };
-use super::session::AuthorizedNativeCommandBinding;
+use super::session::{AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan};
 use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::node_event::encode_current_node_event_json;
 use crate::toolkits::{
@@ -181,6 +183,29 @@ fn runtime_context_with_child() -> (
     (client, calls, paths)
 }
 
+fn runtime_context_with_sensitive_child() -> (RuntimeContextClient, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let token = runtime_context_response(&serde_json::json!({
+        "schema_version": "elitea.runtime.elitea-client-token.v1",
+        "project_id": 17,
+        "token": TOKEN,
+    }));
+    let child = application_version_response(
+        31,
+        41,
+        nested_agent_version(
+            "Resolve only the delegated name.",
+            "child-model",
+            23,
+            vec![remote_mcp_tool()],
+        ),
+    );
+    let client =
+        runtime_context_client_from(VecDeque::from([token, child]), Arc::clone(&calls), paths);
+    (client, calls)
+}
+
 fn application_version_response(
     application_id: u64,
     version_id: u64,
@@ -238,6 +263,16 @@ fn nested_agent_call_response() -> Response<Body> {
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
+fn parallel_nested_agent_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_olivia\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_31_v_41\",\"arguments\":\"{\\\"task\\\":\\\"Resolve Olivia Lovelace\\\"}\"}},{\"index\":1,\"id\":\"call_sasha\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_31_v_41\",\"arguments\":\"{\\\"task\\\":\\\"Resolve Sasha Grey\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
 fn text_response(text: &str) -> Response<Body> {
     let raw = format!(
         "data: {{\"choices\":[{{\"delta\":{{\"role\":\"assistant\",\"content\":{text:?}}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
@@ -275,8 +310,8 @@ fn attach_local_gitlab_tool(request: &mut super::request::AgentExecutionRequest)
     };
 }
 
-fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
-    let tool = serde_json::json!({
+fn remote_mcp_tool() -> serde_json::Value {
+    serde_json::json!({
         "id": 92,
         "type": "mcp",
         "toolkit_name": "release intelligence",
@@ -292,7 +327,11 @@ fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
             "cache_ttl": 300,
             "ssl_verify": true
         }
-    });
+    })
+}
+
+fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
+    let tool = remote_mcp_tool();
     match request.kind {
         AgentExecutionKind::Application => request
             .payload
@@ -1110,6 +1149,146 @@ async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
 
     let captured = captured.lock().expect("captured model requests");
     assert_nested_agent_model_requests(&captured);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupts() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let binding = AuthorizedNativeCommandBinding::fixture();
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("root application profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(&request, &profile, &binding)
+        .expect("root session plan");
+    let user_id = plan.user_id().to_owned();
+    let session_id = plan.session_id().to_owned();
+
+    let (runtime_context, context_calls) = runtime_context_with_sensitive_child();
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(parallel_nested_agent_call_response()),
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("parallel nested model gateway");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions = Arc::new(InMemorySessionService::new());
+    let injected_sessions: Arc<dyn SessionService> = sessions.clone();
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        sensitive_mcp_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(injected_sessions);
+    let assembly =
+        AuthorizedNativeAssembly::new(&request, test_runtime_context_authority(), binding);
+    let mut invocation = assembler
+        .assemble(assembly)
+        .await
+        .expect("parallel nested sensitive assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("parallel nested start");
+    let (mut native, mut projector, _completion) = invocation.start().expect("native start");
+    let mut public_interrupts = Vec::new();
+    while let Some(event) = native.next_event().await.expect("nested sensitive event") {
+        for projected in projector
+            .project(&event)
+            .expect("nested sensitive projection")
+        {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected)
+                    .expect("nested sensitive browser event"),
+            )
+            .expect("nested sensitive browser JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                public_interrupts.push(value);
+            }
+        }
+    }
+
+    assert!(projector.is_paused());
+    assert_parallel_nested_interrupts(&public_interrupts);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(context_calls.load(Ordering::Acquire), 2);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 1);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 3);
+
+    assert_persisted_nested_interrupts(&sessions, user_id, session_id).await;
+}
+
+fn assert_parallel_nested_interrupts(public_interrupts: &[serde_json::Value]) {
+    assert_eq!(public_interrupts.len(), 2);
+    let paths = public_interrupts
+        .iter()
+        .map(|event| event["response_metadata"]["parent_agent_path"].clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        paths,
+        HashSet::from([
+            serde_json::json!([{
+                "name": "release-risk-agent",
+                "call_id": "call_olivia",
+                "sibling_ordinal": 1,
+            }]),
+            serde_json::json!([{
+                "name": "release-risk-agent",
+                "call_id": "call_sasha",
+                "sibling_ordinal": 2,
+            }]),
+        ])
+    );
+    let interrupt_ids = public_interrupts
+        .iter()
+        .map(|event| {
+            event["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+                .as_str()
+                .expect("nested interrupt identity")
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(interrupt_ids.len(), 2);
+}
+
+async fn assert_persisted_nested_interrupts(
+    sessions: &InMemorySessionService,
+    user_id: String,
+    session_id: String,
+) {
+    let stored = sessions
+        .get(GetRequest {
+            app_name: "elitea-agent-v1".to_owned(),
+            user_id,
+            session_id,
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("durable root session");
+    let stored_events = stored.events().all();
+    let confirmations = stored_events
+        .iter()
+        .filter(|event| event.actions.tool_confirmation.is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(confirmations.len(), 2);
+    assert!(confirmations.iter().all(|event| {
+        event
+            .branch
+            .starts_with("elitea.saved_applications.application_")
+            && event
+                .provider_metadata
+                .contains_key("elitea.descendant.container_invocation_id")
+            && event
+                .provider_metadata
+                .contains_key("elitea.descendant.parent_call_id")
+    }));
+    let persisted = serde_json::to_string(&stored_events).expect("serialized root transcript");
+    assert!(!persisted.contains("__elitea_nested_interrupt_v1"));
 }
 
 #[tokio::test(flavor = "current_thread")]

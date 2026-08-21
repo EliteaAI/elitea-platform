@@ -51,6 +51,7 @@ const MAX_PIPELINE_INTERRUPT_MESSAGE_BYTES: usize = MAX_PIPELINE_HITL_MESSAGE_BY
     + MAX_NESTED_PIPELINE_CHECKPOINTS * (MAX_PIPELINE_NODE_IDENTITY_BYTES + 2);
 const MAX_PIPELINE_NODE_IDENTITY_BYTES: usize = 128;
 const MAX_AGENT_PATH_TIERS: usize = 3;
+pub(crate) const APPLICATION_BRANCH_ROOT: &str = "elitea.saved_applications";
 pub(crate) const DESCENDANT_CONTAINER_INVOCATION_KEY: &str =
     "elitea.descendant.container_invocation_id";
 pub(crate) const DESCENDANT_PARENT_CALL_KEY: &str = "elitea.descendant.parent_call_id";
@@ -333,6 +334,19 @@ impl ApplicationToolPresentationCatalog {
 
     fn get(&self, tool_name: &str) -> Option<&ApplicationToolPresentation> {
         self.by_tool_name.get(tool_name)
+    }
+
+    #[must_use]
+    pub(crate) fn contains_runtime_tool(&self, tool_name: &str) -> bool {
+        self.by_tool_name.contains_key(tool_name)
+    }
+
+    #[must_use]
+    pub(crate) fn has_sensitive_descendant(&self) -> bool {
+        self.by_tool_name.values().any(|presentation| {
+            !presentation.sensitive_tools.is_empty()
+                || presentation.child_tools.has_sensitive_descendant()
+        })
     }
 }
 
@@ -1093,8 +1107,12 @@ impl AgentEventProjector {
     }
 
     #[must_use]
-    pub(crate) const fn is_paused(&self) -> bool {
+    pub(crate) fn is_paused(&self) -> bool {
         matches!(self.state, ProjectionState::Paused)
+            || self
+                .descendants
+                .values()
+                .any(|descendant| descendant.projector.is_paused())
     }
 
     fn project_model_event(
@@ -1533,7 +1551,7 @@ fn validate_adk_event(
     root_agent_name: &str,
 ) -> Result<(), AgentEventProjectionError> {
     if event.author != root_agent_name
-        || !event.branch.is_empty()
+        || !valid_application_branch(&event.branch)
         || event.llm_response.interrupted
         || event.llm_response.error_code.is_some()
         || event.llm_response.error_message.is_some()
@@ -1569,7 +1587,7 @@ fn validate_confirmation_event(
         return Err(AgentEventProjectionError::provider_failure());
     }
     if event.author != root_agent_name
-        || !event.branch.is_empty()
+        || !valid_application_branch(&event.branch)
         || !event.llm_response.interrupted
         || !event.llm_response.turn_complete
         || event.llm_response.citation_metadata.is_some()
@@ -1587,6 +1605,23 @@ fn validate_confirmation_event(
         return Err(AgentEventProjectionError::unsupported());
     }
     Ok(())
+}
+
+fn valid_application_branch(value: &str) -> bool {
+    if value.is_empty() || value == APPLICATION_BRANCH_ROOT {
+        return true;
+    }
+    value.len() <= MAX_CONTEXT_TEXT_BYTES
+        && value
+            .strip_prefix(APPLICATION_BRANCH_ROOT)
+            .and_then(|suffix| suffix.strip_prefix('.'))
+            .is_some_and(|suffix| {
+                suffix.split('.').all(|segment| {
+                    segment.strip_prefix("application_").is_some_and(|ordinal| {
+                        !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                })
+            })
 }
 
 #[derive(Deserialize)]

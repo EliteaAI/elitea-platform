@@ -118,6 +118,8 @@ impl OrdinaryNativeAgentAssembler {
             .iter()
             .filter(|reference| reference.kind() == FrozenToolKind::Application)
             .count();
+        let application_only =
+            nested_application_count > 0 && nested_application_count == tool_reference_count;
         tracing::Span::current().record("tool_reference_count", tool_reference_count);
         tracing::Span::current().record("nested_application_count", nested_application_count);
         let context = Arc::new(context);
@@ -143,6 +145,7 @@ impl OrdinaryNativeAgentAssembler {
         )
         .await?
         {
+            validate_nested_application_hitl_scope(application_only, &materialized.presentations)?;
             toolsets.push(materialized.toolset);
             application_runtime = ApplicationRuntimeProjection::streaming(
                 materialized.presentations,
@@ -158,10 +161,7 @@ impl OrdinaryNativeAgentAssembler {
             .await?;
         match start {
             AdmittedNativeStart::Fresh => {
-                let execution_mode = if nested_application_count > 0
-                    && nested_application_count == tool_reference_count
-                    && sensitive_tools.is_empty()
-                {
+                let execution_mode = if application_only && sensitive_tools.is_empty() {
                     NativeToolExecutionMode::ParallelApplications
                 } else {
                     NativeToolExecutionMode::Sequential
@@ -272,6 +272,23 @@ fn unsupported_session_resume() -> NativeAgentAssemblyError {
         NativeAgentAssemblyErrorCode::UnsupportedCapability,
         "direct sensitive-tool continuation requires durable session persistence",
     )
+}
+
+fn unsupported_mixed_nested_hitl() -> NativeAgentAssemblyError {
+    NativeAgentAssemblyError::new(
+        NativeAgentAssemblyErrorCode::UnsupportedCapability,
+        "nested sensitive-tool pauses require an application-only delegation set",
+    )
+}
+
+fn validate_nested_application_hitl_scope(
+    application_only: bool,
+    applications: &super::events::ApplicationToolPresentationCatalog,
+) -> Result<(), NativeAgentAssemblyError> {
+    if !application_only && applications.has_sensitive_descendant() {
+        return Err(unsupported_mixed_nested_hitl());
+    }
+    Ok(())
 }
 
 fn assembly_span(assembly: &AuthorizedNativeAssembly<'_>, session_backend: &str) -> tracing::Span {

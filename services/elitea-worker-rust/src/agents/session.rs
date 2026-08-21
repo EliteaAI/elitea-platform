@@ -106,6 +106,18 @@ impl ApplicationRuntimeProjection {
     }
 }
 
+fn application_event_agent(
+    agent: Arc<dyn Agent>,
+    events: ApplicationEventReceiver,
+    applications: ApplicationToolPresentationCatalog,
+) -> Arc<dyn Agent> {
+    Arc::new(ApplicationEventStreamingAgent::new(
+        agent,
+        events,
+        applications,
+    ))
+}
+
 /// Non-authority command fields needed by local ADK and browser projection.
 ///
 /// This value is created only from the already authenticated command and has
@@ -942,7 +954,7 @@ where
     } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
     let agent = application_events.map_or(agent.clone(), |events| {
-        Arc::new(ApplicationEventStreamingAgent::new(agent, events)) as Arc<dyn Agent>
+        application_event_agent(agent, events, application_tools.clone())
     });
     let (session, created) =
         restore_or_create_session(sessions.as_ref(), &user_id, &session_id).await?;
@@ -1095,7 +1107,7 @@ where
     } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
     let agent = application_events.map_or(agent.clone(), |events| {
-        Arc::new(ApplicationEventStreamingAgent::new(agent, events)) as Arc<dyn Agent>
+        application_event_agent(agent, events, application_tools.clone())
     });
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
