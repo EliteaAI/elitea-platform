@@ -116,10 +116,17 @@ func TestCleanDatabaseGrantsAgentCancelAndConfigurationPermissions(t *testing.T)
 	pool := newMigratedPool(t)
 
 	for _, permission := range readGatePermissions {
+		// The model catalogue read is also on the machine role's callback
+		// surface (shared/0088). `system` is therefore an expected holder of
+		// that one string, and of neither other.
+		want := defaultModeRoles
+		if permission == configurationListPermission {
+			want = withMachineRole(defaultModeRoles...)
+		}
 		holders := defaultModeGrantHolders(t, pool, permission)
-		if !slices.Equal(holders, defaultModeRoles) {
+		if !slices.Equal(holders, want) {
 			t.Errorf("default-mode holders of %s = %v, want %v: without the grant the route "+
-				"answers 403 to every caller", permission, holders, defaultModeRoles)
+				"answers 403 to every caller", permission, holders, want)
 		}
 	}
 	for _, permission := range writeGatePermissions {

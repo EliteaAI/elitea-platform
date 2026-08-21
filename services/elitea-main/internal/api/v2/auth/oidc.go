@@ -5,19 +5,21 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
-	"time"
 
 	"errors"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/oauth2"
 )
@@ -112,8 +114,54 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   300,
 	})
 
-	authURL := h.oauth2Cfg.AuthCodeURL(stateValue)
+	rawNonce := make([]byte, 16)
+	if _, err := rand.Read(rawNonce); err != nil {
+		http.Error(w, "failed to initialize OIDC state", http.StatusInternalServerError)
+		return
+	}
+	nonce := base64.RawURLEncoding.EncodeToString(rawNonce)
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcNonceCookie,
+		Value:    nonce,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   300,
+	})
+
+	authURL := h.oauth2Cfg.AuthCodeURL(stateValue, oidc.Nonce(nonce))
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// oidcNonceCookie holds the nonce of ONE login attempt.
+//
+// The state cookie proves the callback belongs to a login this server started.
+// It does not prove the id_token does: a token captured or replayed from
+// another session verifies, carries a valid signature, and names a real
+// subject. The nonce closes that gap, because the identity provider echoes it
+// into the token and only the browser that started this login holds the cookie.
+// OpenID Connect Core requires the provider to echo a nonce it receives.
+const oidcNonceCookie = "oidc_nonce"
+
+// consumeNonce clears the nonce cookie and reports whether the id_token echoes
+// it. A missing cookie and a mismatch both fail: the token must belong to the
+// login in this browser.
+func (h *OIDCHandler) consumeNonce(w http.ResponseWriter, r *http.Request, tokenNonce string) bool {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcNonceCookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	cookie, err := r.Cookie(oidcNonceCookie)
+	if err != nil || cookie.Value == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(tokenNonce)) == 1
 }
 
 func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
@@ -194,13 +242,34 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var claims struct {
-		Sub   string `json:"sub"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
+		Sub             string `json:"sub"`
+		Email           string `json:"email"`
+		Name            string `json:"name"`
+		EmailVerified   *bool  `json:"email_verified"`
+		AuthorizedParty string `json:"azp"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		slog.Error("OIDC: failed to parse claims", "err", err)
 		http.Error(w, "failed to parse claims", http.StatusInternalServerError)
+		return
+	}
+
+	// A token with more than one audience must name the party it was issued
+	// for, and that party must be this client. Without the check, a token this
+	// client was never the subject of is accepted. The reviewed protocol
+	// verifier applies the same rule (internal/infra/identity/oidc/protocol.go).
+	if (len(idToken.Audience) > 1 && claims.AuthorizedParty == "") ||
+		(claims.AuthorizedParty != "" && claims.AuthorizedParty != h.oauth2Cfg.ClientID) {
+		slog.Error("OIDC: id_token authorized party is not this client", "sub", claims.Sub)
+		http.Error(w, "id_token verification failed", http.StatusUnauthorized)
+		return
+	}
+
+	// The nonce binds the id_token to the browser that started this login. See
+	// oidcNonceCookie.
+	if !h.consumeNonce(w, r, idToken.Nonce) {
+		slog.Error("OIDC: id_token nonce does not match the login", "sub", claims.Sub)
+		http.Error(w, "id_token verification failed", http.StatusUnauthorized)
 		return
 	}
 
@@ -210,11 +279,33 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name)
+	// An identity provider that states the address is NOT verified is refused
+	// outright. The address decides which account an unlinked subject joins, so
+	// an unverified one is a claim to be somebody else.
+	if claims.EmailVerified != nil && !*claims.EmailVerified {
+		slog.Warn("OIDC: refused an unverified email claim", "sub", claims.Sub)
+		http.Error(w, "email claim is not verified", http.StatusForbidden)
+		return
+	}
+
+	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name, claims.EmailVerified)
 	if err != nil {
 		if errors.Is(err, errUserSuspended) {
 			slog.Warn("OIDC: suspended user attempted login", "email", claims.Email)
 			http.Error(w, "account suspended", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, errIdentityConflict) {
+			// The subject and the address name two different accounts. Only an
+			// operator can decide which one survives, so the login stops here
+			// rather than picking one.
+			slog.Warn("OIDC: refused a login that names two accounts", "sub", claims.Sub)
+			http.Error(w, "this identity is already linked to another account", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, errEmailNotVerified) {
+			slog.Warn("OIDC: refused an unverified email for a new subject", "sub", claims.Sub)
+			http.Error(w, "email claim is not verified", http.StatusForbidden)
 			return
 		}
 		slog.Error("OIDC: user provisioning failed", "err", err, "email", claims.Email)
@@ -239,43 +330,242 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 
 var errUserSuspended = errors.New("user account is suspended")
 
-func (h *OIDCHandler) provisionUser(ctx context.Context, sub, email, name string) (string, error) {
+// errIdentityConflict means the provider subject and the email claim name two
+// different accounts. The login stops; only an operator can merge them.
+var errIdentityConflict = errors.New("provider identity conflicts with the email claim")
+
+// errEmailNotVerified means a subject with no link asked to join an account by
+// email alone. The identity provider did not state that the address is verified.
+var errEmailNotVerified = errors.New("email claim is not verified")
+
+// oidcRequiresVerifiedEmail reports whether an ABSENT email_verified claim is
+// fatal for the email fallback.
+//
+// The default is OFF, and that matches the reviewed protocol verifier. Its
+// RequireEmailVerified field is off unless a deployment sets it. Many identity
+// providers omit the claim, so a hard requirement stops a working login. An
+// explicit `"email_verified": false` is refused whatever this variable says.
+// Read Callback for that rule.
+//
+// Keep the name as a LITERAL here. services/elitea-llm-gateway/scripts/
+// env-drift-check.sh greps for a quoted name inside an os.Getenv call. A named
+// constant hides the read, and the gate then reports a false green.
+// deploy/helm/elitea-main/values.yaml carries the matching knob.
+func oidcRequiresVerifiedEmail() bool {
+	return strings.EqualFold(os.Getenv("OIDC_REQUIRE_EMAIL_VERIFIED"), "true")
+}
+
+// provisionUser resolves the account this login belongs to.
+//
+// THE PROVIDER SUBJECT IS THE IDENTITY, and the email claim is only an
+// attribute of it. The previous implementation had that the other way round.
+// It upserted auth_core__user ON CONFLICT (email). It returned whatever id the
+// address matched. It then wrote the subject link with an untargeted
+// ON CONFLICT DO NOTHING. Two failures followed from it.
+//
+//  1. TAKEOVER. Any id_token whose email claim named an existing account handed
+//     the caller a 24-hour session for that account. The subject was never read
+//     back. A `provider_ref` that a different user already owned hit the UNIQUE
+//     constraint. DO NOTHING then discarded the collision in silence.
+//  2. ORPHANING. When an identity provider changed a person's address, the same
+//     subject arrived with a new email. The upsert found no conflict, created a
+//     second row, and the link insert failed on the unique provider_ref and was
+//     again swallowed. The session went to the new empty row. The real account
+//     became unreachable through this provider for good.
+//
+// The order below is the one internal/infra/identityrepo uses. Take the
+// advisory lock on the subject. Look the subject up FIRST. Fall back to the
+// address only for a subject that this deployment has never seen. The fallback
+// also refuses an account that another OIDC subject ALREADY holds. Adoption on
+// an email match alone is exactly failure 1.
+func (h *OIDCHandler) provisionUser(
+	ctx context.Context,
+	sub, email, name string,
+	emailVerified *bool,
+) (string, error) {
+	providerRef := "oidc:" + sub
+
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var userID int
-	err = tx.QueryRow(ctx,
-		`INSERT INTO auth_core__user (email, name, last_login)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (email) DO UPDATE SET last_login = $3
-		 WHERE auth_core__user.suspended = false
-		 RETURNING id`,
-		email, name, time.Now(),
-	).Scan(&userID)
+	userID, err := resolveProvisionedUser(ctx, tx, providerRef, email, name, emailVerified)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return "", errUserSuspended
-		}
-		return "", fmt.Errorf("upsert user: %w", err)
-	}
-
-	providerRef := "oidc:" + sub
-	_, err = tx.Exec(ctx,
-		`INSERT INTO auth_core__user_provider (user_id, provider_ref)
-		 VALUES ($1, $2)
-		 ON CONFLICT DO NOTHING`,
-		userID, providerRef,
-	)
-	if err != nil {
-		return "", fmt.Errorf("link provider: %w", err)
+		return "", err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
 	}
+	return strconv.Itoa(userID), nil
+}
 
-	return fmt.Sprintf("%d", userID), nil
+// resolveProvisionedUser is provisionUser inside one transaction. The split
+// lets a test assert the resolution ORDER without a database. The subject
+// lookup must come first. The email fallback must run only after it misses.
+func resolveProvisionedUser(
+	ctx context.Context,
+	tx pgx.Tx,
+	providerRef, email, name string,
+	emailVerified *bool,
+) (int, error) {
+	// Serializes two concurrent first logins for the same subject, so only one
+	// of them creates the link. Mirrors AcquireAuthProviderAdvisoryLock.
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, providerRef,
+	); err != nil {
+		return 0, fmt.Errorf("lock provider identity: %w", err)
+	}
+
+	userID, linked, err := reuseLinkedAccount(ctx, tx, providerRef, email, name)
+	if err != nil {
+		return 0, err
+	}
+	if linked {
+		return userID, nil
+	}
+	return joinAccountByEmail(ctx, tx, providerRef, email, name, emailVerified)
+}
+
+// reuseLinkedAccount returns the account this provider subject already owns.
+//
+// It also REPAIRS the address on that account. This keeps an email change at
+// the identity provider from orphaning the account. The subject still names the
+// same row, and the row learns the new address.
+func reuseLinkedAccount(
+	ctx context.Context,
+	tx pgx.Tx,
+	providerRef, email, name string,
+) (userID int, linked bool, err error) {
+	var suspended bool
+	err = tx.QueryRow(ctx,
+		`SELECT owner.id, owner.suspended
+		 FROM auth_core__user_provider AS provider
+		 JOIN auth_core__user AS owner ON owner.id = provider.user_id
+		 WHERE provider.provider_ref = $1
+		 FOR UPDATE OF provider, owner`,
+		providerRef,
+	).Scan(&userID, &suspended)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("read provider identity: %w", err)
+	}
+	if suspended {
+		return 0, false, errUserSuspended
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE auth_core__user
+		 SET last_login = now(),
+		     email = $2,
+		     name = COALESCE(NULLIF(name, ''), $3)
+		 WHERE id = $1`,
+		userID, email, name,
+	)
+	var conflict *pgconn.PgError
+	if errors.As(err, &conflict) && conflict.Code == "23505" {
+		// A DIFFERENT account already holds this address. Writing it here would
+		// need the two accounts merged, which only an operator can decide.
+		return 0, false, errIdentityConflict
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("touch provider identity: %w", err)
+	}
+	return userID, true, nil
+}
+
+// joinAccountByEmail handles a subject that has never signed in here. It is the
+// only path on which the email claim decides anything, so it is the narrow one.
+//
+// An account that another OIDC subject ALREADY holds is never adopted. An
+// account with no OIDC link is adopted. This is how a person keeps one account
+// across a first single-sign-on. The deployment can also demand a verified
+// address for that step.
+//
+// The guard reads only refs in this handler's own `oidc:` namespace. Pylon
+// wrote a BARE ref for the same provider, and pylon-created databases hold no
+// prefixed ref (legacy/plugins/auth_init/rpc/processor.py:55). A namespace-blind
+// guard refuses every such account with 409 on its first Go login.
+func joinAccountByEmail(
+	ctx context.Context,
+	tx pgx.Tx,
+	providerRef, email, name string,
+	emailVerified *bool,
+) (int, error) {
+	if oidcRequiresVerifiedEmail() && (emailVerified == nil || !*emailVerified) {
+		return 0, errEmailNotVerified
+	}
+
+	var userID int
+	err := tx.QueryRow(ctx,
+		`INSERT INTO auth_core__user (email, name, last_login)
+		 VALUES ($1, $2, now())
+		 ON CONFLICT (email) DO UPDATE SET last_login = now()
+		 WHERE auth_core__user.suspended = false
+		   AND NOT EXISTS (
+		       SELECT 1 FROM auth_core__user_provider AS bound
+		       WHERE bound.user_id = auth_core__user.id
+		         AND bound.provider_ref LIKE 'oidc:%'
+		   )
+		 RETURNING id`,
+		email, name,
+	).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The address matched a row the conflict clause refused. Read which of
+		// the two reasons it was, so the caller reports the right one.
+		return 0, refusedEmailReason(ctx, tx, email)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("upsert user: %w", err)
+	}
+
+	// TARGETED on provider_ref. The untargeted form also masks the
+	// (user_id, provider_ref) primary key, which hides the collision this
+	// re-select exists to find.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO auth_core__user_provider (user_id, provider_ref)
+		 VALUES ($1, $2)
+		 ON CONFLICT (provider_ref) DO NOTHING`,
+		userID, providerRef,
+	); err != nil {
+		return 0, fmt.Errorf("link provider: %w", err)
+	}
+
+	// The insert above may have written nothing. Read the owner back and refuse
+	// when it is not the account just resolved. With the lookup and the advisory
+	// lock in front this is a race backstop, not the primary guard.
+	var ownerID int
+	if err := tx.QueryRow(ctx,
+		`SELECT user_id FROM auth_core__user_provider WHERE provider_ref = $1`,
+		providerRef,
+	).Scan(&ownerID); err != nil {
+		return 0, fmt.Errorf("read linked provider: %w", err)
+	}
+	if ownerID != userID {
+		return 0, errIdentityConflict
+	}
+	return userID, nil
+}
+
+// refusedEmailReason names why the email upsert wrote no row. The conflict
+// clause has two arms, and the caller must report the right one.
+//
+// A suspended account is reported as suspended. Every other outcome is reported
+// as a conflict, and that answer withholds the account. Two outcomes reach it:
+// another OIDC subject already holds the account, or a concurrent change removed
+// the row.
+func refusedEmailReason(ctx context.Context, tx pgx.Tx, email string) error {
+	var suspended bool
+	err := tx.QueryRow(ctx,
+		`SELECT suspended FROM auth_core__user WHERE email = $1`,
+		email,
+	).Scan(&suspended)
+	if err == nil && suspended {
+		return errUserSuspended
+	}
+	return errIdentityConflict
 }

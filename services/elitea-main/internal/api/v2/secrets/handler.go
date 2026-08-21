@@ -25,6 +25,7 @@ import (
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // Handler serves the secrets API, backed by the same centry.secrets_key /
@@ -392,6 +393,36 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, items)
 }
 
+// secretNameTaken reports whether a project vault already holds `name`, in
+// either map.
+//
+// Both maps matter. `{{secret.<name>}}` resolves one namespace, so a name that
+// is present in `secrets` and in `hidden_secrets` at the same time is an
+// ambiguous vault: Get returns the visible value and hides the other, and
+// Delete then removes both.
+func secretNameTaken(vault vaultData, name string) bool {
+	if _, visible := vault.Secrets[name]; visible {
+		return true
+	}
+	_, hidden := vault.HiddenSecrets[name]
+	return hidden
+}
+
+// maxSecretNameLength is the bound the vault WRITER applies
+// (infra/centrysecrets/mutate.go validSecretName). The API must agree with it,
+// or the API accepts a name the writer refuses.
+const maxSecretNameLength = 128
+
+// invalidSecretNameMessage is the refusal the administration-mode routes give
+// for the same name (admin.go). One rule, one message.
+const invalidSecretNameMessage = "secret name must contain only letters, digits and underscores"
+
+// acceptableSecretName reports whether `{{secret.<name>}}` can resolve to this
+// name, and whether the vault writer accepts it.
+func acceptableSecretName(name string) bool {
+	return len(name) <= maxSecretNameLength && validSecretName.MatchString(name)
+}
+
 // Create adds a new secret.  Body: {"name": "...", "value": "..."}.
 // Response: SecretListItem (201).
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
@@ -401,7 +432,18 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
-		http.Error(w, `{"error":"name is required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	// A name outside this class can be STORED and can never be RESOLVED. The
+	// 201 below hands the user `{{secret.<name>}}` as if it could be. The
+	// expander matches [A-Za-z0-9_]+ (infra/storage/expansion_unsecreter.go).
+	// It leaves a name it does not match as the literal placeholder. The
+	// toolkit then sends `{{secret.openai-api-key}}` to the provider as the
+	// API key. The administration-mode routes already refuse the same name
+	// (admin.go AdminCreate).
+	if !acceptableSecretName(body.Name) {
+		apierr.WriteStatus(w, http.StatusBadRequest, invalidSecretNameMessage)
 		return
 	}
 
@@ -414,8 +456,11 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		vaultUnreadable(w)
 		return
 	}
-	if _, exists := vault.Secrets[body.Name]; exists {
-		http.Error(w, fmt.Sprintf(`{"error":"Secret %q already exists"}`, body.Name), http.StatusBadRequest)
+	// The hidden map is checked too. A name that lives in hidden_secrets is
+	// taken: writing it into `secrets` as well puts one name in both maps, and
+	// Get then returns the visible value and shadows the hidden one.
+	if secretNameTaken(vault, body.Name) {
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("Secret %q already exists", body.Name))
 		return
 	}
 	vault.Secrets[body.Name] = body.Value
@@ -436,7 +481,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
 	if errors.Is(err, ErrVaultAbsent) {
-		http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "secret not found")
 		return
 	}
 	if err != nil {
@@ -461,7 +506,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	http.Error(w, `{"error":"secret not found"}`, http.StatusNotFound)
+	apierr.WriteStatus(w, http.StatusNotFound, "secret not found")
 }
 
 // Update renames and/or changes the value of an existing secret.
@@ -475,16 +520,24 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		Value string `json:"value"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if body.Name == "" {
 		body.Name = oldName
 	}
+	// Validate ONLY a name that changes. A vault written before this rule can
+	// hold a name outside the class, and the SDK route reads such a secret by
+	// its exact name. A value-only edit of that secret must keep working, so
+	// the check covers a rename and a create, never an unchanged name.
+	if body.Name != oldName && !acceptableSecretName(body.Name) {
+		apierr.WriteStatus(w, http.StatusBadRequest, invalidSecretNameMessage)
+		return
+	}
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
 	if errors.Is(err, ErrVaultAbsent) {
-		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("secret %q not found", oldName))
 		return
 	}
 	if err != nil {
@@ -492,7 +545,15 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := vault.Secrets[oldName]; !ok {
-		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, oldName), http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("secret %q not found", oldName))
+		return
+	}
+	// A rename onto an occupied name would silently destroy that entry. The
+	// vault is one encrypted blob with no history, so the overwritten value is
+	// unrecoverable. The administration-mode sibling AdminUpdate has always
+	// refused this; the project-mode route did not, and answered 200.
+	if body.Name != oldName && secretNameTaken(vault, body.Name) {
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("Secret %q already exists", body.Name))
 		return
 	}
 	delete(vault.Secrets, oldName)
@@ -540,7 +601,7 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 
 	vault, err := h.readVaultCtx(r.Context(), projectID)
 	if errors.Is(err, ErrVaultAbsent) {
-		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("secret %q not found", name))
 		return
 	}
 	if err != nil {
@@ -549,7 +610,7 @@ func (h *Handler) Hide(w http.ResponseWriter, r *http.Request) {
 	}
 	val, ok := vault.Secrets[name]
 	if !ok {
-		http.Error(w, fmt.Sprintf(`{"error":"secret %q not found"}`, name), http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, fmt.Sprintf("secret %q not found", name))
 		return
 	}
 	delete(vault.Secrets, name)

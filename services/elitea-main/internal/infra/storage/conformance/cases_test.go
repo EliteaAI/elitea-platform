@@ -164,7 +164,7 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 		if _, err := store.Put(ctx, ref, bytes.NewReader(content), storage.PutOptions{ContentLength: int64(len(content))}); err != nil {
 			t.Fatalf("Put: %v", err)
 		}
-		body, _, err := store.Get(ctx, ref, &storage.ByteRange{Start: 10, End: 19})
+		body, info, err := store.Get(ctx, ref, &storage.ByteRange{Start: 10, End: 19})
 		if err != nil {
 			t.Fatalf("Get(range): %v", err)
 		}
@@ -179,6 +179,16 @@ func runCases(t *testing.T, store storage.ObjectStore) {
 		}
 		if !bytes.Equal(got, want) {
 			t.Fatalf("Get(range 10-19) = %q, want %q", got, want)
+		}
+		// The reported ObjectInfo was discarded here before. That is how the
+		// GCS backend came to report the WHOLE object size for a ranged
+		// read: the handler declared it as Content-Length, net/http saw a
+		// short write, and every ranged download ended in an unexpected EOF.
+		if info.Size != int64(len(got)) {
+			t.Errorf("Get(range 10-19) reported Size %d, want the range length %d", info.Size, len(got))
+		}
+		if info.TotalSize != int64(len(content)) {
+			t.Errorf("Get(range 10-19) reported TotalSize %d, want the whole object %d", info.TotalSize, len(content))
 		}
 	})
 

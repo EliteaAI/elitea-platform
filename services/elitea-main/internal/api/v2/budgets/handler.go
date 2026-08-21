@@ -67,6 +67,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // Permissions the routes are gated on in internal/api/router.go, transcribed
@@ -284,7 +285,7 @@ SELECT EXISTS (SELECT 1 FROM centry.project WHERE id = $1 AND name = $2)`,
 func writeJSON(w http.ResponseWriter, code int, payload any) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	encoded = append(encoded, '\n')

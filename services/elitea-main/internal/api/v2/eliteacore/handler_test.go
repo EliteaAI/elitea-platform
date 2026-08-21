@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -276,7 +278,24 @@ func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
 
 // ---- DefaultIcons -----------------------------------------------------------
 
-func TestDefaultIcons(t *testing.T) {
+// DEFECT: DefaultIcons returned five invented entries — /icons/robot.svg,
+// /icons/brain.svg, /icons/chat.svg, /icons/code.svg and /icons/data.svg.
+// No such file exists in the repository. The only /icons route the router
+// mounts is the two-segment /icons/{projectID}/{filename} object-store route
+// (internal/api/router.go:625). Every one of those URLs therefore answered 404.
+//
+// The project icon picker renders each entry as <img src={icon.url}> and takes
+// the url branch, so its initial-letter fallback never runs: the "Default"
+// section showed five broken images. The legacy handler
+// (legacy/plugins/elitea_core/api/v2/default_icons.py) enumerated a real
+// directory; the port replaced that with a hardcoded list.
+//
+// The catalogue now reports only files that exist. An empty directory means an
+// empty array, never a fabricated URL.
+
+func TestDefaultIconsReportsNoIconWhenTheDirectoryIsAbsent(t *testing.T) {
+	t.Setenv("DEFAULT_ICON_DATA_DIR", filepath.Join(t.TempDir(), "absent"))
+
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.DefaultIcons(w, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -285,24 +304,57 @@ func TestDefaultIcons(t *testing.T) {
 	assertContentTypeJSON(t, w)
 
 	// Handler returns a plain JSON array of icon objects (no wrapper object).
+	if items := decodeArr(t, w); len(items) != 0 {
+		t.Fatalf("catalogue = %v for a directory that does not exist, want an empty array; "+
+			"every entry here renders as a broken image", items)
+	}
+}
+
+func TestDefaultIconsEnumeratesTheIconDirectory(t *testing.T) {
+	directory := t.TempDir()
+	for _, filename := range []string{"robot.svg", "brain.svg"} {
+		if err := os.WriteFile(filepath.Join(directory, filename), []byte("<svg/>"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A sub-directory and a dot file are not icons.
+	if err := os.Mkdir(filepath.Join(directory, "nested"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEFAULT_ICON_DATA_DIR", directory)
+
+	h := newHandler()
+	w := httptest.NewRecorder()
+	h.DefaultIcons(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assertStatus(t, w, http.StatusOK)
 	items := decodeArr(t, w)
-	const wantCount = 5
-	if len(items) != wantCount {
-		t.Errorf("expected %d icons, got %d", wantCount, len(items))
+	if len(items) != 2 {
+		t.Fatalf("catalogue = %v, want the two files on disk", items)
 	}
 
+	urls := map[string]string{}
 	for i, raw := range items {
 		icon, ok := raw.(map[string]any)
 		if !ok {
-			t.Errorf("icon[%d] is not an object", i)
-			continue
+			t.Fatalf("icon[%d] is not an object", i)
 		}
-		if name, _ := icon["name"].(string); name == "" {
+		name, _ := icon["name"].(string)
+		iconURL, _ := icon["url"].(string)
+		if name == "" {
 			t.Errorf("icon[%d] missing or empty 'name'", i)
 		}
-		if url, _ := icon["url"].(string); url == "" {
-			t.Errorf("icon[%d] missing or empty 'url'", i)
+		if !strings.HasPrefix(iconURL, eliteacore.DefaultIconURLPrefix) {
+			t.Errorf("icon[%d] url = %q, want the %q prefix that a static route serves",
+				i, iconURL, eliteacore.DefaultIconURLPrefix)
 		}
+		urls[name] = iconURL
+	}
+	if got := urls["robot"]; got != eliteacore.DefaultIconURLPrefix+"robot.svg" {
+		t.Errorf("robot url = %q", got)
 	}
 }
 

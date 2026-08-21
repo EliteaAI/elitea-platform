@@ -153,14 +153,26 @@ func TestANonMemberIsRefusedTheOwnAvatarRoutes(t *testing.T) {
 
 /* ── why "every role" is the membership check ──────────────────────────── */
 
-// Go seeds exactly three default-mode roles. 0083 grants the avatar strings to
-// all three, so the surviving gate admits every project member and refuses
-// everybody else. That equivalence is the reason 0083 changes the grant and
-// leaves the gate alone, and it stops holding the moment a fourth role appears.
+// Go seeds three HUMAN default-mode roles, plus one machine role.
 //
-// A fourth default-mode role would silently be refused its own avatar. This test
-// fails then, and 0083's decision has to be read again.
-func TestGoSeedsExactlyThreeDefaultModeRoles(t *testing.T) {
+// 0083 grants the avatar strings to admin, editor and viewer, so the surviving
+// gate admits every human project member and refuses everybody else. That
+// equivalence is the reason 0083 changes the grant and leaves the gate alone.
+//
+// shared/0088 then seeds a fourth default-mode role, `system`, and does NOT
+// give it the avatar strings. That was decided, not overlooked. The role is the
+// per-project system identity a scheduled execution runs as. It is a machine
+// and has no avatar. Its grant list is deliberately the worker callback
+// surface and nothing else.
+//
+// The one visible consequence is that an operator who assigns a human the
+// `system` project role gives them no avatar of their own. Every other
+// permission that role carries is already held by `editor`. Such an assignment
+// therefore widens nothing.
+//
+// A FIFTH default-mode role fails this test, and 0083's decision has to be read
+// again before it is added.
+func TestGoSeedsThreeHumanDefaultModeRolesAndOneMachineRole(t *testing.T) {
 	pool := newMigratedPool(t)
 
 	ctx, cancel := testContext()
@@ -185,12 +197,12 @@ func TestGoSeedsExactlyThreeDefaultModeRoles(t *testing.T) {
 		t.Fatalf("iterate the role rows: %v", err)
 	}
 
-	want := []string{"admin", "editor", "viewer"}
+	want := []string{"admin", "editor", machineModeRole, "viewer"}
 	if !slices.Equal(names, want) {
 		t.Fatalf("default-mode roles = %v, want %v.\n"+
-			"  0083 grants the avatar strings to all three because that set IS the\n"+
-			"  membership check. A new role breaks the equivalence and needs its own\n"+
-			"  decision.", names, want)
+			"  0083 grants the avatar strings to the three HUMAN roles because that set IS\n"+
+			"  the membership check. A new role breaks the equivalence and needs its own\n"+
+			"  decision, as shared/0088 made for the machine role.", names, want)
 	}
 }
 

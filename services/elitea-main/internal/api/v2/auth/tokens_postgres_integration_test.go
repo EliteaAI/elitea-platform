@@ -94,7 +94,7 @@ VALUES (7, 'owner@example.test', false), (42, 'collision@example.test', false);`
 		t.Fatalf("created project = %d, want unbound", *created.ProjectID)
 	}
 	const signingKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	encoded, err := signBaselineToken([]byte(signingKey), created)
+	encoded, err := (&Handler{tokenSigningKey: []byte(signingKey)}).signBaselineToken(created)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id) V
 	// The signed bearer string is unchanged by the binding, and the validator
 	// reports the binding from storage on the row it already reads.
 	const signingKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	encoded, err := signBaselineToken([]byte(signingKey), bound)
+	encoded, err := (&Handler{tokenSigningKey: []byte(signingKey)}).signBaselineToken(bound)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,6 +317,81 @@ INSERT INTO public.auth_core__project_user_role (project_id, user_id, role_id) V
 	}
 	if principal.TokenProjectID == nil || *principal.TokenProjectID != 5 {
 		t.Fatalf("validated principal binding = %v, want 5", principal.TokenProjectID)
+	}
+	if principal.TokenProjectActive == nil || !*principal.TokenProjectActive {
+		t.Fatalf("bound project active = %v, want true for an active project", principal.TokenProjectActive)
+	}
+	if principal.BoundProjectRefused() {
+		t.Fatal("an active bound project was refused")
+	}
+
+	// DEFECT: suspending a project revokes no binding. ProjectSuspend runs one
+	// UPDATE on centry.project. A token bound to that project therefore kept
+	// resolving to it at the /llm edge. It also kept spending its budget and
+	// its provider credentials. An UNBOUND caller naming the same project was
+	// already refused by IsCurrentUserProjectMember, which requires
+	// `suspended IS FALSE`. The validator now reports the state on the row it
+	// already reads, and the edge refuses the request.
+	if _, err := pool.Exec(ctx, `UPDATE centry.project SET suspended = true WHERE id = 5`); err != nil {
+		t.Fatal(err)
+	}
+	suspended, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, encoded)
+	if err != nil {
+		t.Fatalf("a bound token must still authenticate after its project is suspended: %v", err)
+	}
+	if suspended.TokenProjectID == nil || *suspended.TokenProjectID != 5 {
+		t.Fatalf("binding after suspension = %v, want 5", suspended.TokenProjectID)
+	}
+	if suspended.TokenProjectActive == nil || *suspended.TokenProjectActive {
+		t.Fatalf("bound project active = %v, want false after suspension", suspended.TokenProjectActive)
+	}
+	if !suspended.BoundProjectRefused() {
+		t.Fatal("a token bound to a suspended project was not refused")
+	}
+
+	// Suspension is reversible, so the refusal must lift with it. A fix that
+	// deleted the binding could never restore this.
+	if _, err := pool.Exec(ctx, `UPDATE centry.project SET suspended = false WHERE id = 5`); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.BoundProjectRefused() {
+		t.Fatal("the binding stayed refused after the project was unsuspended")
+	}
+
+	// REGRESSION GUARD for the query change. Most tokens carry no binding. The
+	// second join must stay a LEFT JOIN: an inner join on centry.project drops
+	// every unbound row, which breaks authentication for the majority of
+	// callers with "token not found".
+	unbound, err := repository.Create(ctx, tokenCreateInput{
+		OwnerID: 7,
+		Name:    stringAddress("unbound-token"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundEncoded, err := (&Handler{tokenSigningKey: []byte(signingKey)}).signBaselineToken(unbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unboundPrincipal, err := authsvc.NewLocalValidator(pool, signingKey).ValidateToken(ctx, unboundEncoded)
+	if err != nil {
+		t.Fatalf("an unbound token must still authenticate: %v", err)
+	}
+	if unboundPrincipal.TokenProjectID != nil {
+		t.Fatalf("unbound principal binding = %v, want nil", unboundPrincipal.TokenProjectID)
+	}
+	if unboundPrincipal.TokenProjectActive != nil {
+		t.Fatalf("unbound principal project state = %v, want nil (nothing to report on)", unboundPrincipal.TokenProjectActive)
+	}
+	if unboundPrincipal.BoundProjectRefused() {
+		t.Fatal("an unbound token was refused")
+	}
+	if err := repository.DeleteOwned(ctx, 7, *unbound.UUID); err != nil {
+		t.Fatal(err)
 	}
 
 	for name, projectID := range map[string]int64{

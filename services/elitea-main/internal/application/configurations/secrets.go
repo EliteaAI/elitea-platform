@@ -56,6 +56,33 @@ func ExtractCurrentConfigurationSecrets(
 	configurationType string,
 	newID CurrentSecretIDGenerator,
 ) (map[string]any, []HiddenSecretMutation, error) {
+	return sealCurrentConfigurationSecrets(ctx, data, properties, configurationType, newID, true)
+}
+
+// SealCurrentConfigurationSecrets does what ExtractCurrentConfigurationSecrets
+// does, but it keeps an unknown top-level field instead of refusing it.
+//
+// The compatibility write route accepts free-form data today. A refusal there
+// turns a request that works into a 400. This variant removes the plaintext
+// and changes nothing else.
+func SealCurrentConfigurationSecrets(
+	ctx context.Context,
+	data map[string]any,
+	properties map[string]any,
+	configurationType string,
+	newID CurrentSecretIDGenerator,
+) (map[string]any, []HiddenSecretMutation, error) {
+	return sealCurrentConfigurationSecrets(ctx, data, properties, configurationType, newID, false)
+}
+
+func sealCurrentConfigurationSecrets(
+	ctx context.Context,
+	data map[string]any,
+	properties map[string]any,
+	configurationType string,
+	newID CurrentSecretIDGenerator,
+	rejectUnknown bool,
+) (map[string]any, []HiddenSecretMutation, error) {
 	if ctx == nil {
 		return nil, nil, ErrInvalidCurrentConfigurationSecrets
 	}
@@ -72,7 +99,7 @@ func ExtractCurrentConfigurationSecrets(
 		existingIDs:       make(map[string]struct{}),
 		generatedIDs:      make(map[string]struct{}),
 	}
-	sanitized, err := extractor.object(ctx, data, properties, "", nil, true)
+	sanitized, err := extractor.object(ctx, data, properties, "", nil, rejectUnknown)
 	if err != nil {
 		return nil, nil, err
 	}

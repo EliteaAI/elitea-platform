@@ -64,12 +64,21 @@ func (m *memberOfProject) QueryRow(_ context.Context, _ string, args ...any) pgx
 	return membershipRow{allowed: projectID == m.project}
 }
 
+// membershipRow answers the middleware's two-column query: the first column is
+// the membership decision, the second is "does this project exist?". Every
+// project in this fixture exists, so the second column is always true and the
+// only discriminator stays the membership answer.
 type membershipRow struct{ allowed bool }
 
 func (r membershipRow) Scan(dest ...any) error {
-	if len(dest) == 1 {
+	if len(dest) > 0 {
 		if target, ok := dest[0].(*bool); ok {
 			*target = r.allowed
+		}
+	}
+	if len(dest) > 1 {
+		if target, ok := dest[1].(*bool); ok {
+			*target = true
 		}
 	}
 	return nil

@@ -27,6 +27,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -204,7 +205,7 @@ func (h *BudgetAlertHandler) Routes() chi.Router {
 func (h *BudgetAlertHandler) Get(w http.ResponseWriter, r *http.Request) {
 	cfg, err := h.store.Get(r.Context())
 	if err != nil {
-		http.Error(w, `{"error":"failed to read budget alert config"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to read budget alert config")
 		return
 	}
 	writeJSON(w, http.StatusOK, cfg)
@@ -218,16 +219,16 @@ func (h *BudgetAlertHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *BudgetAlertHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var req BudgetAlertUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if req.ThresholdPct != nil && (*req.ThresholdPct < 1 || *req.ThresholdPct > 100) {
-		http.Error(w, `{"error":"threshold_pct must be between 1 and 100"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "threshold_pct must be between 1 and 100")
 		return
 	}
 	cfg, err := h.store.Update(r.Context(), req)
 	if err != nil {
-		http.Error(w, `{"error":"failed to save budget alert config"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to save budget alert config")
 		return
 	}
 	writeJSON(w, http.StatusOK, cfg)

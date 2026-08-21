@@ -401,6 +401,22 @@ env:
   # ELITEA_SELF_LLM_ORIGINS also empty, §2.6 guard #1 is inert.
   DEPLOYMENT_URL: ""
 
+  # --- OIDC email policy ------------------------------------------------------
+  # Set "true" to REFUSE one class of OIDC login. The login joins an existing
+  # account by email. The identity provider does not state
+  # `"email_verified": true`.
+  #
+  # The knob applies to ONE path: a provider subject with no link here that asks
+  # to adopt an account by its address (internal/api/v2/auth/oidc.go,
+  # joinAccountByEmail). A subject that already owns an account is never held to
+  # it, because the subject decides that account.
+  #
+  # Empty (the default) leaves the rule OFF, and that matches the code default.
+  # Many identity providers omit the claim, so "true" stops a working login on
+  # those. An explicit `"email_verified": false` is refused whatever this says.
+  # Turn it on when your provider always sends the claim.
+  OIDC_REQUIRE_EMAIL_VERIFIED: ""
+
   # Filesystem path to a custom brand pack directory (internal/api/router.go);
   # empty serves the built-in default brand pack. Discovered unwired while
   # empirically verifying S17's env-drift gate — not itself a storage

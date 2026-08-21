@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -178,14 +179,38 @@ func (b *Backend) Get(ctx context.Context, ref storage.ObjectRef, rng *storage.B
 	if err != nil {
 		return nil, storage.ObjectInfo{}, mapAzureError(err, "get object")
 	}
+	// ContentLength is the length of the RANGE on a ranged download. The
+	// whole blob's size comes from the Content-Range header Azure sends with
+	// a 206, which a caller needs to build its own Content-Range.
+	size := derefInt64(resp.ContentLength)
+	total := size
+	if parsed, ok := totalFromContentRange(derefString(resp.ContentRange)); ok {
+		total = parsed
+	}
 	info := storage.ObjectInfo{
 		Key:          ref.Key(),
-		Size:         derefInt64(resp.ContentLength),
+		Size:         size,
+		TotalSize:    total,
 		LastModified: derefTime(resp.LastModified),
 		ContentType:  derefString(resp.ContentType),
 		ETag:         derefETagString(resp.ETag),
 	}
 	return resp.Body, info, nil
+}
+
+// totalFromContentRange reads the complete-length field out of a
+// "bytes <start>-<end>/<total>" header. A total of "*" is unknown and
+// returns false, as does any header this parser does not recognise.
+func totalFromContentRange(header string) (int64, bool) {
+	slash := strings.LastIndex(header, "/")
+	if slash < 0 {
+		return 0, false
+	}
+	total, err := strconv.ParseInt(strings.TrimSpace(header[slash+1:]), 10, 64)
+	if err != nil || total < 0 {
+		return 0, false
+	}
+	return total, true
 }
 
 func (b *Backend) Stat(ctx context.Context, ref storage.ObjectRef) (storage.ObjectInfo, error) {

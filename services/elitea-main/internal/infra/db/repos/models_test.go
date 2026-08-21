@@ -165,7 +165,12 @@ func TestCurrentModelsRepositoryUsesLLMDefaultMaxForDuplicateOrdering(t *testing
 	}
 }
 
-func TestCurrentModelsRepositoryRejectsInvalidRowsWithoutLeakingValues(t *testing.T) {
+// A row that breaks a tenant invariant fails the whole read.
+//
+// These rows say the query or the transaction returned something from another
+// scope. The read is then untrustworthy, so it must return nothing rather than
+// a smaller answer.
+func TestCurrentModelsRepositoryRejectsRowsFromAnotherScope(t *testing.T) {
 	valid := currentModelRow(1, 7, configurationapp.CurrentModelSectionLLM, "Model", true,
 		`{"name":"model","context_window":128000,"max_output_tokens":16000}`)
 	tests := []struct {
@@ -176,23 +181,6 @@ func TestCurrentModelsRepositoryRejectsInvalidRowsWithoutLeakingValues(t *testin
 		{name: "wrong project", row: func() sqlcgen.ListCurrentModelConfigurationsRow { row := valid; row.ProjectID = 8; return row }()},
 		{name: "wrong section", row: func() sqlcgen.ListCurrentModelConfigurationsRow { row := valid; row.Section = "embedding"; return row }()},
 		{name: "public row not shared", sharedOnly: true, row: func() sqlcgen.ListCurrentModelConfigurationsRow { row := valid; row.Shared = false; return row }()},
-		{name: "missing display name", row: func() sqlcgen.ListCurrentModelConfigurationsRow { row := valid; row.Label = nil; return row }()},
-		{name: "data is not object", row: func() sqlcgen.ListCurrentModelConfigurationsRow { row := valid; row.Data = []byte(`[]`); return row }()},
-		{name: "name has wrong type", row: func() sqlcgen.ListCurrentModelConfigurationsRow {
-			row := valid
-			row.Data = []byte(`{"name":7}`)
-			return row
-		}()},
-		{name: "numeric string is rejected before database cast", row: func() sqlcgen.ListCurrentModelConfigurationsRow {
-			row := valid
-			row.Data = []byte(`{"name":"model","max_output_tokens":"private-secret"}`)
-			return row
-		}()},
-		{name: "boolean string is rejected", row: func() sqlcgen.ListCurrentModelConfigurationsRow {
-			row := valid
-			row.Data = []byte(`{"name":"model","supports_vision":"private-secret"}`)
-			return row
-		}()},
 	}
 
 	for _, test := range tests {
@@ -200,11 +188,60 @@ func TestCurrentModelsRepositoryRejectsInvalidRowsWithoutLeakingValues(t *testin
 			queries := &currentModelQueriesStub{rows: []sqlcgen.ListCurrentModelConfigurationsRow{test.row}}
 			repository := newCurrentModelsRepositoryForTest(t, &currentModelProjectStore{}, queries)
 			_, err := repository.List(context.Background(), 7, configurationapp.CurrentModelSectionLLM, test.sharedOnly)
-			if !errors.Is(err, errInvalidCurrentModelConfiguration) {
+			if !errors.Is(err, errCurrentModelRowNotOwned) {
 				t.Fatalf("error=%v", err)
 			}
-			if strings.Contains(err.Error(), "private-secret") {
-				t.Fatalf("malformed value leaked: %v", err)
+		})
+	}
+}
+
+// THE DEFECT. One row with a wrongly typed `data` field removed the WHOLE model
+// catalogue of the project.
+//
+// List mapped each row and returned on the first error.
+// optionalCurrentModelInt/Bool reject a field whose JSON type is wrong. An
+// example is `"context_window":"128000"` as a string. The compatibility write path
+// (internal/api/v2/configurations/handler.go) stores `data` with no
+// registry-schema check, so any project editor can store such a row through the
+// public API. Every later GET /api/v2/configurations/models/{projectID} then
+// answered 500 for every member of that project, and the chat model picker was
+// empty until someone repaired the row.
+//
+// A malformed row must be skipped instead. The good rows still reach the
+// caller.
+func TestCurrentModelsRepositorySkipsMalformedRowsAndKeepsTheGoodOnes(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "missing display name", data: `{"name":"model"}`},
+		{name: "data is not object", data: `[]`},
+		{name: "name has wrong type", data: `{"name":7}`},
+		{name: "integer field sent as a string", data: `{"name":"model","context_window":"128000"}`},
+		{name: "numeric string is not cast", data: `{"name":"model","max_output_tokens":"private-secret"}`},
+		{name: "boolean field sent as a string", data: `{"name":"model","supports_vision":"private-secret"}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bad := currentModelRow(2, 7, configurationapp.CurrentModelSectionLLM, "Broken", false, test.data)
+			if test.name == "missing display name" {
+				bad.Label = nil
+			}
+			queries := &currentModelQueriesStub{rows: []sqlcgen.ListCurrentModelConfigurationsRow{
+				currentModelRow(1, 7, configurationapp.CurrentModelSectionLLM, "Good One", false,
+					`{"name":"good-one","context_window":128000}`),
+				bad,
+				currentModelRow(3, 7, configurationapp.CurrentModelSectionLLM, "Good Two", false,
+					`{"name":"good-two","context_window":64000}`),
+			}}
+			repository := newCurrentModelsRepositoryForTest(t, &currentModelProjectStore{}, queries)
+			items, err := repository.List(context.Background(), 7, configurationapp.CurrentModelSectionLLM, false)
+			if err != nil {
+				t.Fatalf("one malformed row removed the whole catalogue: %v", err)
+			}
+			if len(items) != 2 || items[0].Name != "good-one" || items[1].Name != "good-two" {
+				t.Fatalf("items=%#v", items)
 			}
 		})
 	}

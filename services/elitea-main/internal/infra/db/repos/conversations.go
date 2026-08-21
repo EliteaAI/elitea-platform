@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -282,30 +283,148 @@ func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationI
 	return nil
 }
 
+// participantIdentityQuery finds the participant row that already describes the
+// same entity.
+//
+// The identity of a participant is NOT the whole entity_meta document. The web
+// client puts a `name` inside it. A renamed agent therefore produces a
+// different document for the same agent. Whole-row equality would create a
+// second row. The key is a per-type subset, the same subset legacy matches on
+// (`make_query_filter_for_entity`):
+//
+//	llm    -> model_name        (a model participant carries no id)
+//	dummy  -> nothing; one row serves every conversation
+//	user   -> id
+//	other  -> id and project_id (application, prompt, toolkit)
+//
+// IS NOT DISTINCT FROM, not `=`: a missing key reads as SQL NULL, and `=`
+// answers NULL for it, which the WHERE clause drops.
+//
+// THE COMPARISON IS TEXTUAL, and legacy's is numeric. legacy casts both sides
+// to Integer (`make_query_filter_for_entity`, participant_utils.py:79-94).
+// This query compares the `->>` text on both sides. A caller that sends
+// `"id": "42"` and a caller that sends `"id": 42` therefore get two rows for
+// one entity. The web client sends a number, so the split does not happen
+// today. A numeric cast here would fail on a non-numeric id, which this
+// endpoint does not reject.
+const participantIdentityQuery = `SELECT id FROM %q.chat_participants
+	WHERE entity_name = $1::text
+	  AND CASE $1::text
+	        WHEN 'llm'   THEN entity_meta->>'model_name' IS NOT DISTINCT FROM $2::jsonb->>'model_name'
+	        WHEN 'dummy' THEN TRUE
+	        WHEN 'user'  THEN entity_meta->>'id' IS NOT DISTINCT FROM $2::jsonb->>'id'
+	        ELSE entity_meta->>'id'         IS NOT DISTINCT FROM $2::jsonb->>'id'
+	         AND entity_meta->>'project_id' IS NOT DISTINCT FROM $2::jsonb->>'project_id'
+	      END
+	ORDER BY id
+	LIMIT 1`
+
+// participantDisplayMeta builds the `meta` document the chat turn builder
+// reads.
+//
+// internal/db/queries/agent_chat.sql reads `meta->>'name'` when it assembles
+// the adhoc tools payload. The previous INSERT hardcoded `'{}'::json`, so every
+// participant this repository created contributed a NULL name there.
+//
+// The name comes from the request, which is what the web client sends
+// (features/chat-participants/lib/helpers.ts). Legacy also resolves an
+// `agent_type` for an application through an entity lookup. Legacy also
+// resolves a user name and avatar for a user through that lookup. This
+// repository does not perform that lookup.
+func participantDisplayMeta(entityName string, entityMeta map[string]any) []byte {
+	meta := map[string]any{}
+	switch entityName {
+	case "llm":
+		if modelName, ok := entityMeta["model_name"].(string); ok && modelName != "" {
+			meta["name"] = modelName
+		}
+	case "dummy":
+		meta["name"] = "EliteA"
+	case "user":
+		if userName, ok := entityMeta["user_name"].(string); ok && userName != "" {
+			meta["user_name"] = userName
+		}
+	default:
+		if name, ok := entityMeta["name"].(string); ok && name != "" {
+			meta["name"] = name
+		}
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return []byte("{}")
+	}
+	return encoded
+}
+
+// AddParticipant attaches one entity to a conversation.
+//
+// DEFECT this shape corrects: the previous version always INSERTed a new
+// chat_participants row with its own gen_random_uuid(), and only looked for an
+// existing row if that INSERT failed. The table has no unique key on
+// (entity_name, entity_meta), so the INSERT could not fail and the lookup was
+// unreachable. The mapping insert's
+// `ON CONFLICT ON CONSTRAINT _participant_conversation_uc` guards
+// (participant_id, conversation_id), and participant_id was always new, so the
+// guard never fired either. Adding the same agent twice left two participant
+// rows and two mapping rows in one conversation. A double click does that,
+// and so does a retry after a failed first attempt.
+//
+// The order is now find, then create, which is what legacy's `get_or_create_one`
+// does and what predict.go's findOrCreateUserParticipant already did.
+//
+// One transaction covers the lookup, the insert and the mapping. Two
+// concurrent first-time adds can still both miss the lookup; the mapping
+// ON CONFLICT does not catch that, because the two transactions hold different
+// participant ids.
 func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error {
 	s := schema(projectID)
 	entityName, _ := body["entity_name"].(string)
+	entityMetaMap, _ := body["entity_meta"].(map[string]any)
 	entityMeta, _ := json.Marshal(body["entity_meta"])
 	entitySettings, _ := json.Marshal(body["entity_settings"])
 	if string(entitySettings) == "null" {
 		entitySettings = []byte("{}")
 	}
 
-	q := fmt.Sprintf(`INSERT INTO %q.chat_participants (uuid, entity_name, entity_meta, meta)
-		VALUES (gen_random_uuid(), $1, $2::jsonb, '{}'::json) RETURNING id`, s)
-	var participantID int
-	err := r.pool.QueryRow(ctx, q, entityName, entityMeta).Scan(&participantID)
+	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
-		q2 := fmt.Sprintf(`SELECT id FROM %q.chat_participants WHERE entity_name = $1 AND entity_meta = $2::jsonb`, s)
-		if err2 := r.pool.QueryRow(ctx, q2, entityName, entityMeta).Scan(&participantID); err2 != nil {
-			return fmt.Errorf("conversations: add participant lookup: %w", err2)
+		return fmt.Errorf("conversations: add participant: %w", err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+
+	var participantID int
+	err = transaction.QueryRow(ctx,
+		fmt.Sprintf(participantIdentityQuery, s), entityName, entityMeta).Scan(&participantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		insert := fmt.Sprintf(`INSERT INTO %q.chat_participants (uuid, entity_name, entity_meta, meta)
+			VALUES (gen_random_uuid(), $1, $2::jsonb, $3::json) RETURNING id`, s)
+		if err = transaction.QueryRow(ctx, insert,
+			entityName, entityMeta, participantDisplayMeta(entityName, entityMetaMap),
+		).Scan(&participantID); err != nil {
+			return fmt.Errorf("conversations: create participant: %w", err)
 		}
+	} else if err != nil {
+		return fmt.Errorf("conversations: add participant lookup: %w", err)
 	}
 
-	q3 := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
-		VALUES ($1, $2, $3::jsonb) ON CONFLICT ON CONSTRAINT _participant_conversation_uc DO NOTHING`, s)
-	if _, err := r.pool.Exec(ctx, q3, conversationID, participantID, entitySettings); err != nil {
+	// ON CONFLICT names the COLUMNS, not the constraint.
+	//
+	// DEFECT: the clause used to read
+	// `ON CONFLICT ON CONSTRAINT _participant_conversation_uc`. Only the legacy
+	// bootstrap schema (internal/infra/db/migrations/001_initial.sql:511) gives
+	// the unique key that name. The ledgered tenant history that every real
+	// deployment runs — migrations/tenant/0123_agent_chat_message_tables.sql:87
+	// — declares an anonymous `UNIQUE (participant_id, conversation_id)`, whose
+	// generated name is different. On such a database the statement failed with
+	// SQLSTATE 42704 (undefined_object), so adding a participant answered 500.
+	// Column inference matches the unique key under either name.
+	mapping := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
+		VALUES ($1, $2, $3::jsonb) ON CONFLICT (participant_id, conversation_id) DO NOTHING`, s)
+	if _, err := transaction.Exec(ctx, mapping, conversationID, participantID, entitySettings); err != nil {
 		return fmt.Errorf("conversations: add participant mapping: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("conversations: add participant commit: %w", err)
 	}
 	return nil
 }

@@ -561,15 +561,15 @@ func tokenOwnerID(r *http.Request) (int64, bool) {
 }
 
 func (h *Handler) tokenServiceAvailable(w http.ResponseWriter) bool {
-	if h.tokens != nil && len(h.tokenSigningKey) != 0 {
+	if h.tokens != nil && (h.tokenSigner != nil || len(h.tokenSigningKey) != 0) {
 		return true
 	}
-	http.Error(w, `{"error":"token service is not configured"}`, http.StatusServiceUnavailable)
+	apierr.WriteStatus(w, http.StatusServiceUnavailable, "token service is not configured")
 	return false
 }
 
 func (h *Handler) presentToken(record tokenRecord, reveal bool) (Token, error) {
-	encoded, err := signBaselineToken(h.tokenSigningKey, record)
+	encoded, err := h.signBaselineToken(record)
 	if err != nil {
 		return Token{}, err
 	}
@@ -615,8 +615,22 @@ type baselineTokenClaims struct {
 	jwt.RegisteredClaims
 }
 
-func signBaselineToken(secret []byte, record tokenRecord) (string, error) {
-	return authsvc.SignBaselinePAT(secret, record.UUID, record.Expires)
+// signBaselineToken signs the bearer this route returns.
+//
+// DEFECT this method fixes: the route always signed with the raw key that
+// WithTokenSigningKey carried, which the composition root filled from
+// APPLICATION_SECRET_KEY. A deployment with an authentication configuration
+// file validates a personal access token with a DIFFERENT key: the bytes of
+// credentials.pat_signing_key_file. Every token that deployment issued failed
+// the signature check on first use, and the plaintext is shown one time only.
+//
+// The signer therefore wins when the composition root supplies one, because it
+// holds the key the same deployment's validator reads back.
+func (h *Handler) signBaselineToken(record tokenRecord) (string, error) {
+	if h.tokenSigner != nil {
+		return h.tokenSigner.SignPAT(record.UUID, record.Expires)
+	}
+	return authsvc.SignBaselinePAT(h.tokenSigningKey, record.UUID, record.Expires)
 }
 
 func (expiration *tokenExpiration) resolve(now time.Time) (*time.Time, error) {

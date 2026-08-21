@@ -101,7 +101,31 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 		Email:          principal.Email,
 		AuthType:       "token",
 		TokenProjectID: tokenProjectID(principal.ProjectID),
+		TokenProjectActive: tokenProjectActive(
+			principal.ProjectID,
+			principal.BoundProjectActive,
+		),
 	}, nil
+}
+
+// tokenProjectActive carries the bound project's lifecycle state, which the
+// same row already answers, so it costs no additional round trip.
+//
+// It returns nil for an unbound token: there is no project to report on, and
+// nil means "not determined" to the edge.
+//
+// DEFECT this closes: an operator suspends a project with one UPDATE on
+// centry.project, and no binding is revoked. A token bound to that project
+// kept resolving to it at the /llm edge. The gateway then kept decrypting the
+// project's provider credentials and charging its budget. An UNBOUND caller
+// naming the same project was already refused, because that path runs
+// IsCurrentUserProjectMember, which requires suspended IS FALSE.
+func tokenProjectActive(stored *int32, active bool) *bool {
+	if stored == nil || *stored <= 0 {
+		return nil
+	}
+	value := active
+	return &value
 }
 
 // tokenProjectID converts the stored binding into the identity field. The

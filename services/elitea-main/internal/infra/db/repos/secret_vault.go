@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -62,6 +63,53 @@ func (r *CurrentSecretVaultRepository) MutateProject(
 
 func (r *CurrentSecretVaultRepository) MutateAdmin(ctx context.Context, mutations []centrysecrets.Mutation) error {
 	return r.mutate(ctx, "admin", mutations)
+}
+
+// SealProjectHiddenSecrets writes hidden secret values into one project vault
+// inside the transaction the caller owns.
+//
+// The compatibility configurations route needs the row write and the vault
+// write to commit together. A separate transaction can leave a stored
+// {{secret.NAME}} reference that names nothing, and the gateway then resolves
+// an unusable credential.
+//
+// The caller commits or rolls back. This method never commits.
+func (r *CurrentSecretVaultRepository) SealProjectHiddenSecrets(
+	ctx context.Context,
+	tx pgx.Tx,
+	projectID int64,
+	mutations []configurationapp.HiddenSecretMutation,
+) error {
+	if r == nil {
+		return ErrCurrentVaultUnavailable
+	}
+	if ctx == nil || tx == nil || projectID <= 0 {
+		return ErrInvalidCurrentVaultMutation
+	}
+	if len(mutations) == 0 || len(mutations) > maxCurrentVaultMutations {
+		return ErrInvalidCurrentVaultMutation
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	vaultMutations := make([]centrysecrets.Mutation, len(mutations))
+	for index, mutation := range mutations {
+		if mutation.Name == "" || mutation.Value == "" {
+			return ErrInvalidCurrentVaultMutation
+		}
+		vaultMutations[index] = centrysecrets.Mutation{
+			Collection: centrysecrets.HiddenSecrets,
+			Name:       mutation.Name,
+			Value:      mutation.Value,
+		}
+	}
+	executor := pgxExecutor{queryer: tx}
+	vault, err := lockCurrentSecretVault(ctx, executor, "project-"+strconv.FormatInt(projectID, 10))
+	if err != nil {
+		return err
+	}
+	defer vault.destroy()
+	return vault.mutate(ctx, executor, r.masterKey, vaultMutations)
 }
 
 // THIS TYPE CREATES NO VAULT, AND MUST NOT (#399). It used to carry

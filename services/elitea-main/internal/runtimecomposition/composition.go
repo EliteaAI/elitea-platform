@@ -1068,8 +1068,15 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				if attachmentChunksErr != nil {
 					return nil, fmt.Errorf("construct attachment chunks repository: %w", attachmentChunksErr)
 				}
+				// Reclaims the bytes behind an expired, never-committed
+				// transfer grant — see sweepExpiredGrants's own doc comment
+				// for why no other sweep can see them.
+				artifactGrants, artifactGrantsErr := repos.NewArtifactTransferGrantsRepository(dependencies.AdmissionPool)
+				if artifactGrantsErr != nil {
+					return nil, fmt.Errorf("construct artifact transfer grants repository: %w", artifactGrantsErr)
+				}
 				retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
-					artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
+					artifactObjects, artifactBuckets, artifactNotifications, artifactGrants, dependencies.ObjectStore,
 				)
 				if retentionSweepErr != nil {
 					return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)

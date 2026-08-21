@@ -89,12 +89,20 @@ type surfaceGrant struct {
 // file's header before you change any holder set here. Every other row still
 // transcribes the matrix, and that stays the rule.
 var (
-	// shared/0074_artifact_permissions.sql
+	// shared/0074_artifact_permissions.sql, and shared/0088 for the machine
+	// role.
+	//
+	// All four are on the per-project system identity's callback surface: the
+	// SDK's artifact toolkit lists the bucket and reads every object with the
+	// project-system PAT, and writes with it too. 0088 seeds the central
+	// default-mode `system` role those grants hang on, so `system` is an
+	// expected holder here. withMachineRole names it at each such row, so a
+	// grant that reaches `system` anywhere else still fails.
 	artifactGrants = []surfaceGrant{
-		{"configuration.artifacts.artifacts.view", []string{"admin", "editor", "viewer"}},
-		{"configuration.artifacts.artifacts.create", []string{"admin", "editor"}},
-		{"configuration.artifacts.artifacts.edit", []string{"admin", "editor"}},
-		{"configuration.artifacts.artifacts.delete", []string{"admin", "editor"}},
+		{"configuration.artifacts.artifacts.view", withMachineRole("admin", "editor", "viewer")},
+		{"configuration.artifacts.artifacts.create", withMachineRole("admin", "editor")},
+		{"configuration.artifacts.artifacts.edit", withMachineRole("admin", "editor")},
+		{"configuration.artifacts.artifacts.delete", withMachineRole("admin", "editor")},
 	}
 
 	// shared/0075_secret_permissions.sql, and shared/0083 for the LIST.
@@ -110,7 +118,10 @@ var (
 		{"configuration.secrets.secret.edit", []string{"admin", "editor"}},
 		{"configuration.secrets.secret.delete", []string{"admin", "editor"}},
 		{"configuration.secrets.secret.hide", []string{"admin", "editor"}},
-		{"configuration.secrets.secret.unsecret", []string{"admin", "editor"}},
+		// The value read is on the machine role's callback surface too
+		// (shared/0088): a worker resolves `{{secret.<name>}}` with the
+		// project-system PAT.
+		{"configuration.secrets.secret.unsecret", withMachineRole("admin", "editor")},
 	}
 
 	// shared/0076_project_member_permissions.sql. 0068 already grants the

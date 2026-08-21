@@ -3,6 +3,7 @@ package middleware
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"net/http"
 	"strings"
 )
@@ -23,7 +24,7 @@ func RequireInternalAdminToken(expected string) func(http.Handler) http.Handler 
 			providedHash := sha256.Sum256([]byte(provided))
 			if !configured || !ok || provided == "" || subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="elitea-internal-admin"`)
-				http.Error(w, `{"error":"internal authorization required"}`, http.StatusUnauthorized)
+				apierr.WriteStatus(w, http.StatusUnauthorized, "internal authorization required")
 				return
 			}
 			next.ServeHTTP(w, r)

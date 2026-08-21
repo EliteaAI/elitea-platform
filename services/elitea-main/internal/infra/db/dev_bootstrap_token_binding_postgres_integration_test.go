@@ -105,6 +105,57 @@ INSERT INTO elitea_identity.token_project_binding (token_id, project_id) VALUES 
 		}
 	})
 
+	// The SQL half of the suspension refusal. authsvc maps the column to
+	// auth.User.TokenProjectActive, and the edge refuses a bound token whose
+	// project is not active. Only a real database answers the expression
+	// `(bound_project.suspended IS FALSE AND bound_project.create_success IS
+	// TRUE)`, so a unit test with a stubbed row cannot cover it.
+	t.Run("the bound project lifecycle state rides on the same row", func(t *testing.T) {
+		var projectID int32
+		if err := pool.QueryRow(ctx, `
+INSERT INTO centry.project (name, owner_id, create_success, suspended)
+VALUES ('bound-project', $1, true, false)
+RETURNING id`, userID).Scan(&projectID); err != nil {
+			t.Fatalf("seed project: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+UPDATE elitea_identity.token_project_binding SET project_id = $1 WHERE token_id = $2`,
+			projectID, tokenID); err != nil {
+			t.Fatalf("rebind token: %v", err)
+		}
+
+		for _, lifecycle := range []struct {
+			name          string
+			suspended     bool
+			createSuccess bool
+			wantActive    bool
+		}{
+			{name: "live", suspended: false, createSuccess: true, wantActive: true},
+			{name: "suspended", suspended: true, createSuccess: true, wantActive: false},
+			{name: "creation never completed", suspended: false, createSuccess: false, wantActive: false},
+		} {
+			t.Run(lifecycle.name, func(t *testing.T) {
+				if _, err := pool.Exec(ctx, `
+UPDATE centry.project SET suspended = $1, create_success = $2 WHERE id = $3`,
+					lifecycle.suspended, lifecycle.createSuccess, projectID); err != nil {
+					t.Fatalf("set project lifecycle: %v", err)
+				}
+				principal, err := queries.GetActivePATPrincipalByUUID(ctx, devBootstrapTokenUUID)
+				if err != nil {
+					t.Fatalf("PAT validation for a bound token: %v", err)
+				}
+				if principal.ProjectID == nil || *principal.ProjectID != projectID {
+					t.Fatalf("project_id = %v, want %d", principal.ProjectID, projectID)
+				}
+				if principal.BoundProjectActive != lifecycle.wantActive {
+					t.Fatalf("bound_project_active = %t, want %t: the edge reads this "+
+						"column to refuse a token bound to an inactive project",
+						principal.BoundProjectActive, lifecycle.wantActive)
+				}
+			})
+		}
+	})
+
 	t.Run("the guarded foreign key resolved, so deleting a token cascades", func(t *testing.T) {
 		// 0071 adds the foreign key only when to_regclass finds
 		// public.auth_core__token. 001_initial.sql creates it, so on this path

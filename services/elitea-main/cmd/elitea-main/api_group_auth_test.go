@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"go/ast"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 )
 
@@ -86,7 +88,7 @@ func TestAPIGroupOIDCOnlyAuthRejectsADeactivatedSession(t *testing.T) {
 			// exactly as they are in main.go, which is the condition that
 			// produced the defect.
 			config := apiGroupAuthConfig(
-				nil, nil, nil, testCase.principals, apiGroupTestSecret, true,
+				nil, nil, nil, testCase.principals, nil, apiGroupTestSecret, true,
 			)
 			handler := &reachedHandler{}
 			router := newAPIGroupRouter(config, handler)
@@ -139,8 +141,10 @@ func TestAPIGroupAuthConfigDoesNotReuseTheProductionValidator(t *testing.T) {
 	production := &countingPrincipals{inner: activePrincipals{}}
 	session := &countingPrincipals{inner: activePrincipals{}}
 
+	tokens := &countingTokens{}
+
 	config := apiGroupAuthConfig(
-		nil, production, nil, session, apiGroupTestSecret, true,
+		nil, production, nil, session, tokens, apiGroupTestSecret, true,
 	)
 
 	if config.SessionSecret != apiGroupTestSecret {
@@ -152,9 +156,15 @@ func TestAPIGroupAuthConfigDoesNotReuseTheProductionValidator(t *testing.T) {
 			"validator; the production one is nil in this branch and would " +
 			"enforce nothing (#370)")
 	}
-	if config.Validator != nil {
-		t.Fatal("the OIDC-only branch must not carry a token validator: a nil " +
-			"*FormGraph in that interface field reads as configured (#86)")
+	if config.Validator != apimw.TokenValidator(tokens) {
+		t.Fatal("the OIDC-only branch did not take the session token " +
+			"validator; without it every personal access token this " +
+			"deployment issues is refused with 401")
+	}
+	if _, isFormGraph := config.Validator.(*authcomposition.FormGraph); isFormGraph {
+		t.Fatal("the OIDC-only branch took the production form graph: it is " +
+			"nil in this branch, and a nil *FormGraph in that interface " +
+			"field reads as configured (#86)")
 	}
 }
 
@@ -169,11 +179,12 @@ func TestAPIGroupAuthConfigKeepsTheProductionCredentials(t *testing.T) {
 	formGraph := &authcomposition.FormGraph{}
 
 	config := apiGroupAuthConfig(
-		formGraph, production, verifier, session, apiGroupTestSecret, true,
+		formGraph, production, verifier, session, &countingTokens{}, apiGroupTestSecret, true,
 	)
 
 	if config.Validator != apimw.TokenValidator(formGraph) {
-		t.Fatal("the production branch lost its token validator")
+		t.Fatal("the production branch lost its token validator: the form " +
+			"graph owns every credential that deployment issues")
 	}
 	if config.PrincipalValidator != apimw.PrincipalValidator(production) {
 		t.Fatal("the production branch must keep the production principal " +
@@ -198,7 +209,7 @@ func TestAPIGroupAuthConfigAdmitsNothingWithoutACredentialPlane(t *testing.T) {
 	session := &countingPrincipals{inner: activePrincipals{}}
 
 	config := apiGroupAuthConfig(
-		nil, nil, nil, session, apiGroupTestSecret, false,
+		nil, nil, nil, session, &countingTokens{}, apiGroupTestSecret, false,
 	)
 
 	// AuthConfig holds a slice, so it is not comparable as a whole.
@@ -292,4 +303,121 @@ type stubForwardedIdentityVerifier struct{}
 
 func (stubForwardedIdentityVerifier) VerifyForwardedIdentityPeer(*http.Request) error {
 	return nil
+}
+
+// countingTokens is a stand-in for the pool-backed personal-access-token
+// validator. It accepts one token and counts every call. A test can therefore
+// tell "the group has a non-nil field" apart from "the credential was really
+// read".
+type countingTokens struct {
+	calls int
+}
+
+const apiGroupTestToken = "api-group-personal-access-token"
+
+func (v *countingTokens) ValidateToken(_ context.Context, token string) (auth.User, error) {
+	v.calls++
+	if token != apiGroupTestToken {
+		return auth.User{}, auth.ErrCredentialRejected
+	}
+	return auth.User{ID: "42", UserID: "42", TokenID: "7", AuthType: "token"}, nil
+}
+
+func (v *countingTokens) consulted() int { return v.calls }
+
+// TestAPIGroupOIDCOnlyAuthAcceptsAPersonalAccessToken drives a Bearer
+// credential and an X-API-Key credential through the real router in the
+// OIDC-only composition.
+//
+// THE DEFECT. The OIDC-only branch of apiGroupAuthConfig set SessionSecret and
+// PrincipalValidator, and left Validator and Client nil. That same
+// SessionSecret is the personal-access-token signing key
+// (router.go WithTokenSigningKey). POST /api/v2/auth/token therefore answered
+// 200 and showed the user a token. tokens.go tokenServiceAvailable reads the
+// pool and the key only. apimw.validateToken then found both Validator and
+// Client nil and returned "authentication validator is not configured".
+//
+// EVERY Bearer request then answered 401 "token validation failed". Every
+// X-API-Key request answered 401 "invalid api key". The deployment issued credentials that no
+// route could accept. deploy/docker-compose.yml is exactly this shape.
+//
+// EVIDENCE. Remove `Validator: sessionTokens` from the OIDC-only branch and
+// both accepted rows go red with 401.
+func TestAPIGroupOIDCOnlyAuthAcceptsAPersonalAccessToken(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		header     string
+		value      string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "bearer token is served",
+			header:     "Authorization",
+			value:      "Bearer " + apiGroupTestToken,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "api key is served",
+			header:     "X-API-Key",
+			value:      apiGroupTestToken,
+			wantStatus: http.StatusOK,
+		},
+		{
+			// The control. A validator that accepts everything would make the
+			// two rows above pass while proving nothing.
+			name:       "an unknown token is refused",
+			header:     "Authorization",
+			value:      "Bearer wrong-token",
+			wantStatus: http.StatusUnauthorized,
+			wantBody:   "token validation failed",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			principals := &countingPrincipals{inner: activePrincipals{}}
+			tokens := &countingTokens{}
+			config := apiGroupAuthConfig(
+				nil, nil, nil, principals, tokens, apiGroupTestSecret, true,
+			)
+			handler := &reachedHandler{}
+			router := newAPIGroupRouter(config, handler)
+
+			request := httptest.NewRequest(http.MethodPost, apiGroupTestPath, nil)
+			request.Header.Set(testCase.header, testCase.value)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != testCase.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)",
+					recorder.Code, testCase.wantStatus, recorder.Body.String())
+			}
+			if testCase.wantBody != "" &&
+				!strings.Contains(recorder.Body.String(), testCase.wantBody) {
+				t.Fatalf("body = %q, want it to contain %q",
+					recorder.Body.String(), testCase.wantBody)
+			}
+			if tokens.consulted() != 1 {
+				t.Fatalf("TokenValidator consulted %d times, want 1: the "+
+					"/api/v2 group carries no token validator, so no personal "+
+					"access token this deployment issues can ever work",
+					tokens.consulted())
+			}
+			wantCalls := 0
+			wantPrincipalChecks := 0
+			if testCase.wantStatus == http.StatusOK {
+				wantCalls = 1
+				// A token credential must still re-check the principal: a
+				// deactivated user's unrevoked token is not a live account.
+				wantPrincipalChecks = 1
+			}
+			if principals.consulted() != wantPrincipalChecks {
+				t.Fatalf("PrincipalValidator consulted %d times, want %d",
+					principals.consulted(), wantPrincipalChecks)
+			}
+			if handler.calls != wantCalls {
+				t.Fatalf("route handler ran %d times, want %d",
+					handler.calls, wantCalls)
+			}
+		})
+	}
 }

@@ -99,11 +99,16 @@ type s3ListResponse struct {
 // do something about. A vague-but-true code beats a precise lie, and both the
 // per-object cap and the project quota (storeObject, objects.go) surface
 // through it.
+// "RangeNotSatisfiable" maps to S3's own InvalidRange. The alternative is
+// the InternalError fallback. That fallback tells the caller the server
+// broke. In fact its Range header addressed bytes the object does not
+// have.
 var s3ErrorCodes = map[string]string{
-	"AccessDenied":    "AccessDenied",
-	"InvalidKey":      "InvalidArgument",
-	"InvalidArgument": "InvalidArgument",
-	"TooLarge":        "EntityTooLarge",
+	"AccessDenied":        "AccessDenied",
+	"InvalidKey":          "InvalidArgument",
+	"InvalidArgument":     "InvalidArgument",
+	"TooLarge":            "EntityTooLarge",
+	"RangeNotSatisfiable": "InvalidRange",
 }
 
 func s3ErrorCode(code, notFoundAs string) string {
@@ -175,7 +180,7 @@ func (h *Handler) requireS3Bucket(w http.ResponseWriter, r *http.Request, projec
 			writeError(w, http.StatusNotFound, "NoSuchBucket", "bucket not found")
 			return repos.BucketRow{}, false
 		}
-		writeError(w, http.StatusInternalServerError, "InternalError", "get bucket: "+err.Error())
+		h.writeInternalS3(w, r, "get bucket", err)
 		return repos.BucketRow{}, false
 	}
 	return row, true
@@ -215,10 +220,11 @@ func (h *Handler) ListObjectsS3(w http.ResponseWriter, r *http.Request) {
 	page, err := h.listBucketObjects(r.Context(), projectIDStr, bucket, q)
 	if err != nil {
 		if errors.Is(err, errInvalidBucketRef) {
-			writeError(w, http.StatusInternalServerError, "InternalError", "list objects: "+err.Error())
+			h.writeInternalS3(w, r, "list objects", err)
 			return
 		}
-		writeError(w, statusForCode(storageErrorCode(err)), s3ErrorCode(storageErrorCode(err), "NoSuchBucket"), err.Error())
+		code, message := h.classifyStorageError(r.Context(), "list objects", err)
+		writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchBucket"), message)
 		return
 	}
 
@@ -388,7 +394,7 @@ func (h *Handler) UploadObjectS3(w http.ResponseWriter, r *http.Request) {
 
 	policy, maxObjectBytes, err := h.resolveObjectSizeLimit(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "get project storage policy: "+err.Error())
+		h.writeInternalS3(w, r, "get project storage policy", err)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
@@ -477,15 +483,15 @@ func (h *Handler) DeleteObjectS3(w http.ResponseWriter, r *http.Request) {
 	// orphaned by a partial earlier delete is healed rather than left to count
 	// against the project's quota forever.
 	if _, err := h.store.Stat(r.Context(), ref); err != nil {
-		if code := storageErrorCode(err); code != "NotFound" {
-			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+		if code, message := h.classifyStorageError(r.Context(), "stat object", err); code != "NotFound" {
+			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), message)
 			return
 		}
 	} else if err := h.store.Delete(r.Context(), ref); err != nil {
 		// A concurrent delete between Stat and Delete lands here; it reached
 		// the caller's intended state, so it is success too.
-		if code := storageErrorCode(err); code != "NotFound" {
-			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), err.Error())
+		if code, message := h.classifyStorageError(r.Context(), "delete object", err); code != "NotFound" {
+			writeError(w, statusForCode(code), s3ErrorCode(code, "NoSuchKey"), message)
 			return
 		}
 	}
@@ -494,7 +500,7 @@ func (h *Handler) DeleteObjectS3(w http.ResponseWriter, r *http.Request) {
 	// counting bytes that no longer exist and a project that deleted
 	// everything it uploaded stays permanently near its limit (S12).
 	if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{key}); err != nil {
-		writeError(w, http.StatusInternalServerError, "InternalError", "delete object metadata: "+err.Error())
+		h.writeInternalS3(w, r, "delete object metadata", err)
 		return
 	}
 

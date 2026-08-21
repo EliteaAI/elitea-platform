@@ -2039,9 +2039,15 @@ once (`io.Copy` into `sha256.New()`), matching the plan's explicit
 "there is no shortcut" instruction. Any commit-time rejection (size, digest,
 media type, quota) deletes the uploaded object outright rather than leaving
 it orphaned for the S14 sweeper to eventually collect — a failed grant commit
-should not require a sweep cycle to clean up. `GET` grants are not
-single-use (only `PUT` grants consume); `CommitTransferGrant` rejects a `GET`
-grant with 400, since there is nothing to verify or commit for a read.
+should not require a sweep cycle to clean up. A grant is always an upload:
+`method` accepts `PUT` only. `GET` was accepted at first and is now refused
+with 400, because a download grant could never work — the key a grant
+reserves is a newly generated grant id, no request field names an existing
+object, and the presigned download URL therefore addressed an empty key and
+answered 404 every time. Download an object through
+`GET /artifacts/objects/{projectID}/{bucket}/{key}` instead.
+`CommitTransferGrant` still rejects a non-`PUT` grant with 400, for rows
+written before that change.
 `DigestMismatch` and `MediaTypeMismatch` were added as new `Error.code` enum
 values — 409 was already used for `AlreadyExists`, but ADR-0016 and this
 plan both treat digest and media-type failures as distinct, typed outcomes a

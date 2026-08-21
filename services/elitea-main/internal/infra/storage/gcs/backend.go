@@ -183,9 +183,23 @@ func (b *Backend) Get(ctx context.Context, ref storage.ObjectRef, rng *storage.B
 		return nil, storage.ObjectInfo{}, mapGCSError(err, "get object")
 	}
 
+	// reader.Attrs.Size is the size of the WHOLE object, even for a range
+	// read — unlike the S3 and Azure responses, which report the range
+	// length. Declaring it as the body length made every ranged download
+	// short-write against its own Content-Length and the client saw an
+	// unexpected EOF. Remain() gives the length of the range; it returns -1
+	// for an unfinalized or gzip-transcoded object, so fall back to the
+	// whole size there.
+	size := reader.Attrs.Size
+	if rng != nil {
+		if remaining := reader.Remain(); remaining >= 0 {
+			size = remaining
+		}
+	}
 	info := storage.ObjectInfo{
 		Key:          ref.Key(),
-		Size:         reader.Attrs.Size,
+		Size:         size,
+		TotalSize:    reader.Attrs.Size,
 		LastModified: reader.Attrs.LastModified,
 		ContentType:  reader.Attrs.ContentType,
 	}

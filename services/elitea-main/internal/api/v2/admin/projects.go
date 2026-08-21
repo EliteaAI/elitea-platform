@@ -62,6 +62,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -149,7 +150,7 @@ func (h *Handler) Projects(w http.ResponseWriter, r *http.Request) {
 		// swallowed every error into an empty page, which renders exactly like
 		// "this deployment has no projects" — the shape #130's post-mortem
 		// named as worse than a 404.
-		http.Error(w, `{"error":"failed to list projects"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to list projects")
 		return
 	}
 	writeJSON(w, http.StatusOK, listing)
@@ -363,17 +364,17 @@ func projectStatus(suspended, createSuccess bool) string {
 // in the UI rather than half-implemented here.
 func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
 	if !isAdministrationMode(r) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "not found")
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
 	projectID, err := strconv.Atoi(chi.URLParam(r, "projectID"))
 	if err != nil || projectID <= 0 {
-		http.Error(w, `{"error":"invalid project id"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid project id")
 		return
 	}
 
@@ -381,22 +382,22 @@ func (h *Handler) ProjectSuspend(w http.ResponseWriter, r *http.Request) {
 		Suspended *bool `json:"suspended"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if body.Suspended == nil {
-		http.Error(w, `{"error":"suspended field is required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "suspended field is required")
 		return
 	}
 
 	tag, err := h.pool.Exec(r.Context(),
 		`UPDATE centry.project SET suspended = $1 WHERE id = $2`, *body.Suspended, projectID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to update project"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update project")
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		http.Error(w, `{"error":"project not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "project not found")
 		return
 	}
 

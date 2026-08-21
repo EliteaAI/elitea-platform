@@ -35,10 +35,11 @@ package admin
 // ## Deliberate divergences from the pylon original
 //
 //   - `local_permissions` is a pylon RUNTIME registry, accumulated as plugins
-//     declare permissions. Go has no plugin runtime, so the catalogue is derived
-//     from the database: the union of every permission any role — central or
-//     project — has ever been granted. On the reference deployment the two agree
-//     exactly (340 names).
+//     declare permissions. Go has no plugin runtime, so the catalogue is the
+//     union of two sources: every permission any role — central or project —
+//     holds, plus every permission this service declares in code. The second
+//     source is what keeps a name grantable when no role holds it. On the
+//     reference deployment the two implementations agree (340 names).
 //   - Every write runs in ONE transaction. Pylon's PUT deletes every override
 //     and then re-inserts, statement by statement; a failure between the two
 //     leaves the project with no permissions at all.
@@ -59,6 +60,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 )
@@ -109,7 +111,7 @@ func (h *Handler) AdminPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
@@ -190,12 +192,29 @@ func (h *Handler) readMatrix(ctx context.Context, scope, mode string) (permissio
 
 // permissionCatalogue is the Go stand-in for pylon's `auth.local_permissions`.
 //
-// Pylon accumulates that set at import time as each plugin declares the
-// permissions it checks; there is no such registry here, so the catalogue is
-// every permission name the database has ever recorded a grant for, central or
-// per-project. A permission granted to nobody anywhere is invisible to both
-// implementations — but one granted to a single project role is a row here,
-// which is what makes it grantable centrally again.
+// It has two sources, and it needs both.
+//
+//  1. Every permission name the database has recorded a grant for, central or
+//     per-project.
+//  2. Every permission name this service DECLARES — see declaredPermissions.
+//
+// Source 1 alone repeats the defect the header of this file records. A name
+// that no role holds is not a row. `parseMatrixBody` then rejects it as an
+// unknown permission. The operator has no path to grant it.
+//
+// That happens in two ways. A permission that no migration seeds is
+// ungrantable from the first boot. A permission that ONE migration seeds
+// becomes ungrantable the moment an operator unchecks its last holder.
+// `applyGrantChanges` deletes the row the catalogue was derived from.
+//
+// Pylon does not have this
+// failure: `auth.local_permissions` is a declaration registry, not a set read
+// back from the grants.
+//
+// The declared names are rows in the project matrices as well as the central
+// one. A project role may hold a central configuration permission with no
+// effect, which costs nothing; the alternative is a matrix whose rows change
+// with the grants, which is the defect.
 func (h *Handler) permissionCatalogue(ctx context.Context) ([]string, error) {
 	rows, err := h.pool.Query(ctx, `
 SELECT permission FROM public.auth_core__role_permission WHERE permission IS NOT NULL
@@ -206,7 +225,59 @@ ORDER BY 1`)
 		return nil, fmt.Errorf("read permission catalogue: %w", err)
 	}
 	defer rows.Close()
-	return scanNames(rows, "permission")
+	granted, err := scanNames(rows, "permission")
+	if err != nil {
+		return nil, err
+	}
+	return catalogueFrom(granted), nil
+}
+
+// catalogueFrom composes the matrix catalogue from the names the database
+// holds a grant for. It is the whole composition, so a test can build the
+// catalogue the handler builds without a database.
+func catalogueFrom(granted []string) []string {
+	return mergePermissionCatalogue(granted, declaredPermissions())
+}
+
+// declaredPermissions lists the permission names this service enforces itself.
+//
+// Every admin Configuration section that carries `required_permission` is read
+// from the section list. A new section cannot add a gate this catalogue does
+// not know. `config_values.go` refuses the section to a caller who does not
+// hold that name. The name must be grantable even when no role holds it
+// yet: `configuration.advanced` and `configuration.service_descriptors` are
+// declared here and seeded by no migration.
+//
+// Middleware gates are NOT here yet. Their names are constants that the gate
+// call sites pass, so no runtime source lists them. The complete registry that
+// both the gates and this catalogue read is the target shape; until it exists,
+// a middleware-gated name stays grantable only while some role holds it.
+func declaredPermissions() []string {
+	declared := make([]string, 0, len(configSections()))
+	for _, section := range configSections() {
+		permission, ok := section["required_permission"].(string)
+		if !ok || permission == "" {
+			continue
+		}
+		declared = append(declared, permission)
+	}
+	return declared
+}
+
+// mergePermissionCatalogue returns the sorted union of the granted names and
+// the declared names, with no duplicate.
+func mergePermissionCatalogue(granted, declared []string) []string {
+	merged := make([]string, 0, len(granted)+len(declared))
+	seen := make(map[string]bool, len(granted)+len(declared))
+	for _, name := range append(append([]string{}, granted...), declared...) {
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		merged = append(merged, name)
+	}
+	sort.Strings(merged)
+	return merged
 }
 
 func (h *Handler) centralRoles(ctx context.Context, mode string) ([]string, error) {
@@ -330,7 +401,7 @@ func (h *Handler) AdminPermissionsSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
@@ -615,7 +686,7 @@ func (h *Handler) AdminPermissionsSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
@@ -741,8 +812,7 @@ func writeMatrixError(w http.ResponseWriter, err error) {
 		writeJSON(w, typed.status, map[string]any{"error": typed.message})
 		return
 	}
-	http.Error(w, `{"error":"the permission matrix could not be read or written"}`,
-		http.StatusInternalServerError)
+	apierr.WriteStatus(w, http.StatusInternalServerError, "the permission matrix could not be read or written")
 }
 
 // defaultPublicProjectID mirrors pylon's elitea_config "ai_project_id" default,

@@ -33,6 +33,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -59,7 +60,7 @@ func auditPagination(r *http.Request) (limit, offset int) {
 // reassuring one is how the admin Users listing used to hide its own errors.
 // The error itself is not echoed to the client — it can quote row values.
 func auditReadFailed(w http.ResponseWriter, what string) {
-	http.Error(w, fmt.Sprintf(`{"error":"failed to query %s"}`, what), http.StatusInternalServerError)
+	apierr.WriteStatus(w, http.StatusInternalServerError, fmt.Sprintf("failed to query %s", what))
 }
 
 /* ── spans ─────────────────────────────────────────────────────────────── */
@@ -378,19 +379,19 @@ func (h *Handler) serveHeatmap(w http.ResponseWriter, r *http.Request, template,
 	// Both bounds are required: without them there is no axis to draw and no
 	// way to choose a bucket width. pylon answers 400 here too.
 	if filters.dateFrom == nil || filters.dateTo == nil {
-		http.Error(w, `{"error":"date_from and date_to are required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "date_from and date_to are required")
 		return
 	}
 	rangeSeconds := int64(filters.dateTo.Sub(*filters.dateFrom).Seconds())
 	if rangeSeconds <= 0 {
-		http.Error(w, `{"error":"date_to must be after date_from"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "date_to must be after date_from")
 		return
 	}
 
 	interval := pickInterval(rangeSeconds)
 	slots := timeSlots(*filters.dateFrom, *filters.dateTo, interval)
 	if len(slots) > maxHeatmapBuckets {
-		http.Error(w, `{"error":"date range is too wide to chart"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "date range is too wide to chart")
 		return
 	}
 

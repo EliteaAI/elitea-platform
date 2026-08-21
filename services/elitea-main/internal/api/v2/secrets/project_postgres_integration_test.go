@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -333,5 +334,121 @@ func TestStoreSecretRefusesAnUnreadableVault(t *testing.T) {
 	keyAfter, dataAfter := rawVaultBlobs(t, pool, dbKey(corruptProjectID))
 	if string(keyAfter) != string(keyBefore) || string(dataAfter) != string(dataBefore) {
 		t.Fatalf("StoreSecret replaced a vault it could not read")
+	}
+}
+
+/* ── the rename guard ──────────────────────────────────────────────────────── */
+
+// readProjectSecret returns one project secret's value through the handler.
+func readProjectSecret(t *testing.T, router chi.Router, projectID, name string) (string, bool) {
+	t.Helper()
+	recorder := do(t, router, http.MethodGet, "/secrets/secret/default/"+projectID+"/"+name, nil)
+	if recorder.Code == http.StatusNotFound {
+		return "", false
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("read project secret %q status = %d (%s)", name, recorder.Code, recorder.Body.String())
+	}
+	var detail SecretDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode the secret detail: %v", err)
+	}
+	return detail.Value, true
+}
+
+// THE DEFECT. A project-mode PUT could rename a secret onto a name that another
+// secret already held. Update checked only that the OLD name existed. It then
+// did `delete(vault.Secrets, oldName)` and `vault.Secrets[body.Name] =
+// body.Value`. The occupied entry's value was replaced, and the call answered
+// 200.
+//
+// The vault is one Fernet blob with no history. The replaced value is
+// therefore unrecoverable. Every `{{secret.<name>}}` reference in the project
+// then resolves the wrong value. The administration-mode sibling AdminUpdate
+// has refused this since it was written. See admin.go, "A rename onto an
+// occupied name would silently destroy that entry".
+// TestAdminSecretRenameDoesNotOverwriteAnExistingName pins it. The project side
+// had no such test, which is why the asymmetry survived.
+//
+// The route is a documented public API — operationId `updateSecret`, "Rename
+// and/or re-value a secret" — so any token-bearing caller could reach it.
+func TestProjectSecretRenameDoesNotOverwriteAnExistingName(t *testing.T) {
+	pool := newSecretsPool(t)
+	seedProjectVault(t, pool, corruptProjectID) // readable — not corrupted here
+	router := secretsRouter(t, pool, allSecretPermissions())
+
+	if code := do(t, router, http.MethodPost, projectSecretsBase+corruptProjectID,
+		map[string]string{"name": "staging_key", "value": "value-staging"}).Code; code != http.StatusCreated {
+		t.Fatalf("seed the second secret: status = %d", code)
+	}
+
+	rename := map[string]string{"name": projectSecretName, "value": "value-staging"}
+	recorder := do(t, router, http.MethodPut,
+		"/secrets/secret/default/"+corruptProjectID+"/staging_key", rename)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("renaming onto an occupied name status = %d, want 400 (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if value, found := readProjectSecret(t, router, corruptProjectID, projectSecretName); !found ||
+		value != projectSecretValue {
+		t.Fatalf("the refused rename overwrote the occupied name anyway: (%q, %v)", value, found)
+	}
+	// The source must survive too. A guard placed after the delete would pass a
+	// target-only assertion and still lose this entry.
+	if value, found := readProjectSecret(t, router, corruptProjectID, "staging_key"); !found ||
+		value != "value-staging" {
+		t.Fatalf("the refused rename removed the source: (%q, %v)", value, found)
+	}
+}
+
+// The hidden map is a name space of the same vault. A rename onto a HIDDEN name
+// put one name in both maps: Get then returned the visible entry and shadowed
+// the hidden value, and Delete removed both at once.
+func TestProjectSecretWriteRefusesANameAHiddenSecretHolds(t *testing.T) {
+	pool := newSecretsPool(t)
+	seedProjectVault(t, pool, corruptProjectID)
+	router := secretsRouter(t, pool, allSecretPermissions())
+
+	if code := do(t, router, http.MethodPost,
+		"/secrets/hide/default/"+corruptProjectID+"/"+projectSecretName, nil).Code; code != http.StatusOK {
+		t.Fatalf("hide the marker: status = %d", code)
+	}
+	if code := do(t, router, http.MethodPost, projectSecretsBase+corruptProjectID,
+		map[string]string{"name": projectSecretName, "value": "shadow"}).Code; code != http.StatusBadRequest {
+		t.Fatalf("creating over a hidden name status = %d, want 400", code)
+	}
+	if code := do(t, router, http.MethodPost, projectSecretsBase+corruptProjectID,
+		map[string]string{"name": "renameable", "value": "value-renameable"}).Code; code != http.StatusCreated {
+		t.Fatalf("seed the renameable secret: status = %d", code)
+	}
+	rename := map[string]string{"name": projectSecretName, "value": "shadow"}
+	if code := do(t, router, http.MethodPut,
+		"/secrets/secret/default/"+corruptProjectID+"/renameable", rename).Code; code != http.StatusBadRequest {
+		t.Fatalf("renaming onto a hidden name status = %d, want 400", code)
+	}
+	// The hidden value is untouched, and it is still the only holder of the name.
+	if value, found := readProjectSecret(t, router, corruptProjectID, projectSecretName); !found ||
+		value != projectSecretValue {
+		t.Fatalf("the hidden secret changed: (%q, %v)", value, found)
+	}
+}
+
+// A plain value change keeps working, and so does a rename onto a free name.
+func TestProjectSecretRenameOntoAFreeNameStillWorks(t *testing.T) {
+	pool := newSecretsPool(t)
+	seedProjectVault(t, pool, corruptProjectID)
+	router := secretsRouter(t, pool, allSecretPermissions())
+
+	rename := map[string]string{"name": "renamed_marker", "value": "value-renamed"}
+	if code := do(t, router, http.MethodPut,
+		"/secrets/secret/default/"+corruptProjectID+"/"+projectSecretName, rename).Code; code != http.StatusOK {
+		t.Fatalf("renaming onto a free name status = %d, want 200", code)
+	}
+	if value, found := readProjectSecret(t, router, corruptProjectID, "renamed_marker"); !found ||
+		value != "value-renamed" {
+		t.Fatalf("the rename did not apply: (%q, %v)", value, found)
+	}
+	if _, found := readProjectSecret(t, router, corruptProjectID, projectSecretName); found {
+		t.Fatalf("the old name survived the rename")
 	}
 }

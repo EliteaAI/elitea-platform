@@ -47,11 +47,24 @@ type NewTransferGrantInput struct {
 	ExpiresAt   time.Time
 }
 
+// ExpiredTransferGrantRow is one grant the sweeper has claimed. It carries
+// only the fields the byte reclamation needs.
+type ExpiredTransferGrantRow struct {
+	ID        string
+	ProjectID int64
+	BucketID  int64
+	Key       string
+	Method    string
+	UploadID  *string
+	ExpiresAt time.Time
+}
+
 type artifactTransferGrantQueries interface {
 	CreateArtifactTransferGrant(context.Context, sqlcgen.CreateArtifactTransferGrantParams) (sqlcgen.CreateArtifactTransferGrantRow, error)
 	GetArtifactTransferGrant(context.Context, sqlcgen.GetArtifactTransferGrantParams) (sqlcgen.GetArtifactTransferGrantRow, error)
 	GetArtifactTransferGrantByID(context.Context, string) (sqlcgen.GetArtifactTransferGrantByIDRow, error)
 	MarkArtifactTransferGrantConsumed(context.Context, string) (int64, error)
+	ClaimExpiredArtifactTransferGrants(context.Context, sqlcgen.ClaimExpiredArtifactTransferGrantsParams) ([]sqlcgen.ClaimExpiredArtifactTransferGrantsRow, error)
 }
 
 // ArtifactTransferGrantsRepository is the metadata store for
@@ -154,4 +167,29 @@ func (r *ArtifactTransferGrantsRepository) MarkTransferGrantConsumed(ctx context
 		return storage.ErrAlreadyExists
 	}
 	return nil
+}
+
+// ClaimExpiredTransferGrants marks a bounded batch of expired, unconsumed
+// grants consumed and returns them for byte reclamation. See the wrapped
+// sqlc query for why the claim and the read are one statement.
+//
+// Pass an olderThan that already includes a grace margin. A commit that
+// started just before the grant's own expiry must finish without racing the
+// sweeper.
+func (r *ArtifactTransferGrantsRepository) ClaimExpiredTransferGrants(ctx context.Context, olderThan time.Time, limit int32) ([]ExpiredTransferGrantRow, error) {
+	rows, err := r.queries.ClaimExpiredArtifactTransferGrants(ctx, sqlcgen.ClaimExpiredArtifactTransferGrantsParams{
+		OlderThan: toTimestamptz(&olderThan),
+		RowLimit:  limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("claim expired artifact transfer grants: %w", err)
+	}
+	out := make([]ExpiredTransferGrantRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, ExpiredTransferGrantRow{
+			ID: row.ID, ProjectID: row.ProjectID, BucketID: row.BucketID, Key: row.Key,
+			Method: row.Method, UploadID: row.UploadID, ExpiresAt: row.ExpiresAt.Time,
+		})
+	}
+	return out, nil
 }
