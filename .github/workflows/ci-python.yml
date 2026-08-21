@@ -164,7 +164,10 @@ jobs:
           # mention would report a healthy wiring for a file whose only real
           # invocation had been deleted — the check passing because it looked at
           # the wrong line.
-          calls="$(grep -v '^[[:space:]]*#' "$caller" | grep -c 'deploy/scripts/sdk-client-check\.sh' || true)"
+          # Count OCCURRENCES, not matching lines: `grep -c` reports 1 for a
+          # line that names the script twice, so the "exactly one call site"
+          # rule below was not enforced for that shape.
+          calls="$(grep -v '^[[:space:]]*#' "$caller" | grep -o 'deploy/scripts/sdk-client-check\.sh' | wc -l | tr -d ' ')"
           if [ "$calls" != "1" ]; then
             echo "::error::$caller INVOKES sdk-client-check.sh $calls time(s) outside comments, expected exactly 1."
             echo "::error::Zero means tier 3 is now unreachable: nothing else starts it, and the file would keep looking maintained."

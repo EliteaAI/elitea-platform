@@ -148,6 +148,14 @@ because each was a real bug found across 3 review rounds.
 - A new /llm route, a change to the refusal body, or a change to
   `internal/api/router.go` MUST be followed by a tier 2 run. `.github/workflows/
   ci-python.yml` starts tiers 1 and 2 on every change under this module.
+- EACH TIER HAS A FLOOR, and the floors are load-bearing. Tier 1 checks that
+  its own tests are still collected (`EXPECTED_TESTS`), tier 2 refuses a run
+  reporting fewer than `EXPECTED_ASSERTIONS`, and tier 3 does the same and
+  prints the count its caller reads. Do not lower a floor to make a job green.
+  Every one of them was added because the gate reported success while
+  measuring less than it claimed: a deleted test file left the file count on
+  its old floor, a renamed test silently removed half a gate, and a wrapper
+  replaced by `exit 0` passed every structural check CI made.
 
 ## Language (ASD-STE100)
 Write ALL agent-authored text in ASD-STE100 Simplified Technical English: GitHub

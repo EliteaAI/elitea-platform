@@ -1575,11 +1575,28 @@ except Exception as error:
     # This script drives the real EliteAClient inside the running worker's own
     # image, so the SDK under test is the SDK the product runs. It makes 15
     # assertions of its own; read its lines above, not this one alone.
-    if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh"; then
-      ok "the elitea-sdk client check passed all of its own assertions"
+    #
+    # Its 15 assertions count as ONE assertion here, so a WRAPPER that exits 0
+    # without ever starting the python satisfies this check and the total
+    # below. Replace sdk-client-check.sh with "exit 0" and every count still
+    # adds up (measured). So do not read the exit status alone: require the
+    # completion line the python prints, and require the count in it. The
+    # python refuses a partial run on its own; this catches a run that never
+    # happened.
+    sdk_check_log="$(mktemp)"
+    if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh" 2>&1 | tee "$sdk_check_log"; then
+      sdk_check_ran="$(sed -n 's/^→ elitea-sdk client: \([0-9][0-9]*\) assertion(s) ran.*/\1/p' "$sdk_check_log" | tail -1)"
+      if [ -z "$sdk_check_ran" ]; then
+        fail "the elitea-sdk client check exited 0 but printed no assertion count — the wrapper did not run the python"
+      elif [ "$sdk_check_ran" -lt 15 ]; then
+        fail "the elitea-sdk client check reported only ${sdk_check_ran} assertion(s), and 15 is its floor"
+      else
+        ok "the elitea-sdk client check passed all ${sdk_check_ran} of its own assertions"
+      fi
     else
       fail "the elitea-sdk client check failed — read its assertion lines above"
     fi
+    rm -f "$sdk_check_log"
 
     echo "→ chat critical path (#284 smoke):"
     # Precondition first, because the failure it produces is a bare HTTP 500
