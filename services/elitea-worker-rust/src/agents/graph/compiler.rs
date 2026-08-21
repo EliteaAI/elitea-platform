@@ -37,6 +37,7 @@ use super::llm::{
     LLM_TOOL_RESUME_STATE_KEY, LlmNode, LlmNodeDefinition, LlmToolkitSelection,
     PipelineLlmAgentFactory,
 };
+use super::node_events::PIPELINE_NODE_EVENT_SCOPE_STATE_KEY;
 use super::printer::{
     PrinterInputMapping, PrinterNode, PrinterNodeDefinition, PrinterPauseCatalog, PrinterResetNode,
 };
@@ -783,6 +784,7 @@ impl PipelineDefinition {
             HITL_RESUME_STATE_KEY.to_owned(),
             DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
             LLM_TOOL_RESUME_STATE_KEY.to_owned(),
+            PIPELINE_NODE_EVENT_SCOPE_STATE_KEY.to_owned(),
         ]);
         channels.extend(self.state.keys().cloned());
         for node in &self.nodes {
@@ -1160,7 +1162,10 @@ fn runtime_channel_default(channel: &str) -> serde_json::Value {
             json!({})
         }
         APPLICATION_MESSAGES_STATE_KEY => json!([]),
-        "context_info" | "hitl_interrupt" | "_pipeline_blocked" => serde_json::Value::Null,
+        PIPELINE_NODE_EVENT_SCOPE_STATE_KEY
+        | "context_info"
+        | "hitl_interrupt"
+        | "_pipeline_blocked" => serde_json::Value::Null,
         channel if RUNTIME_STRING_CHANNELS.contains(&channel) => json!(""),
         _ => serde_json::Value::Null,
     }
@@ -1452,6 +1457,7 @@ fn reserved_user_state_key(key: &str) -> bool {
     key == HITL_RESUME_STATE_KEY
         || key == DIRECT_TOOL_RESUME_STATE_KEY
         || key == LLM_TOOL_RESUME_STATE_KEY
+        || key == PIPELINE_NODE_EVENT_SCOPE_STATE_KEY
         || matches!(
             key,
             APPLICATION_TASK_STATE_KEY

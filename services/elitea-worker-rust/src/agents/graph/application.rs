@@ -23,6 +23,9 @@ use tracing::Instrument as _;
 
 use super::direct_tool::{ensure_state_type, pipeline_tool_context};
 use super::llm::render_fstring;
+use super::node_events::{
+    PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PipelineNodeEventScope, PipelineNodeEventSender,
+};
 use super::yaml::{valid_graph_id, valid_output_key};
 use crate::agents::application_tools::nested_application_interrupt_ids;
 
@@ -284,7 +287,11 @@ pub(crate) enum ResolvedApplicationParticipant {
     /// A direct saved agent invoked through ADK `AgentTool` semantics.
     Agent(Arc<dyn Tool>),
     /// A saved pipeline invoked as a checkpointed native ADK subgraph.
-    Pipeline(Arc<CompiledGraph>),
+    Pipeline {
+        graph: Arc<CompiledGraph>,
+        events: Option<PipelineNodeEventSender>,
+        display_name: String,
+    },
 }
 
 pub(super) struct ApplicationNode {
@@ -321,6 +328,7 @@ impl ApplicationNode {
             "hitl_decisions",
             super::hitl::HITL_RESUME_STATE_KEY,
             super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY,
+            PIPELINE_NODE_EVENT_SCOPE_STATE_KEY,
         ] {
             if node.graph().schema().channels.contains_key(channel) {
                 node = node.with_input(channel, channel);
@@ -334,16 +342,33 @@ impl ApplicationNode {
         context: &NodeContext,
         task: &str,
         graph: Arc<CompiledGraph>,
+        events: Option<&PipelineNodeEventSender>,
+        display_name: &str,
     ) -> Result<NodeOutput, GraphError> {
         let parent_schema = context
             .parent_schema()
             .ok_or_else(|| node_failure(self.name()))?;
         let mut state = context.state.clone();
+        let call_id = format!("pipeline:{}:{}", self.name(), context.step);
         state.insert(APPLICATION_TASK_STATE_KEY.to_owned(), json!(task));
         state.insert(
             APPLICATION_MESSAGES_STATE_KEY.to_owned(),
             json!([{"role": "user", "content": task}]),
         );
+        if let Some(events) = events {
+            let event_scope = PipelineNodeEventScope::new(&call_id, display_name)
+                .map_err(|_| node_failure(self.name()))?;
+            state.insert(
+                PIPELINE_NODE_EVENT_SCOPE_STATE_KEY.to_owned(),
+                event_scope
+                    .to_state_value()
+                    .map_err(|_| node_failure(self.name()))?,
+            );
+            events
+                .send_application_start(display_name, &call_id)
+                .await
+                .map_err(|_| node_failure(self.name()))?;
+        }
         let mut child_context = NodeContext::new(state, context.config.clone(), context.step);
         child_context.set_parent_schema(parent_schema);
         let mut output = self
@@ -364,6 +389,12 @@ impl ApplicationNode {
             .ok_or_else(|| node_failure(self.name()))?;
         if !output.updates.is_empty() {
             return Err(node_failure(self.name()));
+        }
+        if let Some(events) = events {
+            events
+                .send_application_end(display_name, &call_id)
+                .await
+                .map_err(|_| node_failure(self.name()))?;
         }
         self.projected_output(&response)
     }
@@ -425,7 +456,7 @@ impl Node for ApplicationNode {
     }
 
     fn validate_against(&self, parent: &StateSchema) -> Result<(), GraphError> {
-        if let ResolvedApplicationParticipant::Pipeline(graph) = &self.participant {
+        if let ResolvedApplicationParticipant::Pipeline { graph, .. } = &self.participant {
             self.pipeline_subgraph(Arc::clone(graph))
                 .validate_against(parent)?;
         }
@@ -481,9 +512,19 @@ impl Node for ApplicationNode {
                     tracing::Span::current().record("stage", "state_projection");
                     self.projected_output(response)
                 }
-                ResolvedApplicationParticipant::Pipeline(graph) => {
-                    self.execute_pipeline(context, &task, Arc::clone(graph))
-                        .await
+                ResolvedApplicationParticipant::Pipeline {
+                    graph,
+                    events,
+                    display_name,
+                } => {
+                    self.execute_pipeline(
+                        context,
+                        &task,
+                        Arc::clone(graph),
+                        events.as_ref(),
+                        display_name,
+                    )
+                    .await
                 }
             }
         }

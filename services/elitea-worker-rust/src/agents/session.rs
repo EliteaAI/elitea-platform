@@ -117,6 +117,16 @@ impl ApplicationRuntimeProjection {
             resume: None,
         }
     }
+
+    pub(crate) fn insert_presentation(
+        &mut self,
+        tool_name: String,
+        display_name: String,
+        agent_type: String,
+    ) -> Result<(), AgentEventProjectionError> {
+        self.presentations
+            .insert(tool_name, display_name, agent_type)
+    }
 }
 
 pub(crate) struct PipelineRuntimeBindings {

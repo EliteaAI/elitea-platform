@@ -25,8 +25,8 @@ use serde_json::{Map, Value, json};
 use thiserror::Error;
 use tracing::Instrument as _;
 
-use super::PipelineNodeEventSender;
 use super::yaml::{valid_graph_id, valid_output_key};
+use super::{PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PipelineNodeEventScope, PipelineNodeEventSender};
 use crate::agents::direct_hitl::blocked_tool_result;
 use crate::agents::events::mask_sensitive_arguments;
 use crate::toolkits::SensitiveToolPolicy;
@@ -1010,6 +1010,9 @@ async fn run_model_agent(
         .get(LLM_TOOL_RESUME_STATE_KEY)
         .and_then(Value::as_object)
         .and_then(|replays| replays.get(definition.id()));
+    let event_scope =
+        PipelineNodeEventScope::from_state(context.state.get(PIPELINE_NODE_EVENT_SCOPE_STATE_KEY))
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
     let mut transcript = replay.map_or_else(
         || input.initial_transcript(),
         PipelineLlmReplayEnvelope::replay_history,
@@ -1073,7 +1076,7 @@ async fn run_model_agent(
             && let Some(sender) = factory.event_sender()
         {
             sender
-                .send(definition.id(), event.clone())
+                .send(definition.id(), event_scope.as_ref(), event.clone())
                 .await
                 .map_err(|_| LlmExecutionError::Unavailable)?;
         }

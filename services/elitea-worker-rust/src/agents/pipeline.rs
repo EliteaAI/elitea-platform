@@ -451,28 +451,10 @@ impl PipelineNativeAgentAssembler {
             Some(&direct_aliases),
         )
         .await?;
-        let mut participants = BTreeMap::new();
-        let mut projection = ApplicationRuntimeProjection::default();
-        if let Some(runtime) = direct_runtime {
-            let MaterializedApplicationRuntime {
-                tools,
-                presentations,
-                events,
-                resume,
-            } = runtime;
-            for entry in tools {
-                if participants
-                    .insert(
-                        entry.alias,
-                        NativePipelineApplicationParticipant::Agent(entry.tool),
-                    )
-                    .is_some()
-                {
-                    return Err(invalid_pipeline_tool_scope());
-                }
-            }
-            projection = ApplicationRuntimeProjection::streaming(presentations, events, resume);
-        }
+        let (mut participants, mut projection) = direct_runtime.map_or_else(
+            || Ok((BTreeMap::new(), ApplicationRuntimeProjection::default())),
+            application_participants,
+        )?;
         for reference in snapshot.iter().filter(|reference| {
             reference.kind() == FrozenToolKind::Application
                 && reference.application_agent_type() == Some("pipeline")
@@ -496,6 +478,13 @@ impl PipelineNativeAgentAssembler {
                     node_events.clone(),
                 )
                 .await?;
+            projection
+                .insert_presentation(
+                    reference.toolkit_name().to_owned(),
+                    reference.toolkit_name().to_owned(),
+                    "pipeline".to_owned(),
+                )
+                .map_err(|_| invalid_pipeline_tool_scope())?;
             if participants
                 .insert(reference.toolkit_name().to_owned(), participant)
                 .is_some()
@@ -550,15 +539,23 @@ impl PipelineNativeAgentAssembler {
         }
         let admitted = frozen.apply_policy(self.tool_policy.as_ref());
         let runtimes = self
-            .bind_nested_pipeline_runtimes(&child, admitted, context, model_facade, node_events)
+            .bind_nested_pipeline_runtimes(
+                &child,
+                admitted,
+                context,
+                model_facade,
+                node_events.clone(),
+            )
             .await?;
         tracing::debug!(
             application_alias = reference.alias,
             "materialized saved pipeline participant"
         );
         Ok(NativePipelineApplicationParticipant::Pipeline {
-            definition: child.into_definition(),
+            definition: Box::new(child.into_definition()),
             runtimes,
+            events: node_events,
+            display_name: reference.alias.to_owned(),
         })
     }
 
@@ -671,8 +668,10 @@ struct NativePipelineApplicationResolver {
 enum NativePipelineApplicationParticipant {
     Agent(Arc<dyn Tool>),
     Pipeline {
-        definition: PipelineDefinition,
+        definition: Box<PipelineDefinition>,
         runtimes: PipelineNodeRuntimes,
+        events: PipelineNodeEventSender,
+        display_name: String,
     },
 }
 
@@ -694,12 +693,51 @@ impl PipelineApplicationResolver for NativePipelineApplicationResolver {
             NativePipelineApplicationParticipant::Pipeline {
                 definition,
                 runtimes,
+                events,
+                display_name,
             } => definition
                 .compile_subgraph_with_runtime(checkpointer, &runtimes)
-                .map(|graph| ResolvedApplicationParticipant::Pipeline(Arc::new(graph)))
+                .map(|graph| ResolvedApplicationParticipant::Pipeline {
+                    graph: Arc::new(graph),
+                    events: Some(events),
+                    display_name,
+                })
                 .map_err(|_| ApplicationExecutionError::Unavailable),
         }
     }
+}
+
+fn application_participants(
+    runtime: MaterializedApplicationRuntime,
+) -> Result<
+    (
+        BTreeMap<String, NativePipelineApplicationParticipant>,
+        ApplicationRuntimeProjection,
+    ),
+    NativeAgentAssemblyError,
+> {
+    let MaterializedApplicationRuntime {
+        tools,
+        presentations,
+        events,
+        resume,
+    } = runtime;
+    let mut participants = BTreeMap::new();
+    for entry in tools {
+        if participants
+            .insert(
+                entry.alias,
+                NativePipelineApplicationParticipant::Agent(entry.tool),
+            )
+            .is_some()
+        {
+            return Err(invalid_pipeline_tool_scope());
+        }
+    }
+    Ok((
+        participants,
+        ApplicationRuntimeProjection::streaming(presentations, events, resume),
+    ))
 }
 
 impl PipelineDirectToolResolver for NativePipelineDirectToolResolver {

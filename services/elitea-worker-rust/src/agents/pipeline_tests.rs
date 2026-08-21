@@ -359,6 +359,22 @@ fn pipeline_child_runtime() -> PipelineChildRuntime {
     pipeline_runtime(
         &json!({
             "agent_type": "pipeline",
+            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    input_mapping:\n      task: {type: variable, value: input}\n    input: [messages]\n    output: [answer, messages]\n    transition: END\n",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": null
+        }),
+        vec![TestModelGatewayOutcome::Response(pipeline_text_response(
+            "Child: Summarize the release",
+        ))],
+    )
+}
+
+fn pipeline_data_child_runtime() -> PipelineChildRuntime {
+    pipeline_runtime(
+        &json!({
+            "agent_type": "pipeline",
             "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: state_modifier\n    template: 'Child: {{ input }}'\n    input: [input]\n    output: [answer]\n    transition: END\n",
             "meta": {},
             "variables": [],
@@ -1482,22 +1498,64 @@ async fn saved_pipeline_participant_loads_exact_version_and_runs_as_child_subgra
         .project_start(timestamp(0))
         .expect("browser start");
     let (mut run, mut projector, completion) = invocation.start().expect("pipeline start");
+    let mut browser = Vec::new();
     while let Some(event) = run.next_event().await.expect("pipeline event") {
-        let _ = projector
-            .project(&event)
-            .expect("pipeline event projection");
+        browser.extend(
+            projector
+                .project(&event)
+                .expect("pipeline event projection")
+                .into_iter()
+                .map(|event| current(&event)),
+        );
     }
     let selected = completion
         .select()
         .await
         .expect("pipeline result selection");
-    let browser = projector
-        .finish_after_eos(selected, timestamp(1))
-        .expect("pipeline browser completion");
+    browser.extend(
+        projector
+            .finish_after_eos(selected, timestamp(1))
+            .expect("pipeline browser completion")
+            .into_iter()
+            .map(|event| current(&event)),
+    );
+    let wrapper_start = browser
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_tool_start"
+                && event["response_metadata"]["tool_name"] == "release-agent"
+        })
+        .expect("saved-pipeline wrapper start");
+    assert_eq!(
+        wrapper_start["response_metadata"]["parent_agent_call_id"],
+        "pipeline:delegate:0"
+    );
+    assert_eq!(
+        wrapper_start["response_metadata"]["metadata"]["toolkit_type"],
+        "pipeline"
+    );
+    let child_model = browser
+        .iter()
+        .find(|event| {
+            event["type"] == "agent_llm_start"
+                && event["response_metadata"]["metadata"]["langgraph_node"] == "answer"
+        })
+        .expect("saved-pipeline child LLM progress");
+    assert_eq!(
+        child_model["response_metadata"]["parent_agent_path"],
+        json!([{
+            "name": "release-agent",
+            "call_id": "pipeline:delegate:0",
+            "sibling_ordinal": 1,
+        }])
+    );
+    assert!(browser.iter().any(|event| {
+        event["type"] == "agent_tool_end"
+            && event["response_metadata"]["tool_run_id"] == "pipeline:delegate:0"
+    }));
     assert!(
         browser
-            .into_iter()
-            .map(|event| current(&event))
+            .iter()
             .any(|event| { event["content"] == "Child: Summarize the release" })
     );
     assert_eq!(calls.load(Ordering::Acquire), 2);
@@ -1515,6 +1573,39 @@ async fn saved_pipeline_participant_loads_exact_version_and_runs_as_child_subgra
             .expect("child checkpoint lookup")
             .is_some()
     );
+}
+
+#[tokio::test]
+async fn saved_data_pipeline_emits_wrapper_progress_without_an_llm_node() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, calls, _paths) = pipeline_data_child_runtime();
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade);
+    let request = agent_pipeline_request("release-agent", "pipeline");
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized data-pipeline participant");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(browser.iter().any(|event| {
+        event["type"] == "agent_tool_start"
+            && event["response_metadata"]["tool_run_id"] == "pipeline:delegate:0"
+            && event["response_metadata"]["metadata"]["toolkit_type"] == "pipeline"
+    }));
+    assert!(browser.iter().any(|event| {
+        event["type"] == "agent_tool_end"
+            && event["response_metadata"]["tool_run_id"] == "pipeline:delegate:0"
+    }));
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "Child: Summarize the release")
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
 }
 
 #[tokio::test]

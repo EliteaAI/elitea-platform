@@ -104,7 +104,11 @@ fn pipeline_resolver(graph: CompiledGraph) -> Arc<dyn PipelineApplicationResolve
 fn shared_pipeline_resolver(graph: Arc<CompiledGraph>) -> Arc<dyn PipelineApplicationResolver> {
     Arc::new(FixtureApplicationResolver {
         alias: "Research Agent".to_owned(),
-        participant: ResolvedApplicationParticipant::Pipeline(graph),
+        participant: ResolvedApplicationParticipant::Pipeline {
+            graph,
+            events: None,
+            display_name: "Research Agent".to_owned(),
+        },
     })
 }
 

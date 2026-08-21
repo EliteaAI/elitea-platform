@@ -54,8 +54,9 @@ pub(crate) use llm::{
     PipelineLlmReplayEnvelope, prepare_pipeline_llm_replay,
 };
 pub(crate) use node_events::{
-    PIPELINE_NODE_METADATA_KEY, PipelineNodeEventReceiver, PipelineNodeEventSender,
-    PipelineNodeEventStreamingAgent, pipeline_node_event_channel,
+    PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PIPELINE_NODE_METADATA_KEY, PipelineNodeEventReceiver,
+    PipelineNodeEventScope, PipelineNodeEventSender, PipelineNodeEventStreamingAgent,
+    pipeline_node_event_channel,
 };
 
 pub use yaml::{

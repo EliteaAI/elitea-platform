@@ -398,9 +398,13 @@ workaround, second planning call or additional database table. Inner nested
 model/tool lifecycle events cross a bounded invocation-local channel into the
 outer Runner stream. The adapter strips provider request metadata, stamps the
 owning pipeline node, never writes browser progress to graph state and avoids a
-duplicate terminal model turn. Incremental tool-progress chunks and nested
-saved-pipeline breadcrumb containers remain separate gaps, and approved effects
-still require durable outcome reconciliation.
+duplicate terminal model turn. A saved-pipeline Agent node now emits the same
+Pipeline wrapper and call-bound child-node hierarchy as the current platform;
+ADK's missing subgraph metadata propagation is bridged by one private reserved
+state value, not by a new public event shape or table. Incremental tool-progress
+chunks and hierarchy overlay for nested saved-pipeline HITL cards remain
+separate gaps, and approved effects still require durable outcome
+reconciliation.
 
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.
