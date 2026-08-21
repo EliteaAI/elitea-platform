@@ -23,6 +23,7 @@ use tonic::{Request, Response, Status};
 
 use super::agent_coordinator::native_agent_coordinator;
 use super::agent_delivery::{FreshAgentDelivery, test_fresh_agent_delivery};
+use super::agent_delivery_processor::native_agent_delivery_processor;
 use super::agent_invocation::{
     AgentAuthorizationJob, AgentAuthorizationJobCompletion, AgentAuthorizedLifecycleCompletion,
     AgentAuthorizedLifecycleDisposition, AuthorizedAgentLifecycle,
@@ -43,6 +44,7 @@ use super::output_delivery::{
     AgentTerminalRecoveryError, AgentTerminalReplay, FreshAgentProgressPublisher,
     publish_pre_invocation_terminal, recover_accepted_terminal,
 };
+use super::redis_delivery::RedisDeliveryProcessor;
 use crate::agents::events::{
     AgentEventProjectionContext, AgentEventProjector, CompletedAgentBrowserOutput,
 };
@@ -133,10 +135,7 @@ fn fresh() -> FreshAgentDelivery {
 }
 
 fn fresh_for_kind(kind: AgentExecutionKind) -> FreshAgentDelivery {
-    let raw = bytes(match kind {
-        AgentExecutionKind::Application => "signed_command",
-        AgentExecutionKind::Adhoc => "signed_command_adhoc",
-    });
+    let raw = signed_command_for_kind(kind);
     let verified = parse_and_verify_agent_command(
         &raw,
         Some(&TestOnlyConformanceHmacAuthenticator as &dyn SignedCommandAuthenticator),
@@ -145,7 +144,18 @@ fn fresh_for_kind(kind: AgentExecutionKind) -> FreshAgentDelivery {
     let claim =
         test_accepted_agent_claim(&verified, claim_response(), "workload-1", "worker-1", NOW)
             .expect("accepted claim");
-    let delivery = RedisCommandDelivery::decode(
+    test_fresh_agent_delivery(redis_delivery(raw), verified, claim)
+}
+
+fn signed_command_for_kind(kind: AgentExecutionKind) -> Vec<u8> {
+    bytes(match kind {
+        AgentExecutionKind::Application => "signed_command",
+        AgentExecutionKind::Adhoc => "signed_command_adhoc",
+    })
+}
+
+fn redis_delivery(raw: Vec<u8>) -> RedisCommandDelivery {
+    RedisCommandDelivery::decode(
         b"runtime.commands.v1",
         b"1700000000000-0",
         vec![(b"signed_envelope".to_vec(), raw)],
@@ -154,8 +164,7 @@ fn fresh_for_kind(kind: AgentExecutionKind) -> FreshAgentDelivery {
             max_field_bytes: 48 * 1024,
         },
     )
-    .expect("Redis delivery");
-    test_fresh_agent_delivery(delivery, verified, claim)
+    .expect("Redis delivery")
 }
 
 fn output_config(producer_id: &str) -> OutputGrpcConfig {
@@ -295,7 +304,8 @@ impl ControlRpc for RecoveryControl {
         &self,
         _request: Request<ClaimCommandRequestV1>,
     ) -> Result<Response<ClaimCommandResponseV1>, Status> {
-        panic!("terminal recovery must not claim twice")
+        self.trace.lock().expect("trace").push("claim");
+        Ok(Response::new(claim_response()))
     }
 
     async fn begin_execution(
@@ -2766,6 +2776,147 @@ async fn run_native_lifecycle_case(kind: AgentExecutionKind) {
             "redis",
         ]
     );
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn redis_delivery_processor_owns_both_agent_kinds_through_retirement() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        Box::pin(run_delivery_processor_case(kind)).await;
+    }
+}
+
+async fn run_delivery_processor_case(kind: AgentExecutionKind) {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let progress_state =
+        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 8), []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let processor = native_agent_delivery_processor(
+        Arc::new(TestOnlyConformanceHmacAuthenticator),
+        preflight(output_root, "worker-1"),
+        control,
+        retirer,
+        Arc::new(KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind,
+        }),
+        Arc::new(|| NOW),
+        admission.clone(),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(ImmediateTextAgent),
+            sensitive: false,
+        }),
+        connector,
+        1,
+        recovery_config(1),
+    );
+
+    processor
+        .process(redis_delivery(signed_command_for_kind(kind)))
+        .await;
+    processor.close().await.expect("delivery processor drain");
+
+    let expected_assembly = match kind {
+        AgentExecutionKind::Application => "assemble_application",
+        AgentExecutionKind::Adhoc => "assemble_adhoc",
+    };
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        [
+            "claim",
+            "begin",
+            "renew",
+            "observe",
+            "input",
+            "authorize",
+            expected_assembly,
+            "renew",
+            "observe",
+            "settlement",
+            "redis",
+        ]
+    );
+    assert_eq!(progress_state.frames.lock().expect("frames").len(), 9);
+    assert_eq!(admission.available_capacity(), 1);
+    drop(processor);
+    drop(temporary);
+}
+
+#[tokio::test]
+async fn stopped_delivery_processor_closes_prepared_work_without_authorize_or_ack() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let control = authorized_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let connector = FakeProgressConnector {
+        state: FakeProgressState::new([], []),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let processor = native_agent_delivery_processor(
+        Arc::new(TestOnlyConformanceHmacAuthenticator),
+        preflight(output_root, "worker-1"),
+        control,
+        retirer,
+        Arc::new(KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind: AgentExecutionKind::Application,
+        }),
+        Arc::new(|| NOW),
+        admission.clone(),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(ImmediateTextAgent),
+            sensitive: false,
+        }),
+        connector,
+        1,
+        recovery_config(1),
+    );
+    processor.stop().expect("stop delivery processor");
+
+    processor
+        .process(redis_delivery(signed_command_for_kind(
+            AgentExecutionKind::Application,
+        )))
+        .await;
+    processor.close().await.expect("stopped processor drain");
+
+    let trace = trace.lock().expect("trace");
+    assert_eq!(trace.as_slice(), ["claim"]);
+    assert!(!trace.contains(&"begin"));
+    assert!(!trace.contains(&"input"));
+    assert!(!trace.contains(&"authorize"));
+    assert!(!trace.contains(&"redis"));
+    assert_eq!(admission.available_capacity(), 1);
+    drop(trace);
+    drop(processor);
     drop(temporary);
 }
 

@@ -68,6 +68,11 @@ impl AgentPreparationConfig {
         let lease = ClaimLeaseMonitorConfig::new(lease_poll_interval)?;
         Ok(Self { lease })
     }
+
+    #[must_use]
+    pub(crate) const fn lease_config(self) -> ClaimLeaseMonitorConfig {
+        self.lease
+    }
 }
 
 /// Claim-bound materialization boundary used by production and deterministic

@@ -5,7 +5,7 @@
 //! the returned result waiter therefore cannot cancel `AuthorizeInvocation`,
 //! lose its response, or abandon the unique lease/output authority.
 
-#![allow(dead_code)] // Production command-consumer registration remains disabled.
+#![allow(dead_code)] // Production process bootstrap and capability registration remain disabled.
 
 use std::fmt;
 use std::future::Future;

@@ -5,7 +5,7 @@
 //! cancellation can abandon only the returned result waiter; rejected
 //! submissions retain an explicit closeable owner for every unstarted grant.
 
-#![allow(dead_code)] // Production command-consumer registration remains disabled.
+#![allow(dead_code)] // Production process bootstrap and capability registration remain disabled.
 
 use std::sync::Arc;
 

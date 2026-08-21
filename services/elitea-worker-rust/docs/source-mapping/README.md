@@ -140,9 +140,14 @@ Maintained Rust runtime ownership registry:
   consolidation is a measured storage optimization; parallel or nested HITL
   must use distinct session/checkpoint identities rather than new tables per
   pause scope;
-- `src/diagnostics.rs`, `src/execution/{agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle}.rs`:
+- `src/diagnostics.rs`, `src/execution/{agent_delivery_processor,agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle,redis_delivery}.rs`:
   crate-scoped subscriber plus authenticated lifecycle/assembly/tool
-  correlation. Export/retention policy remains deployment-owned.
+  correlation. The concrete agent delivery processor now keeps one raw Redis
+  PEL owner alive through claim, output preflight, preparation, supervised
+  native execution and retirement for both application and ad-hoc commands.
+  Normal bootstrap must drain its Redis processing futures before closing the
+  coordinator. Export/retention policy and process bootstrap remain
+  deployment-owned.
 
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are

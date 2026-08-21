@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::Arc;
 
 use crate::agents::AgentExecutionKind;
 use crate::protocol::ProtocolError;
@@ -26,6 +27,41 @@ pub enum AgentDeliveryError {
     Protocol(ProtocolError),
     Control(AgentControlError),
     Retirement(RedisCommandError),
+}
+
+impl AgentDeliveryError {
+    /// Stable low-cardinality category for delivery diagnostics.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Protocol(ProtocolError::InvalidInput(_)) => "agent_delivery.invalid_input",
+            Self::Protocol(ProtocolError::ResourceExhausted(_)) => {
+                "agent_delivery.resource_exhausted"
+            }
+            Self::Protocol(ProtocolError::IncompatibleVersion(_)) => {
+                "agent_delivery.incompatible_version"
+            }
+            Self::Protocol(ProtocolError::AuthorizationFailed(_)) => {
+                "agent_delivery.authorization_failed"
+            }
+            Self::Protocol(ProtocolError::UnsupportedCapability(_)) => {
+                "agent_delivery.unsupported_capability"
+            }
+            Self::Control(error) if error.retryable() => "agent_delivery.control_unavailable",
+            Self::Control(_) => "agent_delivery.control_rejected",
+            Self::Retirement(error) => error.code(),
+        }
+    }
+
+    /// Whether redelivery can make progress without changing immutable input.
+    #[must_use]
+    pub const fn retryable(&self) -> bool {
+        match self {
+            Self::Control(error) => error.retryable(),
+            Self::Retirement(error) => error.retryable(),
+            Self::Protocol(_) => false,
+        }
+    }
 }
 
 impl fmt::Display for AgentDeliveryError {
@@ -275,13 +311,27 @@ impl AgentDeliveryRoute {
 /// ordering: Claim -> optional `PrepareSettlement` -> atomic Redis retirement.
 /// No terminal route can return success before retirement.
 pub struct AgentDeliveryRouter<R, C> {
-    control: AgentControlClient<R>,
-    retirer: RedisCommandRetirer<C>,
+    control: Arc<AgentControlClient<R>>,
+    retirer: Arc<RedisCommandRetirer<C>>,
 }
 
 impl<R, C> AgentDeliveryRouter<R, C> {
     #[must_use]
-    pub const fn new(control: AgentControlClient<R>, retirer: RedisCommandRetirer<C>) -> Self {
+    pub fn new(control: AgentControlClient<R>, retirer: RedisCommandRetirer<C>) -> Self {
+        Self {
+            control: Arc::new(control),
+            retirer: Arc::new(retirer),
+        }
+    }
+
+    /// Share the exact control and retirement owners with the later invocation
+    /// coordinator. This prevents route and lifecycle wiring from drifting to
+    /// different worker identities or Redis generations.
+    #[must_use]
+    pub(crate) const fn from_shared(
+        control: Arc<AgentControlClient<R>>,
+        retirer: Arc<RedisCommandRetirer<C>>,
+    ) -> Self {
         Self { control, retirer }
     }
 }

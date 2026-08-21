@@ -2,6 +2,7 @@
 
 mod agent_coordinator;
 pub mod agent_delivery;
+mod agent_delivery_processor;
 mod agent_invocation;
 pub mod agent_lease;
 pub mod agent_preparation;

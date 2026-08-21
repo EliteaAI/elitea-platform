@@ -2,7 +2,7 @@
 //!
 //! This module is deliberately capability-disabled. It proves the single-owner
 //! lifecycle shared by direct application/ad-hoc agents and stored pipelines
-//! before production command-consumer registration is admitted.
+//! before production process bootstrap and capability registration are admitted.
 
 #![allow(dead_code)] // Production capability registration remains fail-closed.
 
