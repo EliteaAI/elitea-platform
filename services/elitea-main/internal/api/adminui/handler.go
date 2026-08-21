@@ -194,6 +194,23 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	configScript := fmt.Sprintf(`<script>window.admin_ui_config = %s;</script>`, string(cfgJSON))
 	indexHTML = strings.Replace(indexHTML, "<!-- admin_ui_config -->", configScript, 1)
 
+	// This page is per-operator and must never be replayed to another one.
+	//
+	// It carries the signed-in operator's address and the exact list of
+	// administration-mode permissions they hold. Until the forwarded-identity
+	// source above existed, the runtime deployment received a byte-identical
+	// payload on every load — empty permissions, empty name — so a cache could
+	// not leak anything. It can now: with no directive and no validator, a
+	// shared proxy or the browser's own disk cache may store this response and
+	// serve it after a logout, or to the next person on the machine, who then
+	// gets a fully populated admin console belonging to someone else.
+	//
+	// no-store rather than private/no-cache: there is nothing here worth
+	// revalidating, and no-store is what every other identity-bearing response
+	// in this service sets (internal/api/v2/auth/session.go's writeSessionJSON
+	// and Logout, internal/api/middleware/internal_admin.go).
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, indexHTML)
@@ -245,8 +262,18 @@ func (h *Handler) resolveForwarded(ctx context.Context, principal auth.User) (in
 		ctx, principal, auth.PermissionModeAdministration, "",
 	)
 	if err != nil {
+		// `is_token` is a BOOL derived from the principal, not the principal's
+		// own strings. Every field of `principal` is request-header material
+		// (X-Auth-Type / X-Auth-ID / X-Auth-User-ID), and copying header
+		// material verbatim into a log is how attacker-chosen content reaches
+		// the log sink — CodeQL go/clear-text-logging flags exactly that flow,
+		// and it is right to: the values reaching here are constrained to a
+		// two-element enum only because tryTraefikHeaders already rejected
+		// everything else, which is an invariant no reader of this line can
+		// see. The bool answers the question the line exists for — which
+		// resolution branch refused — and carries none of the input.
 		slog.DebugContext(ctx, "admin ui: forwarded permission resolution refused or failed",
-			"auth_type", principal.AuthType, "error", err)
+			"is_token", principal.TokenID != "", "error", err)
 		return 0, nil, false
 	}
 	if resolution.UserID <= 0 {
@@ -268,7 +295,12 @@ func (h *Handler) lookupEmail(ctx context.Context, userID int64) string {
 	}
 	email, err := h.cfg.Emails.UserEmail(ctx, userID)
 	if err != nil {
-		slog.DebugContext(ctx, "admin ui: user email lookup failed", "user_id", userID, "error", err)
+		// Warn, not Debug. A lookup that was configured and then failed is a
+		// mis-wiring or an outage, and the only symptom on screen is a footer
+		// reading "Admin" — indistinguishable from a user who genuinely has no
+		// address on file. At Debug the operator's report produces nothing in
+		// the logs at any level production runs.
+		slog.WarnContext(ctx, "admin ui: user email lookup failed", "user_id", userID, "error", err)
 		return ""
 	}
 	return email

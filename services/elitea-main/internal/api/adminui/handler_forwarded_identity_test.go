@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -268,5 +269,57 @@ func TestServeSPA_SessionCookieStillResolvesWhenNoHeadersArrive(t *testing.T) {
 	}
 	if injected.UserEmail != "member@example.com" {
 		t.Errorf("user_email = %q, want member@example.com", injected.UserEmail)
+	}
+}
+
+// The injected page is per-operator: it carries their address and the exact
+// list of administration-mode permissions they hold. A cache that stores it can
+// replay one operator's console to another.
+//
+// This is NOT a hypothetical for this handler. Before the forwarded-identity
+// source existed, the runtime deployment received a byte-identical payload on
+// every load — empty permissions, empty name — so a cached copy leaked nothing.
+// Personalising the response is what makes the missing directive matter.
+func TestServeSPA_PersonalisedPageIsNotCacheable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "index.html"),
+		[]byte("<html><body><!-- admin_ui_config --></body></html>"),
+		0o600,
+	); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+
+	cfg := Config{
+		StaticDir:                 dir,
+		BasePath:                  "/admin/app",
+		SecretKey:                 testSecret,
+		ForwardedIdentityVerifier: peerVerifier{},
+		Resolver: resolverFunc(func(
+			_ context.Context, _ auth.User, _, _ string,
+		) (auth.PermissionResolution, error) {
+			return auth.PermissionResolution{UserID: 42, Permissions: []string{"admin.auth.users"}}, nil
+		}),
+		Emails: emailFunc(func(context.Context, int64) (string, error) {
+			return "operator@example.com", nil
+		}),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/app", nil)
+	for name, value := range userHeaders("42") {
+		req.Header.Set(name, value)
+	}
+	rec := httptest.NewRecorder()
+	NewHandler(cfg).ServeSPA(rec, req)
+
+	// Guard the premise: without a personalised body there is nothing to leak,
+	// and this test would pass for the wrong reason.
+	if !strings.Contains(rec.Body.String(), "operator@example.com") {
+		t.Fatalf("the page carries no operator identity, so this test proves nothing:\n%s", rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 }
