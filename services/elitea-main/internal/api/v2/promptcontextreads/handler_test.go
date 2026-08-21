@@ -615,3 +615,46 @@ func (function currentPeerVerifierFunc) VerifyForwardedIdentityPeer(
 func containsError(err error, text string) bool {
 	return err != nil && text != "" && strings.Contains(err.Error(), text)
 }
+
+// TestCurrentChatConfigReaderReadsAnAbsentVaultAsDefaults covers a fresh
+// deployment: no admin vault, and no project vault until something writes a
+// secret. Both loads answer storage.ErrVaultAbsent.
+//
+// That used to fail the read, so the chat configuration was unavailable on a
+// clean install even though all five values have built-in defaults for exactly
+// this case. A vault that EXISTS and will not open still fails: its values are
+// there and unread.
+func TestCurrentChatConfigReaderReadsAnAbsentVaultAsDefaults(t *testing.T) {
+	loader := &currentChatVaultLoader{
+		projectErr: storage.ErrVaultAbsent,
+		adminErr:   storage.ErrVaultAbsent,
+	}
+	reader, err := NewCurrentChatConfigVaultReader(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reader.GetCurrentChatConfig(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("an absent vault must read as the defaults: %v", err)
+	}
+	if result.ChatMaxUploadCount.String() != "10" ||
+		result.ChatMaxUploadSizeMB.String() != "150" ||
+		result.ChatMaxFileUploadSizeMB.String() != "150" ||
+		result.ChatMaxImageUploadCount.String() != "10" ||
+		result.ChatMaxImageUploadSizeMB.String() != "3" {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestCurrentChatConfigReaderStillFailsOnAnUnreadableVault(t *testing.T) {
+	loader := &currentChatVaultLoader{adminErr: storage.ErrContentUnavailable}
+	reader, err := NewCurrentChatConfigVaultReader(loader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.GetCurrentChatConfig(context.Background(), 7); !errors.Is(
+		err, ErrCurrentChatConfigUnavailable,
+	) {
+		t.Fatalf("err=%v", err)
+	}
+}

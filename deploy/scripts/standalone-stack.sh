@@ -52,6 +52,11 @@ detect_compose_bin
 
 PORT="${STANDALONE_PORT:-8084}"
 
+# How long `check` waits for the agent worker to join its Redis consumer group.
+# The worker has no healthcheck, so `compose up -d --wait` returns before it has
+# finished starting; see the wait in the "agent worker" assertion.
+WORKER_JOIN_TIMEOUT="${STANDALONE_WORKER_JOIN_TIMEOUT:-90}"
+
 # ─── The embedding model name: one variable, one resolver, one writer (#468) ──
 #
 # `seed-llm` and `seed-index` both need this name. Both touch ONE row:
@@ -1106,15 +1111,49 @@ PY
     # as far as Redis. XINFO CONSUMERS reports only consumers that actually
     # joined the group, so a name here means TLS, the ACL user, the stream and
     # the group all worked.
+    #
+    # WAITED FOR, not sampled once. The worker has no healthcheck, so
+    # `compose up -d --wait` does not wait for it, and it joins the group only
+    # after a Python start-up that imports the whole SDK — seconds after the
+    # stack reports healthy. A single sample here reads a race: CI has failed
+    # this assertion in a run whose chat critical path then streamed its events
+    # from this very group, which cannot happen unless the worker joined. The
+    # wait costs nothing when the worker is already there and does not weaken
+    # the check: a worker that never joins still fails, just later.
+    #
+    # The poll runs INSIDE one container rather than spawning one per attempt:
+    # a `run --rm` costs about as much as the interval itself on a loaded
+    # runner, which would make the real timeout something other than the one
+    # named here. The last reply is printed either way, so a failure still shows
+    # what Redis actually answered.
     consumers="$($ENGINE run --rm --network "$NETWORK" \
-                  -v "${RUNTIME_CERTS}:/m:ro" --entrypoint sh docker.io/library/redis:7-alpine -c \
-                  "redis-cli --tls --cacert /m/runtime-ca.crt -h runtime-redis -p 6380 \
-                     --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
-                     --no-auth-warning XINFO CONSUMERS '${STREAM}' '${GROUP}'" 2>&1 || true)"
+      -v "${RUNTIME_CERTS}:/m:ro" --entrypoint sh docker.io/library/redis:7-alpine -c \
+      "deadline=\$(( \$(date +%s) + ${WORKER_JOIN_TIMEOUT} ))
+       while : ; do
+         reply=\$(redis-cli --tls --cacert /m/runtime-ca.crt -h runtime-redis -p 6380 \
+                    --user bootstrap --pass \"\$(cat /m/redis-bootstrap-password)\" \
+                    --no-auth-warning XINFO CONSUMERS '${STREAM}' '${GROUP}' 2>&1 || true)
+         case \"\$reply\" in *standalone-agent-worker*) break ;; esac
+         [ \$(date +%s) -lt \$deadline ] || break
+         sleep 2
+       done
+       printf '%s' \"\$reply\"" 2>&1 || true)"
     case "$consumers" in
-      *standalone-agent-worker*) ok "worker joined ${GROUP}" ;;
-      *) fail "no consumer on ${GROUP} — the worker never reached Redis (check its logs)" ;;
+      *standalone-agent-worker*) worker_joined="yes" ;;
+      *) worker_joined="" ;;
     esac
+    if [ -n "$worker_joined" ]; then
+      ok "worker joined ${GROUP}"
+    else
+      # "check its logs" is not something CI can act on, so print them here.
+      fail "no consumer on ${GROUP} after ${WORKER_JOIN_TIMEOUT}s — the worker never reached Redis"
+      echo "    redis answered: ${consumers}" >&2
+      WORKER_CONTAINER="$($ENGINE ps -a --format '{{.Names}}' | grep -m1 "${PROJECT}.*elitea-worker" || true)"
+      if [ -n "$WORKER_CONTAINER" ]; then
+        echo "    ── last 40 lines of ${WORKER_CONTAINER} ──" >&2
+        $ENGINE logs --tail 40 "$WORKER_CONTAINER" 2>&1 | sed 's/^/    /' >&2 || true
+      fi
+    fi
 
     # The worker's platform_origin must terminate TLS with the runtime CA's
     # edge certificate; the SDK verifies it against that CA alone. A plain

@@ -527,7 +527,17 @@ func mapCurrentConfiguration(row sqlcgen.GetCurrentConfigurationRow) (configurat
 	if err != nil {
 		return configurationapp.CurrentConfiguration{}, err
 	}
-	meta, err := decodeCurrentConfigurationJSON(row.Meta, "metadata")
+	// A stored JSON null is read as an empty object for `meta`, and only for
+	// `meta`.
+	//
+	// Rows carrying `meta = 'null'::jsonb` exist: the compatibility create
+	// route wrote them whenever the client omitted the key. Refusing them here
+	// aborted the WHOLE list, so one such row answered 500 for every
+	// configuration in that section — the same failure the model catalogue
+	// already refuses to accept from one bad row. `meta` is annotation; a null
+	// there names no lost value. `data` stays strict, because a null there
+	// would silently present a configuration as empty.
+	meta, err := decodeCurrentConfigurationMetadata(row.Meta)
 	if err != nil {
 		return configurationapp.CurrentConfiguration{}, err
 	}
@@ -556,6 +566,17 @@ func mapCurrentConfiguration(row sqlcgen.GetCurrentConfigurationRow) (configurat
 		UpdatedAt:   updatedAt,
 		IsPinned:    row.IsPinned,
 	}, nil
+}
+
+// decodeCurrentConfigurationMetadata decodes the `meta` column, reading a
+// stored JSON null as an empty object. Every other malformed value — a
+// non-object, trailing data, unparseable bytes — is still refused, so a row
+// that lost its shape is not quietly published as `{}`.
+func decodeCurrentConfigurationMetadata(raw []byte) (map[string]any, error) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return map[string]any{}, nil
+	}
+	return decodeCurrentConfigurationJSON(raw, "metadata")
 }
 
 func decodeCurrentConfigurationJSON(raw []byte, field string) (map[string]any, error) {

@@ -1044,14 +1044,23 @@ func pkcs7Unpad(data []byte) ([]byte, error) {
 // EnsureProjectVault creates an EMPTY vault for a project that has none, and
 // does nothing for a project that already has a readable one (#373).
 //
-// WHY PROVISIONING NEEDS THIS. Every write route below mints a project's Fernet
-// key lazily, so the secrets API alone never needs a vault created in advance.
-// The model catalogue does. storage.PostgresSecretVaultLoader reports absent
-// rows as ErrContentUnavailable, storage.CurrentModelDefaultsReader fails the
-// whole read on that error, and the configurations route turns it into a 500 —
-// so a project with no vault rows presents to its owner as "the product has no
-// models". internal/application/projectprovisioning calls this as its
-// project_secrets step.
+// WHY PROVISIONING STILL DOES THIS. Every write route below mints a project's
+// Fernet key lazily, so no read is BROKEN by a project that has none: an absent
+// vault is now a distinct answer (storage.ErrVaultAbsent) and every reader that
+// consults the vault for a DEFAULT — the model catalogue, the chat
+// configuration, the index staleness timeout — reads it as "never set" and
+// answers normally. It did not used to be. The loader reported absent rows as
+// the generic ErrContentUnavailable, the model defaults reader failed the WHOLE
+// read on it, and the configurations route turned that into a 500, so a project
+// with no vault rows presented to its owner as "the product has no models".
+// That is what #373 was.
+//
+// The step remains because it is what pylon does — the vault is part of a
+// provisioned project, not an artefact of the first write — and because it
+// keeps every project's vault minted by the one minter described below rather
+// than by whichever route happens to write first.
+// internal/application/projectprovisioning calls this as its project_secrets
+// step.
 //
 // WHY IT IS HERE AND NOT IN THE PROVISIONER. This is the only code in the tree
 // that mints a vault key, and it decides — from SECRETS_MASTER_KEY — whether

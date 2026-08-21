@@ -615,18 +615,26 @@ func removeSystemToken(ctx context.Context, p *Provisioner, state *provisionStat
 // used to record this step as deliberately dropped, on the reasoning that the
 // Go vault mints a project's Fernet key lazily on first write and reports an
 // absent vault as an empty list, so provisioning one would create state nothing
-// reads. The first half is true; the second is not. Only the SECRETS API is
-// lazy. The model catalogue is not:
+// reads. The first half was true; the second was not, and #373 was what the
+// gap cost:
 //
-//   - infra/storage/postgres_secret_vault.go's load() turns pgx.ErrNoRows into
-//     ErrContentUnavailable;
-//   - infra/storage/model_defaults.go's Load fails the WHOLE read on it;
-//   - api/v2/configurations/models.go turns that into a 500.
+//   - infra/storage/postgres_secret_vault.go's load() turned pgx.ErrNoRows into
+//     the generic ErrContentUnavailable;
+//   - infra/storage/model_defaults.go's Load failed the WHOLE read on it;
+//   - api/v2/configurations/models.go turned that into a 500.
 //
 // The model picker asks that route for its catalogue, so a project with no
-// vault rows presents to its owner as "the product has no models". A customer
+// vault rows presented to its owner as "the product has no models". A customer
 // given a new project could not pick a model and so could not start a chat
 // turn, which made project creation incomplete for a pylon-free deployment.
+//
+// THAT CHAIN IS NOW BROKEN AT ITS FIRST LINK, and this step is not what holds
+// it. An absent vault is a distinct answer (storage.ErrVaultAbsent) and each
+// reader that consults the vault for a DEFAULT reads it as "never set", so a
+// project with no vault answers 200. Do not read the step as the thing that
+// keeps the model picker working, and do not delete it on the strength of that:
+// it stays because pylon provisions the vault with the project, and because it
+// keeps every vault minted by the one minter (api/v2/secrets.Handler).
 //
 // The vault is created EMPTY. pylon additionally stores an approle blob in
 // centry.project.secrets_json; that column stays dead here, its only occurrence
