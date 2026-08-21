@@ -4,12 +4,28 @@ import { EliteaApiError } from '@/shared/api/generated/mutator';
 
 /**
  * The HTTP status a rejected query carries, or `undefined` when the rejection
- * is not an HTTP answer (a network error, an abort, a thrown TypeError).
+ * is not an ANSWER TO THE REQUEST AS SENT — a network error, an abort, a
+ * thrown TypeError, or a `kind: 'auth'` session failure.
+ *
+ * `kind: 'auth'` IS DELIBERATELY EXCLUDED, and it is the whole reason this
+ * function exists apart from `isFinalClientAnswer` below. The two kinds carry
+ * a status each, but they answer different questions:
+ *
+ *  - `kind: 'http'` is the server's verdict on the REQUEST. Its inputs are the
+ *    method, the path and the body, and a replay repeats all three.
+ *  - `kind: 'auth'` is the server's verdict on the SESSION. `shared/api/
+ *    http.ts` only builds one after it ran the single-flight re-authentication
+ *    AND replayed the request, and the replay answered 401 as well.
+ *
+ * A session is not an input the caller controls, and it changes on its own:
+ * the user is in the middle of a login the moment this rejection is built. So
+ * a later attempt CAN answer differently, which is exactly what
+ * {@link isFinalClientAnswer} means by "final" and what a 401 is not.
  */
 function httpStatusOf(error: unknown): number | undefined {
   if (!(error instanceof EliteaApiError)) return undefined;
   const { failure } = error;
-  return failure.kind === 'http' || failure.kind === 'auth' ? failure.status : undefined;
+  return failure.kind === 'http' ? failure.status : undefined;
 }
 
 /**
@@ -97,7 +113,27 @@ export const QUERY_DEFAULT_OPTIONS: DefaultOptions = {
      * byte for byte cannot change the result; it only doubles the load on a
      * failing endpoint and doubles the delay before the user sees the error.
      * Retry now covers exactly what it was reasoned for above: a network
-     * error, an abort, or a 5xx.
+     * error, an abort, a 5xx — and a `kind: 'auth'` session failure.
+     *
+     * THE RE-AUTHENTICATED 401 IS THE EXCEPTION, and leaving it out cost the
+     * app its only recovery. Measured on the E2E stack, journey J3
+     * (`e2e/journeys/shell/shell.session.spec.ts`): a 401 mid-session opens
+     * the re-auth popup, the user completes a real OIDC round trip, and
+     * `http.ts` replays the request the instant the flight resolves — about
+     * 10ms BEFORE the popup's `close` event. A replay that lands in that
+     * window still answers 401. With a 401 classified as final, every query
+     * that failed during the expiry then stayed in its error state for the
+     * rest of the page's life: nothing refetches it, `refetchOnWindowFocus`
+     * needs a `visibilitychange` the opener never gets, and no other timer
+     * exists. The sidebar's Create button reads `usePermissionSet`, so it
+     * came back DISABLED after a login the user completed, and only a manual
+     * page reload cleared it. Both engines reproduce; webkit lost the race on
+     * 3 runs of 3, chromium on 1 of 4.
+     *
+     * One retry, on the library's 1s backoff, is the recovery. It is bounded
+     * — a second `kind: 'auth'` failure ends the query — and it repeats a
+     * request the server already refused only when the SESSION, not the
+     * request, is what it refused.
      */
     retry: (failureCount: number, error: unknown): boolean => {
       if (isFinalClientAnswer(error)) return false;

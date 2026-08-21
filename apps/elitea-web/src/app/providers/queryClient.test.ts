@@ -8,6 +8,15 @@ function httpError(status: number): EliteaApiError {
   return new EliteaApiError({ kind: 'http', status, url: 'https://example.test/api/v2/x', body: undefined });
 }
 
+/**
+ * The failure `shared/api/http.ts` builds AFTER it ran the single-flight
+ * re-authentication and the replay still answered 401. A different kind from
+ * {@link httpError}, and the retry predicate must treat it differently.
+ */
+function authError(status: number): EliteaApiError {
+  return new EliteaApiError({ kind: 'auth', status, url: 'https://example.test/api/v2/x' });
+}
+
 /** Reads the retry predicate without repeating its type at every call site. */
 function shouldRetry(failureCount: number, error: unknown): boolean {
   const { retry } = QUERY_DEFAULT_OPTIONS.queries ?? {};
@@ -58,6 +67,21 @@ describe('QUERY_DEFAULT_OPTIONS', () => {
 
     it('still retries an error that is not an EliteaApiError', () => {
       expect(shouldRetry(0, new TypeError('boom'))).toBe(true);
+    });
+
+    /*
+     * A `kind: 'auth'` 401 answers for the SESSION, not for the request, and
+     * the session changes on its own while the user completes the login. In
+     * journey J3 the re-auth replay lands about 10ms before the popup closes,
+     * so it still reads 401; with no retry the sidebar Create button stayed
+     * disabled after a completed login until the page was reloaded. The
+     * `kind: 'http'` 401 above must keep its "never repeat" answer, so these
+     * two cases have to disagree on the same status.
+     */
+    it('retries a re-authenticated 401 once, unlike a plain 401', () => {
+      expect(shouldRetry(0, authError(401))).toBe(true);
+      expect(shouldRetry(1, authError(401))).toBe(false);
+      expect(shouldRetry(0, httpError(401))).toBe(false);
     });
   });
 
