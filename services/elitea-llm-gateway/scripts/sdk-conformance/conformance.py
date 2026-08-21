@@ -524,9 +524,11 @@ def assert_anthropic_route(result: Result, client, base_url: str) -> None:
 def assert_paths_resolve(result: Result, client, base_url: str) -> None:
     """All four /llm endpoints the SDK builds must be routes the gateway mounts.
 
-    The paths are read off the SDK client at runtime, never written here: a
-    hard-coded list keeps passing on the day the SDK moves one. A 404 or a 405
-    on any of them is a call that reaches an error instead of the model.
+    The PREFIX is read off the SDK client at runtime; the per-library suffixes
+    are written here, because LangChain appends them to the base_url and there
+    is nothing in the SDK to read them from. So this gate moves with the SDK's
+    base paths but NOT with a LangChain upgrade that changed a suffix. A 404 or
+    a 405 on any of them is a call that reaches an error instead of the model.
     """
     print("-> every /llm path the SDK builds is mounted")
     set_verdict(base_url, "allow")

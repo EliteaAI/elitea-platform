@@ -3,7 +3,7 @@
 //
 // IT IS NOT A DEPLOYMENT. It has no provider, no database, no credential and an
 // EMPTY identity secret, and it exposes a control endpoint that changes the
-// budget verdict. It binds loopback only.
+// budget verdict. It binds loopback BY DEFAULT; -addr accepts a wildcard.
 //
 // Every flag has a default, and the process reads NO environment variable. That
 // is deliberate: scripts/env-drift-check.sh compares the names the gateway code

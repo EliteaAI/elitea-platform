@@ -401,8 +401,10 @@ def assert_budget_contract(result: Result, posture: str, refusal: BaseException 
     checkBudget returns "allowed" before it reads anything. So no request on
     this stack can be refused with 402, and the positive half — a 402 whose
     error.code carries the scope, raising BudgetExceededError with that scope —
-    is unmeasured here. It is asserted in the gateway's own unit tests
-    (TestBudgetRefusalMatchesSDKContract) and nowhere against a live SDK.
+    is unmeasured here. It IS asserted against a live SDK, by tier 2
+    (services/elitea-llm-gateway/scripts/sdk-conformance), which drives the
+    installed elitea-sdk against the real router and makes real 402s; and in
+    the gateway's own unit tests (TestBudgetRefusalMatchesSDKContract).
 
     `posture` is READ FROM THE RUNNING GATEWAY's log by the wrapper, never
     assumed. That is what stops this from becoming a permanent silent skip: if
