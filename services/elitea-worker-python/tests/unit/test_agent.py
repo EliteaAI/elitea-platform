@@ -17,7 +17,9 @@ from elitea.runtime.v1 import (
     input_pb2,
 )
 
-from elitea_worker.agents.sdk_adapter import EliteaSdkAgentAdapter
+from elitea_sdk.runtime.exceptions import BudgetExceededError
+
+from elitea_worker.agents.sdk_adapter import EliteaSdkAgentAdapter, SdkBudgetExceeded
 from elitea_worker.constants import (
     AGENT_EXECUTE_ADHOC_CAPABILITY_ID,
     AGENT_EXECUTE_APPLICATION_CAPABILITY_ID,
@@ -504,6 +506,60 @@ def _adapter(client: _Client) -> EliteaSdkAgentAdapter:
     adapter._memory = "checkpoint-store"  # type: ignore[attr-defined]
     adapter._callbacks = ["current-callback"]  # type: ignore[attr-defined]
     return adapter
+
+
+class _BudgetBlockedExecutor:
+    """An SDK executor whose first invoke hits an exhausted budget."""
+
+    def __init__(self, scope: str, message: str) -> None:
+        self.scope = scope
+        self.message = message
+
+    def invoke(self, value, config):
+        raise BudgetExceededError(self.message, self.scope)
+
+
+class _BudgetBlockedClient(_Client):
+    def __init__(self, scope: str, message: str) -> None:
+        super().__init__()
+        self.application_executor = _BudgetBlockedExecutor(scope, message)
+        self.adhoc_executor = _BudgetBlockedExecutor(scope, message)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    ["project_budget_exceeded", "member_budget_exceeded"],
+)
+@pytest.mark.parametrize("application", [True, False])
+def test_agent_execution_reports_a_budget_rejection_as_a_policy_outcome(
+    scope: str, application: bool
+) -> None:
+    """A budget rejection must leave agent execution as the typed marker.
+
+    Before the agent adapter had a budget boundary, only the INDEX path
+    converted the SDK's typed rejection. Agent execution let it reach the
+    delivery catch-all unclassified, and reported it as an internal fault —
+    a retryable answer to a condition no retry can clear.
+
+    Both scopes are covered because the two travel different routes out of the
+    gateway, and only one of them used to arrive as a typed SDK exception at
+    all.
+    """
+
+    canary = f"BUDGET_SECRET_CANARY_{scope}"
+    adapter = _adapter(_BudgetBlockedClient(scope, canary))
+    payload = _request(application=application).payload
+
+    with pytest.raises(SdkBudgetExceeded) as caught:
+        if application:
+            adapter.execute_application(payload)
+        else:
+            adapter.execute_adhoc(payload)
+
+    # The marker is data-free: the SDK message can quote the proxy, and the
+    # worker's public diagnostics must not carry it.
+    assert str(caught.value) == ""
+    assert canary not in str(caught.value)
 
 
 def test_sdk_adapter_preserves_constructor_split_without_forwarding_authority() -> None:

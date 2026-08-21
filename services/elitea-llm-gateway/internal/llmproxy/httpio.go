@@ -88,7 +88,11 @@ func statusAndType(bErr *schemas.BifrostError) (int, string, string) {
 	// field) at a higher level; the code field is always spec-normalised here.
 	switch {
 	case isBudgetError(status, errType, code):
-		return http.StatusPaymentRequired, "budget_exceeded", "insufficient_quota"
+		// A budget refusal the PROVIDER reported, not one this gateway's gate
+		// decided. It carries the project code because that is the only scope
+		// an upstream can speak to: it knows nothing of a member cap. See
+		// budgetErrorType for why the type must stay the shared one.
+		return http.StatusPaymentRequired, budgetErrorType, budgetCodeProject
 	case status == http.StatusTooManyRequests:
 		// FIX finding #13: spec §2.5 mandates code="rate_limit_exceeded".
 		// The provider's raw code (e.g. "tokens_per_min_exceeded", "slow") must

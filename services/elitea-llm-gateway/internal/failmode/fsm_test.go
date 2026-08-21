@@ -276,7 +276,7 @@ func TestDecide_FreshSafe_DefaultDegradedCap_LargeLimit(t *testing.T) {
 		SoftAlertPct:    80,
 		Found:           true,
 	}
-	p := tieredParams() // DegradedCapNano = 0 → default to 10% = $10M nano
+	p := tieredParams()       // DegradedCapNano = 0 → default to 10% = $10M nano
 	capNano := limitNano / 10 // $10M
 	// At exactly the cap: degraded=cap, req=0 → allow (not > cap).
 	if d := Decide(false, 0, capNano, snap, 0, p); d.Verdict != Allow {

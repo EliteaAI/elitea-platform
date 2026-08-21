@@ -3,6 +3,7 @@ module github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway
 go 1.26.4
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2

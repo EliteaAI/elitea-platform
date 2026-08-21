@@ -51,17 +51,17 @@ env:
 
 # Sensitive vars from Kubernetes Secrets — same shape as the other charts here.
 #
-# The HMAC keys, the passwords and LITELLM_MASTER_KEY are `optional: true`
-# because Pylon starts without them; that is a DOWNGRADE, not a pass. An absent
-# HMAC key means the corresponding message path runs unsigned, and an absent
-# POSTGRES_PASSWORD means the connection is attempted with an empty password.
+# The HMAC keys and the passwords are `optional: true` because Pylon starts
+# without them; that is a DOWNGRADE, not a pass. An absent HMAC key means the
+# corresponding message path runs unsigned, and an absent POSTGRES_PASSWORD
+# means the connection is attempted with an empty password.
 # SECRETS_MASTER_KEY is the one exception and is `optional: false`. Provision
 # the Secret deliberately:
 #
 #   kubectl create secret generic pylon-indexer-secrets -n elitea \
 #     --from-literal=postgres-password=… --from-literal=redis-password=… \
 #     --from-literal=indexer-hmac-key=… --from-literal=event-hmac-key=… \
-#     --from-literal=rpc-hmac-key=… --from-literal=litellm-master-key=… \
+#     --from-literal=rpc-hmac-key=… \
 #     --from-literal=secrets-master-key=…
 #
 # RPC_HMAC_KEY must hold the SAME value as deploy/helm/elitea-scheduler's
@@ -102,11 +102,6 @@ secrets:
     secretName: pylon-indexer-secrets
     key: rpc-hmac-key
     optional: true
-  LITELLM_MASTER_KEY:
-    secretName: pylon-indexer-secrets
-    key: litellm-master-key
-    optional: true
-
 # /data/cache — the model/artefact cache. In compose this volume is pre-seeded
 # by the `model-cache-init` service; THERE IS NO EQUIVALENT PRE-SEED IN THIS
 # CHART, so a fresh pod downloads what it needs on first use and needs egress

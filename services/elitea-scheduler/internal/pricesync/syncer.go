@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // advisoryLockKey is the pg_try_advisory_xact_lock key that serialises price
@@ -72,6 +74,30 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 
 	for _, m := range merged {
 		if err := s.upsert(ctx, tx, m); err != nil {
+			// The UPSERT names the four audio price columns that migration 0086
+			// adds. On a database where 0086 has not been applied — a scheduler
+			// that rolls out ahead of elitea-migrate — PostgreSQL answers 42703
+			// and the whole transaction rolls back, so NO price is refreshed,
+			// token prices included.
+			//
+			// This is deliberately NOT the gateway's behaviour, and the
+			// asymmetry is the point. The gateway READS on every request, so it
+			// degrades: it falls back to the pre-0086 statement and keeps
+			// pricing tokens from the catalog (internal/cost/schema_probe.go).
+			// The scheduler WRITES on a timer. Failing the pass leaves the
+			// catalog at its previous values and the next tick retries, so the
+			// safe outcome is already the default and a partial write is the
+			// only thing that could do harm.
+			//
+			// What was missing was the diagnosis. Name the migration in the
+			// error so an operator reads the cause instead of an opaque
+			// "column does not exist" from a table they did not change.
+			if isUndefinedColumn(err) {
+				s.logger.Error("pricesync: the price catalog is missing columns this build writes; "+
+					"apply migration 0086_gateway_audio_prices.sql. No prices were refreshed this pass; "+
+					"the catalog keeps its previous values and the next pass retries.",
+					"model", m.ModelName, "provider", m.Provider, "err", err)
+			}
 			return 0, err
 		}
 	}
@@ -159,6 +185,16 @@ func priceDrifts(a, b float64) bool {
 
 // upsert writes one normalised row into gateway.gateway_models. The write is
 // per-1M (matching the column denomination) and records source provenance.
+//
+// EVERY PRICE COLUMN MUST APPEAR IN BOTH HALVES of this statement — the INSERT
+// column list and the ON CONFLICT DO UPDATE set list. The two halves serve
+// different rows: the first runs for a model the catalog has never seen, the
+// second for one it already holds. A column named in only one half is not a
+// compile error and not a runtime error; it produces a row that is written once
+// and then never refreshed again (or, the other way round, a column that stays
+// NULL on every new model). Both failures look like a correct sync in the logs,
+// because the upsert reports success either way. TestUpsertSQLCoversEveryPriceColumn
+// pins the pairing.
 func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) error {
 	const q = `
 		INSERT INTO gateway.gateway_models (
@@ -166,14 +202,20 @@ func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) erro
 			input_cost_per_1m_tokens, output_cost_per_1m_tokens,
 			cache_creation_input_token_cost, cache_read_input_token_cost,
 			input_cost_per_1m_tokens_above_128k,
+			input_cost_per_1m_seconds, output_cost_per_1m_seconds,
+			input_cost_per_1m_characters, output_cost_per_1m_characters,
 			source, source_synced_at, last_sync_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now(), now())
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), now(), now())
 		ON CONFLICT (provider, model_name) DO UPDATE SET
 			input_cost_per_1m_tokens            = EXCLUDED.input_cost_per_1m_tokens,
 			output_cost_per_1m_tokens           = EXCLUDED.output_cost_per_1m_tokens,
 			cache_creation_input_token_cost     = EXCLUDED.cache_creation_input_token_cost,
 			cache_read_input_token_cost         = EXCLUDED.cache_read_input_token_cost,
 			input_cost_per_1m_tokens_above_128k = EXCLUDED.input_cost_per_1m_tokens_above_128k,
+			input_cost_per_1m_seconds           = EXCLUDED.input_cost_per_1m_seconds,
+			output_cost_per_1m_seconds          = EXCLUDED.output_cost_per_1m_seconds,
+			input_cost_per_1m_characters        = EXCLUDED.input_cost_per_1m_characters,
+			output_cost_per_1m_characters       = EXCLUDED.output_cost_per_1m_characters,
 			source                              = EXCLUDED.source,
 			source_synced_at                    = EXCLUDED.source_synced_at,
 			last_sync_at                        = EXCLUDED.last_sync_at,
@@ -183,6 +225,25 @@ func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) erro
 		m.InputCostPer1M, m.OutputCostPer1M,
 		m.CacheCreationPer1M, m.CacheReadPer1M,
 		m.InputCostAbove128k,
+		m.InputCostPer1MSeconds, m.OutputCostPer1MSeconds,
+		m.InputCostPer1MCharacters, m.OutputCostPer1MCharacters,
 		m.Source,
 	)
+}
+
+// undefinedColumnCode is the PostgreSQL SQLSTATE for "column does not exist".
+// It is the one error that means "the database is older than this binary",
+// rather than "this row is not there" or "the database is unreachable". The
+// gateway's reader names the same constant for the same reason
+// (elitea-llm-gateway/internal/cost/schema_probe.go).
+const undefinedColumnCode = "42703"
+
+// isUndefinedColumn reports whether err is PostgreSQL 42703.
+//
+// It matches the SQLSTATE through pgconn.PgError rather than the message text:
+// the message is localised by the server's lc_messages setting, so a string
+// match silently stops working on a non-English database.
+func isUndefinedColumn(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == undefinedColumnCode
 }

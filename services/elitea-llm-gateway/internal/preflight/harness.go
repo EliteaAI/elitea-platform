@@ -73,6 +73,12 @@ type MockRouterConfig struct {
 	// UnaryResponsesResponse overrides the object returned by unary
 	// ResponsesRequest / CountTokensRequest calls when Mode==StreamModeAnthropic.
 	UnaryResponsesResponse *schemas.BifrostResponsesResponse
+	// EmbeddingResponse overrides the object returned by EmbeddingRequest. The
+	// default carries Usage and NO Data, which is enough for a billing
+	// assertion but not for a client: openai-python reads data[0].embedding and
+	// raises on an empty list. Set this to drive a real embedding round trip
+	// (internal/preflight/sdkharness uses it for the base64 arm).
+	EmbeddingResponse *schemas.BifrostEmbeddingResponse
 	// InputTokens / OutputTokens are the usage values stamped on the final chunk
 	// and the unary response. Defaults are 100 / 50.
 	InputTokens  int64
@@ -166,6 +172,9 @@ func (m *MockRouter) TextCompletionRequest(_ *schemas.BifrostContext, _ *schemas
 
 func (m *MockRouter) EmbeddingRequest(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	m.called.Store(true)
+	if m.cfg.EmbeddingResponse != nil {
+		return m.cfg.EmbeddingResponse, nil
+	}
 	return &schemas.BifrostEmbeddingResponse{
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: int(m.cfg.InputTokens)},
 	}, nil
@@ -240,6 +249,16 @@ func (m *MockRouter) ImageEditRequest(_ *schemas.BifrostContext, _ *schemas.Bifr
 func (m *MockRouter) ImageVariationRequest(_ *schemas.BifrostContext, _ *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	m.called.Store(true)
 	return &schemas.BifrostImageGenerationResponse{}, nil
+}
+
+func (m *MockRouter) SpeechRequest(_ *schemas.BifrostContext, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostSpeechResponse{}, nil
+}
+
+func (m *MockRouter) TranscriptionRequest(_ *schemas.BifrostContext, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostTranscriptionResponse{}, nil
 }
 
 // compile-time assertion: MockRouter must satisfy LLMRouter.

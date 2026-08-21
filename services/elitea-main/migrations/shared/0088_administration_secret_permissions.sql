@@ -1,4 +1,4 @@
--- 0087_administration_secret_permissions.sql — the ADMINISTRATION-mode grants
+-- 0088_administration_secret_permissions.sql — the ADMINISTRATION-mode grants
 -- for the GLOBAL secret vault.
 --
 --   configuration.secrets.secret.view    in administration mode

@@ -80,7 +80,16 @@ type OpsEventPublisher interface {
 // CostEstimator resolves per-request LLM cost in int64 nano-USD.
 // *cost.Calculator satisfies it; tests may inject a zero-cost stub.
 type CostEstimator interface {
+	// Cost prices a token-billed request. It is the token-only form of
+	// CostUnits and every non-audio route uses it.
 	Cost(ctx context.Context, provider, model string, inputTokens, outputTokens int64) cost.Cost
+
+	// CostUnits prices a request in whichever denomination the provider
+	// reported: tokens, seconds (as milliseconds) or characters (issue #323).
+	// A returned Cost with an empty Basis is UNPRICED — the catalog carries no
+	// rate for those units — and must NOT be read as a request that cost
+	// nothing.
+	CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost
 }
 
 // LLMRouter is the seam over the embedded bifrost/core client. The handler
@@ -116,6 +125,12 @@ type LLMRouter interface {
 	ImageEditRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError)
 	// ImageVariationRequest performs an image-variation request (multipart body).
 	ImageVariationRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError)
+	// SpeechRequest performs a text-to-speech request. Backs
+	// /llm/v1/audio/speech (issue #323).
+	SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError)
+	// TranscriptionRequest performs a speech-to-text request (multipart body).
+	// Backs /llm/v1/audio/transcriptions and /llm/v1/audio/translations.
+	TranscriptionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError)
 }
 
 // bifrostLLMRouter is the default LLMRouter backed by the embedded
@@ -170,6 +185,14 @@ func (r *bifrostLLMRouter) ImageEditRequest(ctx *schemas.BifrostContext, req *sc
 
 func (r *bifrostLLMRouter) ImageVariationRequest(ctx *schemas.BifrostContext, req *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return r.core.ImageVariationRequest(ctx, req)
+}
+
+func (r *bifrostLLMRouter) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	return r.core.SpeechRequest(ctx, req)
+}
+
+func (r *bifrostLLMRouter) TranscriptionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	return r.core.TranscriptionRequest(ctx, req)
 }
 
 // Compile-time assertions that both the concrete *bifrost.Bifrost method set

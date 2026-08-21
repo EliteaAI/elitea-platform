@@ -25,7 +25,7 @@ maps the required indexing dependencies as follows:
 | Current OCR fallback when attachment LLM analysis is disabled | The admitted SDK 0.9.8 profile pins `langchain-community==0.4.1`; its corresponding methods import `pytesseract`. The image pins the OCR wrapper, its wheel digest and license, Tesseract, and the deterministic DejaVu probe font. Behavioral equivalence to the current 0.8.30 Confluence attachment path remains a parity-harness gate |
 | Direct PDF loading, page extraction and image extraction | PyMuPDF, PyPDF, pypdfium2, the SDK PDF loader and Poppler |
 | Project-specific PGVector writes and reads | `langchain-postgres`, `pgvector`, psycopg 3 binary/pool and the unchanged SDK vector adapter |
-| Externalized LiteLLM-compatible chat and embedding calls | the current SDK client with the pinned OpenAI/Anthropic LangChain clients; model credentials remain claim-scoped runtime data, not image content |
+| Externalized chat and embedding calls | the current SDK client with the pinned OpenAI/Anthropic LangChain clients, against `elitea-llm-gateway` through elitea-main at `/llm/v1`; model credentials remain claim-scoped runtime data, not image content |
 | SDK eager document-loader registry imports | the pinned DOCX, XLS/XLSX, PPTX, HTML, Markdown, NumPy/SciPy/Gensim dependencies required when the current loader map is imported |
 
 This is intentionally smaller than the SDK `all` extra. It excludes unrelated

@@ -1,4 +1,4 @@
--- 0089_project_override_reconciliation.sql — deliver the corpus's default-mode
+-- 0090_project_override_reconciliation.sql — deliver the corpus's default-mode
 -- grants to the projects that carry their own permission rows.
 --
 -- THE DEFECT. legacyrbac's projectPermissions() reads the central default-mode

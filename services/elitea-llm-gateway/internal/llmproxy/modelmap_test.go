@@ -106,6 +106,16 @@ func (s *dispatchSpy) ImageGenerationRequest(ctx *schemas.BifrostContext, req *s
 	return s.fakeRouter.ImageGenerationRequest(ctx, req)
 }
 
+func (s *dispatchSpy) SpeechRequest(ctx *schemas.BifrostContext, req *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	s.record(req.Provider, req.Model)
+	return s.fakeRouter.SpeechRequest(ctx, req)
+}
+
+func (s *dispatchSpy) TranscriptionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	s.record(req.Provider, req.Model)
+	return s.fakeRouter.TranscriptionRequest(ctx, req)
+}
+
 var _ LLMRouter = (*dispatchSpy)(nil)
 
 // newDispatchSpy returns a spy pre-loaded with a successful response for every
@@ -118,6 +128,9 @@ func newDispatchSpy() *dispatchSpy {
 		respResp:  &schemas.BifrostResponsesResponse{ID: strPtr("resp-1")},
 		countResp: &schemas.BifrostCountTokensResponse{},
 		imgResp:   &schemas.BifrostImageGenerationResponse{ID: "img-1"},
+
+		speechResp:        &schemas.BifrostSpeechResponse{Audio: []byte("audio-1")},
+		transcriptionResp: &schemas.BifrostTranscriptionResponse{Text: "transcript-1"},
 	}}
 }
 

@@ -30,7 +30,11 @@ agent_memory_config:
   connection_kwargs:
     autocommit: true
 
+# `litellm` was in db_names, and it is gone with the LiteLLM engine (issue
+# #323): no process in this container reads or writes that database now. See
+# configs/bootstrap.yml. `agentstate` stays — it holds the LangGraph
+# checkpoints agent_memory_config points at, above.
 autocreate_dbs:
   enabled: true
   db_url: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@${POSTGRES_HOST:-postgres}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-app}
-  db_names: ["litellm", "agentstate"]
+  db_names: ["agentstate"]
