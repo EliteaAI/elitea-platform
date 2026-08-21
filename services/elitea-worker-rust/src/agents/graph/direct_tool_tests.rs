@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use adk_rust::futures::StreamExt as _;
@@ -17,11 +18,15 @@ use super::direct_tool::{
     ResolvedDirectTool,
 };
 use super::{EliteaGraphAgent, compiler::PipelineDefinition};
-use crate::agents::events::pipeline_tool_event_binding;
-use crate::agents::graph::resume::{PipelineContinuationDecision, PipelineResumeErrorCode};
+use crate::agents::events::{pipeline_mcp_auth_event_binding, pipeline_tool_event_binding};
+use crate::agents::graph::resume::{
+    PipelineContinuationDecision, PipelineMcpAuthorizationContinuation, PipelineResumeErrorCode,
+};
 use crate::agents::request::{AgentExecutionPayload, NextInputSuggestionPolicy, UserInput};
 use crate::agents::runtime::NativeAgentInvocation;
-use crate::toolkits::{SensitiveToolPolicy, ToolAdmissionPolicy};
+use crate::toolkits::{
+    SensitiveToolPolicy, ToolAdmissionPolicy, delegated_authorization_error_fixture,
+};
 
 const TOOLKIT_NODE: &str = r#"
 id: lookup
@@ -151,6 +156,41 @@ struct FixtureResolver {
     alias: String,
     tool: Arc<dyn Tool>,
     sensitive: Option<SensitiveToolPolicy>,
+}
+
+struct AuthorizationFixtureTool {
+    authorized: Arc<AtomicBool>,
+    toolkit_type: &'static str,
+}
+
+#[async_trait]
+impl Tool for AuthorizationFixtureTool {
+    fn name(&self) -> &'static str {
+        "search_records"
+    }
+
+    fn description(&self) -> &'static str {
+        "authorization fixture"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        _arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        if self.authorized.load(Ordering::Acquire) {
+            Ok(json!({
+                "report": {"authorized": true},
+                "messages": [{"role": "assistant", "content": "authorized result"}],
+            }))
+        } else {
+            Err(delegated_authorization_error_fixture(self.toolkit_type))
+        }
+    }
 }
 
 impl PipelineDirectToolResolver for FixtureResolver {
@@ -338,6 +378,95 @@ async fn sensitive_toolkit_node_pauses_then_approval_returns_the_normal_tool_res
         output.updates["messages"],
         json!([{"role":"assistant","content":"approved read"}])
     );
+}
+
+#[tokio::test]
+async fn direct_nodes_share_one_delegated_authorization_interrupt_and_safe_resume() {
+    for (node_type, toolkit_type) in [("mcp", "mcp"), ("toolkit", "sharepoint")] {
+        assert_direct_delegated_authorization(node_type, toolkit_type).await;
+    }
+}
+
+async fn assert_direct_delegated_authorization(node_type: &str, toolkit_type: &'static str) {
+    let yaml = TOOLKIT_NODE.replace("type: toolkit", &format!("type: {node_type}"));
+    let definition = DirectToolNodeDefinition::from_yaml(&yaml).expect("direct node");
+    let authorized = Arc::new(AtomicBool::new(false));
+    let resolver: Arc<dyn PipelineDirectToolResolver> = Arc::new(FixtureResolver {
+        alias: "Customer Support".to_owned(),
+        tool: Arc::new(AuthorizationFixtureTool {
+            authorized: Arc::clone(&authorized),
+            toolkit_type,
+        }),
+        sensitive: None,
+    });
+    let node = DirectToolNode::new(definition, state_types(), resolver);
+    let state = HashMap::from([
+        ("ticket_id".to_owned(), json!(42)),
+        ("filters".to_owned(), json!({"private": "must-not-leak"})),
+    ]);
+    let paused = node
+        .execute(&NodeContext::new(
+            state.clone(),
+            ExecutionConfig::new("thread-mcp-auth"),
+            4,
+        ))
+        .await
+        .expect("delegated authorization pause");
+    let Interrupt::Dynamic { data, .. } = paused.interrupt.expect("dynamic auth interrupt") else {
+        panic!("delegated authorization must use a dynamic interrupt");
+    };
+    let data = data.expect("authorization interrupt data");
+    assert_eq!(data["guardrail_type"], "mcp_auth");
+    assert_eq!(data["toolkit_type"], toolkit_type);
+    assert_eq!(data["available_actions"], json!(["authorize", "skip"]));
+    assert_eq!(data["tool_call_id"], "pipeline:lookup:4");
+    assert_eq!(data["tool_args"], json!({}));
+    assert!(!data.to_string().contains("must-not-leak"));
+
+    let decision = |action: &str| {
+        json!({
+            "lookup": {
+                "definition_digest": data["definition_digest"],
+                "tool_call_id": data["tool_call_id"],
+                "argument_digest": data["argument_digest"],
+                "action": action,
+            }
+        })
+    };
+    let mut skipped = state.clone();
+    skipped.insert(DIRECT_TOOL_RESUME_STATE_KEY.to_owned(), decision("skip"));
+    let skipped = node
+        .execute(&NodeContext::new(
+            skipped,
+            ExecutionConfig::new("thread-mcp-auth"),
+            4,
+        ))
+        .await
+        .expect("delegated authorization skip");
+    assert_eq!(skipped.goto, Some(vec![END.to_owned()]));
+    assert_eq!(skipped.updates["report"], Value::Null);
+    assert!(
+        skipped.updates["_pipeline_blocked"]
+            .as_str()
+            .is_some_and(|message| message.contains("was skipped"))
+    );
+
+    authorized.store(true, Ordering::Release);
+    let mut resumed = state;
+    resumed.insert(
+        DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+        decision("authorize"),
+    );
+    let resumed = node
+        .execute(&NodeContext::new(
+            resumed,
+            ExecutionConfig::new("thread-mcp-auth"),
+            4,
+        ))
+        .await
+        .expect("authorized direct execution");
+    assert_eq!(resumed.updates[DIRECT_TOOL_RESUME_STATE_KEY], json!({}));
+    assert_eq!(resumed.updates["report"], json!({"authorized": true}));
 }
 
 #[tokio::test]
@@ -706,9 +835,185 @@ async fn sensitive_toolkit_graph_resumes_exact_checkpoint_and_executes_once_afte
     assert_eq!(replay.code(), PipelineResumeErrorCode::StaleDecision);
 }
 
+#[tokio::test]
+async fn mcp_graph_authorization_resumes_latest_exact_server_checkpoint() {
+    const ROOT: &str = "pipeline-root";
+    const THREAD: &str = "mcp-authorization-thread";
+    const SERVER: &str = "https://mcp.example.invalid/v1/mcp";
+    let definition = PipelineDefinition::from_yaml(
+        &sensitive_pipeline_definition_yaml().replace("type: toolkit", "type: mcp"),
+    )
+    .expect("MCP pipeline");
+    let authorized = Arc::new(AtomicBool::new(false));
+    let resolver: Arc<dyn PipelineDirectToolResolver> = Arc::new(FixtureResolver {
+        alias: "Customer Support".to_owned(),
+        tool: Arc::new(AuthorizationFixtureTool {
+            authorized: Arc::clone(&authorized),
+            toolkit_type: "mcp",
+        }),
+        sensitive: None,
+    });
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let sessions = sensitive_pipeline_session(THREAD).await;
+    let graph = definition
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            None,
+            &PipelineNodeRuntimes::new(None, Some(Arc::clone(&resolver)), None),
+        )
+        .expect("MCP graph");
+    let events = run_direct_graph(graph, sessions.clone(), THREAD, "lookup").await;
+    assert_eq!(events.len(), 1);
+    let binding = pipeline_mcp_auth_event_binding(&events[0], ROOT, THREAD)
+        .expect("checkpoint-bound MCP authorization");
+    assert_eq!(binding.server_url(), SERVER);
+    let session = sessions
+        .get(GetRequest {
+            app_name: "elitea".to_owned(),
+            user_id: "user-1".to_owned(),
+            session_id: THREAD.to_owned(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .expect("persisted MCP session");
+    let wrong = PipelineMcpAuthorizationContinuation::from_payload(&mcp_resume_payload(
+        "https://other.example.invalid/v1/mcp",
+        "authorize",
+        THREAD,
+    ))
+    .expect("bounded wrong-server continuation")
+    .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+    .await;
+    let Err(wrong) = wrong else {
+        panic!("wrong MCP server must not resume the checkpoint");
+    };
+    assert_eq!(wrong.code(), PipelineResumeErrorCode::StaleDecision);
+
+    let resume = PipelineMcpAuthorizationContinuation::from_payload(&mcp_resume_payload(
+        SERVER,
+        "authorize",
+        THREAD,
+    ))
+    .expect("MCP authorize continuation")
+    .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, THREAD)
+    .await
+    .expect("exact MCP checkpoint resume");
+    authorized.store(true, Ordering::Release);
+    let resumed = definition
+        .compile_with_runtime(
+            ROOT,
+            checkpointer.clone(),
+            Some(resume),
+            &PipelineNodeRuntimes::new(None, Some(resolver), None),
+        )
+        .expect("resumed MCP graph");
+    let events = run_direct_graph(resumed, sessions, THREAD, "continue").await;
+    assert_eq!(events.len(), 1);
+    assert!(
+        !events[0]
+            .provider_metadata
+            .contains_key(adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY)
+    );
+}
+
+#[tokio::test]
+async fn direct_delegated_authorization_skip_reaches_end_with_sdk_terminal_state() {
+    const ROOT: &str = "pipeline-root";
+    for (node_type, toolkit_type, thread) in [
+        ("mcp", "mcp", "mcp-authorization-skip-thread"),
+        (
+            "toolkit",
+            "sharepoint",
+            "sharepoint-authorization-skip-thread",
+        ),
+    ] {
+        let definition = PipelineDefinition::from_yaml(
+            &sensitive_pipeline_definition_yaml()
+                .replace("type: toolkit", &format!("type: {node_type}")),
+        )
+        .expect("direct delegated-auth pipeline");
+        let authorized = Arc::new(AtomicBool::new(false));
+        let resolver: Arc<dyn PipelineDirectToolResolver> = Arc::new(FixtureResolver {
+            alias: "Customer Support".to_owned(),
+            tool: Arc::new(AuthorizationFixtureTool {
+                authorized,
+                toolkit_type,
+            }),
+            sensitive: None,
+        });
+        let checkpointer = Arc::new(MemoryCheckpointer::new());
+        let sessions = sensitive_pipeline_session(thread).await;
+        let graph = definition
+            .compile_with_runtime(
+                ROOT,
+                checkpointer.clone(),
+                None,
+                &PipelineNodeRuntimes::new(None, Some(Arc::clone(&resolver)), None),
+            )
+            .expect("delegated-auth graph");
+        let events = run_direct_graph(graph, sessions.clone(), thread, "lookup").await;
+        let binding = pipeline_mcp_auth_event_binding(&events[0], ROOT, thread)
+            .expect("checkpoint-bound delegated authorization");
+        let session = sessions
+            .get(GetRequest {
+                app_name: "elitea".to_owned(),
+                user_id: "user-1".to_owned(),
+                session_id: thread.to_owned(),
+                num_recent_events: None,
+                after: None,
+            })
+            .await
+            .expect("persisted delegated-auth session");
+        let resume = PipelineMcpAuthorizationContinuation::from_payload(&mcp_resume_payload(
+            binding.server_url(),
+            "skip",
+            thread,
+        ))
+        .expect("skip continuation")
+        .resolve(session.as_ref(), checkpointer.as_ref(), ROOT, thread)
+        .await
+        .expect("checkpoint-bound skip");
+        let resumed = definition
+            .compile_with_runtime(
+                ROOT,
+                checkpointer.clone(),
+                Some(resume),
+                &PipelineNodeRuntimes::new(None, Some(resolver), None),
+            )
+            .expect("resumed delegated-auth graph");
+        let completed = run_direct_graph(resumed, sessions, thread, "continue").await;
+        assert_eq!(completed.len(), 1);
+        assert!(
+            !completed[0]
+                .provider_metadata
+                .contains_key(adk_rust::graph::interrupt::INTERRUPT_METADATA_KEY)
+        );
+        let checkpoint = checkpointer
+            .load(thread)
+            .await
+            .expect("load terminal checkpoint")
+            .expect("terminal checkpoint");
+        assert!(checkpoint.pending_nodes.is_empty());
+        assert_eq!(checkpoint.state.get("report"), Some(&Value::Null));
+        assert!(
+            checkpoint
+                .state
+                .get("_pipeline_blocked")
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("was skipped"))
+        );
+    }
+}
+
 fn sensitive_pipeline_definition() -> PipelineDefinition {
-    PipelineDefinition::from_yaml(
-        r#"
+    PipelineDefinition::from_yaml(&sensitive_pipeline_definition_yaml())
+        .expect("sensitive Toolkit pipeline")
+}
+
+fn sensitive_pipeline_definition_yaml() -> String {
+    r#"
 state:
   ticket_id: {type: int, value: 9}
   filters: {type: dict, value: {active: true}}
@@ -727,9 +1032,8 @@ nodes:
     output: [report, messages]
     structured_output: true
     transition: END
-"#,
-    )
-    .expect("sensitive Toolkit pipeline")
+"#
+    .to_owned()
 }
 
 async fn sensitive_pipeline_session(thread: &str) -> Arc<InMemorySessionService> {
@@ -824,4 +1128,23 @@ fn tool_resume_payload(
         debug_mode: None,
         next_input_suggestion: NextInputSuggestionPolicy::default(),
     }
+}
+
+fn mcp_resume_payload(server_url: &str, action: &str, thread: &str) -> AgentExecutionPayload {
+    let mut payload = tool_resume_payload("unused", "unused", "approve", "", thread);
+    payload.hitl_resume = false;
+    payload.hitl_action = None;
+    payload.hitl_value = None;
+    payload.hitl_decisions.clear();
+    if action == "authorize" {
+        payload.mcp_tokens.insert(
+            server_url.to_owned(),
+            json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        payload
+            .user_declined_mcp_servers
+            .push(json!({"server_url": server_url}));
+    }
+    payload
 }

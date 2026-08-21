@@ -6,11 +6,13 @@ use std::time::Duration;
 use adk_rust::tool::{BasicToolset, SimpleToolContext};
 use adk_rust::{ErrorCategory, ErrorComponent, ReadonlyContext, Tool, ToolContext, Toolset};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
+use super::delegated_auth::delegated_authorization_requirement;
 use super::mcp::{
     McpConnector, McpMaterializationError, McpMaterializationErrorCode, RemoteMcpConfig,
-    materialize_mcp_toolsets,
+    materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens,
+    mcp_authorization_required_fixture,
 };
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::FrozenToolSnapshot;
@@ -25,6 +27,35 @@ fn policy(blocked: &[&str]) -> Arc<ToolAdmissionPolicy> {
         )])
     };
     Arc::new(ToolAdmissionPolicy::new(&[], &blocked_tools).expect("MCP fixture policy"))
+}
+
+struct AuthorizationConnector;
+
+#[async_trait]
+impl McpConnector for AuthorizationConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        Err(mcp_authorization_required_fixture(
+            config,
+            "Bearer resource_metadata=\"https://mcp.example.invalid/.well-known/oauth-protected-resource\"",
+        ))
+    }
+}
+
+struct TokenConnector;
+
+#[async_trait]
+impl McpConnector for TokenConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        assert_eq!(config.access_token_for_test(), Some("runtime-secret"));
+        let (tool, _) = FixtureTool::new("lookup_release", true, json!({"ok": true}));
+        Ok(Arc::new(BasicToolset::new("token_mcp", vec![tool])))
+    }
 }
 
 fn frozen(tool_type: &str, settings: &Value) -> serde_json::Map<String, Value> {
@@ -204,6 +235,73 @@ async fn direct_https_mcp_discovers_filters_describes_and_executes_native_adk_to
     assert_eq!(result, json!({"risk": "low"}));
     assert_eq!(lookup_calls.load(Ordering::Acquire), 1);
     assert_eq!(mutate_calls.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn mcp_auth_challenge_materializes_selected_placeholder_and_exact_token_rebuild() {
+    let version = frozen("mcp", &settings(&["lookup_release"]));
+    let snapshot = FrozenToolSnapshot::from_version_details(&version)
+        .expect("MCP snapshot")
+        .apply_policy(policy(&[]).as_ref());
+    let guarded = materialize_mcp_toolsets(&snapshot, &AuthorizationConnector, &policy(&[]))
+        .await
+        .expect("authorization placeholder");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tool = guarded[0]
+        .tools(readonly)
+        .await
+        .expect("guarded tools")
+        .pop()
+        .expect("selected placeholder");
+    let error = tool
+        .execute(context(), json!({"private": "not-projected"}))
+        .await
+        .expect_err("authorization required");
+    let requirement = delegated_authorization_requirement(&error)
+        .unwrap_or_else(|| panic!("typed authorization metadata={:?}", error.details.metadata));
+    assert_eq!(requirement.toolkit_name(), "release intelligence");
+    assert_eq!(requirement.toolkit_type(), "mcp");
+    assert_eq!(
+        requirement.server_url(),
+        "https://mcp.example.invalid/v1/mcp"
+    );
+    assert_eq!(
+        requirement.resource_metadata_url(),
+        Some("https://mcp.example.invalid/.well-known/oauth-protected-resource")
+    );
+    assert!(!format!("{error:?} {error}").contains("not-projected"));
+
+    let tokens = Map::from_iter([(
+        "https://mcp.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    )]);
+    let rebuilt =
+        materialize_mcp_toolsets_with_tokens(&snapshot, &TokenConnector, &policy(&[]), &tokens)
+            .await
+            .expect("token-bound rebuild");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    assert_eq!(
+        rebuilt[0]
+            .tools(readonly)
+            .await
+            .expect("rebuilt tools")
+            .len(),
+        1
+    );
+
+    let wrong_server = Map::from_iter([(
+        "https://other.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    )]);
+    let guarded = materialize_mcp_toolsets_with_tokens(
+        &snapshot,
+        &AuthorizationConnector,
+        &policy(&[]),
+        &wrong_server,
+    )
+    .await
+    .expect("wrong-server token must not be applied");
+    assert_eq!(guarded.len(), 1);
 }
 
 #[tokio::test]

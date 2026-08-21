@@ -6,6 +6,7 @@
 
 #![allow(dead_code)] // Materialization remains capability-gated.
 
+mod delegated_auth;
 mod families;
 mod invocation;
 mod materialize;
@@ -13,6 +14,11 @@ mod mcp;
 mod policy;
 mod snapshot;
 
+#[cfg(test)]
+pub(crate) use delegated_auth::delegated_authorization_error_fixture;
+pub(crate) use delegated_auth::{
+    DelegatedAuthorizationRequirement, delegated_authorization_requirement,
+};
 pub(crate) use materialize::{
     ToolsetMaterializationError, ToolsetMaterializationErrorCode, materialize_configured_toolsets,
 };
@@ -20,7 +26,7 @@ pub(crate) use materialize::{
 pub(crate) use mcp::RemoteMcpConfig;
 pub(crate) use mcp::{
     AdkHttpMcpConnector, McpConnector, McpMaterializationError, McpMaterializationErrorCode,
-    materialize_mcp_toolsets,
+    materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens,
 };
 pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy};
 pub(crate) use snapshot::{

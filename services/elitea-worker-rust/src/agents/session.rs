@@ -854,17 +854,7 @@ async fn resolve_pipeline_start(
             None
         }
         PipelineNativeStart::Hitl(decision) => {
-            let session = state
-                .sessions
-                .get(GetRequest {
-                    app_name: APP_NAME.to_owned(),
-                    user_id: plan.user_id.to_string(),
-                    session_id: plan.session_id.to_string(),
-                    num_recent_events: None,
-                    after: None,
-                })
-                .await
-                .map_err(|_| dependency_unavailable())?;
+            let session = restore_pipeline_session(state, plan).await?;
             let resolved = decision
                 .resolve(
                     session.as_ref(),
@@ -887,18 +877,22 @@ async fn resolve_pipeline_start(
             }
             Some(resume)
         }
+        PipelineNativeStart::McpAuthorization(continuation) => {
+            let session = restore_pipeline_session(state, plan).await?;
+            Some(
+                continuation
+                    .resolve(
+                        session.as_ref(),
+                        state.checkpointer.as_ref(),
+                        ROOT_AGENT_NAME,
+                        plan.session_id.as_ref(),
+                    )
+                    .await
+                    .map_err(|error| pipeline_resume_error(&error))?,
+            )
+        }
         PipelineNativeStart::Printer(continuation) => {
-            let session = state
-                .sessions
-                .get(GetRequest {
-                    app_name: APP_NAME.to_owned(),
-                    user_id: plan.user_id.to_string(),
-                    session_id: plan.session_id.to_string(),
-                    num_recent_events: None,
-                    after: None,
-                })
-                .await
-                .map_err(|_| dependency_unavailable())?;
+            let session = restore_pipeline_session(state, plan).await?;
             Some(
                 continuation
                     .resolve(
@@ -925,6 +919,23 @@ async fn resolve_pipeline_start(
             )
         }
     })
+}
+
+async fn restore_pipeline_session(
+    state: &PipelineStateServices,
+    plan: &OrdinaryNativeAgentPlan,
+) -> Result<Box<dyn adk_rust::session::Session>, NativeAgentAssemblyError> {
+    state
+        .sessions
+        .get(GetRequest {
+            app_name: APP_NAME.to_owned(),
+            user_id: plan.user_id.to_string(),
+            session_id: plan.session_id.to_string(),
+            num_recent_events: None,
+            after: None,
+        })
+        .await
+        .map_err(|_| dependency_unavailable())
 }
 
 /// Build one fresh ADK session, direct `LlmAgent`, and exclusive Runner.

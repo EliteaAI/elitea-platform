@@ -169,6 +169,36 @@ fn pipeline_tool_hitl_event(data: Value) -> Event {
     event
 }
 
+fn pipeline_mcp_auth_event(data: Value) -> Event {
+    let message = data
+        .get("message")
+        .and_then(Value::as_str)
+        .expect("MCP authorization fixture message")
+        .to_owned();
+    let payload = GraphInterruptPayload {
+        kind: "dynamic".to_owned(),
+        node: None,
+        message: Some(message.clone()),
+        data: Some(data),
+        thread_id: "thread-1".to_owned(),
+        checkpoint_id: "checkpoint-mcp-1".to_owned(),
+    };
+    let mut event = Event::with_id("graph-mcp-interrupt", "invocation-1");
+    event.timestamp = timestamp(1);
+    event.author = "root-agent".to_owned();
+    event.llm_response.content = Some(Content {
+        role: "assistant".to_owned(),
+        parts: vec![Part::Text {
+            text: format!("Dynamic interrupt: {message}"),
+        }],
+    });
+    event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        payload.to_metadata_value(),
+    );
+    event
+}
+
 fn nested_pipeline_hitl_event(child_checkpoint_id: &str, child_thread: &str) -> Event {
     let message = "Review the generated answer.";
     let payload = GraphInterruptPayload {
@@ -997,6 +1027,92 @@ fn graph_tool_confirmation_projects_masked_call_bound_sensitive_interrupt() {
             .is_some_and(|value| value.starts_with("hitl_gt1:"))
     );
     assert!(projector.is_paused());
+}
+
+#[test]
+fn graph_mcp_authorization_projects_current_durable_card_without_tool_arguments() {
+    let message = "Authorization is required to use the Customer Support MCP toolkit. Choose Authorize to sign in, or Skip to stop this pipeline safely.";
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected = projector
+        .project(&pipeline_mcp_auth_event(json!({
+            "schema_revision": "elitea.graph.mcp-authorization.v1",
+            "type": "hitl",
+            "guardrail_type": "mcp_auth",
+            "node_name": "lookup",
+            "message": message,
+            "available_actions": ["authorize", "skip"],
+            "routes": {},
+            "definition_digest": format!("sha256:{}", "1".repeat(64)),
+            "tool_call_id": "pipeline:lookup:4",
+            "tool_name": "search_records",
+            "toolkit_name": "Customer Support",
+            "toolkit_type": "mcp",
+            "tool_args": {},
+            "argument_digest": format!("sha256:{}", "2".repeat(64)),
+            "server_url": "https://mcp.example.invalid/v1/mcp",
+            "resource_metadata_url": "https://mcp.example.invalid/.well-known/oauth-protected-resource",
+            "www_authenticate": "Bearer resource_metadata=\"https://mcp.example.invalid/.well-known/oauth-protected-resource\"",
+        })))
+        .expect("MCP authorization projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0]["type"], "mcp_authorization_required");
+    assert_eq!(projected[0]["content"], message);
+    let metadata = &projected[0]["response_metadata"];
+    assert_eq!(metadata["guardrail_type"], "mcp_auth");
+    assert_eq!(metadata["tool_call_id"], "pipeline:lookup:4");
+    assert_eq!(metadata["tool_args"], json!({}));
+    assert_eq!(metadata["resume_strategy"], "root");
+    assert!(
+        metadata["interrupt_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("mcp_auth_g1:"))
+    );
+    assert!(metadata.get("checkpoint_id").is_none());
+    assert!(metadata.get("definition_digest").is_none());
+    assert!(projector.is_paused());
+
+    let sharepoint_message = "Authorization is required to use the Team Documents toolkit. Choose Authorize to sign in, or Skip to stop this pipeline safely.";
+    let mut sharepoint =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("SharePoint projector");
+    sharepoint.start(timestamp(0)).expect("start");
+    let projected = sharepoint
+        .project(&pipeline_mcp_auth_event(json!({
+            "schema_revision": "elitea.graph.mcp-authorization.v1",
+            "type": "hitl",
+            "guardrail_type": "mcp_auth",
+            "node_name": "documents",
+            "message": sharepoint_message,
+            "available_actions": ["authorize", "skip"],
+            "routes": {},
+            "definition_digest": format!("sha256:{}", "3".repeat(64)),
+            "tool_call_id": "pipeline:documents:2",
+            "tool_name": "read_document",
+            "toolkit_name": "Team Documents",
+            "toolkit_type": "sharepoint",
+            "tool_args": {},
+            "argument_digest": format!("sha256:{}", "4".repeat(64)),
+            "server_url": "https://tenant.sharepoint.example.invalid/sites/support",
+            "resource_metadata_url": "https://login.microsoftonline.example.invalid/tenant/v2.0/.well-known/openid-configuration",
+            "www_authenticate": "Bearer resource_metadata=\"https://login.microsoftonline.example.invalid/tenant/v2.0/.well-known/openid-configuration\"",
+        })))
+        .expect("delegated Toolkit authorization projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected[0]["type"], "mcp_authorization_required");
+    assert_eq!(
+        projected[0]["response_metadata"]["toolkit_type"],
+        "sharepoint"
+    );
+    assert_eq!(projected[0]["response_metadata"]["tool_args"], json!({}));
+    assert!(sharepoint.is_paused());
 }
 
 #[test]

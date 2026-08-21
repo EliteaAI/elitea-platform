@@ -108,6 +108,29 @@ impl OrdinaryNoToolProfile {
         })
     }
 
+    pub(crate) fn validate_pipeline_mcp_authorization_shell(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        let common = validate_common_profile(request, CommonProfileMode::McpAuthorization)?;
+        if request.kind != AgentExecutionKind::Application {
+            return Err(unsupported_profile());
+        }
+        let model = application_model_for_agent_type(request, "pipeline")?;
+        Ok(Self {
+            kind: request.kind,
+            instructions: model.instructions,
+            model_name: model.model_name,
+            model_provider: model.model_provider,
+            model_project_id: model.model_project_id,
+            max_tokens: model.max_tokens,
+            reasoning_effort: model.reasoning_effort,
+            temperature: model.temperature,
+            step_limit: validate_step_limit(request.payload.steps_limit)?,
+            chat_history: common.chat_history,
+            context_management: common.context_management,
+        })
+    }
+
     fn validate_with_mode(
         request: &AgentExecutionRequest,
         mode: CommonProfileMode,
@@ -291,6 +314,7 @@ struct CommonProfile {
 enum CommonProfileMode {
     Fresh,
     Continuation,
+    McpAuthorization,
 }
 
 fn validate_common_profile(
@@ -313,10 +337,11 @@ fn validate_common_profile(
         &payload.context_settings,
         payload.conversation_id.as_deref(),
     )?;
+    let mcp_authorization = mode == CommonProfileMode::McpAuthorization;
     if !payload.internal_tools.is_empty()
-        || !payload.mcp_tokens.is_empty()
-        || !payload.ignored_mcp_servers.is_empty()
-        || !payload.user_declined_mcp_servers.is_empty()
+        || (!mcp_authorization && !payload.mcp_tokens.is_empty())
+        || (!mcp_authorization && !payload.ignored_mcp_servers.is_empty())
+        || (!mcp_authorization && !payload.user_declined_mcp_servers.is_empty())
         || payload.checkpoint_id.is_some()
         || payload.is_regenerate
         || payload.supports_vision
@@ -343,7 +368,12 @@ fn validate_common_profile(
         || payload.hitl_value.is_some()
         || !payload.hitl_decisions.is_empty();
     if (mode == CommonProfileMode::Fresh && has_direct_hitl_fields)
-        || (mode == CommonProfileMode::Continuation && !has_direct_hitl_fields)
+        || (mode != CommonProfileMode::Fresh && !has_direct_hitl_fields)
+        || (mcp_authorization
+            && (payload.hitl_resume
+                || payload.hitl_action.is_some()
+                || payload.hitl_value.is_some()
+                || !payload.hitl_decisions.is_empty()))
     {
         return Err(unsupported_profile());
     }

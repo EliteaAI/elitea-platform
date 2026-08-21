@@ -27,7 +27,8 @@ use super::events::{
     ProjectedAgentEventBatch,
 };
 use super::graph::resume::{
-    PipelineContinuationDecision, PipelineResumeError, PipelineResumeErrorCode, PrinterContinuation,
+    PipelineContinuationDecision, PipelineMcpAuthorizationContinuation, PipelineResumeError,
+    PipelineResumeErrorCode, PrinterContinuation,
 };
 use super::pipeline::PipelineExecutionProfile;
 use super::request::AgentExecutionRequest;
@@ -230,9 +231,18 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         let has_continuation = has_continuation(self.request);
         let start = if has_continuation {
             if self.request.payload.should_continue && !self.request.payload.hitl_resume {
-                PrinterContinuation::from_payload(&self.request.payload)
-                    .map(PipelineNativeStart::Printer)
-                    .map_err(|error| pipeline_hitl_admission_error(&error))?
+                if !self.request.payload.mcp_tokens.is_empty()
+                    || !self.request.payload.ignored_mcp_servers.is_empty()
+                    || !self.request.payload.user_declined_mcp_servers.is_empty()
+                {
+                    PipelineMcpAuthorizationContinuation::from_payload(&self.request.payload)
+                        .map(PipelineNativeStart::McpAuthorization)
+                        .map_err(|error| pipeline_hitl_admission_error(&error))?
+                } else {
+                    PrinterContinuation::from_payload(&self.request.payload)
+                        .map(PipelineNativeStart::Printer)
+                        .map_err(|error| pipeline_hitl_admission_error(&error))?
+                }
             } else {
                 PipelineContinuationDecision::from_payload(&self.request.payload)
                     .map(PipelineNativeStart::Hitl)
@@ -241,7 +251,11 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         } else {
             PipelineNativeStart::Fresh
         };
-        let mut profile = PipelineExecutionProfile::validate(self.request, start.is_resume())?;
+        let mut profile = if matches!(&start, PipelineNativeStart::McpAuthorization(_)) {
+            PipelineExecutionProfile::validate_mcp_authorization_resume(self.request)?
+        } else {
+            PipelineExecutionProfile::validate(self.request, start.is_resume())?
+        };
         let frozen_toolsets =
             FrozenToolSnapshot::from_request(self.request).map_err(tool_snapshot_error)?;
         profile.validate_tool_snapshot(&frozen_toolsets, policy)?;
@@ -283,6 +297,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
 pub(crate) enum PipelineNativeStart {
     Fresh,
     Hitl(PipelineContinuationDecision),
+    McpAuthorization(PipelineMcpAuthorizationContinuation),
     Printer(PrinterContinuation),
 }
 
@@ -333,6 +348,7 @@ impl<'a> AdmittedPipelineNativeAssembly<'a> {
         PipelineExecutionProfile,
         OrdinaryNativeAgentPlan,
         AdmittedToolSnapshot<'a>,
+        &'a serde_json::Map<String, serde_json::Value>,
         PipelineNativeStart,
         ClaimBoundRuntimeContextAuthority,
         ClaimBoundSessionAuthority,
@@ -342,6 +358,7 @@ impl<'a> AdmittedPipelineNativeAssembly<'a> {
             self.profile,
             self.plan,
             self.toolsets,
+            &self.request.payload.mcp_tokens,
             self.start,
             self.runtime_context,
             self.session,

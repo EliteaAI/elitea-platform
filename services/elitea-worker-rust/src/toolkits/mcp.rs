@@ -24,8 +24,10 @@ use adk_rust::{
     AdkError, ErrorCategory, ErrorComponent, ReadonlyContext, RetryHint, Tool, ToolContext, Toolset,
 };
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+use zeroize::Zeroizing;
 
+use super::delegated_auth::{DelegatedAuthorizationRequirement, delegated_authorization_error};
 use super::invocation::admit_materialized_toolset;
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::{AdmittedToolSnapshot, FrozenToolKind, FrozenToolReference};
@@ -42,25 +44,33 @@ const MAX_RESULT_DEPTH: usize = 64;
 const MAX_RESULT_NODES: usize = 65_536;
 const MAX_RESULT_STRING_BYTES: usize = 512 * 1_024;
 const MAX_SSE_EVENT_BYTES: usize = 2 * 1_024 * 1_024;
+const MAX_ACCESS_TOKEN_BYTES: usize = 16 * 1_024;
+const MAX_AUTH_CHALLENGE_BYTES: usize = 16 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum McpMaterializationErrorCode {
     InvalidConfiguration,
     UnsupportedAuthority,
     ResourceExhausted,
+    AuthorizationRequired,
     DependencyUnavailable,
 }
 
 /// A stable, data-free remote MCP assembly failure.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct McpMaterializationError {
     code: McpMaterializationErrorCode,
+    authorization: Option<Box<DelegatedAuthorizationRequirement>>,
 }
 
 impl McpMaterializationError {
     #[must_use]
-    pub(crate) const fn code(self) -> McpMaterializationErrorCode {
+    pub(crate) const fn code(&self) -> McpMaterializationErrorCode {
         self.code
+    }
+
+    pub(crate) fn authorization(&self) -> Option<&DelegatedAuthorizationRequirement> {
+        self.authorization.as_deref()
     }
 }
 
@@ -85,6 +95,9 @@ impl fmt::Display for McpMaterializationError {
             McpMaterializationErrorCode::ResourceExhausted => {
                 "the MCP server catalog exceeds its approved limit"
             }
+            McpMaterializationErrorCode::AuthorizationRequired => {
+                "the MCP server requires delegated authorization"
+            }
             McpMaterializationErrorCode::DependencyUnavailable => "the MCP server is unavailable",
         })
     }
@@ -95,17 +108,22 @@ impl std::error::Error for McpMaterializationError {}
 /// Validated, immutable connection settings for one direct remote MCP server.
 ///
 /// This value intentionally has no `Debug` implementation because endpoints
-/// may contain tenant-identifying paths. Authentication headers and OAuth
-/// credentials remain unsupported until Main freezes them as secret fields and
-/// binds their redemption to the exact execution claim.
+/// may contain tenant-identifying paths. A continuation access token is accepted
+/// only from Main's claim-fetched token map and applied to the exact frozen URL;
+/// static headers and embedded OAuth credentials remain unsupported.
 pub(crate) struct RemoteMcpConfig {
+    toolkit_name: String,
     endpoint: String,
     timeout: Duration,
     selected_tools: Vec<String>,
+    access_token: Option<Zeroizing<String>>,
 }
 
 impl RemoteMcpConfig {
-    fn parse(reference: &FrozenToolReference<'_>) -> Result<Self, McpMaterializationError> {
+    fn parse(
+        reference: &FrozenToolReference<'_>,
+        mcp_tokens: &Map<String, Value>,
+    ) -> Result<Self, McpMaterializationError> {
         if reference.kind() != FrozenToolKind::Mcp || reference.tool_type() != "mcp" {
             return Err(unsupported_authority());
         }
@@ -119,6 +137,7 @@ impl RemoteMcpConfig {
             MAX_TIMEOUT_SECONDS,
         )?);
         let selected_tools = parse_selected_tools(settings)?;
+        let access_token = resolve_access_token(mcp_tokens, &endpoint)?;
         settings.get("enable_caching").map_or(Ok(true), |value| {
             value.as_bool().ok_or_else(invalid_configuration)
         })?;
@@ -130,10 +149,17 @@ impl RemoteMcpConfig {
             return Err(unsupported_authority());
         }
         Ok(Self {
+            toolkit_name: reference.toolkit_name().to_owned(),
             endpoint,
             timeout,
             selected_tools,
+            access_token,
         })
+    }
+
+    #[must_use]
+    pub(crate) fn toolkit_name(&self) -> &str {
+        &self.toolkit_name
     }
 
     #[must_use]
@@ -149,6 +175,15 @@ impl RemoteMcpConfig {
     #[must_use]
     pub(crate) fn selected_tools(&self) -> &[String] {
         &self.selected_tools
+    }
+
+    fn access_token(&self) -> Option<&str> {
+        self.access_token.as_deref().map(String::as_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn access_token_for_test(&self) -> Option<&str> {
+        self.access_token()
     }
 }
 
@@ -180,22 +215,35 @@ impl McpConnector for AdkHttpMcpConnector {
         &self,
         config: &RemoteMcpConfig,
     ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
-        let client = reqwest_mcp::Client::builder()
+        let mut client = reqwest_mcp::Client::builder()
             .https_only(true)
             .redirect(reqwest_mcp::redirect::Policy::none())
             .retry(reqwest_mcp::retry::never())
             .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(config.timeout())
-            .build()
-            .map_err(|_| invalid_configuration())?;
+            .timeout(config.timeout());
+        if let Some(token) = config.access_token() {
+            let mut bearer = Zeroizing::new(String::with_capacity("Bearer ".len() + token.len()));
+            bearer.push_str("Bearer ");
+            bearer.push_str(token);
+            let mut value = reqwest_mcp::header::HeaderValue::from_str(&bearer)
+                .map_err(|_| invalid_configuration())?;
+            value.set_sensitive(true);
+            let mut headers = reqwest_mcp::header::HeaderMap::new();
+            headers.insert(reqwest_mcp::header::AUTHORIZATION, value);
+            client = client.default_headers(headers);
+        }
+        let client = client.build().map_err(|_| invalid_configuration())?;
         let transport_config = StreamableHttpClientTransportConfig::with_uri(config.endpoint())
             .max_sse_event_size(MAX_SSE_EVENT_BYTES)
             .reinit_on_expired_session(false);
         let transport = StreamableHttpClientTransport::with_client(client, transport_config);
-        let running = tokio::time::timeout(config.timeout(), ().serve(transport))
-            .await
-            .map_err(|_| dependency_unavailable())?
-            .map_err(|_| dependency_unavailable())?;
+        let running = match tokio::time::timeout(config.timeout(), ().serve(transport)).await {
+            Ok(Ok(running)) => running,
+            Ok(Err(error)) if error.is_authorization_required() => {
+                return Err(authorization_required(config, error.auth_challenge()));
+            }
+            Err(_) | Ok(Err(_)) => return Err(dependency_unavailable()),
+        };
         Ok(Arc::new(McpToolset::new(running)))
     }
 }
@@ -210,6 +258,19 @@ pub(crate) async fn materialize_mcp_toolsets(
     connector: &dyn McpConnector,
     policy: &Arc<ToolAdmissionPolicy>,
 ) -> Result<Vec<Arc<dyn Toolset>>, McpMaterializationError> {
+    materialize_mcp_toolsets_with_tokens(snapshot, connector, policy, &Map::new()).await
+}
+
+/// Materialize remote MCP toolsets with claim-fetched continuation tokens.
+///
+/// Tokens are applied only when their canonical server URL exactly matches the
+/// frozen endpoint. They are never retained in tool metadata or errors.
+pub(crate) async fn materialize_mcp_toolsets_with_tokens(
+    snapshot: &AdmittedToolSnapshot<'_>,
+    connector: &dyn McpConnector,
+    policy: &Arc<ToolAdmissionPolicy>,
+    mcp_tokens: &Map<String, Value>,
+) -> Result<Vec<Arc<dyn Toolset>>, McpMaterializationError> {
     let references = snapshot
         .iter()
         .filter(|reference| reference.kind() == FrozenToolKind::Mcp)
@@ -220,8 +281,44 @@ pub(crate) async fn materialize_mcp_toolsets(
 
     let mut toolsets = Vec::with_capacity(references.len());
     for reference in references {
-        let config = RemoteMcpConfig::parse(reference)?;
-        let discovered = connector.connect(&config).await?;
+        let config = RemoteMcpConfig::parse(reference, mcp_tokens)?;
+        let discovered = match connector.connect(&config).await {
+            Ok(discovered) => discovered,
+            Err(error) if error.code() == McpMaterializationErrorCode::AuthorizationRequired => {
+                let requirement = error
+                    .authorization()
+                    .cloned()
+                    .ok_or_else(invalid_configuration)?;
+                if config.selected_tools().is_empty() {
+                    return Err(error);
+                }
+                let guarded = config
+                    .selected_tools()
+                    .iter()
+                    .map(|name| {
+                        Arc::new(McpAuthorizationRequiredTool::new(name, requirement.clone()))
+                            as Arc<dyn Tool>
+                    })
+                    .collect::<Vec<_>>();
+                let admitted = admit_materialized_toolset(
+                    reference.toolkit_name(),
+                    reference.tool_type(),
+                    policy,
+                    guarded,
+                )
+                .map_err(|error| match error.code() {
+                    super::invocation::MaterializedToolsetErrorCode::InvalidDefinition => {
+                        invalid_configuration()
+                    }
+                    super::invocation::MaterializedToolsetErrorCode::ResourceExhausted => {
+                        resource_exhausted()
+                    }
+                })?;
+                toolsets.push(Arc::new(admitted) as Arc<dyn Toolset>);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let context: Arc<dyn ReadonlyContext> =
             Arc::new(SimpleToolContext::new("elitea_mcp_discovery"));
         let tools = tokio::time::timeout(config.timeout(), discovered.tools(context))
@@ -286,6 +383,64 @@ fn select_tools(
         .into_iter()
         .filter(|tool| selected.contains(&tool.name().to_lowercase()))
         .collect())
+}
+
+struct McpAuthorizationRequiredTool {
+    name: Box<str>,
+    description: Box<str>,
+    requirement: DelegatedAuthorizationRequirement,
+}
+
+impl McpAuthorizationRequiredTool {
+    fn new(name: &str, requirement: DelegatedAuthorizationRequirement) -> Self {
+        Self {
+            name: name.into(),
+            description: format!(
+                "This MCP operation is unavailable until the user authorizes the {} toolkit.",
+                requirement.toolkit_name()
+            )
+            .into_boxed_str(),
+            requirement,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for McpAuthorizationRequiredTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn description(&self) -> &str {
+        &self.description
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "additionalProperties": true,
+        }))
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        _arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        authorization_error(&self.requirement)
+    }
+}
+
+fn authorization_error(requirement: &DelegatedAuthorizationRequirement) -> adk_rust::Result<Value> {
+    Err(delegated_authorization_error(requirement))
 }
 
 struct BoundedMcpTool {
@@ -452,6 +607,121 @@ fn parse_selected_tools(
     Ok(result)
 }
 
+fn resolve_access_token(
+    tokens: &Map<String, Value>,
+    endpoint: &str,
+) -> Result<Option<Zeroizing<String>>, McpMaterializationError> {
+    if tokens.len() > MAX_MCP_SERVERS {
+        return Err(resource_exhausted());
+    }
+    let endpoint = reqwest_mcp::Url::parse(endpoint).map_err(|_| invalid_configuration())?;
+    let mut matched = None;
+    for (server, raw) in tokens {
+        if server.is_empty() || server.len() > MAX_ENDPOINT_BYTES {
+            return Err(invalid_configuration());
+        }
+        let candidate = reqwest_mcp::Url::parse(server).map_err(|_| invalid_configuration())?;
+        if candidate != endpoint {
+            continue;
+        }
+        if matched.is_some() {
+            return Err(invalid_configuration());
+        }
+        let token = match raw {
+            Value::String(token) => Some(token.as_str()),
+            Value::Object(value) => value.get("access_token").and_then(Value::as_str),
+            _ => None,
+        }
+        .filter(|token| {
+            !token.is_empty()
+                && token.len() <= MAX_ACCESS_TOKEN_BYTES
+                && !token
+                    .chars()
+                    .any(|character| matches!(character, '\0' | '\r' | '\n'))
+        })
+        .ok_or_else(invalid_configuration)?;
+        matched = Some(Zeroizing::new(token.to_owned()));
+    }
+    Ok(matched)
+}
+
+fn authorization_required(
+    config: &RemoteMcpConfig,
+    challenge: Option<&str>,
+) -> McpMaterializationError {
+    let challenge = challenge.filter(|value| {
+        !value.is_empty()
+            && value.len() <= MAX_AUTH_CHALLENGE_BYTES
+            && !value.chars().any(char::is_control)
+    });
+    let resource_metadata_url =
+        challenge.and_then(|challenge| resource_metadata_url(challenge, config.endpoint()));
+    McpMaterializationError {
+        code: McpMaterializationErrorCode::AuthorizationRequired,
+        authorization: DelegatedAuthorizationRequirement::new(
+            config.toolkit_name().to_owned(),
+            "mcp".to_owned(),
+            config.endpoint().to_owned(),
+            resource_metadata_url,
+            challenge.map(ToOwned::to_owned),
+        )
+        .map(Box::new),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn mcp_authorization_required_fixture(
+    config: &RemoteMcpConfig,
+    challenge: &str,
+) -> McpMaterializationError {
+    authorization_required(config, Some(challenge))
+}
+
+fn resource_metadata_url(challenge: &str, endpoint: &str) -> Option<String> {
+    let lowercase = challenge.to_ascii_lowercase();
+    let offset = lowercase.find("resource_metadata=")? + "resource_metadata=".len();
+    let value = challenge.get(offset..)?.trim_start();
+    let raw = if let Some(quoted) = value.strip_prefix('"') {
+        let mut escaped = false;
+        let end = quoted.char_indices().find_map(|(index, character)| {
+            if escaped {
+                escaped = false;
+                return None;
+            }
+            if character == '\\' {
+                escaped = true;
+                return None;
+            }
+            (character == '"').then_some(index)
+        })?;
+        quoted.get(..end)?.replace("\\\"", "\"")
+    } else {
+        value
+            .split(|character: char| character == ',' || character.is_ascii_whitespace())
+            .next()?
+            .to_owned()
+    };
+    let server = valid_https_url(endpoint)?;
+    let metadata = server.join(&raw).ok()?;
+    (metadata.scheme() == server.scheme()
+        && metadata.host_str() == server.host_str()
+        && metadata.port_or_known_default() == server.port_or_known_default()
+        && metadata.username().is_empty()
+        && metadata.password().is_none()
+        && metadata.fragment().is_none())
+    .then(|| metadata.to_string())
+}
+
+fn valid_https_url(value: &str) -> Option<reqwest_mcp::Url> {
+    let parsed = reqwest_mcp::Url::parse(value).ok()?;
+    (parsed.scheme() == "https"
+        && parsed.host_str().is_some()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.fragment().is_none())
+    .then_some(parsed)
+}
+
 fn parse_bounded_integer(
     value: Option<&Value>,
     default: u64,
@@ -563,23 +833,27 @@ fn invalid_mcp_result() -> AdkError {
 const fn invalid_configuration() -> McpMaterializationError {
     McpMaterializationError {
         code: McpMaterializationErrorCode::InvalidConfiguration,
+        authorization: None,
     }
 }
 
 const fn unsupported_authority() -> McpMaterializationError {
     McpMaterializationError {
         code: McpMaterializationErrorCode::UnsupportedAuthority,
+        authorization: None,
     }
 }
 
 const fn resource_exhausted() -> McpMaterializationError {
     McpMaterializationError {
         code: McpMaterializationErrorCode::ResourceExhausted,
+        authorization: None,
     }
 }
 
 const fn dependency_unavailable() -> McpMaterializationError {
     McpMaterializationError {
         code: McpMaterializationErrorCode::DependencyUnavailable,
+        authorization: None,
     }
 }

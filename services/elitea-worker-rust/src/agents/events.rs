@@ -2,8 +2,9 @@
 //!
 //! The current compatibility profile handles bounded root-agent model/tool
 //! events, direct sensitive-tool confirmations, dynamic stored-pipeline HITL
-//! interrupts and compiler-owned Printer `interrupt_after` checkpoints.
-//! Transfers, citations, MCP authorization, arbitrary static graph breakpoints,
+//! interrupts, direct MCP authorization and compiler-owned Printer
+//! `interrupt_after` checkpoints. Transfers, citations, delegated MCP
+//! authorization, arbitrary static graph breakpoints,
 //! pipeline custom events and multi-agent branches remain closed until their
 //! typed Elitea identities are available. Production construction remains
 //! capability-gated behind the authorized lifecycle and durable resume owner.
@@ -44,8 +45,10 @@ const MAX_COMPLETED_CONTENT_BYTES: usize = 60 * 1_024;
 const MAX_TOOL_EVENT_VALUE_BYTES: usize = 40 * 1_024;
 const PIPELINE_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-hitl-interrupt.v1\0";
 const PIPELINE_TOOL_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-tool-hitl-interrupt.v1\0";
+const PIPELINE_MCP_AUTH_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-mcp-auth-interrupt.v1\0";
 const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
 const PIPELINE_TOOL_HITL_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
+const PIPELINE_MCP_AUTH_SCHEMA: &str = "elitea.graph.mcp-authorization.v1";
 const MAX_PIPELINE_HITL_MESSAGE_BYTES: usize = 8 * 1024;
 const MAX_NESTED_PIPELINE_CHECKPOINTS: usize = 3;
 const MAX_PIPELINE_INTERRUPT_MESSAGE_BYTES: usize = MAX_PIPELINE_HITL_MESSAGE_BYTES
@@ -865,6 +868,7 @@ impl AgentEventProjector {
         match guardrail_type {
             "pipeline_hitl" => self.project_pipeline_hitl(event, &payload),
             "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload),
+            "mcp_auth" => self.project_pipeline_mcp_authorization(event, &payload),
             "application_sensitive_tool" => {
                 self.project_pipeline_application_confirmation(event, &payload)
             }
@@ -1153,6 +1157,62 @@ impl AgentEventProjector {
         let mut batch = ProjectedAgentEventBatch::new();
         batch.push(self.event(
             "agent_hitl_interrupt",
+            &Value::String(data.message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    fn project_pipeline_mcp_authorization(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if !matches!(
+            self.state,
+            ProjectionState::Started | ProjectionState::Complete(_)
+        ) || !self.active_tools.is_empty()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let binding = pipeline_mcp_auth_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            checkpoint_thread_id,
+        )?;
+        let data = binding.data;
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "root_thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "guardrail_type": "mcp_auth",
+            "interrupt_id": binding.interrupt_id,
+            "call_digest": binding.call_digest,
+            "node_name": data.node_name,
+            "message": data.message,
+            "available_actions": data.available_actions,
+            "tool_call_id": data.tool_call_id,
+            "tool_name": data.tool_name,
+            "toolkit_name": data.toolkit_name,
+            "toolkit_type": data.toolkit_type,
+            "tool_args": {},
+            "server_url": data.server_url,
+            "resource_metadata_url": data.resource_metadata_url,
+            "www_authenticate": data.www_authenticate,
+            "resume_strategy": "root",
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "mcp_authorization_required",
             &Value::String(data.message),
             None,
             &metadata,
@@ -1919,6 +1979,60 @@ struct PipelineToolHitlData {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PipelineMcpAuthData {
+    schema_revision: String,
+    #[serde(rename = "type")]
+    interrupt_type: String,
+    guardrail_type: String,
+    node_name: String,
+    message: String,
+    available_actions: Vec<String>,
+    routes: BTreeMap<String, String>,
+    definition_digest: String,
+    tool_call_id: String,
+    tool_name: String,
+    toolkit_name: String,
+    toolkit_type: String,
+    tool_args: Value,
+    argument_digest: String,
+    server_url: String,
+    resource_metadata_url: Option<String>,
+    www_authenticate: Option<String>,
+}
+
+impl PipelineMcpAuthData {
+    fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
+        if self.schema_revision != PIPELINE_MCP_AUTH_SCHEMA
+            || self.interrupt_type != "hitl"
+            || self.guardrail_type != "mcp_auth"
+            || self.message != graph_message
+            || self.available_actions != ["authorize", "skip"]
+            || !self.routes.is_empty()
+            || !valid_pipeline_node_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || !valid_sha256_label(&self.argument_digest)
+            || !valid_tool_identity(&self.tool_call_id)
+            || !valid_tool_identity(&self.tool_name)
+            || !valid_tool_identity(&self.toolkit_name)
+            || !valid_tool_identity(&self.toolkit_type)
+            || self.tool_args != json!({})
+            || !valid_https_public_metadata_url(&self.server_url)
+            || self.resource_metadata_url.as_deref().is_some_and(|value| {
+                !valid_https_public_metadata_url(value)
+                    || (self.toolkit_type == "mcp" && !same_origin(value, &self.server_url))
+            })
+            || self.www_authenticate.as_deref().is_some_and(|value| {
+                value.is_empty() || value.len() > 16 * 1024 || value.chars().any(char::is_control)
+            })
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_pipeline_hitl_message(&self.message)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PipelineApplicationHitlData {
     schema_revision: String,
     #[serde(rename = "type")]
@@ -2015,6 +2129,51 @@ pub(crate) struct PipelineToolHitlEventBinding {
     checkpoint_id: String,
     nested_checkpoints: Vec<NestedPipelineCheckpoint>,
     data: PipelineToolHitlData,
+}
+
+pub(crate) struct PipelineMcpAuthEventBinding {
+    interrupt_id: String,
+    call_digest: String,
+    checkpoint_id: String,
+    nested_checkpoints: Vec<NestedPipelineCheckpoint>,
+    data: PipelineMcpAuthData,
+}
+
+impl PipelineMcpAuthEventBinding {
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    pub(crate) fn pending_node_name(&self) -> &str {
+        self.nested_checkpoints.first().map_or(
+            self.data.node_name.as_str(),
+            NestedPipelineCheckpoint::node_name,
+        )
+    }
+
+    pub(crate) fn nested_checkpoints(&self) -> &[NestedPipelineCheckpoint] {
+        &self.nested_checkpoints
+    }
+
+    pub(crate) fn node_name(&self) -> &str {
+        &self.data.node_name
+    }
+
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.data.definition_digest
+    }
+
+    pub(crate) fn tool_call_id(&self) -> &str {
+        &self.data.tool_call_id
+    }
+
+    pub(crate) fn argument_digest(&self) -> &str {
+        &self.data.argument_digest
+    }
+
+    pub(crate) fn server_url(&self) -> &str {
+        &self.data.server_url
+    }
 }
 
 pub(crate) struct PipelineApplicationHitlEventBinding {
@@ -2232,6 +2391,16 @@ pub(crate) fn pipeline_tool_event_binding(
     pipeline_tool_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
 }
 
+pub(crate) fn pipeline_mcp_auth_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineMcpAuthEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_mcp_auth_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
 /// Validate and bind an internal graph checkpoint for descendant Application
 /// confirmations. The child confirmation events remain the only public cards.
 pub(crate) fn pipeline_application_event_binding(
@@ -2358,6 +2527,41 @@ fn pipeline_tool_event_binding_from_payload(
     let (interrupt_id, call_digest) =
         pipeline_tool_hitl_identity(&event.invocation_id, payload, &data)?;
     Ok(PipelineToolHitlEventBinding {
+        interrupt_id,
+        call_digest,
+        checkpoint_id: payload.checkpoint_id.clone(),
+        nested_checkpoints,
+        data,
+    })
+}
+
+fn pipeline_mcp_auth_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineMcpAuthEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let message = payload
+        .message
+        .as_deref()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    validate_pipeline_interrupt_envelope_message(message)?;
+    let (raw_data, nested_checkpoints) = pipeline_interrupt_data(payload, thread_id)?;
+    let data = serde_json::from_value::<PipelineMcpAuthData>(raw_data)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    validate_pipeline_interrupt_message(message, &data.message, &nested_checkpoints)?;
+    data.validate(&data.message)?;
+    let (interrupt_id, call_digest) =
+        pipeline_mcp_auth_identity(&event.invocation_id, payload, &data)?;
+    Ok(PipelineMcpAuthEventBinding {
         interrupt_id,
         call_digest,
         checkpoint_id: payload.checkpoint_id.clone(),
@@ -2522,6 +2726,15 @@ fn nested_pipeline_interrupt_identity(
         }
         "sensitive_tool" => {
             let binding = pipeline_tool_event_binding_from_payload(
+                event,
+                payload,
+                root_agent_name,
+                root_thread_id,
+            )?;
+            (binding.interrupt_id, binding.call_digest)
+        }
+        "mcp_auth" => {
+            let binding = pipeline_mcp_auth_event_binding_from_payload(
                 event,
                 payload,
                 root_agent_name,
@@ -2710,6 +2923,61 @@ fn pipeline_tool_hitl_identity(
         format!("hitl_gt1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
         format!("sha256:{}", hex(digest.as_ref())),
     ))
+}
+
+fn pipeline_mcp_auth_identity(
+    invocation_id: &str,
+    payload: &GraphInterruptPayload,
+    data: &PipelineMcpAuthData,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let canonical = canonical_json(
+        payload
+            .data
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(PIPELINE_MCP_AUTH_DIGEST_DOMAIN);
+    for field in [
+        invocation_id.as_bytes(),
+        payload.thread_id.as_bytes(),
+        payload.checkpoint_id.as_bytes(),
+        data.node_name.as_bytes(),
+        data.definition_digest.as_bytes(),
+        data.tool_call_id.as_bytes(),
+        data.argument_digest.as_bytes(),
+        canonical.as_slice(),
+    ] {
+        context.update(&(field.len() as u64).to_be_bytes());
+        context.update(field);
+    }
+    let digest = context.finish();
+    Ok((
+        format!("mcp_auth_g1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
+        format!("sha256:{}", hex(digest.as_ref())),
+    ))
+}
+
+fn valid_https_public_metadata_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn same_origin(left: &str, right: &str) -> bool {
+    let Ok(left) = reqwest::Url::parse(left) else {
+        return false;
+    };
+    let Ok(right) = reqwest::Url::parse(right) else {
+        return false;
+    };
+    left.scheme() == right.scheme()
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 fn validate_pipeline_hitl_message(value: &str) -> Result<(), AgentEventProjectionError> {

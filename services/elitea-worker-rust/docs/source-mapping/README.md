@@ -104,11 +104,15 @@ Maintained Rust runtime ownership registry:
   stored-pipeline event identity, complete-document active-node compilation,
   latest-event/checkpoint decision binding, bounded YAML contracts and a
   capability-closed explicit pipeline parallel-node core that is not yet bound
-  by the compiler. Direct Toolkit and auth-free remote MCP reads use
+  by the compiler. Direct Toolkit and remote MCP reads use
   native `ToolContext`; sensitive reads pause before dispatch, approval returns
   the ordinary result, and denial records the same-call blocked result plus the
   SDK-formatted terminal chat message before `goto END` without nulling typed
-  outputs. Printer uses a compiler-owned native `interrupt_after` checkpoint,
+  outputs. A family-neutral delegated-auth signal preserves the SDK's
+  compatibility-named `mcp_auth` card for both node kinds; remote MCP can rebuild
+  with an exact-server claim-fetched token, while Skip nulls declared data state
+  and stops at `END`. Concrete SharePoint/OpenAPI materializers remain unported.
+  Printer uses a compiler-owned native `interrupt_after` checkpoint,
   publishes one bounded ordinary chat result, and resumes through the generated
   reset node on the next ordinary user message. Router evaluates bounded
   state-driven conditions and Decision runs a no-tool claim-bound model; both
@@ -140,14 +144,14 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
-  prebuilt/static MCP, remote effects, child variables, nested static Printer
+  fallback, normalized-label and common-Runner proof. Delegated LLM auth-control
+  replay, prebuilt/static MCP, remote effects, child variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain
   separate gates. Saved-pipeline child events and configured/sensitive HITL
   cards use the existing wrapper hierarchy; the sensitive continuation keeps
   the original call ID and executes no blocked provider tool;
-- `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
+- `src/toolkits/{snapshot,materialize,delegated_auth,mcp,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;
 - `src/transport/model_facade.rs`: provider-neutral model ownership over

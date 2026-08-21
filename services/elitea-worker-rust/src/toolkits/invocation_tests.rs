@@ -17,6 +17,7 @@ use tracing_subscriber::fmt::format::FmtSpan;
 
 use super::invocation::{MaterializedToolsetErrorCode, admit_materialized_toolset};
 use super::policy::ToolAdmissionPolicy;
+use super::{delegated_authorization_error_fixture, delegated_authorization_requirement};
 
 fn policy(blocked_tools: &[(&str, &[&str])]) -> Arc<ToolAdmissionPolicy> {
     let blocked_tools = blocked_tools
@@ -169,6 +170,41 @@ async fn delegated_failures_keep_category_and_retry_without_secret_diagnostics()
     let diagnostics = format!("{error:?} {error}");
     assert!(!diagnostics.contains(secret));
     assert!(std::error::Error::source(&error).is_none());
+}
+
+#[tokio::test]
+async fn configured_toolkit_policy_preserves_only_typed_delegated_authorization() {
+    let action: Arc<dyn Tool> = Arc::new(DelegatedAuthorizationTool);
+    let toolset =
+        admit_materialized_toolset("team-documents", "sharepoint", &policy(&[]), vec![action])
+            .expect("admitted delegated Toolkit");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tool = toolset
+        .tools(readonly)
+        .await
+        .expect("native ADK tools")
+        .pop()
+        .expect("delegated action");
+
+    let error = tool
+        .execute(context(), json!({"document": "private-input"}))
+        .await
+        .expect_err("delegated authorization required");
+    let requirement = delegated_authorization_requirement(&error)
+        .expect("typed delegated authorization survives policy wrapping");
+    assert_eq!(requirement.toolkit_type(), "sharepoint");
+    assert_eq!(requirement.toolkit_name(), "Customer Support");
+    assert_eq!(
+        requirement.server_url(),
+        "https://tenant.sharepoint.example.invalid/sites/support"
+    );
+    assert_eq!(
+        requirement.resource_metadata_url(),
+        Some(
+            "https://login.microsoftonline.example.invalid/tenant/v2.0/.well-known/openid-configuration"
+        )
+    );
+    assert!(!format!("{error:?} {error}").contains("private-input"));
 }
 
 #[tokio::test]
@@ -347,6 +383,31 @@ impl Tool for FixtureTool {
 struct PendingTool {
     started: Arc<Notify>,
     dropped: Arc<AtomicBool>,
+}
+
+struct DelegatedAuthorizationTool;
+
+#[async_trait]
+impl Tool for DelegatedAuthorizationTool {
+    fn name(&self) -> &'static str {
+        "read_document"
+    }
+
+    fn description(&self) -> &'static str {
+        "delegated authorization fixture"
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        _arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        Err(delegated_authorization_error_fixture("sharepoint"))
+    }
 }
 
 struct ExecutionGuard(Arc<AtomicBool>);

@@ -24,7 +24,9 @@ use tracing::Instrument as _;
 use super::yaml::{valid_graph_id, valid_output_key};
 use crate::agents::application_tools::PIPELINE_APPLICATION_NODE_METADATA_KEY;
 use crate::agents::events::mask_sensitive_arguments;
-use crate::toolkits::SensitiveToolPolicy;
+use crate::toolkits::{
+    DelegatedAuthorizationRequirement, SensitiveToolPolicy, delegated_authorization_requirement,
+};
 
 const MAX_NODE_YAML_BYTES: usize = 64 * 1024;
 const MAX_MAPPING_ENTRIES: usize = 256;
@@ -38,6 +40,7 @@ const MAX_CONFIRMATION_MESSAGE_BYTES: usize = 16 * 1024;
 const CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.direct_tool.config.v1\0";
 const ARGUMENT_DIGEST_DOMAIN: &[u8] = b"elitea.graph.direct_tool.arguments.v1\0";
 const TOOL_CONFIRMATION_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
+const MCP_AUTHORIZATION_SCHEMA: &str = "elitea.graph.mcp-authorization.v1";
 pub(crate) const DIRECT_TOOL_RESUME_STATE_KEY: &str = "__elitea_tool_resume_v1";
 
 #[derive(Clone, Deserialize)]
@@ -403,6 +406,27 @@ impl DirectToolNode {
         {
             return Err(node_failure(self.name()));
         }
+        if self.has_mcp_authorization_resume(context)
+            && let Some(decision) = self
+                .mcp_authorization_decision(context, &arguments, tool_context.function_call_id())
+                .map_err(|_| node_failure(self.name()))?
+        {
+            return match decision {
+                McpAuthorizationDecision::Authorize(remaining) => {
+                    self.invoke_and_project(
+                        tool.as_ref(),
+                        tool_context,
+                        arguments,
+                        Some(remaining),
+                        true,
+                    )
+                    .await
+                }
+                McpAuthorizationDecision::Skip(remaining) => {
+                    Ok(self.mcp_authorization_stopped(remaining, false))
+                }
+            };
+        }
         if let Some(policy) = sensitive.as_ref() {
             return self
                 .execute_sensitive(context, tool.as_ref(), tool_context, arguments, policy)
@@ -416,7 +440,7 @@ impl DirectToolNode {
         {
             return Err(node_failure(self.name()));
         }
-        self.invoke_and_project(tool.as_ref(), tool_context, arguments, None)
+        self.invoke_and_project(tool.as_ref(), tool_context, arguments, None, false)
             .await
     }
 
@@ -438,7 +462,7 @@ impl DirectToolNode {
                 data,
             )),
             SensitiveDirectToolDecision::Approve(remaining) => {
-                self.invoke_and_project(tool, tool_context, arguments, Some(remaining))
+                self.invoke_and_project(tool, tool_context, arguments, Some(remaining), false)
                     .await
             }
             SensitiveDirectToolDecision::Block {
@@ -467,12 +491,29 @@ impl DirectToolNode {
         tool_context: Arc<dyn ToolContext>,
         arguments: Value,
         remaining: Option<Value>,
+        authorization_refresh: bool,
     ) -> Result<NodeOutput, GraphError> {
         tracing::Span::current().record("stage", "tool_execution");
-        let result = tool
-            .execute(tool_context, arguments)
-            .await
+        let call_id = tool_context.function_call_id().to_owned();
+        let argument_digest = argument_digest(&call_id, tool.name(), &arguments)
             .map_err(|_| node_failure(self.name()))?;
+        let result = match tool.execute(tool_context, arguments).await {
+            Ok(result) => result,
+            Err(error) => {
+                let Some(requirement) = delegated_authorization_requirement(&error) else {
+                    return Err(node_failure(self.name()));
+                };
+                if authorization_refresh {
+                    return Ok(self
+                        .mcp_authorization_stopped(remaining.unwrap_or_else(|| json!({})), true));
+                }
+                return Ok(self.mcp_authorization_interrupt(
+                    &requirement,
+                    &call_id,
+                    &argument_digest,
+                ));
+            }
+        };
         tracing::Span::current().record("stage", "state_projection");
         let updates = self
             .definition
@@ -486,6 +527,152 @@ impl DirectToolNode {
             output = output.with_update(&key, value);
         }
         Ok(output)
+    }
+
+    fn mcp_authorization_decision(
+        &self,
+        context: &NodeContext,
+        arguments: &Value,
+        call_id: &str,
+    ) -> Result<Option<McpAuthorizationDecision>, DirectToolExecutionError> {
+        let resumes = context
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .map(|value| {
+                value
+                    .as_object()
+                    .ok_or(DirectToolExecutionError::InvalidArguments)
+            })
+            .transpose()?;
+        let Some(raw) = resumes.and_then(|resumes| resumes.get(self.name())) else {
+            return Ok(None);
+        };
+        let expected_definition = self.definition.digest_label();
+        let expected_arguments =
+            argument_digest(call_id, self.definition.selection().tool(), arguments)?;
+        let decision =
+            McpAuthorizationResume::parse(raw, &expected_definition, call_id, &expected_arguments)?;
+        let mut remaining = resumes
+            .ok_or(DirectToolExecutionError::InvalidArguments)?
+            .clone();
+        if remaining.remove(self.name()).is_none() {
+            return Err(DirectToolExecutionError::InvalidArguments);
+        }
+        let remaining = Value::Object(remaining);
+        Ok(Some(match decision {
+            McpAuthorizationResume::Authorize => McpAuthorizationDecision::Authorize(remaining),
+            McpAuthorizationResume::Skip => McpAuthorizationDecision::Skip(remaining),
+        }))
+    }
+
+    fn has_mcp_authorization_resume(&self, context: &NodeContext) -> bool {
+        context
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .and_then(Value::as_object)
+            .and_then(|resumes| resumes.get(self.name()))
+            .and_then(Value::as_object)
+            .and_then(|resume| resume.get("action"))
+            .and_then(Value::as_str)
+            .is_some_and(|action| matches!(action, "authorize" | "skip"))
+    }
+
+    fn mcp_authorization_interrupt(
+        &self,
+        requirement: &DelegatedAuthorizationRequirement,
+        call_id: &str,
+        argument_digest: &str,
+    ) -> NodeOutput {
+        let message = requirement.user_message();
+        NodeOutput::interrupt_with_data(
+            &message,
+            json!({
+                "schema_revision": MCP_AUTHORIZATION_SCHEMA,
+                "type": "hitl",
+                "guardrail_type": "mcp_auth",
+                "node_name": self.name(),
+                "message": message,
+                "available_actions": ["authorize", "skip"],
+                "routes": {},
+                "definition_digest": self.definition.digest_label(),
+                "tool_call_id": call_id,
+                "tool_name": self.definition.selection().tool(),
+                "toolkit_name": requirement.toolkit_name(),
+                "toolkit_type": requirement.toolkit_type(),
+                "tool_args": {},
+                "argument_digest": argument_digest,
+                "server_url": requirement.server_url(),
+                "resource_metadata_url": requirement.resource_metadata_url(),
+                "www_authenticate": requirement.www_authenticate(),
+            }),
+        )
+    }
+
+    fn mcp_authorization_stopped(&self, remaining: Value, refresh_failed: bool) -> NodeOutput {
+        let toolkit = self.definition.selection().alias();
+        let tool = self.definition.selection().tool();
+        let node = self.name();
+        let message = if refresh_failed {
+            format!(
+                "**Pipeline stopped** — authorization for **{toolkit}** (tool: `{tool}`, node: *{node}*) completed, but the authorized Toolkit was not available in this pipeline instance.\n\nDownstream nodes were not executed with an unavailable tool.\n\n> **Tip:** Run the pipeline again to load the authorized Toolkit."
+            )
+        } else {
+            format!(
+                "**Pipeline stopped** — authorization for **{toolkit}** (tool: `{tool}`, node: *{node}*) was skipped.\n\nDownstream nodes that depend on `{node}` output were not executed because the required toolkit is unavailable.\n\n> **Tip:** Authorize the toolkit and run the pipeline again."
+            )
+        };
+        let mut output = NodeOutput::new()
+            .with_update(DIRECT_TOOL_RESUME_STATE_KEY, remaining)
+            .with_update("_pipeline_blocked", Value::String(message.clone()))
+            .with_update(
+                "messages",
+                json!([{"role": "assistant", "content": message}]),
+            )
+            .with_goto([END]);
+        for key in self
+            .definition
+            .output_keys()
+            .iter()
+            .filter(|key| key.as_str() != "messages")
+        {
+            output = output.with_update(key, Value::Null);
+        }
+        output
+    }
+}
+
+enum McpAuthorizationDecision {
+    Authorize(Value),
+    Skip(Value),
+}
+
+enum McpAuthorizationResume {
+    Authorize,
+    Skip,
+}
+
+impl McpAuthorizationResume {
+    fn parse(
+        raw: &Value,
+        definition_digest: &str,
+        call_id: &str,
+        argument_digest: &str,
+    ) -> Result<Self, DirectToolExecutionError> {
+        let object = raw
+            .as_object()
+            .ok_or(DirectToolExecutionError::InvalidArguments)?;
+        if object.len() != 4
+            || object.get("definition_digest").and_then(Value::as_str) != Some(definition_digest)
+            || object.get("tool_call_id").and_then(Value::as_str) != Some(call_id)
+            || object.get("argument_digest").and_then(Value::as_str) != Some(argument_digest)
+        {
+            return Err(DirectToolExecutionError::InvalidArguments);
+        }
+        match object.get("action").and_then(Value::as_str) {
+            Some("authorize") => Ok(Self::Authorize),
+            Some("skip") => Ok(Self::Skip),
+            _ => Err(DirectToolExecutionError::InvalidArguments),
+        }
     }
 }
 

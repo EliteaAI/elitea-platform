@@ -23,7 +23,7 @@ use crate::agents::direct_hitl::{
 };
 use crate::agents::events::{
     pipeline_application_event_binding, pipeline_hitl_event_binding,
-    pipeline_printer_event_binding, pipeline_tool_event_binding,
+    pipeline_mcp_auth_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
 };
 use crate::agents::request::AgentExecutionPayload;
 
@@ -37,6 +37,151 @@ const MAX_IDENTITY_BYTES: usize = 512;
 /// exact latest Printer checkpoint, and the text is appended to graph messages
 /// before the compiler-owned reset node executes.
 pub(crate) struct PrinterContinuation;
+
+#[derive(Clone, Copy)]
+enum PipelineMcpAuthorizationAction {
+    Authorize,
+    Skip,
+}
+
+/// Current authorization continuation inferred from Main's claim-fetched
+/// token/decline collections. The public request identity has already been
+/// consumed by Main; Rust binds the decision to the latest durable graph card,
+/// exact server URL and checkpoint before rebuilding the graph.
+pub(crate) struct PipelineMcpAuthorizationContinuation {
+    action: PipelineMcpAuthorizationAction,
+    server_urls: BTreeSet<String>,
+}
+
+impl PipelineMcpAuthorizationContinuation {
+    pub(crate) fn from_payload(
+        payload: &AgentExecutionPayload,
+    ) -> Result<Self, PipelineResumeError> {
+        if !payload.should_continue
+            || payload.hitl_resume
+            || payload.hitl_action.is_some()
+            || payload.hitl_value.is_some()
+            || !payload.hitl_decisions.is_empty()
+            || payload.checkpoint_id.is_some()
+            || payload.auto_approve_sensitive_actions
+        {
+            return Err(PipelineResumeError::new(
+                PipelineResumeErrorCode::UnsupportedCapability,
+            ));
+        }
+        let (action, server_urls) = if !payload.mcp_tokens.is_empty() {
+            (
+                PipelineMcpAuthorizationAction::Authorize,
+                payload.mcp_tokens.keys().cloned().collect::<BTreeSet<_>>(),
+            )
+        } else if !payload.user_declined_mcp_servers.is_empty() {
+            (
+                PipelineMcpAuthorizationAction::Skip,
+                payload
+                    .user_declined_mcp_servers
+                    .iter()
+                    .map(declined_server_url)
+                    .collect::<Option<BTreeSet<_>>>()
+                    .ok_or_else(PipelineResumeError::invalid)?
+                    .into_iter()
+                    .map(ToOwned::to_owned)
+                    .collect(),
+            )
+        } else {
+            return Err(PipelineResumeError::invalid());
+        };
+        if server_urls.is_empty() || server_urls.iter().any(|value| !valid_server_url(value)) {
+            return Err(PipelineResumeError::invalid());
+        }
+        Ok(Self {
+            action,
+            server_urls,
+        })
+    }
+
+    pub(crate) async fn resolve(
+        self,
+        session: &dyn Session,
+        checkpointer: &dyn Checkpointer,
+        root_agent_name: &str,
+        thread_id: &str,
+    ) -> Result<PipelineResume, PipelineResumeError> {
+        let events = session.events().all();
+        let interrupt_index = events
+            .iter()
+            .rposition(|event| event.provider_metadata.contains_key(INTERRUPT_METADATA_KEY))
+            .ok_or_else(PipelineResumeError::stale)?;
+        if interrupt_index + 1 != events.len() {
+            return Err(PipelineResumeError::stale());
+        }
+        let binding =
+            pipeline_mcp_auth_event_binding(&events[interrupt_index], root_agent_name, thread_id)
+                .map_err(|_| PipelineResumeError::corrupt())?;
+        if !self.server_urls.contains(binding.server_url()) {
+            return Err(PipelineResumeError::stale());
+        }
+        let checkpoint = checkpointer
+            .load(thread_id)
+            .await
+            .map_err(|_| PipelineResumeError::dependency())?
+            .ok_or_else(PipelineResumeError::stale)?;
+        if checkpoint.thread_id != thread_id
+            || checkpoint.checkpoint_id != binding.checkpoint_id()
+            || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
+            || checkpoint
+                .state
+                .get(DIRECT_TOOL_RESUME_STATE_KEY)
+                .is_some_and(|value| value != &json!({}))
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        validate_nested_checkpoints(
+            checkpointer,
+            binding.nested_checkpoints(),
+            binding.node_name(),
+            DIRECT_TOOL_RESUME_STATE_KEY,
+        )
+        .await?;
+        let action = match self.action {
+            PipelineMcpAuthorizationAction::Authorize => "authorize",
+            PipelineMcpAuthorizationAction::Skip => "skip",
+        };
+        Ok(PipelineResume {
+            state: [(
+                DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+                json!({
+                    binding.node_name(): {
+                        "definition_digest": binding.definition_digest(),
+                        "tool_call_id": binding.tool_call_id(),
+                        "argument_digest": binding.argument_digest(),
+                        "action": action,
+                    }
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        })
+    }
+}
+
+fn declined_server_url(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) => Some(value),
+        Value::Object(value) => value.get("server_url").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+fn valid_server_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
+}
 
 pub(crate) struct PrinterResumeContext<'a> {
     session: &'a dyn Session,

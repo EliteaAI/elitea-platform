@@ -1158,7 +1158,7 @@ impl ApplicationAssemblyState<'_> {
         let mut mcp_toolsets =
             materialize_mcp_toolsets(frozen, self.mcp_connector.as_ref(), &self.policy)
                 .await
-                .map_err(mcp_toolset_error)?;
+                .map_err(|error| mcp_toolset_error(&error))?;
         sensitive_tools.merge(
             sensitive_tools_for_kind(
                 frozen,
@@ -2513,13 +2513,16 @@ fn toolset_error(error: crate::toolkits::ToolsetMaterializationError) -> NativeA
     NativeAgentAssemblyError::new(code, "the nested application toolsets are unavailable")
 }
 
-fn mcp_toolset_error(error: crate::toolkits::McpMaterializationError) -> NativeAgentAssemblyError {
+fn mcp_toolset_error(error: &crate::toolkits::McpMaterializationError) -> NativeAgentAssemblyError {
     let code = match error.code() {
         McpMaterializationErrorCode::InvalidConfiguration => {
             NativeAgentAssemblyErrorCode::InvalidConfiguration
         }
         McpMaterializationErrorCode::UnsupportedAuthority => {
             NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        McpMaterializationErrorCode::AuthorizationRequired => {
+            NativeAgentAssemblyErrorCode::AuthorizationFailed
         }
         McpMaterializationErrorCode::ResourceExhausted => {
             NativeAgentAssemblyErrorCode::ResourceExhausted

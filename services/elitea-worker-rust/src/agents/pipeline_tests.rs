@@ -23,7 +23,7 @@ use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, St
 use super::request::AgentExecutionKind;
 use super::runtime::{
     AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
-    NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector,
+    NativeAgentAssemblyErrorCode, NativeAgentCompletionSelector, PipelineNativeStart,
 };
 use super::session::{
     AuthorizedNativeCommandBinding, OrdinaryNativeAgentPlan, PipelineAgentCompletion,
@@ -978,6 +978,30 @@ fn pipeline_resume_admits_distinct_node_and_tool_decision_envelopes_before_check
         .admit_pipeline()
         .expect("Toolkit-call decision envelope admission");
     assert!(admitted.is_resume());
+}
+
+#[test]
+fn pipeline_mcp_authorization_envelope_is_not_admitted_as_printer_text() {
+    let mut pipeline = pipeline_request();
+    pipeline.payload.should_continue = true;
+    pipeline.payload.hitl_resume = false;
+    pipeline.payload.mcp_tokens.insert(
+        "https://mcp.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    );
+    let admitted = authorized(&pipeline)
+        .admit_pipeline()
+        .expect("MCP authorization admission");
+    let (_, _, _, _, start, _, _, _) = admitted.into_parts();
+    assert!(matches!(start, PipelineNativeStart::McpAuthorization(_)));
+
+    let mut malformed = pipeline_request();
+    malformed.payload.should_continue = true;
+    malformed.payload.ignored_mcp_servers = vec![json!({
+        "server_url": "https://mcp.example.invalid/v1/mcp"
+    })];
+    let error = admission_error(authorized(&malformed).admit_pipeline());
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
 }
 
 #[test]

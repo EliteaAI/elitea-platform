@@ -326,7 +326,7 @@ async fn materialize_direct_toolsets(
     .await?;
     let mut mcp_toolsets = materialize_mcp_toolsets(snapshot, connector, policy)
         .await
-        .map_err(mcp_materialization_error)?;
+        .map_err(|error| mcp_materialization_error(&error))?;
     sensitive.merge(
         sensitive_tools_for_kind(
             snapshot,
@@ -378,13 +378,16 @@ fn tool_materialization_error(error: ToolsetMaterializationError) -> NativeAgent
     NativeAgentAssemblyError::new(code, "the native agent toolsets could not be materialized")
 }
 
-fn mcp_materialization_error(error: McpMaterializationError) -> NativeAgentAssemblyError {
+fn mcp_materialization_error(error: &McpMaterializationError) -> NativeAgentAssemblyError {
     let code = match error.code() {
         McpMaterializationErrorCode::InvalidConfiguration => {
             NativeAgentAssemblyErrorCode::InvalidConfiguration
         }
         McpMaterializationErrorCode::UnsupportedAuthority => {
             NativeAgentAssemblyErrorCode::UnsupportedCapability
+        }
+        McpMaterializationErrorCode::AuthorizationRequired => {
+            NativeAgentAssemblyErrorCode::AuthorizationFailed
         }
         McpMaterializationErrorCode::ResourceExhausted => {
             NativeAgentAssemblyErrorCode::ResourceExhausted

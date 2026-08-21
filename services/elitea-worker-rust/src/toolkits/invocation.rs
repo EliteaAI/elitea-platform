@@ -362,6 +362,11 @@ impl Write for BoundedJsonWriter {
 }
 
 fn sanitize_tool_error(error: &AdkError) -> AdkError {
+    if let Some(authorization) =
+        super::delegated_auth::preserve_delegated_authorization_error(error)
+    {
+        return authorization;
+    }
     let (code, message) = match error.category {
         ErrorCategory::InvalidInput => (
             "tool.execution.invalid_input",
