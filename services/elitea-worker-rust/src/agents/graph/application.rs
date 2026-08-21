@@ -10,7 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use adk_rust::Tool;
-use adk_rust::graph::{GraphError, Node, NodeContext, NodeOutput, State};
+use adk_rust::graph::subgraph::SubgraphNode;
+use adk_rust::graph::{
+    Checkpointer, CompiledGraph, GraphError, Node, NodeContext, NodeOutput, State, StateSchema,
+};
 use async_trait::async_trait;
 use ring::digest;
 use serde::Deserialize;
@@ -28,6 +31,9 @@ const MAX_NODE_VARIABLES: usize = 64;
 const MAX_APPLICATION_ALIAS_BYTES: usize = 1_024;
 const MAX_RESULT_BYTES: usize = 512 * 1024;
 const CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.application.config.v1\0";
+pub(super) const APPLICATION_TASK_STATE_KEY: &str = "__elitea_application_task_v1";
+pub(super) const APPLICATION_MESSAGES_STATE_KEY: &str = "__elitea_application_messages_v1";
+pub(super) const APPLICATION_RESULT_STATE_KEY: &str = "__elitea_application_result_v1";
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -259,26 +265,147 @@ pub(crate) trait PipelineApplicationResolver: Send + Sync {
     fn resolve(
         &self,
         selection: &PipelineApplicationSelection,
-    ) -> Result<Arc<dyn Tool>, ApplicationExecutionError>;
+        checkpointer: Arc<dyn Checkpointer>,
+    ) -> Result<ResolvedApplicationParticipant, ApplicationExecutionError>;
+}
+
+/// One exact saved participant after claim-bound materialization.
+#[derive(Clone)]
+pub(crate) enum ResolvedApplicationParticipant {
+    /// A direct saved agent invoked through ADK `AgentTool` semantics.
+    Agent(Arc<dyn Tool>),
+    /// A saved pipeline invoked as a checkpointed native ADK subgraph.
+    Pipeline(Arc<CompiledGraph>),
 }
 
 pub(super) struct ApplicationNode {
     definition: ApplicationNodeDefinition,
     state_types: BTreeMap<String, String>,
-    resolver: Arc<dyn PipelineApplicationResolver>,
+    participant: ResolvedApplicationParticipant,
+    checkpointer: Arc<dyn Checkpointer>,
 }
 
 impl ApplicationNode {
     pub(super) fn new(
         definition: ApplicationNodeDefinition,
         state_types: BTreeMap<String, String>,
-        resolver: Arc<dyn PipelineApplicationResolver>,
-    ) -> Self {
-        Self {
+        resolver: &dyn PipelineApplicationResolver,
+        checkpointer: Arc<dyn Checkpointer>,
+    ) -> Result<Self, ApplicationExecutionError> {
+        let participant = resolver.resolve(definition.selection(), Arc::clone(&checkpointer))?;
+        Ok(Self {
             definition,
             state_types,
-            resolver,
+            participant,
+            checkpointer,
+        })
+    }
+
+    fn pipeline_subgraph(&self, graph: Arc<CompiledGraph>) -> SubgraphNode {
+        let mut node = SubgraphNode::new(self.definition.id(), graph)
+            .isolated()
+            .with_input(APPLICATION_TASK_STATE_KEY, "input")
+            .with_input(APPLICATION_MESSAGES_STATE_KEY, "messages")
+            .with_output("elitea_response", APPLICATION_RESULT_STATE_KEY);
+        for channel in [
+            "session_id",
+            "hitl_decisions",
+            super::hitl::HITL_RESUME_STATE_KEY,
+            super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY,
+        ] {
+            if node.graph().schema().channels.contains_key(channel) {
+                node = node.with_input(channel, channel);
+            }
         }
+        node
+    }
+
+    async fn execute_pipeline(
+        &self,
+        context: &NodeContext,
+        task: &str,
+        graph: Arc<CompiledGraph>,
+    ) -> Result<NodeOutput, GraphError> {
+        let parent_schema = context
+            .parent_schema()
+            .ok_or_else(|| node_failure(self.name()))?;
+        let mut state = context.state.clone();
+        state.insert(APPLICATION_TASK_STATE_KEY.to_owned(), json!(task));
+        state.insert(
+            APPLICATION_MESSAGES_STATE_KEY.to_owned(),
+            json!([{"role": "user", "content": task}]),
+        );
+        let mut child_context = NodeContext::new(state, context.config.clone(), context.step);
+        child_context.set_parent_schema(parent_schema);
+        let mut output = self
+            .pipeline_subgraph(graph)
+            .execute(&child_context)
+            .await?;
+        if let Some(interrupt) = output.interrupt.as_mut() {
+            self.bind_child_checkpoint(context, interrupt).await?;
+            return Ok(output);
+        }
+        if output.goto.is_some() || output.goto_parent.is_some() || !output.events.is_empty() {
+            return Err(node_failure(self.name()));
+        }
+        let response = output
+            .updates
+            .remove(APPLICATION_RESULT_STATE_KEY)
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .ok_or_else(|| node_failure(self.name()))?;
+        if !output.updates.is_empty() {
+            return Err(node_failure(self.name()));
+        }
+        self.projected_output(&response)
+    }
+
+    async fn bind_child_checkpoint(
+        &self,
+        context: &NodeContext,
+        interrupt: &mut adk_rust::graph::interrupt::Interrupt,
+    ) -> Result<(), GraphError> {
+        let adk_rust::graph::interrupt::Interrupt::Dynamic {
+            data: Some(data), ..
+        } = interrupt
+        else {
+            return Err(node_failure(self.name()));
+        };
+        let wrapper = data
+            .as_object_mut()
+            .ok_or_else(|| node_failure(self.name()))?;
+        let expected_thread = format!("{}/{}", context.config.thread_id, self.name());
+        if wrapper.get("subgraph").and_then(Value::as_str) != Some(self.name())
+            || wrapper.get("thread").and_then(Value::as_str) != Some(expected_thread.as_str())
+            || wrapper.contains_key("checkpoint_id")
+        {
+            return Err(node_failure(self.name()));
+        }
+        let checkpoint = self
+            .checkpointer
+            .load(&expected_thread)
+            .await
+            .map_err(|_| node_failure(self.name()))?
+            .ok_or_else(|| node_failure(self.name()))?;
+        if checkpoint.thread_id != expected_thread || checkpoint.pending_nodes.len() != 1 {
+            return Err(node_failure(self.name()));
+        }
+        wrapper.insert(
+            "checkpoint_id".to_owned(),
+            Value::String(checkpoint.checkpoint_id),
+        );
+        Ok(())
+    }
+
+    fn projected_output(&self, response: &str) -> Result<NodeOutput, GraphError> {
+        let updates = self
+            .definition
+            .project_response(response, &self.state_types)
+            .map_err(|_| node_failure(self.name()))?;
+        let mut output = NodeOutput::new();
+        for (key, value) in updates {
+            output = output.with_update(&key, value);
+        }
+        Ok(output)
     }
 }
 
@@ -286,6 +413,14 @@ impl ApplicationNode {
 impl Node for ApplicationNode {
     fn name(&self) -> &str {
         self.definition.id()
+    }
+
+    fn validate_against(&self, parent: &StateSchema) -> Result<(), GraphError> {
+        if let ResolvedApplicationParticipant::Pipeline(graph) = &self.participant {
+            self.pipeline_subgraph(Arc::clone(graph))
+                .validate_against(parent)?;
+        }
+        Ok(())
     }
 
     async fn execute(&self, context: &NodeContext) -> Result<NodeOutput, GraphError> {
@@ -304,33 +439,28 @@ impl Node for ApplicationNode {
                 .definition
                 .map_task(&context.state)
                 .map_err(|_| node_failure(self.name()))?;
-            tracing::Span::current().record("stage", "application_binding");
-            let tool = self
-                .resolver
-                .resolve(self.definition.selection())
-                .map_err(|_| node_failure(self.name()))?;
-            let tool_context = pipeline_tool_context(context, self.name(), tool.name());
             tracing::Span::current().record("stage", "child_execution");
-            let result = tool
-                .execute(tool_context, json!({"task": task}))
-                .await
-                .map_err(|_| node_failure(self.name()))?;
-            let response = result
-                .as_object()
-                .filter(|object| object.len() == 1)
-                .and_then(|object| object.get("response"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| node_failure(self.name()))?;
-            tracing::Span::current().record("stage", "state_projection");
-            let updates = self
-                .definition
-                .project_response(response, &self.state_types)
-                .map_err(|_| node_failure(self.name()))?;
-            let mut output = NodeOutput::new();
-            for (key, value) in updates {
-                output = output.with_update(&key, value);
+            match &self.participant {
+                ResolvedApplicationParticipant::Agent(tool) => {
+                    let tool_context = pipeline_tool_context(context, self.name(), tool.name());
+                    let result = tool
+                        .execute(tool_context, json!({"task": task}))
+                        .await
+                        .map_err(|_| node_failure(self.name()))?;
+                    let response = result
+                        .as_object()
+                        .filter(|object| object.len() == 1)
+                        .and_then(|object| object.get("response"))
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| node_failure(self.name()))?;
+                    tracing::Span::current().record("stage", "state_projection");
+                    self.projected_output(response)
+                }
+                ResolvedApplicationParticipant::Pipeline(graph) => {
+                    self.execute_pipeline(context, &task, Arc::clone(graph))
+                        .await
+                }
             }
-            Ok(output)
         }
         .instrument(span.clone())
         .await;

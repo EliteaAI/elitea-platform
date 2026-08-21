@@ -90,12 +90,18 @@ Maintained Rust runtime ownership registry:
   state-driven conditions and Decision runs a no-tool claim-bound model; both
   select only compiler-validated targets with an atomic ADK `goto`. Agent nodes
   map one task to an exact frozen saved participant; direct saved agents reuse
-  the claim-bound native `AgentTool` assembly and project their final response.
+  the claim-bound native `AgentTool` assembly and project their final response;
+  saved pipelines compile as isolated native `SubgraphNode` values over the
+  same claim-fenced Checkpointer. A nested dynamic HITL binds one public
+  `interrupt_id` to the exact parent and child checkpoints, resumes the child
+  through the pending Agent node once and keeps child thread/checkpoint IDs out
+  of browser output. The current materializer supports one selected child
+  pipeline level and fails closed if that child declares another Agent node.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
-  prebuilt/static MCP, remote effects, saved-pipeline `SubgraphNode` composition,
-  child variables, LLM-node nested confirmation, arbitrary static interrupts
-  and production activation remain separate gates;
+  prebuilt/static MCP, remote effects, recursive child participants, child
+  variables, nested static Printer interrupts, LLM-node nested confirmation,
+  arbitrary static interrupts and production activation remain separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing;

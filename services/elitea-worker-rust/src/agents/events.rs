@@ -534,7 +534,10 @@ impl AgentEventProjector {
         let guardrail_type = payload
             .data
             .as_ref()
-            .and_then(|data| data.get("guardrail_type"))
+            .and_then(|data| {
+                data.get("guardrail_type")
+                    .or_else(|| data.get("data")?.get("guardrail_type"))
+            })
             .and_then(Value::as_str)
             .ok_or_else(AgentEventProjectionError::invalid_state)?;
         match guardrail_type {
@@ -1348,6 +1351,21 @@ struct PipelineHitlData {
     definition_digest: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NestedPipelineInterruptData {
+    subgraph: String,
+    thread: String,
+    checkpoint_id: String,
+    data: Value,
+}
+
+struct NestedPipelineCheckpoint {
+    node_name: String,
+    thread_id: String,
+    checkpoint_id: String,
+}
+
 impl PipelineHitlData {
     fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
         if self.schema_revision != PIPELINE_HITL_SCHEMA
@@ -1458,6 +1476,7 @@ pub(crate) struct PipelineHitlEventBinding {
     interrupt_id: String,
     call_digest: String,
     checkpoint_id: String,
+    nested_checkpoint: Option<NestedPipelineCheckpoint>,
     data: PipelineHitlData,
 }
 
@@ -1466,6 +1485,7 @@ pub(crate) struct PipelineToolHitlEventBinding {
     interrupt_id: String,
     call_digest: String,
     checkpoint_id: String,
+    nested_checkpoint: Option<NestedPipelineCheckpoint>,
     data: PipelineToolHitlData,
 }
 
@@ -1520,6 +1540,25 @@ impl PipelineToolHitlEventBinding {
     }
 
     #[must_use]
+    pub(crate) fn pending_node_name(&self) -> &str {
+        self.nested_checkpoint
+            .as_ref()
+            .map_or(self.data.node_name.as_str(), |checkpoint| {
+                checkpoint.node_name.as_str()
+            })
+    }
+
+    #[must_use]
+    pub(crate) fn nested_checkpoint(&self) -> Option<(&str, &str)> {
+        self.nested_checkpoint.as_ref().map(|checkpoint| {
+            (
+                checkpoint.thread_id.as_str(),
+                checkpoint.checkpoint_id.as_str(),
+            )
+        })
+    }
+
+    #[must_use]
     pub(crate) fn node_name(&self) -> &str {
         &self.data.node_name
     }
@@ -1549,6 +1588,25 @@ impl PipelineHitlEventBinding {
     #[must_use]
     pub(crate) fn checkpoint_id(&self) -> &str {
         &self.checkpoint_id
+    }
+
+    #[must_use]
+    pub(crate) fn pending_node_name(&self) -> &str {
+        self.nested_checkpoint
+            .as_ref()
+            .map_or(self.data.node_name.as_str(), |checkpoint| {
+                checkpoint.node_name.as_str()
+            })
+    }
+
+    #[must_use]
+    pub(crate) fn nested_checkpoint(&self) -> Option<(&str, &str)> {
+        self.nested_checkpoint.as_ref().map(|checkpoint| {
+            (
+                checkpoint.thread_id.as_str(),
+                checkpoint.checkpoint_id.as_str(),
+            )
+        })
     }
 
     #[must_use]
@@ -1668,19 +1726,17 @@ fn pipeline_hitl_event_binding_from_payload(
         .as_deref()
         .ok_or_else(AgentEventProjectionError::invalid_state)?;
     validate_pipeline_hitl_message(message)?;
-    let data = serde_json::from_value::<PipelineHitlData>(
-        payload
-            .data
-            .clone()
-            .ok_or_else(AgentEventProjectionError::invalid_state)?,
-    )
-    .map_err(|_| AgentEventProjectionError::invalid_state())?;
-    data.validate(message)?;
+    let (raw_data, nested_checkpoint) = pipeline_interrupt_data(payload, thread_id)?;
+    let data = serde_json::from_value::<PipelineHitlData>(raw_data)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    validate_pipeline_interrupt_message(message, &data.message, nested_checkpoint.as_ref())?;
+    data.validate(&data.message)?;
     let (interrupt_id, call_digest) = pipeline_hitl_identity(&event.invocation_id, payload, &data)?;
     Ok(PipelineHitlEventBinding {
         interrupt_id,
         call_digest,
         checkpoint_id: payload.checkpoint_id.clone(),
+        nested_checkpoint,
         data,
     })
 }
@@ -1704,22 +1760,65 @@ fn pipeline_tool_event_binding_from_payload(
         .as_deref()
         .ok_or_else(AgentEventProjectionError::invalid_state)?;
     validate_pipeline_hitl_message(message)?;
-    let data = serde_json::from_value::<PipelineToolHitlData>(
-        payload
-            .data
-            .clone()
-            .ok_or_else(AgentEventProjectionError::invalid_state)?,
-    )
-    .map_err(|_| AgentEventProjectionError::invalid_state())?;
-    data.validate(message)?;
+    let (raw_data, nested_checkpoint) = pipeline_interrupt_data(payload, thread_id)?;
+    let data = serde_json::from_value::<PipelineToolHitlData>(raw_data)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    validate_pipeline_interrupt_message(message, &data.message, nested_checkpoint.as_ref())?;
+    data.validate(&data.message)?;
     let (interrupt_id, call_digest) =
         pipeline_tool_hitl_identity(&event.invocation_id, payload, &data)?;
     Ok(PipelineToolHitlEventBinding {
         interrupt_id,
         call_digest,
         checkpoint_id: payload.checkpoint_id.clone(),
+        nested_checkpoint,
         data,
     })
+}
+
+fn pipeline_interrupt_data(
+    payload: &GraphInterruptPayload,
+    parent_thread_id: &str,
+) -> Result<(Value, Option<NestedPipelineCheckpoint>), AgentEventProjectionError> {
+    let raw = payload
+        .data
+        .clone()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    if raw.get("subgraph").is_none() {
+        return Ok((raw, None));
+    }
+    let nested = serde_json::from_value::<NestedPipelineInterruptData>(raw)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    let expected_thread = format!("{parent_thread_id}/{}", nested.subgraph);
+    if !valid_pipeline_node_identity(&nested.subgraph)
+        || nested.thread != expected_thread
+        || !valid_graph_checkpoint_identity(&nested.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok((
+        nested.data,
+        Some(NestedPipelineCheckpoint {
+            node_name: nested.subgraph,
+            thread_id: nested.thread,
+            checkpoint_id: nested.checkpoint_id,
+        }),
+    ))
+}
+
+fn validate_pipeline_interrupt_message(
+    outer_message: &str,
+    inner_message: &str,
+    nested: Option<&NestedPipelineCheckpoint>,
+) -> Result<(), AgentEventProjectionError> {
+    let expected = nested.map_or_else(
+        || inner_message.to_owned(),
+        |checkpoint| format!("{}: {inner_message}", checkpoint.node_name),
+    );
+    if outer_message != expected {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    Ok(())
 }
 
 fn validate_graph_interrupt_event(

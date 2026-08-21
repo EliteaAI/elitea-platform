@@ -8,7 +8,7 @@
 
 #![allow(dead_code)] // Production registration remains capability-gated.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -76,6 +76,7 @@ pub(crate) async fn materialize_application_toolset(
         elitea_context,
         fallback_profile,
         dependencies,
+        None,
     )
     .await?;
     if materialized.is_empty() {
@@ -95,8 +96,9 @@ pub(crate) async fn materialize_application_tools(
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
     dependencies: ApplicationToolDependencies,
+    selected_aliases: Option<&BTreeSet<String>>,
 ) -> Result<Vec<MaterializedApplicationTool>, NativeAgentAssemblyError> {
-    let references = application_references(snapshot)?;
+    let references = application_references(snapshot, selected_aliases)?;
     if references.is_empty() {
         return Ok(Vec::new());
     }
@@ -223,7 +225,7 @@ impl ApplicationAssemblyState<'_> {
                 .await
                 .map_err(mcp_toolset_error)?;
         toolsets.append(&mut mcp_toolsets);
-        let nested_references = application_references(&frozen)?;
+        let nested_references = application_references(&frozen, None)?;
         if !nested_references.is_empty() {
             let mut nested_tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(nested_references.len());
             for nested in nested_references {
@@ -263,12 +265,16 @@ struct ApplicationReference {
 
 fn application_references(
     snapshot: &AdmittedToolSnapshot<'_>,
+    selected_aliases: Option<&BTreeSet<String>>,
 ) -> Result<Vec<ApplicationReference>, NativeAgentAssemblyError> {
     let mut seen = HashSet::new();
     let mut references = Vec::new();
     for reference in snapshot
         .iter()
         .filter(|reference| reference.kind() == FrozenToolKind::Application)
+        .filter(|reference| {
+            selected_aliases.is_none_or(|aliases| aliases.contains(reference.toolkit_name()))
+        })
     {
         let identity = reference
             .application_identity()

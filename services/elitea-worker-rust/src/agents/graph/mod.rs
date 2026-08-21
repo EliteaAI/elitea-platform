@@ -42,6 +42,7 @@ pub(crate) use agent::{
 };
 pub(crate) use application::{
     ApplicationExecutionError, PipelineApplicationResolver, PipelineApplicationSelection,
+    ResolvedApplicationParticipant,
 };
 pub(crate) use direct_tool::{
     DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection, PipelineDirectToolResolver,

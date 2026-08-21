@@ -1,13 +1,19 @@
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adk_rust::graph::{Checkpointer, MemoryCheckpointer};
 use adk_rust::session::{InMemorySessionService, SessionService};
 use adk_rust::tool::{BasicToolset, SimpleToolContext};
 use adk_rust::{Tool, ToolContext, Toolset};
 use async_trait::async_trait;
+use bytes::Bytes;
 use chrono::{TimeZone, Utc};
+use http::{Request, Response, StatusCode, Version};
+use http_body_util::Full;
 use serde_json::{Value, json};
+use tonic::body::Body;
 
 use super::assembly_tests::ordinary_request;
 use super::events::pipeline_hitl_event_binding;
@@ -23,6 +29,12 @@ use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
 use crate::toolkits::{
     McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
+};
+use crate::transport::model_facade::ModelFacade;
+use crate::transport::model_gateway::{test_model_gateway_client, test_model_gateway_config};
+use crate::transport::platform_client::PlatformClient;
+use crate::transport::runtime_context::{
+    RuntimeContextClient, RuntimeContextConfig, RuntimeContextRpc, RuntimeContextTransportError,
 };
 
 const PIPELINE: &str = r"
@@ -265,6 +277,97 @@ fn agent_pipeline_request(
         }]),
     );
     request
+}
+
+struct PipelineRuntimeContextFixture {
+    responses: Mutex<VecDeque<Response<Body>>>,
+    calls: Arc<AtomicUsize>,
+    paths: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl RuntimeContextRpc for PipelineRuntimeContextFixture {
+    async fn post(
+        &self,
+        request: Request<Body>,
+    ) -> Result<Response<Body>, RuntimeContextTransportError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        self.paths
+            .lock()
+            .map_err(|_| RuntimeContextTransportError::Unavailable)?
+            .push(request.uri().path().to_owned());
+        self.responses
+            .lock()
+            .map_err(|_| RuntimeContextTransportError::Unavailable)?
+            .pop_front()
+            .ok_or(RuntimeContextTransportError::Unavailable)
+    }
+}
+
+fn runtime_response(value: &Value) -> Response<Body> {
+    let raw = value.to_string();
+    Response::builder()
+        .status(StatusCode::OK)
+        .version(Version::HTTP_2)
+        .header("content-type", "application/json")
+        .header("cache-control", "private, no-cache, no-store")
+        .header("pragma", "no-cache")
+        .header("content-length", raw.len())
+        .body(Body::new(Full::new(Bytes::from(raw))))
+        .expect("runtime-context fixture response")
+}
+
+type PipelineChildRuntime = (
+    Arc<PlatformClient>,
+    Arc<ModelFacade>,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+);
+
+fn pipeline_child_runtime() -> PipelineChildRuntime {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let token = runtime_response(&json!({
+        "schema_version": "elitea.runtime.elitea-client-token.v1",
+        "project_id": 17,
+        "token": "ephemeral-pipeline-token"
+    }));
+    let child = runtime_response(&json!({
+        "schema_version": "elitea.runtime.application-version.v1",
+        "project_id": 17,
+        "application_id": 3,
+        "version_id": 4,
+        "version_details": {
+            "agent_type": "pipeline",
+            "instructions": "state:\n  input: str\n  messages: list\n  answer: str\nentry_point: answer\nnodes:\n  - id: answer\n    type: state_modifier\n    template: 'Child: {{ input }}'\n    input: [input]\n    output: [answer]\n    transition: END\n",
+            "meta": {},
+            "variables": [],
+            "tools": [],
+            "llm_settings": null
+        }
+    }));
+    let runtime = RuntimeContextClient::with_rpc(
+        PipelineRuntimeContextFixture {
+            responses: Mutex::new(VecDeque::from([token, child])),
+            calls: Arc::clone(&calls),
+            paths: Arc::clone(&paths),
+        },
+        RuntimeContextConfig {
+            origin: "https://content.internal".to_owned(),
+            deadline: Duration::from_secs(1),
+            max_response_bytes: 32 * 1_024,
+            max_application_response_bytes: 1_024 * 1_024,
+        },
+    )
+    .expect("pipeline runtime-context fixture");
+    let (gateway, _) = test_model_gateway_client(Vec::new(), test_model_gateway_config())
+        .expect("unused pipeline model gateway");
+    (
+        Arc::new(PlatformClient::new(Arc::new(runtime))),
+        Arc::new(ModelFacade::from_gateway(gateway)),
+        calls,
+        paths,
+    )
 }
 
 fn runtime_tool_policy(value: &Value) -> ToolAdmissionPolicy {
@@ -635,6 +738,61 @@ fn agent_node_scope_requires_one_exact_allowed_saved_application_or_pipeline() {
     assert_eq!(
         error.code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+}
+
+#[tokio::test]
+async fn saved_pipeline_participant_loads_exact_version_and_runs_as_child_subgraph() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let (platform, model_facade, calls, paths) = pipeline_child_runtime();
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade);
+    let request = agent_pipeline_request("release-agent", "pipeline");
+    let private_thread = private_pipeline_session_id(&request);
+    let mut invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized saved-pipeline participant");
+    invocation
+        .project_start(timestamp(0))
+        .expect("browser start");
+    let (mut run, mut projector, completion) = invocation.start().expect("pipeline start");
+    while let Some(event) = run.next_event().await.expect("pipeline event") {
+        let _ = projector
+            .project(&event)
+            .expect("pipeline event projection");
+    }
+    let selected = completion
+        .select()
+        .await
+        .expect("pipeline result selection");
+    let browser = projector
+        .finish_after_eos(selected, timestamp(1))
+        .expect("pipeline browser completion");
+    assert!(
+        browser
+            .into_iter()
+            .map(|event| current(&event))
+            .any(|event| { event["content"] == "Child: Summarize the release" })
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        paths.lock().expect("runtime paths").as_slice(),
+        [
+            "/executions/execution%2Fone/generations/2/runtime-context/elitea-client-token",
+            "/executions/execution%2Fone/generations/2/runtime-context/applications/3/versions/4"
+        ]
+    );
+    assert!(
+        checkpointer
+            .load(&format!("{private_thread}/delegate"))
+            .await
+            .expect("child checkpoint lookup")
+            .is_some()
     );
 }
 

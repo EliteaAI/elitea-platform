@@ -113,6 +113,47 @@ fn pipeline_tool_hitl_event(data: Value) -> Event {
     event
 }
 
+fn nested_pipeline_hitl_event(child_checkpoint_id: &str, child_thread: &str) -> Event {
+    let message = "Review the generated answer.";
+    let payload = GraphInterruptPayload {
+        kind: "dynamic".to_owned(),
+        node: None,
+        message: Some(format!("delegate: {message}")),
+        data: Some(json!({
+            "subgraph": "delegate",
+            "thread": child_thread,
+            "checkpoint_id": child_checkpoint_id,
+            "data": {
+                "schema_revision": "elitea.graph.hitl-interrupt.v1",
+                "type": "hitl",
+                "guardrail_type": "pipeline_hitl",
+                "node_name": "review",
+                "message": message,
+                "available_actions": ["approve", "reject"],
+                "routes": {"approve": "publish", "reject": "END"},
+                "edit_state_key": null,
+                "definition_digest": format!("sha256:{}", "3".repeat(64)),
+            }
+        })),
+        thread_id: "thread-1".to_owned(),
+        checkpoint_id: "parent-checkpoint-9".to_owned(),
+    };
+    let mut event = Event::with_id("nested-graph-interrupt", "invocation-1");
+    event.timestamp = timestamp(1);
+    event.author = "root-agent".to_owned();
+    event.llm_response.content = Some(Content {
+        role: "assistant".to_owned(),
+        parts: vec![Part::Text {
+            text: format!("Dynamic interrupt: delegate: {message}"),
+        }],
+    });
+    event.provider_metadata.insert(
+        INTERRUPT_METADATA_KEY.to_owned(),
+        payload.to_metadata_value(),
+    );
+    event
+}
+
 #[test]
 #[allow(clippy::too_many_lines)] // One ordered browser lifecycle is clearer as one trace.
 fn ordinary_stream_matches_current_text_lifecycle_without_a_heap_event_queue() {
@@ -531,6 +572,50 @@ fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
     assert!(metadata.get("checkpoint_id").is_none());
     assert!(metadata.get("definition_digest").is_none());
     assert!(projector.is_paused());
+}
+
+#[test]
+fn nested_graph_hitl_projects_without_leaking_child_checkpoint_identity() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected = projector
+        .project(&nested_pipeline_hitl_event(
+            "child-checkpoint-12",
+            "thread-1/delegate",
+        ))
+        .expect("nested pipeline HITL projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect::<Vec<_>>();
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0]["content"], "Review the generated answer.");
+    let metadata = &projected[0]["response_metadata"];
+    assert_eq!(metadata["thread_id"], "thread-1");
+    assert_eq!(metadata["hitl_interrupt"]["node_name"], "review");
+    assert!(
+        metadata["hitl_interrupt"]["interrupt_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("hitl_g1:"))
+    );
+    assert!(metadata.get("checkpoint_id").is_none());
+    assert!(metadata.get("child_thread").is_none());
+    assert!(metadata["hitl_interrupt"].get("checkpoint_id").is_none());
+    assert!(metadata["hitl_interrupt"].get("child_thread").is_none());
+}
+
+#[test]
+fn nested_graph_hitl_rejects_an_unbound_child_thread() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let error = projection_error(projector.project(&nested_pipeline_hitl_event(
+        "child-checkpoint-12",
+        "different-thread/delegate",
+    )));
+    assert_eq!(error.code(), AgentEventProjectionErrorCode::InvalidState);
 }
 
 #[test]

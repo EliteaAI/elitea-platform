@@ -11,10 +11,11 @@ use std::fmt;
 use std::sync::Arc;
 
 use adk_rust::graph::{
-    Channel, Checkpointer, END, GraphAgent, GraphAgentBuilder, GraphError, Reducer, START, State,
-    StateSchema,
+    Channel, Checkpointer, CompiledGraph, END, GraphAgent, GraphAgentBuilder, GraphError, Node,
+    NodeContext, NodeOutput, Reducer, START, State, StateGraph, StateSchema,
 };
 use adk_rust::{Event, InvocationContext, Part};
+use async_trait::async_trait;
 use ring::digest;
 use serde::Deserialize;
 use serde::de::{Deserializer, SeqAccess, Visitor};
@@ -22,6 +23,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use super::application::{
+    APPLICATION_MESSAGES_STATE_KEY, APPLICATION_RESULT_STATE_KEY, APPLICATION_TASK_STATE_KEY,
     ApplicationNode, ApplicationNodeDefinition, PipelineApplicationResolver,
     PipelineApplicationSelection,
 };
@@ -47,6 +49,7 @@ const MAX_PIPELINE_STATE_KEYS: usize = 256;
 const MAX_STATIC_INTERRUPTS: usize = 128;
 const PIPELINE_RECURSION_LIMIT: usize = 100;
 const MAX_PIPELINE_RESULT_BYTES: usize = 512 * 1024;
+const SUBGRAPH_RESULT_NODE: &str = "__elitea_subgraph_result_v1";
 const PIPELINE_DIGEST_DOMAIN: &[u8] = b"elitea.graph.pipeline.config.v1\0";
 
 type ValidatedState = (
@@ -236,6 +239,102 @@ impl PipelineNodeRuntimes {
             application,
         }
     }
+}
+
+enum PipelineGraphBuilder {
+    Agent(Box<GraphAgentBuilder>),
+    Subgraph {
+        graph: StateGraph,
+        terminal: &'static str,
+    },
+}
+
+impl PipelineGraphBuilder {
+    fn node<N>(self, node: N) -> Self
+    where
+        N: Node + 'static,
+    {
+        match self {
+            Self::Agent(builder) => Self::Agent(Box::new((*builder).node(node))),
+            Self::Subgraph { graph, terminal } => Self::Subgraph {
+                graph: graph.add_node(TerminalRedirectNode::new(node, terminal)),
+                terminal,
+            },
+        }
+    }
+
+    fn edge(self, source: &str, target: &str) -> Self {
+        match self {
+            Self::Agent(builder) => Self::Agent(Box::new((*builder).edge(source, target))),
+            Self::Subgraph { graph, terminal } => Self::Subgraph {
+                graph: graph.add_edge(source, terminal_target(target, terminal)),
+                terminal,
+            },
+        }
+    }
+
+    fn into_agent(self) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
+        match self {
+            Self::Agent(builder) => Ok(*builder),
+            Self::Subgraph { .. } => Err(PipelineConfigurationError::Invalid(
+                "an internal pipeline graph builder changed kind",
+            )),
+        }
+    }
+
+    fn into_subgraph(self) -> Result<StateGraph, PipelineConfigurationError> {
+        match self {
+            Self::Subgraph { graph, .. } => Ok(graph),
+            Self::Agent(_) => Err(PipelineConfigurationError::Invalid(
+                "an internal pipeline graph builder changed kind",
+            )),
+        }
+    }
+}
+
+struct TerminalRedirectNode<N> {
+    inner: N,
+    terminal: &'static str,
+}
+
+impl<N> TerminalRedirectNode<N> {
+    const fn new(inner: N, terminal: &'static str) -> Self {
+        Self { inner, terminal }
+    }
+}
+
+#[async_trait]
+impl<N> Node for TerminalRedirectNode<N>
+where
+    N: Node,
+{
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn validate_against(&self, parent: &StateSchema) -> Result<(), GraphError> {
+        self.inner.validate_against(parent)
+    }
+
+    fn validate(&self) -> Result<(), GraphError> {
+        self.inner.validate()
+    }
+
+    async fn execute(&self, context: &NodeContext) -> Result<NodeOutput, GraphError> {
+        let mut output = self.inner.execute(context).await?;
+        if let Some(targets) = output.goto.as_mut() {
+            for target in targets {
+                if target == END {
+                    self.terminal.clone_into(target);
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+fn terminal_target<'a>(target: &'a str, terminal: &'a str) -> &'a str {
+    if target == END { terminal } else { target }
 }
 
 #[derive(Clone)]
@@ -570,19 +669,23 @@ impl PipelineDefinition {
         }
         let state_schema = self.state_schema(self.runtime_channels());
         let result_policy = self.result_policy();
-        let mut builder = GraphAgent::builder(agent_name)
-            .description("Elitea stored pipeline")
-            .state_schema(state_schema)
-            .edge(START, &self.entry_point)
-            .checkpointer_arc(checkpointer)
-            .recursion_limit(PIPELINE_RECURSION_LIMIT)
-            .max_concurrency(1)
-            .output_mapper(move |state| {
-                vec![pipeline_completion_event_from_state(state, &result_policy)]
-            });
+        let node_checkpointer = Arc::clone(&checkpointer);
+        let mut builder = PipelineGraphBuilder::Agent(Box::new(
+            GraphAgent::builder(agent_name)
+                .description("Elitea stored pipeline")
+                .state_schema(state_schema)
+                .edge(START, &self.entry_point)
+                .checkpointer_arc(checkpointer)
+                .recursion_limit(PIPELINE_RECURSION_LIMIT)
+                .max_concurrency(1)
+                .output_mapper(move |state| {
+                    vec![pipeline_completion_event_from_state(state, &result_policy)]
+                }),
+        ));
         for node in &self.nodes {
-            builder = self.bind_node(builder, node, runtimes)?;
+            builder = self.bind_node(builder, node, runtimes, &node_checkpointer)?;
         }
+        let mut builder = builder.into_agent()?;
         let printer_interrupts = self
             .nodes
             .iter()
@@ -606,6 +709,54 @@ impl PipelineDefinition {
         builder.build().map_err(PipelineConfigurationError::Graph)
     }
 
+    /// Compile this definition for one exact saved-pipeline participant.
+    ///
+    /// The child keeps the same claim-fenced checkpointer but receives a
+    /// namespaced thread from ADK [`SubgraphNode`](adk_rust::graph::subgraph::SubgraphNode).
+    /// A compiler-owned terminal node projects the same public result policy
+    /// into `elitea_response`, which is the only business result shared back to
+    /// the parent Agent node.
+    pub(crate) fn compile_subgraph_with_runtime(
+        &self,
+        checkpointer: Arc<dyn Checkpointer>,
+        runtimes: &PipelineNodeRuntimes,
+    ) -> Result<CompiledGraph, PipelineConfigurationError> {
+        let state_schema = self.state_schema(self.runtime_channels());
+        let result_policy = self.result_policy();
+        let graph = StateGraph::new(state_schema).add_edge(START, &self.entry_point);
+        let mut builder = PipelineGraphBuilder::Subgraph {
+            graph,
+            terminal: SUBGRAPH_RESULT_NODE,
+        };
+        for node in &self.nodes {
+            builder = self.bind_node(builder, node, runtimes, &checkpointer)?;
+            if node.route_targets().is_empty() {
+                builder = builder.edge(node.id(), END);
+            }
+        }
+        builder = builder.node(PipelineSubgraphResultNode { result_policy });
+        let printer_interrupts = self
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                PipelineNodeDefinition::Printer(node) => Some(node.id()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mut graph = builder
+            .into_subgraph()?
+            .add_edge(SUBGRAPH_RESULT_NODE, END)
+            .compile()
+            .map_err(PipelineConfigurationError::Graph)?
+            .with_checkpointer_arc(checkpointer)
+            .with_recursion_limit(PIPELINE_RECURSION_LIMIT)
+            .with_max_concurrency(1);
+        if !printer_interrupts.is_empty() {
+            graph = graph.with_interrupt_after(&printer_interrupts);
+        }
+        Ok(graph)
+    }
+
     fn runtime_channels(&self) -> BTreeSet<String> {
         let mut channels = BTreeSet::from([
             "input".to_owned(),
@@ -622,6 +773,9 @@ impl PipelineDefinition {
             "parallel_tasks".to_owned(),
             "_pipeline_blocked".to_owned(),
             "session_id".to_owned(),
+            APPLICATION_TASK_STATE_KEY.to_owned(),
+            APPLICATION_MESSAGES_STATE_KEY.to_owned(),
+            APPLICATION_RESULT_STATE_KEY.to_owned(),
             HITL_RESUME_STATE_KEY.to_owned(),
             DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
         ]);
@@ -639,13 +793,14 @@ impl PipelineDefinition {
 
     fn bind_node(
         &self,
-        builder: GraphAgentBuilder,
+        builder: PipelineGraphBuilder,
         node: &PipelineNodeDefinition,
         runtimes: &PipelineNodeRuntimes,
-    ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
+        checkpointer: &Arc<dyn Checkpointer>,
+    ) -> Result<PipelineGraphBuilder, PipelineConfigurationError> {
         Ok(match node {
             PipelineNodeDefinition::Application(node) => {
-                self.bind_application_node(builder, node, runtimes)?
+                self.bind_application_node(builder, node, runtimes, checkpointer)?
             }
             PipelineNodeDefinition::Decision(node) => {
                 let Some(factory) = runtimes.llm.clone() else {
@@ -736,22 +891,30 @@ impl PipelineDefinition {
 
     fn bind_application_node(
         &self,
-        builder: GraphAgentBuilder,
+        builder: PipelineGraphBuilder,
         node: &ApplicationNodeDefinition,
         runtimes: &PipelineNodeRuntimes,
-    ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
-        let Some(resolver) = runtimes.application.clone() else {
+        checkpointer: &Arc<dyn Checkpointer>,
+    ) -> Result<PipelineGraphBuilder, PipelineConfigurationError> {
+        let Some(resolver) = runtimes.application.as_ref() else {
             return Err(PipelineConfigurationError::Unsupported(
                 "the pipeline Agent runtime is not bound to this compiler",
             ));
         };
         let transition = node.transition().map(ToOwned::to_owned);
         let node_id = node.id().to_owned();
-        let mut next = builder.node(ApplicationNode::new(
+        let application = ApplicationNode::new(
             node.clone(),
             self.state.clone(),
-            resolver,
-        ));
+            resolver.as_ref(),
+            Arc::clone(checkpointer),
+        )
+        .map_err(|_| {
+            PipelineConfigurationError::Unsupported(
+                "the selected pipeline Agent participant is unavailable",
+            )
+        })?;
+        let mut next = builder.node(application);
         if let Some(transition) = transition {
             let target = if transition == "END" {
                 END
@@ -856,9 +1019,27 @@ impl PipelineDefinition {
     }
 }
 
+#[derive(Clone)]
 pub(super) struct PipelineResultPolicy {
     pub(super) terminal_data_keys: Vec<String>,
     pub(super) fallback_data_keys: Vec<String>,
+}
+
+struct PipelineSubgraphResultNode {
+    result_policy: PipelineResultPolicy,
+}
+
+#[async_trait]
+impl Node for PipelineSubgraphResultNode {
+    fn name(&self) -> &str {
+        SUBGRAPH_RESULT_NODE
+    }
+
+    async fn execute(&self, context: &NodeContext) -> Result<NodeOutput, GraphError> {
+        let result_text = select_pipeline_result(&context.state, &self.result_policy)
+            .unwrap_or_else(|| super::agent::PIPELINE_COMPLETED_CONTENT.to_owned());
+        Ok(NodeOutput::new().with_update("elitea_response", json!(result_text)))
+    }
 }
 
 fn pipeline_completion_event_from_state(state: &State, policy: &PipelineResultPolicy) -> Event {
@@ -969,6 +1150,7 @@ fn runtime_channel_default(channel: &str) -> serde_json::Value {
         "parallel_tasks" | "state_types" | HITL_RESUME_STATE_KEY | DIRECT_TOOL_RESUME_STATE_KEY => {
             json!({})
         }
+        APPLICATION_MESSAGES_STATE_KEY => json!([]),
         "context_info" | "hitl_interrupt" | "_pipeline_blocked" => serde_json::Value::Null,
         channel if RUNTIME_STRING_CHANNELS.contains(&channel) => json!(""),
         _ => serde_json::Value::Null,
@@ -1021,6 +1203,11 @@ fn parse_pipeline_nodes(
     let mut node_ids = BTreeSet::new();
     for raw_node in raw_nodes {
         let node = parse_pipeline_node(&raw_node)?;
+        if node.id() == SUBGRAPH_RESULT_NODE {
+            return Err(PipelineConfigurationError::Invalid(
+                "a pipeline node identifier is reserved",
+            ));
+        }
         if !node_ids.insert(node.id().to_owned()) {
             return Err(PipelineConfigurationError::Invalid(
                 "pipeline node identifiers must be unique",
@@ -1255,6 +1442,13 @@ fn builtin_state_key(key: &str) -> bool {
 fn reserved_user_state_key(key: &str) -> bool {
     key == HITL_RESUME_STATE_KEY
         || key == DIRECT_TOOL_RESUME_STATE_KEY
+        || matches!(
+            key,
+            APPLICATION_TASK_STATE_KEY
+                | APPLICATION_MESSAGES_STATE_KEY
+                | APPLICATION_RESULT_STATE_KEY
+                | SUBGRAPH_RESULT_NODE
+        )
         || matches!(
             key,
             "output"

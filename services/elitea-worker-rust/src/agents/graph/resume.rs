@@ -322,7 +322,7 @@ impl PipelineToolDecision {
             .ok_or_else(PipelineResumeError::stale)?;
         if checkpoint.thread_id != thread_id
             || checkpoint.checkpoint_id != binding.checkpoint_id()
-            || checkpoint.pending_nodes.as_slice() != [binding.node_name()]
+            || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
             || checkpoint
                 .state
                 .get(DIRECT_TOOL_RESUME_STATE_KEY)
@@ -330,6 +330,13 @@ impl PipelineToolDecision {
         {
             return Err(PipelineResumeError::stale());
         }
+        validate_nested_checkpoint(
+            checkpointer,
+            binding.nested_checkpoint(),
+            binding.node_name(),
+            DIRECT_TOOL_RESUME_STATE_KEY,
+        )
+        .await?;
         Ok(PipelineResume {
             state: [(
                 DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
@@ -438,7 +445,7 @@ impl PipelineHitlDecision {
             .ok_or_else(PipelineResumeError::stale)?;
         if checkpoint.thread_id != thread_id
             || checkpoint.checkpoint_id != binding.checkpoint_id()
-            || checkpoint.pending_nodes.as_slice() != [binding.node_name()]
+            || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
             || checkpoint
                 .state
                 .get(HITL_RESUME_STATE_KEY)
@@ -446,6 +453,13 @@ impl PipelineHitlDecision {
         {
             return Err(PipelineResumeError::stale());
         }
+        validate_nested_checkpoint(
+            checkpointer,
+            binding.nested_checkpoint(),
+            binding.node_name(),
+            HITL_RESUME_STATE_KEY,
+        )
+        .await?;
         let value = if self.action == PipelineHitlAction::Edit {
             Value::String(self.value)
         } else {
@@ -477,6 +491,33 @@ impl PipelineResume {
     pub(super) fn into_state(self) -> State {
         self.state
     }
+}
+
+async fn validate_nested_checkpoint(
+    checkpointer: &dyn Checkpointer,
+    nested: Option<(&str, &str)>,
+    pending_node: &str,
+    resume_state_key: &str,
+) -> Result<(), PipelineResumeError> {
+    let Some((thread_id, checkpoint_id)) = nested else {
+        return Ok(());
+    };
+    let checkpoint = checkpointer
+        .load(thread_id)
+        .await
+        .map_err(|_| PipelineResumeError::dependency())?
+        .ok_or_else(PipelineResumeError::stale)?;
+    if checkpoint.thread_id != thread_id
+        || checkpoint.checkpoint_id != checkpoint_id
+        || checkpoint.pending_nodes.as_slice() != [pending_node]
+        || checkpoint
+            .state
+            .get(resume_state_key)
+            .is_some_and(|value| value != &json!({}))
+    {
+        return Err(PipelineResumeError::stale());
+    }
+    Ok(())
 }
 
 fn valid_identity(value: &str) -> bool {

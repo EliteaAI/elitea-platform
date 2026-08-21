@@ -141,11 +141,28 @@ impl OrdinaryNoToolProfile {
         version: &Map<String, Value>,
         fallback: &Self,
     ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::from_nested_version_for_type(version, fallback, "agent")
+    }
+
+    /// Validate one nested stored pipeline while preserving the parent's model
+    /// as the SDK-compatible fallback for its LLM/Decision nodes.
+    pub(crate) fn from_nested_pipeline_version(
+        version: &Map<String, Value>,
+        fallback: &Self,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::from_nested_version_for_type(version, fallback, "pipeline")
+    }
+
+    fn from_nested_version_for_type(
+        version: &Map<String, Value>,
+        fallback: &Self,
+        expected_agent_type: &'static str,
+    ) -> Result<Self, NativeAgentAssemblyError> {
         match version.get("agent_type") {
-            None => {}
-            Some(Value::String(value)) if value == "agent" => {}
+            None if expected_agent_type == "agent" => {}
+            Some(Value::String(value)) if value == expected_agent_type => {}
             Some(Value::String(_)) => return Err(unsupported_profile()),
-            Some(_) => return Err(invalid_profile()),
+            Some(_) | None => return Err(invalid_profile()),
         }
         validate_feature_array(version.get("tools"), true)?;
         validate_empty_feature_array(version.get("internal_tools"), false)?;
@@ -163,9 +180,10 @@ impl OrdinaryNoToolProfile {
             .and_then(Value::as_str)
             .filter(|value| bounded_instruction(value))
             .ok_or_else(invalid_profile)?;
-        if ["{{", "{%", "{#"]
-            .iter()
-            .any(|marker| instructions.contains(marker))
+        if expected_agent_type == "agent"
+            && ["{{", "{%", "{#"]
+                .iter()
+                .any(|marker| instructions.contains(marker))
         {
             return Err(unsupported_profile());
         }
