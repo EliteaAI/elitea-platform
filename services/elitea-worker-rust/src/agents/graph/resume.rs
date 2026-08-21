@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 
 use super::direct_tool::DIRECT_TOOL_RESUME_STATE_KEY;
 use super::hitl::HITL_RESUME_STATE_KEY;
+use super::llm::LLM_TOOL_RESUME_STATE_KEY;
 use super::printer::{
     PRINTER_OUTPUT_STATE_KEY, PRINTER_PAUSE_SCHEMA, PrinterPauseCatalog, PrinterPauseMetadata,
 };
@@ -405,10 +406,53 @@ impl PipelineToolDecision {
         if checkpoint.thread_id != thread_id
             || checkpoint.checkpoint_id != binding.checkpoint_id()
             || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
-            || checkpoint
-                .state
-                .get(DIRECT_TOOL_RESUME_STATE_KEY)
-                .is_some_and(|value| value != &json!({}))
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        if let Some(replay) = binding.llm_replay().cloned() {
+            let predecessor = pipeline_leaf_state_entry(
+                checkpointer,
+                &checkpoint.state,
+                binding.nested_checkpoints(),
+                binding.node_name(),
+                LLM_TOOL_RESUME_STATE_KEY,
+            )
+            .await?;
+            if !replay
+                .matches_checkpoint_predecessor(predecessor.as_ref())
+                .map_err(|_| PipelineResumeError::corrupt())?
+            {
+                return Err(PipelineResumeError::stale());
+            }
+            let approve = self.action == PipelineHitlAction::Approve;
+            let denial_comment = (self.action == PipelineHitlAction::BlockWithComment)
+                .then_some(self.value.as_str());
+            let resolved = replay
+                .resolve_decision(
+                    binding.tool_call_id(),
+                    binding.tool_name(),
+                    approve,
+                    denial_comment,
+                    (
+                        binding.toolkit_name(),
+                        binding.toolkit_type(),
+                        binding.action_label(),
+                    ),
+                )
+                .map_err(|_| PipelineResumeError::corrupt())?;
+            return Ok(PipelineResume {
+                state: [(
+                    LLM_TOOL_RESUME_STATE_KEY.to_owned(),
+                    json!({binding.node_name(): resolved}),
+                )]
+                .into_iter()
+                .collect(),
+            });
+        }
+        if checkpoint
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .is_some_and(|value| value != &json!({}))
         {
             return Err(PipelineResumeError::stale());
         }
@@ -436,6 +480,38 @@ impl PipelineToolDecision {
             .collect(),
         })
     }
+}
+
+async fn pipeline_leaf_state_entry(
+    checkpointer: &dyn Checkpointer,
+    root_state: &State,
+    nested: &[crate::agents::events::NestedPipelineCheckpoint],
+    leaf_pending_node: &str,
+    state_key: &str,
+) -> Result<Option<Value>, PipelineResumeError> {
+    let mut leaf_state = root_state.clone();
+    for (index, nested_checkpoint) in nested.iter().enumerate() {
+        let pending_node = nested
+            .get(index + 1)
+            .map_or(leaf_pending_node, |checkpoint| checkpoint.node_name());
+        let checkpoint = checkpointer
+            .load(nested_checkpoint.thread_id())
+            .await
+            .map_err(|_| PipelineResumeError::dependency())?
+            .ok_or_else(PipelineResumeError::stale)?;
+        if checkpoint.thread_id != nested_checkpoint.thread_id()
+            || checkpoint.checkpoint_id != nested_checkpoint.checkpoint_id()
+            || checkpoint.pending_nodes.as_slice() != [pending_node]
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        leaf_state = checkpoint.state;
+    }
+    Ok(leaf_state
+        .get(state_key)
+        .and_then(Value::as_object)
+        .and_then(|values| values.get(leaf_pending_node))
+        .cloned())
 }
 
 impl PipelineHitlDecision {

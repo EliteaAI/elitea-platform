@@ -382,6 +382,22 @@ require an additional atomic record, but it must first prove that a
 deterministic decision event or checkpoint transition cannot satisfy the
 contract; pending state alone is not justification for another table.
 
+A pipeline LLM node now applies the same semantic contract at the graph
+boundary. Its nested native `LlmAgent` still owns tool execution and
+correlation. When confirmation pauses, Elitea adds a private
+`elitea.graph.llm-tool-replay.v1` value to the existing graph-interrupt/session
+binding with the exact bounded history, pending model content, provider call IDs,
+input/configuration/predecessor digests and accumulated decisions. The public
+interrupt contains only the existing masked graph confirmation. Resume
+validates the latest checkpoint, writes the resolved value to a reserved graph
+state channel and replays the saved model content once.
+Approval executes the selected real tool; denial swaps only that exact call for
+the shared no-effect adapter, so the continuation provider request receives
+`sensitive_tool_blocked` under the original call ID. There is no user-message
+workaround, second planning call or additional database table. Inner nested
+tool events still need an outer pipeline progress adapter, and approved effects
+still require durable outcome reconciliation.
+
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.
 The migration ledger is an eighth physical bookkeeping table, while four

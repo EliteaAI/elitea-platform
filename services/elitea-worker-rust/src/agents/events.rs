@@ -25,7 +25,8 @@ use serde_json::{Value, json};
 use super::direct_hitl::sensitive_call_identity;
 use super::graph::{
     PIPELINE_APPLICATION_HITL_SCHEMA, PIPELINE_COMPLETED_CONTENT, PIPELINE_COMPLETED_METADATA_KEY,
-    PIPELINE_COMPLETED_METADATA_VALUE, PRINTER_PAUSE_METADATA_KEY, PrinterPauseMetadata,
+    PIPELINE_COMPLETED_METADATA_VALUE, PRINTER_PAUSE_METADATA_KEY, PipelineLlmReplayEnvelope,
+    PrinterPauseMetadata,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -1801,6 +1802,8 @@ struct PipelineToolHitlData {
     tool_args: Value,
     argument_digest: String,
     policy_message: String,
+    #[serde(default)]
+    llm_replay: Option<PipelineLlmReplayEnvelope>,
 }
 
 #[derive(Deserialize)]
@@ -1870,6 +1873,14 @@ impl PipelineToolHitlData {
         validate_tool_event_value(&self.tool_args)?;
         if mask_sensitive_arguments(&self.tool_args, 0)? != self.tool_args {
             return Err(AgentEventProjectionError::invalid_state());
+        }
+        if let Some(replay) = &self.llm_replay {
+            replay
+                .validate()
+                .map_err(|_| AgentEventProjectionError::invalid_state())?;
+            if replay.definition_digest() != self.definition_digest {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
         }
         Ok(())
     }
@@ -2013,6 +2024,31 @@ impl PipelineToolHitlEventBinding {
     #[must_use]
     pub(crate) fn tool_call_id(&self) -> &str {
         &self.data.tool_call_id
+    }
+
+    #[must_use]
+    pub(crate) fn tool_name(&self) -> &str {
+        &self.data.tool_name
+    }
+
+    #[must_use]
+    pub(crate) fn toolkit_name(&self) -> &str {
+        &self.data.toolkit_name
+    }
+
+    #[must_use]
+    pub(crate) fn toolkit_type(&self) -> &str {
+        &self.data.toolkit_type
+    }
+
+    #[must_use]
+    pub(crate) fn action_label(&self) -> &str {
+        &self.data.action_label
+    }
+
+    #[must_use]
+    pub(crate) fn llm_replay(&self) -> Option<&PipelineLlmReplayEnvelope> {
+        self.data.llm_replay.as_ref()
     }
 }
 

@@ -126,11 +126,20 @@ Maintained Rust runtime ownership registry:
   same provider call ID remain separated by invocation hierarchy. The current
   materializer supports one selected child
   pipeline level and fails closed if that child declares another Agent node.
+  A pipeline LLM node uses native `require_tool_confirmation` and a bounded
+  private replay envelope in the existing graph-interrupt/session binding to
+  join the exact pending ADK tool turn to the outer checkpoint. Resume places
+  the resolved envelope in one reserved graph-state channel. Approve returns
+  the ordinary result; reject or
+  Block With Comment supplies the shared `sensitive_tool_blocked` result under
+  the original provider call ID without a new user turn or model replanning.
+  `src/agents/pipeline_tests.rs` owns the no-dispatch, same-ID and provider-call
+  count regression proof for that path.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,
   prebuilt/static MCP, remote effects, child variables, nested static Printer
-  interrupts, LLM-node nested
-  confirmation, arbitrary static interrupts and production activation remain
+  interrupts, inner pipeline-LLM tool progress projection, approved-effect
+  receipts, arbitrary static interrupts and production activation remain
   separate gates;
 - `src/toolkits/{snapshot,materialize,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded

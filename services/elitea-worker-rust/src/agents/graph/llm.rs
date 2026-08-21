@@ -9,19 +9,26 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use adk_rust::futures::StreamExt as _;
+use adk_rust::futures::{StreamExt as _, stream};
 use adk_rust::graph::{GraphError, Node, NodeContext, NodeOutput, State};
-use adk_rust::{Agent, Content, InvocationContext, Part};
+use adk_rust::{
+    AdkError, Agent, Content, FinishReason, InvocationContext, Llm, LlmRequest, LlmResponse,
+    LlmResponseStream, Part, ReadonlyContext, RunConfig, SchemaAdapter, Tool,
+    ToolConfirmationDecision, ToolContext, Toolset, tool_call_fingerprint,
+};
 use async_trait::async_trait;
 use ring::digest;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use thiserror::Error;
 use tracing::Instrument as _;
 
 use super::yaml::{valid_graph_id, valid_output_key};
+use crate::agents::direct_hitl::blocked_tool_result;
+use crate::agents::events::mask_sensitive_arguments;
+use crate::toolkits::SensitiveToolPolicy;
 
 const MAX_NODE_YAML_BYTES: usize = 64 * 1024;
 const MAX_MAPPING_ENTRIES: usize = 16;
@@ -33,6 +40,16 @@ const MAX_TOOL_TIMEOUT_SECONDS: u64 = 900;
 const DEFAULT_TOOL_TIMEOUT_SECONDS: u64 = 900;
 const CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.llm.config.v1\0";
 const MAX_RENDERED_INPUT_BYTES: usize = 64 * 1024;
+const MAX_LLM_REPLAY_BYTES: usize = 512 * 1024;
+const MAX_LLM_REPLAY_CONTENTS: usize = 1_024;
+const MAX_LLM_REPLAY_DECISIONS: usize = 16;
+const MAX_CONFIRMATION_IDENTITY_BYTES: usize = 512;
+const MAX_CONFIRMATION_MESSAGE_BYTES: usize = 16 * 1024;
+const LLM_TOOL_CONFIRMATION_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
+const LLM_TOOL_REPLAY_SCHEMA: &str = "elitea.graph.llm-tool-replay.v1";
+const LLM_INPUT_DIGEST_DOMAIN: &[u8] = b"elitea.graph.llm.input.v1\0";
+const LLM_REPLAY_STATE_DIGEST_DOMAIN: &[u8] = b"elitea.graph.llm.replay-state.v1\0";
+pub(crate) const LLM_TOOL_RESUME_STATE_KEY: &str = "__elitea_llm_tool_resume_v1";
 static LLM_INVOCATION_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 #[derive(Clone, Deserialize)]
@@ -415,6 +432,10 @@ impl LlmNodeDefinition {
         );
         copy_digest(context.finish().as_ref())
     }
+
+    fn digest_label(&self) -> String {
+        format!("sha256:{}", hex(&self.config_digest()))
+    }
 }
 
 /// Prompt material passed to an invocation-owned ADK `LlmAgent`.
@@ -429,6 +450,24 @@ impl LlmExecutionInput {
         &self.system
     }
 
+    fn digest_label(&self) -> Result<String, LlmExecutionError> {
+        let encoded = serde_json::to_vec(&(&self.system, &self.task, &self.history))
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        if encoded.len() > MAX_LLM_REPLAY_BYTES {
+            return Err(LlmExecutionError::ResourceExhausted);
+        }
+        let mut context = digest::Context::new(&digest::SHA256);
+        context.update(LLM_INPUT_DIGEST_DOMAIN);
+        digest_field(&mut context, &encoded);
+        Ok(format!("sha256:{}", hex(context.finish().as_ref())))
+    }
+
+    fn initial_transcript(&self) -> Vec<Content> {
+        let mut transcript = self.history.clone();
+        transcript.push(self.task.clone());
+        transcript
+    }
+
     pub(super) fn for_decision(history: Vec<Content>, prompt: String) -> Self {
         Self {
             system: String::new(),
@@ -438,6 +477,260 @@ impl LlmExecutionInput {
     }
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineLlmReplayDecision {
+    tool_name: String,
+    arguments: Value,
+    fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocked_result: Option<Value>,
+}
+
+/// Private, checkpoint-bound continuation state for one native LLM-node tool turn.
+///
+/// The browser receives only the masked confirmation card. Raw arguments and the
+/// exact ADK transcript remain inside the `PostgreSQL` graph/session boundary so a
+/// continuation can replay the provider's original function-call IDs without a
+/// second planning call.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PipelineLlmReplayEnvelope {
+    schema_revision: String,
+    node_name: String,
+    definition_digest: String,
+    input_digest: String,
+    predecessor_digest: String,
+    history_before_pending: Vec<Content>,
+    pending_content: Content,
+    decisions: BTreeMap<String, PipelineLlmReplayDecision>,
+}
+
+impl PipelineLlmReplayEnvelope {
+    fn new(
+        definition: &LlmNodeDefinition,
+        input_digest: String,
+        predecessor: Option<&Value>,
+        history_before_pending: Vec<Content>,
+        pending_content: Content,
+        prior: Option<&Self>,
+    ) -> Result<Self, LlmExecutionError> {
+        let decisions = prior
+            .filter(|prior| same_content(&prior.pending_content, &pending_content))
+            .map_or_else(BTreeMap::new, |prior| prior.decisions.clone());
+        let envelope = Self {
+            schema_revision: LLM_TOOL_REPLAY_SCHEMA.to_owned(),
+            node_name: definition.id().to_owned(),
+            definition_digest: definition.digest_label(),
+            input_digest,
+            predecessor_digest: replay_state_digest(predecessor)?,
+            history_before_pending,
+            pending_content,
+            decisions,
+        };
+        envelope.validate()?;
+        Ok(envelope)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), LlmExecutionError> {
+        if self.schema_revision != LLM_TOOL_REPLAY_SCHEMA
+            || !valid_replay_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || !valid_sha256_label(&self.input_digest)
+            || !valid_sha256_label(&self.predecessor_digest)
+            || self.history_before_pending.len() > MAX_LLM_REPLAY_CONTENTS
+            || self.decisions.len() > MAX_LLM_REPLAY_DECISIONS
+            || self.pending_content.role != "model"
+        {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let calls = replay_calls(&self.pending_content)?;
+        if calls.is_empty() || calls.len() > MAX_LLM_REPLAY_DECISIONS {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let mut identities = BTreeSet::new();
+        if calls.iter().any(|call| {
+            !valid_replay_identity(call.call_id)
+                || !valid_replay_identity(call.tool_name)
+                || !identities.insert(call.call_id)
+        }) {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        for (call_id, decision) in &self.decisions {
+            let Some(call) = calls.iter().find(|call| call.call_id == call_id) else {
+                return Err(LlmExecutionError::InvalidInputMapping);
+            };
+            if !valid_replay_identity(call_id)
+                || !valid_replay_identity(&decision.tool_name)
+                || decision.tool_name != call.tool_name
+                || &decision.arguments != call.arguments
+                || decision.fingerprint
+                    != tool_call_fingerprint(&decision.tool_name, &decision.arguments)
+            {
+                return Err(LlmExecutionError::InvalidInputMapping);
+            }
+            if let Some(result) = &decision.blocked_result
+                && result.get("type").and_then(Value::as_str) != Some("sensitive_tool_blocked")
+            {
+                return Err(LlmExecutionError::InvalidInputMapping);
+            }
+        }
+        let encoded =
+            serde_json::to_vec(self).map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        if encoded.len() > MAX_LLM_REPLAY_BYTES {
+            return Err(LlmExecutionError::ResourceExhausted);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn matches_checkpoint_predecessor(
+        &self,
+        predecessor: Option<&Value>,
+    ) -> Result<bool, LlmExecutionError> {
+        replay_state_digest(predecessor).map(|digest| digest == self.predecessor_digest)
+    }
+
+    pub(crate) fn resolve_decision(
+        mut self,
+        call_id: &str,
+        tool_name: &str,
+        approve: bool,
+        denial_comment: Option<&str>,
+        policy: (&str, &str, &str),
+    ) -> Result<Value, LlmExecutionError> {
+        self.validate()?;
+        let call = replay_calls(&self.pending_content)?
+            .into_iter()
+            .find(|call| call.call_id == call_id && call.tool_name == tool_name)
+            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+        if self.decisions.contains_key(call_id) {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let blocked_result = (!approve).then(|| {
+            let (toolkit_name, toolkit_type, action_label) = policy;
+            blocked_tool_result(
+                tool_name,
+                toolkit_name,
+                toolkit_type,
+                action_label,
+                denial_comment,
+            )
+        });
+        self.decisions.insert(
+            call_id.to_owned(),
+            PipelineLlmReplayDecision {
+                tool_name: tool_name.to_owned(),
+                arguments: call.arguments.clone(),
+                fingerprint: tool_call_fingerprint(tool_name, call.arguments),
+                blocked_result,
+            },
+        );
+        self.validate()?;
+        serde_json::to_value(self).map_err(|_| LlmExecutionError::InvalidInputMapping)
+    }
+
+    fn apply_run_config(&self, run_config: &mut RunConfig) {
+        for (call_id, decision) in &self.decisions {
+            run_config
+                .tool_confirmation_decisions
+                .insert(call_id.clone(), ToolConfirmationDecision::Approve);
+            run_config
+                .tool_confirmation_fingerprints
+                .insert(call_id.clone(), decision.fingerprint.clone());
+        }
+    }
+
+    fn blocked_replays(&self) -> Vec<PipelineBlockedToolReplay> {
+        self.decisions
+            .iter()
+            .filter_map(|(call_id, decision)| {
+                decision
+                    .blocked_result
+                    .as_ref()
+                    .map(|response| PipelineBlockedToolReplay {
+                        call_id: call_id.clone(),
+                        tool_name: decision.tool_name.clone(),
+                        arguments: decision.arguments.clone(),
+                        response: response.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    fn replay_history(&self) -> Vec<Content> {
+        self.history_before_pending.clone()
+    }
+
+    fn pending_content(&self) -> Content {
+        self.pending_content.clone()
+    }
+
+    fn decisions(&self) -> &BTreeMap<String, PipelineLlmReplayDecision> {
+        &self.decisions
+    }
+
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.definition_digest
+    }
+
+    fn input_digest(&self) -> &str {
+        &self.input_digest
+    }
+}
+
+struct ReplayCall<'a> {
+    call_id: &'a str,
+    tool_name: &'a str,
+    arguments: &'a Value,
+}
+
+fn replay_calls(content: &Content) -> Result<Vec<ReplayCall<'_>>, LlmExecutionError> {
+    content
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            Part::FunctionCall { name, args, id, .. } => Some(
+                id.as_deref()
+                    .map(|call_id| ReplayCall {
+                        call_id,
+                        tool_name: name,
+                        arguments: args,
+                    })
+                    .ok_or(LlmExecutionError::InvalidInputMapping),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+fn same_content(left: &Content, right: &Content) -> bool {
+    serde_json::to_vec(left).ok() == serde_json::to_vec(right).ok()
+}
+
+fn replay_state_digest(value: Option<&Value>) -> Result<String, LlmExecutionError> {
+    let encoded = serde_json::to_vec(value.unwrap_or(&Value::Null))
+        .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+    if encoded.len() > MAX_LLM_REPLAY_BYTES {
+        return Err(LlmExecutionError::ResourceExhausted);
+    }
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(LLM_REPLAY_STATE_DIGEST_DOMAIN);
+    digest_field(&mut context, &encoded);
+    Ok(format!("sha256:{}", hex(context.finish().as_ref())))
+}
+
+fn valid_replay_identity(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_CONFIRMATION_IDENTITY_BYTES
+        && !value.chars().any(char::is_control)
+}
+
+fn valid_sha256_label(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Invocation-owned factory that binds a fresh model and exact node toolsets.
 pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
     fn build(
@@ -445,7 +738,12 @@ pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
         definition: &LlmNodeDefinition,
         input: &LlmExecutionInput,
         output_schema: Option<Value>,
+        replay: Option<&PipelineLlmReplayEnvelope>,
     ) -> Result<Arc<dyn Agent>, LlmExecutionError>;
+
+    fn sensitive_policy(&self, _tool_name: &str) -> Option<SensitiveToolPolicy> {
+        None
+    }
 }
 
 /// Native ADK agent node with Elitea YAML input/output projection.
@@ -499,25 +797,50 @@ impl Node for LlmNode {
                 .definition
                 .map_execution_input(&context.state)
                 .map_err(|_| node_failure(self.name()))?;
+            let input_digest = input
+                .digest_label()
+                .map_err(|_| node_failure(self.name()))?;
+            let (replay, remaining_replays) = self
+                .replay_state(&context.state, &input_digest)
+                .map_err(|_| node_failure(self.name()))?;
             tracing::Span::current().record("stage", "agent_binding");
             let schema = self
                 .definition
                 .output_schema(&self.state_types)
                 .map_err(|_| node_failure(self.name()))?;
-            let text =
-                run_model_agent_text(&self.definition, input, schema, &self.factory, context)
-                    .await
-                    .map_err(|_| node_failure(self.name()))?;
-            tracing::Span::current().record("stage", "state_projection");
-            let updates = self
-                .definition
-                .project_response(&text, &self.state_types)
-                .map_err(|_| node_failure(self.name()))?;
-            let mut output = NodeOutput::new();
-            for (key, value) in updates {
-                output = output.with_update(&key, value);
+            match run_model_agent(
+                &self.definition,
+                input,
+                &input_digest,
+                schema,
+                &self.factory,
+                replay.as_ref(),
+                context,
+            )
+            .await
+            .map_err(|_| node_failure(self.name()))?
+            {
+                PipelineLlmRunOutcome::Completed(text) => {
+                    tracing::Span::current().record("stage", "state_projection");
+                    let updates = self
+                        .definition
+                        .project_response(&text, &self.state_types)
+                        .map_err(|_| node_failure(self.name()))?;
+                    let mut output = NodeOutput::new();
+                    if replay.is_some() {
+                        output = output.with_update(LLM_TOOL_RESUME_STATE_KEY, remaining_replays);
+                    }
+                    for (key, value) in updates {
+                        output = output.with_update(&key, value);
+                    }
+                    Ok(output)
+                }
+                PipelineLlmRunOutcome::Confirmation(confirmation) => {
+                    tracing::Span::current().record("stage", "tool_confirmation");
+                    self.confirmation_interrupt(*confirmation)
+                        .map_err(|_| node_failure(self.name()))
+                }
             }
-            Ok(output)
         }
         .instrument(span.clone())
         .await;
@@ -531,6 +854,104 @@ impl Node for LlmNode {
     }
 }
 
+impl LlmNode {
+    fn replay_state(
+        &self,
+        state: &State,
+        input_digest: &str,
+    ) -> Result<(Option<PipelineLlmReplayEnvelope>, Value), LlmExecutionError> {
+        let Some(raw_replays) = state.get(LLM_TOOL_RESUME_STATE_KEY) else {
+            return Ok((None, json!({})));
+        };
+        let replays = raw_replays
+            .as_object()
+            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+        let Some(raw) = replays.get(self.name()) else {
+            return Ok((None, raw_replays.clone()));
+        };
+        let replay = serde_json::from_value::<PipelineLlmReplayEnvelope>(raw.clone())
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        replay.validate()?;
+        if replay.node_name != self.name()
+            || replay.definition_digest() != self.definition.digest_label()
+            || replay.input_digest() != input_digest
+            || replay.decisions().is_empty()
+        {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let mut remaining = replays.clone();
+        remaining.remove(self.name());
+        Ok((Some(replay), Value::Object(remaining)))
+    }
+
+    fn confirmation_interrupt(
+        &self,
+        confirmation: PipelineLlmConfirmation,
+    ) -> Result<NodeOutput, LlmExecutionError> {
+        let call_id = confirmation
+            .request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_replay_identity(value))
+            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+        let policy = self
+            .factory
+            .sensitive_policy(&confirmation.request.tool_name)
+            .ok_or(LlmExecutionError::Unavailable)?;
+        if policy.policy_message().is_empty()
+            || policy.policy_message().len() > MAX_CONFIRMATION_MESSAGE_BYTES
+            || policy.policy_message().chars().any(|character| {
+                character == '\0'
+                    || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+            })
+        {
+            return Err(LlmExecutionError::ResourceExhausted);
+        }
+        let masked = mask_sensitive_arguments(&confirmation.request.args, 0)
+            .map_err(|_| LlmExecutionError::ResourceExhausted)?;
+        let argument_digest = confirmation_argument_digest(
+            call_id,
+            &confirmation.request.tool_name,
+            &confirmation.request.args,
+        )?;
+        let replay = serde_json::to_value(confirmation.replay)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        let data = json!({
+            "schema_revision": LLM_TOOL_CONFIRMATION_SCHEMA,
+            "type": "hitl",
+            "guardrail_type": "sensitive_tool",
+            "node_name": self.name(),
+            "message": policy.policy_message(),
+            "available_actions": ["approve", "reject", "block_with_comment"],
+            "routes": {},
+            "definition_digest": self.definition.digest_label(),
+            "tool_call_id": call_id,
+            "tool_name": confirmation.request.tool_name,
+            "toolkit_name": policy.toolkit_name(),
+            "toolkit_type": policy.toolkit_type(),
+            "action_label": policy.action_name(),
+            "tool_args": masked,
+            "argument_digest": argument_digest,
+            "policy_message": policy.policy_message(),
+            "llm_replay": replay,
+        });
+        Ok(NodeOutput::interrupt_with_data(
+            policy.policy_message(),
+            data,
+        ))
+    }
+}
+
+enum PipelineLlmRunOutcome {
+    Completed(String),
+    Confirmation(Box<PipelineLlmConfirmation>),
+}
+
+struct PipelineLlmConfirmation {
+    request: adk_rust::ToolConfirmationRequest,
+    replay: PipelineLlmReplayEnvelope,
+}
+
 pub(super) async fn run_model_agent_text(
     definition: &LlmNodeDefinition,
     input: LlmExecutionInput,
@@ -538,12 +959,50 @@ pub(super) async fn run_model_agent_text(
     factory: &Arc<dyn PipelineLlmAgentFactory>,
     context: &NodeContext,
 ) -> Result<String, LlmExecutionError> {
-    let agent = factory.build(definition, &input, output_schema)?;
+    match run_model_agent(
+        definition,
+        input,
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        output_schema,
+        factory,
+        None,
+        context,
+    )
+    .await?
+    {
+        PipelineLlmRunOutcome::Completed(text) => Ok(text),
+        PipelineLlmRunOutcome::Confirmation(_) => Err(LlmExecutionError::Unavailable),
+    }
+}
+
+async fn run_model_agent(
+    definition: &LlmNodeDefinition,
+    mut input: LlmExecutionInput,
+    input_digest: &str,
+    output_schema: Option<Value>,
+    factory: &Arc<dyn PipelineLlmAgentFactory>,
+    replay: Option<&PipelineLlmReplayEnvelope>,
+    context: &NodeContext,
+) -> Result<PipelineLlmRunOutcome, LlmExecutionError> {
+    let predecessor = context
+        .state
+        .get(LLM_TOOL_RESUME_STATE_KEY)
+        .and_then(Value::as_object)
+        .and_then(|replays| replays.get(definition.id()));
+    let mut transcript = replay.map_or_else(
+        || input.initial_transcript(),
+        PipelineLlmReplayEnvelope::replay_history,
+    );
+    if let Some(replay) = replay {
+        input.history = replay.replay_history();
+    }
+    let agent = factory.build(definition, &input, output_schema, replay)?;
     let invocation = Arc::new(PipelineLlmInvocationContext::new(
         &context.config.thread_id,
         input,
         agent.clone(),
         context.config.parent_context.clone(),
+        replay,
     ));
     tracing::Span::current().record("stage", "model_tool_loop");
     let stream = agent
@@ -552,10 +1011,49 @@ pub(super) async fn run_model_agent_text(
         .map_err(|_| LlmExecutionError::Unavailable)?;
     tokio::pin!(stream);
     let mut events = Vec::new();
+    let mut pending_prefix = None;
+    let mut pending_content = None;
     while let Some(event) = stream.next().await {
-        events.push(event.map_err(|_| LlmExecutionError::Unavailable)?);
+        let event = event.map_err(|_| LlmExecutionError::Unavailable)?;
+        if let Some(request) = event.actions.tool_confirmation.clone() {
+            let pending_content = pending_content
+                .take()
+                .ok_or(LlmExecutionError::Unavailable)?;
+            let pending_prefix = pending_prefix
+                .take()
+                .ok_or(LlmExecutionError::Unavailable)?;
+            let replay = PipelineLlmReplayEnvelope::new(
+                definition,
+                input_digest.to_owned(),
+                predecessor,
+                pending_prefix,
+                pending_content,
+                replay,
+            )?;
+            return Ok(PipelineLlmRunOutcome::Confirmation(Box::new(
+                PipelineLlmConfirmation { request, replay },
+            )));
+        }
+        if !event.llm_response.partial
+            && let Some(content) = event.content()
+        {
+            let mut event_content = content.clone();
+            if event_content
+                .parts
+                .iter()
+                .any(|part| matches!(part, Part::FunctionCall { .. }))
+            {
+                normalize_replay_call_ids(&mut event_content, &event.invocation_id)?;
+                pending_prefix = Some(transcript.clone());
+                pending_content = Some(event_content.clone());
+            }
+            transcript.push(event_content);
+        }
+        events.push(event);
     }
-    last_model_text(&events).ok_or(LlmExecutionError::Unavailable)
+    last_model_text(&events)
+        .map(PipelineLlmRunOutcome::Completed)
+        .ok_or(LlmExecutionError::Unavailable)
 }
 
 fn node_failure(node: &str) -> GraphError {
@@ -576,6 +1074,299 @@ fn last_model_text(events: &[adk_rust::Event]) -> Option<String> {
             .join("");
         (!text.is_empty()).then_some(text)
     })
+}
+
+fn normalize_replay_call_ids(
+    content: &mut Content,
+    invocation_id: &str,
+) -> Result<(), LlmExecutionError> {
+    if !valid_replay_identity(invocation_id) {
+        return Err(LlmExecutionError::InvalidInputMapping);
+    }
+    let mut index = 0_usize;
+    for part in &mut content.parts {
+        if let Part::FunctionCall { name, id, .. } = part {
+            if id.is_none() {
+                *id = Some(format!("{invocation_id}_{name}_{index}"));
+            }
+            index += 1;
+        }
+    }
+    replay_calls(content).map(|_| ())
+}
+
+fn confirmation_argument_digest(
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+) -> Result<String, LlmExecutionError> {
+    if !valid_replay_identity(call_id) || !valid_replay_identity(tool_name) {
+        return Err(LlmExecutionError::InvalidInputMapping);
+    }
+    let fingerprint = tool_call_fingerprint(tool_name, arguments);
+    if fingerprint.len() > MAX_LLM_REPLAY_BYTES {
+        return Err(LlmExecutionError::ResourceExhausted);
+    }
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(b"elitea.graph.llm.arguments.v1\0");
+    digest_field(&mut context, call_id.as_bytes());
+    digest_field(&mut context, fingerprint.as_bytes());
+    Ok(format!("sha256:{}", hex(context.finish().as_ref())))
+}
+
+const PIPELINE_REPLAY_PENDING: u8 = 0;
+const PIPELINE_REPLAY_DELEGATING: u8 = 1;
+
+struct PipelineLlmReplayModel {
+    delegate: Arc<dyn Llm>,
+    state: AtomicU8,
+    pending_content: Content,
+}
+
+#[async_trait]
+impl Llm for PipelineLlmReplayModel {
+    fn name(&self) -> &str {
+        self.delegate.name()
+    }
+
+    fn schema_adapter(&self) -> &dyn SchemaAdapter {
+        self.delegate.schema_adapter()
+    }
+
+    fn uses_interactions_api(&self) -> bool {
+        self.delegate.uses_interactions_api()
+    }
+
+    async fn generate_content(
+        &self,
+        request: LlmRequest,
+        stream_response: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        if self
+            .state
+            .compare_exchange(
+                PIPELINE_REPLAY_PENDING,
+                PIPELINE_REPLAY_DELEGATING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            for call in replay_calls(&self.pending_content)
+                .map_err(|_| AdkError::agent("the pipeline LLM replay is malformed"))?
+            {
+                if !request.tools.contains_key(call.tool_name) {
+                    return Err(AdkError::agent(
+                        "the pipeline LLM replay tool is unavailable",
+                    ));
+                }
+            }
+            tracing::debug!("re-emitting one checkpointed pipeline LLM tool turn through ADK");
+            let response = LlmResponse {
+                content: Some(self.pending_content.clone()),
+                finish_reason: Some(FinishReason::Stop),
+                turn_complete: true,
+                ..LlmResponse::default()
+            };
+            return Ok(Box::pin(stream::once(async move { Ok(response) })));
+        }
+        validate_replay_results(&request, &self.pending_content)?;
+        self.delegate
+            .generate_content(request, stream_response)
+            .await
+    }
+}
+
+fn validate_replay_results(request: &LlmRequest, pending: &Content) -> adk_rust::Result<()> {
+    for call in replay_calls(pending)
+        .map_err(|_| AdkError::agent("the pipeline LLM replay is malformed"))?
+    {
+        let mut call_seen = false;
+        let mut response_seen = false;
+        for content in &request.contents {
+            for part in &content.parts {
+                match part {
+                    Part::FunctionCall { name, id, args, .. }
+                        if id.as_deref() == Some(call.call_id)
+                            && name == call.tool_name
+                            && args == call.arguments =>
+                    {
+                        call_seen = true;
+                    }
+                    Part::FunctionResponse {
+                        function_response,
+                        id,
+                        ..
+                    } if call_seen
+                        && id.as_deref() == Some(call.call_id)
+                        && function_response.name == call.tool_name =>
+                    {
+                        response_seen = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !call_seen || !response_seen {
+            return Err(AdkError::agent(
+                "the checkpointed pipeline LLM tool turn has no exact result",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PipelineBlockedToolReplay {
+    call_id: String,
+    tool_name: String,
+    arguments: Value,
+    response: Value,
+}
+
+struct PipelineBlockedToolset {
+    name: String,
+    inner: Arc<dyn Toolset>,
+    blocked: Arc<BTreeMap<String, PipelineBlockedToolReplay>>,
+}
+
+#[async_trait]
+impl Toolset for PipelineBlockedToolset {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn tools(
+        &self,
+        context: Arc<dyn ReadonlyContext>,
+    ) -> adk_rust::Result<Vec<Arc<dyn Tool>>> {
+        self.inner.tools(context).await.map(|tools| {
+            tools
+                .into_iter()
+                .map(|inner| {
+                    if self
+                        .blocked
+                        .values()
+                        .any(|blocked| blocked.tool_name == inner.name())
+                    {
+                        Arc::new(PipelineBlockedTool {
+                            inner,
+                            blocked: Arc::clone(&self.blocked),
+                        }) as Arc<dyn Tool>
+                    } else {
+                        inner
+                    }
+                })
+                .collect()
+        })
+    }
+}
+
+struct PipelineBlockedTool {
+    inner: Arc<dyn Tool>,
+    blocked: Arc<BTreeMap<String, PipelineBlockedToolReplay>>,
+}
+
+#[async_trait]
+impl Tool for PipelineBlockedTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn declaration(&self) -> Value {
+        self.inner.declaration()
+    }
+
+    fn enhanced_description(&self) -> String {
+        self.inner.enhanced_description()
+    }
+
+    fn is_long_running(&self) -> bool {
+        self.inner.is_long_running()
+    }
+
+    fn is_builtin(&self) -> bool {
+        self.inner.is_builtin()
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        self.inner.parameters_schema()
+    }
+
+    fn response_schema(&self) -> Option<Value> {
+        self.inner.response_schema()
+    }
+
+    fn required_scopes(&self) -> &[&str] {
+        self.inner.required_scopes()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.inner.is_read_only()
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        self.inner.is_concurrency_safe()
+    }
+
+    async fn execute(
+        &self,
+        context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        let Some(blocked) = self.blocked.get(context.function_call_id()) else {
+            return self.inner.execute(context, arguments).await;
+        };
+        if blocked.tool_name != self.inner.name() || blocked.arguments != arguments {
+            return Err(AdkError::agent(
+                "the blocked pipeline LLM tool call does not match its checkpointed replay",
+            ));
+        }
+        let mut actions = context.actions();
+        actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Deny);
+        context.set_actions(actions);
+        Ok(blocked.response.clone())
+    }
+}
+
+/// Bind the native ADK replay model and same-call structured block adapters.
+pub(crate) fn prepare_pipeline_llm_replay(
+    delegate: Arc<dyn Llm>,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    replay: Option<&PipelineLlmReplayEnvelope>,
+) -> (Arc<dyn Llm>, Vec<Arc<dyn Toolset>>) {
+    let Some(replay) = replay else {
+        return (delegate, toolsets);
+    };
+    let model: Arc<dyn Llm> = Arc::new(PipelineLlmReplayModel {
+        delegate,
+        state: AtomicU8::new(PIPELINE_REPLAY_PENDING),
+        pending_content: replay.pending_content(),
+    });
+    let blocked = replay
+        .blocked_replays()
+        .into_iter()
+        .map(|blocked| (blocked.call_id.clone(), blocked))
+        .collect::<BTreeMap<_, _>>();
+    if blocked.is_empty() {
+        return (model, toolsets);
+    }
+    let blocked = Arc::new(blocked);
+    let toolsets = toolsets
+        .into_iter()
+        .map(|inner| {
+            Arc::new(PipelineBlockedToolset {
+                name: format!("{}-blocked", inner.name()),
+                inner,
+                blocked: Arc::clone(&blocked),
+            }) as Arc<dyn Toolset>
+        })
+        .collect();
+    (model, toolsets)
 }
 
 pub(super) fn render_fstring(template: &str, state: &State) -> Result<String, LlmExecutionError> {
@@ -729,8 +1520,9 @@ impl PipelineLlmInvocationContext {
         input: LlmExecutionInput,
         agent: Arc<dyn Agent>,
         parent: Option<Arc<dyn InvocationContext>>,
+        replay: Option<&PipelineLlmReplayEnvelope>,
     ) -> Self {
-        let (user_id, app_name, branch, run_config) = parent.as_ref().map_or_else(
+        let (user_id, app_name, branch, mut run_config) = parent.as_ref().map_or_else(
             || {
                 (
                     "graph_user".to_owned(),
@@ -752,6 +1544,9 @@ impl PipelineLlmInvocationContext {
                 )
             },
         );
+        if let Some(replay) = replay {
+            replay.apply_run_config(&mut run_config);
+        }
         Self {
             invocation_id: format!(
                 "{session_id}:{}:{}",
@@ -1081,6 +1876,16 @@ fn copy_digest(value: &[u8]) -> [u8; 32] {
     let mut digest = [0_u8; 32];
     digest.copy_from_slice(value);
     digest
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        output.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    output
 }
 
 #[derive(Debug, Error)]

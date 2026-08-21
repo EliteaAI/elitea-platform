@@ -50,6 +50,7 @@ pub(crate) use direct_tool::{
 };
 pub(crate) use llm::{
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineLlmAgentFactory,
+    PipelineLlmReplayEnvelope, prepare_pipeline_llm_replay,
 };
 
 pub use yaml::{

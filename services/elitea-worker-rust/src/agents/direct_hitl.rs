@@ -1137,7 +1137,7 @@ fn exact_replay_result<'a>(
     .then_some(results[0].response)
 }
 
-fn blocked_tool_result(
+pub(crate) fn blocked_tool_result(
     tool_name: &str,
     toolkit_name: &str,
     toolkit_type: &str,

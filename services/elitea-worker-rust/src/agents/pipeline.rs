@@ -28,7 +28,8 @@ use super::graph::{
     ApplicationExecutionError, DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection,
     LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineApplicationResolver,
     PipelineApplicationSelection, PipelineDirectToolResolver, PipelineLlmAgentFactory,
-    ResolvedApplicationParticipant, ResolvedDirectTool,
+    PipelineLlmReplayEnvelope, ResolvedApplicationParticipant, ResolvedDirectTool,
+    prepare_pipeline_llm_replay,
 };
 use super::request::AgentExecutionRequest;
 use super::runtime::{
@@ -68,6 +69,7 @@ pub(crate) struct PipelineExecutionProfile {
     shell: OrdinaryNoToolProfile,
     definition: PipelineDefinition,
     sensitive_direct_tools: BTreeMap<(String, String), SensitiveToolPolicy>,
+    sensitive_llm_tools: BTreeMap<String, SensitiveToolPolicy>,
 }
 
 impl PipelineExecutionProfile {
@@ -83,6 +85,7 @@ impl PipelineExecutionProfile {
             shell,
             definition,
             sensitive_direct_tools: BTreeMap::new(),
+            sensitive_llm_tools: BTreeMap::new(),
         })
     }
 
@@ -97,6 +100,7 @@ impl PipelineExecutionProfile {
             shell,
             definition,
             sensitive_direct_tools: BTreeMap::new(),
+            sensitive_llm_tools: BTreeMap::new(),
         })
     }
 
@@ -123,6 +127,7 @@ impl PipelineExecutionProfile {
         policy: &ToolAdmissionPolicy,
     ) -> Result<(), NativeAgentAssemblyError> {
         self.sensitive_direct_tools.clear();
+        self.sensitive_llm_tools.clear();
         for selection in self.definition.llm_tool_selections() {
             let mut matches = snapshot
                 .iter()
@@ -139,14 +144,16 @@ impl PipelineExecutionProfile {
             for tool_name in selection.tools() {
                 if policy.tool_decision(reference.tool_type(), tool_name)
                     != ToolAdmissionDecision::Allowed
-                    || policy
-                        .sensitive_tool(reference.tool_type(), reference.toolkit_name(), tool_name)
-                        .is_some()
                 {
-                    // The exact graph tool-confirmation bridge is a later
-                    // slice. Never downgrade a selected sensitive/blocked tool
-                    // to an ordinary call meanwhile.
                     return Err(unsupported_pipeline_tool_scope());
+                }
+                if let Some(sensitive) = policy.sensitive_tool(
+                    reference.tool_type(),
+                    reference.toolkit_name(),
+                    tool_name,
+                ) {
+                    self.sensitive_llm_tools
+                        .insert(tool_name.to_owned(), sensitive);
                 }
                 let configured = reference
                     .settings()
@@ -227,6 +234,10 @@ impl PipelineExecutionProfile {
         self.sensitive_direct_tools
             .get(&(selection.alias().to_owned(), selection.tool().to_owned()))
             .cloned()
+    }
+
+    fn sensitive_llm_tools(&self) -> BTreeMap<String, SensitiveToolPolicy> {
+        self.sensitive_llm_tools.clone()
     }
 }
 
@@ -369,6 +380,7 @@ impl PipelineNativeAgentAssembler {
                 context,
                 model_facade,
                 toolsets,
+                sensitive_tools: profile.sensitive_llm_tools(),
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
         Ok(PipelineRuntimeBindings {
@@ -569,6 +581,7 @@ impl PipelineNativeAgentAssembler {
                 context,
                 model_facade,
                 toolsets,
+                sensitive_tools: profile.sensitive_llm_tools(),
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
         Ok(PipelineNodeRuntimes::new(
@@ -635,6 +648,7 @@ struct NativePipelineLlmAgentFactory {
     context: Arc<ClaimScopedEliteaContext>,
     model_facade: Arc<ModelFacade>,
     toolsets: std::collections::BTreeMap<String, Arc<dyn Toolset>>,
+    sensitive_tools: BTreeMap<String, SensitiveToolPolicy>,
 }
 
 struct NativePipelineDirectToolResolver {
@@ -698,6 +712,7 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         definition: &LlmNodeDefinition,
         input: &LlmExecutionInput,
         output_schema: Option<serde_json::Value>,
+        replay: Option<&PipelineLlmReplayEnvelope>,
     ) -> Result<Arc<dyn Agent>, LlmExecutionError> {
         let system_instruction = if input.system().trim().is_empty() {
             "You are an AI assistant executing one bounded Elitea pipeline node.".to_owned()
@@ -725,9 +740,27 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
                 invocation,
             )
             .map_err(|_| LlmExecutionError::Unavailable)?;
+        let mut selected_toolsets = Vec::new();
+        for selection in definition.tool_selections() {
+            if selection.tools().is_empty() {
+                continue;
+            }
+            let inner = self
+                .toolsets
+                .get(selection.alias())
+                .cloned()
+                .ok_or(LlmExecutionError::Unavailable)?;
+            selected_toolsets.push(Arc::new(StrictNodeToolset::new(
+                selection.alias(),
+                inner,
+                selection.tools(),
+            )) as Arc<dyn Toolset>);
+        }
+        let (model, selected_toolsets) =
+            prepare_pipeline_llm_replay(model.adk_model(), selected_toolsets, replay);
         let mut builder = LlmAgentBuilder::new(definition.id())
             .description("Elitea stored-pipeline LLM node")
-            .model(model.adk_model())
+            .model(model)
             .generate_content_config(GenerateContentConfig {
                 temperature: self.profile.temperature(),
                 max_output_tokens: i32::try_from(self.profile.max_tokens()).ok(),
@@ -740,25 +773,20 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         if let Some(schema) = output_schema {
             builder = builder.output_schema(schema).output_max_retries(2);
         }
-        for selection in definition.tool_selections() {
-            if selection.tools().is_empty() {
-                continue;
-            }
-            let inner = self
-                .toolsets
-                .get(selection.alias())
-                .cloned()
-                .ok_or(LlmExecutionError::Unavailable)?;
-            builder = builder.toolset(Arc::new(StrictNodeToolset::new(
-                selection.alias(),
-                inner,
-                selection.tools(),
-            )));
+        for toolset in selected_toolsets {
+            builder = builder.toolset(toolset);
+        }
+        for tool_name in self.sensitive_tools.keys() {
+            builder = builder.require_tool_confirmation(tool_name);
         }
         builder
             .build()
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
             .map_err(|_| LlmExecutionError::Unavailable)
+    }
+
+    fn sensitive_policy(&self, tool_name: &str) -> Option<SensitiveToolPolicy> {
+        self.sensitive_tools.get(tool_name).cloned()
     }
 }
 

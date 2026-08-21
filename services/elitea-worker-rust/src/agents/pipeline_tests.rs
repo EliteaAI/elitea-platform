@@ -16,7 +16,9 @@ use serde_json::{Value, json};
 use tonic::body::Body;
 
 use super::assembly_tests::ordinary_request;
-use super::events::{pipeline_application_event_binding, pipeline_hitl_event_binding};
+use super::events::{
+    pipeline_application_event_binding, pipeline_hitl_event_binding, pipeline_tool_event_binding,
+};
 use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, StrictNodeToolset};
 use super::request::AgentExecutionKind;
 use super::runtime::{
@@ -34,8 +36,8 @@ use crate::toolkits::{
 };
 use crate::transport::model_facade::ModelFacade;
 use crate::transport::model_gateway::{
-    TestModelGatewayOutcome, test_model_gateway_client, test_model_gateway_config,
-    test_model_gateway_response,
+    CapturedModelRequests, TestModelGatewayOutcome, test_model_gateway_client,
+    test_model_gateway_config, test_model_gateway_response,
 };
 use crate::transport::platform_client::PlatformClient;
 use crate::transport::runtime_context::{
@@ -242,6 +244,30 @@ fn mcp_pipeline_request(
             }
         }]),
     );
+    request
+}
+
+fn llm_mcp_pipeline_request(
+    toolkit_alias: &str,
+    selected_tools: &[&str],
+    node_tools: &[&str],
+) -> super::request::AgentExecutionRequest {
+    let mut request = mcp_pipeline_request(toolkit_alias, selected_tools, "lookup_release");
+    let tool_names = node_tools
+        .iter()
+        .map(|name| format!("{name:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let definition = format!(
+        "state:\n  answer: str\n  messages: list\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    output: [answer, messages]\n    tool_names:\n      {toolkit_alias}: [{tool_names}]\n    transition: END\n"
+    );
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture")
+        .insert("instructions".to_owned(), json!(definition));
     request
 }
 
@@ -865,7 +891,7 @@ fn malformed_pipeline_tools_fail_and_llm_yaml_is_admitted_without_authority() {
 }
 
 #[test]
-fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
+fn llm_tool_scope_is_exact_sensitive_tools_bind_and_blocked_authority_fails_closed() {
     let allowed = llm_pipeline_request(
         "release_repository",
         &["list_branches_in_repo"],
@@ -903,11 +929,6 @@ fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
                 "blocked_tools": {"gitlab_org": ["list_branches_in_repo"]}
             }
         })),
-        runtime_tool_policy(&json!({
-            "toolkit_security": {
-                "sensitive_tools": {"gitlab_org": ["list_branches_in_repo"]}
-            }
-        })),
     ] {
         let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&policy));
         assert_eq!(
@@ -915,6 +936,15 @@ fn llm_tool_scope_is_exact_and_sensitive_or_blocked_authority_fails_closed() {
             NativeAgentAssemblyErrorCode::UnsupportedCapability
         );
     }
+
+    let sensitive = runtime_tool_policy(&json!({
+        "toolkit_security": {
+            "sensitive_tools": {"gitlab_org": ["list_branches_in_repo"]}
+        }
+    }));
+    authorized(&allowed)
+        .admit_pipeline_with_policy(&sensitive)
+        .expect("sensitive LLM tool binds to native confirmation");
 }
 
 #[test]
@@ -1544,6 +1574,156 @@ impl Tool for PipelineMcpTool {
             "messages": [{"role": "assistant", "content": "MCP read complete"}]
         }))
     }
+}
+
+#[tokio::test]
+async fn llm_node_block_actions_replay_same_call_as_structured_tool_result() {
+    run_llm_node_block("reject", None, "denied by user").await;
+    run_llm_node_block(
+        "block_with_comment",
+        Some("release is under legal hold"),
+        "release is under legal hold",
+    )
+    .await;
+}
+
+async fn run_llm_node_block(action: &str, comment: Option<&str>, expected_reason: &str) {
+    let (assembler, captured, tool_calls) = sensitive_llm_node_assembler();
+    let mut request = llm_mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        &["lookup_release"],
+    );
+    let profile = PipelineExecutionProfile::validate(&request, false).expect("pipeline profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized_pipeline(
+        &request,
+        profile.shell(),
+        &AuthorizedNativeCommandBinding::fixture(),
+        false,
+        false,
+    )
+    .expect("pipeline identity plan");
+
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("sensitive LLM-node invocation");
+    let (interrupts, graph_interrupt) = collect_pipeline_pause(invocation).await;
+    assert_eq!(interrupts.len(), 1);
+    let interrupt_id = interrupts[0]["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+        .as_str()
+        .expect("LLM-node interrupt identity")
+        .to_owned();
+    let graph_interrupt = graph_interrupt.expect("private graph interruption");
+    let binding = pipeline_tool_event_binding(&graph_interrupt, "elitea-agent", plan.session_id())
+        .expect("LLM-node confirmation binding");
+    assert_eq!(binding.tool_call_id(), "call_mcp");
+    assert!(binding.llm_replay().is_some());
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    request.binding.request_content_digest = [9; 32];
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = Some(action.to_owned());
+    request.payload.hitl_value = Some(comment.unwrap_or_default().to_owned());
+    request.payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call_mcp",
+        "action": action,
+        "value": comment.unwrap_or_default(),
+    })];
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("same-call LLM-node continuation");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "continued after block")
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    assert_llm_blocked_continuation(&captured, expected_reason);
+}
+
+fn sensitive_llm_node_assembler() -> (
+    PipelineNativeAgentAssembler,
+    CapturedModelRequests,
+    Arc<AtomicUsize>,
+) {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let token_response = || {
+        runtime_response(&json!({
+            "schema_version": "elitea.runtime.elitea-client-token.v1",
+            "project_id": 17,
+            "token": "ephemeral-pipeline-token"
+        }))
+    };
+    let runtime = RuntimeContextClient::with_rpc(
+        PipelineRuntimeContextFixture {
+            responses: Mutex::new(VecDeque::from([token_response(), token_response()])),
+            calls: Arc::new(AtomicUsize::new(0)),
+            paths: Arc::new(Mutex::new(Vec::new())),
+        },
+        RuntimeContextConfig {
+            origin: "https://content.internal".to_owned(),
+            deadline: Duration::from_secs(1),
+            max_response_bytes: 32 * 1_024,
+            max_application_response_bytes: 1_024 * 1_024,
+        },
+    )
+    .expect("pipeline runtime-context fixture");
+    let (gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response("continued after block")),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("pipeline model gateway fixture");
+    let platform = Arc::new(PlatformClient::new(Arc::new(runtime)));
+    let model_facade = Arc::new(ModelFacade::from_gateway(gateway));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(PipelineMcpConnector {
+        connections: Arc::new(AtomicUsize::new(0)),
+        tool_calls: Arc::clone(&tool_calls),
+        read_only: true,
+    }))
+    .with_tool_policy(sensitive_pipeline_mcp_policy());
+    (assembler, captured, tool_calls)
+}
+
+fn assert_llm_blocked_continuation(captured: &CapturedModelRequests, expected_reason: &str) {
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(
+        captured.len(),
+        2,
+        "resume must not replan before tool replay"
+    );
+    let continuation: Value =
+        serde_json::from_slice(&captured[1].body).expect("continuation request JSON");
+    let tool_message = continuation["messages"]
+        .as_array()
+        .expect("continuation messages")
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_mcp")
+        .expect("same-call tool response delivered to model");
+    let blocked: Value = serde_json::from_str(
+        tool_message["content"]
+            .as_str()
+            .expect("structured tool response JSON"),
+    )
+    .expect("structured blocked result");
+    assert_eq!(blocked["type"], "sensitive_tool_blocked");
+    assert_eq!(blocked["blocked_tool_name"], "lookup_release");
+    assert_eq!(blocked["denial_reason"], expected_reason);
 }
 
 #[tokio::test]

@@ -33,7 +33,10 @@ use super::direct_tool::{
     DirectToolSelection, PipelineDirectToolResolver,
 };
 use super::hitl::{HITL_RESUME_STATE_KEY, HitlNode, HitlNodeDefinition};
-use super::llm::{LlmNode, LlmNodeDefinition, LlmToolkitSelection, PipelineLlmAgentFactory};
+use super::llm::{
+    LLM_TOOL_RESUME_STATE_KEY, LlmNode, LlmNodeDefinition, LlmToolkitSelection,
+    PipelineLlmAgentFactory,
+};
 use super::printer::{
     PrinterInputMapping, PrinterNode, PrinterNodeDefinition, PrinterPauseCatalog, PrinterResetNode,
 };
@@ -90,6 +93,7 @@ const INTERNAL_RESULT_KEYS: &[&str] = &[
     "session_id",
     HITL_RESUME_STATE_KEY,
     DIRECT_TOOL_RESUME_STATE_KEY,
+    LLM_TOOL_RESUME_STATE_KEY,
 ];
 
 #[derive(Clone, Deserialize)]
@@ -778,6 +782,7 @@ impl PipelineDefinition {
             APPLICATION_RESULT_STATE_KEY.to_owned(),
             HITL_RESUME_STATE_KEY.to_owned(),
             DIRECT_TOOL_RESUME_STATE_KEY.to_owned(),
+            LLM_TOOL_RESUME_STATE_KEY.to_owned(),
         ]);
         channels.extend(self.state.keys().cloned());
         for node in &self.nodes {
@@ -1147,7 +1152,11 @@ pub(super) fn merge_or_clear_object(
 fn runtime_channel_default(channel: &str) -> serde_json::Value {
     match channel {
         "messages" | "hitl_decisions" => json!([]),
-        "parallel_tasks" | "state_types" | HITL_RESUME_STATE_KEY | DIRECT_TOOL_RESUME_STATE_KEY => {
+        "parallel_tasks"
+        | "state_types"
+        | HITL_RESUME_STATE_KEY
+        | DIRECT_TOOL_RESUME_STATE_KEY
+        | LLM_TOOL_RESUME_STATE_KEY => {
             json!({})
         }
         APPLICATION_MESSAGES_STATE_KEY => json!([]),
@@ -1442,6 +1451,7 @@ fn builtin_state_key(key: &str) -> bool {
 fn reserved_user_state_key(key: &str) -> bool {
     key == HITL_RESUME_STATE_KEY
         || key == DIRECT_TOOL_RESUME_STATE_KEY
+        || key == LLM_TOOL_RESUME_STATE_KEY
         || matches!(
             key,
             APPLICATION_TASK_STATE_KEY
