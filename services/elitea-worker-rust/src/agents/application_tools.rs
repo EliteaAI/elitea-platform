@@ -24,6 +24,7 @@ use serde_json::{Value, json};
 use tracing::Instrument as _;
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
+use super::events::ApplicationToolPresentationCatalog;
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use super::session::BoundOrdinaryAgentModel;
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
@@ -57,7 +58,14 @@ pub(crate) struct ApplicationToolDependencies {
 /// One exact frozen Application alias bound to its invocation-owned ADK tool.
 pub(crate) struct MaterializedApplicationTool {
     pub(crate) alias: String,
+    pub(crate) agent_type: String,
     pub(crate) tool: Arc<dyn Tool>,
+}
+
+/// One root toolset plus its frozen browser-presentation join.
+pub(crate) struct MaterializedApplicationToolset {
+    pub(crate) toolset: Arc<dyn Toolset>,
+    pub(crate) presentations: ApplicationToolPresentationCatalog,
 }
 
 /// Build the one nested-application toolset for the root direct agent.
@@ -68,7 +76,7 @@ pub(crate) async fn materialize_application_toolset(
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
     dependencies: ApplicationToolDependencies,
-) -> Result<Option<Arc<dyn Toolset>>, NativeAgentAssemblyError> {
+) -> Result<Option<MaterializedApplicationToolset>, NativeAgentAssemblyError> {
     let materialized = materialize_application_tools(
         snapshot,
         platform,
@@ -82,10 +90,23 @@ pub(crate) async fn materialize_application_toolset(
     if materialized.is_empty() {
         return Ok(None);
     }
-    Ok(Some(Arc::new(BasicToolset::new(
-        "elitea_nested_applications",
-        materialized.into_iter().map(|entry| entry.tool).collect(),
-    ))))
+    let mut presentations = ApplicationToolPresentationCatalog::default();
+    for entry in &materialized {
+        presentations
+            .insert(
+                entry.tool.name().to_owned(),
+                entry.alias.clone(),
+                entry.agent_type.clone(),
+            )
+            .map_err(|_| invalid_configuration())?;
+    }
+    Ok(Some(MaterializedApplicationToolset {
+        toolset: Arc::new(BasicToolset::new(
+            "elitea_nested_applications",
+            materialized.into_iter().map(|entry| entry.tool).collect(),
+        )),
+        presentations,
+    }))
 }
 
 /// Resolve exact frozen saved applications without changing their graph alias.
@@ -118,9 +139,11 @@ pub(crate) async fn materialize_application_tools(
     for reference in references {
         let identity = reference.identity;
         let alias = reference.name.clone();
+        let agent_type = reference.agent_type.clone();
         let agent = state.build(reference.clone(), 2).await?;
         tools.push(MaterializedApplicationTool {
             alias,
+            agent_type,
             tool: Arc::new(ApplicationAgentTool::new(agent, identity)),
         });
     }

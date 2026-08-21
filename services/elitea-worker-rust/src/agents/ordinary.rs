@@ -15,6 +15,7 @@ use tracing::Instrument as _;
 
 use super::application_tools::{ApplicationToolDependencies, materialize_application_toolset};
 use super::assembly::{OrdinaryModelProvider, ReasoningEffort};
+use super::events::ApplicationToolPresentationCatalog;
 use super::runtime::{
     AdmittedNativeStart, AssembledNativeAgentInvocation, AuthorizedNativeAssembly,
     NativeAgentAssembler, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
@@ -22,8 +23,8 @@ use super::runtime::{
 };
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
 use super::session::{
-    NativeSessionBackend, OrdinaryAgentCompletion, assemble_direct_hitl_resume_with_sessions,
-    assemble_ordinary_native_with_sessions,
+    NativeSessionBackend, NativeToolExecutionMode, OrdinaryAgentCompletion,
+    assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native_with_sessions_and_options,
 };
 use crate::state::SessionLimits;
 use crate::toolkits::{
@@ -127,7 +128,8 @@ impl OrdinaryNativeAgentAssembler {
             &self.tool_policy,
         )
         .await?;
-        if let Some(application_toolset) = materialize_application_toolset(
+        let mut application_tools = ApplicationToolPresentationCatalog::default();
+        if let Some(materialized) = materialize_application_toolset(
             &tool_snapshot,
             self.platform.as_ref(),
             &runtime_context,
@@ -141,7 +143,8 @@ impl OrdinaryNativeAgentAssembler {
         )
         .await?
         {
-            toolsets.push(application_toolset);
+            toolsets.push(materialized.toolset);
+            application_tools = materialized.presentations;
         }
         tracing::Span::current().record("materialized_toolset_count", toolsets.len());
         let model = self.bind_model(&profile, context.as_ref())?;
@@ -152,16 +155,34 @@ impl OrdinaryNativeAgentAssembler {
             .await?;
         match start {
             AdmittedNativeStart::Fresh => {
-                assemble_ordinary_native_with_sessions(
+                let execution_mode = if nested_application_count > 0
+                    && nested_application_count == tool_reference_count
+                    && sensitive_tools.is_empty()
+                {
+                    NativeToolExecutionMode::ParallelApplications
+                } else {
+                    NativeToolExecutionMode::Sequential
+                };
+                tracing::Span::current().record(
+                    "tool_execution_mode",
+                    match execution_mode {
+                        NativeToolExecutionMode::Sequential => "sequential",
+                        NativeToolExecutionMode::ParallelApplications => "parallel_applications",
+                    },
+                );
+                assemble_ordinary_native_with_sessions_and_options(
                     model,
                     plan,
                     toolsets,
                     sensitive_tools,
+                    application_tools,
+                    execution_mode,
                     sessions,
                 )
                 .await
             }
             AdmittedNativeStart::DirectHitl(decision) => {
+                tracing::Span::current().record("tool_execution_mode", "direct_hitl_resume");
                 assemble_direct_hitl_resume_with_sessions(
                     model,
                     plan,
@@ -259,6 +280,7 @@ fn assembly_span(assembly: &AuthorizedNativeAssembly<'_>, session_backend: &str)
         tool_reference_count = tracing::field::Empty,
         nested_application_count = tracing::field::Empty,
         materialized_toolset_count = tracing::field::Empty,
+        tool_execution_mode = tracing::field::Empty,
         session_backend,
         session_bootstrap = tracing::field::Empty,
         outcome = tracing::field::Empty,

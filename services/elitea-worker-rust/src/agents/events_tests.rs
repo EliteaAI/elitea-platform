@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionErrorCode, AgentEventProjector,
-    CompletedAgentBrowserOutput,
+    ApplicationToolPresentationCatalog, CompletedAgentBrowserOutput,
 };
 use super::graph::pipeline_result_event;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
@@ -444,6 +444,69 @@ fn tool_calls_and_results_follow_the_current_browser_lifecycle() {
         finish[0]["response_metadata"]["tool_output"],
         "{\"title\":\"Bounded result\"}"
     );
+}
+
+#[test]
+fn repeated_application_calls_project_distinct_stable_ui_invocations() {
+    let mut applications = ApplicationToolPresentationCatalog::default();
+    applications
+        .insert(
+            "elitea_agent_17_v_9".to_owned(),
+            "Full Name Resolver".to_owned(),
+            "agent".to_owned(),
+        )
+        .expect("application presentation");
+    let mut projector = AgentEventProjector::with_tool_catalogs(
+        AgentEventProjectionContext::fixture(json!({})),
+        super::sensitive_tools::SensitiveToolCatalog::default(),
+        applications,
+    )
+    .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let starts = projector
+        .project(&event(
+            "llm-parallel-applications",
+            1,
+            false,
+            true,
+            vec![
+                Part::FunctionCall {
+                    name: "elitea_agent_17_v_9".to_owned(),
+                    args: json!({"task": "Resolve Olivia Lovelace"}),
+                    id: Some("application-call-1".to_owned()),
+                    thought_signature: None,
+                },
+                Part::FunctionCall {
+                    name: "elitea_agent_17_v_9".to_owned(),
+                    args: json!({"task": "Resolve Sasha Grey"}),
+                    id: Some("application-call-2".to_owned()),
+                    thought_signature: None,
+                },
+            ],
+        ))
+        .expect("application tool starts")
+        .into_iter()
+        .map(|event| current(&event))
+        .filter(|event| event["type"] == "agent_tool_start")
+        .collect::<Vec<_>>();
+
+    assert_eq!(starts.len(), 2);
+    for (index, start) in starts.iter().enumerate() {
+        let metadata = &start["response_metadata"];
+        let expected_id = format!("application-call-{}", index + 1);
+        assert_eq!(metadata["tool_name"], "elitea_agent_17_v_9");
+        assert_eq!(metadata["tool_run_id"], expected_id);
+        assert_eq!(metadata["parent_agent_call_id"], expected_id);
+        assert_eq!(metadata["parent_agent_path"], json!([]));
+        assert_eq!(metadata["sibling_ordinal"], index + 1);
+        assert_eq!(metadata["metadata"]["original_name"], "Full Name Resolver");
+        assert_eq!(metadata["metadata"]["toolkit_type"], "application");
+        assert_eq!(metadata["metadata"]["agent_type"], "agent");
+        assert_eq!(
+            metadata["tool_meta"]["metadata"]["parent_agent_call_id"],
+            expected_id
+        );
+    }
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adk_rust::model::MockLlm;
 use adk_rust::session::{GetRequest, InMemorySessionService, SessionService};
@@ -12,18 +13,20 @@ use adk_rust::{
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::{Value, json};
+use tokio::sync::Barrier;
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::{current_text_history, ordinary_request};
 use super::direct_hitl::DirectHitlDecision;
-use super::events::AgentEventProjectionErrorCode;
+use super::events::{AgentEventProjectionErrorCode, ApplicationToolPresentationCatalog};
 use super::request::{AgentExecutionKind, UserInput};
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel, NativeSessionBackend,
-    OrdinaryNativeAgentPlan, assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native,
-    assemble_ordinary_native_with_sessions,
+    NativeToolExecutionMode, OrdinaryNativeAgentPlan, assemble_direct_hitl_resume_with_sessions,
+    assemble_ordinary_native, assemble_ordinary_native_with_sessions,
+    assemble_ordinary_native_with_sessions_and_options,
 };
 use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
@@ -118,6 +121,32 @@ struct CountingTool {
     read_only: bool,
 }
 
+struct ParallelApplicationProbeTool {
+    barrier: Arc<Barrier>,
+}
+
+#[async_trait]
+impl Tool for ParallelApplicationProbeTool {
+    fn name(&self) -> &'static str {
+        "elitea_agent_17_v_9"
+    }
+
+    fn description(&self) -> &'static str {
+        "Fixture saved Application participant."
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        tokio::time::timeout(Duration::from_secs(1), self.barrier.wait())
+            .await
+            .map_err(|_| adk_rust::AdkError::agent("fixture calls were not concurrent"))?;
+        Ok(json!({"task": arguments["task"]}))
+    }
+}
+
 #[async_trait]
 impl Tool for CountingTool {
     fn name(&self) -> &'static str {
@@ -160,6 +189,31 @@ fn tool_call_response_with(args: Value) -> LlmResponse {
                 id: Some("call-1".to_owned()),
                 thought_signature: None,
             }],
+        }),
+        finish_reason: Some(FinishReason::Stop),
+        turn_complete: true,
+        ..LlmResponse::default()
+    }
+}
+
+fn parallel_application_call_response() -> LlmResponse {
+    LlmResponse {
+        content: Some(Content {
+            role: "model".to_owned(),
+            parts: vec![
+                Part::FunctionCall {
+                    name: "elitea_agent_17_v_9".to_owned(),
+                    args: json!({"task": "Resolve Olivia Lovelace"}),
+                    id: Some("application-call-1".to_owned()),
+                    thought_signature: None,
+                },
+                Part::FunctionCall {
+                    name: "elitea_agent_17_v_9".to_owned(),
+                    args: json!({"task": "Resolve Sasha Grey"}),
+                    id: Some("application-call-2".to_owned()),
+                    thought_signature: None,
+                },
+            ],
         }),
         finish_reason: Some(FinishReason::Stop),
         turn_complete: true,
@@ -398,6 +452,77 @@ async fn direct_llm_agent_executes_a_bound_toolset_before_the_final_model_turn()
     assert!(saw_result);
     assert_eq!(model_calls.load(Ordering::SeqCst), 2);
     assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
+    let completion = completion.select().await.expect("selected completion");
+    let _ = completion;
+}
+
+#[tokio::test]
+async fn application_only_agent_dispatches_repeated_participant_calls_concurrently_in_call_order() {
+    let request = ordinary_request(AgentExecutionKind::Adhoc);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("agent profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("native plan");
+    let model = FixtureBoundModel {
+        model: Arc::new(SequencedLlm {
+            responses: Mutex::new(VecDeque::from([
+                parallel_application_call_response(),
+                LlmResponse::new(Content::new("model").with_text("Both names were resolved.")),
+            ])),
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+        completed: "Both names were resolved.".to_owned(),
+    };
+    let tool: Arc<dyn Tool> = Arc::new(ParallelApplicationProbeTool {
+        barrier: Arc::new(Barrier::new(2)),
+    });
+    let toolset: Arc<dyn Toolset> =
+        Arc::new(BasicToolset::new("elitea_nested_applications", vec![tool]));
+    let mut applications = ApplicationToolPresentationCatalog::default();
+    applications
+        .insert(
+            "elitea_agent_17_v_9".to_owned(),
+            "Full Name Resolver".to_owned(),
+            "agent".to_owned(),
+        )
+        .expect("application presentation");
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let assembled = assemble_ordinary_native_with_sessions_and_options(
+        model,
+        plan,
+        vec![toolset],
+        SensitiveToolCatalog::default(),
+        applications,
+        NativeToolExecutionMode::ParallelApplications,
+        sessions,
+    )
+    .await
+    .expect("parallel native assembly");
+    let (mut native, _projector, completion) = assembled.start().expect("native start");
+
+    let result_ids = tokio::time::timeout(Duration::from_secs(3), async {
+        let mut result_ids = Vec::new();
+        while let Some(event) = native.next_event().await.expect("native event") {
+            result_ids.extend(
+                event
+                    .tool_results()
+                    .into_iter()
+                    .filter_map(|result| result.call_id.map(str::to_owned)),
+            );
+        }
+        result_ids
+    })
+    .await
+    .expect("parallel calls completed without serial barrier timeout");
+
+    assert_eq!(
+        result_ids,
+        ["application-call-1", "application-call-2"],
+        "ADK must restore provider call order after concurrent completion"
+    );
     let completion = completion.select().await.expect("selected completion");
     let _ = completion;
 }

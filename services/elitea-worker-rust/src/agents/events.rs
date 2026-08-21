@@ -245,6 +245,65 @@ pub(crate) struct OrdinaryProjectionInput {
     pub(crate) application_details: Value,
 }
 
+/// Frozen public labels for saved participants exposed as model-callable tools.
+///
+/// The provider-visible tool name remains the execution identity. Presentation
+/// data is joined only while projecting browser events so two calls to the same
+/// participant retain distinct provider call IDs and UI accordions.
+#[derive(Clone, Default)]
+pub(crate) struct ApplicationToolPresentationCatalog {
+    by_tool_name: BTreeMap<String, ApplicationToolPresentation>,
+}
+
+#[derive(Clone)]
+struct ApplicationToolPresentation {
+    display_name: String,
+    agent_type: String,
+}
+
+impl ApplicationToolPresentation {
+    fn toolkit_type(&self) -> &'static str {
+        if self.agent_type == "pipeline" {
+            "pipeline"
+        } else {
+            "application"
+        }
+    }
+}
+
+impl ApplicationToolPresentationCatalog {
+    pub(crate) fn insert(
+        &mut self,
+        tool_name: String,
+        display_name: String,
+        agent_type: String,
+    ) -> Result<(), AgentEventProjectionError> {
+        if !valid_tool_identity(&tool_name)
+            || display_name.is_empty()
+            || display_name.len() > MAX_CONTEXT_TEXT_BYTES
+            || display_name.chars().any(char::is_control)
+            || !matches!(agent_type.as_str(), "agent" | "pipeline")
+            || self
+                .by_tool_name
+                .insert(
+                    tool_name,
+                    ApplicationToolPresentation {
+                        display_name,
+                        agent_type,
+                    },
+                )
+                .is_some()
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        Ok(())
+    }
+
+    fn get(&self, tool_name: &str) -> Option<&ApplicationToolPresentation> {
+        self.by_tool_name.get(tool_name)
+    }
+}
+
 /// Pipeline-only projection identity kept separate from the public chat thread.
 pub(crate) struct PipelineProjectionInput {
     pub(crate) ordinary: OrdinaryProjectionInput,
@@ -339,6 +398,8 @@ struct ActiveToolCall {
     arguments: Value,
     public_arguments: Value,
     timestamp_start: String,
+    application: Option<ApplicationToolPresentation>,
+    sibling_ordinal: Option<usize>,
 }
 
 /// Sanitized completion selected by the application/ad-hoc assembler.
@@ -417,6 +478,7 @@ pub(crate) struct AgentEventProjector {
     invocation_id: Option<String>,
     active_tools: BTreeMap<String, ActiveToolCall>,
     sensitive_tools: SensitiveToolCatalog,
+    application_tools: ApplicationToolPresentationCatalog,
     pipeline_result: Option<String>,
 }
 
@@ -431,6 +493,18 @@ impl AgentEventProjector {
         context: AgentEventProjectionContext,
         sensitive_tools: SensitiveToolCatalog,
     ) -> Result<Self, AgentEventProjectionError> {
+        Self::with_tool_catalogs(
+            context,
+            sensitive_tools,
+            ApplicationToolPresentationCatalog::default(),
+        )
+    }
+
+    pub(crate) fn with_tool_catalogs(
+        context: AgentEventProjectionContext,
+        sensitive_tools: SensitiveToolCatalog,
+        application_tools: ApplicationToolPresentationCatalog,
+    ) -> Result<Self, AgentEventProjectionError> {
         validate_context(&context)?;
         Ok(Self {
             context,
@@ -438,6 +512,7 @@ impl AgentEventProjector {
             invocation_id: None,
             active_tools: BTreeMap::new(),
             sensitive_tools,
+            application_tools,
             pipeline_result: None,
         })
     }
@@ -969,7 +1044,7 @@ impl AgentEventProjector {
             .to_rfc3339_opts(SecondsFormat::AutoSi, false);
         let mut ids = HashSet::with_capacity(calls.len());
         let mut pending = Vec::with_capacity(calls.len());
-        for call in calls {
+        for (index, call) in calls.iter().enumerate() {
             let id = call
                 .call_id
                 .filter(|value| valid_tool_identity(value))
@@ -988,6 +1063,8 @@ impl AgentEventProjector {
                 arguments: call.args.clone(),
                 public_arguments,
                 timestamp_start: timestamp.clone(),
+                application: self.application_tools.get(call.name).cloned(),
+                sibling_ordinal: self.application_tools.get(call.name).map(|_| index + 1),
             };
             let entry = tool_entry(id, &active, None, None, None, None);
             batch.push(self.event(
@@ -2196,7 +2273,7 @@ fn tool_entry(
     output: Option<&str>,
     error: Option<&str>,
 ) -> Value {
-    json!({
+    let mut entry = json!({
         "tool_name": active.name,
         "tool_run_id": id,
         "run_id": id,
@@ -2208,7 +2285,34 @@ fn tool_entry(
         "finish_reason": finish_reason,
         "tool_output": output,
         "error": error,
-    })
+    });
+    if let Some(application) = active.application.as_ref() {
+        let metadata = json!({
+            "original_name": application.display_name,
+            "display_name": application.display_name,
+            "agent_type": application.agent_type,
+            "toolkit_type": application.toolkit_type(),
+            "parent_agent_call_id": id,
+            "parent_agent_path": [],
+            "sibling_ordinal": active.sibling_ordinal,
+        });
+        let Value::Object(object) = &mut entry else {
+            return entry;
+        };
+        object.insert("metadata".to_owned(), metadata.clone());
+        object.insert("parent_agent_call_id".to_owned(), json!(id));
+        object.insert("parent_agent_path".to_owned(), json!([]));
+        object.insert("sibling_ordinal".to_owned(), json!(active.sibling_ordinal));
+        object.insert(
+            "tool_meta".to_owned(),
+            json!({
+                "name": active.name,
+                "display_name": application.display_name,
+                "metadata": metadata,
+            }),
+        );
+    }
+    entry
 }
 
 fn valid_tool_identity(value: &str) -> bool {

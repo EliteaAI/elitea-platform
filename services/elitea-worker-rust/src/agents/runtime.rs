@@ -732,6 +732,23 @@ impl NativeAgentInvocation {
         }
     }
 
+    /// Seal a fresh invocation with an explicit bounded ADK run policy.
+    pub(crate) fn new_with_run_config(
+        runner: Runner,
+        user_id: UserId,
+        session_id: SessionId,
+        user_content: Content,
+        run_config: adk_rust::RunConfig,
+    ) -> Self {
+        Self {
+            runner,
+            user_id,
+            session_id,
+            user_content,
+            run_config: Some(run_config),
+        }
+    }
+
     /// Seal a read-only direct-HITL replay prepared from one persisted call.
     pub(crate) fn new_direct_hitl(
         runner: Runner,

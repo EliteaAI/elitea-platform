@@ -19,7 +19,8 @@ use adk_rust::session::{
     AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, SessionService,
 };
 use adk_rust::{
-    AdkIdentity, Content, Event, GenerateContentConfig, Llm, SessionId, Toolset, UserId,
+    AdkIdentity, Content, Event, GenerateContentConfig, Llm, RunConfig, SessionId,
+    ToolConcurrencyConfig, ToolExecutionStrategy, Toolset, UserId,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -33,8 +34,8 @@ use super::context_management::ContextManagementPlan;
 use super::direct_hitl::{DirectHitlDecision, DirectHitlError, DirectHitlErrorCode};
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
-    AgentEventProjector, CompletedAgentBrowserOutput, OrdinaryProjectionInput,
-    PipelineProjectionInput,
+    AgentEventProjector, ApplicationToolPresentationCatalog, CompletedAgentBrowserOutput,
+    OrdinaryProjectionInput, PipelineProjectionInput,
 };
 use super::graph::compiler::PipelineDefinition;
 use super::graph::resume::{PipelineResumeError, PipelineResumeErrorCode};
@@ -65,6 +66,16 @@ const MAX_PUBLIC_APPLICATION_DETAILS_BYTES: usize = 32 * 1_024;
 const APPLICATION_CAPABILITY_ID: &str = "agent.execute.application.v1";
 const ADHOC_CAPABILITY_ID: &str = "agent.execute.adhoc.v1";
 const FROZEN_HISTORY_EVENT_DOMAIN: &[u8] = b"elitea.adk.frozen-history-event.v1\0";
+const MAX_PARALLEL_APPLICATION_CALLS: usize = 8;
+
+/// Dispatch policy chosen from the complete frozen root tool snapshot.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum NativeToolExecutionMode {
+    #[default]
+    Sequential,
+    /// Every model-callable root tool is a saved Application participant.
+    ParallelApplications,
+}
 
 /// Non-authority command fields needed by local ADK and browser projection.
 ///
@@ -833,6 +844,31 @@ pub(crate) async fn assemble_ordinary_native_with_sessions<M>(
 where
     M: BoundOrdinaryAgentModel,
 {
+    assemble_ordinary_native_with_sessions_and_options(
+        model,
+        plan,
+        toolsets,
+        sensitive_tools,
+        ApplicationToolPresentationCatalog::default(),
+        NativeToolExecutionMode::Sequential,
+        sessions,
+    )
+    .await
+}
+
+/// Build the direct Runner with an explicitly admitted tool dispatch policy.
+pub(crate) async fn assemble_ordinary_native_with_sessions_and_options<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
+    application_tools: ApplicationToolPresentationCatalog,
+    execution_mode: NativeToolExecutionMode,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
     let OrdinaryNativeAgentPlan {
         user_id,
         session_id,
@@ -859,6 +895,12 @@ where
         .max_iterations(max_iterations)
         .disallow_transfer_to_parent(true)
         .disallow_transfer_to_peers(true);
+    if execution_mode == NativeToolExecutionMode::ParallelApplications {
+        if !sensitive_tools.is_empty() {
+            return Err(invalid_configuration());
+        }
+        builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
+    }
     for toolset in toolsets {
         builder = builder.toolset(toolset);
     }
@@ -894,10 +936,27 @@ where
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector = AgentEventProjector::with_sensitive_tools(projection, sensitive_tools)
-        .map_err(projection_configuration)?;
+    let projector =
+        AgentEventProjector::with_tool_catalogs(projection, sensitive_tools, application_tools)
+            .map_err(projection_configuration)?;
+    let invocation = if execution_mode == NativeToolExecutionMode::ParallelApplications {
+        NativeAgentInvocation::new_with_run_config(
+            runner,
+            user_id,
+            session_id,
+            user_content,
+            RunConfig::builder()
+                .tool_concurrency(ToolConcurrencyConfig {
+                    max_concurrency: Some(MAX_PARALLEL_APPLICATION_CALLS),
+                    ..ToolConcurrencyConfig::default()
+                })
+                .build(),
+        )
+    } else {
+        NativeAgentInvocation::new(runner, user_id, session_id, user_content)
+    };
     Ok(AssembledNativeAgentInvocation::new(
-        NativeAgentInvocation::new(runner, user_id, session_id, user_content),
+        invocation,
         projector,
         OrdinaryAgentCompletion { model, thread_id },
     ))

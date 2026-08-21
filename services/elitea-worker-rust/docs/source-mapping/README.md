@@ -48,7 +48,7 @@ Detailed ledgers:
 
 - `agent-runtime.md` maps language-neutral worker delivery and agent execution.
 - `pipeline-nodes.md` maps every current Python pipeline node/edge branch and
-  the new durable Rust `parallel` node.
+  the capability-closed future explicit pipeline `parallel` node core.
 - `configuration-toolsets.md` maps saved configuration and toolkit families.
 - `indexing.md` maps indexing behavior and its later Rust capability.
 
@@ -65,22 +65,28 @@ Maintained Rust runtime ownership registry:
   Approved reads replay through ADK `RunConfig`/`ToolExecutor`; denied calls
   produce a structured result under the original call ID without dispatching
   the real tool. Exact restart suffixes are recovered and the internal replay
-  marker is removed before provider dispatch. Approved effects and deployment
-  registration remain closed. `native_runtime.rs` selects exactly one direct
+  marker is removed before provider dispatch. A fresh direct agent whose
+  complete frozen root tool set consists only of saved Applications uses
+  ADK-native bounded parallel tool dispatch; mixed tool batches stay sequential.
+  Application wrapper events retain provider call ID as invocation identity and
+  carry frozen display name plus sibling ordinal for current UI grouping.
+  Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
   frozen `agent_type=pipeline` applications, compiles their complete YAML before
   provider/state construction and retains the authorized state inputs for the
   graph assembler;
 - `src/agents/application_tools.rs`: exact saved child application/version to
-  ADK `AgentTool` composition, recursion and model-visible delegation schema;
+  ADK `AgentTool` composition, recursion, model-visible delegation schema and
+  the runtime-name-to-frozen-presentation join used by browser projection;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
   lineage, coordinated with graph checkpoints where applicable;
 - `src/agents/graph/{agent,application,compiler,resume,hitl,llm,direct_tool,printer,router,decision,state_modifier,parallel,yaml}.rs`:
   stored-pipeline event identity, complete-document active-node compilation,
-  latest-event/checkpoint decision binding, bounded YAML contracts and the
-  durable parallel-node core. Direct Toolkit and auth-free remote MCP reads use
+  latest-event/checkpoint decision binding, bounded YAML contracts and a
+  capability-closed explicit pipeline parallel-node core that is not yet bound
+  by the compiler. Direct Toolkit and auth-free remote MCP reads use
   native `ToolContext`; sensitive reads pause before dispatch, approval returns
   the ordinary result, and denial records the same-call blocked result plus the
   SDK-formatted terminal chat message before `goto END` without nulling typed
@@ -93,9 +99,9 @@ Maintained Rust runtime ownership registry:
   the claim-bound native `AgentTool` assembly and project their final response;
   saved pipelines compile as isolated native `SubgraphNode` values over the
   same claim-fenced Checkpointer. A nested dynamic HITL binds one public
-  `interrupt_id` to the exact parent and child checkpoints, resumes the child
-  through the pending Agent node once and keeps child thread/checkpoint IDs out
-  of browser output. The current materializer supports one selected child
+  `interrupt_id` to a bounded exact descendant checkpoint chain, resumes every
+  pending Agent-node checkpoint in order and keeps child thread/checkpoint IDs
+  out of browser output. The current materializer supports one selected child
   pipeline level and fails closed if that child declares another Agent node.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
   fallback, normalized-label and common-Runner proof. MCP OAuth/on-demand auth,

@@ -1035,14 +1035,20 @@ async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
         .expect("agent start");
     let (mut native, mut projector, completion) = invocation.start().expect("native start");
     let mut event_types = Vec::new();
+    let mut public_events = Vec::new();
     while let Some(event) = native.next_event().await.expect("native event") {
-        event_types.extend(
-            projector
-                .project(&event)
-                .expect("projected nested-agent event")
-                .into_iter()
-                .map(|event| event.r#type),
-        );
+        for event in projector
+            .project(&event)
+            .expect("projected nested-agent event")
+        {
+            event_types.push(event.r#type.clone());
+            public_events.push(
+                serde_json::from_slice::<serde_json::Value>(
+                    &encode_current_node_event_json(&event).expect("canonical nested-agent event"),
+                )
+                .expect("nested-agent browser event JSON"),
+            );
+        }
     }
     let completed = completion.select().await.expect("selected root completion");
     let finish = projector
@@ -1059,6 +1065,23 @@ async fn saved_agent_is_resolved_once_and_runs_as_an_adk_agent_tool() {
     assert_eq!(final_json["content"], "parent final answer");
     assert!(event_types.iter().any(|event| event == "agent_tool_start"));
     assert!(event_types.iter().any(|event| event == "agent_tool_end"));
+    let wrapper = public_events
+        .iter()
+        .find(|event| event["type"] == "agent_tool_start")
+        .expect("nested-agent wrapper event");
+    assert_eq!(
+        wrapper["response_metadata"]["metadata"]["original_name"],
+        "release-risk-agent"
+    );
+    assert_eq!(
+        wrapper["response_metadata"]["metadata"]["toolkit_type"],
+        "application"
+    );
+    assert_eq!(
+        wrapper["response_metadata"]["parent_agent_call_id"],
+        "call_child"
+    );
+    assert_eq!(wrapper["response_metadata"]["sibling_ordinal"], 1);
 
     let captured = captured.lock().expect("captured model requests");
     assert_nested_agent_model_requests(&captured);

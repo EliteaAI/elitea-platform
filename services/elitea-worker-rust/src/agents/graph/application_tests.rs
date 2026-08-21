@@ -520,7 +520,7 @@ nodes:
         binding
             .nested_checkpoints()
             .first()
-            .map(|checkpoint| checkpoint.thread_id()),
+            .map(super::super::events::NestedPipelineCheckpoint::thread_id),
         Some("nested-resume/delegate")
     );
     let interrupt_id = binding.interrupt_id().to_owned();
@@ -604,7 +604,7 @@ nodes:
     );
     let middle = Arc::new(
         PipelineDefinition::from_yaml(
-            r#"
+            r"
 state:
   input: str
   messages: list
@@ -618,7 +618,7 @@ nodes:
     input: [input]
     output: [messages]
     transition: END
-"#,
+",
         )
         .expect("middle pipeline")
         .compile_subgraph_with_runtime(
@@ -632,7 +632,7 @@ nodes:
         .expect("compiled middle pipeline"),
     );
     let parent = PipelineDefinition::from_yaml(
-        r#"
+        r"
 state:
   messages: list
 entry_point: delegate
@@ -644,7 +644,7 @@ nodes:
       task: {type: fixed, value: deployment}
     output: [messages]
     transition: END
-"#,
+",
     )
     .expect("parent pipeline");
     let sessions = Arc::new(InMemorySessionService::new());
