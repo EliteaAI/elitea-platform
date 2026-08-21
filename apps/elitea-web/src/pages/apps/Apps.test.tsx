@@ -33,13 +33,27 @@ beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(
     getListToolkitsMockHandler({}),
-    // EVERY catalogue render now asks for moderation status. `useModerationRequests`
-    // sends one request per catalogue entry, and it only stopped sending them
-    // before because the selected project id was undefined and the queries were
-    // disabled. This suite runs with `onUnhandledRequest: 'error'` (R-M5), so an
-    // unmatched status request breaks the render, and the catalogue card never
-    // appears. That is what made this file fail about one run in three.
-    getModerationStatusMockHandler(),
+    /*
+     * PIN THE MODERATION STATUS. The argument is the whole point of this line.
+     *
+     * EVERY catalogue render now asks for moderation status: `useModerationRequests`
+     * sends one request per catalogue entry, and it only stopped sending them
+     * before because the selected project id was undefined and the queries were
+     * disabled.
+     *
+     * The generated handler answers with `getModerationStatusResponseMock()`,
+     * whose row carries `status: faker.helpers.arrayElement(['pending',
+     * 'approved', 'rejected'])`. A card whose status reads `pending` correctly
+     * hides its Configure button, because the user already has a request in
+     * flight. So one run in three failed, and calling the generated handler
+     * with no argument did not help: the randomness IS the defect.
+     *
+     * An empty row set is the precondition these cases actually describe — a
+     * project with no moderation request against the entity, where Configure
+     * is offered. Any test that wants the pending or rejected branch has to
+     * ask for it explicitly.
+     */
+    getModerationStatusMockHandler({ total: 0, rows: [] }),
   );
 });
 
