@@ -18,12 +18,14 @@ use async_trait::async_trait;
 use sqlx::PgPool;
 use tracing::Instrument as _;
 
+use super::application_tools::{ApplicationToolDependencies, materialize_application_tools};
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
 use super::graph::compiler::PipelineNodeRuntimes;
 use super::graph::compiler::{PipelineConfigurationError, PipelineDefinition};
 use super::graph::{
-    DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection, LlmExecutionError,
-    LlmExecutionInput, LlmNodeDefinition, PipelineDirectToolResolver, PipelineLlmAgentFactory,
+    ApplicationExecutionError, DirectToolExecutionError, DirectToolNodeKind, DirectToolSelection,
+    LlmExecutionError, LlmExecutionInput, LlmNodeDefinition, PipelineApplicationResolver,
+    PipelineApplicationSelection, PipelineDirectToolResolver, PipelineLlmAgentFactory,
     ResolvedDirectTool,
 };
 use super::request::AgentExecutionRequest;
@@ -35,11 +37,12 @@ use super::session::{
     BoundOrdinaryAgentModel, NativePipelineStateBackend, PipelineAgentCompletion,
     assemble_pipeline_native,
 };
+use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::state::{CheckpointLimits, SessionLimits};
 use crate::toolkits::{
-    AdkHttpMcpConnector, FrozenToolKind, FrozenToolSnapshot, McpConnector, SensitiveToolPolicy,
-    ToolAdmissionDecision, ToolAdmissionPolicy, materialize_configured_toolsets,
-    materialize_mcp_toolsets,
+    AdkHttpMcpConnector, AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, McpConnector,
+    SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy,
+    materialize_configured_toolsets, materialize_mcp_toolsets,
 };
 use crate::transport::model_facade::{
     ModelAdapterKind, ModelFacade, ModelInvocation, ModelReasoningEffort,
@@ -180,6 +183,16 @@ impl PipelineExecutionProfile {
                 return Err(invalid_pipeline_tool_scope());
             }
         }
+        let mut application_identities = BTreeMap::new();
+        for selection in self.definition.application_selections() {
+            let identity = validate_application_selection(selection, snapshot, policy)?;
+            if application_identities
+                .insert(identity, selection.alias())
+                .is_some_and(|alias| alias != selection.alias())
+            {
+                return Err(invalid_pipeline_tool_scope());
+            }
+        }
         Ok(())
     }
 
@@ -248,6 +261,119 @@ impl PipelineNativeAgentAssembler {
         self.mcp_connector = connector;
         self
     }
+
+    async fn bind_node_runtimes(
+        &self,
+        profile: &PipelineExecutionProfile,
+        toolsets: AdmittedToolSnapshot<'_>,
+        runtime_context: &ClaimBoundRuntimeContextAuthority,
+    ) -> Result<PipelineNodeRuntimes, NativeAgentAssemblyError> {
+        let has_llm_nodes = profile.definition().has_llm_nodes();
+        let has_direct_tool_nodes = profile.definition().has_direct_tool_nodes();
+        let has_application_nodes = profile.definition().has_application_nodes();
+        if !has_llm_nodes && !has_direct_tool_nodes && !has_application_nodes {
+            return Ok(PipelineNodeRuntimes::default());
+        }
+        let (context, model_facade) = if has_llm_nodes || has_application_nodes {
+            let platform = self
+                .platform
+                .as_ref()
+                .ok_or_else(unsupported_pipeline_runtime)?;
+            let model_facade = self
+                .model_facade
+                .clone()
+                .ok_or_else(unsupported_pipeline_runtime)?;
+            tracing::Span::current().record("stage", "runtime_context");
+            let context = platform
+                .redeem_elitea_context(runtime_context)
+                .await
+                .map_err(NativeAgentAssemblyError::from)?;
+            (Some(Arc::new(context)), Some(model_facade))
+        } else {
+            (None, None)
+        };
+        tracing::Span::current().record("stage", "toolsets");
+        let aliases = profile.definition().runtime_toolkit_aliases();
+        let selected_snapshot = toolsets.retain_toolkit_names(&aliases);
+        let mut materialized =
+            materialize_configured_toolsets(&selected_snapshot, &self.tool_policy)
+                .map_err(|_| unsupported_pipeline_runtime())?;
+        let mut mcp = materialize_mcp_toolsets(
+            &selected_snapshot,
+            self.mcp_connector.as_ref(),
+            &self.tool_policy,
+        )
+        .await
+        .map_err(|_| unsupported_pipeline_runtime())?;
+        materialized.append(&mut mcp);
+        let toolsets = toolsets_by_alias(materialized)?;
+        let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
+        let application_resolver = self
+            .build_application_resolver(
+                profile,
+                &selected_snapshot,
+                runtime_context,
+                context.clone(),
+                model_facade.clone(),
+            )
+            .await?;
+        let llm_factory = context.zip(model_facade).map(|(context, model_facade)| {
+            Arc::new(NativePipelineLlmAgentFactory {
+                profile: profile.shell().clone(),
+                context,
+                model_facade,
+                toolsets,
+            }) as Arc<dyn PipelineLlmAgentFactory>
+        });
+        Ok(PipelineNodeRuntimes::new(
+            llm_factory,
+            direct_tool_resolver,
+            application_resolver,
+        ))
+    }
+
+    async fn build_application_resolver(
+        &self,
+        profile: &PipelineExecutionProfile,
+        snapshot: &AdmittedToolSnapshot<'_>,
+        runtime_context: &ClaimBoundRuntimeContextAuthority,
+        context: Option<Arc<ClaimScopedEliteaContext>>,
+        model_facade: Option<Arc<ModelFacade>>,
+    ) -> Result<Option<Arc<dyn PipelineApplicationResolver>>, NativeAgentAssemblyError> {
+        if !profile.definition().has_application_nodes() {
+            return Ok(None);
+        }
+        let platform = self
+            .platform
+            .as_ref()
+            .ok_or_else(unsupported_pipeline_runtime)?;
+        let tools = materialize_application_tools(
+            snapshot,
+            platform,
+            runtime_context,
+            context.ok_or_else(unsupported_pipeline_runtime)?,
+            profile.shell(),
+            ApplicationToolDependencies {
+                model_facade: model_facade.ok_or_else(unsupported_pipeline_runtime)?,
+                policy: Arc::clone(&self.tool_policy),
+                mcp_connector: Arc::clone(&self.mcp_connector),
+            },
+        )
+        .await?;
+        let expected = profile
+            .definition()
+            .application_selections()
+            .map(PipelineApplicationSelection::alias)
+            .collect::<BTreeSet<_>>();
+        let actual = tools
+            .iter()
+            .map(|entry| entry.alias.as_str())
+            .collect::<BTreeSet<_>>();
+        if actual != expected {
+            return Err(invalid_pipeline_tool_scope());
+        }
+        build_application_resolver(tools).map(Some)
+    }
 }
 
 #[async_trait]
@@ -271,63 +397,9 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
             let admitted = assembly.admit_pipeline_with_policy(self.tool_policy.as_ref())?;
             let (profile, plan, toolsets, start, runtime_context, session, lease) =
                 admitted.into_parts();
-            let has_llm_nodes = profile.definition().has_llm_nodes();
-            let has_direct_tool_nodes = profile.definition().has_direct_tool_nodes();
-            let (context, model_facade) = if has_llm_nodes {
-                let platform = self
-                    .platform
-                    .as_ref()
-                    .ok_or_else(unsupported_pipeline_runtime)?;
-                let model_facade = self
-                    .model_facade
-                    .clone()
-                    .ok_or_else(unsupported_pipeline_runtime)?;
-                tracing::Span::current().record("stage", "runtime_context");
-                (
-                    Some(Arc::new(
-                        platform
-                            .redeem_elitea_context(&runtime_context)
-                            .await
-                            .map_err(NativeAgentAssemblyError::from)?,
-                    )),
-                    Some(model_facade),
-                )
-            } else {
-                drop(runtime_context);
-                (None, None)
-            };
-            let (llm_factory, direct_tool_resolver) = if has_llm_nodes || has_direct_tool_nodes {
-                tracing::Span::current().record("stage", "toolsets");
-                let aliases = profile.definition().runtime_toolkit_aliases();
-                let selected_snapshot = toolsets.retain_toolkit_names(&aliases);
-                let mut materialized =
-                    materialize_configured_toolsets(&selected_snapshot, &self.tool_policy)
-                        .map_err(|_| unsupported_pipeline_runtime())?;
-                let mut mcp = materialize_mcp_toolsets(
-                    &selected_snapshot,
-                    self.mcp_connector.as_ref(),
-                    &self.tool_policy,
-                )
-                .await
-                .map_err(|_| unsupported_pipeline_runtime())?;
-                materialized.append(&mut mcp);
-                let toolsets = toolsets_by_alias(materialized)?;
-                let direct_tool_resolver = build_direct_tool_resolver(&profile, &toolsets).await?;
-                let llm_factory = context.zip(model_facade).map(|(context, model_facade)| {
-                    Arc::new(NativePipelineLlmAgentFactory {
-                        profile: profile.shell().clone(),
-                        context,
-                        model_facade,
-                        toolsets,
-                    }) as Arc<dyn PipelineLlmAgentFactory>
-                });
-                (llm_factory, direct_tool_resolver)
-            } else {
-                // Pure/control graphs neither redeem a PAT nor construct an
-                // unused toolkit client.
-                drop(toolsets);
-                (None, None)
-            };
+            let node_runtimes = self
+                .bind_node_runtimes(&profile, toolsets, &runtime_context)
+                .await?;
             tracing::Span::current().record("stage", "state");
             assemble_pipeline_native(
                 plan,
@@ -336,7 +408,7 @@ impl NativeAgentAssembler for PipelineNativeAgentAssembler {
                 session,
                 lease,
                 &self.state,
-                PipelineNodeRuntimes::new(llm_factory, direct_tool_resolver),
+                node_runtimes,
             )
             .await
         }
@@ -364,6 +436,22 @@ struct NativePipelineLlmAgentFactory {
 
 struct NativePipelineDirectToolResolver {
     tools: BTreeMap<(String, String), ResolvedDirectTool>,
+}
+
+struct NativePipelineApplicationResolver {
+    tools: BTreeMap<String, Arc<dyn Tool>>,
+}
+
+impl PipelineApplicationResolver for NativePipelineApplicationResolver {
+    fn resolve(
+        &self,
+        selection: &PipelineApplicationSelection,
+    ) -> Result<Arc<dyn Tool>, ApplicationExecutionError> {
+        self.tools
+            .get(selection.alias())
+            .cloned()
+            .ok_or(ApplicationExecutionError::Unavailable)
+    }
 }
 
 impl PipelineDirectToolResolver for NativePipelineDirectToolResolver {
@@ -567,6 +655,46 @@ async fn build_direct_tool_resolver(
         }
     }
     Ok(Some(Arc::new(NativePipelineDirectToolResolver { tools })))
+}
+
+fn build_application_resolver(
+    materialized: Vec<super::application_tools::MaterializedApplicationTool>,
+) -> Result<Arc<dyn PipelineApplicationResolver>, NativeAgentAssemblyError> {
+    let mut tools = BTreeMap::new();
+    for entry in materialized {
+        if tools.insert(entry.alias, entry.tool).is_some() {
+            return Err(invalid_pipeline_tool_scope());
+        }
+    }
+    Ok(Arc::new(NativePipelineApplicationResolver { tools }))
+}
+
+fn validate_application_selection(
+    selection: &PipelineApplicationSelection,
+    snapshot: &FrozenToolSnapshot<'_>,
+    policy: &ToolAdmissionPolicy,
+) -> Result<(u64, u64), NativeAgentAssemblyError> {
+    let mut matches = snapshot
+        .iter()
+        .filter(|reference| reference.toolkit_name() == selection.alias());
+    let Some(reference) = matches.next() else {
+        return Err(invalid_pipeline_tool_scope());
+    };
+    if matches.next().is_some()
+        || reference.kind() != FrozenToolKind::Application
+        || !matches!(
+            reference.application_agent_type(),
+            Some("agent" | "pipeline")
+        )
+    {
+        return Err(invalid_pipeline_tool_scope());
+    }
+    if policy.toolkit_decision(reference.tool_type()) != ToolAdmissionDecision::Allowed {
+        return Err(unsupported_pipeline_tool_scope());
+    }
+    reference
+        .application_identity()
+        .ok_or_else(invalid_pipeline_tool_scope)
 }
 
 const fn model_reasoning_effort(effort: ReasoningEffort) -> ModelReasoningEffort {

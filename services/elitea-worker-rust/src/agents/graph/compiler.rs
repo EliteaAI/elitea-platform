@@ -21,6 +21,10 @@ use serde::de::{Deserializer, SeqAccess, Visitor};
 use serde_json::json;
 use thiserror::Error;
 
+use super::application::{
+    ApplicationNode, ApplicationNodeDefinition, PipelineApplicationResolver,
+    PipelineApplicationSelection,
+};
 use super::decision::{DecisionNode, DecisionNodeDefinition};
 use super::direct_tool::{
     DIRECT_TOOL_RESUME_STATE_KEY, DirectToolInputMapping, DirectToolNode, DirectToolNodeDefinition,
@@ -216,6 +220,7 @@ pub(crate) struct PipelineDefinition {
 pub(crate) struct PipelineNodeRuntimes {
     llm: Option<Arc<dyn PipelineLlmAgentFactory>>,
     direct_tool: Option<Arc<dyn PipelineDirectToolResolver>>,
+    application: Option<Arc<dyn PipelineApplicationResolver>>,
 }
 
 impl PipelineNodeRuntimes {
@@ -223,13 +228,19 @@ impl PipelineNodeRuntimes {
     pub(crate) const fn new(
         llm: Option<Arc<dyn PipelineLlmAgentFactory>>,
         direct_tool: Option<Arc<dyn PipelineDirectToolResolver>>,
+        application: Option<Arc<dyn PipelineApplicationResolver>>,
     ) -> Self {
-        Self { llm, direct_tool }
+        Self {
+            llm,
+            direct_tool,
+            application,
+        }
     }
 }
 
 #[derive(Clone)]
 enum PipelineNodeDefinition {
+    Application(ApplicationNodeDefinition),
     Decision(DecisionNodeDefinition),
     DirectTool(DirectToolNodeDefinition),
     Hitl(HitlNodeDefinition),
@@ -242,6 +253,7 @@ enum PipelineNodeDefinition {
 impl PipelineNodeDefinition {
     fn id(&self) -> &str {
         match self {
+            Self::Application(node) => node.id(),
             Self::Decision(node) => node.id(),
             Self::DirectTool(node) => node.id(),
             Self::Hitl(node) => node.id(),
@@ -254,6 +266,7 @@ impl PipelineNodeDefinition {
 
     fn input_keys(&self) -> &[String] {
         match self {
+            Self::Application(node) => node.input_keys(),
             Self::Decision(node) => node.input_keys(),
             Self::DirectTool(node) => node.input_keys(),
             Self::Hitl(node) => node.input_keys(),
@@ -266,6 +279,7 @@ impl PipelineNodeDefinition {
 
     fn output_keys(&self) -> &[String] {
         match self {
+            Self::Application(node) => node.output_keys(),
             Self::DirectTool(node) => node.output_keys(),
             Self::Decision(_) | Self::Hitl(_) | Self::Printer(_) | Self::Router(_) => &[],
             Self::Llm(node) => node.output_keys(),
@@ -275,7 +289,8 @@ impl PipelineNodeDefinition {
 
     fn cleaned_keys(&self) -> &[String] {
         match self {
-            Self::Decision(_)
+            Self::Application(_)
+            | Self::Decision(_)
             | Self::DirectTool(_)
             | Self::Hitl(_)
             | Self::Llm(_)
@@ -288,7 +303,8 @@ impl PipelineNodeDefinition {
     fn edit_state_key(&self) -> Option<&str> {
         match self {
             Self::Hitl(node) => node.edit_state_key(),
-            Self::Decision(_)
+            Self::Application(_)
+            | Self::Decision(_)
             | Self::DirectTool(_)
             | Self::Llm(_)
             | Self::Printer(_)
@@ -299,6 +315,7 @@ impl PipelineNodeDefinition {
 
     fn route_targets(&self) -> Vec<&str> {
         match self {
+            Self::Application(node) => node.transition().into_iter().collect(),
             Self::Decision(node) => node.route_targets().collect(),
             Self::DirectTool(node) => node.transition().into_iter().collect(),
             Self::Hitl(node) => node.route_targets().collect(),
@@ -311,6 +328,7 @@ impl PipelineNodeDefinition {
 
     fn config_digest(&self) -> [u8; 32] {
         match self {
+            Self::Application(node) => node.config_digest(),
             Self::Decision(node) => node.config_digest(),
             Self::DirectTool(node) => node.config_digest(),
             Self::Hitl(node) => node.config_digest(),
@@ -421,7 +439,8 @@ impl PipelineDefinition {
     pub(crate) fn llm_tool_selections(&self) -> impl Iterator<Item = &LlmToolkitSelection> {
         self.nodes.iter().flat_map(|node| match node {
             PipelineNodeDefinition::Llm(node) => node.tool_selections(),
-            PipelineNodeDefinition::Decision(_)
+            PipelineNodeDefinition::Application(_)
+            | PipelineNodeDefinition::Decision(_)
             | PipelineNodeDefinition::DirectTool(_)
             | PipelineNodeDefinition::Hitl(_)
             | PipelineNodeDefinition::Printer(_)
@@ -434,7 +453,24 @@ impl PipelineDefinition {
     pub(crate) fn direct_tool_selections(&self) -> impl Iterator<Item = &DirectToolSelection> {
         self.nodes.iter().filter_map(|node| match node {
             PipelineNodeDefinition::DirectTool(node) => Some(node.selection()),
+            PipelineNodeDefinition::Application(_)
+            | PipelineNodeDefinition::Decision(_)
+            | PipelineNodeDefinition::Hitl(_)
+            | PipelineNodeDefinition::Llm(_)
+            | PipelineNodeDefinition::Printer(_)
+            | PipelineNodeDefinition::Router(_)
+            | PipelineNodeDefinition::StateModifier(_) => None,
+        })
+    }
+
+    /// Exact saved-application participants selected by Agent nodes.
+    pub(crate) fn application_selections(
+        &self,
+    ) -> impl Iterator<Item = &PipelineApplicationSelection> {
+        self.nodes.iter().filter_map(|node| match node {
+            PipelineNodeDefinition::Application(node) => Some(node.selection()),
             PipelineNodeDefinition::Decision(_)
+            | PipelineNodeDefinition::DirectTool(_)
             | PipelineNodeDefinition::Hitl(_)
             | PipelineNodeDefinition::Llm(_)
             | PipelineNodeDefinition::Printer(_)
@@ -460,6 +496,13 @@ impl PipelineDefinition {
             .any(|node| matches!(node, PipelineNodeDefinition::DirectTool(_)))
     }
 
+    #[must_use]
+    pub(crate) fn has_application_nodes(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|node| matches!(node, PipelineNodeDefinition::Application(_)))
+    }
+
     pub(crate) fn llm_toolkit_aliases(&self) -> BTreeSet<String> {
         self.llm_tool_selections()
             .map(|selection| selection.alias().to_owned())
@@ -471,6 +514,10 @@ impl PipelineDefinition {
             .into_iter()
             .chain(
                 self.direct_tool_selections()
+                    .map(|selection| selection.alias().to_owned()),
+            )
+            .chain(
+                self.application_selections()
                     .map(|selection| selection.alias().to_owned()),
             )
             .collect()
@@ -504,7 +551,7 @@ impl PipelineDefinition {
             agent_name,
             checkpointer,
             resume,
-            &PipelineNodeRuntimes::new(llm_factory.cloned(), None),
+            &PipelineNodeRuntimes::new(llm_factory.cloned(), None, None),
         )
     }
 
@@ -597,6 +644,9 @@ impl PipelineDefinition {
         runtimes: &PipelineNodeRuntimes,
     ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
         Ok(match node {
+            PipelineNodeDefinition::Application(node) => {
+                self.bind_application_node(builder, node, runtimes)?
+            }
             PipelineNodeDefinition::Decision(node) => {
                 let Some(factory) = runtimes.llm.clone() else {
                     return Err(PipelineConfigurationError::Unsupported(
@@ -684,6 +734,35 @@ impl PipelineDefinition {
         })
     }
 
+    fn bind_application_node(
+        &self,
+        builder: GraphAgentBuilder,
+        node: &ApplicationNodeDefinition,
+        runtimes: &PipelineNodeRuntimes,
+    ) -> Result<GraphAgentBuilder, PipelineConfigurationError> {
+        let Some(resolver) = runtimes.application.clone() else {
+            return Err(PipelineConfigurationError::Unsupported(
+                "the pipeline Agent runtime is not bound to this compiler",
+            ));
+        };
+        let transition = node.transition().map(ToOwned::to_owned);
+        let node_id = node.id().to_owned();
+        let mut next = builder.node(ApplicationNode::new(
+            node.clone(),
+            self.state.clone(),
+            resolver,
+        ));
+        if let Some(transition) = transition {
+            let target = if transition == "END" {
+                END
+            } else {
+                transition.as_str()
+            };
+            next = next.edge(&node_id, target);
+        }
+        Ok(next)
+    }
+
     /// Build the native ADK state schema for runtime-owned and user channels.
     fn state_schema(&self, channels: BTreeSet<String>) -> StateSchema {
         let mut schema = StateSchema::new();
@@ -741,6 +820,9 @@ impl PipelineDefinition {
         let mut keys = Vec::new();
         for node in &self.nodes {
             let (transition, output_keys) = match node {
+                PipelineNodeDefinition::Application(node) => {
+                    (node.transition(), node.output_keys())
+                }
                 PipelineNodeDefinition::DirectTool(node) => (node.transition(), node.output_keys()),
                 PipelineNodeDefinition::Llm(node) => (node.transition(), node.output_keys()),
                 PipelineNodeDefinition::StateModifier(node) => {
@@ -960,6 +1042,9 @@ fn parse_pipeline_node(
         "decision" => DecisionNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::Decision)
             .map_err(|_| PipelineConfigurationError::Invalid("a Decision node is invalid")),
+        "agent" => ApplicationNodeDefinition::from_yaml(&encoded)
+            .map(PipelineNodeDefinition::Application)
+            .map_err(|_| PipelineConfigurationError::Invalid("an Agent node is invalid")),
         "toolkit" | "mcp" => DirectToolNodeDefinition::from_yaml(&encoded)
             .map(PipelineNodeDefinition::DirectTool)
             .map_err(|_| PipelineConfigurationError::Invalid("a direct-tool node is invalid")),
@@ -1003,6 +1088,16 @@ fn validate_node_state(
         }
     }
     match node {
+        PipelineNodeDefinition::Application(node) => {
+            if let Some(key) = node.mapped_variable()
+                && !builtin_state_key(key)
+                && !state.contains_key(key)
+            {
+                return Err(PipelineConfigurationError::Invalid(
+                    "an Agent task mapping variable is not declared in pipeline state",
+                ));
+            }
+        }
         PipelineNodeDefinition::DirectTool(node) => {
             for mapping in node.input_mapping().values() {
                 if let DirectToolInputMapping::Variable(key) = mapping
@@ -1217,6 +1312,7 @@ fn definition_digest(
     for node in nodes {
         digest_field(&mut context, node.id().as_bytes());
         let kind = match node {
+            PipelineNodeDefinition::Application(_) => b"agent".as_slice(),
             PipelineNodeDefinition::Decision(_) => b"decision".as_slice(),
             PipelineNodeDefinition::DirectTool(node) => {
                 node.selection().kind().wire_name().as_bytes()

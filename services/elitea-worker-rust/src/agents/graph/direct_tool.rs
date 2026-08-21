@@ -782,7 +782,7 @@ fn blocked_messages(call_id: &str, tool_name: &str, result: &Value, message: &st
     ])
 }
 
-fn pipeline_tool_context(
+pub(super) fn pipeline_tool_context(
     context: &NodeContext,
     node_name: &str,
     tool_name: &str,
@@ -1071,7 +1071,7 @@ fn assistant_message(result: &Value) -> Result<Value, DirectToolExecutionError> 
     Ok(json!([{"role": "assistant", "content": content}]))
 }
 
-fn ensure_state_type(
+pub(super) fn ensure_state_type(
     key: &str,
     value: &Value,
     state_types: &BTreeMap<String, String>,

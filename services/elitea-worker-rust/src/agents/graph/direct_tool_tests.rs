@@ -546,7 +546,7 @@ nodes:
             "pipeline-root",
             checkpointer.clone(),
             None,
-            &PipelineNodeRuntimes::new(None, Some(resolver)),
+            &PipelineNodeRuntimes::new(None, Some(resolver), None),
         )
         .expect("compiled Toolkit graph");
     let sessions = Arc::new(InMemorySessionService::new());
@@ -618,7 +618,7 @@ async fn sensitive_toolkit_graph_resumes_exact_checkpoint_and_executes_once_afte
             ROOT,
             checkpointer.clone(),
             None,
-            &PipelineNodeRuntimes::new(None, Some(Arc::clone(&resolver))),
+            &PipelineNodeRuntimes::new(None, Some(Arc::clone(&resolver)), None),
         )
         .expect("first graph");
     let first_events = run_direct_graph(first, sessions.clone(), THREAD, "lookup").await;
@@ -667,7 +667,7 @@ async fn sensitive_toolkit_graph_resumes_exact_checkpoint_and_executes_once_afte
             ROOT,
             checkpointer.clone(),
             Some(resume),
-            &PipelineNodeRuntimes::new(None, Some(resolver)),
+            &PipelineNodeRuntimes::new(None, Some(resolver), None),
         )
         .expect("resumed graph");
     let events = run_direct_graph(resumed, sessions.clone(), THREAD, "continue").await;

@@ -54,6 +54,12 @@ pub(crate) struct ApplicationToolDependencies {
     pub(crate) mcp_connector: Arc<dyn McpConnector>,
 }
 
+/// One exact frozen Application alias bound to its invocation-owned ADK tool.
+pub(crate) struct MaterializedApplicationTool {
+    pub(crate) alias: String,
+    pub(crate) tool: Arc<dyn Tool>,
+}
+
 /// Build the one nested-application toolset for the root direct agent.
 pub(crate) async fn materialize_application_toolset(
     snapshot: &AdmittedToolSnapshot<'_>,
@@ -63,9 +69,36 @@ pub(crate) async fn materialize_application_toolset(
     fallback_profile: &OrdinaryNoToolProfile,
     dependencies: ApplicationToolDependencies,
 ) -> Result<Option<Arc<dyn Toolset>>, NativeAgentAssemblyError> {
+    let materialized = materialize_application_tools(
+        snapshot,
+        platform,
+        runtime_context,
+        elitea_context,
+        fallback_profile,
+        dependencies,
+    )
+    .await?;
+    if materialized.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(BasicToolset::new(
+        "elitea_nested_applications",
+        materialized.into_iter().map(|entry| entry.tool).collect(),
+    ))))
+}
+
+/// Resolve exact frozen saved applications without changing their graph alias.
+pub(crate) async fn materialize_application_tools(
+    snapshot: &AdmittedToolSnapshot<'_>,
+    platform: &PlatformClient,
+    runtime_context: &ClaimBoundRuntimeContextAuthority,
+    elitea_context: Arc<ClaimScopedEliteaContext>,
+    fallback_profile: &OrdinaryNoToolProfile,
+    dependencies: ApplicationToolDependencies,
+) -> Result<Vec<MaterializedApplicationTool>, NativeAgentAssemblyError> {
     let references = application_references(snapshot)?;
     if references.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let mut state = ApplicationAssemblyState {
         platform,
@@ -79,16 +112,17 @@ pub(crate) async fn materialize_application_toolset(
         resolving: HashSet::new(),
         hops: 0,
     };
-    let mut tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(references.len());
+    let mut tools = Vec::with_capacity(references.len());
     for reference in references {
         let identity = reference.identity;
+        let alias = reference.name.clone();
         let agent = state.build(reference.clone(), 2).await?;
-        tools.push(Arc::new(ApplicationAgentTool::new(agent, identity)));
+        tools.push(MaterializedApplicationTool {
+            alias,
+            tool: Arc::new(ApplicationAgentTool::new(agent, identity)),
+        });
     }
-    Ok(Some(Arc::new(BasicToolset::new(
-        "elitea_nested_applications",
-        tools,
-    ))))
+    Ok(tools)
 }
 
 struct ApplicationAssemblyState<'a> {

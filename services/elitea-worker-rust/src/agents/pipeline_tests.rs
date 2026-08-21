@@ -228,6 +228,45 @@ fn mcp_pipeline_request(
     request
 }
 
+fn agent_pipeline_request(
+    alias: &str,
+    child_agent_type: &str,
+) -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    let definition = format!(
+        "state:\n  answer: str\n  messages: list\nentry_point: delegate\nnodes:\n  - id: delegate\n    type: agent\n    tool: {alias:?}\n    input_mapping:\n      task: {{type: fixed, value: 'Summarize the release'}}\n    output: [answer, messages]\n    transition: END\n"
+    );
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert("instructions".to_owned(), json!(definition));
+    version.insert(
+        "tools".to_owned(),
+        json!([{
+            "id": 44,
+            "type": "application",
+            "name": "release-agent",
+            "description": "Summarizes one release.",
+            "author_id": 11,
+            "settings": {"application_id": 3, "application_version_id": 4},
+            "meta": {},
+            "created_at": "2026-08-21T10:00:00Z",
+            "toolkit_name": "release-agent",
+            "author": null,
+            "agent_type": child_agent_type,
+            "online": null,
+            "icon_meta": null,
+            "variables": [],
+            "is_pinned": false,
+            "indexes_count": null
+        }]),
+    );
+    request
+}
+
 fn runtime_tool_policy(value: &Value) -> ToolAdmissionPolicy {
     let runtime = value.as_object().expect("runtime policy object");
     ToolAdmissionPolicy::from_runtime_config(runtime).expect("runtime tool policy")
@@ -534,6 +573,69 @@ fn mcp_node_scope_is_exact_and_sensitive_read_uses_the_graph_confirmation() {
     let error =
         admission_error(authorized(&configured_as_mcp).admit_pipeline_with_policy(&empty_policy));
     assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
+#[test]
+fn agent_node_scope_requires_one_exact_allowed_saved_application_or_pipeline() {
+    let allowed = agent_pipeline_request("release-agent", "agent");
+    let empty_policy = runtime_tool_policy(&json!({}));
+    let admitted = authorized(&allowed)
+        .admit_pipeline_with_policy(&empty_policy)
+        .expect("exact frozen Agent participant");
+    assert!(admitted.profile().definition().has_application_nodes());
+
+    let child_pipeline = agent_pipeline_request("release-agent", "pipeline");
+    authorized(&child_pipeline)
+        .admit_pipeline_with_policy(&empty_policy)
+        .expect("saved pipeline is a valid Agent-node participant kind");
+
+    for invalid in [
+        agent_pipeline_request("other-agent", "agent"),
+        agent_pipeline_request("release-agent", "openai"),
+    ] {
+        let error = admission_error(authorized(&invalid).admit_pipeline_with_policy(&empty_policy));
+        assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    }
+
+    let mut duplicate_identity = agent_pipeline_request("release-agent", "agent");
+    let version = duplicate_identity
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    let instructions = version
+        .get("instructions")
+        .and_then(Value::as_str)
+        .expect("Agent pipeline YAML")
+        .replace("transition: END", "transition: delegate_again");
+    version.insert(
+        "instructions".to_owned(),
+        json!(format!(
+            "{instructions}  - id: delegate_again\n    type: agent\n    tool: release-agent-copy\n    input_mapping:\n      task: {{type: fixed, value: 'Summarize again'}}\n    output: [answer, messages]\n    transition: END\n"
+        )),
+    );
+    let tools = version
+        .get_mut("tools")
+        .and_then(Value::as_array_mut)
+        .expect("saved participant list");
+    let mut duplicate = tools[0].clone();
+    duplicate["id"] = json!(45);
+    duplicate["name"] = json!("release-agent-copy");
+    duplicate["toolkit_name"] = json!("release-agent-copy");
+    tools.push(duplicate);
+    let error =
+        admission_error(authorized(&duplicate_identity).admit_pipeline_with_policy(&empty_policy));
+    assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+
+    let blocked = runtime_tool_policy(&json!({
+        "toolkit_security": {"blocked_toolkits": ["application"]}
+    }));
+    let error = admission_error(authorized(&allowed).admit_pipeline_with_policy(&blocked));
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
 }
 
 #[tokio::test]
