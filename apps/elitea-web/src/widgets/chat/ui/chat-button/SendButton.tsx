@@ -9,6 +9,7 @@ import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
+import { useVoiceFeatureFlags } from '@/shared/lib/hooks/useVoiceFeatureFlags';
 import { VoicewaveIcon } from '@/shared/ui/icons/voicewave-icon';
 
 /**
@@ -19,17 +20,27 @@ import { VoicewaveIcon } from '@/shared/ui/icons/voicewave-icon';
  *  - a voice-wave icon (clickable to enter speaking mode, when the input is empty)
  *  - a speaking-mode strip (voice-wave + stop button)
  *
- * `micDisabled` (= `disabledSend` alone) gates the mic control independently
- * of `isDisabled` (= `disabledSend || isEmpty`, used by the send control) —
- * the mic branch only renders when `isEmpty` is already true, so reusing
- * `isDisabled` there made the mic permanently non-interactive regardless of
- * `disabledSend` (baseline `SendButton.jsx:57` gates it on `disabledSend`
- * alone).
+ * `micDisabled` (= `disabledSend || temporarilyDisabled`) gates the mic
+ * control. `isDisabled` (= `disabledSend || isEmpty`) gates the send control.
+ * The two must stay separate. The mic branch renders only when `isEmpty` is
+ * already true. `isDisabled` there made the mic permanently non-interactive.
+ * The baseline gates the mic on `disabledSend` alone (`SendButton.jsx:57`).
  *
- * `VOICE_FEATURES_ENABLED`/`VOICE_FEATURES_TEMPORARILY_DISABLED` are
- * hardcoded to baseline's own env-flag defaults, same disclosed
- * `shared/config` `ConfigSchema` gap `features/chat-input/ui/
- * VoiceControlButton.tsx` already established (no schema field yet).
+ * The two voice flags are READ FROM THE PLATFORM (`useVoiceFeatureFlags`,
+ * A14/issue 200), not hardcoded. They were the module constants
+ * `VOICE_FEATURES_ENABLED = true` and
+ * `VOICE_FEATURES_TEMPORARILY_DISABLED = false`. The module doc called that a
+ * `shared/config` `ConfigSchema` gap. The gap is closed:
+ * `GET /elitea_core/platform_settings/…` marshals both values from
+ * `centry.platform_config`, and `useVoiceFeatureFlags` is the schema.
+ * `enabled` hides the mic and the speaking-mode strip. `temporarilyDisabled`
+ * keeps the mic visible but non-interactive, with the administrator tooltip.
+ * `VoiceButton.tsx`'s `deriveVoiceButtonUiState` applies the same pairing.
+ *
+ * Both controls are real `IconButton`s inside a plain `span`. The `span` is the
+ * `Tooltip` child on purpose. MUI cannot attach listeners to a disabled
+ * element. A disabled `IconButton` as the direct child suppresses the tooltip.
+ * The tooltip of that exact state carries the reason for the disabled control.
  *
  * Prop contract (injected by the composition root through `slots.sendControl`):
  *   - `isSpeakingMode`      — show the speaking-mode strip
@@ -50,20 +61,74 @@ export interface SendButtonProps {
   tooltipOfSendButton?: string;
 }
 
-const VOICE_FEATURES_ENABLED = true;
-const VOICE_FEATURES_TEMPORARILY_DISABLED = false;
-
 const voicewaveIconStyle = { width: '1rem', height: '1rem' };
 
-/** Split out purely to keep the component under the §3.5 cyclomatic-complexity-12 budget — every branch below is driven by a single `disabled` flag, repeated per render state. */
-function disabledCursorOpacitySx(disabled: boolean): { cursor: 'default' | 'pointer'; opacity: number } {
-  return { cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1 };
-}
+/** Keeps the 0.5 disabled opacity the previous `<span>` markup painted by hand, now that MUI owns the disabled state. */
+const disabledOpacitySx = { '&.Mui-disabled': { opacity: 0.5 } };
 
-function micTooltipTitle(): string {
-  return VOICE_FEATURES_TEMPORARILY_DISABLED
+function micTooltipTitle(temporarilyDisabled: boolean): string {
+  return temporarilyDisabled
     ? t('widgets.chat.sendButton.micDisabledTooltip', 'Temporarily disabled by admin')
     : t('widgets.chat.sendButton.startSpeakingTooltip', 'Start speaking');
+}
+
+interface SendControlProps {
+  readonly tooltip: string;
+  readonly disabled: boolean;
+  readonly onSend: () => void;
+}
+
+/**
+ * The send arrow. `aria-label` repeats the tooltip text on purpose. `Tooltip`
+ * spreads the child's own props after the name it injects, so an explicit
+ * label wins. A different string gives a WCAG 2.5.3 label-in-name mismatch.
+ */
+function SendControl({ tooltip, disabled, onSend }: SendControlProps) {
+  return (
+    <Tooltip title={tooltip} placement="top">
+      <Box component="span" sx={{ display: 'inline-flex' }}>
+        <IconButton
+          data-testid="chat-send-button"
+          type="button"
+          size="small"
+          disabled={disabled}
+          onClick={onSend}
+          aria-label={tooltip}
+          sx={{ ...disabledOpacitySx, color: disabled ? 'text.disabled' : 'primary.main' }}
+        >
+          <SendIcon fontSize="small" />
+        </IconButton>
+      </Box>
+    </Tooltip>
+  );
+}
+
+interface MicControlProps {
+  readonly disabled: boolean;
+  readonly temporarilyDisabled: boolean;
+  readonly onEnterSpeaking: () => void;
+}
+
+/** The voice-wave icon that enters speaking mode, shown while the composer is empty. */
+function MicControl({ disabled, temporarilyDisabled, onEnterSpeaking }: MicControlProps) {
+  const title = micTooltipTitle(temporarilyDisabled);
+  return (
+    <Tooltip title={title} placement="top">
+      <Box component="span" sx={{ display: 'inline-flex' }}>
+        <IconButton
+          data-testid="chat-speaking-mode-button"
+          type="button"
+          size="small"
+          disabled={disabled}
+          onClick={onEnterSpeaking}
+          aria-label={title}
+          sx={{ ...disabledOpacitySx, color: 'text.secondary' }}
+        >
+          <VoicewaveIcon style={voicewaveIconStyle} />
+        </IconButton>
+      </Box>
+    </Tooltip>
+  );
 }
 
 export const SendButton = memo(
@@ -76,15 +141,14 @@ export const SendButton = memo(
     onSend,
     tooltipOfSendButton = t('widgets.chat.sendButton.defaultTooltip', 'Send'),
   }: SendButtonProps) => {
+    const voiceFlags = useVoiceFeatureFlags();
     const isEmpty = !question;
     const isDisabled = disabledSend || isEmpty;
-    const micDisabled = disabledSend;
+    const micDisabled = disabledSend || voiceFlags.temporarilyDisabled;
 
     const handleSend = useCallback(() => {
-      if (!isDisabled) {
-        onSend?.();
-      }
-    }, [isDisabled, onSend]);
+      onSend?.();
+    }, [onSend]);
 
     const handleEnterSpeaking = useCallback(() => {
       onEnterSpeakingMode?.();
@@ -93,6 +157,14 @@ export const SendButton = memo(
     const handleExitSpeaking = useCallback(() => {
       onExitSpeakingMode?.();
     }, [onExitSpeakingMode]);
+
+    // Voice off platform-wide: no mic, and no speaking-mode strip either.
+    // This branch sits above the `isSpeakingMode` branch on purpose. A session
+    // that was already in speaking mode returns to the send arrow when the
+    // operator turns the feature off. It does not keep the recording surface.
+    if (!voiceFlags.enabled) {
+      return <SendControl tooltip={tooltipOfSendButton} disabled={isDisabled} onSend={handleSend} />;
+    }
 
     // Speaking mode strip
     if (isSpeakingMode) {
@@ -135,33 +207,18 @@ export const SendButton = memo(
     }
 
     // Idle, empty input: show the voice-wave icon to enter speaking mode.
-    if (isEmpty && VOICE_FEATURES_ENABLED) {
+    if (isEmpty) {
       return (
-        <Tooltip title={micTooltipTitle()} placement="top">
-          <Box
-            component="span"
-            sx={{ ...disabledCursorOpacitySx(micDisabled), color: 'text.secondary' }}
-            onClick={!micDisabled ? handleEnterSpeaking : undefined}
-          >
-            <VoicewaveIcon style={voicewaveIconStyle} />
-          </Box>
-        </Tooltip>
+        <MicControl
+          disabled={micDisabled}
+          temporarilyDisabled={voiceFlags.temporarilyDisabled}
+          onEnterSpeaking={handleEnterSpeaking}
+        />
       );
     }
 
-    // Active state: send button (has text, or voice features are off)
-    return (
-      <Tooltip title={tooltipOfSendButton} placement="top">
-        <Box
-          data-testid="chat-send-button"
-          component="span"
-          sx={{ ...disabledCursorOpacitySx(isDisabled), color: isDisabled ? 'text.disabled' : 'primary.main' }}
-          onClick={isDisabled ? undefined : handleSend}
-        >
-          <SendIcon fontSize="small" />
-        </Box>
-      </Tooltip>
-    );
+    // Active state: send button (has text).
+    return <SendControl tooltip={tooltipOfSendButton} disabled={isDisabled} onSend={handleSend} />;
   },
 );
 

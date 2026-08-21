@@ -10,6 +10,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { InputBase } from '@/shared/ui/InputBase';
 import type { InputBaseProps } from '@/shared/ui/InputBase';
 import { AiAssistantIcon } from '@/shared/ui/icons/ai-assistant-icon';
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
 import { AIAssistantModal } from './AIAssistantModal';
@@ -180,27 +181,41 @@ export const AIAssistantInput = memo(function AIAssistantInput(props: AIAssistan
     { disabled, projectId, fieldBinding, fStringAutocomplete, pipelineContext },
   );
 
+  /*
+   * THE TRIGGER IS GATED HERE, not only at the call sites.
+   *
+   * The modal posts to `/elitea_core/predict_llm/...`, which the Go router
+   * registers in no profile. `SimpleLLMInputItem` was gated on its own, but
+   * this component is rendered directly by `nodes/PrinterNode.tsx`,
+   * `nodes/ConditionNode.tsx` and `settings/PipelineSettings.tsx` as well.
+   * Those three paths kept a button that answers 404. The gate belongs on the
+   * component that owns the trigger, so a later call site cannot miss it.
+   */
+  const aiAssistantServed = hasBackendCapability('aiGeneration');
+
   return (
     <Box sx={{ position: 'relative' }}>
       <InputBase {...inputBaseProps} />
-      <Tooltip
-        title={triggerLabel}
-        placement="top"
-      >
-        <IconButton
-          onClick={handleOpenAIAssistant}
-          sx={triggerButtonSx}
-          aria-label={triggerLabel}
-          size="small"
+      {aiAssistantServed && (
+        <Tooltip
+          title={triggerLabel}
+          placement="top"
         >
-          <SvgIcon
-            component={AiAssistantIcon}
-            inheritViewBox
-            fontSize="small"
-          />
-        </IconButton>
-      </Tooltip>
-      {showAIAssistantModal && <AIAssistantModal {...modalProps} />}
+          <IconButton
+            onClick={handleOpenAIAssistant}
+            sx={triggerButtonSx}
+            aria-label={triggerLabel}
+            size="small"
+          >
+            <SvgIcon
+              component={AiAssistantIcon}
+              inheritViewBox
+              fontSize="small"
+            />
+          </IconButton>
+        </Tooltip>
+      )}
+      {aiAssistantServed && showAIAssistantModal && <AIAssistantModal {...modalProps} />}
     </Box>
   );
 });

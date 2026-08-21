@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -28,6 +29,9 @@ const detail = {
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: BASE });
+  // The test pane POSTs `predict_llm`, which no router mounts, so it is
+  // hidden by default — see `shared/config/backendCapabilities`.
+  setBackendCapabilityForTests('aiGeneration', true);
   server.use(
     http.get(`${BASE}/elitea_core/skill/prompt_lib/:projectId/:skillId`, () =>
       HttpResponse.json(detail),
@@ -39,6 +43,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
   vi.restoreAllMocks();
 });
 

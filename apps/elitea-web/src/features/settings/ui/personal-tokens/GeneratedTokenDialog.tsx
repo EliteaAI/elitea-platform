@@ -91,10 +91,16 @@ export const GeneratedTokenDialog = memo(function GeneratedTokenDialog({
           </Typography>
           <IconButton
             size="small"
+            aria-label={t('common.closeAriaLabel', 'Close')}
             onClick={onClose}
             sx={styles.closeButton}
           >
-            <span style={{ fontSize: theme.typography.headingMedium.fontSize }}>{t('common.close', '✕')}</span>
+            <span
+              aria-hidden="true"
+              style={{ fontSize: theme.typography.headingMedium.fontSize }}
+            >
+              {t('common.close', '✕')}
+            </span>
           </IconButton>
         </Box>
 

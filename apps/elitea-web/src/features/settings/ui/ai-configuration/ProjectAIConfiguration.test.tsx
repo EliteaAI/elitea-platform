@@ -45,4 +45,26 @@ describe('ProjectAIConfiguration', () => {
     );
     expect(screen.getByText('https://elitea.example.test/llm/v1')).toBeInTheDocument();
   });
+  /*
+   * ABSOLUTE, NOT RELATIVE. `vite_server_url` ships as the bare path `/api/v2`
+   * whenever one gateway fronts both the SPA and elitea-main, and a live
+   * deployment rendered `OpenAI-BaseURL: /llm/v1` and `Server URL: /api/v2`
+   * beside a copy button. A bare path addresses nothing once it is pasted into
+   * an SDK, a curl command or a CI variable.
+   */
+  it('resolves a path-only API URL against the page origin', () => {
+    renderWithTheme(<ProjectAIConfiguration userApiUrl="/api/v2" projectId={WORKING_PROJECT_ID} />);
+    const origin = window.location.origin;
+    expect(screen.getByText(`${origin}/llm/v1`)).toBeInTheDocument();
+    expect(screen.getByText(`${origin}/api/v2`)).toBeInTheDocument();
+    expect(screen.queryByText('/llm/v1')).not.toBeInTheDocument();
+  });
+
+  it('leaves an absolute API URL exactly as the operator configured it', () => {
+    renderWithTheme(
+      <ProjectAIConfiguration userApiUrl="https://api.elsewhere.test/api/v2" projectId={WORKING_PROJECT_ID} />,
+    );
+    expect(screen.getByText('https://api.elsewhere.test/llm/v1')).toBeInTheDocument();
+    expect(screen.getByText('https://api.elsewhere.test/api/v2')).toBeInTheDocument();
+  });
 });

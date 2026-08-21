@@ -149,7 +149,7 @@ function serverBasePaths(servers) {
   return servers
     .map((s) => {
       try {
-        // Server URLs here are path-only ("/api/v2/elitea_core") or "/".
+        // Server URLs here are path-only ("/api/v2") or "/".
         const u = new URL(s.url, 'http://x');
         return u.pathname.replace(/\/$/, '');
       } catch {

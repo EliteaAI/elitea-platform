@@ -175,4 +175,53 @@ describe('AgentModal', () => {
     addSpy.mockRestore();
     removeSpy.mockRestore();
   });
+  // The dismiss control is an icon-only button. Without an `aria-label` it
+  // announces as a bare "button" beside the like button.
+  it('names the close button and closes the modal when it is clicked', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    server.use(getGetPublicApplicationMockHandler());
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+
+    withProviders(<AgentModal open agent={AGENT} onClose={onClose} />);
+    await screen.findByText('Research Agent');
+
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * REGRESSION guard. The port kept the "Show context" text and its click
+   * handler, but it discarded the state getter and rendered no dialog. The
+   * control looked live and did nothing. Baseline: `AgentModal.jsx:263-269`.
+   */
+  it('opens the context dialog with the agent instructions when "Show context" is clicked', async () => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    server.use(
+      getGetPublicApplicationMockHandler({
+        id: '42',
+        name: 'Research Agent',
+        description: 'Finds things.',
+        version_details: {
+          id: 'v-1',
+          application_id: '42',
+          name: 'v1',
+          status: 'published',
+          instructions: 'You are a helpful research assistant.',
+        },
+      }),
+    );
+    const user = userEvent.setup();
+
+    withProviders(<AgentModal open agent={AGENT} onClose={() => {}} />);
+    await screen.findByText('Research Agent');
+    // The instructions are not on screen until the dialog opens.
+    expect(screen.queryByText('You are a helpful research assistant.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByText('Show context'));
+
+    expect(await screen.findByText('Context')).toBeInTheDocument();
+    expect(await screen.findByText('You are a helpful research assistant.')).toBeInTheDocument();
+  });
 });

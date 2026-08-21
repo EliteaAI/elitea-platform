@@ -7,6 +7,7 @@ import IconButton from '@mui/material/IconButton';
 import type { SxProps, Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { InfoLabelWithTooltip } from '@/shared/ui/InfoLabelWithTooltip';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
@@ -98,9 +99,13 @@ export function TriggerTypeSelector(props: TriggerTypeSelectorProps): ReactNode 
 
   const hasInteractiveElements = useMemo(() => computeHasInteractiveElements(versionInstructions), [versionInstructions]);
 
+  // Schedule and Webhook both write through the pipeline-trigger endpoint,
+  // which no router mounts — see `shared/config/backendCapabilities`. Chat
+  // Message calls no endpoint, so it is the only option that can work.
+  const chatMessageOnly = hasInteractiveElements || !hasBackendCapability('pipelineTriggers');
   const availableTriggerOptions = useMemo(
-    () => (hasInteractiveElements ? TRIGGER_OPTIONS.filter(option => option.value === TRIGGER_TYPES.chat_message) : TRIGGER_OPTIONS),
-    [hasInteractiveElements],
+    () => (chatMessageOnly ? TRIGGER_OPTIONS.filter(option => option.value === TRIGGER_TYPES.chat_message) : TRIGGER_OPTIONS),
+    [chatMessageOnly],
   );
 
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);

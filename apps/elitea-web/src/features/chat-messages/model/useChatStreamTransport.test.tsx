@@ -164,6 +164,179 @@ describe('useChatStreamTransport', () => {
     expect(history.current[0]?.isStreaming).toBe(false);
   });
 
+  /**
+   * DEFECT: `isTurnTerminalFrame` accepted only `pipeline_finish` and an
+   * `agent_response` carrying a `finish_reason`. A run that PAUSES emits
+   * neither: the worker's `emit_terminal` returns `agent_hitl_interrupt` or
+   * `mcp_authorization_required` and stops. The server never closes the stream
+   * either, so the connection stayed open forever. `isStreaming` stayed true.
+   * ChatBox kept the composer disabled for the rest of the session. The
+   * stream held one of the principal's four SSE admission slots.
+   *
+   * EVIDENCE: `handlers/agent_events.py:293-360` (emit_terminal) and
+   * `executions/events.go:181-232` (the server loop has no terminal exit).
+   */
+  it('releases the stream when the run pauses for a human decision', async () => {
+    okStart();
+    const { api, history, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({
+          type: 'agent_hitl_interrupt',
+          content: 'Approve this tool call?',
+          response_metadata: { thread_id: 't-1', message: 'Approve this tool call?', hitl_interrupt: { tool_name: 'shell' } },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(api.current?.isStreaming).toBe(false));
+    expect(registry.getOpen()).toHaveLength(0);
+    expect(history.current[0]?.isStreaming).toBe(false);
+  });
+
+  /**
+   * The counterpart guard: a fan-out CHILD pause is not the end of the run.
+   * Its siblings keep producing frames on the SAME stream, so detaching there
+   * would truncate their output. `classifyHitlPause` is the one rule both the
+   * reducer and the transport read.
+   */
+  it('keeps the stream open when only a fan-out child pauses', async () => {
+    okStart();
+    const { api, history, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({
+          type: 'agent_hitl_interrupt',
+          content: 'child paused',
+          response_metadata: { message: 'child paused', metadata: { parent_agent_name: 'root', child_thread_id: 'child-1' } },
+        }),
+      );
+    });
+
+    expect(api.current?.isStreaming).toBe(true);
+    expect(registry.getOpen()).toHaveLength(1);
+
+    // A sibling still folds into the same message, which is what the open
+    // stream is for.
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'sibling output' }));
+    });
+    expect(history.current[0]?.content).toContain('sibling output');
+  });
+
+  /**
+   * An in-process PARALLEL AGGREGATE pause IS the end of the run, unlike a
+   * fan-out child. One invoke spawns the sub-agents in one process and returns
+   * every pause in one frame. The worker emits that frame as the
+   * execution terminal (`emit_terminal`, agent_events.py:293-330). Nothing
+   * follows it, so a transport that stays attached locks the composer for the
+   * rest of the session.
+   *
+   * The message keeps `isStreaming: true`. That is the reducer's own rule for
+   * both parallel shapes, and it holds the live thinking view open. Only the
+   * TRANSPORT detaches here.
+   */
+  it('closes on an in-process parallel aggregate pause', async () => {
+    okStart();
+    const { api, history, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({
+          type: 'agent_hitl_interrupt',
+          content: 'Approve both sub-agents?',
+          response_metadata: {
+            thread_id: 't-1',
+            message: 'Approve both sub-agents?',
+            hitl_interrupts: [
+              { tool_call_id: 'c-1', parent_agent_name: 'researcher' },
+              { tool_call_id: 'c-2', parent_agent_name: 'writer' },
+            ],
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(api.current?.isStreaming).toBe(false));
+    expect(registry.getOpen()).toHaveLength(0);
+    // The reducer still marks the message live, which keeps the thinking view
+    // open for the siblings that have not rendered a card.
+    expect(history.current[0]?.isStreaming).toBe(true);
+  });
+
+  /**
+   * `mcp_authorization_required` is emitted TWICE for one run: once as progress
+   * from the tool-error path, and once as the execution terminal. Only the
+   * terminal frame carries the `authorization_requests` array
+   * (`agent_events.py:335-357`). Detaching on the first would drop the second
+   * authorization card.
+   */
+  it('closes on the terminal MCP authorization frame only, not the progress one', async () => {
+    okStart();
+    const { api, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({
+          type: 'mcp_authorization_required',
+          content: 'Authorization required.',
+          response_metadata: { tool_run_id: 'run-1', tool_name: 'github', server_url: 'https://mcp.example', authorization_servers: ['https://auth.example'] },
+        }),
+      );
+    });
+    expect(api.current?.isStreaming).toBe(true);
+    expect(registry.getOpen()).toHaveLength(1);
+
+    act(() => {
+      registry.emit(
+        'execution.node_event',
+        nodeEvent({
+          type: 'mcp_authorization_required',
+          content: 'Toolkit authorization is required.',
+          response_metadata: {
+            tool_run_id: 'run-2',
+            tool_name: 'github',
+            server_url: 'https://mcp.example',
+            authorization_servers: ['https://auth.example'],
+            authorization_requests: [{ tool_run_id: 'run-1' }, { tool_run_id: 'run-2' }],
+          },
+        }),
+      );
+    });
+
+    await waitFor(() => expect(api.current?.isStreaming).toBe(false));
+    expect(registry.getOpen()).toHaveLength(0);
+  });
+
+  /** A failure frame also ends the turn — the worker emits no node event after one. */
+  it('releases the stream when the run fails', async () => {
+    okStart();
+    const { api, Probe } = harness();
+    render(<Probe />);
+    await started(api);
+
+    act(() => {
+      registry.emit('execution.node_event', nodeEvent({ type: 'llm_error', content: 'the model refused the request' }));
+    });
+
+    await waitFor(() => expect(api.current?.isStreaming).toBe(false));
+    expect(registry.getOpen()).toHaveLength(0);
+  });
+
   it('reports false and opens NO stream when the backend rejects the contract', async () => {
     // The documented fallback signal: the caller then emits chat_predict.
     server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => new HttpResponse(null, { status: 400 })));

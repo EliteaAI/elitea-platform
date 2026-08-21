@@ -204,13 +204,29 @@ export function createHitlEditUserMessage(params: CreateHitlEditUserMessageParam
   };
 }
 
+/**
+ * The `llm_settings` of the conversation's `dummy` participant, the fallback
+ * source for the saved model.
+ *
+ * A conversation this app starts persists the picked model on the `dummy`
+ * participant only (`useChatBoxSend.ts`'s `adhocParticipants`), never on the
+ * `user` participant that `getChatUserSettings` reads. Without this fallback
+ * the saved model is restored for legacy conversations alone, and a
+ * conversation created here always reopens on the project default model.
+ */
+function getDummyParticipantSettings(
+  conversation: ConversationForHelpers | undefined,
+): Readonly<Record<string, unknown>> | undefined {
+  return conversation?.participants?.find((p) => p.entity_name === ChatParticipantType.Dummy)?.entity_settings?.llm_settings;
+}
+
 /** `chat.helpers.js:147-161`. `getChatUserSettings` (`./newConversation.helpers.ts`) supplies the intermediate `userSettings` lookup — same intra-slice call the baseline makes (`NewConversationHelpers.getChatUserSettings`, imported cross-file within the same old-app feature). */
 export function getSelectedConversationModel(
   conversation: ConversationForHelpers | undefined,
   availableModels: readonly AvailableModelWire[] | undefined,
   userId: string | undefined,
 ): AvailableModelWire | null {
-  const userSettings = getChatUserSettings(conversation, userId);
+  const userSettings = getChatUserSettings(conversation, userId) ?? getDummyParticipantSettings(conversation);
   const modelName = userSettings?.model_name as string | undefined;
   if (!modelName || !availableModels?.length) return null;
 

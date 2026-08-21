@@ -5,6 +5,7 @@ import { BasicAccordion } from '@/shared/ui/BasicAccordion';
 import { useSoundNotification } from '@/shared/lib/hooks/useSoundNotification';
 
 import { SoundNotificationControls } from './SoundNotificationControls';
+import { t } from '@/shared/i18n';
 
 export function SoundNotificationSection() {
   const { config, setConfig, playCompletionSound } = useSoundNotification();
@@ -20,7 +21,7 @@ export function SoundNotificationSection() {
       }}
       items={[
         {
-          title: 'Sound Notifications',
+          title: t('settings.profile.soundNotifications.title', 'Sound Notifications'),
           content: (
             <SoundNotificationControls
               config={config}

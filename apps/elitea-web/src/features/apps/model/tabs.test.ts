@@ -74,6 +74,18 @@ describe('searchForAppsTab', () => {
     expect(searchForAppsTab(AppsTabs[1], search)).toBe(search);
   });
 
+  // DEFECT: the only same-reference exit was `search.view === undefined`, but
+  // the `view` route schema prefaults to `'grid'`, so a parsed search object
+  // always carries the key. The function returned a new object on every
+  // Catalog-tab mount, and `Apps.tsx`'s reference-equality guard then fired a
+  // replace-navigation that `validateSearch` immediately undid. This shape —
+  // `{ view: 'grid' }` — is the one production actually produces; the `{}`
+  // case above never occurs at run time.
+  it('returns the SAME reference on the catalog tab when `view` is already the default', () => {
+    const search = { view: 'grid' };
+    expect(searchForAppsTab(AppsTabs[1], search)).toBe(search);
+  });
+
   it('returns a NEW object when it actually strips `view`', () => {
     const search = { view: 'list' };
     expect(searchForAppsTab(AppsTabs[1], search)).not.toBe(search);

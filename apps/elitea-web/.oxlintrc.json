@@ -110,6 +110,24 @@
       { "name": "sessionStorage", "message": "§5.4: storage goes through shared/lib/storage.ts under the el.* namespace" }
     ],
 
+    // The MEMBER-EXPRESSION half of R-A1/R-A4. `no-restricted-globals` matches
+    // an unresolved identifier only, so it is blind to `window.fetch(...)`,
+    // `globalThis.fetch(...)` and `self.fetch(...)`. That spelling shipped a
+    // network client with no /api/v2 base, no credentials mode, no traceparent
+    // and no 401 re-auth, and every gate stayed green — the same hole
+    // `elitea/no-raw-webstorage` was written for on the storage side (issue
+    // #22). The three objects are listed one by one on purpose: a bare
+    // `{ "property": "fetch" }` catch-all also reports an unrelated `x.fetch`.
+    "no-restricted-properties": [
+      "error",
+      { "object": "window", "property": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts — use the typed client" },
+      { "object": "globalThis", "property": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts — use the typed client" },
+      { "object": "self", "property": "fetch", "message": "R-A1: fetch is called only inside shared/api/http.ts — use the typed client" },
+      { "object": "window", "property": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts (upload progress)" },
+      { "object": "globalThis", "property": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts (upload progress)" },
+      { "object": "self", "property": "XMLHttpRequest", "message": "R-A4: XMLHttpRequest lives only in shared/api/upload.ts (upload progress)" }
+    ],
+
     // ── import fences (R-A2/R-A3/R-T4/R-I1), native ───────────────────────
     "no-restricted-imports": [
       "error",

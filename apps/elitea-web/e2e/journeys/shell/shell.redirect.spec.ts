@@ -132,9 +132,9 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   //
   // and that matcher cannot express what logout does, for a reason measured
   // directly rather than assumed. `performLogout()` sends the browser to
-  // `/forward-auth/logout?target_to=/forward-auth/auth_oidc/login`, which
-  // elitea-main answers 302 → `/forward-auth/auth_oidc/login`, itself 302 →
-  // the provider's `/oauth2/authorize`. All three hops were observed as real
+  // `/forward-auth/logout?target_to=/forward-auth/login`, which elitea-main
+  // answers 302 → `/forward-auth/login` → 302 `/forward-auth/auth_oidc/login`,
+  // itself 302 → the provider's `/oauth2/authorize`. All hops were observed as real
   // navigation requests — but a chain of server-side 302s COMMITS exactly one
   // document, so `page.url()` and `framenavigated` only ever report the final
   // landing and both intermediate hops are invisible to a URL matcher.
@@ -198,11 +198,21 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   expect(logoutHop, 'the browser must navigate to /forward-auth/logout').toBeTruthy();
   // The hand-off must name the login screen as its target, or the signed-out
   // user is parked on the index route's loading state instead.
-  expect(new URL(logoutHop!).searchParams.get('target_to')).toBe('/forward-auth/auth_oidc/login');
-  // ...and the login hop must sit BETWEEN the logout and the provider.
+  //
+  // The target is `/forward-auth/login`, NOT `/forward-auth/auth_oidc/login`.
+  // Only `/forward-auth/login` is registered on both authentication planes.
+  // The OIDC-only path ended a form-plane logout on a bare 404. THIS stack is
+  // the OIDC plane. On it, `/forward-auth/login` answers 302 to
+  // `/forward-auth/auth_oidc/login`. The chain below is therefore one hop
+  // longer. Its end state is the same.
+  expect(new URL(logoutHop!).searchParams.get('target_to')).toBe('/forward-auth/login');
+  // ...and the login hops must sit BETWEEN the logout and the provider.
   const order = (predicate: (url: string) => boolean): number => navigations.findIndex(predicate);
-  expect(order((url) => url.includes('/forward-auth/auth_oidc/login'))).toBeGreaterThan(
+  expect(order((url) => url.includes('/forward-auth/login'))).toBeGreaterThan(
     order((url) => url.includes('/forward-auth/logout')),
+  );
+  expect(order((url) => url.includes('/forward-auth/auth_oidc/login'))).toBeGreaterThan(
+    order((url) => url.includes('/forward-auth/login')),
   );
 
   // 2. The SERVER session must be gone — the "user state is cleared" half.

@@ -8,6 +8,7 @@ import { useTheme, type Theme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 
 import { t } from '@/shared/i18n';
+import { toAbsoluteApiUrl, toOpenAiBaseUrl } from '@/shared/lib/api-url';
 
 import FieldWithCopy from './FieldWithCopy';
 
@@ -24,7 +25,17 @@ export default memo(function ProjectAIConfiguration({ userApiUrl, projectId }: P
   const theme = useTheme();
   const styles = projectAIConfigurationStyles(theme);
 
-  const baseUrl = userApiUrl ? `${userApiUrl.replace('/api/v2', '')}/llm/v1` : t('ai-configuration.projectConfig.notConfigured', 'Not configured');
+  /*
+   * ABSOLUTE, NOT RELATIVE. `vite_server_url` ships as the path `/api/v2`
+   * whenever one gateway fronts both the SPA and elitea-main. These two
+   * fields therefore used to render `/llm/v1` and `/api/v2` beside a copy
+   * button. Neither
+   * addresses anything once it leaves the page — and leaving the page is the
+   * entire purpose of a copy button here. See `shared/lib/api-url.ts`.
+   */
+  const notConfigured = t('ai-configuration.projectConfig.notConfigured', 'Not configured');
+  const baseUrl = userApiUrl ? toOpenAiBaseUrl(userApiUrl) : notConfigured;
+  const serverUrl = userApiUrl ? toAbsoluteApiUrl(userApiUrl) : notConfigured;
 
   return (
     <Box sx={styles.projectConfigSection}>
@@ -52,8 +63,8 @@ export default memo(function ProjectAIConfiguration({ userApiUrl, projectId }: P
         <Box />
       </Box>
       <Box sx={styles.fieldsGrid}>
-        <FieldWithCopy label={`${t('ai-configuration.projectConfig.serverUrl', 'Server URL:')} `} value={userApiUrl || t('ai-configuration.projectConfig.notConfigured', 'Not configured')} />
-        <FieldWithCopy label={`${t('ai-configuration.projectConfig.projectId', 'Project ID:')} `} value={projectId || t('ai-configuration.projectConfig.notConfigured', 'Not configured')} />
+        <FieldWithCopy label={`${t('ai-configuration.projectConfig.serverUrl', 'Server URL:')} `} value={serverUrl} />
+        <FieldWithCopy label={`${t('ai-configuration.projectConfig.projectId', 'Project ID:')} `} value={projectId || notConfigured} />
       </Box>
     </Box>
   );

@@ -39,6 +39,7 @@ import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
 import { pickIdAndUuid } from '../ChatBox.helpers';
+import { NO_STREAM_TRANSPORT, STREAM_STARTED, type StreamStartOutcome } from './useChatBoxHandlers.helpers';
 
 /** The conversation-lifecycle and attachment-upload slices this hook adapts. */
 interface SendDeps {
@@ -47,7 +48,51 @@ interface SendDeps {
 }
 
 /**
- * The agent-execution start body.
+ * The wire `entity_name` of a participant, or `''` when the value is not one.
+ */
+function participantEntityName(participant: unknown): string {
+  const name = (participant as { readonly entity_name?: unknown } | null | undefined)?.entity_name;
+  return typeof name === 'string' ? name : '';
+}
+
+/**
+ * A participant an AGENT turn is addressed to.
+ *
+ * A pipeline is stored as `entity_name='application'` with
+ * `entity_settings.agent_type='pipeline'`, so the singular `'application'` is
+ * the value the turn resolver's SQL matches. `'pipeline'` is accepted as well
+ * because `ChatParticipantType` defines it and a row could carry it.
+ */
+function isApplicationParticipant(participant: unknown): boolean {
+  const name = participantEntityName(participant);
+  return name === 'application' || name === 'pipeline';
+}
+
+/** A participant id the route can decode into its `int64` field, or `undefined`. */
+function positiveParticipantId(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const numeric = Number(raw);
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : undefined;
+}
+
+/**
+ * The participant this turn is addressed to.
+ *
+ * An explicit selection wins. With nothing selected, a conversation that holds
+ * exactly ONE agent participant is addressing that agent. Resolving it here
+ * keeps the turn off the ad-hoc contract. That contract's `participant_id: 0`
+ * matches ANY `dummy` in the conversation. It would answer from a stray model
+ * participant instead of the agent.
+ */
+export function resolveTargetParticipant(activeParticipant: unknown, participants: readonly unknown[] | undefined): unknown {
+  if (activeParticipant !== undefined && activeParticipant !== null) return activeParticipant;
+  const applications = (participants ?? []).filter(isApplicationParticipant);
+  return applications.length === 1 ? applications[0] : activeParticipant;
+}
+
+/**
+ * The agent-execution start body, or `undefined` when no body can satisfy the
+ * chosen contract.
  *
  * The REST contract is NOT the socket payload: `chat_predict` carries a flat
  * `question`, while the route reads `payload.user_input`, its own
@@ -56,37 +101,59 @@ interface SendDeps {
  * nothing. `question_id` and `interaction_uuid` must both be REAL uuids: the
  * repository parses them before querying and rejects the turn identically for
  * a malformed one as for an absent one.
+ *
+ * The two contracts are validated DIFFERENTLY, so one body shape cannot serve
+ * both (`internal/api/v2/agentexecution/route.go`):
+ *  - `agent.execute.application.v1` demands a POSITIVE `participant_id` and
+ *    NO `llm_settings` key at all.
+ *  - `agent.execute.adhoc.v1` demands an `llm_settings` OBJECT and accepts
+ *    `participant_id: 0`.
+ * A body that carries the other shape is answered `422
+ * unsupported_agent_execution`, which names nothing.
  */
-function buildStartBody(params: {
+export function buildStartBody(params: {
   readonly conversationUuid: string;
   readonly projectId: string | undefined;
   readonly payload: Record<string, unknown>;
   readonly llmSettings: Readonly<Record<string, unknown>> | undefined;
   readonly modelName: string | undefined;
-}): Record<string, unknown> {
+  readonly isApplicationTurn: boolean;
+  readonly participantId: number | undefined;
+}): Record<string, unknown> | undefined {
   const { payload } = params;
   const question = typeof payload['question'] === 'string' ? payload['question'] : '';
-  const participantId = payload['participant_id'];
   // A NUMBER, not the string the socket payload carries: the route decodes
   // `project_id` into an integer field and rejects a string with the same flat
   // `400 Invalid agent execution request` it uses for every other malformed
   // body, naming nothing.
   const numericProjectID = Number(params.projectId);
-  return {
+  const base = {
     project_id: Number.isFinite(numericProjectID) ? numericProjectID : params.projectId,
     conversation_uuid: params.conversationUuid,
-    // 0 is the ad-hoc "no specific participant" value the backend smoke uses;
-    // a missing key is rejected rather than defaulted.
-    participant_id: participantId ?? 0,
     question_id: payload['question_id'],
     interaction_uuid: crypto.randomUUID(),
     payload: { user_input: question, ...(payload['attachments'] ? { attachments: payload['attachments'] } : {}) },
+  };
+  if (params.isApplicationTurn) {
+    if (params.participantId === undefined) return undefined;
+    return { ...base, participant_id: params.participantId };
+  }
+  return {
+    ...base,
+    // 0 is the ad-hoc "no specific participant" value the backend smoke uses;
+    // a missing key is rejected rather than defaulted.
+    participant_id: params.participantId ?? 0,
     llm_settings: {
       ...params.llmSettings,
       ...(params.modelName !== undefined ? { model_name: params.modelName } : {}),
       stream: true,
     },
   };
+}
+
+/** The execution contract one turn takes, derived from the participant it addresses. */
+export function resolveStartContract(target: unknown): string {
+  return isApplicationParticipant(target) ? conversationApi.contracts.application : conversationApi.contracts.adhoc;
 }
 
 /**
@@ -136,7 +203,13 @@ export interface UseChatBoxSendParams {
   readonly conversationUuid?: string | undefined;
   readonly projectId: string | number | undefined;
   readonly projectIdString: string | undefined;
-  /** An agent-app conversation takes a different execution contract from an ad-hoc/test one. */
+  /**
+   * The agents/test-panel host, which seeds no ad-hoc participants.
+   *
+   * It does NOT pick the execution contract any more: the sole `<ChatBox>`
+   * call site never sets it, so the contract has to come from the participant
+   * the turn addresses (`resolveStartContract`).
+   */
   readonly isAgentsPage?: boolean | undefined;
   /** The signed-in user, for the ad-hoc turn's `user` participant. */
   readonly userId?: string | undefined;
@@ -149,13 +222,23 @@ export interface UseChatBoxSendParams {
 /** @public */
 export interface UseChatBoxSendResult {
   /**
-   * Start the run over REST and subscribe to its stream. `true` ⇒ this
+   * Start the run over REST and subscribe to its stream. `started` ⇒ this
    * transport owns the run and `chat_predict` must NOT also be emitted.
    */
   readonly startStreamedExecution: (params: {
     readonly conversationUuid: string;
     readonly payload: Record<string, unknown>;
-  }) => Promise<boolean>;
+  }) => Promise<StreamStartOutcome>;
+  /**
+   * Resume a PAUSED run over REST and re-subscribe to its stream.
+   *
+   * `started` ⇒ the route accepted the resume and `chat_continue_predict`
+   * must NOT also be emitted; a second resume runs the agent twice.
+   */
+  readonly continueStreamedExecution: (params: {
+    readonly conversationUuid: string;
+    readonly body: Record<string, unknown>;
+  }) => Promise<StreamStartOutcome>;
   readonly isStreaming: boolean;
   /**
    * The user pressed Stop: cancel the run server-side and close its stream.
@@ -196,27 +279,54 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
     ...(params.conversationUuid !== undefined ? { conversationUuid: params.conversationUuid } : {}),
     context: buildChatStreamContext(params),
   });
-  const { start } = transport;
+  const { start, resume } = transport;
 
   const startStreamedExecution = useCallback(
-    async ({ conversationUuid, payload }: { readonly conversationUuid: string; readonly payload: Record<string, unknown> }) => {
-      // No project ⇒ no route to POST to. Reporting false keeps the socket
-      // fallback rather than silently sending nothing.
-      if (projectId === undefined) return false;
-      return start({
+    async ({ conversationUuid, payload }: { readonly conversationUuid: string; readonly payload: Record<string, unknown> }): Promise<StreamStartOutcome> => {
+      // No project ⇒ no route to POST to. Reporting no-transport keeps the
+      // socket fallback rather than silently sending nothing.
+      if (projectId === undefined) return NO_STREAM_TRANSPORT;
+      // The contract comes from the PARTICIPANT this turn addresses, never
+      // from a page flag. The sole `<ChatBox>` call site passes no
+      // `isAgentsPage`. Deriving it from that flag therefore sent every turn
+      // — including one addressed to an agent — as `agent.execute.adhoc.v1`.
+      // That resolver joins on `entity_name='dummy'` and answers 422 for an
+      // agent participant.
+      const target = resolveTargetParticipant(params.activeParticipant, params.participants);
+      const isApplicationTurn = resolveStartContract(target) === conversationApi.contracts.application;
+      const body = buildStartBody({
+        conversationUuid,
+        projectId: projectIdString,
+        payload,
+        llmSettings: params.llmSettings,
+        modelName: params.model?.name,
+        isApplicationTurn,
+        participantId: positiveParticipantId(payload['participant_id']) ?? positiveParticipantId((target as { readonly id?: unknown } | null | undefined)?.id),
+      });
+      // No body can satisfy this contract (an agent turn with no addressable
+      // participant). The socket fallback takes it rather than a POST that is
+      // certain to be refused.
+      if (body === undefined) return NO_STREAM_TRANSPORT;
+      const started = await start({ projectId, conversationUuid, contract: resolveStartContract(target), body });
+      return started ? STREAM_STARTED : NO_STREAM_TRANSPORT;
+    },
+    [start, projectId, projectIdString, params.llmSettings, params.model, params.activeParticipant, params.participants],
+  );
+
+  const continueStreamedExecution = useCallback(
+    async ({ conversationUuid, body }: { readonly conversationUuid: string; readonly body: Record<string, unknown> }): Promise<StreamStartOutcome> => {
+      // No project ⇒ no route to POST to. Reporting no-transport keeps the
+      // socket fallback rather than silently sending nothing.
+      if (projectId === undefined) return NO_STREAM_TRANSPORT;
+      const resumed = await resume({
         projectId,
         conversationUuid,
-        contract: isAgentsPage ? conversationApi.contracts.application : conversationApi.contracts.adhoc,
-        body: buildStartBody({
-          conversationUuid,
-          projectId: projectIdString,
-          payload,
-          llmSettings: params.llmSettings,
-          modelName: params.model?.name,
-        }),
+        contract: conversationApi.contracts.continueHitl,
+        body,
       });
+      return resumed ? STREAM_STARTED : NO_STREAM_TRANSPORT;
     },
-    [start, projectId, projectIdString, isAgentsPage, params.llmSettings, params.model],
+    [resume, projectId],
   );
 
   const { deps } = params;
@@ -233,6 +343,18 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
       // conversation already has the agent as one, so this is scoped to the
       // ad-hoc path and to a chat that actually has a model to name.
       const modelName = params.model?.name;
+      if (!isAgentsPage && !modelName) {
+        // NOT silent, and not a refusal either. With no model there is nothing
+        // to put in the `dummy` participant. Every REST turn this
+        // conversation ever receives therefore resolves to no rows. The route
+        // answers `422 unsupported_agent_execution`. The conversation is still
+        // created because the socket path does not need that participant, so
+        // refusing here would break a deployment whose socket works.
+        //
+        // `model` is null exactly when the project has no model catalogue or
+        // the catalogue call failed. The user has to be told about that state.
+        console.warn('[useChatBoxSend] no model is selected: created an ad-hoc conversation with no `dummy` participant, so its REST turns cannot resolve');
+      }
       if (!isAgentsPage && modelName && created.id !== undefined && projectId !== undefined) {
         try {
           await addParticipants({
@@ -268,6 +390,7 @@ export function useChatBoxSend(params: UseChatBoxSendParams): UseChatBoxSendResu
 
   return {
     startStreamedExecution,
+    continueStreamedExecution,
     isStreaming: transport.isStreaming,
     stopStreamedExecution: transport.stop,
     createConversationForSend,

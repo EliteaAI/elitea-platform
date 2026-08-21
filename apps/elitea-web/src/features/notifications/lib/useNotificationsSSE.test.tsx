@@ -138,19 +138,124 @@ describe('useNotificationsSSE', () => {
     expect(sources[0]?.closed).toBe(true);
     expect(sources[1]?.url).toBe('/api/v2/notifications/events/prompt_lib/9');
   });
-  it('warns — and leaves the surface working — when the stream fails (429 from the admission cap, 403, 503)', () => {
+});
+
+/*
+ * DEFECT: a failed notifications stream was permanent, and the polling
+ * fallback its own comment promised did not exist.
+ *
+ * `onError` wrote one `console.warn` and nothing else; `useEventSource` never
+ * reopens; and `refetchInterval` appeared nowhere in the app, so the claim
+ * that losing the stream "degrades to the pre-#92 polling behaviour" was
+ * false. The route rejects a stream with an HTTP status. It sends 429 with
+ * `Retry-After: 2` once the per-principal cap of 4 concurrent streams is
+ * saturated (`events.go`'s `newCurrentNotificationAdmission(64, 4)`). It also
+ * sends 403 and 503. Per WHATWG an HTTP status fails an `EventSource` for
+ * good.
+ *
+ * Opening a fifth tab therefore killed live notifications in that tab
+ * for the life of the mount. Only a console line showed it.
+ */
+describe('useNotificationsSSE — reconnect', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reopens a failed stream after the shared backoff, resuming from the last event id', () => {
+    const queryClient = new QueryClient();
+    renderHook(() => useNotificationsSSE('7', vi.fn()), { wrapper: wrapper(queryClient) });
+
+    act(() => {
+      registry.emit('notifications_notify', '', '12');
+      registry.fail();
+    });
+    expect(registry.getSources()).toHaveLength(1);
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    const sources = registry.getSources();
+    expect(sources).toHaveLength(2);
+    // A reopened `EventSource` cannot send `Last-Event-ID`. The route
+    // reads a missing cursor as "start from the high-water mark". Without
+    // the query cursor every notification sent while the stream was down
+    // would be skipped.
+    expect(sources[1]?.url).toBe('/api/v2/notifications/events/prompt_lib/7?cursor=12');
+  });
+
+  // The `error` event also fires on a mid-stream drop, where the browser is
+  // already reconnecting. Reopening then runs two streams for one principal.
+  // It reaches the server's per-user cap of 4 twice as fast. It therefore
+  // manufactures the very 429 the reconnect exists to survive.
+  it('does not reopen while the browser is reconnecting by itself', () => {
+    const queryClient = new QueryClient();
+    renderHook(() => useNotificationsSSE('7', vi.fn()), { wrapper: wrapper(queryClient) });
+
+    act(() => {
+      registry.drop();
+    });
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(registry.getSources()).toHaveLength(1);
+  });
+
+  it('reports streamDead once the four attempts are spent, and warns exactly once', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const queryClient = new QueryClient();
-    const onNotify = vi.fn();
-    renderHook(() => useNotificationsSSE('7', onNotify), { wrapper: wrapper(queryClient) });
+    const { result } = renderHook(() => useNotificationsSSE('7', vi.fn()), { wrapper: wrapper(queryClient) });
 
+    expect(result.current.streamDead).toBe(false);
+    for (const delay of [1_000, 2_000, 4_000, 8_000]) {
+      act(() => {
+        registry.fail();
+      });
+      act(() => {
+        vi.advanceTimersByTime(delay);
+      });
+    }
     act(() => {
       registry.fail();
     });
 
+    expect(registry.getSources()).toHaveLength(5);
+    expect(result.current.streamDead).toBe(true);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0])).toContain('notifications SSE stream failed');
-    expect(onNotify).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  // A stream that really opened proves the connection works, so the next
+  // failure must not inherit a spent budget.
+  it('restarts the attempt budget after a stream opens', () => {
+    const queryClient = new QueryClient();
+    const { result } = renderHook(() => useNotificationsSSE('7', vi.fn()), { wrapper: wrapper(queryClient) });
+
+    for (const delay of [1_000, 2_000, 4_000]) {
+      act(() => {
+        registry.fail();
+      });
+      act(() => {
+        vi.advanceTimersByTime(delay);
+      });
+    }
+    act(() => {
+      registry.emit('open');
+    });
+    act(() => {
+      registry.fail();
+    });
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+
+    expect(result.current.streamDead).toBe(false);
+    expect(registry.getSources()).toHaveLength(5);
   });
 });

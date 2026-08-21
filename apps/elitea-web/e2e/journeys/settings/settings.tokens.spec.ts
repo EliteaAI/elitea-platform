@@ -31,25 +31,29 @@ import { API_BASE, AUTOTEST_PREFIX } from '../../fixtures/api';
 const stamp = (): string => `${Date.now()}-tok`;
 
 /**
- * Navigate into the shell and WAIT FOR THE ROUTER'S SEARCH-PARAM NORMALIZATION
- * to land before returning.
+ * Navigate into the shell and WAIT FOR THE ROUTER TO COMMIT the location
+ * before returning, then assert that it left the URL alone.
  *
- * Every `/app/*` route rewrites a bare URL to the shell's full default search
- * schema (`?author_id=&...&viewMode=owner&page_size=20&createSecret="0"`) with a
- * client-side replace that fires AFTER the `load` event `page.goto` waits for.
- * On chromium that replace wins the race with whatever the test does next; on
- * webkit it lands late and aborts the NEXT `page.goto` with
- * `Navigation to "…/app/settings/tokens" is interrupted by another navigation
- * to "…/app/settings/tokens?author_id=&…"` (reproduced 4/6 webkit runs,
- * 0/6 chromium). Nothing browser-specific happens in the app: the rewrite is
- * identical and deterministic on both engines, so this is a test-side race.
+ * Every `/app/*` route USED TO rewrite a bare URL into the shell's full
+ * default search schema (`?author_id=&...&viewMode=owner&page_size=20&
+ * createSecret="0"`) with a client-side replace that fires AFTER the `load`
+ * event `page.goto` waits for. On chromium that replace won the race with
+ * whatever the test did next; on webkit it landed late and aborted the NEXT
+ * `page.goto` with `Navigation to "…/app/settings/tokens" is interrupted by
+ * another navigation to "…/app/settings/tokens?author_id=&…"` (reproduced 4/6
+ * webkit runs, 0/6 chromium).
  *
- * Waiting on `viewMode=owner` is not a sleep — it is the router's own
- * post-normalization URL, so it also pins that the normalization happened.
+ * `routes/__root.tsx` now strips every defaulted key with `stripSearchParams`,
+ * so the rewrite does not happen and there is no race left to wait out. This
+ * helper therefore waits on the SHELL, which proves the router committed, and
+ * then pins the new contract: a defaulted key never reaches the address bar.
+ * The old wait — `toHaveURL(/viewMode=owner/)` — asserted the 359-character
+ * URL that change removed.
  */
 async function gotoSettled(page: import('@playwright/test').Page, url: string): Promise<void> {
   await page.goto(url);
-  await expect(page).toHaveURL(/[?&]viewMode=owner(&|$)/);
+  await expect(page.getByTestId('sidebar-collapse-toggle')).toBeVisible({ timeout: 30_000 });
+  await expect(page).toHaveURL(url);
 }
 
 test('J23: settings: create personal token', async ({ page }) => {

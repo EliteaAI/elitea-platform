@@ -219,6 +219,26 @@ test.describe('J20 artifacts lifecycle', () => {
     const projectId = await selectedProjectId(page);
     await seedBucketWithFiles(request, projectId);
 
+    /*
+     * Let the first load FINISH before asking for a second one.
+     *
+     * `page.goto` resolves on `load`, and this app keeps working after that: it
+     * pulls ~50 lazy route chunks and issues its boot calls (`/forward-auth/
+     * info`, `/social/author`, the permission list, the project list). Reloading
+     * into that traffic made WebKit cancel its own fresh navigation and start it
+     * again, which Playwright reports on the FIRST attempt as
+     * `page.reload: Frame load interrupted` — the CI failure this line repairs.
+     * The page always recovered; only the call's first navigation was lost.
+     *
+     * Measured on the E2E stack, webkit, 24 runs each: reload-while-booting
+     * failed 9 times and a plain second `goto` 13 times; waiting first failed 0.
+     * The wait costs 0.7-1.6 s and settles well before the default timeout —
+     * the notification SSE stream stays open across it and does not hold it.
+     *
+     * No assertion is weakened: the three below still judge a FRESH document.
+     */
+    await page.waitForLoadState('networkidle');
+
     await page.reload();
     await page.waitForURL('**/artifacts**', { timeout: 15_000 });
 

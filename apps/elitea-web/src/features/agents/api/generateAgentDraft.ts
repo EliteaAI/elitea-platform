@@ -46,8 +46,12 @@ import type { PredictResponse } from '@/shared/api/generated/model';
  * gated on a `RouterConfig.Predictor` nothing ever assigned, so
  * `POST /elitea_core/generate_application_draft/prompt_lib/{projectId}`
  * answered 404 in every deployment. The request issued below is identical to
- * the generated one, so this hook behaves exactly as it did; #194 tracks the
- * missing backend.
+ * the generated one; #194 tracks the missing backend.
+ *
+ * The hook is KEPT and its ONE affordance is hidden instead — see
+ * the `aiGeneration` capability in `shared/config/backendCapabilities`, which
+ * `GenerateAgentButton` reads. Nothing calls this hook while that capability
+ * is off. Turn it on in the same change that mounts the route.
  */
 export interface UseGenerateAgentDraftMutationArgs {
   readonly projectId: string;

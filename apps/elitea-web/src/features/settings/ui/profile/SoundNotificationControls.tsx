@@ -51,7 +51,7 @@ export const SoundNotificationControls = memo(
               onChange={handleToggle}
               slotProps={{
                 input: {
-                  'aria-label': 'Play sound when tasks complete',
+                  'aria-label': t('settings.playSoundOnComplete', 'Play sound when tasks complete'),
                 },
               }}
             />

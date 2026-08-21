@@ -33,13 +33,27 @@ beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
   server.use(
     getListToolkitsMockHandler({}),
-    // EVERY catalogue render now asks for moderation status. `useModerationRequests`
-    // sends one request per catalogue entry, and it only stopped sending them
-    // before because the selected project id was undefined and the queries were
-    // disabled. This suite runs with `onUnhandledRequest: 'error'` (R-M5), so an
-    // unmatched status request breaks the render, and the catalogue card never
-    // appears. That is what made this file fail about one run in three.
-    getModerationStatusMockHandler(),
+    /*
+     * PIN THE MODERATION STATUS. The argument is the whole point of this line.
+     *
+     * EVERY catalogue render now asks for moderation status: `useModerationRequests`
+     * sends one request per catalogue entry, and it only stopped sending them
+     * before because the selected project id was undefined and the queries were
+     * disabled.
+     *
+     * The generated handler answers with `getModerationStatusResponseMock()`,
+     * whose row carries `status: faker.helpers.arrayElement(['pending',
+     * 'approved', 'rejected'])`. A card whose status reads `pending` correctly
+     * hides its Configure button, because the user already has a request in
+     * flight. So one run in three failed, and calling the generated handler
+     * with no argument did not help: the randomness IS the defect.
+     *
+     * An empty row set is the precondition these cases actually describe — a
+     * project with no moderation request against the entity, where Configure
+     * is offered. Any test that wants the pending or rejected branch has to
+     * ask for it explicitly.
+     */
+    getModerationStatusMockHandler({ total: 0, rows: [] }),
   );
 });
 
@@ -96,6 +110,42 @@ describe('Apps (ROUTE-036/039)', () => {
 
     expect(await screen.findByText('Wikis')).toBeInTheDocument();
     expect(screen.getByText('Inventory')).toBeInTheDocument();
+  });
+
+  // DEFECT: `searchForAppsTab` only returned the same object reference when
+  // `view` was absent. The route schema prefaults `view` to `'grid'`, so the
+  // key is always present. Every Catalog-tab mount therefore produced a
+  // new object. `Apps.tsx`'s reference-equality guard then fired a replace
+  // navigation with `view` stripped. `validateSearch` put `view=grid`
+  // straight back into the URL. Evidence: the URL grew a `?view=grid` query
+  // that the user never asked for, one history replace per mount.
+  it('issues no redirect on a Catalog-tab mount when `view` is already the default', async () => {
+    server.use(getListApplicationsMockHandler(applicationsList(0)));
+    const navigations: unknown[] = [];
+    const { router } = renderAppsRoute('/apps/catalog', {
+      projectId: 'proj-1',
+      onRouterCreated: (created) => {
+        const navigate = created.navigate.bind(created);
+        created.navigate = ((options: never) => {
+          navigations.push(options);
+          return navigate(options);
+        }) as typeof created.navigate;
+      },
+    });
+
+    expect(await screen.findByText('Wikis')).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.pathname).toBe('/apps/catalog'));
+    expect(navigations).toEqual([]);
+  });
+
+  // The reset itself must survive: a non-default `view` carried onto the
+  // Catalog tab is still normalised back to the default.
+  it('resets a non-default `view` on the Catalog tab', async () => {
+    server.use(getListApplicationsMockHandler(applicationsList(0)));
+    const { router } = renderAppsRoute('/apps/catalog?view=list', { projectId: 'proj-1' });
+
+    await waitFor(() => expect(router.state.location.searchStr).not.toContain('list'));
+    expect(router.state.location.pathname).toBe('/apps/catalog');
   });
 
   it('renders the (composition-gap) Applications tab panel at /apps/applications without crashing', async () => {

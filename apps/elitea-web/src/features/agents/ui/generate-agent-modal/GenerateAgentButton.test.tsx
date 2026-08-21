@@ -6,6 +6,7 @@ import type { ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getPermissionListMockHandler } from '@/shared/api/generated/auth/auth.msw';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/shared/brand';
 import { PERMISSIONS } from '@/shared/lib/permissions';
@@ -58,10 +59,15 @@ function renderButtonWithRouter(ui: ReactElement, options: { projectId?: string 
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  // The draft route is not mounted, so the button is hidden by default — see
+  // `shared/config/backendCapabilities`. These cases are about the PERMISSION
+  // gate, so they turn the capability on.
+  setBackendCapabilityForTests('aiGeneration', true);
 });
 
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
 });
 
 describe('GenerateAgentButton', () => {
@@ -74,6 +80,20 @@ describe('GenerateAgentButton', () => {
 
   it('renders nothing when the user lacks applications.update', async () => {
     server.use(getPermissionListMockHandler([{ name: 'some.other.permission', enabled: true }]));
+    renderButtonWithRouter(<GenerateAgentButton onAgentCreated={vi.fn()} />, { projectId: 'p1' });
+
+    await waitFor(() => expect(screen.queryByText('Build with AI')).not.toBeInTheDocument());
+  });
+
+  /**
+   * The draft route is not mounted. `POST /elitea_core/
+   * generate_application_draft/prompt_lib/{projectId}` answers
+   * `404 page not found`, so the button could only ever fail. It stays hidden
+   * until the route lands — see `shared/config/backendCapabilities`.
+   */
+  it('renders nothing while the draft route is unmounted, permission or not', async () => {
+    resetBackendCapabilitiesForTests();
+    server.use(getPermissionListMockHandler([{ name: PERMISSIONS.applications.update, enabled: true }]));
     renderButtonWithRouter(<GenerateAgentButton onAgentCreated={vi.fn()} />, { projectId: 'p1' });
 
     await waitFor(() => expect(screen.queryByText('Build with AI')).not.toBeInTheDocument());

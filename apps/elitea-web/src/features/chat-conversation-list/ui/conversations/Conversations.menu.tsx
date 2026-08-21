@@ -72,10 +72,15 @@ export function buildMoveToFoldersMenuItems(params: BuildMoveToFoldersMenuItemsP
     onClick: () => void onMoveToFolderConversation(conversation, null),
   };
 
+  // `ConversationsFolder.ownerId` has no producer yet. The folders wire
+  // normaliser drops `owner_id`. A plain inequality against a real user id
+  // therefore disables every folder target. Compare only a known owner id.
+  const isForeignFolder = (targetFolder: ConversationsFolder): boolean => targetFolder.ownerId !== undefined && targetFolder.ownerId !== currentUserId;
+
   const folderItems: ControlsDropdownLeafItem[] = folders.map((targetFolder) => ({
     key: `folder-${targetFolder.id}`,
     label: targetFolder.name,
-    disabled: targetFolder.ownerId !== currentUserId || !hasFolderUpdatePermission || conversation.folderId === targetFolder.id,
+    disabled: isForeignFolder(targetFolder) || !hasFolderUpdatePermission || conversation.folderId === targetFolder.id,
     onClick: () => void onMoveToFolderConversation(conversation, conversation.folderId !== targetFolder.id ? targetFolder : null),
   }));
 

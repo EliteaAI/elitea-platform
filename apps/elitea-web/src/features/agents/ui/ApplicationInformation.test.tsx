@@ -12,6 +12,7 @@ import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/sh
 import { server } from '@/test/setup';
 
 import { createTestQueryClient } from '../__tests__/testUtils';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { ApplicationInformation } from './ApplicationInformation';
 
 /** `CopyToClipboardButton`/`StyledShowContextModal` read `theme.vars.palette.*` — this file drives its own `RouterProvider` (needed for `useSelectedProjectId`'s `useRouteContext`) rather than the shared `renderWithProviders` helper, so the theme has to be wired in here too. */
@@ -19,10 +20,14 @@ const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  // The trigger read is disabled while the route is unmounted — see
+  // `shared/config/backendCapabilities`. The trigger-row cases need it.
+  setBackendCapabilityForTests('pipelineTriggers', true);
 });
 
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
 });
 
 function renderInfo(props: Partial<ComponentProps<typeof ApplicationInformation>> = {}) {

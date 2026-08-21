@@ -110,6 +110,7 @@ function ModalHeader({ contextLabel, showCopyAction, onCopy, onClose }: ModalHea
           )}
           <IconButton
             color="tertiary"
+            aria-label={t('common.closeAriaLabel', 'Close')}
             onClick={onClose}
           >
             <CloseIcon fontSize="small" />

@@ -15,6 +15,8 @@ import Typography from '@mui/material/Typography';
 
 import CloseIcon from '@mui/icons-material/Close';
 
+import { t } from '@/shared/i18n';
+
 /** @public Props for `ToolModal`. */
 export interface ToolModalProps {
   /** Whether the modal is open. */
@@ -57,6 +59,7 @@ export function ToolModal({ open, onClose, toolAction }: ToolModalProps): ReactN
         </Typography>
         <IconButton
           size="small"
+          aria-label={t('common.closeAriaLabel', 'Close')}
           onClick={onClose}
         >
           <CloseIcon />

@@ -209,7 +209,7 @@ export function OpenAPISchemaInput({
                   onDragLeave={onDragLeave}
                 >
                   <Box
-                    aria-label="full-scrn-btn"
+                    data-fullscreen-toggle
                     sx={fullScreenWrapperSx}
                   >
                     <Tooltip
@@ -291,7 +291,18 @@ const editorWrapperSx = (isDragOver: boolean): SxProps<Theme> => (theme: Theme) 
   overflow: 'hidden',
   border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
   backgroundColor: isDragOver ? theme.vars.palette.text.contextHighLight : 'transparent',
-  '&:hover': { '& [aria-label="full-scrn-btn"]': { display: 'block' } },
+  // Reveal on focus-within as well as hover. `display: none` used to be the
+  // only state of the toggle until a mouse hovered. That removed the toggle
+  // from the accessibility tree AND from the tab order. `:focus-within` could
+  // therefore never fire. A keyboard or touch user had no way to reach full
+  // screen.
+  // `pointer-events` is restored with the opacity: the hidden box still
+  // occupies its corner, and would otherwise swallow clicks aimed at the
+  // editor underneath it.
+  '&:hover [data-fullscreen-toggle], &:focus-within [data-fullscreen-toggle]': {
+    opacity: 1,
+    pointerEvents: 'auto',
+  },
 });
 
 const placeholderTextSx: SxProps<Theme> = (theme: Theme) => ({
@@ -307,7 +318,11 @@ const chooseFileLinkSx: SxProps<Theme> = { textDecoration: 'underline', cursor: 
 
 const fullScreenWrapperSx: SxProps<Theme> = {
   position: 'absolute',
-  display: 'none',
+  // Invisible, not absent: the button stays focusable and stays in the
+  // accessibility tree. See `editorWrapperSx` for the reveal rule.
+  opacity: 0,
+  pointerEvents: 'none',
+  transition: 'opacity 120ms',
   top: '0.25rem',
   right: '0.25rem',
   zIndex: 10,
