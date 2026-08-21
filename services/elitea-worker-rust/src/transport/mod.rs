@@ -13,6 +13,7 @@ pub mod output_grpc;
 mod output_session;
 pub(crate) mod platform_client;
 pub mod redis_commands;
+pub(crate) mod redis_connector;
 pub(crate) mod redis_generation;
 #[cfg(test)]
 mod redis_generation_tests;

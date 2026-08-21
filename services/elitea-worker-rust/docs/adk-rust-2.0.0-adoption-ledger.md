@@ -40,7 +40,7 @@ passing upstream test does not register a production worker capability.
 | Managed runtime | Optional `managed-runtime` exposes another lifecycle abstraction | Defer | Its façade is a useful shape, but the audited implementation keeps its checkpoint manager, sequence counter, parking lot and active channels in process. Injecting the PostgreSQL `SessionService` would persist conversation events, not the parked execution frame. Main plus the worker delivery coordinator therefore remain the only execution authority; revisit only as an internal adapter after proving restart-safe external checkpoint/parking injection cannot duplicate claims, settlement or recovery |
 | Semantic memory | Optional memory service and database/Redis/SQLite backends | Defer and wrap | Define tenant/project/agent namespace, consent, retention, deletion, embedding/provider and poisoning policy before enabling global agent or graph memory |
 | Realtime/voice | Optional realtime runner and transport/provider features | Defer and wrap | Map current voice/ASR/TTS session behavior, cancellation, quotas and `NodeEventV1`/media boundaries first; do not enable the enterprise preset |
-| Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. A crate-private generation owner serializes explicit replacement after retryable failure without replaying an ambiguous command or allowing a late old-generation failure to evict the replacement. Strict production config and trust loaders now validate the canonical ACL endpoint and re-read the password plus TLS files for each future generation. Connector/serve-loop composition, stop-aware replacement and a real Redis 7 reconnect/reclaim system test remain. A later memory/session Redis backend must use separate keys and failure semantics |
+| Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The production connector reloads the ACL password and TLS files, opens and pings both restricted connections, and installs them through the serialized generation owner; retryable loss replaces only that generation without replaying an ambiguous command. The stop-aware delivery runtime is composed with the native processor. Signal/global-deadline bootstrap and a real Redis 7 reconnect/reclaim system test remain. A later memory/session Redis backend must use separate keys and failure semantics |
 
 The toolset foundation also contains the complete capability-disabled
 `ServiceNow` incident family: one bounded read plus create and update effects,
@@ -403,10 +403,10 @@ stream. Normal shutdown must stop and drain the Redis delivery runtime before
 stopping and closing the invocation coordinator; a hard drain timeout belongs
 to the one process-wide exit budget, because dropping only the waiter cannot
 cancel already supervised native work.
-Production capability registration still waits for connector/signal bootstrap,
+Production capability registration still waits for signal/global-deadline bootstrap,
 input-free running/ambiguous recovery, real provider, session,
-tool and policy assembly plus cross-process integration proof. Config and trust
-material validation exist, but the authoritative frozen runtime/admin
+tool and policy proof plus cross-process integration. Config, trust, clients,
+state pool and the runtime constructor are composed, but the authoritative frozen runtime/admin
 `toolkit_security` snapshot has no production delivery source yet and must not
 default to an empty policy. `smallvec`,
 `crossbeam` and lock-free queues are not architecture requirements. Add them

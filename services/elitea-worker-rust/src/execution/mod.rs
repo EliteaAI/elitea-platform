@@ -10,6 +10,7 @@ pub mod invocation_admission;
 mod invocation_supervisor;
 mod native_agent_lifecycle;
 pub mod output_delivery;
+pub(crate) mod production;
 mod redis_delivery;
 
 #[cfg(test)]

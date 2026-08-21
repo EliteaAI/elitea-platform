@@ -175,9 +175,16 @@ Maintained Rust runtime ownership registry:
   canonical private-plane endpoints, permission-bounded regular-file access,
   TLS 1.3 workload identity validation, exact Ed25519 command-key resolution
   and zeroizing spool/Redis secret ownership. Redis password and TLS files are
-  reloaded for each connection generation. This is the trust-material boundary,
-  not a running bootstrap: channel construction, signal/drain orchestration and
-  capability registration remain closed. Production agent registration also
+  reloaded for each connection generation;
+- `src/bootstrap.rs`, `src/transport/redis_connector.rs` and
+  `src/execution/production.rs`: one capability-disabled production ownership
+  path from validated trust into private control/output/content/runtime-context/
+  model channels, the shared `agentstate` pool, reconnectable Redis generation,
+  output preflight, semantic delivery processor, direct/graph native assembler
+  and stop-aware Redis runtime. Runtime construction requires an injected
+  `ToolAdmissionPolicy`; there is no missing-policy/default-policy branch.
+  Signal/global-deadline orchestration, CLI `serve` and capability registration
+  remain closed. Production agent registration also
   requires an authoritative frozen runtime/admin `toolkit_security` snapshot;
   an absent policy is never silently interpreted as an empty policy;
 - `src/diagnostics.rs`, `src/execution/{agent_delivery_processor,agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle,redis_delivery}.rs`:
