@@ -113,4 +113,36 @@ describe('App boot redirect', () => {
     window.history.pushState({}, '', '/');
   });
 
+  /*
+   * J20c (webkit). A probe that never answered is not a probe that said
+   * "no session".
+   *
+   * The browser cancels every in-flight request the moment it starts leaving a
+   * page, and `/forward-auth/info` is issued from App's boot effect. A reload
+   * during boot therefore aborted it, and the redirect below then fought the
+   * navigation already under way: `page.reload()` failed with "Frame load
+   * interrupted" and the browser landed on the OIDC authorize page.
+   *
+   * `HttpResponse.error()` is MSW's transport failure — the same
+   * `kind: 'network'` result an aborted request produces, and the only shape
+   * that leaves `probeStatus` undefined.
+   */
+  it('does not redirect when the session probe never answered', async () => {
+    configureEnv();
+
+    const assigned: string[] = [];
+    vi.stubGlobal('open', () => null);
+    server.use(
+      http.get('/forward-auth/info', () => HttpResponse.error()),
+      http.all('*', () => new HttpResponse(null, { status: 401 })),
+    );
+    stubLocationAssign(assigned);
+
+    render(<App />);
+    await waitFor(() => expect(useSessionStore.getState().loaded).toBe(true));
+
+    expect(useSessionStore.getState().probeStatus).toBeUndefined();
+    expect(assigned).toEqual([]);
+  });
+
 });

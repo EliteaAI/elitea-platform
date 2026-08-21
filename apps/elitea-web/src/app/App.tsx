@@ -135,6 +135,29 @@ export function App() {
       if (user !== undefined) return;
       if (window.location.pathname.endsWith(AUTH_CALLBACK_PATH)) return;
 
+      /*
+       * A probe that never ANSWERED is not a probe that said "no session".
+       *
+       * `probeStatus` is `undefined` only for the two `HttpFailure` kinds that
+       * carry no status: `network` and `aborted` (`shared/api/http.ts:48-51`).
+       * Every real answer has one — 200, 401 and the Form plane's 404 alike.
+       *
+       * DEFECT this repairs (J20c, webkit). The browser cancels every in-flight
+       * request the instant it starts leaving a page. `/forward-auth/info` is
+       * issued from this effect, so a reload or a link click during boot aborts
+       * it. `fetchSession` then stored `user: undefined`, this continuation ran
+       * inside the UNLOADING document, and the assign below fought the
+       * navigation already under way. Measured on the E2E stack: `page.reload()`
+       * failed with "Frame load interrupted" and the browser landed on the OIDC
+       * authorize page instead of the page it was loading. A signed-in user who
+       * reloads early was thrown into a re-login.
+       *
+       * Not redirecting is also the right answer away from that race: when the
+       * probe cannot reach elitea-main, the login form it would send the browser
+       * to is served by that same unreachable elitea-main.
+       */
+      if (probeStatus === undefined) return;
+
       const returnTo = window.location.pathname + window.location.search;
       window.location.assign(buildLoginUrl(authPlaneFromProbeStatus(probeStatus), returnTo));
     });
