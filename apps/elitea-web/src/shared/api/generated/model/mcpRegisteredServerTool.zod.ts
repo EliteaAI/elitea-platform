@@ -41,29 +41,19 @@
  */
 import { z as zod } from "zod";
 
-export const TransferGrantResponse = zod.object({
-  grant_id: zod.string(),
-  url: zod
-    .string()
-    .optional()
-    .describe(
-      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
-    ),
-  method: zod
-    .enum(["PUT"])
-    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
-  expires_at: zod.iso.datetime({ offset: true }),
-  content_type: zod.string(),
-  max_bytes: zod.int(),
-  upload_id: zod
-    .string()
-    .optional()
-    .describe(
-      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
-    ),
-});
+export const McpRegisteredServerTool = zod
+  .object({
+    name: zod.string(),
+    description: zod.string(),
+    inputSchema: zod
+      .record(zod.string(), zod.unknown())
+      .describe("JSON Schema of the tool's arguments."),
+  })
+  .describe(
+    "NOTE(W2): internal\/mcpregistry\/registry.go:41-45 — the Tool struct, as `tools_list` serialises it. `inputSchema` keeps pylon's camelCase spelling. That spelling is the wire contract the Python SDK reads (elitea_sdk toolkits\/tools.py, _init_single_mcp_tool), so do not rename it.\n",
+  );
 
-export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
-export type TransferGrantResponseOutput = zod.output<
-  typeof TransferGrantResponse
+export type McpRegisteredServerTool = zod.input<typeof McpRegisteredServerTool>;
+export type McpRegisteredServerToolOutput = zod.output<
+  typeof McpRegisteredServerTool
 >;

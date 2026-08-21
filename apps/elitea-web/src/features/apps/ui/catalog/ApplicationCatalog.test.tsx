@@ -57,7 +57,7 @@ beforeEach(() => {
   server.use(
     getListToolkitsMockHandler({}),
     getListApplicationsMockHandler({ rows: [], total: 0, page: 1, page_size: 20, total_pages: 0 }),
-    getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
+    getModerationStatusMockHandler({ total: 0, rows: [] }),
   );
 });
 
@@ -87,7 +87,19 @@ describe('ApplicationCatalog', () => {
   });
 
   it('opens the request-access modal for the clicked card and submits through to the moderation API', async () => {
-    server.use(getCreateModerationRequestMockHandler({ status: REQUEST_STATUS.APPROVED }));
+    server.use(getCreateModerationRequestMockHandler({
+        id: 1,
+        user_id: 7,
+        user_email: 'requester@example.com',
+        project_id: 1,
+        issue_type: 'Inventory',
+        entity_id: 'inventory',
+        description: 'I need this',
+        status: REQUEST_STATUS.APPROVED,
+        rejection_comment: null,
+        created_at: '2026-08-01T10:00:00Z',
+        updated_at: '2026-08-01T10:00:00Z',
+      } as never));
     const user = userEvent.setup();
     renderCatalog();
 

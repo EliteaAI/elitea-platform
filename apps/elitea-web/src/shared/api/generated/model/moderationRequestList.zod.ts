@@ -40,30 +40,24 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { ModerationRequestRow } from "./moderationRequestRow.zod";
 
-export const TransferGrantResponse = zod.object({
-  grant_id: zod.string(),
-  url: zod
-    .string()
-    .optional()
-    .describe(
-      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
-    ),
-  method: zod
-    .enum(["PUT"])
-    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
-  expires_at: zod.iso.datetime({ offset: true }),
-  content_type: zod.string(),
-  max_bytes: zod.int(),
-  upload_id: zod
-    .string()
-    .optional()
-    .describe(
-      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
-    ),
-});
+export const ModerationRequestList = zod
+  .object({
+    total: zod
+      .int()
+      .describe(
+        "On the per-entity route this is `len(rows)`, not a page total — the route answers with the caller's own rows for one entity and takes no paging parameters (internal\/api\/v2\/moderation\/requests.go:594).\n",
+      ),
+    rows: zod
+      .array(ModerationRequestRow)
+      .describe("Newest first, so the current state is `rows[0]`."),
+  })
+  .describe(
+    'NOTE(W2): internal\/api\/v2\/moderation\/requests.go:594 — `{\"total\": len(rows), \"rows\": rows}`.\n',
+  );
 
-export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
-export type TransferGrantResponseOutput = zod.output<
-  typeof TransferGrantResponse
+export type ModerationRequestList = zod.input<typeof ModerationRequestList>;
+export type ModerationRequestListOutput = zod.output<
+  typeof ModerationRequestList
 >;

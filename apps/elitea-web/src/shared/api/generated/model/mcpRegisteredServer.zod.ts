@@ -40,30 +40,32 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { McpRegisteredServerTool } from "./mcpRegisteredServerTool.zod";
 
-export const TransferGrantResponse = zod.object({
-  grant_id: zod.string(),
-  url: zod
-    .string()
-    .optional()
-    .describe(
-      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
-    ),
-  method: zod
-    .enum(["PUT"])
-    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
-  expires_at: zod.iso.datetime({ offset: true }),
-  content_type: zod.string(),
-  max_bytes: zod.int(),
-  upload_id: zod
-    .string()
-    .optional()
-    .describe(
-      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
-    ),
-});
+export const McpRegisteredServer = zod
+  .object({
+    name: zod.string(),
+    tools: zod.array(McpRegisteredServerTool),
+    project_id: zod.int().nullable(),
+    sio_sid: zod
+      .string()
+      .nullable()
+      .describe(
+        "Always null here. The field is the socket.io session id of the client that registered the server, and this service runs no socket.io server. It stays in the body because pylon produces it.\n",
+      ),
+    timeout_tools_list: zod
+      .int()
+      .describe("Seconds. Defaults to 90 (mcpregistry.DefaultTimeoutSeconds)."),
+    timeout_tools_call: zod
+      .int()
+      .describe("Seconds. Defaults to 90 (mcpregistry.DefaultTimeoutSeconds)."),
+    group: zod
+      .string()
+      .describe('Defaults to \"Other\" (mcpregistry.DefaultGroup).'),
+  })
+  .describe(
+    "NOTE(W2): internal\/mcpregistry\/registry.go:59-67 — the Server struct, which is pylon's `McpServer` shape. `tools_list` returns a bare array of it, with no envelope.\n",
+  );
 
-export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
-export type TransferGrantResponseOutput = zod.output<
-  typeof TransferGrantResponse
->;
+export type McpRegisteredServer = zod.input<typeof McpRegisteredServer>;
+export type McpRegisteredServerOutput = zod.output<typeof McpRegisteredServer>;

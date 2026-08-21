@@ -41,29 +41,31 @@
  */
 import { z as zod } from "zod";
 
-export const TransferGrantResponse = zod.object({
-  grant_id: zod.string(),
-  url: zod
-    .string()
-    .optional()
-    .describe(
-      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
-    ),
-  method: zod
-    .enum(["PUT"])
-    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
-  expires_at: zod.iso.datetime({ offset: true }),
-  content_type: zod.string(),
-  max_bytes: zod.int(),
-  upload_id: zod
-    .string()
-    .optional()
-    .describe(
-      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
-    ),
-});
+export const moderationRequestCreateIssueTypeMax = 256;
 
-export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
-export type TransferGrantResponseOutput = zod.output<
-  typeof TransferGrantResponse
+export const ModerationRequestCreate = zod
+  .object({
+    issue_type: zod
+      .string()
+      .max(moderationRequestCreateIssueTypeMax)
+      .describe(
+        "The label of the catalogue entry. Required; a longer value is refused with 400 because the column is VARCHAR(256).\n",
+      ),
+    description: zod
+      .string()
+      .describe("The requester's justification. Required."),
+    status: zod
+      .enum(["pending"])
+      .optional()
+      .describe(
+        'Accepted only as \"pending\", and refused with 400 otherwise — a requester may not file an already-approved request. The value is never applied: the server always stores \"pending\" (internal\/api\/v2\/moderation\/requests.go:666-681).\n',
+      ),
+  })
+  .describe(
+    "NOTE(W2): the fields internal\/api\/v2\/moderation\/requests.go's `requestCreateBody` (:602-608) reads. Two more fields are decoded only so they can be refused, and neither is modeled here because no client should send one: `user_id` is refused with 400 (the author is the authenticated caller), and a non-empty `meta` is refused with 400 (an absent, null or empty one is tolerated for the two shipped clients). `project_id` and `entity_id` come from the path.\n",
+  );
+
+export type ModerationRequestCreate = zod.input<typeof ModerationRequestCreate>;
+export type ModerationRequestCreateOutput = zod.output<
+  typeof ModerationRequestCreate
 >;

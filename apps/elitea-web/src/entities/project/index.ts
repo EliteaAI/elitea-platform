@@ -1,7 +1,7 @@
 /**
  * Public API — spec §3.3: named exports only, curated (§3.5 budget: ≤20).
  */
-export type { Project, ProjectContext, ProjectStatus } from './model/types';
+export type { Project, ProjectContext } from './model/types';
 export type { ProjectContextEntry, ProjectInfoEntry, UploadedIcon } from './model/projectContextTypes';
 export { isPublicProject, isSuspendedProject, sortProjectsByName } from './model/selectors';
 

@@ -40,30 +40,16 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { AdminMessageResponse } from "./adminMessageResponse.zod";
+import { ErrorResponse } from "./errorResponse.zod";
 
-export const TransferGrantResponse = zod.object({
-  grant_id: zod.string(),
-  url: zod
-    .string()
-    .optional()
-    .describe(
-      "Never the physical bucket, backend URL, or a credential — a complete, ready-to-use presigned (or facade) URL (S15). Absent when upload_id is present (S16) — a native multipart upload has no single URL for the whole object, only per-part ones obtained via POST ...\/grants\/{projectID}\/{grantID}\/parts\/{partNumber}.\n",
-    ),
-  method: zod
-    .enum(["PUT"])
-    .describe('Always \"PUT\" — see CreateTransferGrantRequest.method.'),
-  expires_at: zod.iso.datetime({ offset: true }),
-  content_type: zod.string(),
-  max_bytes: zod.int(),
-  upload_id: zod
-    .string()
-    .optional()
-    .describe(
-      "Present only for a native multipart upload (S16) — mutually exclusive with url. Exchange it for part-level presigned URLs, then finish with :completeMultipart or cancel with :abortMultipart.\n",
-    ),
-});
+export const SecretsModeErrorBody = zod
+  .union([ErrorResponse, AdminMessageResponse])
+  .describe(
+    'NOTE(issue 151): the error body of a mode-ful \/secrets route. `default` writes {\"error\": \"...\"}; `administration` writes {\"message\": \"...\"}. The two modes are separate handlers, so the envelope follows the mode.\n',
+  );
 
-export type TransferGrantResponse = zod.input<typeof TransferGrantResponse>;
-export type TransferGrantResponseOutput = zod.output<
-  typeof TransferGrantResponse
+export type SecretsModeErrorBody = zod.input<typeof SecretsModeErrorBody>;
+export type SecretsModeErrorBodyOutput = zod.output<
+  typeof SecretsModeErrorBody
 >;

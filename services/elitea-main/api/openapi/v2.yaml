@@ -9959,8 +9959,8 @@ paths:
         Issue 335 replaced the earlier 501 with a durable read. The listing
         comes from elitea_mcp.registered_servers and elitea_mcp.registered_tools
         (shared migration 0073), unioned with the caller's personal project. A
-        personal entry wins a name collision, so a server a user registers in
-        their own project follows them into every project they work in
+        personal entry wins a name collision. A server a user registers in their
+        own project therefore follows them into every project they work in
         (internal/api/v2/mcp/registry.go:116-129).
 
         The body is a bare array, which is pylon's shape. An empty array is now
