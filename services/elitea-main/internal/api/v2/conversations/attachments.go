@@ -125,9 +125,12 @@ type AttachmentStore interface {
 	// attachmentMaxTotalBytes/attachmentMaxImageBytes's own doc comments.
 	AttachmentPolicy(ctx context.Context, projectID int64) (bucketName string, maxFileBytes *int64, retentionDays *int32, err error)
 	// RequireAttachmentBucket returns the reserved system bucket's database
-	// ID and its own ExpiresAt (stamped onto every object written into it),
-	// creating the bucket row on first use.
-	RequireAttachmentBucket(ctx context.Context, projectID int64, bucketName string, retentionDays int32) (bucketID int64, bucketExpiresAt *time.Time, err error)
+	// ID, creating the bucket row on first use. It returns no deadline: the
+	// bucket's expires_at is one frozen instant, so an attachment that
+	// copied it was born expired after the project's first attachment aged
+	// past retention_days. Each attachment carries its own deadline
+	// instead — see the RecordAttachmentObject call below.
+	RequireAttachmentBucket(ctx context.Context, projectID int64, bucketName string, retentionDays int32) (bucketID int64, err error)
 	RecordAttachmentObject(ctx context.Context, bucketID int64, key string, byteLength int64, mediaType string, expiresAt *time.Time) error
 
 	UpsertAttachmentChunk(ctx context.Context, projectID int64, conversationID, fileID string, chunkIndex, totalChunks int32, fileName, contentType string, body []byte) error
@@ -422,11 +425,14 @@ func (h *Handler) finalizeAttachment(w http.ResponseWriter, ctx context.Context,
 	if policyRetentionDays != nil {
 		retentionDays = *policyRetentionDays
 	}
-	bucketID, bucketExpiresAt, err := h.attachments.RequireAttachmentBucket(ctx, projectID, bucketName, retentionDays)
+	bucketID, err := h.attachments.RequireAttachmentBucket(ctx, projectID, bucketName, retentionDays)
 	if err != nil {
 		apierr.Write(w, apierr.Internal("get or create attachment bucket: "+err.Error()))
 		return
 	}
+	// The retention window of this attachment starts now, not when the
+	// bucket was created.
+	attachmentExpiresAt := time.Now().AddDate(0, 0, int(retentionDays))
 
 	// Legacy prefixes the stored filename with the conversation's UUID
 	// (f"{conversation.uuid}/{sanitized_filename}"); conversationID here is
@@ -447,7 +453,7 @@ func (h *Handler) finalizeAttachment(w http.ResponseWriter, ctx context.Context,
 		return
 	}
 
-	if err := h.attachments.RecordAttachmentObject(ctx, bucketID, info.Key, info.Size, contentType, bucketExpiresAt); err != nil {
+	if err := h.attachments.RecordAttachmentObject(ctx, bucketID, info.Key, info.Size, contentType, &attachmentExpiresAt); err != nil {
 		apierr.Write(w, apierr.Internal("record attachment metadata: "+err.Error()))
 		return
 	}

@@ -68,7 +68,32 @@ import (
 // The default-mode roles 001_initial.sql seeds. The legacy matrix
 // (testdata/postgres/legacy-rbac-matrix.json) grants
 // `models.chat.messages.create` to all three.
+//
+// These are the three HUMAN roles. shared/0088 seeds a fourth default-mode
+// role, `system`, for the per-project machine identity; see machineModeRole.
 var defaultModeRoles = []string{"admin", "editor", "viewer"}
+
+// machineModeRole is the default-mode role the per-project system identity
+// holds. shared/0089_central_system_role.sql seeds it. projectprovisioning
+// assigns the system user a project role of this name. legacyrbac resolves
+// such a role through the CENTRAL default-mode role of the same name. With no central row the scheduled-execution PAT resolved nothing
+// and every worker callback answered 403.
+//
+// It is NOT a human role. It holds only the callback surface 0088 lists, so it
+// appears in the expected holder set of those permissions and of no other.
+const machineModeRole = "system"
+
+// withMachineRole returns `holders` plus the machine role, sorted the way
+// defaultModeGrantHolders sorts what it reads.
+//
+// Use it only for a permission shared/0088 grants. Naming the role at each such
+// call site keeps the assertion discriminating: a grant that reaches `system`
+// anywhere else still fails.
+func withMachineRole(holders ...string) []string {
+	combined := append(append([]string{}, holders...), machineModeRole)
+	slices.Sort(combined)
+	return combined
+}
 
 // The permission both chat gates require. It is read from the production
 // constant, not copied, so a rename cannot leave this test measuring a string

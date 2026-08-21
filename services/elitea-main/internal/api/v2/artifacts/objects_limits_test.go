@@ -252,44 +252,68 @@ func TestArtifactLimitUploadRecordsObjectMetadata(t *testing.T) {
 	}
 }
 
-// TestArtifactRetentionUploadStampsObjectExpiryFromBucket proves S14 item 1's
-// object-side half: an object uploaded into a bucket with retention
-// configured gets the bucket's own expires_at, not a nil one — the bucket
-// side of this (computeExpiresAt on create/retention-update) already existed
-// from S8; only the upload path was missing it before S14.
-func TestArtifactRetentionUploadStampsObjectExpiryFromBucket(t *testing.T) {
-	repo := newFakeRepo()
-	bucket, err := repo.CreateBucket(t.Context(), repos.NewBucketInput{
-		ProjectID: 1, Name: "reports", DisplayName: "reports", BucketType: "local",
-		RetentionDays: int32Ptr(30),
-		ExpiresAt:     timePtr(time.Now().Add(30 * 24 * time.Hour)),
-	})
-	if err != nil {
-		t.Fatalf("seed CreateBucket: %v", err)
+// TestArtifactRetentionUploadStampsObjectExpiryFromRetentionDays proves S14
+// item 1's object-side half: an object uploaded into a bucket with retention
+// configured gets a non-nil expires_at.
+//
+// DEFECT: the upload path copied the BUCKET's expires_at onto every object.
+// That value is one absolute instant, computed once when the bucket was
+// created (computeExpiresAt = now + retention_days) and never re-derived.
+// Every upload made after that instant was therefore stamped with a deadline
+// already in the past. The API answered 201 Created, and the retention
+// sweeper (cadence */15 * * * *, ListExpiredObjects WHERE expires_at < now)
+// deleted the bytes and the metadata row within 15 minutes. No error reached
+// the caller. The second case below is the one that was missing: it uses a
+// bucket whose own deadline has already passed.
+func TestArtifactRetentionUploadStampsObjectExpiryFromRetentionDays(t *testing.T) {
+	cases := []struct {
+		name            string
+		bucketExpiresAt *time.Time
+	}{
+		{"bucket deadline in the future", timePtr(time.Now().Add(30 * 24 * time.Hour))},
+		{"bucket deadline already passed", timePtr(time.Now().Add(-2 * 24 * time.Hour))},
 	}
-	if bucket.ExpiresAt == nil {
-		t.Fatal("seeded bucket has a nil ExpiresAt; test fixture is broken")
-	}
-	store := newFakeStore()
-	h := artifacts.NewHandler(repo, store)
-	r := newObjectTestRouter(h)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newFakeRepo()
+			bucket, err := repo.CreateBucket(t.Context(), repos.NewBucketInput{
+				ProjectID: 1, Name: "reports", DisplayName: "reports", BucketType: "local",
+				RetentionDays: int32Ptr(30),
+				ExpiresAt:     tc.bucketExpiresAt,
+			})
+			if err != nil {
+				t.Fatalf("seed CreateBucket: %v", err)
+			}
+			store := newFakeStore()
+			h := artifacts.NewHandler(repo, store)
+			r := newObjectTestRouter(h)
 
-	req := newUploadRequest(t, "/objects/1/reports", "expiring.bin", []byte("x"))
-	rr := httptest.NewRecorder()
-	r.ServeHTTP(rr, req)
-	if rr.Code != http.StatusCreated {
-		t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusCreated, rr.Body.String())
-	}
+			before := time.Now()
+			req := newUploadRequest(t, "/objects/1/reports", "expiring.bin", []byte("x"))
+			rr := httptest.NewRecorder()
+			r.ServeHTTP(rr, req)
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d; body=%s", rr.Code, http.StatusCreated, rr.Body.String())
+			}
 
-	record, ok := repo.objects[fakeObjectKey(bucket.ID, "expiring.bin")]
-	if !ok {
-		t.Fatal("expected UpsertObject to have recorded expiring.bin")
-	}
-	if record.expiresAt == nil {
-		t.Fatal("uploaded object has a nil ExpiresAt, want the bucket's expires_at")
-	}
-	if !record.expiresAt.Equal(*bucket.ExpiresAt) {
-		t.Errorf("object ExpiresAt = %v, want the bucket's %v", *record.expiresAt, *bucket.ExpiresAt)
+			record, ok := repo.objects[fakeObjectKey(bucket.ID, "expiring.bin")]
+			if !ok {
+				t.Fatal("expected UpsertObject to have recorded expiring.bin")
+			}
+			if record.expiresAt == nil {
+				t.Fatal("uploaded object has a nil ExpiresAt, want now + retention_days")
+			}
+			// The sweeper deletes anything whose expires_at is in the past.
+			// A fresh upload must never be born in that set.
+			if !record.expiresAt.After(time.Now()) {
+				t.Fatalf("object ExpiresAt = %v is not in the future; the sweeper deletes it on the next tick", *record.expiresAt)
+			}
+			wantLow := before.AddDate(0, 0, 30)
+			wantHigh := time.Now().AddDate(0, 0, 30)
+			if record.expiresAt.Before(wantLow) || record.expiresAt.After(wantHigh) {
+				t.Errorf("object ExpiresAt = %v, want between %v and %v", *record.expiresAt, wantLow, wantHigh)
+			}
+		})
 	}
 }
 

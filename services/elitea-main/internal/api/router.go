@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
@@ -172,6 +173,14 @@ type RouterConfig struct {
 	ObjectStore      storage.ObjectStore
 	BudgetAlertStore *gateway.BudgetAlertStore
 	SessionSecret    string
+	// PATSigner signs the personal access tokens the /api/v2/auth/token route
+	// returns. Set it whenever the deployment validates a token with a key
+	// that is NOT SessionSecret. A form authentication graph does exactly
+	// that: it reads a token back with credentials.pat_signing_key_file.
+	//
+	// Leave it nil for the OIDC-only shape, where APPLICATION_SECRET_KEY both
+	// signs the token and reads it back. Never box a nil pointer into it.
+	PATSigner v2auth.TokenSigner
 	// InternalAdminToken is a disabled-by-default transitional control for
 	// shadow/cutover operations, not production workload identity. Empty leaves
 	// those routes unmounted.
@@ -535,6 +544,39 @@ func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(ht
 	})
 }
 
+// compressJSONResponses gzips a JSON API response when the caller asks for it.
+//
+// DEFECT this fixes: the router had no compression middleware at all, so every
+// JSON answer went over the wire verbatim. `GET /api/v2/configurations/available/`
+// alone is a 136 KB catalogue that compresses to about 17 KB, and the credential
+// form waits for the whole of it.
+//
+// The allow-list holds `application/json` only. Two response kinds must never be
+// compressed, and both are excluded by it:
+//
+//   - Server-sent events. `text/event-stream` is not in the list, so chi writes
+//     those through raw. `Flush` and `Unwrap` still reach the real writer
+//     (chi v5.1.0 middleware/compress.go), which is what `pkg/ssewriter` and
+//     `http.NewResponseController` need.
+//   - A byte-range answer. chi compresses by content type without reading the
+//     status code, so a 206 would be gzipped while `Content-Range` still
+//     described the raw object. This middleware skips any request that carries a
+//     `Range` header. The artifact object routes, the only 206 in the service
+//     (internal/api/v2/artifacts/objects.go), also sit outside this group.
+func compressJSONResponses() func(http.Handler) http.Handler {
+	compress := chimw.Compress(5, "application/json")
+	return func(next http.Handler) http.Handler {
+		compressed := compress(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Range") != "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			compressed.ServeHTTP(w, r)
+		})
+	}
+}
+
 // newProductionRouter is the single route composition NewRouter builds. It
 // carries the broad legacy-parity registration map alongside
 // mountReviewedProductionRoutes (called at the end, below) because that is
@@ -720,7 +762,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// mountMCPServerRoutes.
 	mountMCPServerRoutes(r, cfg.Pool, authenticate)
 
+	// This group holds the whole JSON API — the `/api/v2` route below is its
+	// only member. Compression sits at the top of it, ABOVE the shadow
+	// comparator: shadow buffers what the handler writes. A compressor under
+	// it would hand the comparator gzip bytes to diff against pylon's JSON.
+	// The comparator would then report a mismatch on every sampled request.
 	r.Group(func(r chi.Router) {
+		r.Use(compressJSONResponses())
 		r.Use(apimw.Auth(apimw.AuthConfig{
 			Client:                    cfg.AuthClient,
 			Validator:                 cfg.AuthValidator,
@@ -750,11 +798,20 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			)
 
 			// === Auth endpoints ===
-			r.Mount("/auth", v2auth.NewHandler(
-				cfg.Pool,
+			//
+			// Sign a personal access token with the key that THIS deployment's
+			// validator reads it back with. A form authentication graph holds
+			// that key; SessionSecret is a different value and signing with it
+			// produced tokens that failed every later request with 401.
+			authOptions := []v2auth.Option{
 				v2auth.WithPermissionResolver(permissionResolver),
-				v2auth.WithTokenSigningKey(cfg.SessionSecret),
-			).Routes())
+			}
+			if cfg.PATSigner != nil {
+				authOptions = append(authOptions, v2auth.WithTokenSigner(cfg.PATSigner))
+			} else {
+				authOptions = append(authOptions, v2auth.WithTokenSigningKey(cfg.SessionSecret))
+			}
+			r.Mount("/auth", v2auth.NewHandler(cfg.Pool, authOptions...).Routes())
 
 			// === Projects endpoints ===
 			//
@@ -1199,6 +1256,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				v2configs.WithPermissionResolver(coreResolver),
 				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
 				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+				v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
 			).Routes())
 
 			// === Secrets ===
@@ -2477,4 +2535,55 @@ func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {
 	}
 	router.Method(http.MethodPost, runtimeValidationPath, routes.Validation)
 	router.Method(http.MethodGet, runtimeEventsPath, routes.ExecutionEvents)
+}
+
+// configurationSecretSealer builds the project-vault writer the compatibility
+// configurations router seals provider credentials into.
+//
+// A nil result REFUSES every write that carries a schema-declared password
+// field. That is the required behaviour. The alternative is the defect this
+// function exists to close: the handler used to store the submitted `api_key`
+// verbatim in p_{project}.configuration, and migrations/shared/0072 grants the
+// read of that column to the project VIEWER role.
+//
+// cmd/elitea-main validates SECRETS_MASTER_KEY at start-up and stops on a
+// malformed value, so the error branch here is the programmatic caller's case,
+// not an operator's. An ABSENT variable is a supported state: the project key
+// is then stored unwrapped, and every path here reads it that way.
+//
+// The sealer also carries the vault creator, because a project can hold rows
+// and no vault. migrations/001_initial.sql inserts centry.project id 1 and
+// creates p_1 without calling the provisioner, so the default project of a
+// fresh install has no vault rows at all. Without the creator the first
+// credential save into that project answers 503, and the deployment can store
+// no provider credential.
+//
+// v2secrets.NewHandler is the creator because it is the ONE minter of a vault
+// key (#399). It reads the same SECRETS_MASTER_KEY this function reads, so the
+// creator and this writer share one key source.
+func configurationSecretSealer(pool *pgxpool.Pool) v2configs.SecretSealer {
+	if pool == nil {
+		return nil
+	}
+	// MasterKeyFromEnv is the VALIDATOR here, not the source. It returns the
+	// DECODED 32 key bytes, and this repository takes the ENCODED 44-byte
+	// form — the same form loadOptionalFernetMasterKey reads out of
+	// ELITEA_VAULT_MASTER_KEY_FILE, and the same form centrysecrets decodes.
+	// Handing it the decoded bytes made NewCurrentSecretVaultRepository reject
+	// the key, which returned a nil sealer, which refused EVERY credential save
+	// with 503. deploy/docker-compose.yml REQUIRES the variable (`:?`), so that
+	// is the default deployment.
+	decoded, err := v2secrets.MasterKeyFromEnv(os.Getenv)
+	if err != nil {
+		return nil
+	}
+	clear(decoded)
+	masterKey := []byte(os.Getenv(v2secrets.MasterKeyEnvVar))
+	sealer, err := dbrepos.NewCurrentSecretVaultRepository(pool, masterKey,
+		dbrepos.WithProjectVaultCreator(v2secrets.NewHandler(pool)))
+	clear(masterKey)
+	if err != nil || sealer == nil {
+		return nil
+	}
+	return sealer
 }

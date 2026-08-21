@@ -139,6 +139,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
@@ -528,10 +529,21 @@ func insertDecisionNotification(ctx context.Context, tx pgx.Tx, row requestRow) 
 		return fmt.Errorf("encode notification meta: %w", err)
 	}
 
+	// `uuid` and `is_seen` are bound here, and not left to a column default.
+	// centry.notifications belongs to the current platform schema, and that
+	// schema declares both columns NOT NULL with NO server default: the
+	// defaults are Python-side, on the legacy model. Only this repository's own
+	// 001_initial.sql adds server defaults. It creates the table with
+	// CREATE TABLE IF NOT EXISTS. A database that the legacy platform created
+	// therefore never gets them. An INSERT that omits the two columns therefore
+	// fails with SQLSTATE 23502 on such a database. The failure rolls back the
+	// whole decision transaction, so approve and reject answer 500 and the
+	// moderation_state row stays `pending`. Every generated notification query
+	// in internal/db/queries binds both columns for the same reason.
 	if _, err := tx.Exec(ctx, `
-INSERT INTO centry.notifications (project_id, user_id, meta, event_type)
-VALUES ($1, $2, $3, $4)`,
-		row.ProjectID, row.UserID, encoded, "moderation_"+row.Status,
+INSERT INTO centry.notifications (uuid, is_seen, project_id, user_id, meta, event_type)
+VALUES ($1::text::uuid, FALSE, $2, $3, $4, $5)`,
+		uuid.NewString(), row.ProjectID, row.UserID, encoded, "moderation_"+row.Status,
 	); err != nil {
 		return fmt.Errorf("notify requester: %w", err)
 	}

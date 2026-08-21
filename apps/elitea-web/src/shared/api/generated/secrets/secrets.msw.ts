@@ -44,17 +44,34 @@ import { faker } from "@faker-js/faker";
 import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
-import type { HideSecret200, SecretDetail, SecretListItem } from "../model";
+import type {
+  AdminMessageResponse,
+  AdminSecretListItem,
+  AdminSecretValue,
+  HideSecret200,
+  SecretDetail,
+  SecretListItem,
+} from "../model";
 
-export const getListSecretsResponseMock = (): SecretListItem[] =>
-  Array.from(
-    { length: faker.number.int({ min: 1, max: 10 }) },
-    (_, i) => i + 1,
-  ).map(() => ({
-    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    is_default: faker.datatype.boolean(),
-  }));
+export const getListSecretsResponseMock = ():
+  SecretListItem[] | AdminSecretListItem[] =>
+  faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      is_default: faker.datatype.boolean(),
+    })),
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      secret: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
+  ]);
 
 export const getCreateSecretResponseMock = (
   overrideResponse: Partial<Extract<SecretListItem, object>> = {},
@@ -65,25 +82,68 @@ export const getCreateSecretResponseMock = (
   ...overrideResponse,
 });
 
-export const getShowSecretResponseMock = (
-  overrideResponse: Partial<Extract<SecretDetail, object>> = {},
+export const getShowSecretResponseSecretDetailMock = (
+  overrideResponse: Partial<SecretDetail> = {},
 ): SecretDetail => ({
-  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  is_default: faker.datatype.boolean(),
-  is_hidden: faker.datatype.boolean(),
-  value: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...{
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    is_default: faker.datatype.boolean(),
+    is_hidden: faker.datatype.boolean(),
+    value: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
   ...overrideResponse,
 });
 
-export const getUpdateSecretResponseMock = (
-  overrideResponse: Partial<Extract<SecretListItem, object>> = {},
-): SecretListItem => ({
-  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  is_default: faker.datatype.boolean(),
+export const getShowSecretResponseAdminSecretValueMock = (
+  overrideResponse: Partial<AdminSecretValue> = {},
+): AdminSecretValue => ({
+  ...{
+    secret: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      null,
+    ]),
+  },
   ...overrideResponse,
 });
+
+export const getShowSecretResponseMock = (): SecretDetail | AdminSecretValue =>
+  faker.helpers.arrayElement([
+    { ...getShowSecretResponseSecretDetailMock() },
+    { ...getShowSecretResponseAdminSecretValueMock() },
+  ]);
+
+export const getCreateSecretInModeResponseMock = (
+  overrideResponse: Partial<Extract<AdminMessageResponse, object>> = {},
+): AdminMessageResponse => ({
+  message: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getUpdateSecretResponseSecretListItemMock = (
+  overrideResponse: Partial<SecretListItem> = {},
+): SecretListItem => ({
+  ...{
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    secret_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    is_default: faker.datatype.boolean(),
+  },
+  ...overrideResponse,
+});
+
+export const getUpdateSecretResponseAdminMessageResponseMock = (
+  overrideResponse: Partial<AdminMessageResponse> = {},
+): AdminMessageResponse => ({
+  ...{ message: faker.string.alpha({ length: { min: 10, max: 20 } }) },
+  ...overrideResponse,
+});
+
+export const getUpdateSecretResponseMock = ():
+  SecretListItem | AdminMessageResponse =>
+  faker.helpers.arrayElement([
+    { ...getUpdateSecretResponseSecretListItemMock() },
+    { ...getUpdateSecretResponseAdminMessageResponseMock() },
+  ]);
 
 export const getHideSecretResponseMock = (
   overrideResponse: Partial<Extract<HideSecret200, object>> = {},
@@ -106,9 +166,13 @@ export const getShowSecretWithoutModeResponseMock = (
 export const getListSecretsMockHandler = (
   overrideResponse?:
     | SecretListItem[]
+    | AdminSecretListItem[]
     | ((
         info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<SecretListItem[]> | SecretListItem[]),
+      ) =>
+        | Promise<SecretListItem[] | AdminSecretListItem[]>
+        | SecretListItem[]
+        | AdminSecretListItem[]),
   options?: RequestHandlerOptions,
 ) => {
   return http.get(
@@ -158,9 +222,13 @@ export const getCreateSecretMockHandler = (
 export const getShowSecretMockHandler = (
   overrideResponse?:
     | SecretDetail
+    | AdminSecretValue
     | ((
         info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<SecretDetail> | SecretDetail),
+      ) =>
+        | Promise<SecretDetail | AdminSecretValue>
+        | SecretDetail
+        | AdminSecretValue),
   options?: RequestHandlerOptions,
 ) => {
   return http.get(
@@ -181,12 +249,42 @@ export const getShowSecretMockHandler = (
   );
 };
 
+export const getCreateSecretInModeMockHandler = (
+  overrideResponse?:
+    | AdminMessageResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<AdminMessageResponse> | AdminMessageResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/secrets/secret/:mode/:projectID/:name",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateSecretInModeResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getUpdateSecretMockHandler = (
   overrideResponse?:
     | SecretListItem
+    | AdminMessageResponse
     | ((
         info: Parameters<Parameters<typeof http.put>[1]>[0],
-      ) => Promise<SecretListItem> | SecretListItem),
+      ) =>
+        | Promise<SecretListItem | AdminMessageResponse>
+        | SecretListItem
+        | AdminMessageResponse),
   options?: RequestHandlerOptions,
 ) => {
   return http.put(
@@ -284,6 +382,7 @@ export const getSecretsMock = () => [
   getListSecretsMockHandler(),
   getCreateSecretMockHandler(),
   getShowSecretMockHandler(),
+  getCreateSecretInModeMockHandler(),
   getUpdateSecretMockHandler(),
   getDeleteSecretMockHandler(),
   getHideSecretMockHandler(),

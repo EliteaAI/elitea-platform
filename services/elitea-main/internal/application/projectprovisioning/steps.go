@@ -111,12 +111,22 @@ const (
 
 // systemProjectRole is the project role the per-project system identity holds.
 //
-// It is not one of the central default-mode role names. pylon's
-// `auth.get_roles(mode='default')` returns `system` alongside admin/editor/
-// viewer, so its `admin_add_role` creates a `system` project role as a side
-// effect; this repository deliberately does not seed a central `system` role
-// (001_initial.sql: "not in the Go product's role vocabulary"), so the project
-// role has to be named explicitly here.
+// pylon's `auth.get_roles(mode='default')` returns `system` alongside admin/
+// editor/viewer, so its `admin_add_role` creates a `system` project role as a
+// side effect. This repository names the role explicitly here instead.
+//
+// THE CENTRAL ROLE OF THE SAME NAME MATTERS, AND IT USED NOT TO EXIST.
+// legacyrbac resolves a project role that carries no per-project grant rows
+// through the CENTRAL default-mode role of the same name
+// (internal/infra/legacyrbac/postgres.go). 001_initial.sql seeded admin, editor
+// and viewer only. This role therefore matched nothing. The project-system PAT
+// that a scheduled execution runs on resolved the EMPTY set. Every worker
+// callback answered 403, while the same run started by a human succeeded.
+//
+// migrations/shared/0089_central_system_role.sql seeds the central role and
+// grants it the worker callback surface. Read that file before you change the
+// name here: the two have to agree, and nothing checks the spelling for you
+// except migrations/administration_secret_and_system_role_grants_postgres_integration_test.go.
 //
 // It must exist. queries/auth_pat.sql's GetActiveProjectSystemPAT joins through
 // auth_core__project_user_role, so a system user with no project role assignment
@@ -406,6 +416,13 @@ func removeProjectSchema(ctx context.Context, p *Provisioner, state *provisionSt
 func createProjectPermissions(ctx context.Context, p *Provisioner, state *provisionState) error {
 	// Every central default-mode role name, plus `system`. pylon derives the
 	// list from auth.get_roles(mode='default'), which includes `system` there.
+	//
+	// The UNION is kept although shared/0088 now seeds a central `system` role
+	// and the SELECT above it therefore returns the name already. It is
+	// idempotent under the ON CONFLICT clause. It also keeps provisioning
+	// correct on a database whose central role list is not the shape the
+	// migration assumed. An operator can rename or remove a central role.
+	// A project with no `system` role issues no system PAT at all.
 	if _, err := p.pool.Exec(ctx, `
 INSERT INTO public.auth_core__project_role (project_id, name)
 SELECT $1, role_name

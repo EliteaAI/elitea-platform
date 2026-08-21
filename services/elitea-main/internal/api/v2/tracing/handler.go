@@ -54,6 +54,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // Config configures the tracing ingest surface.
@@ -151,7 +152,7 @@ func (h *Handler) Routes(requireAdminStatus func(http.Handler) http.Handler) chi
 func requireAuthenticatedUser(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := auth.UserFromContext(r.Context()); !ok {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)

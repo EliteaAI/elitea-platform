@@ -64,7 +64,6 @@ import type {
   IconUploadResponse,
   ImportWizardResponse,
   OkResponse,
-  Project,
   ProjectContext,
   ProjectQuota,
   ProjectStatistics,
@@ -3739,23 +3738,28 @@ export const getGetAgentCategoriesResponseMock = (
   ...overrideResponse,
 });
 
-export const getListProjectsResponseMock = (): Project[] =>
+export const getListProjectsResponseMock = (): ProjectWithGroups[] =>
   Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
     id: faker.number.int(),
     name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    description: faker.helpers.arrayElement([
-      faker.string.alpha({ length: { min: 10, max: 20 } }),
-      undefined,
-    ]),
-    status: faker.helpers.arrayElement(["active", "suspended"] as const),
-    role: faker.helpers.arrayElement([
-      faker.string.alpha({ length: { min: 10, max: 20 } }),
-      undefined,
-    ]),
+    owner_id: faker.number.int(),
+    plugins: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+    keycloak_groups: {},
+    create_success: faker.datatype.boolean(),
     suspended: faker.datatype.boolean(),
+    groups: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.number.int(),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
   }));
 
 export const getListGroupsResponseMock = (
@@ -4955,10 +4959,10 @@ export const getGetAgentCategoriesMockHandler = (
 
 export const getListProjectsMockHandler = (
   overrideResponse?:
-    | Project[]
+    | ProjectWithGroups[]
     | ((
         info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<Project[]> | Project[]),
+      ) => Promise<ProjectWithGroups[]> | ProjectWithGroups[]),
   options?: RequestHandlerOptions,
 ) => {
   return http.get(

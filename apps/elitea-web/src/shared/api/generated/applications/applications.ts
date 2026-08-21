@@ -95,7 +95,6 @@ import type {
   N409Response,
   N500Response,
   OkResponse,
-  Project,
   ProjectContext,
   ProjectContextUpdateRequest,
   ProjectGroupCreate,
@@ -8920,7 +8919,7 @@ export function useGetAgentCategories<
 }
 
 export type listProjectsResponse200 = {
-  data: Project[];
+  data: ProjectWithGroups[];
   status: 200;
 };
 
@@ -8959,9 +8958,15 @@ export const getListProjectsUrl = (
 };
 
 /**
- * NOTE(W2): PLAIN ARRAY of Project,
- * internal/api/v2/projects/handler.go:47-102; check_public_role is
- * accepted but not read.
+ * NOTE(W2): PLAIN ARRAY of ProjectWithGroups. The route is
+ * internal/api/v2/projects/handler.go:157 (GetCurrentProjectList), which
+ * calls getCurrentProjects at :161. The Project struct is at :134-143.
+ * assembleProjects at :227-252 collapses the joined rows into one item
+ * per project.
+ *
+ * The handler reads `check_public_role` as presence only. Any value, also
+ * `false`, sets the flag true. The flag reaches the query, which then
+ * hides the public project from a caller who is not an admin of it.
  * @summary List projects accessible to the caller
  */
 export const listProjects = async (

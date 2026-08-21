@@ -58,8 +58,15 @@ const (
 	// codeProjectNotResolved reports that no project could be determined.
 	codeProjectNotResolved = "project_not_resolved"
 	// codeProjectScopeConflict reports a selector that contradicts a bound
-	// token. It is the only refusal on this path.
+	// token.
 	codeProjectScopeConflict = "project_scope_conflict"
+	// errTypePermission is the OpenAI-compatible error type for a refusal the
+	// caller cannot correct by changing the request.
+	errTypePermission = "permission_error"
+	// codeProjectInactive reports a bound project that is no longer usable.
+	// The message names no lifecycle column, so it discloses nothing about
+	// another tenant's state.
+	codeProjectInactive = "project_inactive"
 )
 
 // projectSelectorHeaders lists the accepted selector headers in precedence
@@ -267,6 +274,9 @@ func resolveEdgeProject(
 	user auth.User,
 ) (int, bool) {
 	if boundID, bound := boundProjectID(user); bound {
+		if user.BoundProjectRefused() {
+			return refuseInactiveBoundProject(w)
+		}
 		return admitSelectorAgainstBinding(w, r, boundID)
 	}
 
@@ -299,6 +309,30 @@ func boundProjectID(user auth.User) (int, bool) {
 		return 0, false
 	}
 	return int(id), true
+}
+
+// refuseInactiveBoundProject refuses a bound token whose project is no longer
+// usable: suspended, not created, or gone.
+//
+// DEFECT this closes: the bound arm consulted neither the resolver nor any
+// project state, and suspension revokes no binding. A token bound to project P
+// therefore kept billing P's budget and spending P's provider credentials
+// after an operator suspended P. Every other caller was already cut off,
+// because the unbound arm runs IsCurrentUserProjectMember, which requires
+// suspended IS FALSE.
+//
+// It REFUSES and does not fall through to the unbound path. A fallback would
+// resolve the caller's personal project. It would then silently move the
+// spend that the suspension was meant to stop. ADR-0018 names that
+// accounting discrepancy.
+//
+// The message names no lifecycle column, following the token routes: the
+// caller learns that the binding is unusable, not the tenant's state.
+func refuseInactiveBoundProject(w http.ResponseWriter) (int, bool) {
+	writeJSONError(w, http.StatusForbidden, errTypePermission, codeProjectInactive,
+		"the project this access token is bound to is not available. "+
+			"Ask an administrator, or use a token that is not bound to it.")
+	return 0, false
 }
 
 // admitSelectorAgainstBinding applies spec §5 rows 1-3 for a bound token.

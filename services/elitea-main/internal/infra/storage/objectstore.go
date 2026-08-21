@@ -75,6 +75,10 @@ type Capabilities struct {
 // an unsupported operation returns ErrNotSupported rather than panicking.
 type ObjectStore interface {
 	Put(ctx context.Context, ref ObjectRef, body io.Reader, opts PutOptions) (ObjectInfo, error)
+	// Get returns the bytes the range selects. On a ranged read
+	// ObjectInfo.Size is the length of that range and ObjectInfo.TotalSize
+	// is the size of the whole object. A caller that declares
+	// Content-Length must use Size, never TotalSize.
 	Get(ctx context.Context, ref ObjectRef, rng *ByteRange) (io.ReadCloser, ObjectInfo, error)
 	Stat(ctx context.Context, ref ObjectRef) (ObjectInfo, error)
 	Delete(ctx context.Context, ref ObjectRef) error

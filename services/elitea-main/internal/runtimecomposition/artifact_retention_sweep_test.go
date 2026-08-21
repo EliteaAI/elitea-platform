@@ -31,15 +31,29 @@ func artifactRetentionOccurrence(dueAt time.Time) schedulingapp.Occurrence {
 
 func newArtifactRetentionSweepFixture(t *testing.T) (*artifactRetentionSweep, *artifactRetentionFakeObjectsRepo, *artifactRetentionFakeBucketsRepo, *artifactRetentionFakeNotifier, *artifactRetentionFakeStore) {
 	t.Helper()
+	sweep, objects, buckets, notifier, store, _ := newArtifactRetentionSweepFixtureWithGrants(t)
+	return sweep, objects, buckets, notifier, store
+}
+
+func newArtifactRetentionSweepFixtureWithGrants(t *testing.T) (
+	*artifactRetentionSweep,
+	*artifactRetentionFakeObjectsRepo,
+	*artifactRetentionFakeBucketsRepo,
+	*artifactRetentionFakeNotifier,
+	*artifactRetentionFakeStore,
+	*artifactRetentionFakeGrantsRepo,
+) {
+	t.Helper()
 	objects := &artifactRetentionFakeObjectsRepo{}
 	buckets := &artifactRetentionFakeBucketsRepo{buckets: map[int64]repos.BucketRow{}, notFoundIDs: map[int64]bool{}}
 	notifier := &artifactRetentionFakeNotifier{ownerByProject: map[int64]int64{}}
+	grants := &artifactRetentionFakeGrantsRepo{}
 	store := &artifactRetentionFakeStore{existing: map[string]bool{}, failKeys: map[string]bool{}}
-	sweep, err := newArtifactRetentionSweep(objects, buckets, notifier, store)
+	sweep, err := newArtifactRetentionSweep(objects, buckets, notifier, grants, store)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return sweep, objects, buckets, notifier, store
+	return sweep, objects, buckets, notifier, store, grants
 }
 
 func TestArtifactRetentionSweepRejectsInvalidOccurrenceBeforeAnyWork(t *testing.T) {
@@ -525,6 +539,13 @@ type artifactRetentionFakeStore struct {
 	existing         map[string]bool
 	failKeys         map[string]bool
 	deleteBatchCalls int
+	// deleted and aborted record the grant-reclamation calls. Delete and
+	// AbortMultipart returned ErrNotSupported before the grant sweep
+	// existed, because nothing in the sweeper called them.
+	deleted   []string
+	aborted   []string
+	deleteErr error
+	abortErr  error
 }
 
 func (s *artifactRetentionFakeStore) DeleteBatch(_ context.Context, refs []storage.ObjectRef) (storage.BatchResult, error) {
@@ -555,8 +576,15 @@ func (s *artifactRetentionFakeStore) Stat(context.Context, storage.ObjectRef) (s
 	return storage.ObjectInfo{}, storage.ErrNotSupported
 }
 
-func (s *artifactRetentionFakeStore) Delete(context.Context, storage.ObjectRef) error {
-	return storage.ErrNotSupported
+func (s *artifactRetentionFakeStore) Delete(_ context.Context, ref storage.ObjectRef) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleted = append(s.deleted, ref.Key())
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.existing, ref.StorageKey(""))
+	return nil
 }
 
 func (s *artifactRetentionFakeStore) List(context.Context, storage.ListQuery) (storage.ListPage, error) {
@@ -583,8 +611,11 @@ func (s *artifactRetentionFakeStore) CompleteMultipart(context.Context, storage.
 	return storage.ObjectInfo{}, storage.ErrNotSupported
 }
 
-func (s *artifactRetentionFakeStore) AbortMultipart(context.Context, storage.ObjectRef, storage.UploadID) error {
-	return storage.ErrNotSupported
+func (s *artifactRetentionFakeStore) AbortMultipart(_ context.Context, ref storage.ObjectRef, _ storage.UploadID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.aborted = append(s.aborted, ref.Key())
+	return s.abortErr
 }
 
 func (s *artifactRetentionFakeStore) Capabilities() storage.Capabilities {
@@ -592,6 +623,33 @@ func (s *artifactRetentionFakeStore) Capabilities() storage.Capabilities {
 }
 
 var _ storage.ObjectStore = (*artifactRetentionFakeStore)(nil)
+
+// artifactRetentionFakeGrantsRepo hands the sweeper one batch of claimed
+// grants and then nothing. That matches the real query. The real query cannot
+// return the same row twice, because it stamps consumed_at as it reads.
+type artifactRetentionFakeGrantsRepo struct {
+	pending    []repos.ExpiredTransferGrantRow
+	claimCalls []time.Time
+	claimErr   error
+}
+
+func (r *artifactRetentionFakeGrantsRepo) ClaimExpiredTransferGrants(_ context.Context, olderThan time.Time, limit int32) ([]repos.ExpiredTransferGrantRow, error) {
+	r.claimCalls = append(r.claimCalls, olderThan)
+	if r.claimErr != nil {
+		return nil, r.claimErr
+	}
+	if len(r.pending) == 0 {
+		return nil, nil
+	}
+	batch := r.pending
+	if int32(len(batch)) > limit {
+		batch = batch[:limit]
+	}
+	r.pending = r.pending[len(batch):]
+	return batch, nil
+}
+
+var _ artifactRetentionGrantsRepository = (*artifactRetentionFakeGrantsRepo)(nil)
 
 // artifactRetentionFakeAttachmentChunksRepo is S20a's cleanup-step fake —
 // see artifactRetentionAttachmentChunksRepository's own doc comment for why
@@ -658,5 +716,92 @@ func TestArtifactRetentionSweepPropagatesAttachmentChunkCleanupFailure(t *testin
 	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
 	if err == nil || outcome != "" {
 		t.Fatalf("outcome=%q error=%v, want a propagated error and empty outcome", outcome, err)
+	}
+}
+
+// TestArtifactRetentionSweepReclaimsBytesBehindAnUncommittedGrant pins the
+// grant half of the retention sweep.
+//
+// DEFECT: CreateTransferGrant issued a presigned PUT and wrote only a
+// transfer_grants row. The elitea_storage.objects row was written by the
+// commit and nowhere else. A caller could therefore ask for a grant with
+// max_bytes=1, and then upload gigabytes to the signed URL. S3 enforces no
+// size on a presigned PUT. The caller could then never commit. The bytes then had no objects row, so
+// SumProjectBytes never counted them against max_total_bytes and
+// ListExpiredObjects never saw them. Execute ran sweepExpiredObjects,
+// notifyExpiringBuckets, updateProjectByteUsageGauges and
+// cleanupStaleAttachmentChunks — nothing grant-related — and no query in the
+// tree scanned transfer_grants for expiry. Repeating the loop filled the
+// storage account with unbilled, unreclaimable data.
+func TestArtifactRetentionSweepReclaimsBytesBehindAnUncommittedGrant(t *testing.T) {
+	sweep, _, buckets, _, store, grants := newArtifactRetentionSweepFixtureWithGrants(t)
+	buckets.buckets[7] = repos.BucketRow{ID: 7, ProjectID: 5, Name: "reports"}
+	uploadID := "upload-1"
+	grants.pending = []repos.ExpiredTransferGrantRow{
+		{ID: "grant-put", ProjectID: 5, BucketID: 7, Key: "abandoned-put", Method: "PUT"},
+		{ID: "grant-multipart", ProjectID: 5, BucketID: 7, Key: "abandoned-parts", Method: "PUT", UploadID: &uploadID},
+		// A GET grant reserves no bytes: its key is a grant id nothing ever
+		// wrote to. Touching the store for one would be a wasted call.
+		{ID: "grant-get", ProjectID: 5, BucketID: 7, Key: "read-only", Method: "GET"},
+	}
+
+	before := time.Now()
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
+	}
+
+	if len(store.deleted) != 1 || store.deleted[0] != "abandoned-put" {
+		t.Errorf("Delete calls = %v, want exactly [abandoned-put]", store.deleted)
+	}
+	if len(store.aborted) != 1 || store.aborted[0] != "abandoned-parts" {
+		t.Errorf("AbortMultipart calls = %v, want exactly [abandoned-parts]", store.aborted)
+	}
+	if len(grants.claimCalls) == 0 {
+		t.Fatal("the sweep never claimed a grant")
+	}
+	// The claim must lag the clock. A commit that started before the grant
+	// expired streams the whole object through a SHA-256 hasher, so it can
+	// still be running when expires_at passes. Claiming that grant would let
+	// the sweeper delete the bytes under a commit. That commit then records a
+	// metadata row for an object that no longer exists.
+	if !grants.claimCalls[0].Before(before) {
+		t.Errorf("claim cutoff %v is not before now; a commit in flight can be raced", grants.claimCalls[0])
+	}
+}
+
+// TestArtifactRetentionSweepContinuesPastOneUnreclaimableGrant proves one
+// bad bucket cannot stall the rest of the tick. The error still surfaces.
+func TestArtifactRetentionSweepContinuesPastOneUnreclaimableGrant(t *testing.T) {
+	sweep, _, buckets, _, store, grants := newArtifactRetentionSweepFixtureWithGrants(t)
+	buckets.buckets[7] = repos.BucketRow{ID: 7, ProjectID: 5, Name: "reports"}
+	store.deleteErr = errors.New("simulated backend outage")
+	grants.pending = []repos.ExpiredTransferGrantRow{
+		{ID: "grant-a", ProjectID: 5, BucketID: 7, Key: "first", Method: "PUT"},
+		{ID: "grant-b", ProjectID: 5, BucketID: 7, Key: "second", Method: "PUT"},
+	}
+
+	if _, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now())); err == nil {
+		t.Fatal("expected the storage error to surface")
+	}
+	if len(store.deleted) != 2 {
+		t.Errorf("Delete calls = %v, want both grants attempted", store.deleted)
+	}
+}
+
+// TestArtifactRetentionSweepTreatsAnUnusedGrantAsReclaimed proves the common
+// case is not an error: most grants are never uploaded to, so the object the
+// sweep tries to delete does not exist.
+func TestArtifactRetentionSweepTreatsAnUnusedGrantAsReclaimed(t *testing.T) {
+	sweep, _, buckets, _, store, grants := newArtifactRetentionSweepFixtureWithGrants(t)
+	buckets.buckets[7] = repos.BucketRow{ID: 7, ProjectID: 5, Name: "reports"}
+	store.deleteErr = storage.ErrNotFound
+	grants.pending = []repos.ExpiredTransferGrantRow{
+		{ID: "grant-unused", ProjectID: 5, BucketID: 7, Key: "never-uploaded", Method: "PUT"},
+	}
+
+	outcome, err := sweep.Execute(context.Background(), artifactRetentionOccurrence(time.Now()))
+	if err != nil || outcome != schedulingapp.OutcomeLocalCompleted {
+		t.Fatalf("outcome=%q error=%v", outcome, err)
 	}
 }

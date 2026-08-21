@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -48,6 +49,25 @@ import (
 // (legacy's applications_configuration_check_connection over the SDK toolkit
 // surface, itself never implemented in Go) and are out of this issue's scope
 // (#319 is specifically the LiteLLM/ai_credentials path — see the issue body).
+const (
+	// maxBatchConnectionChecks bounds how many items of one POST
+	// /check_connections body reach the gateway. The web app sends a
+	// project's whole credential list unpaginated, so the cap sits far above
+	// realistic use; an item above it reports "could not verify" instead of
+	// failing the request.
+	maxBatchConnectionChecks = 200
+
+	// batchConnectionCheckWorkers is how many items are checked at the same
+	// time. It keeps a legitimate list inside the budget without turning one
+	// request into a burst at the provider.
+	batchConnectionCheckWorkers = 6
+)
+
+// batchConnectionCheckBudget bounds the whole request. One item costs up to
+// 12 s at the checker's own client timeout. A sequential run of a long list
+// could therefore hold a worker for hours. It is a var so a test can shorten it.
+var batchConnectionCheckBudget = 30 * time.Second
+
 var checkableConnectionTypes = map[string]struct{}{
 	"open_ai":       {},
 	"azure_open_ai": {},
@@ -301,58 +321,105 @@ func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	results := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		id := item["id"]
-		configType := strVal(item, "type")
-		data, _ := item["data"].(map[string]any)
-		if data == nil {
-			data = map[string]any{}
-		}
+	// The body is bounded at 1 MiB only, and one minimal item is ~50 bytes.
+	// A single request could therefore ask for ~20,000 provider round trips.
+	// Bound the work three ways: an item cap, one deadline for the whole request, and a
+	// worker pool so a legitimate list finishes inside that deadline. The
+	// server sets no WriteTimeout on purpose (cmd/elitea-main/http_server.go),
+	// so nothing else cuts this handler short.
+	ctx, cancel := context.WithTimeout(r.Context(), batchConnectionCheckBudget)
+	defer cancel()
 
-		if _, known := h.catalog.EntryByType(configType); !known {
-			results = append(results, map[string]any{"id": id, "success": false, "unsupported": true})
-			continue
-		}
-
-		if err := validateNotSelfReferential(data, selfLLMOrigins()); err != nil {
-			results = append(results, map[string]any{"id": id, "success": false, "message": err.Error()})
-			continue
-		}
-
-		if _, checkable := checkableConnectionTypes[configType]; !checkable {
-			results = append(results, map[string]any{
-				"id": id, "success": false, "message": connectionCheckNotSupportedMessage(configType),
-			})
-			continue
-		}
-
-		if h.connectionChecker == nil {
-			slog.ErrorContext(r.Context(), "check_connections: no connection checker configured", "type", configType)
-			results = append(results, map[string]any{
-				"id": id, "success": false, "message": "Connection checking is not available right now.",
-			})
-			continue
-		}
-
-		ctx := WithConnectionCheckProjectID(r.Context(), projectID)
-		result, err := h.connectionChecker.Check(ctx, configType, data)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "check_connections: checker call failed", "type", configType, "project_id", projectID, "id", id, "err", err)
-			results = append(results, map[string]any{
-				"id": id, "success": false, "message": "Could not verify the connection right now. Please try again.",
-			})
-			continue
-		}
-
-		if result.Success {
-			results = append(results, map[string]any{"id": id, "success": true, "message": result.Message})
-		} else {
-			results = append(results, map[string]any{"id": id, "success": false, "message": result.Message})
+	// The contract is always HTTP 200 with one object per input item, in input
+	// order. An over-cap list therefore degrades per row; it does not fail the
+	// whole page. The web app marks EVERY credential invalid when this request
+	// fails, so a 400 would paint a healthy project all red.
+	results := make([]map[string]any, len(items))
+	checked := items
+	if len(checked) > maxBatchConnectionChecks {
+		checked = items[:maxBatchConnectionChecks]
+		slog.WarnContext(ctx, "check_connections: item count above the cap",
+			"project_id", projectID, "items", len(items), "cap", maxBatchConnectionChecks)
+		for index := maxBatchConnectionChecks; index < len(items); index++ {
+			results[index] = connectionCheckUnavailableResult(items[index]["id"])
 		}
 	}
 
+	positions := make(chan int)
+	var workers sync.WaitGroup
+	for worker := 0; worker < batchConnectionCheckWorkers; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			// Each worker writes its own index, so the slice needs no lock and
+			// the input order survives.
+			for index := range positions {
+				results[index] = h.checkBatchItem(ctx, projectID, checked[index])
+			}
+		}()
+	}
+	for index := range checked {
+		positions <- index
+	}
+	close(positions)
+	workers.Wait()
+
 	writeJSON(w, http.StatusOK, results)
+}
+
+// checkBatchItem produces the one result object for one input item.
+func (h *Handler) checkBatchItem(ctx context.Context, projectID string, item map[string]any) map[string]any {
+	id := item["id"]
+	configType := strVal(item, "type")
+	data, _ := item["data"].(map[string]any)
+	if data == nil {
+		data = map[string]any{}
+	}
+
+	if _, known := h.catalog.EntryByType(configType); !known {
+		return map[string]any{"id": id, "success": false, "unsupported": true}
+	}
+
+	if err := validateNotSelfReferential(data, selfLLMOrigins()); err != nil {
+		return map[string]any{"id": id, "success": false, "message": err.Error()}
+	}
+
+	if _, checkable := checkableConnectionTypes[configType]; !checkable {
+		return map[string]any{
+			"id": id, "success": false, "message": connectionCheckNotSupportedMessage(configType),
+		}
+	}
+
+	if h.connectionChecker == nil {
+		slog.ErrorContext(ctx, "check_connections: no connection checker configured", "type", configType)
+		return map[string]any{
+			"id": id, "success": false, "message": "Connection checking is not available right now.",
+		}
+	}
+
+	// Read the deadline here rather than rely on Check returning an error, so
+	// an expired budget costs no syscall for each remaining item.
+	if ctx.Err() != nil {
+		return connectionCheckUnavailableResult(id)
+	}
+
+	result, err := h.connectionChecker.Check(WithConnectionCheckProjectID(ctx, projectID), configType, data)
+	if err != nil {
+		// A transport-level failure must never be reported as success.
+		slog.ErrorContext(ctx, "check_connections: checker call failed",
+			"type", configType, "project_id", projectID, "id", id, "err", err)
+		return connectionCheckUnavailableResult(id)
+	}
+	return map[string]any{"id": id, "success": result.Success, "message": result.Message}
+}
+
+// connectionCheckUnavailableResult is the one row shape for "this item was not
+// checked": a transport failure, an expired budget, or a position above the
+// item cap. It never reports success.
+func connectionCheckUnavailableResult(id any) map[string]any {
+	return map[string]any{
+		"id": id, "success": false, "message": "Could not verify the connection right now. Please try again.",
+	}
 }
 
 // gatewayConnectionCheckerFromEnv builds a GatewayConnectionChecker from the

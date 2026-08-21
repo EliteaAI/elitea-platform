@@ -85,16 +85,30 @@ WHERE id = sqlc.arg(id)::integer;
 -- The token binding rides along on the row the validator already reads, so a
 -- bound token costs no additional round trip on the request path
 -- (spec-llm-project-scope §3.2). Do not split it into a second lookup.
+--
+-- bound_project_active carries the lifecycle state of the bound project on the
+-- same row, for the same reason. Suspension is a reversible boolean on
+-- centry.project and revokes no binding, so a bound token kept spending a
+-- suspended project's budget and credentials. The middleware re-checks the
+-- state here instead (spec-llm-project-scope §7 invariant 3).
+--
+-- BOTH joins must stay LEFT joins. Most personal access tokens carry no
+-- binding, and an inner join on centry.project would drop every one of those
+-- rows. That breaks authentication for the majority of callers.
 -- name: GetActivePATPrincipalByUUID :one
 SELECT
     token.id AS token_id,
     owner.id AS user_id,
     COALESCE(owner.email, '')::text AS email,
-    binding.project_id
+    binding.project_id,
+    (bound_project.suspended IS FALSE
+        AND bound_project.create_success IS TRUE)::boolean AS bound_project_active
 FROM public.auth_core__token AS token
 JOIN public.auth_core__user AS owner ON owner.id = token.user_id
 LEFT JOIN elitea_identity.token_project_binding AS binding
        ON binding.token_id = token.id
+LEFT JOIN centry.project AS bound_project
+       ON bound_project.id = binding.project_id
 WHERE token.uuid = sqlc.arg(uuid)::text
   AND owner.suspended = false
   AND (token.expires IS NULL OR token.expires > (clock_timestamp() AT TIME ZONE 'UTC'));

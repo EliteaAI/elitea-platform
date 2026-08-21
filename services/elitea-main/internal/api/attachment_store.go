@@ -64,13 +64,20 @@ func (a *attachmentRepoAdapter) AttachmentPolicy(ctx context.Context, projectID 
 // project-creation hook wired anywhere in this service yet (S13's own
 // bootstrapper is deliberately unwired for the same reason), so this stage
 // cannot depend on one either.
-func (a *attachmentRepoAdapter) RequireAttachmentBucket(ctx context.Context, projectID int64, bucketName string, retentionDays int32) (int64, *time.Time, error) {
+//
+// It returns the bucket id only. It deliberately does NOT return the
+// bucket's expires_at, which is one absolute instant computed when the
+// bucket row was created. An attachment that copied that instant was born
+// expired once the project passed retentionDays after its FIRST attachment.
+// The retention sweeper then deleted it minutes after upload. The caller
+// stamps each attachment with its own deadline instead.
+func (a *attachmentRepoAdapter) RequireAttachmentBucket(ctx context.Context, projectID int64, bucketName string, retentionDays int32) (int64, error) {
 	row, err := a.buckets.GetBucket(ctx, projectID, bucketName)
 	if err == nil {
-		return row.ID, row.ExpiresAt, nil
+		return row.ID, nil
 	}
 	if !errors.Is(err, storage.ErrNotFound) {
-		return 0, nil, err
+		return 0, err
 	}
 
 	expiresAt := time.Now().AddDate(0, 0, int(retentionDays))
@@ -83,18 +90,18 @@ func (a *attachmentRepoAdapter) RequireAttachmentBucket(ctx context.Context, pro
 		ExpiresAt:     &expiresAt,
 	})
 	if err == nil {
-		return row.ID, row.ExpiresAt, nil
+		return row.ID, nil
 	}
 	if errors.Is(err, storage.ErrAlreadyExists) {
 		// Lost a create race against a concurrent first-upload request —
 		// the bucket now exists either way.
 		row, err = a.buckets.GetBucket(ctx, projectID, bucketName)
 		if err != nil {
-			return 0, nil, err
+			return 0, err
 		}
-		return row.ID, row.ExpiresAt, nil
+		return row.ID, nil
 	}
-	return 0, nil, err
+	return 0, err
 }
 
 func (a *attachmentRepoAdapter) RecordAttachmentObject(ctx context.Context, bucketID int64, key string, byteLength int64, mediaType string, expiresAt *time.Time) error {

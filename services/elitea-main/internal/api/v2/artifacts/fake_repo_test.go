@@ -67,6 +67,22 @@ func (r *fakeRepo) setAggregate(bucketID, sizeBytes, objectCount int64) {
 	r.counts[bucketID] = objectCount
 }
 
+// objectKeys reports the keys of the metadata rows a bucket still holds,
+// in ascending order. DeleteBucket's regression tests need it: a test that
+// only counts bytes cannot tell a cleaned-up row from an orphaned one.
+func (r *fakeRepo) objectKeys(bucketID int64) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	keys := make([]string, 0, len(r.objects))
+	for _, obj := range r.objects {
+		if obj.bucketID == bucketID {
+			keys = append(keys, obj.key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (r *fakeRepo) setPolicy(policy repos.ProjectStoragePolicy) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

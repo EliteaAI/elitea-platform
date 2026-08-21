@@ -1,20 +1,25 @@
 package adminui
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 type Config struct {
@@ -22,6 +27,12 @@ type Config struct {
 	ViteServerURL string // e.g. "/api/v2"
 	BasePath      string // e.g. "/admin/app"
 	SecretKey     string // session cookie HMAC key
+
+	// Resolver reads the operator's REAL administration-mode permissions.
+	//
+	// A nil Resolver means "no permissions". It never means "all permissions".
+	// A mis-wired composition root must degrade closed.
+	Resolver auth.PermissionResolver
 }
 
 type Handler struct {
@@ -50,7 +61,10 @@ type adminUIConfig struct {
 	UserName      string   `json:"user_name"`
 	UserEmail     string   `json:"user_email"`
 	Permissions   []string `json:"permissions"`
-	Roles         []string `json:"roles"`
+	// Roles is always empty. The resolver reports permissions only, and no
+	// bundle reads this field. It stays in the payload so an older admin
+	// bundle that reads `roles` gets an empty list, never "super_admin".
+	Roles []string `json:"roles"`
 }
 
 func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
@@ -61,36 +75,34 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		Roles:         []string{},
 	}
 
-	// Try to extract user from session cookie
+	// Read the operator from the session cookie, then resolve the permissions
+	// that operator really holds.
+	//
+	// DEFECT this replaces: the handler wrote a fixed list of 37 admin
+	// permissions, plus roles ["super_admin"], for EVERY caller whose cookie
+	// passed the HMAC and exp check. A rank-and-file user who opened
+	// /admin/app therefore saw the whole admin console. Every destructive
+	// control stayed visible and enabled. Each click ended in a
+	// server-side 403.
+	// A suspended user with an unexpired cookie saw the same, because
+	// verifySession never reads the database.
+	//
+	// The resolver closes both halves with one query: the administration mode
+	// reads only roles with mode='administration', and the resolver refuses a
+	// suspended user.
 	if cookie, err := r.Cookie("elitea_session"); err == nil && h.cfg.SecretKey != "" {
 		if claims := h.verifySession(cookie.Value); claims != nil {
-			cfg.UserID = claims["user_id"]
 			if email, ok := claims["email"].(string); ok {
 				cfg.UserEmail = email
 				cfg.UserName = email
 			}
-			cfg.Permissions = []string{
-				"admin.auth.users", "admin.auth.users.super_admin",
-				"configuration", "configuration.roles",
-				"configuration.roles.permissions.view", "configuration.roles.permissions.edit",
-				"configuration.roles.roles.view", "configuration.roles.roles.create",
-				"configuration.roles.roles.edit", "configuration.roles.roles.delete",
-				"configuration.users", "configuration.users.users.view",
-				"configuration.users.users.create", "configuration.users.users.edit",
-				"configuration.users.users.delete",
-				"projects", "projects.projects",
-				"projects.projects.projects.view", "projects.projects.projects.edit",
-				"configuration.secrets.secret.list", "configuration.secrets.secret.create",
-				"configuration.secrets.secret.edit", "configuration.secrets.secret.delete",
-				"configuration.litellm", "configuration.litellm.edit",
-				"configuration.advanced", "configuration.service_descriptors",
-				"runtime", "runtime.plugins",
-				"configuration.scheduling.schedules.view", "configuration.scheduling.schedules.edit",
-				"models.admin.audit_trail.view",
-				"admin.moderation", "admin.moderation.view",
-				"admin.moderation.create", "admin.moderation.edit",
+			// The minting code writes the claim as `uid`. The old code read
+			// `user_id`, so window.admin_ui_config.user_id was null on every
+			// page load. See internal/api/v2/auth/session.go makeSessionToken.
+			if userID, ok := sessionClaimUserID(claims); ok {
+				cfg.UserID = userID
+				cfg.Permissions = h.resolvePermissions(r.Context(), userID)
 			}
-			cfg.Roles = []string{"super_admin"}
 		}
 	}
 
@@ -127,6 +139,48 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, indexHTML)
+}
+
+// resolvePermissions returns the administration-mode permissions of one user.
+//
+// It returns an empty list on ANY error, a refusal included. The injected list
+// is a presentation hint for the admin SPA, so an empty list hides controls.
+// It never grants anything: every admin route resolves the permissions again.
+func (h *Handler) resolvePermissions(ctx context.Context, userID int64) []string {
+	if h.cfg.Resolver == nil {
+		return []string{}
+	}
+	resolution, err := h.cfg.Resolver.ResolvePermissions(
+		ctx,
+		auth.User{UserID: strconv.FormatInt(userID, 10)},
+		auth.PermissionModeAdministration,
+		"",
+	)
+	if err != nil {
+		slog.DebugContext(ctx, "admin ui: permission resolution refused or failed",
+			"user_id", userID, "error", err)
+		return []string{}
+	}
+	if resolution.Permissions == nil {
+		return []string{}
+	}
+	return resolution.Permissions
+}
+
+// sessionClaimUserID reads the `uid` claim of the session cookie. It accepts
+// the string and the number form, because encoding/json decodes a JSON number
+// as float64. It mirrors the reader in internal/api/v2/auth/session.go.
+func sessionClaimUserID(claims map[string]any) (int64, bool) {
+	switch value := claims["uid"].(type) {
+	case string:
+		id, err := strconv.ParseInt(value, 10, 64)
+		return id, err == nil && id > 0
+	case float64:
+		id := int64(value)
+		return id, value == float64(id) && id > 0
+	default:
+		return 0, false
+	}
 }
 
 func (h *Handler) verifySession(token string) map[string]any {

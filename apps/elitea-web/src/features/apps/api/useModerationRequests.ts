@@ -7,7 +7,7 @@ import {
   createModerationRequest,
   getModerationStatusQueryOptions,
 } from '@/shared/api/generated/admin/admin';
-import type { IgnoredRequestBody } from '@/shared/api/generated/model';
+import type { ModerationRequestCreate } from '@/shared/api/generated/model';
 
 import { APPLICATION_CATALOG, REQUEST_STATUS } from '../lib/constants';
 import type { RequestStatus } from '../lib/constants';
@@ -15,38 +15,19 @@ import type { RequestStatus } from '../lib/constants';
 import { useSelectedProjectId } from './useSelectedProjectId';
 
 /**
- * The Go admin-moderation endpoints (`/admin/moderation_status/default/
- * {project_id}/{entity_id}`, both GET and POST) type `entityId` as a
- * `number` in the generated client. The baseline addresses catalog entries
- * with a STRING key instead (`useApplicationRequests.hooks.js:26`,
- * `entityId: app.type`, e.g. `"inventory"`) — there is no numeric id for an
- * abstract catalogue TYPE (only real configured application/toolkit
- * INSTANCES have one), so the baseline's own call would not type-check
- * against this endpoint's declared contract at all. A stable FNV-1a hash of
- * the type key stands in: deterministic (the same type always addresses the
- * same synthetic entity across requests/reloads) and collision-safe for
- * this catalogue's 2 entries.
+ * DEFECT, fixed here: this file used to hash a catalogue key into a number
+ * with FNV-1a (`entityIdForType`) before sending it as `entity_id`.
  *
- * As of unit A14 the endpoint is real: `entity_id` is a `VARCHAR` column and
- * the server stores whatever this sends, so each catalogue type does now get
- * its own independently-addressable record — which is what this hash was
- * written for. It also means the value is what an operator SEES in the admin
- * App Requests queue, where a number is less legible than `"inventory"` would
- * be. That page therefore renders `issue_type` (the human label this hook
- * sends alongside) as its Application column, with the key beneath it. The
- * remaining cost is that this app and the legacy EliteaUI address the same
- * catalogue entry by two different keys, so a request filed in one is not
- * visible to the other; fixing that means changing the generated contract's
- * `entityId` type, which is a `v2.yaml` + orval change and is NOT done here.
+ * The hash existed because `v2.yaml` typed the `entity_id` path parameter as
+ * an integer. That integer type is a leftover from a retired static stub. The
+ * generated client therefore demanded a number. The column is a VARCHAR and the handler stores
+ * the raw string (`internal/api/v2/moderation/requests.go`), and the legacy
+ * EliteaUI sends the key itself ("inventory"). One catalogue entry therefore
+ * had two addresses: a request filed here was invisible in the other client
+ * and filed a second row, and the admin App Requests queue listed an opaque
+ * number. The spec now types the parameter as a string, so the key travels
+ * unchanged.
  */
-export function entityIdForType(type: string): number {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < type.length; index += 1) {
-    hash ^= type.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
 
 function asRequestStatus(status: unknown): RequestStatus | undefined {
   return status === REQUEST_STATUS.PENDING ||
@@ -61,13 +42,13 @@ function asRequestStatus(status: unknown): RequestStatus | undefined {
  *
  * Both shapes are read on purpose. The endpoint's REAL contract — pylon's, and
  * the Go handler's since unit A14 — is a `{total, rows}` envelope of the
- * caller's own rows, newest first. Until A14 the Go side answered a bare
- * `{"status":"approved"}` from a static stub, which is the only shape the
- * generated `ModerationStatusResponse` describes and the only one this function
- * used to read: against a real server it found no `status` field, fell through
- * to `NONE`, and the "Pending approval" state on a catalogue card was
- * unreachable — the card would keep offering "Request Access" after the request
- * had been filed.
+ * caller's own rows, newest first, and `ModerationRequestList` in the spec
+ * now says so. Until A14 the Go side answered a bare `{"status":"approved"}`
+ * from a static stub, which was the only shape this function used to read.
+ * Against a real server it found no `status` field and fell through to
+ * `NONE`. The "Pending approval" state on a catalogue card was therefore
+ * unreachable. The card would keep offering "Request Access" after the
+ * request had been filed.
  *
  * The bare-object branch stays because a hybrid deployment can still be served
  * by a pylon that returns the create response's shape from the POST path this
@@ -117,13 +98,11 @@ function useCreateModerationRequestMutation(): UseMutationResult<
 > {
   return useMutation({
     mutationFn: ({ projectId, type, description, label }: SubmitModerationRequestVariables) => {
-      const body: IgnoredRequestBody = {
-        issue_type: label,
-        description,
-        status: REQUEST_STATUS.PENDING,
-        meta: {},
-      };
-      return createModerationRequest(projectId, entityIdForType(type), body);
+      // Only the two fields a requester owns. The server takes the author
+      // from the session and always stores `pending`, and it refuses a
+      // non-empty `meta`, so neither is sent.
+      const body: ModerationRequestCreate = { issue_type: label, description };
+      return createModerationRequest(projectId, type, body);
     },
   });
 }
@@ -143,12 +122,9 @@ function useCreateModerationRequestMutation(): UseMutationResult<
  * (`services/elitea-main/internal/api/v2/moderation/requests.go`), which is
  * what `statusFromResponse` above had to be corrected for.
  *
- * The POST body still carries `status: 'pending'` and `meta: {}`. Neither is
- * applied — the server takes the status from nowhere but its own rule and
- * refuses any other value, and refuses a non-empty `meta` — but an empty
- * `meta` and an explicitly-pending status are tolerated precisely so the two
- * shipped clients keep working, so they are left as they are rather than
- * removed on one of the two.
+ * The POST body carries only `issue_type` and `description`, the two fields
+ * a requester owns. `status` and `meta` used to be sent as well; the server
+ * tolerates them but applies neither, so they are no longer sent.
  */
 export function useModerationRequests() {
   const projectId = useSelectedProjectId();
@@ -158,7 +134,10 @@ export function useModerationRequests() {
 
   const statusQueries = useQueries({
     queries: APPLICATION_CATALOG.map((entry) =>
-      getModerationStatusQueryOptions(projectId ?? '', entityIdForType(entry.type), {
+      // The third argument is the operation's query parameters
+      // (`issue_type`), NOT the react-query options. Passing the options
+      // there silently drops `enabled`. The query then runs with no project.
+      getModerationStatusQueryOptions(projectId ?? '', entry.type, undefined, {
         query: { enabled: projectId !== undefined },
       }),
     ),
@@ -170,9 +149,8 @@ export function useModerationRequests() {
       // `.data.data`'s declared type includes the error-envelope variant —
       // never actually reachable here since `eliteaFetch` throws instead of
       // resolving with it (mutator.ts's §3.6 unwrap contract). It is passed as
-      // `unknown` rather than cast to the generated `ModerationStatusResponse`,
-      // because that type describes the retired static stub's shape and not what
-      // the endpoint now returns; `statusFromResponse` reads both.
+      // `unknown` so `statusFromResponse` can also read the bare-`{status}`
+      // body a hybrid pylon deployment may still answer with.
       map.set(entry.type, statusFromResponse(statusQueries[index]?.data?.data));
     });
     return map;
@@ -195,7 +173,7 @@ export function useModerationRequests() {
           label: label ?? 'Application Access Request',
         });
         await queryClient.invalidateQueries({
-          queryKey: getModerationStatusQueryOptions(projectId, entityIdForType(type)).queryKey,
+          queryKey: getModerationStatusQueryOptions(projectId, type).queryKey,
         });
       } finally {
         setSubmittingType(null);

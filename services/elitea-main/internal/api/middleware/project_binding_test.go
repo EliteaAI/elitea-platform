@@ -382,3 +382,113 @@ func decodeProjectError(t *testing.T, body []byte) projectErrorEnvelope {
 	}
 	return envelope
 }
+
+// boundRequestWithProjectState is boundRequest plus the lifecycle state the
+// credential validator read for the bound project.
+func boundRequestWithProjectState(binding int64, active bool) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
+	user := auth.User{
+		ID:                 "42",
+		UserID:             "42",
+		TokenID:            "900",
+		Name:               "Regular User",
+		AuthType:           "token",
+		TokenProjectID:     &binding,
+		TokenProjectActive: &active,
+	}
+	return withTokenProvenance(req, user)
+}
+
+// DEFECT: the bound arm of resolveEdgeProject consulted neither the resolver
+// nor any project state, and ProjectSuspend flips centry.project.suspended
+// without revoking a binding. A token bound to project P therefore kept
+// resolving to P after an operator suspended P. The gateway kept decrypting
+// P's provider credentials and charging P's budget.
+//
+// Evidence: an UNBOUND caller who names P with X-Project-Id is already
+// refused, because that path runs IsCurrentUserProjectMember, whose query
+// requires `project.suspended IS FALSE`. The two arms disagreed, and only the
+// bound one kept spending.
+func TestProjectBinding_InactiveBoundProjectIsRefused(t *testing.T) {
+	resolver := &fakeResolver{id: personalProject}
+
+	rec, seen, invoked := runBound(t, resolver, boundRequestWithProjectState(boundProject, false))
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+	}
+	if invoked {
+		t.Error("next handler was invoked; a refused request must bill nothing")
+	}
+	if seen.ProjectID != 0 {
+		t.Errorf("project %d reached the proxy on a refused request", seen.ProjectID)
+	}
+	// The refusal must NOT fall through to the unbound path. A fallback would
+	// bill the caller's personal project and silently move the spend that the
+	// suspension was meant to stop.
+	if resolver.called {
+		t.Error("the personal-project lookup ran; a refused binding must not fall back to another project")
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+
+	envelope := decodeProjectError(t, rec.Body.Bytes())
+	if envelope.Error.Code != codeProjectInactive {
+		t.Errorf("error.code = %q, want %q", envelope.Error.Code, codeProjectInactive)
+	}
+	if envelope.Error.Type != errTypePermission {
+		t.Errorf("error.type = %q, want %q", envelope.Error.Type, errTypePermission)
+	}
+	// The message must not name the lifecycle column that failed, following
+	// the token routes: the caller learns the binding is unusable, not the
+	// tenant's state.
+	for _, leak := range []string{"suspend", "Suspend", "create_success", "deleted"} {
+		if strings.Contains(envelope.Error.Message, leak) {
+			t.Errorf("error.message %q discloses the project lifecycle state", envelope.Error.Message)
+		}
+	}
+}
+
+// An ACTIVE bound project still bills the binding, and still costs no query.
+func TestProjectBinding_ActiveBoundProjectStillBillsTheBinding(t *testing.T) {
+	resolver := &fakeResolver{id: personalProject}
+
+	rec, seen, invoked := runBound(t, resolver, boundRequestWithProjectState(boundProject, true))
+
+	assertBoundProjectBilled(t, rec, seen, invoked)
+	if resolver.called {
+		t.Error("the personal-project lookup ran for a bound token")
+	}
+}
+
+// A validator that reads no storage leaves the state undetermined. The binding
+// must keep working, or the change would fail every such deployment closed.
+func TestProjectBinding_UndeterminedProjectStateKeepsTheBinding(t *testing.T) {
+	resolver := &fakeResolver{id: personalProject}
+
+	rec, seen, invoked := runBound(t, resolver, boundRequest(boundProject, "", ""))
+
+	assertBoundProjectBilled(t, rec, seen, invoked)
+}
+
+// A conflicting selector must not hide the refusal, and the refusal must not
+// hide the conflict. An inactive binding is refused first: the caller cannot
+// correct it by changing the header.
+func TestProjectBinding_InactiveBoundProjectBeatsASelectorConflict(t *testing.T) {
+	resolver := &fakeResolver{id: personalProject}
+	req := boundRequestWithProjectState(boundProject, false)
+	req.Header.Set(HeaderProjectSelector, strconv.Itoa(rivalProject))
+
+	rec, _, invoked := runBound(t, resolver, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", rec.Code, rec.Body.String())
+	}
+	if invoked {
+		t.Error("next handler was invoked on a refused request")
+	}
+	if envelope := decodeProjectError(t, rec.Body.Bytes()); envelope.Error.Code != codeProjectInactive {
+		t.Errorf("error.code = %q, want %q", envelope.Error.Code, codeProjectInactive)
+	}
+}

@@ -334,6 +334,21 @@ var toolkitTypeSchemas = map[string]map[string]any{
 	},
 }
 
+// writeToolkitInternalError logs the cause and answers a fixed 500 body.
+//
+// A raw `err.Error()` crosses a trust boundary. A pgx error names the database
+// user, database, host and port when the server is unreachable, and table or
+// constraint names otherwise. Give the caller a stable message. Keep the cause
+// in the log, where the operator reads it.
+//
+// This is the `{"error": …}` twin of writeIndexInternalError
+// (index_write.go:105), which serves the `{"ok": false, "error": …}` index
+// routes. Use the shape the route already answers with.
+func writeToolkitInternalError(w http.ResponseWriter, r *http.Request, operation, message string, err error) {
+	slog.ErrorContext(r.Context(), operation+": "+message, "error", err)
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"error": message})
+}
+
 // ListTypeSchemas serves the toolkit TYPE catalogue: a map of toolkit type name
 // to its settings JSON Schema, with each type's per-tool argument schemas at
 // properties.selected_tools.args_schemas — the exact path the web client indexes
@@ -351,7 +366,8 @@ func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
 		// A built-in snapshot that will not yield its schemas is a broken
 		// binary, not a client error, and serving the placeholder tool lists
 		// instead would reproduce the empty create-index form silently.
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeToolkitInternalError(w, r, "list_type_schemas",
+			"failed to build the toolkit type catalogue", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, catalogue)
@@ -540,7 +556,9 @@ func (h *Handler) ForkToolkit(w http.ResponseWriter, r *http.Request) {
 	}
 	tool, err := h.repo.ForkToolkit(r.Context(), projectID, body)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		// This route answers `{"ok": false, …}`, so it uses the index helper
+		// rather than writeToolkitInternalError. Both hide the cause.
+		writeIndexInternalError(w, r, "fork_toolkit", "failed to fork the toolkit", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, tool)
@@ -637,7 +655,12 @@ func (h *Handler) IndexMeta(w http.ResponseWriter, r *http.Request) {
 		//     branch.
 		//
 		// A read that could not run is an error, not an empty list.
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		//
+		// The body carries a fixed message, never `err.Error()`. The raw pgx
+		// error names the database user, database, host and port when the
+		// server is unreachable, and constraint or table names otherwise.
+		slog.ErrorContext(ctx, "index_meta_list: index_meta read failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list indexes"})
 		return
 	}
 	defer rows.Close()
@@ -773,7 +796,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	body["_author_id"] = userID
 	item, err := h.repo.CreateToolkit(r.Context(), projectID, body)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeToolkitInternalError(w, r, "create_toolkit", "failed to create the toolkit", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, item)
@@ -830,7 +853,7 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 
 	item, err := h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeToolkitInternalError(w, r, "update_toolkit", "failed to update the toolkit", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
@@ -880,14 +903,14 @@ func (h *Handler) updateToolRelation(w http.ResponseWriter, r *http.Request, pro
 			args = append(args, selectedTools)
 		}
 		if _, err := h.pool.Exec(ctx, q, args...); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			writeToolkitInternalError(w, r, "update_tool_relation", "failed to add the tool relation", err)
 			return
 		}
 	} else {
 		q := fmt.Sprintf(`DELETE FROM %q.entity_tool_mapping WHERE entity_version_id = $1 AND tool_id = $2`, s)
 		_, err := h.pool.Exec(ctx, q, entityVersionID, toolID)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			writeToolkitInternalError(w, r, "update_tool_relation", "failed to remove the tool relation", err)
 			return
 		}
 	}
@@ -960,7 +983,7 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitID := chi.URLParam(r, "toolkitID")
 	if err := h.repo.DeleteToolkit(r.Context(), projectID, toolkitID); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeToolkitInternalError(w, r, "delete_toolkit", "failed to delete the toolkit", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

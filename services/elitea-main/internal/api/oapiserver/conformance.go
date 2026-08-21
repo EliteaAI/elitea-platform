@@ -19,11 +19,16 @@ package oapiserver
 // Reverse direction (router → spec): the spec deliberately covers only a
 // subset of the router surface today (chi.Walk yields ~346 method+pattern
 // registrations under the full-surface test config, ~310 after compat-shim
-// exclusion), so there is no global reverse assertion. When the endpoint manifest for the new UI lands
-// (apps/elitea-web/parity/manifest.json, unit P1), the reverse check is:
-// load the manifest into []ManifestEndpoint and assert
-// MissingFromSpec(ops, endpoints) is empty. See
+// exclusion), so there is no global reverse assertion. The reverse check is
+// scoped to what the new UI calls: load
+// apps/elitea-web/src/shared/api/endpoints.manifest.json into
+// []ManifestEndpoint and assert MissingFromSpec(ops, endpoints) holds only the
+// ids in testdata/reverse_check_allowlist.txt. See
 // TestSpecRouterConformance/manifest_reverse_check for the wired-up seam.
+//
+// Do NOT point that check at apps/elitea-web/parity/manifest.json. That file is
+// the parity shard INDEX. It has no `endpoints` key, so the check reads a nil
+// slice and passes with zero assertions.
 
 import (
 	"fmt"

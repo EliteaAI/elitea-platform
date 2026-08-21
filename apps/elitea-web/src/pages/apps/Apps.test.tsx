@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 
 import { getListApplicationsMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { getListToolkitsMockHandler } from '@/shared/api/generated/toolkits/toolkits.msw';
+import { getModerationStatusMockHandler } from '@/shared/api/generated/admin/admin.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -30,7 +31,16 @@ function applicationsList(total: number) {
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
-  server.use(getListToolkitsMockHandler({}));
+  server.use(
+    getListToolkitsMockHandler({}),
+    // EVERY catalogue render now asks for moderation status. `useModerationRequests`
+    // sends one request per catalogue entry, and it only stopped sending them
+    // before because the selected project id was undefined and the queries were
+    // disabled. This suite runs with `onUnhandledRequest: 'error'` (R-M5), so an
+    // unmatched status request breaks the render, and the catalogue card never
+    // appears. That is what made this file fail about one run in three.
+    getModerationStatusMockHandler(),
+  );
 });
 
 afterEach(() => {

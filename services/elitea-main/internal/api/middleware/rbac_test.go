@@ -3,6 +3,7 @@ package middleware_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -226,10 +227,35 @@ func TestRequireResolvedPermissionsFailsClosed(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:     "resolver failure",
+			// DEFECT: the middleware collapsed a resolver error into the same
+			// 403 branch as a refusal (`if err != nil || !hasIntersection(...)`).
+			// A saturated pool or a query timeout then reached the user as
+			// "insufficient permissions" on every screen. It reached the
+			// operator as 403 answers with no 5xx and no error rate alert.
+			// A database failure is an infrastructure failure. It is 500.
+			name:     "resolver failure is an infrastructure failure",
 			withUser: true,
 			resolver: permissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
 				return auth.PermissionResolution{}, errors.New("database unavailable")
+			}),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			// A REFUSAL still answers 403. The resolver reports it with the
+			// auth.ErrPermissionDenied sentinel.
+			name:     "resolver refusal stays 403",
+			withUser: true,
+			resolver: permissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+				return auth.PermissionResolution{}, auth.ErrPermissionDenied
+			}),
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			// A wrapped sentinel is still a refusal.
+			name:     "wrapped resolver refusal stays 403",
+			withUser: true,
+			resolver: permissionResolverFunc(func(context.Context, auth.User, string, string) (auth.PermissionResolution, error) {
+				return auth.PermissionResolution{}, fmt.Errorf("resolve: %w", auth.ErrPermissionDenied)
 			}),
 			wantStatus: http.StatusForbidden,
 		},
@@ -243,19 +269,24 @@ func TestRequireResolvedPermissionsFailsClosed(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			handler := middleware.RequireResolvedPermissions(
+			// Mount on a chi route that carries {projectID}. Without the URL
+			// param the extractor refuses the request BEFORE the resolver
+			// runs. Every case then answers 403, and the table proves
+			// nothing about the resolver.
+			router := chi.NewRouter()
+			router.With(middleware.RequireResolvedPermissions(
 				test.resolver,
 				auth.PermissionModeDefault,
 				"configurations.configuration.create",
-			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			)).Post("/{projectID}", func(http.ResponseWriter, *http.Request) {
 				t.Fatal("protected handler should not run")
-			}))
-			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/7", nil)
 			if test.withUser {
 				req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "1"}))
 			}
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			router.ServeHTTP(rec, req)
 			if rec.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, test.wantStatus)
 			}
@@ -366,7 +397,10 @@ func TestRequireCentralPermissions_DeniesWithoutAPrincipalOrResolver(t *testing.
 	}
 }
 
-func TestRequireCentralPermissions_DeniesWhenTheResolverErrors(t *testing.T) {
+// DEFECT: the central variant shares one body with the project variant, so it
+// reported a database failure as 403 too. It must answer 500 and must still
+// keep the protected handler closed.
+func TestRequireCentralPermissions_ReportsAResolverFailureAs500(t *testing.T) {
 	resolver := permissionResolverFunc(func(
 		_ context.Context, _ auth.User, _, _ string,
 	) (auth.PermissionResolution, error) {
@@ -374,10 +408,56 @@ func TestRequireCentralPermissions_DeniesWhenTheResolverErrors(t *testing.T) {
 	})
 
 	router, reached := centralRoute(t, resolver, "admin.auth.users")
+	if rec := centralRequest(router, &auth.User{ID: "7", UserID: "7"}); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if *reached {
+		t.Fatal("handler ran after a resolver error")
+	}
+}
+
+func TestRequireCentralPermissions_ReportsARefusalAs403(t *testing.T) {
+	resolver := permissionResolverFunc(func(
+		_ context.Context, _ auth.User, _, _ string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{}, auth.ErrPermissionDenied
+	})
+
+	router, reached := centralRoute(t, resolver, "admin.auth.users")
 	if rec := centralRequest(router, &auth.User{ID: "7", UserID: "7"}); rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
 	if *reached {
-		t.Fatal("handler ran after a resolver error")
+		t.Fatal("handler ran after a refusal")
+	}
+}
+
+// A canceled client request must not become a 5xx. The SPA aborts requests as
+// a matter of course, so a blanket "error -> 500" rule would replace a silent
+// failure with an error rate storm.
+func TestRequireResolvedPermissions_CanceledRequestGetsNo500(t *testing.T) {
+	resolver := permissionResolverFunc(func(
+		ctx context.Context, _ auth.User, _, _ string,
+	) (auth.PermissionResolution, error) {
+		return auth.PermissionResolution{}, ctx.Err()
+	})
+
+	router := chi.NewRouter()
+	router.With(middleware.RequireResolvedPermissions(
+		resolver,
+		auth.PermissionModeDefault,
+		"configurations.configuration.create",
+	)).Post("/{projectID}", func(http.ResponseWriter, *http.Request) {
+		t.Fatal("protected handler should not run")
+	})
+
+	ctx, cancel := context.WithCancel(auth.ContextWithUser(context.Background(), auth.User{ID: "1"}))
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "/7", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusInternalServerError {
+		t.Fatalf("status = %d, want anything but 500 for a canceled client request", rec.Code)
 	}
 }

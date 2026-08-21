@@ -11,6 +11,85 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const claimExpiredArtifactTransferGrants = `-- name: ClaimExpiredArtifactTransferGrants :many
+UPDATE elitea_storage.transfer_grants
+SET consumed_at = now()
+WHERE id IN (
+    SELECT id FROM elitea_storage.transfer_grants
+    WHERE consumed_at IS NULL AND expires_at < $1::timestamptz
+    ORDER BY expires_at
+    LIMIT $2::int
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id::text AS id, project_id, bucket_id, key, method, upload_id, expires_at
+`
+
+type ClaimExpiredArtifactTransferGrantsParams struct {
+	OlderThan pgtype.Timestamptz `db:"older_than" json:"older_than"`
+	RowLimit  int32              `db:"row_limit" json:"row_limit"`
+}
+
+type ClaimExpiredArtifactTransferGrantsRow struct {
+	ID        string             `db:"id" json:"id"`
+	ProjectID int64              `db:"project_id" json:"project_id"`
+	BucketID  int64              `db:"bucket_id" json:"bucket_id"`
+	Key       string             `db:"key" json:"key"`
+	Method    string             `db:"method" json:"method"`
+	UploadID  *string            `db:"upload_id" json:"upload_id"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+// Claims a bounded batch of expired, unconsumed grants for the retention
+// sweeper, and returns what it needs to reclaim the bytes.
+//
+// WHY THIS EXISTS. CreateArtifactTransferGrant hands out a presigned PUT and
+// writes only this row. The elitea_storage.objects row appears at commit and
+// nowhere else. A caller who uploads to the signed URL and never commits
+// therefore leaves bytes with no metadata row: SumArtifactProjectBytes cannot
+// count them against max_total_bytes, and ListExpiredArtifactObjects cannot
+// see them, because both read only the objects table. Nothing time-driven
+// reclaimed them.
+//
+// WHY IT CLAIMS INSTEAD OF SELECTING. Setting consumed_at in the same
+// statement that selects the row is what makes the sweep safe against a
+// commit in flight. MarkArtifactTransferGrantConsumed already carries
+// `AND consumed_at IS NULL`, so a commit that races a claimed grant loses the
+// mark and answers 409. A plain SELECT followed by a delete has the opposite
+// outcome. The commit writes a metadata row. The sweeper then deletes the
+// bytes underneath it. The project is charged for an object that no longer
+// exists, and no later sweep can heal that.
+//
+// FOR UPDATE SKIP LOCKED lets two replicas sweep at the same time without
+// either waiting on the other. The row itself is kept, not deleted, so a late
+// commit still sees the 409 rather than a 404.
+func (q *Queries) ClaimExpiredArtifactTransferGrants(ctx context.Context, arg ClaimExpiredArtifactTransferGrantsParams) ([]ClaimExpiredArtifactTransferGrantsRow, error) {
+	rows, err := q.db.Query(ctx, claimExpiredArtifactTransferGrants, arg.OlderThan, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimExpiredArtifactTransferGrantsRow{}
+	for rows.Next() {
+		var i ClaimExpiredArtifactTransferGrantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.BucketID,
+			&i.Key,
+			&i.Method,
+			&i.UploadID,
+			&i.ExpiresAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createArtifactTransferGrant = `-- name: CreateArtifactTransferGrant :one
 INSERT INTO elitea_storage.transfer_grants (
     id, project_id, bucket_id, key, method, content_type, max_bytes,

@@ -43,7 +43,11 @@ import { z as zod } from "zod";
 
 export const CreateTransferGrantRequest = zod
   .object({
-    method: zod.enum(["GET", "PUT"]),
+    method: zod
+      .enum(["PUT"])
+      .describe(
+        'Upload only. \"GET\" used to be accepted and was removed: a grant derives its storage key from a newly generated grant id and no field names an existing object, so a download grant always presigned an empty key and answered 404. Download an object with GET \/artifacts\/objects\/{projectID}\/{bucket}\/{key} instead.\n',
+      ),
     display_name: zod
       .string()
       .optional()

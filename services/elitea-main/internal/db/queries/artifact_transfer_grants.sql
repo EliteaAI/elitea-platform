@@ -53,3 +53,38 @@ WHERE id = sqlc.arg('id')::text::uuid;
 UPDATE elitea_storage.transfer_grants
 SET consumed_at = now()
 WHERE id = sqlc.arg('id')::text::uuid AND consumed_at IS NULL;
+
+-- name: ClaimExpiredArtifactTransferGrants :many
+-- Claims a bounded batch of expired, unconsumed grants for the retention
+-- sweeper, and returns what it needs to reclaim the bytes.
+--
+-- WHY THIS EXISTS. CreateArtifactTransferGrant hands out a presigned PUT and
+-- writes only this row. The elitea_storage.objects row appears at commit and
+-- nowhere else. A caller who uploads to the signed URL and never commits
+-- therefore leaves bytes with no metadata row: SumArtifactProjectBytes cannot
+-- count them against max_total_bytes, and ListExpiredArtifactObjects cannot
+-- see them, because both read only the objects table. Nothing time-driven
+-- reclaimed them.
+--
+-- WHY IT CLAIMS INSTEAD OF SELECTING. Setting consumed_at in the same
+-- statement that selects the row is what makes the sweep safe against a
+-- commit in flight. MarkArtifactTransferGrantConsumed already carries
+-- `AND consumed_at IS NULL`, so a commit that races a claimed grant loses the
+-- mark and answers 409. A plain SELECT followed by a delete has the opposite
+-- outcome. The commit writes a metadata row. The sweeper then deletes the
+-- bytes underneath it. The project is charged for an object that no longer
+-- exists, and no later sweep can heal that.
+--
+-- FOR UPDATE SKIP LOCKED lets two replicas sweep at the same time without
+-- either waiting on the other. The row itself is kept, not deleted, so a late
+-- commit still sees the 409 rather than a 404.
+UPDATE elitea_storage.transfer_grants
+SET consumed_at = now()
+WHERE id IN (
+    SELECT id FROM elitea_storage.transfer_grants
+    WHERE consumed_at IS NULL AND expires_at < sqlc.arg('older_than')::timestamptz
+    ORDER BY expires_at
+    LIMIT sqlc.arg('row_limit')::int
+    FOR UPDATE SKIP LOCKED
+)
+RETURNING id::text AS id, project_id, bucket_id, key, method, upload_id, expires_at;

@@ -302,6 +302,12 @@ type sourceIndex struct {
 	files     map[string][]*ast.File
 	// imports is file -> alias -> package directory, for in-module imports.
 	imports map[*ast.File]map[string]string
+	// helperCache is dir -> helper name -> signature. Helper discovery reads
+	// every file of the package, so it produces the same table for every
+	// file in it. Without the cache the six-round search re-runs once per
+	// file. That is quadratic in the size of the package. It returns the
+	// same answer each time.
+	helperCache map[string]map[string]helperSignature
 }
 
 // collectGates walks every non-test Go file under internal/ and returns one
@@ -315,6 +321,8 @@ func collectGates(t *testing.T, root string) []gate {
 		constants: map[string]map[string]constantDefinition{},
 		files:     map[string][]*ast.File{},
 		imports:   map[*ast.File]map[string]string{},
+
+		helperCache: map[string]map[string]helperSignature{},
 	}
 	if err := index.load(filepath.Join(root, "internal")); err != nil {
 		t.Fatalf("parse the service source: %v", err)
@@ -468,9 +476,22 @@ type helperSignature struct {
 	modeKnown       bool
 }
 
-// gatesIn returns the gates in one file, plus the positions of any permission
-// argument that cannot be resolved.
-func (index *sourceIndex) gatesIn(dir string, file *ast.File) ([]gate, []string) {
+// helpersIn returns the gate helpers of one package: the four base
+// middleware names plus every function that forwards one of its own
+// parameters into a known gate's permission position.
+//
+// The answer depends on the package, not on the file, so it is cached per
+// directory.
+//
+// SCOPE LIMIT, STATED SO THE NEXT READER DOES NOT ASSUME MORE. This search
+// is package-transitive, not module-transitive. A helper EXPORTED from one
+// package and called from another is still invisible, and every gate behind
+// it would be dropped in silence. No such helper exists in the tree today.
+// If one appears, extend this search across the import graph.
+func (index *sourceIndex) helpersIn(dir string) map[string]helperSignature {
+	if cached, ok := index.helperCache[dir]; ok {
+		return cached
+	}
 	helpers := map[string]helperSignature{}
 	for name, position := range baseGates {
 		helpers[name] = helperSignature{permissionIndex: position, variadic: true}
@@ -496,58 +517,96 @@ func (index *sourceIndex) gatesIn(dir string, file *ast.File) ([]gate, []string)
 	// A function becomes a helper when it forwards one of its own parameters
 	// into a known gate's permission position. The loop repeats so a helper
 	// built from a helper is also found.
+	//
+	// THE TABLE IS BUILT FROM THE WHOLE PACKAGE, NOT FROM THIS ONE FILE.
+	//
+	// This is the fix for a hole that hid a whole surface. Go resolves an
+	// unqualified name across every file of its package, so a helper may be
+	// DEFINED in one file and CALLED from another. The earlier version scanned
+	// `file` alone, so such a helper was never in the table. Its call sites
+	// did not look like gates. The check reported "ok" for permissions no
+	// migration granted.
+	//
+	// It was not hypothetical. internal/api/v2/secrets defines `adminGate` in
+	// admin.go and calls it six times from handler.go's Routes(). Those six
+	// administration-mode gates were invisible. Every one of them named a
+	// permission that no migration granted in that mode. The whole global
+	// secret vault therefore answered 403 to every principal.
 	for round := 0; round < 6; round++ {
 		grew := false
-		forEachFunction(file, func(name string, signature *ast.FuncType, body *ast.BlockStmt) {
-			if name == "" || body == nil {
-				return
-			}
-			if _, known := helpers[name]; known {
-				return
-			}
-			parameters := parameterNames(signature)
-			ast.Inspect(body, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
+		for _, sourceFile := range index.files[dir] {
+			forEachFunction(sourceFile, func(name string, signature *ast.FuncType, body *ast.BlockStmt) {
+				if name == "" || body == nil {
+					return
 				}
-				called, ok := helperName(call.Fun)
-				if !ok {
-					return true
+				if _, known := helpers[name]; known {
+					return
 				}
-				inner := helpers[called]
-				for i := inner.permissionIndex; i < len(call.Args); i++ {
-					if !inner.variadic && i > inner.permissionIndex {
-						break
-					}
-					identifier, ok := call.Args[i].(*ast.Ident)
+				parameters := parameterNames(signature)
+				ast.Inspect(body, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
 					if !ok {
-						continue
+						return true
 					}
-					at := indexOf(parameters, identifier.Name)
-					if at < 0 {
-						continue
+					called, ok := helperName(call.Fun)
+					if !ok {
+						return true
 					}
-					derived := helperSignature{permissionIndex: at}
-					// The derived helper fixes the mode, because the mode is
-					// written at the middleware call inside its body.
-					if modeIndex, ok := modeArgIndex[called]; ok && modeIndex < len(call.Args) {
-						if mode, ok := index.resolveString(call.Args[modeIndex], file, dir, 0); ok {
-							derived.mode, derived.modeKnown = mode, true
+					inner := helpers[called]
+					for i := inner.permissionIndex; i < len(call.Args); i++ {
+						if !inner.variadic && i > inner.permissionIndex {
+							break
 						}
-					} else if inner.modeKnown {
-						derived.mode, derived.modeKnown = inner.mode, true
+						identifier, ok := call.Args[i].(*ast.Ident)
+						if !ok {
+							continue
+						}
+						at := indexOf(parameters, identifier.Name)
+						if at < 0 {
+							continue
+						}
+						derived := helperSignature{permissionIndex: at}
+						// The derived helper fixes the mode, because the mode
+						// is written at the middleware call inside its body.
+						// Resolve it against the file that DEFINES the helper.
+						if modeIndex, ok := modeArgIndex[called]; ok && modeIndex < len(call.Args) {
+							if mode, ok := index.resolveString(call.Args[modeIndex], sourceFile, dir, 0); ok {
+								derived.mode, derived.modeKnown = mode, true
+							}
+						} else if inner.modeKnown {
+							derived.mode, derived.modeKnown = inner.mode, true
+						}
+						helpers[name] = derived
+						grew = true
+						return false
 					}
-					helpers[name] = derived
-					grew = true
-					return false
-				}
-				return true
+					return true
+				})
 			})
-		})
+		}
 		if !grew {
 			break
 		}
+	}
+	index.helperCache[dir] = helpers
+	return helpers
+}
+
+// gatesIn returns the gates in one file, plus the positions of any permission
+// argument that cannot be resolved.
+func (index *sourceIndex) gatesIn(dir string, file *ast.File) ([]gate, []string) {
+	helpers := index.helpersIn(dir)
+
+	helperName := func(function ast.Expr) (string, bool) {
+		switch node := function.(type) {
+		case *ast.Ident:
+			_, ok := helpers[node.Name]
+			return node.Name, ok
+		case *ast.SelectorExpr:
+			_, ok := helpers[node.Sel.Name]
+			return node.Sel.Name, ok
+		}
+		return "", false
 	}
 
 	var gates []gate

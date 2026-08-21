@@ -3,15 +3,19 @@ package social
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 type Handler struct {
@@ -57,7 +61,7 @@ type AuthorResponse struct {
 func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -192,7 +196,7 @@ func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) s
 func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -203,7 +207,7 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
@@ -226,7 +230,7 @@ func (h *Handler) UpdateAuthor(w http.ResponseWriter, r *http.Request) {
 		jsonVal(body, "personalization"),
 	)
 	if err != nil {
-		http.Error(w, `{"error":"failed to update author"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update author")
 		return
 	}
 
@@ -421,6 +425,23 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// logTenantReadFault records a failed read of a per-project table.
+//
+// SQLSTATE 3F000 (invalid_schema_name) and 42P01 (undefined_table) get their
+// own message. After the project-existence check in RequireProjectAccess they
+// can no longer mean "unknown project id". They name a project row whose
+// tenant schema is absent or incomplete. The error text stays in the log; the
+// response body carries a fixed message.
+func logTenantReadFault(ctx context.Context, operation, projectID string, err error) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == "3F000" || pgErr.Code == "42P01") {
+		slog.ErrorContext(ctx, operation+": the tenant schema of an existing project is incomplete",
+			"project_id", projectID, "sqlstate", pgErr.Code, "error", err)
+		return
+	}
+	slog.ErrorContext(ctx, operation+": tenant read failed", "project_id", projectID, "error", err)
+}
+
 func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 	if h.pool == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "total": 0})
@@ -437,6 +458,15 @@ func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {
+		// A missing tenant schema or table now means an INCONSISTENT database,
+		// not an unknown project: RequireProjectAccess answers 404 before this
+		// handler runs when centry.project holds no row for the id
+		// (internal/api/middleware/project_authorization.go). The status stays
+		// 500, and the cause is logged so the inconsistency is visible.
+		//
+		// The read is NOT downgraded to an empty list. A missing per-project
+		// table reported as "no data" is how a broken tenant looks healthy.
+		logTenantReadFault(ctx, "social_feedbacks_list", projectID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list feedback"})
 		return
 	}
@@ -455,6 +485,7 @@ func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		logTenantReadFault(ctx, "social_feedbacks_list", projectID, err)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list feedback"})
 		return
 	}

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -257,22 +258,21 @@ func (h *Handler) SearchOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "collections": []any{}})
 }
 
-func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	ctx := r.Context()
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 20
-	}
-
-	items := make([]map[string]any, 0)
-	total := 0
-
-	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
-		// Count total: project members UNION super_admins (excluding system users)
-		countQ := `
+// usersCountQuery and usersPageQuery list the members of one project, plus the
+// central platform administrators.
+//
+// THE MODE PREDICATE IS LOAD-BEARING. A role name alone does not identify a
+// platform administrator. auth_core__role is UNIQUE (name, mode), so a legacy
+// database carries a `super_admin` role in the `default` and `developer` modes
+// as well. Only the `administration` mode grants central access. Without
+// `r.mode = 'administration'` every holder of a same-named role joined every
+// project's member list as a phantom member.
+//
+// They are package constants rather than locals for a second reason:
+// scripts/validate_contract_static.sh reads only the first 80 lines of the
+// Users function to find its writeJSON call. Inline, the two queries pushed
+// that call to line 81 and the gate reported the response shape as unmeasured.
+const usersCountQuery = `
 			SELECT COUNT(*) FROM (
 				SELECT au.id FROM auth_core__user au
 				JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
@@ -281,13 +281,14 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				SELECT au.id FROM auth_core__user au
 				JOIN auth_core__user_role ur ON ur.user_id = au.id
 				JOIN auth_core__role r ON r.id = ur.role_id
-				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+				WHERE r.name = 'super_admin' AND r.mode = 'administration'
+					AND au.email NOT LIKE '%@centry.user'
 			) combined
 		`
-		_ = h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total) // failure leaves total=0, which is safe
 
-		// Fetch paginated: project-specific roles for members, 'super_admin' for global admins
-		q := `
+// usersPageQuery is usersCountQuery's page: project roles for a member, and the
+// literal `super_admin` for a central administrator who is not one.
+const usersPageQuery = `
 			SELECT id, email, name, roles FROM (
 				SELECT au.id, au.email, COALESCE(au.name, '') as name,
 					COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), ARRAY['viewer']) as roles
@@ -302,7 +303,8 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				FROM auth_core__user au
 				JOIN auth_core__user_role ur ON ur.user_id = au.id
 				JOIN auth_core__role r ON r.id = ur.role_id
-				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+				WHERE r.name = 'super_admin' AND r.mode = 'administration'
+					AND au.email NOT LIKE '%@centry.user'
 					AND au.id NOT IN (
 						SELECT pur2.user_id FROM auth_core__project_user_role pur2 WHERE pur2.project_id = $1
 					)
@@ -310,7 +312,24 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 			ORDER BY name, id
 			LIMIT $2 OFFSET $3
 		`
-		rows, err := h.pool.Query(ctx, q, pidNum, limit, offset)
+
+func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	ctx := r.Context()
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+
+	items := make([]map[string]any, 0)
+	total := 0
+
+	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
+		_ = h.pool.QueryRow(ctx, usersCountQuery, pidNum).Scan(&total) // failure leaves total=0, which is safe
+
+		rows, err := h.pool.Query(ctx, usersPageQuery, pidNum, limit, offset)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -1165,10 +1184,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 					"context": nil,
 					"fix":     "Remove one of the circular sub-agent references to break the cycle",
 				}},
-				"warnings":               []map[string]any{},
-				"recommendations":        []map[string]any{},
-				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
-				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"warnings":                []map[string]any{},
+				"recommendations":         []map[string]any{},
+				"summary":                 fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                  map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
 				"ai_validation_available": false,
 				"validation_token":        nil,
 			}, http.StatusUnprocessableEntity
@@ -1183,10 +1202,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 					"context": nil,
 					"fix":     "Reduce the nesting depth of sub-agent references",
 				}},
-				"warnings":               []map[string]any{},
-				"recommendations":        []map[string]any{},
-				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
-				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"warnings":                []map[string]any{},
+				"recommendations":         []map[string]any{},
+				"summary":                 fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                  map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
 				"ai_validation_available": false,
 				"validation_token":        nil,
 			}, http.StatusUnprocessableEntity
@@ -1351,10 +1370,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	resp := map[string]any{
 		"status":                  status,
 		"critical_issues":         criticalIssues,
-		"warnings":               warnings,
-		"recommendations":        recommendations,
-		"summary":                fmt.Sprintf("Validation %s for version %s", status, versionID),
-		"counts":                 map[string]any{"critical": len(criticalIssues), "warnings": len(warnings), "suggestions": len(recommendations)},
+		"warnings":                warnings,
+		"recommendations":         recommendations,
+		"summary":                 fmt.Sprintf("Validation %s for version %s", status, versionID),
+		"counts":                  map[string]any{"critical": len(criticalIssues), "warnings": len(warnings), "suggestions": len(recommendations)},
 		"ai_validation_available": false,
 		"validation_token":        token,
 	}
@@ -1557,9 +1576,9 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	}
 
 	var llmSettings, meta, starters, pipelineSettings any
-	_ = json.Unmarshal(llmJSON, &llmSettings)         // DB jsonb columns
-	_ = json.Unmarshal(metaJSON, &meta)               // DB jsonb columns
-	_ = json.Unmarshal(startersJSON, &starters)       // DB jsonb columns
+	_ = json.Unmarshal(llmJSON, &llmSettings)           // DB jsonb columns
+	_ = json.Unmarshal(metaJSON, &meta)                 // DB jsonb columns
+	_ = json.Unmarshal(startersJSON, &starters)         // DB jsonb columns
 	_ = json.Unmarshal(pipelineJSON, &pipelineSettings) // DB jsonb columns
 
 	projIDInt, _ := strconv.Atoi(publicProjectID)
@@ -1638,7 +1657,7 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	}
 
 	versionDetails := map[string]any{
-		"id":                     strconv.Itoa(vID),
+		"id":                    strconv.Itoa(vID),
 		"application_id":        strconv.Itoa(appID),
 		"name":                  vName,
 		"status":                vStatus,
@@ -1877,14 +1896,93 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
-	icons := []map[string]any{
-		{"name": "robot", "url": "/icons/robot.svg"},
-		{"name": "brain", "url": "/icons/brain.svg"},
-		{"name": "chat", "url": "/icons/chat.svg"},
-		{"name": "code", "url": "/icons/code.svg"},
-		{"name": "data", "url": "/icons/data.svg"},
+// DefaultIconURLPrefix is the public path the default entity icons are served
+// under. It follows /app/application_icon/ and /app/application_tool_icon/,
+// the two static directories internal/api/router.go already mounts.
+//
+// The two-segment /icons/{projectID}/{filename} route is NOT this prefix: it
+// serves the per-project icons a user uploads, out of the object store.
+//
+// NO ROUTE SERVES THIS PREFIX YET, and no build bakes icon files into the
+// image. Read the consequence plainly. DefaultIconCatalogue enumerates a
+// directory that no current image creates. GET
+// /api/v2/elitea_core/default_icons/prompt_lib/{projectID} therefore answers
+// `[]` in every build, and the "Default" section of the icon picker is empty.
+//
+// This state corrects a worse one. It is not the finished feature. The
+// endpoint answered with five invented URLs before. Every one of them
+// returned 404, and the picker drew five broken images, because it has no
+// fallback for a url that fails. An empty section is honest.
+//
+// Three items complete the feature. Legacy does all three
+// (legacy/plugins/elitea_core/routes/application_icon.py:15 and
+// legacy/plugins/elitea_core/module.py:599-616):
+//
+//  1. Mount a static file server on this prefix in internal/api/router.go,
+//     beside /app/application_icon/ and /app/application_tool_icon/.
+//  2. Add the prefix to internal/api/main_public_rules.go. A browser <img>
+//     tag sends no Authorization header.
+//  3. Give the pod the icon files. Legacy downloads the
+//     EliteaAI/elitea_static archive into /data/static at start-up.
+const DefaultIconURLPrefix = "/app/default_entity_icons/"
+
+// defaultIconDataDir is the directory that holds the default entity icons.
+// DEFAULT_ICON_DATA_DIR overrides it.
+const defaultIconDataDir = "/data/static/elitea_static-main/default_entity_icons"
+
+// iconDirEnvOr reads the icon directory override, or gives the compiled-in
+// default.
+//
+// The `*Or(...)` NAME IS LOAD-BEARING, not a style choice. The env-drift gate
+// (services/elitea-llm-gateway/scripts/env-drift-check.sh:117) sorts every env
+// name the code reads by the shape of the call. A bare `os.Getenv("X")` counts
+// as REQUIRED. It fails the gate when the chart never sets it. An
+// `*Or("X", fallback)` call counts as DEFAULTED and only warns. This variable
+// has a compiled-in default, so the second tier is the honest one. Read through
+// a bare os.Getenv, it failed the gate. It then read as a feature that is
+// silently broken in the deployed pod. It is not broken.
+func iconDirEnvOr(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
+	return fallback
+}
+
+// DefaultIconCatalogue lists the default entity icons that exist on disk.
+//
+// It returns an empty slice when the directory is absent or empty. It NEVER
+// invents a name: an entry the client cannot load renders as a broken image,
+// because the icon picker has no fallback for a url that answers 404.
+func DefaultIconCatalogue() []map[string]any {
+	directory := iconDirEnvOr("DEFAULT_ICON_DATA_DIR", defaultIconDataDir)
+	icons := make([]map[string]any, 0)
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return icons
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		filename := entry.Name()
+		if strings.HasPrefix(filename, ".") {
+			continue
+		}
+		name := strings.TrimSuffix(filename, filepath.Ext(filename))
+		icons = append(icons, map[string]any{
+			"name": name,
+			"url":  DefaultIconURLPrefix + url.PathEscape(filename),
+		})
+	}
+	return icons
+}
+
+func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
+	// The local is load-bearing. scripts/validate_contract_static.sh reads the
+	// third argument of writeJSON to prove this route answers a plain array. Its
+	// pattern accepts a slice literal or a lowercase identifier, so an inline
+	// `DefaultIconCatalogue()` call left the shape unmeasured and failed the gate.
+	icons := DefaultIconCatalogue()
 	writeJSON(w, http.StatusOK, icons)
 }
 
@@ -2342,26 +2440,26 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
 				"application_id": fmt.Sprintf("%d", appID),
-				"name":          vName,
-				"status":        "draft",
+				"name":           vName,
+				"status":         "draft",
 			})
 
 			var llmParsed, startersParsed any
-			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)       // already marshaled above; can't fail
+			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)           // already marshaled above; can't fail
 			_ = json.Unmarshal([]byte(startersJSON), &startersParsed) // already marshaled above; can't fail
 
 			versionDetails = map[string]any{
 				"id":                    fmt.Sprintf("%d", vID),
 				"application_id":        fmt.Sprintf("%d", appID),
 				"name":                  vName,
-				"status":               "draft",
-				"author_id":            fmt.Sprintf("%d", userID),
-				"agent_type":           agentType,
-				"instructions":         instructions,
-				"welcome_message":      welcomeMsg,
-				"llm_settings":         llmParsed,
+				"status":                "draft",
+				"author_id":             fmt.Sprintf("%d", userID),
+				"agent_type":            agentType,
+				"instructions":          instructions,
+				"welcome_message":       welcomeMsg,
+				"llm_settings":          llmParsed,
 				"conversation_starters": startersParsed,
-				"tools":                []any{},
+				"tools":                 []any{},
 			}
 		}
 
@@ -2877,8 +2975,8 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
 				"application_id": fmt.Sprintf("%d", appID),
-				"name":          vName,
-				"status":        "draft",
+				"name":           vName,
+				"status":         "draft",
 			})
 
 			// Build version_details response
@@ -2909,18 +3007,18 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 				"id":                    fmt.Sprintf("%d", vID),
 				"application_id":        fmt.Sprintf("%d", appID),
 				"name":                  vName,
-				"status":               "draft",
-				"author_id":            fmt.Sprintf("%d", userID),
-				"agent_type":           agentType,
-				"instructions":         instructions,
-				"welcome_message":      welcomeMsg,
-				"llm_settings":         llmSettings,
+				"status":                "draft",
+				"author_id":             fmt.Sprintf("%d", userID),
+				"agent_type":            agentType,
+				"instructions":          instructions,
+				"welcome_message":       welcomeMsg,
+				"llm_settings":          llmSettings,
 				"conversation_starters": starters,
-				"meta":                 forkMeta,
-				"is_forked":            true,
-				"variables":            respVars,
-				"tags":                 respTags,
-				"tools":                []any{},
+				"meta":                  forkMeta,
+				"is_forked":             true,
+				"variables":             respVars,
+				"tags":                  respTags,
+				"tools":                 []any{},
 			}
 		}
 
@@ -3726,8 +3824,8 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var appEntities, dsEntities []any
-	_ = json.Unmarshal(appsJSON, &appEntities)         // DB jsonb column; malformed means empty list
-	_ = json.Unmarshal(datasourcesJSON, &dsEntities)   // DB jsonb column; malformed means empty list
+	_ = json.Unmarshal(appsJSON, &appEntities)       // DB jsonb column; malformed means empty list
+	_ = json.Unmarshal(datasourcesJSON, &dsEntities) // DB jsonb column; malformed means empty list
 
 	// Separate applications vs pipelines
 	var apps, pipelines []map[string]any

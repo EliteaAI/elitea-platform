@@ -56,6 +56,7 @@ import type {
   ErrorResponse,
   InternalMcpPatStatus,
   ListToolkitInstancesParams,
+  McpRegisteredServer,
   McpToolCallRequest,
   N400Response,
   N401Response,
@@ -1193,6 +1194,16 @@ export function useCreateToolkit<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export type listRegisteredMcpServersResponse200 = {
+  data: McpRegisteredServer[];
+  status: 200;
+};
+
+export type listRegisteredMcpServersResponse400 = {
+  data: ErrorResponse;
+  status: 400;
+};
+
 export type listRegisteredMcpServersResponse401 = {
   data: N401Response;
   status: 401;
@@ -1203,39 +1214,48 @@ export type listRegisteredMcpServersResponse403 = {
   status: 403;
 };
 
-export type listRegisteredMcpServersResponse501 = {
+export type listRegisteredMcpServersResponse503 = {
   data: ErrorResponse;
-  status: 501;
+  status: 503;
 };
 
+export type listRegisteredMcpServersResponseSuccess =
+  listRegisteredMcpServersResponse200 & {
+    headers: Headers;
+  };
 export type listRegisteredMcpServersResponseError = (
+  | listRegisteredMcpServersResponse400
   | listRegisteredMcpServersResponse401
   | listRegisteredMcpServersResponse403
-  | listRegisteredMcpServersResponse501
+  | listRegisteredMcpServersResponse503
 ) & {
   headers: Headers;
 };
 
 export type listRegisteredMcpServersResponse =
-  listRegisteredMcpServersResponseError;
+  | listRegisteredMcpServersResponseSuccess
+  | listRegisteredMcpServersResponseError;
 
 export const getListRegisteredMcpServersUrl = (projectId: string) => {
   return `/elitea_core/tools_list/default/${projectId}`;
 };
 
 /**
- * Always answers 501 with a stated reason. This endpoint does NOT list
- * this platform's own tools — that is the MCP server at
- * /app/{project_id}/mcp. It reports the MCP servers an Elitea MCP CLIENT
- * has registered INTO the project, which the reference implementation
- * keeps in an in-process dict populated over socket.io and keyed by the
- * client's socket id. There is no table behind that dict, and this
- * service runs no socket.io server, so there is nothing to list.
+ * Lists the MCP servers an Elitea MCP CLIENT has registered INTO the
+ * project. This endpoint does NOT list this platform's own tools — that
+ * is the MCP server at /app/{project_id}/mcp.
  *
- * An empty array is deliberately not returned: it would assert that no
- * client is connected, which this service has no way to know. See
- * internal/api/v2/mcp/registry.go for the full reason string, which is
- * also what the response body carries.
+ * Issue 335 replaced the earlier 501 with a durable read. The listing
+ * comes from elitea_mcp.registered_servers and elitea_mcp.registered_tools
+ * (shared migration 0073), unioned with the caller's personal project. A
+ * personal entry wins a name collision. A server a user registers in their
+ * own project therefore follows them into every project they work in
+ * (internal/api/v2/mcp/registry.go:116-129).
+ *
+ * The body is a bare array, which is pylon's shape. An empty array is now
+ * an honest read of the rows: it means the project has no registered
+ * server. A read failure answers 503 instead, because reporting an empty
+ * toolset would make an agent answer without its tools.
  * @summary List MCP servers registered into the project by an MCP client
  */
 export const listRegisteredMcpServers = async (
@@ -1257,7 +1277,7 @@ export const getListRegisteredMcpServersQueryKey = (projectId: string) => {
 
 export const getListRegisteredMcpServersQueryOptions = <
   TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
-  TError = N401Response | ErrorResponse,
+  TError = ErrorResponse | N401Response,
 >(
   projectId: string,
   options?: {
@@ -1296,11 +1316,11 @@ export const getListRegisteredMcpServersQueryOptions = <
 export type ListRegisteredMcpServersQueryResult = NonNullable<
   Awaited<ReturnType<typeof listRegisteredMcpServers>>
 >;
-export type ListRegisteredMcpServersQueryError = N401Response | ErrorResponse;
+export type ListRegisteredMcpServersQueryError = ErrorResponse | N401Response;
 
 export function useListRegisteredMcpServers<
   TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
-  TError = N401Response | ErrorResponse,
+  TError = ErrorResponse | N401Response,
 >(
   projectId: string,
   options: {
@@ -1327,7 +1347,7 @@ export function useListRegisteredMcpServers<
 };
 export function useListRegisteredMcpServers<
   TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
-  TError = N401Response | ErrorResponse,
+  TError = ErrorResponse | N401Response,
 >(
   projectId: string,
   options?: {
@@ -1354,7 +1374,7 @@ export function useListRegisteredMcpServers<
 };
 export function useListRegisteredMcpServers<
   TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
-  TError = N401Response | ErrorResponse,
+  TError = ErrorResponse | N401Response,
 >(
   projectId: string,
   options?: {
@@ -1377,7 +1397,7 @@ export function useListRegisteredMcpServers<
 
 export function useListRegisteredMcpServers<
   TData = Awaited<ReturnType<typeof listRegisteredMcpServers>>,
-  TError = N401Response | ErrorResponse,
+  TError = ErrorResponse | N401Response,
 >(
   projectId: string,
   options?: {

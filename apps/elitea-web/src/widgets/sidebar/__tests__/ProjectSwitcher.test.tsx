@@ -11,8 +11,8 @@ import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 import { ProjectSwitcher } from '../ui/ProjectSwitcher';
 
 const projects: readonly Project[] = [
-  { id: 11, name: 'Public', status: 'active', suspended: false },
-  { id: 2, name: 'Acme', status: 'active', suspended: false },
+  { id: 11, name: 'Public', suspended: false },
+  { id: 2, name: 'Acme', suspended: false },
 ];
 
 /**

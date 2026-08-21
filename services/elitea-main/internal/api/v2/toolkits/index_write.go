@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -87,6 +88,23 @@ func toolkitRowID(toolkitID string) (int64, error) {
 		return 0, fmt.Errorf("%q is not a toolkit id", toolkitID)
 	}
 	return id, nil
+}
+
+// writeIndexInternalError answers a fixed, safe message and logs the cause.
+//
+// DEFECT: these handlers put `err.Error()` straight into the 500 body. The
+// value is an unwrapped pgx error. When PostgreSQL is unreachable,
+// `*pgconn.ConnectError` prints
+// `failed to connect to `user=<db user> database=<db name>`: <host>:<port> ...`,
+// so any authenticated caller read the internal database user, database name,
+// host and port. A `*pgconn.PgError` prints `ERROR: <message> (SQLSTATE nnnnn)`
+// and can carry constraint names and table names that the route does not.
+// AGENTS.md forbids a raw `err.Error()` across a trust boundary.
+//
+// The envelope keeps its shape: the client reads `ok`.
+func writeIndexInternalError(w http.ResponseWriter, r *http.Request, operation, message string, err error) {
+	slog.ErrorContext(r.Context(), operation+": "+message, "error", err)
+	writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": message})
 }
 
 // indexWriteTarget is the (schema, toolkit) pair every handler below needs,
@@ -141,7 +159,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -160,7 +178,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
 		return
 	}
 
@@ -168,7 +186,7 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(`DELETE FROM %q.index_meta WHERE toolkit_id = $1 AND name = $2`, target.schema),
 		target.toolkitID, indexName,
 	); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
 		return
 	}
 
@@ -183,12 +201,12 @@ func (h *Handler) IndexMetaDelete(w http.ResponseWriter, r *http.Request) {
 		 WHERE id = $1`, target.schema),
 		target.toolkitID, indexName,
 	); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_delete", "failed to delete the index", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -256,7 +274,7 @@ func (h *Handler) IndexMetaUpdate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "Toolkit not found"})
 		return
 	case err != nil:
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_meta_update", "failed to update the index schedule", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, indexesMeta)
@@ -409,7 +427,7 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, r *http.Request) {
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_cancel", "failed to cancel the index run", err)
 		return
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
@@ -433,7 +451,7 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_cancel", "failed to cancel the index run", err)
 		return
 	}
 
@@ -457,11 +475,11 @@ func (h *Handler) IndexCancel(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf(`UPDATE %q.index_meta SET status = 'cancelled' WHERE id = $1`, target.schema),
 		rowID,
 	); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_cancel", "failed to cancel the index run", err)
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": err.Error()})
+		writeIndexInternalError(w, r, "index_cancel", "failed to cancel the index run", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

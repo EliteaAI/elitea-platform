@@ -5,7 +5,7 @@ import type { Project } from '@/entities/project';
 import { orderedProjectOptions } from '../lib/projectOptions';
 
 function project(id: number, name: string): Project {
-  return { id, name, status: 'active', suspended: false };
+  return { id, name, suspended: false };
 }
 
 describe('orderedProjectOptions', () => {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strconv"
 
@@ -24,8 +25,19 @@ const (
 )
 
 var (
+	// errInvalidCurrentModelConfiguration reports a row whose `data` document
+	// has the wrong SHAPE: a value that is not an object, a missing name, or a
+	// field with the wrong JSON type. The row is bad; the query is not. List
+	// skips such a row, because one bad row must not remove the whole
+	// catalogue.
 	errInvalidCurrentModelConfiguration = errors.New("current model configuration is invalid")
-	errCurrentModelCatalogTooLarge      = errors.New("current model catalog exceeds the safe row limit")
+	// errCurrentModelRowNotOwned reports a row that breaks a tenant invariant:
+	// a foreign project, a foreign section, or a private row in a shared-only
+	// read. The row content is not the problem. The query or the transaction
+	// returned a row it must never return, so List fails closed and returns
+	// nothing.
+	errCurrentModelRowNotOwned     = errors.New("current model row does not belong to the requested scope")
+	errCurrentModelCatalogTooLarge = errors.New("current model catalog exceeds the safe row limit")
 )
 
 type currentModelQueries interface {
@@ -138,6 +150,26 @@ func (r *CurrentModelsRepository) List(
 	candidates := make([]currentModelCandidate, 0, len(rows))
 	for _, row := range rows {
 		candidate, err := mapCurrentModelCandidate(row, projectID, section, sharedOnly)
+		if errors.Is(err, errInvalidCurrentModelConfiguration) {
+			// Skip the row. Do not fail the read.
+			//
+			// The write path stores `data` without a registry-schema check.
+			// One editor can therefore store a wrongly typed field through the
+			// public API. `"context_window":"128000"` is the plain case.
+			// An abort here turned that single row into a 500 for GET
+			// /api/v2/configurations/models/{projectID}. The model picker was
+			// then empty for every member of the project, until someone
+			// repaired the row.
+			//
+			// Log the identifiers only. The value is a stored configuration and
+			// may hold a credential reference, so it never reaches a log line
+			// or an error message.
+			slog.WarnContext(ctx, "skipping a malformed model configuration",
+				"project_id", projectID,
+				"configuration_id", row.ID,
+				"section", string(section))
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -165,8 +197,11 @@ func mapCurrentModelCandidate(
 	section configurationapp.CurrentModelSection,
 	sharedOnly bool,
 ) (currentModelCandidate, error) {
+	// A tenant-invariant break is NOT a skippable row. It means the query or
+	// the transaction handed back a row from another scope, so the whole read
+	// is untrustworthy.
 	if row.ID <= 0 || row.ProjectID != projectID || row.Section != string(section) || (sharedOnly && !row.Shared) {
-		return currentModelCandidate{}, errInvalidCurrentModelConfiguration
+		return currentModelCandidate{}, errCurrentModelRowNotOwned
 	}
 
 	item := configurationapp.CurrentModelCatalogItem{
