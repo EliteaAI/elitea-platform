@@ -139,6 +139,70 @@ func TestKey(t *testing.T) {
 	}
 }
 
+// TestNormalizeAudioPricesUseTheSameFactor is the audio half of the 1e6 guard.
+// Upstream publishes a per-second and a per-character price the same way it
+// publishes a per-token price: as the cost of ONE unit. So the ×1,000,000
+// convert applies unchanged. A second, unit-specific factor here would be a
+// 1,000,000x error on every audio row, and skipping the convert would be a
+// 1,000,000x undercharge.
+func TestNormalizeAudioPricesUseTheSameFactor(t *testing.T) {
+	var n Normalizer
+	raw := RawModelPrice{
+		Provider:  "openai",
+		ModelName: "whisper-1",
+		// $0.0001 per second → $100.00 per 1M seconds.
+		InputCostPerSecond:  fptr(0.0001),
+		OutputCostPerSecond: fptr(0.0002),
+		// $0.000015 per character → $15.00 per 1M characters.
+		InputCostPerCharacter:  fptr(0.0000003),
+		OutputCostPerCharacter: fptr(0.000015),
+	}
+	got, err := n.Normalize(raw, PerToken, "litellm")
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	cases := []struct {
+		name string
+		got  *float64
+		want float64
+	}{
+		{"input per 1M seconds", got.InputCostPer1MSeconds, 100},
+		{"output per 1M seconds", got.OutputCostPer1MSeconds, 200},
+		{"input per 1M characters", got.InputCostPer1MCharacters, 0.3},
+		{"output per 1M characters", got.OutputCostPer1MCharacters, 15},
+	}
+	for _, c := range cases {
+		if c.got == nil {
+			t.Errorf("%s is nil, want %v", c.name, c.want)
+			continue
+		}
+		if !almost(*c.got, c.want) {
+			t.Errorf("%s = %v, want %v", c.name, *c.got, c.want)
+		}
+	}
+	// An audio-only row carries no token price, and the absent-vs-zero
+	// distinction must survive the conversion.
+	if got.InputCostPer1M != nil || got.OutputCostPer1M != nil {
+		t.Errorf("absent token prices must stay nil, got in=%v out=%v",
+			got.InputCostPer1M, got.OutputCostPer1M)
+	}
+}
+
+// TestNormalizeAudioPricesRespectDenomination guards the other direction: a
+// source that already publishes per-1M (the bundled seed) must not have its
+// audio prices scaled again.
+func TestNormalizeAudioPricesRespectDenomination(t *testing.T) {
+	var n Normalizer
+	raw := RawModelPrice{Provider: "openai", ModelName: "whisper-1", InputCostPerSecond: fptr(100)}
+	got, err := n.Normalize(raw, Per1M, "seed")
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if got.InputCostPer1MSeconds == nil || !almost(*got.InputCostPer1MSeconds, 100) {
+		t.Errorf("per-1M source must convert ×1, got %v", got.InputCostPer1MSeconds)
+	}
+}
+
 func almost(a, b float64) bool {
 	d := a - b
 	if d < 0 {

@@ -418,11 +418,42 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   project seeded that way. Keep each model in its own section and make the
   gateway read them all.
 
-- **`asr` and `tts` are deliberately absent, and that is a routing fact.** The
-  gateway mounts no audio route, so admitting those sections would advertise a
-  model no caller can reach. `vectorstorage` holds no model. Add a pair to
-  `addressableModelSections` when, and only when, you add a route that
-  dispatches it — `model_sections_test.go` covers each pair on its own route.
+- **`asr` and `tts` joined the list with the audio routes (issue #323).** They
+  were absent while the gateway mounted no audio route, because admitting a
+  section with no route advertises a model no caller can reach. `vectorstorage`
+  holds no model and stays out. Add a pair to `addressableModelSections` when,
+  and only when, you add a route that dispatches it — `model_sections_test.go`
+  covers each pair on its own route.
+
+- **[2026-08-20, issue #323] The gateway serves `/llm/v1/audio/speech`,
+  `/audio/transcriptions` and `/audio/translations`.** *Finding:* the retired
+  LiteLLM proxy served the first two, and `pylon-indexer`'s voice paths call
+  them by absolute URL (`indexer_tts.py`, `indexer_asr_whisper.py`). Nothing
+  replaced them, so that image kept a LiteLLM process of its own to answer them
+  — a SECOND LLM data plane that applies no budget, bills nothing, and resolves
+  credentials from a registry (`runtime_interface_litellm`, in the deleted
+  pylon_main) that the platform no longer writes. The model registry it reads is
+  therefore empty, so those calls already fail. *Decision:* implement the two
+  routes here, on the same order every /llm route follows — decode, `mapModel`,
+  `checkBudget`, dispatch, `updateUsage` — so the audio path is governed like
+  every other. Two limits are deliberate and are stated in `audio.go`:
+
+  | Limit | Why |
+  |---|---|
+  | Neither route streams | A streaming speech route needs the detached-drain billing machinery the chat stream has. The pylon TTS client reads the body with `iter_content`, so a unary body still arrives chunked to it; it loses first-byte latency, not audio. |
+  | A response the catalog carries no rate for bills zero | `cost.Calculator` now prices three bases — tokens, seconds and characters (migration 0086) — but only from the catalog. There is no default per-second or per-character price and there must not be one: an invented rate reaches the authoritative budget counter as if it were measured. A model with no catalog audio rate is UNPRICED. The condition is counted on `gateway_audio_unpriced_total` and logged, not hidden. |
+
+  **Two follow-up decisions, both from the adversarial review of this change:**
+
+  | Question | Decision |
+  |---|---|
+  | The widened price `SELECT` names four columns migration 0086 adds. What happens on a pod that rolls out ahead of `elitea-migrate`? | Postgres answers 42703 for EVERY model, and `lookupCatalog` reads any non-`ErrNoRows` error as "uncatalogued" — so the WHOLE catalog would silently bill at the default price table for the length of the skew. `queryCatalog` now catches 42703 alone, latches, and re-reads the same row with the pre-0086 two-column statement. Token pricing survives; only the audio rates go missing, so audio is UNPRICED and counted. The latch expires after 5 minutes and lifts itself when the migration lands. `gateway_price_catalog_schema_behind` (gauge) and `..._total` (counter) are the signal: one for the process, not one log line per model per cache TTL. |
+  | The speech route bills a character count bifrost computed from OUR request (`BackfillParams`), not one a provider reported. Is that legitimate? | Yes, and `audio.go` says so plainly. A character-billed TTS provider charges for the input text it was sent, so a rune count of that exact text IS the billable quantity, not an estimate of one. Contrast `BifrostTranscriptionResponse.Duration`, which bifrost DERIVES from word timestamps: that is an observation of something the provider never stated, and `transcriptionUnits` still refuses it. The rule is "bill the quantity the sale is priced on, never an inference about it". Because bifrost backfills that count on every speech response and refuses an empty input, the speech "no usable usage" branch is unreachable through the real router; it is marked as a guard for a non-bifrost router, and the test for that shape now runs against the transcription route, where it is real. |
+
+  **Realtime ASR was NOT covered then. It is now** — see "Realtime sessions"
+  below (2026-08-20). `indexer_asr_realtime.py` opens a WebSocket to
+  `/v1/realtime`, and the budget and billing design that entry records is what
+  the sentence above said was missing.
 
 - **The declared order is the precedence order.** `modelsSQL` joins the pairs
   with `WITH ORDINALITY` and orders by the ordinality before the row id, so a
@@ -471,6 +502,359 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   `..._lookup_failed_total`). `llmproxy.ModelMapMetricNames` is the ONE named
   path by which they reach `GET /metrics`, so the package that publishes a
   counter also states its name. No name is copied into a second file.
+
+## Realtime sessions
+- **[2026-08-20] The gateway serves `/llm/v1/realtime`** (`internal/llmproxy/
+  realtime.go`). *Finding:* the audio routes removed two of the three reasons
+  pylon-indexer still runs a LiteLLM process of its own; the third is
+  `indexer_asr_realtime.py`, which opens a WebSocket to
+  `/v1/realtime?model=…&intent=transcription` and pumps PCM16 audio at it. That
+  process is a SECOND LLM data plane: no budget, no billing, credentials from a
+  registry the platform no longer writes. *Decision:* serve the route here, on
+  the same order every /llm route follows — mapModel, then the budget gate, then
+  dispatch, then bill.
+
+  **What is different from every other route, and why each difference is a rule
+  rather than a preference.** An HTTP request is gated once because it ENDS. A
+  realtime session does not end: the tenant holds the socket, the turns keep
+  coming, and a hijacked connection has its deadlines CLEARED, so no
+  `ReadHeaderTimeout` and no `IdleTimeout` can ever reap it.
+
+  | Property | Rule |
+  |---|---|
+  | Admission | mapModel → price gate → budget gate, ALL before `websocket.Accept`. After the hijack there is no `http.ResponseWriter` left to write an OpenAI-shaped body with. `checkBudget` was split into `admissionVerdict` (writer-free) and a thin HTTP wrapper so the session re-check asks the SAME question, not a second weaker one. |
+  | Billing | Per TURN, never once per session. `updateUsageUnits` → `spawnBillingGoroutine`, which ALREADY mints a fresh uuid per call — so one call per turn is one event id per turn and that function needs NO change. One id per session would make turns 2..N look like redeliveries to the NATS duplicate window and to `gateway.processed_event_ids`' primary key, and they would contribute nothing. |
+  | Not `streamSettler` | It ASSIGNS usage, because SSE counts are cumulative over one response. Realtime `response.done` usage is per RESPONSE and must be summed across turns; assigning would bill only the last one. |
+  | Keepalive | The gateway's own job, because the hijack cleared the deadlines. Both peers are pinged. |
+  | Shutdown | Its OWN phase and its own wait group, NOT the stream drain's (see below). |
+  | Read limit | 1 MiB on BOTH sockets. The library default is 32 KiB, realtime frames carry base64 audio well past it, and the failure is a mid-session close with status 1009 rather than an error at setup. |
+
+- **[2026-08-20] The route dispatches the `asr` section. No `realtime` pair is
+  added, and that is a finding.** elitea-main writes exactly five model types —
+  `llm_model`, `embedding_model`, `asr_model`, `tts_model`,
+  `image_generation_model` (`internal/api/v2/configurations/handler.go`) — and
+  no `realtime` section exists for a project to put a row in. Declaring one in
+  `addressableModelSections` would admit a pair no row can carry, so every
+  realtime call would answer 404 for a model nobody could configure. A realtime
+  ASR model IS an ASR model, and the `asr` pair joined the list with the audio
+  routes. `TestRealtime_DispatchesTheAsrSectionWireName` asserts the pair covers
+  the new route, because a missing pair is exactly how `/llm/v1/embeddings`
+  broke. Putting a realtime model in the `llm` section is NOT the alternative:
+  those rows are the chat catalogue the web model picker reads.
+
+- **[human decision] 2026-08-20 — a mid-session budget-store outage REFUSES THE
+  TURN and KEEPS THE SOCKET OPEN. N consecutive outages then close the
+  session.** *Decision (H1):* when a live session's re-check returns Block503,
+  the turn is not forwarded to the provider and a realtime `error` event is sent
+  to the client; the socket stays open. After
+  `maxConsecutiveBudgetOutages` = 4 consecutive such re-checks the session is
+  closed with status 1008. *Rationale:* fail CLOSED on spend, because no
+  un-gated turn reaches the provider for the whole window, without dropping a
+  live call on a transient blip. *Why 4:* 4 × the 15 s re-check is about a
+  minute — deliberately longer than a NATS reconnect or a leader election, which
+  are seconds, and far shorter than the FSM's own continuous-outage ceiling
+  (`LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN`, default 10 minutes), so a real
+  outage cannot hold an un-gated socket open for as long as that ceiling would
+  allow. Turns are refused throughout either way; what the window buys is that
+  the caller's session survives a blip. An exhausted budget (402) is NOT a blip
+  and closes on the FIRST refusal. The counter counts a 503 and NOTHING else:
+  see the 2026-08-20 entry below on the loop breaker.
+
+- **[human decision] 2026-08-20 — an UNPRICED realtime model is REFUSED AT THE
+  UPGRADE.** *Decision (H2):* a session opens only when the price CATALOG
+  carries a rate for that exact model — a real catalog price, which
+  `cost.Cost.FromCatalog()` reports, and NOT a default-table or fallback price.
+  Otherwise the gateway answers 502 `model_not_priced` before the upgrade, while
+  an `http.ResponseWriter` still exists. Either basis admits: a conversational
+  session is sold by the token and a transcription session can be sold by the
+  second, and refusing the second shape would refuse every whisper-style model.
+  *Rationale:* `cost.Calculator`'s default table PREFIX-MATCHES, so
+  `gpt-4o-realtime-preview` resolves onto the plain `gpt-4o` text row and bills a
+  confident, roughly 10x-too-small amount that no "unpriced" counter can fire
+  on. For a single audio request the answer to an unpriced model is "bill zero
+  and count it", and the loss is bounded by one call. A socket the tenant holds
+  open has no natural bound, so the same answer caps nothing.
+  *Accepted cost:* a project that configures a realtime model the price sync has
+  not reached cannot open a session at all, and sees a 502 rather than a working
+  call. `gateway_realtime_refused_unpriced_model_total` is the number that makes
+  that state visible. On a gateway with NO budget gate wired the check is
+  skipped, for the same reason `checkBudget` is skipped there: nothing is metered
+  on any route in that posture, and this is not a second policy.
+
+- **[2026-08-20] The mid-session refusal event is a NEW contract, not a
+  compatibility requirement.** No elitea-sdk realtime client exists, so nothing
+  constrains this shape today; it is written down here so the first client does
+  not have to guess. The frame is the provider's own `error` event, and its
+  error object carries the EXACT three fields the HTTP budget refusal carries:
+
+  ```json
+  {"type":"error","error":{"type":"budget_exceeded","code":"insufficient_quota","message":"…"}}
+  ```
+
+  `type` is always `budget_exceeded` and the SCOPE rides in `code`
+  (`insufficient_quota` for the project ceiling, `member_budget_exceeded` for
+  the member one) — the same rule `budgetErrorType` states for the HTTP path, so
+  a future SDK reader reuses the one matcher it already has. A non-budget
+  refusal carries its own type and code (`service_unavailable` /
+  `nats_unavailable` for a gate outage). A client that only understands the
+  provider's `error` event still reads it.
+
+- **[2026-08-20] A realtime session is NOT a stream drain, and shutdown gives it
+  its own phase.** `drainWg` / `drainClosing` / `StopStreamGrace` mean "stop
+  waiting for a usage trailer on a response that already finished". Their cut is
+  one second, which is not a close budget for a live call, and sharing the pool
+  would make a session compete for slots with abandoned SSE streams. The session
+  group is separate (`sessionWg`, `sessionClosing`, `Handler.
+  CloseRealtimeSessions`), with the same Add-after-Wait mutex guard `trackDrain`
+  uses. The sequence is:
+
+  `ShutdownHTTP → StopStreamGrace → CloseRealtimeSessions → DrainBilling →
+  govStore.Drain → Close`
+
+  AFTER `ShutdownHTTP` because `http.Server.Shutdown` neither closes nor waits
+  for a hijacked connection, so nothing else ends a session at all. BEFORE
+  `DrainBilling` for the reason the three-phase entry above gives for a
+  recovered stream trailer: a session's LAST turn spawns its billing goroutine
+  as it closes, and that goroutine needs billing open and NATS live. Move it
+  after `DrainBilling` and every session's final turn is refused with
+  `billing_refused` on every rolling deploy. `TestShutdownSequence` asserts the
+  order by EXECUTING it, and `TestMainWiring` asserts the call exists.
+
+- **[2026-08-20] The accept-side Origin policy is same-origin by default and
+  `InsecureSkipVerify` is never used.** A WebSocket handshake is NOT subject to
+  CORS, so this is the first /llm path a browser could open cross-site with the
+  user's ambient credentials. `websocket.AcceptOptions.OriginPatterns` is left
+  EMPTY by default, which is the library's same-origin rule and not "no policy":
+  a handshake is admitted when its `Origin` matches the gateway's own host, or
+  when it carries no `Origin` at all — which is every non-browser client,
+  including the pylon relay this route exists for. An operator widens it, per
+  origin, through `LLM_REALTIME_ALLOWED_ORIGINS`, and `logRealtimeMode` states
+  the resulting mode at startup so a widened policy is never silent.
+  **Still open, and it is NOT in this module:** the edge (elitea-main) performs
+  no Origin check of its own, and the gateway's check compares against the
+  GATEWAY's host, not the edge's. A browser reaching the route through
+  `https://dev.elitea.ai/llm/v1/realtime` therefore has to be admitted by name
+  here, which also admits it for a caller that reaches the gateway directly. An
+  edge-side check is the right place for a browser-facing policy; it lives in a
+  different module and is left as a follow-up.
+
+- **[2026-08-20] The TLS listener advertises `http/1.1` and nothing else.**
+  `buildTLSConfig` set no `NextProtos`, and `ListenAndServeTLS` adds `h2` when
+  the field is empty — so the listener negotiated HTTP/2 with any client that
+  offered it. A WebSocket upgrade needs the raw connection, and net/http gets it
+  by hijacking the `ResponseWriter`; an HTTP/2 `ResponseWriter` serves ONE STREAM
+  of a multiplexed connection and is not an `http.Hijacker`. RFC 8441 extended
+  CONNECT is the HTTP/2 answer and neither net/http nor this gateway implements
+  it. Production survived only because elitea-main's proxy transport pins
+  http/1.1; a direct in-cluster h2 client failed at an opaque non-Hijacker
+  assertion, after the caller believed the handshake had started. Pinning ALPN
+  turns that into a clear negotiation failure.
+
+- **[2026-08-20] The dependency is `github.com/coder/websocket` v1.8.15 (ISC).**
+  It is net/http-native (`Accept(w, r, opts)` / `Dial(ctx, url, opts)`), every
+  operation takes a context, and it serialises writes internally — which is what
+  lets the keepalive pinger share a socket with the forwarding goroutine without
+  a lock of ours. Its own `require` block is empty, so it costs exactly one
+  module. bifrost/core owns NO socket for this surface: there is no realtime
+  request method, the provider supplies a URL, a header set and a subprotocol,
+  and the CALLER dials, frames and pumps (core's own reference use is
+  `internal/llmtests/realtime.go`).
+
+- **[2026-08-20] The route forwards an ALLOWLIST of caller query parameters onto
+  the provider URL. `intent` is on it; `model` is not.** *Finding:* the one
+  client this route has —
+  `legacy/plugins/indexer_worker/methods/indexer_asr_realtime.py` — dials
+  `/v1/realtime?model=<m>&intent=transcription`, and `intent` selects the
+  provider's TRANSCRIPTION session mode. bifrost's `RealtimeWebSocketURL` builds
+  `<base>/v1/realtime?model=<model>` and core@v1.7.3 holds ZERO occurrences of
+  "intent", so the parameter was dropped: the provider opened a CONVERSATIONAL
+  session for the only caller the feature has. *Decision:* forward the
+  allowlisted parameters (`realtimeForwardedParams`, today exactly `intent`),
+  never the caller's whole query. A passthrough would let the caller rewrite
+  `model` — undoing `mapModel` and the price gate — or name `api-key`,
+  `api-version` or `deployment` and pick the credential or the Azure deployment
+  the gateway dials. A parameter already on the provider URL is never
+  overwritten, so the gateway's own values win whatever the allowlist grows to.
+  Add a name only when it selects a provider session MODE.
+
+- **[2026-08-20] A client frame that changes the session model re-runs the WHOLE
+  admission sequence, and the session is CLOSED when it fails.** *Finding:*
+  `mapModel`, the price gate and `checkBudget` all ran against the `model` QUERY
+  parameter, but the model the provider serves is changed by a client frame:
+  `session.update` carries `session.model` (`schemas.RealtimeSession.Model` is a
+  first-class field) and `transcription_session.update` carries
+  `session.input_audio_transcription.model`. The uplink forwarded both verbatim,
+  so an admitted, priced model became an UNPRICED one one frame after the
+  upgrade, and `billTurn` kept pricing the ORIGINAL. Everything H2 refuses at the
+  upgrade was reachable through that hole. *Decision:* re-run `mapModel` → price
+  gate → budget gate for the new name; on success ADOPT it (so billing follows
+  the model the provider serves) and REWRITE the frame to carry the mapped
+  provider name; on failure close the session with 1008 and the OpenAI-shaped
+  refusal. *Why not refuse the frame:* `indexer_asr_realtime.py` opens EVERY
+  session with `transcription_session.update`, and that frame carries the audio
+  format, the language and the VAD settings as well as the model. Dropping it
+  leaves the session with no transcription configuration at all — a silent,
+  total failure of the only caller. *Why close instead of stripping the model:* a
+  session that quietly kept serving the old model would answer a request the
+  caller never made, and the caller could not tell.
+  A session therefore holds TWO model slots — the response model and the
+  input-transcription model — and each turn bills against the model that
+  produced it. Pricing a transcription turn with the conversation model's rate
+  is a wrong number, not a missing one.
+
+- **[2026-08-20] A live session bounds every gate call itself.** *Finding:*
+  `regate` and `gateTurn` called `admissionVerdict` with the SESSION context,
+  which has no deadline by design. `admissionVerdict` bounds each store read
+  with `budgetGateTimeout` — but that is a context DEADLINE, and a store that
+  STALLS while it ignores its context returns nothing at all. The re-check
+  goroutine then parked for ever: the ticker never fired again and the session
+  ran un-gated for the life of the process. *Decision:* `gateVerdict` runs the
+  verdict on its own goroutine and waits `realtimeGateTimeout`
+  (`2 x budgetGateTimeout + 1 s`, so a merely SLOW store still answers). A
+  timeout is an OUTAGE and decision H1 applies to it: refuse the turn, keep the
+  socket, count it toward `maxConsecutiveBudgetOutages`.
+
+- **[2026-08-20] A session ends in ONE order: REFUSE, then CLOSE, then CANCEL.**
+  *Finding (F):* the 402 path closed the client socket BEFORE cancelling and
+  never set the refusing flag, so the uplink kept forwarding client events to
+  the provider for the whole close handshake — which coder/websocket runs for up
+  to a HARDCODED 5 s. An exhausted budget paid for five more seconds of
+  inference. *Finding (G):* the same order made `Close` wait for the peer's close
+  reply while the uplink held the connection's `readMu`; one silent peer burned
+  5.001 s of the 5 s `RealtimeCloseTimeout`, and `CloseRealtimeSessions`
+  returned with the session STILL LIVE — so `DrainBilling` closed billing while
+  that session's last turn was in flight. *Decision:* `realtimeSession.end` sets
+  `refusing` FIRST (spend stops at once), then closes, then cancels; and
+  `wsSocket.Close` waits `realtimeCloseHandshakeBudget` (1 s) for the peer's
+  reply and then walks away. The close FRAME is written before that wait, so the
+  caller still learns WHY the session ended.
+  **The reviewers' literal prescription — cancel first, then close — was
+  MEASURED and rejected.** The session context is the context the uplink reads
+  the CLIENT socket with, and coder/websocket arms a `context.AfterFunc` that
+  closes the connection ABRUPTLY when it fires (`conn.go`, `setupReadTimeout`).
+  Cancel-then-close delivered the close status on 8 runs out of 30 and an
+  unexplained EOF on the other 22, so the caller usually could not tell a budget
+  refusal from a crash. `end()` records the first reason a session ends, so
+  `run()`'s tidy close can no longer race it either.
+
+- **[2026-08-20] The provider is dialled AFTER `websocket.Accept`, and a
+  non-upgrade request gets an OpenAI-shaped 426.** *Finding:* the dial ran
+  first, so every plain GET, every scan and — because the Origin allowlist lives
+  INSIDE `Accept` — every REFUSED cross-site handshake opened one outbound
+  WebSocket to a paid provider before it was refused. *Decision:* accept the
+  client socket first. The price is that a dial failure has no status line left,
+  so it is reported on the socket as the same OpenAI-shaped `error` object every
+  other refusal carries, followed by close 1011. The gateway also detects a
+  non-upgrade request itself (`isWebSocketUpgrade`) and answers 426 with the
+  nested error body, because the library's own 426 is plain text and every /llm
+  route refuses in the OpenAI shape (spec 2.5). The client socket is accepted
+  with this surface's one subprotocol, `realtime`, because the provider's answer
+  is not known yet; the two sides negotiate separately and both are logged.
+
+- **[2026-08-20] Four counters were added because the money path had no signal
+  where it needed one.**
+
+  | Counter | The silence it ends |
+  |---|---|
+  | `gateway_realtime_frames_dropped_total` | `..._turns_refused_total` had its only `Add` in `refuseTurns`, which `regate` calls once per re-check TICK. At the shipped 15 s interval an operator read "1" while a caller streaming 20 audio frames a second had 300 thrown away. The drops are counted where they happen now, and `turns_refused` counts TURN STARTS only. |
+  | `gateway_realtime_turn_basis_mismatch_total` | H2's probe admits EITHER basis, and a turn bills on whatever the provider reports. A token-priced model that reports DURATIONS bills nothing, and `updateUsageUnits` answers `billNotBillable`, which no realtime counter saw. The session was H2 admitted and billed zero for its whole life. |
+  | `gateway_realtime_turns_unbilled_total` | `billTurn` DISCARDED `billRefused` — real, provider-reported spend dropped because billing was draining. It now publishes `budget.unbilled_stream` with the existing `billing_refused` reason and a `realtime_turn` outcome, exactly as `streamSettler` does, so the one alarm covers both surfaces. |
+  | `gateway_realtime_sessions_closed_model_total` | The mid-session model refusal above. |
+
+  `billTurn` also no longer returns silently when the codec cannot DECODE a
+  terminal frame. The type is read from the raw frame instead, so such a turn is
+  billed when its usage is still readable (`ExtractRealtimeTurnUsage` takes the
+  raw bytes) and counted as unpriced when it is not. A turn is also billed when
+  the forward to the CALLER fails: the provider had already done the work, and
+  returning before `billTurn` was the free-inference-on-disconnect class
+  `stream_drain.go` exists to prevent.
+
+- **[2026-08-20] A turn that reports no usable usage is COUNTED, never billed as
+  zero.** `ExtractRealtimeTurnUsage` reads `response.usage` off `response.done`
+  ONLY. A transcription-intent session emits neither, so bifrost returns nil for
+  the event that DOES carry a well-formed top-level `usage` object — this
+  gateway parses that envelope itself. Worse, the same extractor returns a
+  NON-NIL, ALL-ZERO struct for a duration-shaped envelope, so `if u != nil {
+  bill(u) }` bills zero and reports success. Every reader here discriminates on
+  the QUANTITY, never on the pointer. A turn with no usable quantity raises
+  `gateway_realtime_turns_unpriced_total` and bills nothing; no number is
+  invented for it. A `total_tokens`-only envelope is unpriced for the same
+  reason: input and output are priced at different rates, so splitting a total
+  between them would be a figure the gateway made up.
+
+- **[2026-08-20] A mid-session budget re-check is NOT a request, and it no longer
+  feeds the amplification backstop.** *Finding:* `gateVerdict` called
+  `admissionVerdict`, and `admissionVerdict` records a hit in the
+  per-(project, model) loop breaker. The re-check runs on a ticker for the whole
+  life of every session, so the gateway's own gating work arrived in that
+  sliding window as if it were tenant traffic. Enough long sessions on one
+  project and model opened the circuit for that project's REAL /llm requests —
+  an availability defect the gateway caused itself. *Decision:* the verdict
+  function takes an `admissionMode`. An ARRIVAL calls `loopBreaker.allow`, which
+  reads the circuit and records the hit. A RE-CHECK calls `loopBreaker.observe`,
+  which reads the circuit and records nothing. `recheckVerdict` is the re-check
+  entry point and the realtime route is its only caller. The re-check still
+  RESPECTS an open circuit: dropping the read would put a live session outside a
+  control every other path obeys. Tests:
+  `TestRealtime_TheBudgetRecheckIsNotCountedAsARequest`,
+  `TestRecheckVerdict_ObservesTheBackstopWithoutFeedingIt`,
+  `TestLoopBreaker_ObserveReportsTheCircuitAndRecordsNothing`.
+
+- **[2026-08-20] Decision H1's outage counter applies to a 503 ONLY.**
+  *Finding:* `regate`'s default branch counted EVERY non-Allow, non-402 verdict
+  toward `maxConsecutiveBudgetOutages`. H1 was authored for one condition — the
+  budget store did not answer — and a tripped loop breaker is a different
+  condition with a different lifetime (`DefaultLoopBreakerOpenFor` is 5 s). A
+  live call was therefore torn down under a policy nobody wrote for it, and for
+  a condition that had usually already cleared. *Decision:* the branches are
+  separated. A 503 refuses the turn, keeps the socket and counts toward H1. Any
+  other refusal refuses the turn, keeps the socket and counts NOTHING — the
+  counter is left unchanged rather than reset, because such a verdict says
+  nothing about whether the store is reachable. Only an Allow ends an outage
+  run. Test: `TestRealtime_ATrippedBackstopRefusesTurnsButKeepsTheSession`.
+
+- **[2026-08-20] The upstream reports the NEGOTIATED subprotocol, not the
+  declared one.** *Finding:* `RealtimeUpstream.Subprotocol` carried
+  `RealtimeWebSocketSubprotocol()`, which is only what the dial OFFERED. A
+  provider is free to answer with none, so the session log named a negotiation
+  that may not have happened. *Decision:* read the value off the opened
+  connection (`conn.Subprotocol()`). Test:
+  `TestOpenRealtimeSocket_ReportsTheNegotiatedSubprotocol`.
+
+- **[2026-08-20] Each keepalive ping gets its OWN deadline.** *Finding:* the two
+  pings shared one context and ran one after the other. `coder/websocket`'s
+  `Ping` waits for the pong, so a caller that was slow to answer spent the whole
+  shared budget; the provider ping then started on an expired context, answered
+  "context deadline exceeded", and the session was torn down on a FALSE liveness
+  verdict about a healthy provider. *Decision:* `pingPeers` pings both peers at
+  the same time, each under its own deadline (`realtimePingBound`, default
+  `realtimeWriteTimeout`). The two sockets are different connections, so a
+  concurrent ping on each is safe. Test:
+  `TestRealtime_EachKeepalivePingGetsItsOwnDeadline`.
+
+- **[2026-08-20] The production dialer is tested, and the split that made it
+  testable.** *Finding:* `DialRealtime` and all four `bifrostRealtimeCodec`
+  methods measured 0.0% coverage, because every realtime test injects a fake
+  dialer. The one piece of the route that touches the bifrost realtime API — an
+  API nobody here had used before — was the one piece nothing ran. *Decision:*
+  `openRealtimeSocket` holds everything below the key selection (URL, headers,
+  dial, read limit, negotiated subprotocol); it takes the two optional provider
+  interfaces, so a stub `schemas.RealtimeProvider` and a real WebSocket listener
+  drive all of it. `DialRealtime` itself is also driven end to end against a
+  real embedded core whose account points one provider at a test listener
+  (`TestDialRealtime_ThroughTheEmbeddedCore`). Coverage went 0.0% → 100%
+  (`openRealtimeSocket`, all four codec methods) and 86.7% (`DialRealtime`; the
+  two remaining statements need a provider that implements one optional
+  interface but not the other). The provider-side `SetReadLimit` is pinned by
+  `TestOpenRealtimeSocket_PinsTheProviderSideReadLimit` — deleting the call left
+  the whole suite green before.
+
+- **[2026-08-20] A URL parse failure no longer repeats the URL.** *Finding:*
+  `realtimeProviderURL` returned `url.Parse`'s own error, and that error QUOTES
+  the URL it failed on. The base URL comes from the credential and can carry
+  userinfo, so the one function every caller is careful not to log put the URL
+  back into the error text. *Decision:* return the REASON only. Test:
+  `TestOpenRealtimeSocket_UnparsableProviderURLIsReported`.
 
 ## Observability
 - **[human decision] 2026-08-17 (issue #465) — `GET /metrics` serves a named

@@ -162,6 +162,25 @@ type fakeCostEstimator struct {
 	mu         sync.Mutex
 	lastInput  int64
 	lastOutput int64
+	// lastUnits records the whole Units value CostUnits received, so an audio
+	// test can assert the BASIS the handler chose and not only the counts.
+	lastUnits cost.Units
+
+	// source is the provenance the fake reports on Cost.Source. It defaults to
+	// the CATALOG, because that is what almost every test means by "a price":
+	// leaving it empty would make every token-billed audio request look like one
+	// the gateway priced from a fabricated default, and trip
+	// MetricAudioDefaultPriced across the suite. A test that wants the
+	// fabricated case sets cost.SourceFallback explicitly.
+	source string
+}
+
+// costSource returns the provenance to stamp on a returned Cost.
+func (f *fakeCostEstimator) costSource() string {
+	if f.source == "" {
+		return cost.SourceCatalog
+	}
+	return f.source
 }
 
 func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, outputTokens int64) cost.Cost {
@@ -170,9 +189,64 @@ func (f *fakeCostEstimator) Cost(_ context.Context, _, _ string, inputTokens, ou
 	f.lastOutput = outputTokens
 	f.mu.Unlock()
 	if f.inputRateNano != 0 || f.outputRateNano != 0 {
-		return cost.Cost{TotalNanoUSD: inputTokens*f.inputRateNano + outputTokens*f.outputRateNano}
+		return cost.Cost{
+			TotalNanoUSD: inputTokens*f.inputRateNano + outputTokens*f.outputRateNano,
+			Basis:        cost.BasisTokens,
+			Source:       f.costSource(),
+		}
 	}
-	return cost.Cost{TotalNanoUSD: f.totalNano}
+	return cost.Cost{TotalNanoUSD: f.totalNano, Basis: cost.BasisTokens, Source: f.costSource()}
+}
+
+// CostUnits is the audio-capable form (issue #323). The fake prices seconds and
+// characters at the SAME per-unit rates it prices tokens at, and it records the
+// units it received, so a test can assert both the basis the handler chose and
+// the quantity it passed. A real rate table is the Calculator's job, not this
+// stub's.
+//
+// It answers a non-token basis with cost.Basis set, so the handler's
+// non-token accounting runs. audioUnpricedEstimator below is the stub for the
+// opposite case: units the catalog cannot price.
+func (f *fakeCostEstimator) CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost {
+	f.mu.Lock()
+	f.lastUnits = u
+	f.mu.Unlock()
+
+	basis := u.Basis()
+	if basis == cost.BasisTokens {
+		return f.Cost(ctx, provider, model, u.InputTokens, u.OutputTokens)
+	}
+	in, out := u.InputChars, u.OutputChars
+	if basis == cost.BasisSeconds {
+		in, out = u.InputMillis, u.OutputMillis
+	}
+	total := f.totalNano
+	if f.inputRateNano != 0 || f.outputRateNano != 0 {
+		total = in*f.inputRateNano + out*f.outputRateNano
+	}
+	return cost.Cost{TotalNanoUSD: total, Basis: basis, Source: f.costSource()}
+}
+
+func (f *fakeCostEstimator) getLastUnits() cost.Units {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastUnits
+}
+
+// audioUnpricedEstimator answers every non-token basis with an UNPRICED cost:
+// an empty Basis and a zero total. It stands for the catalog that carries no
+// per-second or per-character rate for the model, which is the state every
+// model is in until the price sync writes one.
+type audioUnpricedEstimator struct{ fakeCostEstimator }
+
+func (a *audioUnpricedEstimator) CostUnits(ctx context.Context, provider, model string, u cost.Units) cost.Cost {
+	if u.Basis() == cost.BasisTokens {
+		return a.fakeCostEstimator.CostUnits(ctx, provider, model, u)
+	}
+	a.mu.Lock()
+	a.lastUnits = u
+	a.mu.Unlock()
+	return cost.Cost{}
 }
 
 func (f *fakeCostEstimator) getLastTokens() (input, output int64) {
@@ -1376,5 +1450,53 @@ func TestDrainBilling_NewRequestsRejectedAfterDrain(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if gate.updateCalls.Load() != 0 {
 		t.Error("UpdateUsage was called after DrainBilling — billing goroutine was added after Wait")
+	}
+}
+
+// TestRecheckVerdict_ObservesTheBackstopWithoutFeedingIt pins the one difference
+// between an ARRIVAL and a RE-CHECK.
+//
+// THE DEFECT. A live realtime session re-asks this verdict on a ticker, and the
+// verdict recorded a hit in the per-(project, model) amplification backstop each
+// time. The gateway's own gating work therefore arrived in that window as if it
+// were tenant traffic, and enough long sessions on one pair opened the circuit
+// for that project's REAL /llm requests.
+//
+// The re-check must still RESPECT an open circuit. Dropping the read would leave
+// a live session outside a control every other path obeys.
+func TestRecheckVerdict_ObservesTheBackstopWithoutFeedingIt(t *testing.T) {
+	const threshold = 3
+	h := NewHandler(newDispatchSpy(), nil, nil,
+		WithLoopBreakerParams(LoopBreakerParams{
+			Threshold: threshold,
+			Window:    time.Minute,
+			OpenFor:   time.Minute,
+		}))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "42")
+
+	// Many more re-checks than the threshold, on one tuple.
+	for i := 0; i < 50; i++ {
+		if v := h.recheckVerdict(ctx, "gpt-4o"); !v.allow {
+			t.Fatalf("re-check #%d was refused with status %d; a re-check must not open the circuit it reads",
+				i, v.status)
+		}
+	}
+	// An arriving request is still admitted, which is the property that matters
+	// to a tenant: the sliding window holds none of the re-checks.
+	if v := h.admissionVerdict(ctx, "gpt-4o"); !v.allow {
+		t.Fatal("an arriving request was refused after 50 budget re-checks; the re-checks filled the window")
+	}
+
+	// A circuit that ARRIVALS open is still reported to a re-check.
+	for i := 0; i < threshold; i++ {
+		h.admissionVerdict(ctx, "gpt-4o")
+	}
+	v := h.recheckVerdict(ctx, "gpt-4o")
+	if v.allow {
+		t.Fatal("a re-check was admitted while the tuple's circuit was open; the read must not be dropped")
+	}
+	if v.status != http.StatusTooManyRequests || v.code != "rate_limit_exceeded" {
+		t.Fatalf("re-check verdict = status %d code %q, want 429 rate_limit_exceeded", v.status, v.code)
 	}
 }

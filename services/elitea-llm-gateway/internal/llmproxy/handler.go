@@ -77,7 +77,7 @@ type Handler struct {
 	// each drain holds a goroutine and an open provider socket for up to
 	// streamGrace. nil = unbounded (unit-test construction only); production
 	// wiring always sets a limit via WithStreamDrainLimit.
-	drainLimit *drainLimiter
+	drainLimit *slotLimiter
 
 	// drainWg tracks detached stream drains, SEPARATELY from billingWg. The two
 	// must be waited on in order: drains have to settle (and spawn their
@@ -112,6 +112,59 @@ type Handler struct {
 	// request?" assertion has no other observation point, because a blocked
 	// request never reaches the router.
 	streamCtxHook func(*schemas.BifrostContext)
+
+	// realtimeDialer opens the PROVIDER side of a /llm/v1/realtime session
+	// (realtime.go). nil disables the route: it then answers 501 rather than
+	// upgrading a socket it could never connect to anything.
+	realtimeDialer RealtimeDialer
+
+	// realtimeLimit bounds concurrent realtime sessions globally and per
+	// project. It is a SEPARATE pool from drainLimit — a live call must not
+	// compete for slots with abandoned SSE streams.
+	realtimeLimit *slotLimiter
+
+	// realtimeRecheck is how often a live session re-asks the budget gate. It is
+	// the MANDATORY bound on a session's spend: a socket the tenant holds open
+	// is not bounded by its own admission check (realtime.go, fact F3).
+	realtimeRecheck time.Duration
+
+	// realtimeKeepalive is the ping interval on a live session's two sockets.
+	// It is NOT operator configuration: the value is bounded by what proxies
+	// and load balancers do, not by anything a deployment chooses. It is a
+	// field rather than a bare constant so a test can drive the pinger without
+	// waiting 20 s for one tick.
+	realtimeKeepalive time.Duration
+
+	// realtimePingBound is how long ONE keepalive ping waits for its pong. It
+	// is NOT operator configuration and it is NOT shared between the two peers:
+	// each ping gets its own deadline, so a caller that is slow to pong cannot
+	// spend the provider's budget and make a live provider read as a dead one.
+	// It is a field rather than a bare constant so a test can drive a slow peer
+	// without waiting the production bound. See realtimeSession.pingPeers.
+	realtimePingBound time.Duration
+
+	// realtimeGateBound is how long a live session waits for ONE budget-gate
+	// answer before it reads the silence as an outage. It is NOT operator
+	// configuration: the value follows what admissionVerdict can legitimately
+	// take, not what a deployment chooses. It is a field rather than a bare
+	// constant so a test can drive a STALLED budget store without waiting the
+	// production bound for it. See realtimeSession.gateVerdict.
+	realtimeGateBound time.Duration
+
+	// realtimeOrigins is the accept-side Origin allowlist. Empty is the
+	// library's same-origin default, which is the secure one; it is never
+	// InsecureSkipVerify.
+	realtimeOrigins []string
+
+	// sessionWg tracks live realtime sessions, SEPARATELY from drainWg and
+	// billingWg. sessionMu/sessionWaiting are the same Add-after-Wait guard
+	// trackDrain uses, and sessionClosing is what tells a live session to end.
+	// CloseRealtimeSessions states why these are not the drain's.
+	sessionWg          sync.WaitGroup
+	sessionMu          sync.Mutex
+	sessionWaiting     bool
+	sessionClosing     chan struct{}
+	sessionClosingOnce sync.Once
 
 	// egressPolicy backs the /llm/v1/check_connection endpoint's SSRF gate
 	// (#319). It is the SAME operator-configured allowlist GetKeysForProvider
@@ -235,6 +288,40 @@ func WithStreamDrainLimit(n int) HandlerOption {
 	}
 }
 
+// WithRealtimeDialer wires the provider side of the /llm/v1/realtime route. A
+// nil dialer leaves the route answering 501: the alternative would be to accept
+// a caller's socket and then have nothing to connect it to.
+func WithRealtimeDialer(d RealtimeDialer) HandlerOption {
+	return func(h *Handler) { h.realtimeDialer = d }
+}
+
+// WithRealtimeSessionLimit bounds concurrent realtime sessions on this replica.
+// n <= 0 leaves the pool unbounded (test construction only); the composition
+// root always passes a positive limit, because nothing else bounds a session —
+// a hijacked connection has no server-side timeout (realtime.go, fact F6).
+func WithRealtimeSessionLimit(n int) HandlerOption {
+	return func(h *Handler) { h.realtimeLimit = realtimeSessionLimit(n) }
+}
+
+// WithRealtimeBudgetRecheck sets how often a live realtime session re-asks the
+// budget gate. A non-positive value leaves the default in place: a session with
+// no re-check is gated exactly once, for its whole life, which is the hole this
+// mechanism exists to close.
+func WithRealtimeBudgetRecheck(d time.Duration) HandlerOption {
+	return func(h *Handler) {
+		if d > 0 {
+			h.realtimeRecheck = d
+		}
+	}
+}
+
+// WithRealtimeOrigins sets the accept-side Origin allowlist for
+// /llm/v1/realtime. An empty list keeps the same-origin default; the values come
+// from the operator (LLM_REALTIME_ALLOWED_ORIGINS), never from a request.
+func WithRealtimeOrigins(origins []string) HandlerOption {
+	return func(h *Handler) { h.realtimeOrigins = origins }
+}
+
 // NewHandler builds a /llm Handler over the given router. logger may be nil
 // (a discarding logger is substituted). identitySecret may be empty to disable
 // HMAC verification of the forwarded identity headers. Optional features (the
@@ -254,6 +341,15 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 		streamGrace:  DefaultStreamGrace,
 		drainLimit:   newDrainLimiter(DefaultStreamDrainLimit),
 		drainClosing: make(chan struct{}),
+		// The realtime defaults are ON for the same reason the stream grace is:
+		// a Handler built without the options must still bound a session rather
+		// than gate it once and hold an unbounded socket.
+		realtimeLimit:     realtimeSessionLimit(DefaultRealtimeMaxSessions),
+		realtimeRecheck:   DefaultRealtimeBudgetRecheck,
+		realtimeKeepalive: realtimeKeepalivePeriod,
+		realtimePingBound: realtimeWriteTimeout,
+		realtimeGateBound: realtimeGateTimeout,
+		sessionClosing:    make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(h)

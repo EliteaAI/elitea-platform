@@ -54,16 +54,34 @@ const (
 	fallbackOutputNano int64 = 3_000_000_000
 )
 
-// defaultPrice returns the pylon-parity default price for a model name, matching
-// the FIRST prefix (case-insensitive, insertion order) as pylon does, else the
-// ultimate 1.0/3.0 USD fallback. Source is "default" on a table hit and
+// THIS TABLE MUST NEVER GAIN AN AUDIO RATE, and neither may the fallback below
+// it (issue #323). Every price here is per 1,000,000 TOKENS.
+//
+// The reason is the fallback, not the table. defaultPrice answers for EVERY
+// model, including one no prefix matches: it fabricates 1.0 / 3.0 USD per 1M
+// tokens. That is a defensible guess for a text model. It is a meaningless
+// number for a second of audio or for a character of speech, and the budget
+// counter it would land on is the same counter the budget gate reads back.
+// whisper-1 would then be refused, or admitted, on an invented figure.
+//
+// So a per-second or per-character price comes from the catalog or it does not
+// exist. A model with no catalog audio rate is UNPRICED: the gateway bills it
+// zero and counts it on gateway_audio_unpriced_total, where an operator can see
+// it. Price.AudioFromCatalog is the flag that keeps the two apart, and
+// defaultPrice leaves it false by returning a Price with no audio fields set.
+
+// defaultPrice returns the pylon-parity default TOKEN price for a model name,
+// matching the FIRST prefix (case-insensitive, insertion order) as pylon does,
+// else the ultimate 1.0/3.0 USD fallback. Source is "default" on a table hit and
 // "fallback" on the ultimate default, so a metering gap is observable.
+//
+// It sets no audio rate and leaves AudioFromCatalog false. See the note above.
 func defaultPrice(model string) Price {
 	lower := strings.ToLower(model)
 	for _, e := range defaultPriceTable {
 		if strings.HasPrefix(lower, e.prefix) {
-			return Price{InputNanoPer1M: e.inputNano, OutputNanoPer1M: e.outputNano, Source: "default"}
+			return Price{InputNanoPer1M: e.inputNano, OutputNanoPer1M: e.outputNano, Source: sourceDefault}
 		}
 	}
-	return Price{InputNanoPer1M: fallbackInputNano, OutputNanoPer1M: fallbackOutputNano, Source: "fallback"}
+	return Price{InputNanoPer1M: fallbackInputNano, OutputNanoPer1M: fallbackOutputNano, Source: sourceFallback}
 }

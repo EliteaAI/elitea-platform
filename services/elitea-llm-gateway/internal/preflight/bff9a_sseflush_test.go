@@ -41,9 +41,9 @@ import (
 // wellFormedAnthropicRouter embeds a MockRouter but overrides
 // ResponsesStreamRequest to emit a WELL-FORMED Anthropic SSE sequence:
 //
-//   response.created  → message_start        (exactly ONE)
-//   response.in_progress × (Chunks-2)        → maps to nil, no SSE event emitted
-//   response.completed → message_delta + message_stop
+//	response.created  → message_start        (exactly ONE)
+//	response.in_progress × (Chunks-2)        → maps to nil, no SSE event emitted
+//	response.completed → message_delta + message_stop
 //
 // The result is: exactly 1 message_start, then message_delta + message_stop,
 // with ChunkDelay before the Completed chunk to allow incremental-arrival
@@ -285,8 +285,8 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 		// the previous behaviour where 5 response.created events each mapped to
 		// their own message_start, producing a malformed stream.
 		baseRouter := preflight.NewMockRouter(preflight.MockRouterConfig{
-			Mode:        preflight.StreamModeAnthropic,
-			InputTokens: 150,
+			Mode:         preflight.StreamModeAnthropic,
+			InputTokens:  150,
 			OutputTokens: 75,
 		})
 		router := &wellFormedAnthropicRouter{
@@ -312,7 +312,7 @@ func TestBFF9A_SSEIncrementalFlush(t *testing.T) {
 		// The gateway's Messages handler expects an AnthropicMessageRequest; the
 		// minimum required fields are model, max_tokens, and messages.
 		body := fmt.Sprintf(
-			`{"model":"anthropic/claude-3-5-sonnet-20241022","max_tokens":256,`+
+			`{"model":"anthropic/claude-3-5-sonnet-20241022","max_tokens":256,` +
 				`"messages":[{"role":"user","content":"stream test"}],"stream":true}`,
 		)
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/llm/v1/messages", strings.NewReader(body))

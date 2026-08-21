@@ -102,7 +102,9 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// 85: shared/0085_project_member_and_role_listings_administration.sql, the
 	// two administration-mode listing grants #313 needs. It follows
 	// shared/0084_budget_usage_dimensions.sql above.
-	require.EqualValues(t, 85, Head(shared))
+	// 86: shared/0086_gateway_audio_prices.sql, the four per-1,000,000-unit
+	// audio price columns the /llm/v1/audio/* routes need.
+	require.EqualValues(t, 86, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
