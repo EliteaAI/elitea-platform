@@ -255,74 +255,23 @@ jobs:
             poppler-utils \
             tesseract-ocr
 
-      - name: Read the pinned SDK out of the worker lock file
-        # The revision, the archive digest and the cherry-picks used to be
-        # written HERE as well as in the lock file. Two copies of one pin drift,
-        # and the copy that drifts is the one nobody reads. The lock file owns
-        # them now; this step publishes them for the steps below.
-        #
-        # Every value is validated before it is exported. An empty revision
-        # would make `git checkout --detach ""` fail with a message about a
-        # pathspec, and an empty digest would make the `test` below compare a
-        # real digest with nothing — a comparison that can only fail confusingly
-        # or, if inverted one day, not at all.
-        run: |
-          python3 - <<'PYTHON' >> "$GITHUB_ENV"
-          import json
-          import re
-          import sys
-
-          LOCK = "services/elitea-worker-python/elitea-sdk.lock.json"
-          FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-          FULL_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-
-          with open(LOCK, encoding="utf-8") as handle:
-              source = json.load(handle)["source"]
-
-          revision = source.get("revision", "")
-          digest = source.get("git_archive_sha256", "")
-          patches = source.get("patch_revisions") or []
-          repository = source.get("repository", "")
-
-          problems = []
-          if not FULL_SHA.match(revision):
-              problems.append(f"source.revision {revision!r} is not a 40-character object name")
-          if not FULL_DIGEST.match(digest):
-              problems.append(f"source.git_archive_sha256 {digest!r} is not a sha256 digest")
-          if not repository.startswith("https://"):
-              problems.append(f"source.repository {repository!r} is not an https URL")
-          if not patches:
-              problems.append("source.patch_revisions is empty; the pinned SDK is a revision "
-                              "PLUS cherry-picks, and an empty list would install neither")
-          for patch in patches:
-              if not FULL_SHA.match(patch):
-                  problems.append(f"patch revision {patch!r} is not a 40-character object name")
-          if problems:
-              print("\n".join(f"::error::{LOCK}: {p}" for p in problems), file=sys.stderr)
-              raise SystemExit(1)
-
-          print(f"SDK_REPOSITORY={repository}")
-          print(f"SDK_REVISION={revision}")
-          print(f"SDK_ARCHIVE_SHA256={digest}")
-          print("SDK_PATCH_REVISIONS=" + " ".join(patches))
-          PYTHON
-
       - name: Check out the exact worker-locked SDK source
+        env:
+          SDK_REVISION: b5113a129329b85d23c2d5c2bf55f18e307414ec
+          SDK_ARCHIVE_SHA256: df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7
+          SDK_MCP_PREFLIGHT_PATCH: 5c9409779ac0a55f8bf74f6ef438977089187a14
+          SDK_MCP_HARD_TIMEOUT_PATCH: 07ddc5cd67a0c747f83ca0e26421cde71bd97d9d
         run: |
           git clone --filter=blob:none --no-checkout \
-            "${SDK_REPOSITORY}" \
+            https://github.com/EliteaAI/elitea-sdk.git \
             /tmp/elitea-sdk-current
           git -C /tmp/elitea-sdk-current checkout --detach "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current rev-parse HEAD)" = "${SDK_REVISION}"
           test "$(git -C /tmp/elitea-sdk-current archive --format=tar HEAD | sha256sum | cut -d ' ' -f 1)" = "${SDK_ARCHIVE_SHA256}"
-          # The list is looped rather than named one patch at a time, so adding
-          # or removing a cherry-pick is a lock-file edit and nothing else. An
-          # empty list was already refused above; without that refusal this loop
-          # would apply nothing and report success.
-          for patch in ${SDK_PATCH_REVISIONS}; do
-            git -C /tmp/elitea-sdk-current cat-file -e "${patch}^{commit}"
-            git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${patch}"
-          done
+          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_PREFLIGHT_PATCH}^{commit}"
+          git -C /tmp/elitea-sdk-current cat-file -e "${SDK_MCP_HARD_TIMEOUT_PATCH}^{commit}"
+          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_PREFLIGHT_PATCH}"
+          git -C /tmp/elitea-sdk-current cherry-pick --no-commit "${SDK_MCP_HARD_TIMEOUT_PATCH}"
 
       - name: Install the pinned worker and protocol packages
         run: |
@@ -350,8 +299,15 @@ jobs:
           # directory held 5, so deleting one gate left 4 and this step stayed
           # green. Name the files that must be present, so a delete or a bad
           # merge fails here instead of passing quietly.
+          # Name them ALL. A count alone cannot tell "five files" from "the
+          # four that were not deleted plus a new one", and a floor of 1 would
+          # let three of these disappear quietly.
           required_contract_tests=(
             scripts/contract/test_sdk_budget_contract.py
+            scripts/contract/test_sync_current_available_sdk.py
+            scripts/contract/test_sync_index_types_snapshot.py
+            scripts/contract/test_sync_toolkit_schema_snapshot.py
+            scripts/contract/test_sync_worker_sdk_catalog.py
           )
           for required in "${required_contract_tests[@]}"; do
             if [ ! -f "$required" ]; then
