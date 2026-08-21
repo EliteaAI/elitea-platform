@@ -13,7 +13,7 @@
             "path": "/admin/moderation_status/default/{project_id}/{entity_id}",
             "operationId": "createModerationRequest",
             "source": "generated",
-            "responseSchema": "ModerationStatusResponse",
+            "responseSchema": "ModerationRequestRow",
             "fixture": null,
             "usedBy": []
         },
@@ -43,7 +43,7 @@
             "path": "/admin/moderation_status/default/{project_id}/{entity_id}",
             "operationId": "moderationStatus",
             "source": "generated",
-            "responseSchema": "ModerationStatusResponse",
+            "responseSchema": "ModerationRequestList",
             "fixture": null,
             "usedBy": []
         },
