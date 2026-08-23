@@ -87,8 +87,10 @@ adminTest('J34a: Guardrails offers a real form, including its two tool maps', as
   // and `blocked_tools`/`sensitive_tools` are the substance of the feature —
   // shipping them inert would have made the landing screen a form whose two
   // most important controls do nothing.
-  const addButtons = page.getByRole('button', { name: 'Add toolkit' });
-  await expect(addButtons).toHaveCount(2);
+  // Named per field: two identically-labelled buttons on one screen would be
+  // ambiguous to a screen reader and to this assertion alike.
+  await expect(page.getByRole('button', { name: 'Add toolkit — Blocked Tools' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add toolkit — Sensitive Action Tools' })).toBeVisible();
   await expect(
     page.getByText('This platform has no editor for this field yet', { exact: false }),
   ).toHaveCount(0);

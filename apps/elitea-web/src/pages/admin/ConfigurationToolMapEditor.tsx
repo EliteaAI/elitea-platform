@@ -202,12 +202,22 @@ function ToolMapRow({
 }
 
 export function ConfigurationToolMapEditor({
+  label,
   rows,
   disabled,
   toolkitOptions,
   toolSource,
   onChange,
 }: {
+  /**
+   * The field's title, appended to the add button.
+   *
+   * Not decoration. Guardrails renders TWO of these editors on one screen, so a
+   * bare "Add toolkit" would give the page two buttons with the same accessible
+   * name and no way to tell which map they belong to. The array editor beside
+   * them already names its field for the same reason.
+   */
+  readonly label: string;
   readonly rows: readonly ConfigToolMapRow[];
   readonly disabled: boolean;
   readonly toolkitOptions: readonly string[];
@@ -252,7 +262,7 @@ export function ConfigurationToolMapEditor({
             onChange([...rows, { toolkit: '', tools: [] }]);
           }}
         >
-          {t('pages.admin.configuration.toolMap.add', 'Add toolkit')}
+          {`${t('pages.admin.configuration.toolMap.add', 'Add toolkit')} — ${label}`}
         </Button>
       </Box>
     </Box>

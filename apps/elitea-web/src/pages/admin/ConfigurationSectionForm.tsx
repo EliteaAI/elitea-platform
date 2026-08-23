@@ -134,6 +134,7 @@ function ToolMapField({ field, value, disabled, onChange }: FieldProps) {
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
       <FieldHeading field={field} />
       <ConfigurationToolMapEditor
+        label={fieldLabel(field)}
         rows={toConfigToolMapRows(value)}
         disabled={disabled}
         toolkitOptions={toolkitOptions}
