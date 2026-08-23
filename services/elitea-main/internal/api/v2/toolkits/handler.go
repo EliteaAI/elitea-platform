@@ -88,6 +88,7 @@ type Handler struct {
 	pool                *pgxpool.Pool
 	argumentSchemas     ToolkitArgumentSchemaSource
 	settingsDefinitions ToolkitSettingsDefinitionSource
+	guardrails          GuardrailPolicySource
 }
 
 // Option configures a Handler at construction, matching the pattern
@@ -171,6 +172,10 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 			merged = append(merged, t)
 		}
 	}
+
+	// Guardrails last, over the merged list, so a blocked type cannot re-enter
+	// through the tenant read after being filtered out of the static one.
+	merged = filterBlockedToolkitTypes(h.guardrailPolicy(r.Context(), "toolkit_types"), merged)
 
 	writeJSON(w, http.StatusOK, map[string]any{"rows": merged, "total": len(merged)})
 }
@@ -370,6 +375,9 @@ func (h *Handler) ListTypeSchemas(w http.ResponseWriter, r *http.Request) {
 			"failed to build the toolkit type catalogue", err)
 		return
 	}
+	catalogue = applyGuardrailsToCatalogue(
+		h.guardrailPolicy(r.Context(), "list_type_schemas"), catalogue,
+	)
 	writeJSON(w, http.StatusOK, catalogue)
 }
 
@@ -509,6 +517,7 @@ func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": availableToolsReadFailed})
 		return
 	}
+	tools = filterBlockedTools(h.guardrailPolicy(r.Context(), "toolkit_available_tools"), tools)
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
 
@@ -517,6 +526,12 @@ func (h *Handler) AvailableTools(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DiscoverTools(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	toolkitType := chi.URLParam(r, "toolkitType")
+	// The type is in the URL, so a blocked one is refused outright rather than
+	// answered with an empty list: "this type is blocked" and "this project has
+	// no toolkits of this type" are different facts.
+	if h.refuseBlockedToolkitType(w, r, "toolkit_discover_tools", toolkitType) {
+		return
+	}
 	tools, err := h.repo.DiscoverTools(r.Context(), projectID, toolkitType)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "toolkit_discover_tools: "+discoverToolsReadFailed,
@@ -524,6 +539,7 @@ func (h *Handler) DiscoverTools(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": discoverToolsReadFailed})
 		return
 	}
+	tools = filterBlockedTools(h.guardrailPolicy(r.Context(), "toolkit_discover_tools"), tools)
 	writeJSON(w, http.StatusOK, map[string]any{"tools": tools, "total": len(tools)})
 }
 
@@ -552,6 +568,9 @@ func (h *Handler) ForkToolkit(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
+		return
+	}
+	if forked, _ := body["type"].(string); h.refuseBlockedToolkitType(w, r, "fork_toolkit", forked) {
 		return
 	}
 	tool, err := h.repo.ForkToolkit(r.Context(), projectID, body)
@@ -793,6 +812,9 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if created, _ := body["type"].(string); h.refuseBlockedToolkitType(w, r, "create_toolkit", created) {
+		return
+	}
 	body["_author_id"] = userID
 	item, err := h.repo.CreateToolkit(r.Context(), projectID, body)
 	if err != nil {
@@ -851,6 +873,14 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A body that names a blocked type is refused. A body that omits `type` is
+	// not: an update that does not restate the type cannot be used to introduce
+	// a blocked one, and refusing it would make an existing toolkit of a
+	// newly-blocked type impossible to edit — including impossible to point at
+	// something harmless before deleting it.
+	if updated, _ := body["type"].(string); h.refuseBlockedToolkitType(w, r, "update_toolkit", updated) {
+		return
+	}
 	item, err := h.repo.UpdateToolkit(r.Context(), projectID, toolkitID, body)
 	if err != nil {
 		writeToolkitInternalError(w, r, "update_toolkit", "failed to update the toolkit", err)

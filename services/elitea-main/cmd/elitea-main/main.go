@@ -1250,6 +1250,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		Pool:                       pool,
 		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
 		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
+		ToolkitRegistry:            toolkitArgumentSchemas,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,

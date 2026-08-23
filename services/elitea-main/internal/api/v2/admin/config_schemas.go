@@ -29,8 +29,14 @@ import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2
 const (
 	// pylonPluginConfigUnavailable covers every section whose fields address a
 	// key inside a Pylon plugin's YAML config and are read by that plugin at
-	// load time — guardrails, MCP server definitions, tracing switches, the
-	// indexer worker's runtime flags, the auth provider.
+	// load time — MCP server definitions, tracing switches, the indexer worker's
+	// runtime flags, the auth provider.
+	//
+	// `guardrails` used to be the first name on that list and no longer is. Its
+	// fields address `toolkit_security.*` in the same way, but the reason a
+	// section is withheld was never "the path looks like a plugin's" — it is
+	// "nothing here reads the values". This platform now reads them: see
+	// guardrailsSection() for the four consumers.
 	pylonPluginConfigUnavailable = "these settings configure Pylon plugin runtimes: the reference page collects them " +
 		"from plugin heartbeats and saves them by shipping patched plugin YAML back over the Arbiter bus. This " +
 		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
@@ -180,21 +186,45 @@ func serviceDescriptorsSection() map[string]any {
 	}
 }
 
+// guardrailsSection — the platform-wide toolkit security policy. LIVE.
+//
+// Every field here is read, and the reason the section carried
+// `pylonPluginConfigUnavailable` until now was that none of them were. The four
+// consumers, in the order an operator meets them:
+//
+//   - the toolkit TYPE catalogue (`/toolkits`, `/toolkit_types`,
+//     `/toolkit_available_tools`, `/toolkit_discover_tools`) drops blocked types
+//     and blocked tools, so a blocked toolkit cannot be picked;
+//   - the toolkit WRITE paths (`Create`, `Update`, `ForkToolkit`) refuse a
+//     blocked type with a 403 that names it, so it cannot be created by a client
+//     that skipped the form;
+//   - the agent tool FREEZE (internal/application/agentexecution/tools.go)
+//     strips blocked toolkits and tools out of the execution input. This is the
+//     load-bearing one: an agent version saved before a toolkit was blocked
+//     still names it, and the freeze is the only point a running agent cannot
+//     route around;
+//   - `GET /elitea_core/platform_settings/prompt_lib` publishes
+//     `blocked_toolkits` so the product UI can mark an existing toolkit blocked.
+//
+// The sensitive-action fields are stored and served here, and reach the worker's
+// SensitiveToolGuardMiddleware through the agent execution input. Note the
+// enforcement asymmetry that the descriptions below have to be honest about:
+// catalogue and write-path enforcement are unconditional, while the freeze runs
+// only where the runtime plane is enabled.
 func guardrailsSection() map[string]any {
 	return map[string]any{
-		"id":                 "guardrails",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "Guardrails",
-		"description":        "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
-		"order":              1,
-		"icon":               "security",
+		"id":          "guardrails",
+		"title":       "Guardrails",
+		"description": "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
+		"order":       1,
+		"icon":        "security",
 		"fields": []map[string]any{
 			{
 				"key":         "blocked_toolkits",
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"title":       "Blocked Toolkits",
-				"description": "Toolkit types that are completely disabled platform-wide. Blocked toolkits will not be registered, listed, or creatable.",
+				"description": "Toolkit types disabled platform-wide. A blocked type cannot be listed or created, and is stripped out of every agent before it runs. Toolkits of this type that already exist stay visible to administrators so they can be reviewed and deleted \u2014 blocking stops them working, it does not remove them or their stored credentials.",
 				"path":        "toolkit_security.blocked_toolkits",
 				"section":     "guardrails",
 				"default":     []any{},
@@ -205,7 +235,7 @@ func guardrailsSection() map[string]any {
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"title":                "Blocked Tools",
-				"description":          "Specific tools blocked within allowed toolkits. Map of toolkit type to list of blocked tool names.",
+				"description":          "Individual tools blocked inside otherwise-allowed toolkits. Map of toolkit type to blocked tool names. Matching ignores case and separators, so 'Create File', 'create_file' and 'create-file' are one entry. Scoped to the named toolkit: blocking 'create_file' under github leaves other toolkits' identically-named tools alone.",
 				"path":                 "toolkit_security.blocked_tools",
 				"section":              "guardrails",
 				"default":              map[string]any{},
@@ -217,7 +247,7 @@ func guardrailsSection() map[string]any {
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"title":                "Sensitive Action Tools",
-				"description":          "Tools that require explicit user authorization before execution. Map of toolkit type to list of tool names that trigger an authorization dialog at runtime.",
+				"description":          "Tools that require the user to authorize each call before it runs. Map of toolkit type to tool names; the key '*' applies to every toolkit. Enforced by the agent runtime, so it takes effect where agent execution is enabled.",
 				"path":                 "toolkit_security.sensitive_tools",
 				"section":              "guardrails",
 				"default":              map[string]any{},
@@ -228,7 +258,7 @@ func guardrailsSection() map[string]any {
 				"key":         "sensitive_action_company_name",
 				"type":        "string",
 				"title":       "Company Name for Policy Message",
-				"description": "Company name displayed in the sensitive action authorization dialog. Used in the policy message template.",
+				"description": "Company name shown in the authorization dialog. Left blank, the runtime's own default (\"Your organization\") is used.",
 				"path":        "toolkit_security.sensitive_action_company_name",
 				"section":     "guardrails",
 				"default":     "",
@@ -237,7 +267,7 @@ func guardrailsSection() map[string]any {
 				"key":         "sensitive_action_message_template",
 				"type":        "string",
 				"title":       "Authorization Message Template",
-				"description": "Message template shown in the authorization dialog. Supports placeholders: {company_name}, {action_name}, {tool_name}, {toolkit_name}.",
+				"description": "Message shown in the authorization dialog. Supports the placeholders {company_name}, {action_name}, {tool_name} and {toolkit_name}. Left blank, the runtime's own default wording is used.",
 				"path":        "toolkit_security.sensitive_action_message_template",
 				"section":     "guardrails",
 				"default":     "",
@@ -377,7 +407,6 @@ func agentPublishingSection() map[string]any {
 				"path":               "publishing_guardrail.publish_validation_rules",
 				"section":            "agent_publishing",
 				"default":            "",
-				
 			},
 		},
 	}
@@ -1273,11 +1302,11 @@ func voiceFeaturesSection() map[string]any {
 		// constants, and it IS mounted: `pages/chat` → `ChatBox` →
 		// `buildChatBoxInputSlots()` → `<VoiceButton>`. Both flags are now
 		// marshalled by `GET /elitea_core/platform_settings/…` and read there.
-		"title":              "Voice Features",
-		"description":        "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
-		"order":              15,
-		"icon":               "record_voice_over",
-		"always_visible":     true,
+		"title":          "Voice Features",
+		"description":    "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
+		"order":          15,
+		"icon":           "record_voice_over",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_voice_features_enabled",

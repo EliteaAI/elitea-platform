@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"strings"
 	"unicode/utf8"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/guardrails"
 )
 
 const (
@@ -73,20 +75,37 @@ type CurrentApplicationToolSnapshotService struct {
 	settings        CurrentAgentToolkitSettingsResolver
 	names           CurrentAgentToolkitNameResolver
 	models          CurrentAgentModelCatalog
+	guardrails      CurrentAgentGuardrailResolver
 	publicProjectID int32
+}
+
+// CurrentAgentGuardrailResolver supplies the live toolkit guardrails policy.
+//
+// It is a REQUIRED dependency, not an option, and the constructor refuses a nil
+// one. This is the freeze: the one point at which a blocked toolkit is removed
+// from an execution that a saved agent version still names. A service
+// constructed without a policy source would enforce nothing and look exactly
+// like one whose operator had configured nothing — the shape of defect this
+// codebase has shipped before with a nil principal validator at the composition
+// root (#301/#314/#370). Making it required means a composition root that forgot
+// it fails to build the service rather than silently running unguarded.
+type CurrentAgentGuardrailResolver interface {
+	ResolveCurrentAgentGuardrails(ctx context.Context) (guardrails.Policy, error)
 }
 
 func NewCurrentApplicationToolSnapshotService(
 	settings CurrentAgentToolkitSettingsResolver,
 	names CurrentAgentToolkitNameResolver,
 	models CurrentAgentModelCatalog,
+	guardrailPolicies CurrentAgentGuardrailResolver,
 	publicProjectID int32,
 ) (*CurrentApplicationToolSnapshotService, error) {
-	if settings == nil || names == nil || models == nil || publicProjectID <= 0 {
+	if settings == nil || names == nil || models == nil || guardrailPolicies == nil || publicProjectID <= 0 {
 		return nil, errors.New("current agent toolkit snapshot dependencies are required")
 	}
 	return &CurrentApplicationToolSnapshotService{
-		settings: settings, names: names, models: models, publicProjectID: publicProjectID,
+		settings: settings, names: names, models: models,
+		guardrails: guardrailPolicies, publicProjectID: publicProjectID,
 	}, nil
 }
 
@@ -99,6 +118,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 	request CurrentApplicationVersionFreezeRequest,
 ) (json.RawMessage, error) {
 	if service == nil || service.settings == nil || service.names == nil || service.models == nil ||
+		service.guardrails == nil ||
 		service.publicProjectID <= 0 || ctx == nil ||
 		request.ProjectID <= 0 || request.ActorUserID <= 0 ||
 		!validJSONObject(request.VersionDetails) {
@@ -122,7 +142,29 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 	if !ok {
 		return nil, unsupportedStart("version tools is not an array")
 	}
-	for index, value := range tools {
+
+	// The guardrails policy is resolved ONCE, before the walk, and a failed read
+	// fails the whole freeze.
+	//
+	// Every other reader of this policy degrades permissively, because refusing
+	// to render a catalogue over one unreadable row would take the product down
+	// to enforce a policy that is usually empty. This reader must not: it is the
+	// only place a blocked toolkit is removed from an execution that a saved
+	// agent version still names, so "we could not read the policy" and "there is
+	// no policy" have opposite consequences here. Running unguarded because a
+	// row would not load is how a blocked tool executes.
+	policy, err := service.guardrails.ResolveCurrentAgentGuardrails(ctx)
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, unsupportedStartBecause("guardrails policy resolution", err)
+	}
+
+	// Rebuilt rather than index-assigned: a blocked toolkit is DROPPED, which
+	// changes the length.
+	frozenTools := make([]any, 0, len(tools))
+	for _, value := range tools {
 		tool, ok := value.(map[string]any)
 		if !ok {
 			return nil, unsupportedStart("a tool entry is not an object")
@@ -147,7 +189,23 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if !ok {
 				return nil, unsupportedStart("an application tool reference could not be frozen")
 			}
-			tools[index] = frozen
+			// Not guardrail-filtered. An `application` entry is a nested AGENT
+			// reference, not a toolkit; its own tools are frozen by its own
+			// freeze when it runs. Matching a blocked toolkit TYPE against it
+			// would compare a policy about toolkits to an agent's name.
+			frozenTools = append(frozenTools, frozen)
+			continue
+		}
+
+		// A blocked toolkit type is dropped from the execution entirely.
+		//
+		// Dropped, not refused: an agent version saved before the block was
+		// configured still names the toolkit, and failing the run would make one
+		// administrator's guardrail break every agent that ever attached it.
+		// Removing the tool is what "blocked" means — the agent runs, without it.
+		if policy.ToolkitBlocked(toolType) {
+			slog.WarnContext(ctx, "guardrails: dropped a blocked toolkit from an agent execution",
+				"toolkit_type", toolType, "project_id", request.ProjectID)
 			continue
 		}
 		toolID, ok := positiveCurrentAgentJSONInteger(tool["id"])
@@ -197,11 +255,11 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			return nil, unsupportedStartBecause("toolkit name resolution", err)
 		}
 		tool["id"] = toolID
-		tool["settings"] = frozen
+		tool["settings"] = withoutBlockedSelectedTools(ctx, policy, toolType, toolkitName, frozen)
 		tool["toolkit_name"] = toolkitName
-		tools[index] = tool
+		frozenTools = append(frozenTools, tool)
 	}
-	version["tools"] = tools
+	version["tools"] = frozenTools
 
 	encoded, err := json.Marshal(version)
 	if err != nil || !validJSONObject(encoded) || len(encoded) > executiondomain.MaxAgentExecutionInputBytes {
@@ -595,3 +653,56 @@ func currentAgentJSONInteger(value any) (int64, bool) {
 }
 
 var _ CurrentApplicationVersionFreezer = (*CurrentApplicationToolSnapshotService)(nil)
+
+// withoutBlockedSelectedTools removes blocked tool names from one toolkit's
+// frozen `selected_tools`.
+//
+// `selected_tools` is the per-agent restriction the SDK honours when it builds
+// the toolkit, so a name removed here is a tool the worker never constructs. The
+// toolkit's INSTANCE name is offered to the match alongside its type, because an
+// operator may have named either.
+//
+// The map is rebuilt only when something is actually removed. The common case is
+// an empty policy or a toolkit none of whose tools are blocked, and rebuilding
+// on every toolkit of every execution to change nothing is a cost paid for
+// nothing.
+func withoutBlockedSelectedTools(
+	ctx context.Context,
+	policy guardrails.Policy,
+	toolkitType string,
+	toolkitName string,
+	settings map[string]any,
+) map[string]any {
+	if policy.Empty() || settings == nil {
+		return settings
+	}
+	selected, ok := settings["selected_tools"].([]any)
+	if !ok || len(selected) == 0 {
+		return settings
+	}
+
+	kept := make([]any, 0, len(selected))
+	for _, entry := range selected {
+		name, ok := entry.(string)
+		if ok && policy.ToolBlocked(toolkitType, name) {
+			slog.WarnContext(ctx, "guardrails: dropped a blocked tool from an agent execution",
+				"toolkit_type", toolkitType, "toolkit_name", toolkitName, "tool", name)
+			continue
+		}
+		// A non-string entry is kept rather than dropped. This function enforces
+		// a guardrail; it is not the shape validator, and silently discarding an
+		// entry it did not understand would hide a malformed selection behind a
+		// security feature.
+		kept = append(kept, entry)
+	}
+	if len(kept) == len(selected) {
+		return settings
+	}
+
+	rebuilt := make(map[string]any, len(settings))
+	for key, value := range settings {
+		rebuilt[key] = value
+	}
+	rebuilt["selected_tools"] = kept
+	return rebuilt
+}

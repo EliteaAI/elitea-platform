@@ -2072,5 +2072,12 @@
   "entities.token.table.projectNone": "Not bound",
   "features.toolkits.indexScheduleModal.credentialsLabel": "Credentials",
   "entities.token.form.projectNoneNote": "This token gets no project, and you cannot change this later.",
-  "entities.token.form.projectNote": "The project {{project}} pays for this token, and you cannot change this later."
+  "entities.token.form.projectNote": "The project {{project}} pays for this token, and you cannot change this later.",
+  "pages.admin.configuration.toolMap.add": "Add toolkit",
+  "pages.admin.configuration.toolMap.duplicate": "Another row already covers this toolkit. Matching ignores case and separators, so only one of them would be saved.",
+  "pages.admin.configuration.toolMap.empty": "No toolkits are listed.",
+  "pages.admin.configuration.toolMap.remove": "Remove this toolkit",
+  "pages.admin.configuration.toolMap.toolkit": "Toolkit type",
+  "pages.admin.configuration.toolMap.tools": "Tools",
+  "pages.admin.configuration.toolMap.toolsPlaceholder": "Add a tool name"
 }

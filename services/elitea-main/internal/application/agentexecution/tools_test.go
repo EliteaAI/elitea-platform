@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/guardrails"
 )
 
 type currentAgentSettingsResolverStub struct {
@@ -78,7 +79,7 @@ func TestCurrentApplicationToolSnapshotFreezesGenericToolkitReferences(t *testin
 	}}
 	names := &currentAgentNameResolverStub{result: "team_docs"}
 	models := currentAgentModelCatalogForTest(true)
-	service, err := NewCurrentApplicationToolSnapshotService(settings, names, models, 1)
+	service, err := NewCurrentApplicationToolSnapshotService(settings, names, models, &currentAgentGuardrailStub{}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,6 +145,7 @@ func TestCurrentApplicationToolSnapshotFreezesSavedMCPReferenceWithoutSpecialCas
 		settings,
 		names,
 		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
 		1,
 	)
 	if err != nil {
@@ -194,6 +196,7 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationRefere
 		settings,
 		names,
 		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
 		1,
 	)
 	if err != nil {
@@ -252,6 +255,7 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectPipelineReference(t *
 		&currentAgentSettingsResolverStub{},
 		&currentAgentNameResolverStub{},
 		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
 		1,
 	)
 	if err != nil {
@@ -305,6 +309,7 @@ func TestCurrentApplicationToolSnapshotPreservesStoredApplicationReference(t *te
 		settings,
 		names,
 		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
 		1,
 	)
 	if err != nil {
@@ -458,7 +463,7 @@ func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t
 			}
 			service, err := NewCurrentApplicationToolSnapshotService(
 				&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{},
-				currentAgentModelCatalogForTest(false), 1,
+				currentAgentModelCatalogForTest(false), &currentAgentGuardrailStub{}, 1,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -478,16 +483,23 @@ func TestCurrentApplicationToolSnapshotRejectsUnsupportedApplicationReferences(t
 
 func TestCurrentApplicationToolSnapshotValidatesConstruction(t *testing.T) {
 	models := currentAgentModelCatalogForTest(false)
-	if service, err := NewCurrentApplicationToolSnapshotService(nil, &currentAgentNameResolverStub{}, models, 1); err == nil || service != nil {
+	rails := &currentAgentGuardrailStub{}
+	if service, err := NewCurrentApplicationToolSnapshotService(nil, &currentAgentNameResolverStub{}, models, rails, 1); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
-	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, nil, models, 1); err == nil || service != nil {
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, nil, models, rails, 1); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
-	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, nil, 1); err == nil || service != nil {
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, nil, rails, 1); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
-	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, 0); err == nil || service != nil {
+	// The guardrail resolver is required, not optional. A service built without
+	// one would enforce nothing and be indistinguishable from one whose operator
+	// had configured nothing — see CurrentAgentGuardrailResolver.
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, nil, 1); err == nil || service != nil {
+		t.Fatalf("service=%#v error=%v", service, err)
+	}
+	if service, err := NewCurrentApplicationToolSnapshotService(&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, rails, 0); err == nil || service != nil {
 		t.Fatalf("service=%#v error=%v", service, err)
 	}
 }
@@ -511,7 +523,8 @@ func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing
 				}},
 			}}
 			service, err := NewCurrentApplicationToolSnapshotService(
-				&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models, 1,
+				&currentAgentSettingsResolverStub{}, &currentAgentNameResolverStub{}, models,
+				&currentAgentGuardrailStub{}, 1,
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -536,4 +549,24 @@ func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing
 			}
 		})
 	}
+}
+
+// currentAgentGuardrailStub is the freeze's guardrail dependency in tests.
+//
+// The zero value carries an empty policy, so every pre-existing case in this
+// file continues to assert what it asserted before guardrails existed: nothing
+// is blocked, and the frozen output is unchanged. Cases that DO exercise a
+// policy set `policy`, and `err` covers the read-failure path.
+type currentAgentGuardrailStub struct {
+	policy guardrails.Policy
+	err    error
+}
+
+func (stub *currentAgentGuardrailStub) ResolveCurrentAgentGuardrails(
+	context.Context,
+) (guardrails.Policy, error) {
+	if stub.err != nil {
+		return guardrails.Policy{}, stub.err
+	}
+	return stub.policy, nil
 }
