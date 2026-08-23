@@ -675,6 +675,16 @@
       "notes": "Audit Trail on its default Today preset: heatmap + traces table. WIRED and deliberately NOT snapshotted — see the EXEMPT entry in scripts/check-visual-coverage.mjs. Every visible value is a function of the wall clock at seed time.",
       "surface": "admin",
       "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-audit-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/governance",
+      "targetComponent": "src/pages/admin/GatewayGovernance.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "The LLM governance definition list (#218): the propagation Alert, the search bar and the DataGrid. Snapshotted on the EMPTY grid — this stack seeds no governance rows, so the no-rows label is what it renders, and a populated baseline would pin a fixture that does not exist.",
+      "surface": "admin",
+      "baseline": null
     }
   ],
   "gaps": [],

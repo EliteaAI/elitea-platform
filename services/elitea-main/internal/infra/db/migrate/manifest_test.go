@@ -125,7 +125,12 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// deployment gains anything; a pylon-backed database carries no per-project
 	// permission row, so the central fallback is live there and every project
 	// viewer did gain the secret listing.
-	require.EqualValues(t, 91, Head(shared))
+	// 92: shared/0092_governance_config_type_check.sql, which constrains
+	// gateway.governance_config.type to the value set every reader switches on,
+	// and carries the correction 0067's checksum-immutable header could not: the
+	// gateway now DOES read this table (#218). The constraint is NOT VALID so an
+	// existing row with an unknown type does not fail the release.
+	require.EqualValues(t, 92, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

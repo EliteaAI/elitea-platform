@@ -96,6 +96,17 @@ const (
 	// interval, i.e. about 9 reads a second at the shipped session ceiling.
 	DefaultRealtimeBudgetRecheck = 15 * time.Second
 
+	// DefaultGovernanceRefresh is how often the gateway re-reads the authored
+	// governance definitions from gateway.governance_config. It mirrors
+	// policy.DefaultRefreshInterval; TestGovernanceRefreshDefaultInSync holds
+	// the two together.
+	//
+	// It bounds how long an operator waits between saving a definition and the
+	// gateway enforcing it, for the case where the warm-reload event did not
+	// arrive. It is a POLL and not the only path: elitea-main publishes a
+	// reload event on every write, and this is the floor under that guarantee.
+	DefaultGovernanceRefresh = 30 * time.Second
+
 	// DefaultRealtimeMaxSessions bounds concurrent realtime sessions on one
 	// replica (LLM_REALTIME_MAX_SESSIONS). It MUST equal
 	// llmproxy.DefaultRealtimeMaxSessions.
@@ -257,6 +268,11 @@ type Config struct {
 	// and not an optimisation.
 	RealtimeBudgetRecheck time.Duration
 
+	// GovernanceRefresh is the poll interval for the authored governance
+	// definitions (LLM_GOVERNANCE_REFRESH_SEC). 0 or negative selects
+	// DefaultGovernanceRefresh.
+	GovernanceRefresh time.Duration
+
 	// RealtimeMaxSessions bounds concurrent realtime sessions on this replica
 	// (LLM_REALTIME_MAX_SESSIONS). The per-project cap is derived from it.
 	RealtimeMaxSessions int
@@ -314,6 +330,7 @@ func FromEnv() Config {
 		PublicProjectID:         intOr("ELITEA_AI_PROJECT_ID", 0),
 
 		RealtimeBudgetRecheck:  secondsOr("LLM_REALTIME_BUDGET_RECHECK_SEC", DefaultRealtimeBudgetRecheck),
+		GovernanceRefresh:      secondsOr("LLM_GOVERNANCE_REFRESH_SEC", DefaultGovernanceRefresh),
 		RealtimeMaxSessions:    intOr("LLM_REALTIME_MAX_SESSIONS", DefaultRealtimeMaxSessions),
 		RealtimeAllowedOrigins: csvOr("LLM_REALTIME_ALLOWED_ORIGINS"),
 	}

@@ -272,6 +272,19 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     landmark: (page) => page.getByRole('switch', { name: 'Enable MCP' }),
   },
   {
+    // @covers /admin/app/governance
+    name: 'admin-governance',
+    path: '/admin/app/governance',
+    // The propagation Alert. It renders unconditionally once the page mounts —
+    // it states a property of the GATEWAY, not of the query — so it is present
+    // in the loading frame too, and on its own it would pin a loading state as
+    // the reference (#159, #174). The DataGrid's own no-rows label is the
+    // landmark instead: `LinearProgress` is what the loading frame shows, and
+    // the grid renders only after the list query resolves.
+    // Measured: loaded YES, stalled no.
+    landmark: (page) => page.getByText('No governance definitions.', { exact: false }),
+  },
+  {
     // @covers /admin/app/service-descriptors
     name: 'admin-service-descriptors',
     path: '/admin/app/service-descriptors',

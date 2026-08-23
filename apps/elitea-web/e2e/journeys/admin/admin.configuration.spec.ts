@@ -12,12 +12,19 @@
  * unit. The round trip it proved now lives in journey 35 (`admin.features.spec.ts`),
  * unchanged in substance and asserted against the same public route.
  *
- * What is left on this page is every section this platform cannot serve — Pylon
- * plugin configuration, a maintenance hook that does not exist, an LLM
- * governance surface nothing enforces. That is a true and useful thing for the
- * page to say, and it is what this journey asserts: not that a form renders, but
- * that each pane states a server-declared REASON and each endpoint refuses the
- * write rather than accepting and discarding it.
+ * What is left on this page is every section this platform cannot serve HERE —
+ * Pylon plugin configuration, a maintenance hook that does not exist, and LLM
+ * governance, which is authored on its own page. That last one changed reason
+ * rather than status: it used to be withheld because nothing enforced it, and
+ * #218 made the gateway read and enforce `gateway.governance_config`, so the
+ * section now points at `/admin/app/governance` and says the definitions take
+ * effect. It stays unavailable here because a governance corpus is a list of
+ * scoped rows and this page is a flat form over one value document.
+ *
+ * That is a true and useful thing for the page to say, and it is what this
+ * journey asserts: not that a form renders, but that each pane states a
+ * server-declared REASON and each endpoint refuses the write rather than
+ * accepting and discarding it.
  *
  * Before unit A14 every one of those sections answered 200 on both verbs — the
  * GET with schema defaults, the PUT with an empty object and the request body
