@@ -125,7 +125,11 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// deployment gains anything; a pylon-backed database carries no per-project
 	// permission row, so the central fallback is live there and every project
 	// viewer did gain the secret listing.
-	require.EqualValues(t, 91, Head(shared))
+	// 92: shared/0092_mcp_prebuilt_catalogue.sql, the platform-wide catalogue
+	// of pre-built MCP servers. It replaces the indexer_worker plugin
+	// descriptor block that pylon distributes over the Arbiter event bus, which
+	// this service has no way to read.
+	require.EqualValues(t, 92, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
