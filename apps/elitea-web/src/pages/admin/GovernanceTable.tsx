@@ -60,12 +60,15 @@ export function describeScope(row: GovernanceRow): string {
   const providers = list(record.providers);
   const models = list(record.models);
 
+  // Composed rather than interpolated. A `{{ids}}` placeholder in the fallback
+  // is a trap here: once the key is backfilled into en.json the BUNDLE value
+  // wins over the call-site fallback, and i18next then owns an interpolation
+  // this function resolves by hand — so the braces render literally. Joining a
+  // translated noun to the id list keeps both halves translatable and leaves
+  // no placeholder for the bundle to disagree about.
   const projectPart =
     projects.length > 0
-      ? t('pages.admin.governance.scope.projects', 'projects {{ids}}').replace(
-          '{{ids}}',
-          projects.join(', '),
-        )
+      ? `${t('pages.admin.governance.scope.projects', 'projects')} ${projects.join(', ')}`
       : t('pages.admin.governance.scope.allProjects', 'all projects');
 
   if (row.type === 'model_config') {

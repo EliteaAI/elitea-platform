@@ -1,4 +1,12 @@
--- 0092_governance_config_type_check.sql (issue #218)
+-- 0093_governance_config_type_check.sql (issue #218)
+--
+-- NUMBERED 0093, NOT 0092, AND THE GAP IS DELIBERATE. 0092 belongs to
+-- shared/0092_mcp_prebuilt_catalogue.sql, which was in review on its own branch
+-- while this file was written. Both files correctly claimed 0092 against a main
+-- whose head was 0091; the collision is only real at merge, and this one yields.
+-- The ledger tolerates the gap if the MCP file lands after this one:
+-- scripts/database/check-migration-version.sh requires a version ABOVE the base
+-- head, not the next one, and Head() reads the last entry rather than counting.
 --
 -- Two jobs: correct a claim that 0067 could not carry, and stop a row that no
 -- reader understands from being written.

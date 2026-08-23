@@ -78,7 +78,7 @@ const (
 	// The stale claim in the header of
 	// migrations/shared/0067_gateway_budget_schema.sql — which said the gateway
 	// reads these rows at load, and was wrong when it was written — has become
-	// accurate by the gateway catching up with it. Migration 0092 records that,
+	// accurate by the gateway catching up with it. Migration 0093 records that,
 	// because 0067 is checksum-immutable once applied
 	// (internal/infra/db/migrate/manifest.go) and cannot be edited.
 	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
