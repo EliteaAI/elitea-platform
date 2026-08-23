@@ -682,7 +682,7 @@
       "targetComponent": "src/pages/admin/GatewayGovernance.tsx",
       "theme": "dark",
       "wiringStatus": "wired",
-      "notes": "The LLM governance definition list (#218): the propagation Alert, the search bar and the DataGrid. Snapshotted on the EMPTY grid — this stack seeds no governance rows, so the no-rows label is what it renders, and a populated baseline would pin a fixture that does not exist.",
+      "notes": "The LLM governance definition list (#218): the propagation Alert, the search bar and the DataGrid. The stack seeds ONE row — the #322 platform soft-alert config — and this page shows it with its actions withheld, because the budget-alerts surface owns it and this page's editor has no field for its keys. That withheld state is part of what the baseline pins.",
       "surface": "admin",
       "baseline": null
     }

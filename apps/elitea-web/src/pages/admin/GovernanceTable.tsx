@@ -12,6 +12,7 @@ import { memo, useMemo } from 'react';
 
 import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
+import LockOutlinedIcon from '@mui/icons-material/LockOutlined';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import IconButton from '@mui/material/IconButton';
@@ -23,7 +24,7 @@ import { DataGrid } from '@mui/x-data-grid';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
 
-import type { GovernanceRow } from './api/adminGovernanceApi';
+import { isEditableGovernanceRow, type GovernanceRow } from './api/adminGovernanceApi';
 
 export interface GovernanceTableProps {
   readonly rows: readonly GovernanceRow[];
@@ -39,6 +40,8 @@ interface GovernanceGridRow {
   readonly type: string;
   readonly scope: string;
   readonly enabled: boolean;
+  /** False for a row another surface owns — its actions are withheld. */
+  readonly editable: boolean;
   readonly source: GovernanceRow;
 }
 
@@ -102,6 +105,7 @@ export const GovernanceTable = memo(function GovernanceTable({
         type: row.type,
         scope: describeScope(row),
         enabled: row.enabled,
+        editable: isEditableGovernanceRow(row),
         source: row,
       })),
     [rows],
@@ -152,28 +156,47 @@ export const GovernanceTable = memo(function GovernanceTable({
         width: 96,
         sortable: false,
         filterable: false,
-        renderCell: (params: GridRenderCellParams<GovernanceGridRow>) => (
-          <Box>
-            <Tooltip title={t('common.edit', 'Edit')}>
-              <IconButton
-                size="small"
-                onClick={() => onEdit(params.row.source)}
-                aria-label={t('pages.admin.governance.action.edit', 'Edit entry')}
+        renderCell: (params: GridRenderCellParams<GovernanceGridRow>) => {
+          // A row another surface owns is shown and NOT offered an editor. The
+          // reason is on the row rather than in a runbook: this page's editor
+          // has no field for that row's keys, so saving it here would drop
+          // them. Hiding the row instead would leave an operator hunting for a
+          // definition that does exist.
+          if (!params.row.editable) {
+            return (
+              <Tooltip
+                title={t(
+                  'pages.admin.governance.readOnlyRow',
+                  'This entry is authored on the budget-alerts surface. Editing it here would discard its settings.',
+                )}
               >
-                <EditOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title={t('common.delete', 'Delete')}>
-              <IconButton
-                size="small"
-                onClick={() => onDelete(params.row.source)}
-                aria-label={t('pages.admin.governance.action.delete', 'Delete entry')}
-              >
-                <DeleteOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        ),
+                <LockOutlinedIcon fontSize="small" color="disabled" data-testid="governance-row-readonly" />
+              </Tooltip>
+            );
+          }
+          return (
+            <Box>
+              <Tooltip title={t('common.edit', 'Edit')}>
+                <IconButton
+                  size="small"
+                  onClick={() => onEdit(params.row.source)}
+                  aria-label={t('pages.admin.governance.action.edit', 'Edit entry')}
+                >
+                  <EditOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <Tooltip title={t('common.delete', 'Delete')}>
+                <IconButton
+                  size="small"
+                  onClick={() => onDelete(params.row.source)}
+                  aria-label={t('pages.admin.governance.action.delete', 'Delete entry')}
+                >
+                  <DeleteOutlinedIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          );
+        },
       },
     ],
     [onDelete, onEdit],

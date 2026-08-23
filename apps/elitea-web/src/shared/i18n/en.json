@@ -2151,5 +2151,6 @@
   "pages.admin.governance.type.rateLimit": "Rate limit",
   "pages.admin.governance.type.routingRule": "CEL routing rule",
   "pages.admin.governance.weightWarning": "The target weights must sum to exactly 1.0. The server re-checks this on save and rejects a rule that fails.",
-  "pages.admin.nav.governance": "LLM Governance"
+  "pages.admin.nav.governance": "LLM Governance",
+  "pages.admin.governance.readOnlyRow": "This entry is authored on the budget-alerts surface. Editing it here would discard its settings."
 }

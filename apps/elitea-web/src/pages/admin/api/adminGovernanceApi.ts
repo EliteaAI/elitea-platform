@@ -71,6 +71,24 @@ export const GOVERNANCE_TYPES = [
 
 export type GovernanceType = (typeof GOVERNANCE_TYPES)[number];
 
+/**
+ * The row type this page LISTS but must never edit.
+ *
+ * `PUT /admin/gateway/budget-alerts` owns it and validates its two keys. It is
+ * not in GOVERNANCE_TYPES, so this page's editor has no field for either key —
+ * and `draftToData` writes only the groups the chosen type names, so saving one
+ * of these rows here would drop `enabled` and `threshold_pct` and leave a row
+ * that still looks configured. The list shows it, because an operator looking
+ * for their governance rows should see every row that exists; the actions are
+ * withheld.
+ */
+export const READ_ONLY_GOVERNANCE_TYPE = 'budget_alert';
+
+/** Whether this row may be edited or deleted from this page. */
+export function isEditableGovernanceRow(row: GovernanceRow): boolean {
+  return row.type !== READ_ONLY_GOVERNANCE_TYPE;
+}
+
 /** The three billing treatments a credential-policy row can carry. */
 export const RATE_POLICIES = ['billed', 'zero-rate-metered', 'excluded'] as const;
 

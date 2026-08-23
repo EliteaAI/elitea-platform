@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { GovernanceRow } from './api/adminGovernanceApi';
+import { isEditableGovernanceRow, type GovernanceRow } from './api/adminGovernanceApi';
 import { describeScope } from './GovernanceTable';
 import {
   draftToData,
@@ -199,5 +199,35 @@ describe('describeScope', () => {
     expect(described).toContain('→');
     expect(described).toContain('openai');
     expect(described).toContain('every model');
+  });
+});
+
+describe('isEditableGovernanceRow', () => {
+  it('withholds the editor from the budget-alert row', () => {
+    // The budget-alerts surface owns that row and validates its two keys. This
+    // page has no field for either, and `draftToData` writes only the groups
+    // the chosen type names — so saving it here would drop `enabled` and
+    // `threshold_pct` and leave a row that still looked configured.
+    expect(isEditableGovernanceRow(row({ type: 'budget_alert', name: 'global' }))).toBe(false);
+  });
+
+  it('permits every type this page can actually author', () => {
+    for (const type of ['budget', 'rate_limit', 'model_config', 'mcp_allowlist', 'credential_policy', 'routing_rule']) {
+      expect(isEditableGovernanceRow(row({ type }))).toBe(true);
+    }
+  });
+
+  it('proves the data loss it prevents', () => {
+    // The failure mode, stated as an assertion rather than as a comment: a
+    // budget_alert row put through this page's own mapping comes back without
+    // the keys that make it a budget alert.
+    const stored = row({
+      type: 'budget_alert',
+      name: 'global',
+      data: { enabled: true, threshold_pct: 80 },
+    });
+    const roundTripped = draftToData(rowToDraft(stored));
+    expect(roundTripped).not.toHaveProperty('enabled');
+    expect(roundTripped).not.toHaveProperty('threshold_pct');
   });
 });
