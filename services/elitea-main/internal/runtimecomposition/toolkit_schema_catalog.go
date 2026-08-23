@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -173,6 +174,53 @@ func (s *CurrentToolkitSchemaSnapshot) EntryCount() int {
 		return 0
 	}
 	return len(s.entries)
+}
+
+// ToolkitTypes returns every built-in toolkit type name the snapshot declares,
+// sorted.
+//
+// This is the registry the admin Configuration page's guardrail fields need to
+// offer as choices — the `enum_source: toolkit_names` the reference schema
+// declares. pylon answered it from `elitea_core.toolkit_schemas`, an in-process
+// dict populated at plugin load; this snapshot is the same registry, pinned to
+// the exact SDK revision the workers are admitted to run, which makes it a
+// BETTER source rather than a substitute: an operator cannot be offered a
+// toolkit name the workers would not recognise.
+func (s *CurrentToolkitSchemaSnapshot) ToolkitTypes() []string {
+	if s == nil {
+		return nil
+	}
+	types := make([]string, 0, len(s.entries))
+	for toolkitType := range s.entries {
+		types = append(types, toolkitType)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// ToolkitToolNames returns the tool names one built-in toolkit type declares,
+// sorted. found=false means the type is not a built-in SDK toolkit.
+//
+// The names are the KEYS of the pinned argument schemas, which is where the tool
+// list authoritatively lives — the same keys ListTypeSchemas serves as
+// `selected_tools.args_schemas`. The reference read them out of a Literal enum
+// nested in a Pydantic JSON Schema and had to handle two draft formats to do it
+// (`enum`, and `const` for a single-value Literal); this snapshot has already
+// resolved that, so there is one shape here and no format sniffing.
+func (s *CurrentToolkitSchemaSnapshot) ToolkitToolNames(toolkitType string) ([]string, bool) {
+	if s == nil || !validCurrentToolkitSchemaIdentifier(toolkitType) {
+		return nil, false
+	}
+	entry, found := s.entries[toolkitType]
+	if !found {
+		return nil, false
+	}
+	names := make([]string, 0, len(entry.argsSchemas))
+	for name := range entry.argsSchemas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
 }
 
 // ToolkitArgumentSchemas returns a detached copy of one built-in toolkit

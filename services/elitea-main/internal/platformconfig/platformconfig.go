@@ -33,6 +33,7 @@ const (
 	SectionMCPConfiguration = "mcp_configuration"
 	SectionAgentPublishing  = "agent_publishing"
 	SectionVoiceFeatures    = "voice_features"
+	SectionGuardrails       = "guardrails"
 )
 
 // Field keys, for the same reason.
@@ -44,6 +45,12 @@ const (
 	KeyAgentCategories            = "agent_categories"
 	KeyVoiceEnabled               = "vite_voice_features_enabled"
 	KeyVoiceTemporarilyDisabled   = "vite_voice_features_temporarily_disabled"
+
+	KeyBlockedToolkits                = "blocked_toolkits"
+	KeyBlockedTools                   = "blocked_tools"
+	KeySensitiveTools                 = "sensitive_tools"
+	KeySensitiveActionCompanyName     = "sensitive_action_company_name"
+	KeySensitiveActionMessageTemplate = "sensitive_action_message_template"
 )
 
 // Values is one section's stored rows, decoded. A key ABSENT from the map has
@@ -132,6 +139,48 @@ func (v Values) Ints(key string) []int64 {
 			continue
 		}
 		out = append(out, int64(number))
+	}
+	return out
+}
+
+// String reads a string, falling back when the key is absent or holds something
+// else — the same wrong-type-is-absent rule Bool applies, and for the same
+// reason.
+func (v Values) String(key string, fallback string) string {
+	got, ok := v[key].(string)
+	if !ok {
+		return fallback
+	}
+	return got
+}
+
+// StringLists reads a `map[string][]string` — the shape both guardrail tool maps
+// use (`{"github": ["create_issue"]}`).
+//
+// Elements that are not strings are skipped, and a key whose value is not an
+// array at all is skipped entirely rather than recorded as an empty list. An
+// empty list and a malformed value are different facts: the first is an operator
+// who selected a toolkit and no tools, the second is a row that should never have
+// been written, and recording the second as the first would make a corrupt row
+// look like a deliberate choice in the admin form.
+func (v Values) StringLists(key string) map[string][]string {
+	entries, ok := v[key].(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string][]string, len(entries))
+	for name, raw := range entries {
+		items, ok := raw.([]any)
+		if !ok {
+			continue
+		}
+		values := make([]string, 0, len(items))
+		for _, item := range items {
+			if text, ok := item.(string); ok && text != "" {
+				values = append(values, text)
+			}
+		}
+		out[name] = values
 	}
 	return out
 }
