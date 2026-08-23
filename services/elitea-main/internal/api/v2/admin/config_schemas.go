@@ -429,7 +429,24 @@ const mcpServersUnavailable = "MCP server definitions are not stored as plugin c
 
 func mcpServersSection() map[string]any {
 	return map[string]any{
-		"id":                 "mcp_servers",
+		"id": "mcp_servers",
+		// managed_surface names the dedicated surface that really holds this
+		// section's data, so the client can render the right editor WITHOUT a
+		// hardcoded list of section ids.
+		//
+		// That distinction is the whole reason this key exists on the server.
+		// The reference keeps section placement in two client-side lists that
+		// have to stay each other's exact complement by hand, and #217 already
+		// corrected one instance of it. A client that special-cased
+		// `id == "mcp_servers"` would be the same mistake in a new place: the
+		// server would move the catalogue and the client would go on rendering
+		// an editor for a surface that no longer exists.
+		//
+		// `unavailable_reason` STAYS. It is still true of the plugin-config
+		// value endpoints, which cannot serve this section — a client that
+		// cannot render the managed surface must still be told why the ordinary
+		// form is missing, and the two value endpoints must keep refusing.
+		"managed_surface":    "mcp_prebuilt_servers",
 		"unavailable_reason": mcpServersUnavailable,
 		"title":              "MCP Servers",
 		"description":        "Configure Model Context Protocol server definitions available to the indexer runtime.",

@@ -98,6 +98,18 @@ export interface AdminConfigSection {
   readonly fields?: readonly AdminConfigField[];
   readonly unavailable_reason?: string;
   /**
+   * The dedicated surface that really holds this section's data, when one
+   * exists — `'mcp_prebuilt_servers'` for the MCP catalogue.
+   *
+   * Server-declared, for the reason `page` is: a client that keyed a bespoke
+   * editor on `id === 'mcp_servers'` would go on rendering it after the server
+   * moved or withdrew the surface. Keying on the server's own word means the
+   * server decides, and a client that does not recognise the value falls back
+   * to rendering `unavailable_reason` — which is why that field STAYS set on a
+   * managed section.
+   */
+  readonly managed_surface?: string;
+  /**
    * Which admin page renders this section — `'features'`, or absent for
    * Configuration.
    *
