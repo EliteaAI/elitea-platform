@@ -90,6 +90,7 @@ def request_from(
     parallel_terminal_errors = _json_list(
         message.parallel_terminal_errors, "parallel terminal errors"
     )
+    toolkit_guardrails = _toolkit_guardrails_policy(message.toolkit_guardrails)
     next_input_suggestion = _next_input_suggestion_policy(
         message.next_input_suggestion
     )
@@ -161,6 +162,7 @@ def request_from(
             parallel_reconcile=parallel_reconcile,
             parallel_terminal_errors=parallel_terminal_errors,
             next_input_suggestion=next_input_suggestion,
+            toolkit_guardrails=toolkit_guardrails,
             exception_handling_enabled=(
                 message.exception_handling_enabled
                 if message.HasField("exception_handling_enabled")
@@ -220,6 +222,70 @@ def _optional_json_object(raw: bytes, name: str) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise InvalidInput(f"The agent {name} must be an object or null.")
     return value
+
+
+# The guardrail fields the admission path sends, and the only ones accepted.
+#
+# Declared as a closed set for the same reason the suggestion policy's is: an
+# unexpected key means the two sides disagree about the contract, and silently
+# ignoring it would let a field be added on one side and never noticed missing
+# on the other.
+_TOOLKIT_GUARDRAIL_FIELDS = frozenset(
+    {
+        "blocked_toolkits",
+        "blocked_tools",
+        "sensitive_tools",
+        "sensitive_action_company_name",
+        "sensitive_action_message_template",
+    }
+)
+
+
+def _toolkit_guardrails_policy(raw: bytes) -> dict[str, Any] | None:
+    """Decode the per-run toolkit guardrails, or None when the field is absent.
+
+    ABSENT is not EMPTY. An empty payload means this command came from a
+    platform that does not send the field, and the worker must be left on its
+    environment configuration exactly as before — that is what keeps existing
+    deployments working. An empty *object* means the platform resolved a policy
+    and it is empty, which is a real instruction: nothing is blocked and nothing
+    is sensitive.
+    """
+    if not raw:
+        return None
+    value = parse_json_value(raw)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise InvalidInput("The agent toolkit guardrails must be an object or null.")
+    if set(value) - _TOOLKIT_GUARDRAIL_FIELDS:
+        raise InvalidInput("The agent toolkit guardrails contain unsupported fields.")
+
+    for name in ("sensitive_action_company_name", "sensitive_action_message_template"):
+        if name in value and not isinstance(value[name], str):
+            raise InvalidInput(f"The agent guardrail {name} must be a string.")
+    if "blocked_toolkits" in value:
+        _guardrail_name_list(value["blocked_toolkits"], "blocked_toolkits")
+    for name in ("blocked_tools", "sensitive_tools"):
+        mapping = value.get(name)
+        if mapping is None:
+            continue
+        if not isinstance(mapping, dict):
+            raise InvalidInput(f"The agent guardrail {name} must be an object.")
+        for toolkit, tools in mapping.items():
+            if not isinstance(toolkit, str):
+                raise InvalidInput(f"The agent guardrail {name} keys must be strings.")
+            _guardrail_name_list(tools, name)
+    return value
+
+
+def _guardrail_name_list(value: Any, name: str) -> None:
+    """Every entry of a guardrail name list must be a string."""
+    if not isinstance(value, list):
+        raise InvalidInput(f"The agent guardrail {name} must be a list of names.")
+    for entry in value:
+        if not isinstance(entry, str):
+            raise InvalidInput(f"The agent guardrail {name} entries must be strings.")
 
 
 def _next_input_suggestion_policy(raw: bytes) -> dict[str, Any]:

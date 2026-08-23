@@ -38,7 +38,8 @@ func TestCurrentApplicationRegenerationReusesResponseWithFreshGeneration(t *test
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver, &currentApplicationVersionFreezerStub{}, admissions,
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +81,8 @@ func TestCurrentRegenerationRejectsBrowserIdentityDriftBeforeAdmission(t *testin
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver, &currentApplicationVersionFreezerStub{}, admissions,
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
 		t.Fatal(err)

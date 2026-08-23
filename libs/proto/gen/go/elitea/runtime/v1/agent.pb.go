@@ -198,8 +198,28 @@ type AgentExecutionInputV1 struct {
 	// reads Pylon configuration directly and treats suggestion generation as a
 	// best-effort post-response side effect.
 	NextInputSuggestion []byte `protobuf:"bytes,37,opt,name=next_input_suggestion,json=nextInputSuggestion,proto3" json:"next_input_suggestion,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// The platform-wide toolkit guardrails, as one bounded, non-secret JSON
+	// object: `sensitive_tools`, `blocked_toolkits`, `blocked_tools` and the two
+	// authorization-dialog copy fields.
+	//
+	// It travels with the RUN rather than with the container. The worker's
+	// guardrail middleware reads process-global state configured from
+	// `ELITEA_SENSITIVE_TOOLS`-style environment variables, which means a policy
+	// change needs a redeploy and every tenant on a worker pool shares one answer.
+	// The admin Configuration page writes this policy per platform and expects it
+	// to take effect on the next call, so the resolved policy is stamped here at
+	// admission and applied by the worker before it builds the agent.
+	//
+	// ABSENT is meaningful and is not the same as empty: an absent field leaves
+	// the worker on its environment configuration exactly as before, which is what
+	// keeps existing deployments working. An empty object means the platform
+	// resolved a policy and it is empty.
+	//
+	// Guardrail identifiers only — never credentials. The tool and toolkit names
+	// here are the same public identifiers the toolkit catalogue already serves.
+	ToolkitGuardrails []byte `protobuf:"bytes,38,opt,name=toolkit_guardrails,json=toolkitGuardrails,proto3" json:"toolkit_guardrails,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *AgentExecutionInputV1) Reset() {
@@ -491,6 +511,13 @@ func (x *AgentExecutionInputV1) GetNextInputSuggestion() []byte {
 	return nil
 }
 
+func (x *AgentExecutionInputV1) GetToolkitGuardrails() []byte {
+	if x != nil {
+		return x.ToolkitGuardrails
+	}
+	return nil
+}
+
 type AgentExecutionArtifactReferenceV1 struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	ArtifactId       string                 `protobuf:"bytes,1,opt,name=artifact_id,json=artifactId,proto3" json:"artifact_id,omitempty"`
@@ -679,7 +706,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x10request_entry_id\x18\x01 \x01(\tR\x0erequestEntryId\x12(\n" +
 	"\x10client_stream_id\x18\x02 \x01(\tR\x0eclientStreamId\x12*\n" +
 	"\x11client_message_id\x18\x03 \x01(\tR\x0fclientMessageId\x12\x1b\n" +
-	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\x9a\r\n" +
+	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\xc9\r\n" +
 	"\x15AgentExecutionInputV1\x12'\n" +
 	"\x0fschema_revision\x18\x01 \x01(\tR\x0eschemaRevision\x12\x10\n" +
 	"\x03llm\x18\x02 \x01(\fR\x03llm\x12!\n" +
@@ -725,7 +752,8 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x1aexception_handling_enabled\x18# \x01(\bH\aR\x18exceptionHandlingEnabled\x88\x01\x01\x12\"\n" +
 	"\n" +
 	"debug_mode\x18$ \x01(\bH\bR\tdebugMode\x88\x01\x01\x122\n" +
-	"\x15next_input_suggestion\x18% \x01(\fR\x13nextInputSuggestionB\f\n" +
+	"\x15next_input_suggestion\x18% \x01(\fR\x13nextInputSuggestion\x12-\n" +
+	"\x12toolkit_guardrails\x18& \x01(\fR\x11toolkitGuardrailsB\f\n" +
 	"\n" +
 	"_thread_idB\x10\n" +
 	"\x0e_checkpoint_idB\x0e\n" +
@@ -735,7 +763,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x15_execution_generationB\x12\n" +
 	"\x10_conversation_idB\x1d\n" +
 	"\x1b_exception_handling_enabledB\r\n" +
-	"\v_debug_modeJ\x04\b&\x10@\"\x94\x02\n" +
+	"\v_debug_modeJ\x04\b'\x10@\"\x94\x02\n" +
 	"!AgentExecutionArtifactReferenceV1\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12+\n" +
