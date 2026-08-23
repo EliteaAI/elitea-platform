@@ -109,7 +109,14 @@ function McpServerTable({
 }) {
   return (
     <TableContainer>
-      <Table size="small" data-testid="admin-mcp-servers-table">
+      {/* Named, so the table has an accessible name for a screen reader and a
+          stable handle for the journey and visual specs — the same shape as the
+          admin Schedules table. */}
+      <Table
+        size="small"
+        aria-label={t('pages.admin.mcpServers.tableLabel', 'MCP servers')}
+        data-testid="admin-mcp-servers-table"
+      >
         <TableHead>
           <TableRow>
             <TableCell>{t('pages.admin.mcpServers.column.name', 'Name')}</TableCell>

@@ -2114,5 +2114,6 @@
   "pages.admin.mcpServers.error.load": "Failed to load the MCP server catalogue.",
   "pages.admin.mcpServers.error.save": "Failed to save that MCP server.",
   "pages.admin.mcpServers.noSecret": "None",
-  "pages.admin.mcpServers.remove": "Remove"
+  "pages.admin.mcpServers.remove": "Remove",
+  "pages.admin.mcpServers.tableLabel": "MCP servers"
 }

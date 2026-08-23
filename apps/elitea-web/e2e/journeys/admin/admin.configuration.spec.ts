@@ -44,7 +44,7 @@ async function openConfiguration(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: /Guardrails/ })).toBeVisible({ timeout: 20_000 });
 }
 
-adminTest('J34: every section on this page is marked unavailable before it is opened', async ({ page }) => {
+adminTest('J34: every section except MCP Servers is marked unavailable before it is opened', async ({ page }) => {
   await openConfiguration(page);
 
   await expect(page.getByText('Failed to load the configuration sections.')).toHaveCount(0);
@@ -53,10 +53,41 @@ adminTest('J34: every section on this page is marked unavailable before it is op
   // legible before the operator clicks anything.
   const marks = page.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  expect(await marks.count(), 'every remaining Configuration section is unavailable').toBeGreaterThan(5);
+  expect(await marks.count(), 'the Pylon-configuration sections are all unavailable').toBeGreaterThan(4);
 
-  // And no save control exists anywhere on the page.
+  // MCP Servers is the ONE exception, and the exception is the point: the
+  // section still declares an `unavailable_reason` — true of the plugin-config
+  // value endpoints, which cannot serve a catalogue that carries a client
+  // secret — but it also declares a `managed_surface`, and the page renders
+  // that surface's editor instead. Marking it "Not available here" would send
+  // an operator away from the only page that can edit it.
+  const mcpEntry = page.getByRole('button', { name: /MCP Servers/ });
+  await expect(mcpEntry).toBeVisible();
+  await expect(mcpEntry.getByText('Not available here')).toHaveCount(0);
+
+  // And no save control exists anywhere on the page. The catalogue editor's
+  // own Save lives inside its dialog, which no assertion here has opened.
   await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34a: the MCP Servers section renders its editor, not a refusal', async ({ page }) => {
+  await openConfiguration(page);
+
+  await page.getByRole('button', { name: /MCP Servers/ }).click();
+
+  // The editor's own control, so this proves the dedicated surface MOUNTED —
+  // not merely that the refusal notice is absent, which a blank pane would also
+  // satisfy.
+  await expect(page.getByTestId('admin-mcp-servers-add')).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The catalogue read is authorised and answered. A fresh deployment catalogues
+  // nothing, so the empty state is the truthful branch here; the error alert
+  // would mean the route refused, which is what this asserts is NOT happening.
+  await expect(page.getByTestId('admin-mcp-servers-empty')).toBeVisible();
+  await expect(page.getByTestId('admin-mcp-servers-error')).toHaveCount(0);
 
   await checkA11y(page);
 });

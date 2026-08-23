@@ -250,13 +250,22 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // @covers /admin/app/configuration
     name: 'admin-configuration',
     path: '/admin/app/configuration',
-    // The unavailable Alert — see this file's classification note below on why
-    // a refusal screen is a legitimate baseline and a scaffolding screen is
-    // not. NOT the "This deployment publishes no configuration sections." text:
-    // `activeSection` is `undefined` while `sections` is still `[]`, so that
-    // string is the LOADING state as well as the empty one.
-    // Measured: loaded YES, stalled no.
-    landmark: (page) => page.getByTestId('admin-configuration-unavailable'),
+    // The MCP catalogue's EMPTY state, not the unavailable Alert this entry
+    // used to wait for.
+    //
+    // The page opens on the first section it can actually serve, and MCP
+    // Servers is now one — it declares a `managed_surface`, so the page renders
+    // the catalogue editor rather than the section's refusal. The old landmark
+    // is therefore no longer on screen at rest.
+    //
+    // The EMPTY state rather than the Add button, deliberately: the button
+    // renders immediately, so it would resolve while the catalogue read was
+    // still in flight and the snapshot could catch a half-loaded pane. The
+    // empty state is gated on `!isLoading` AND no error, so it is a settled
+    // screen. A fresh E2E stack catalogues nothing, so that is the branch this
+    // stack renders; if the read ever fails, this landmark does not resolve and
+    // the run fails loudly, which is the correct outcome for a broken route.
+    landmark: (page) => page.getByTestId('admin-mcp-servers-empty'),
     light: true,
   },
   {
