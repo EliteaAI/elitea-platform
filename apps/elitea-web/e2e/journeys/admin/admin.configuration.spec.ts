@@ -53,7 +53,10 @@ adminTest('J34: every section except MCP Servers is marked unavailable before it
   // legible before the operator clicks anything.
   const marks = page.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  expect(await marks.count(), 'the Pylon-configuration sections are all unavailable').toBeGreaterThan(4);
+  // Still > 5, unchanged from before this branch: the catalogue took ONE
+  // section out of the unavailable set and 11 remain. Lowering the bound to
+  // absorb the change would have weakened the assertion for nothing.
+  expect(await marks.count(), 'the Pylon-configuration sections are all unavailable').toBeGreaterThan(5);
 
   // MCP Servers is the ONE exception, and the exception is the point: the
   // section still declares an `unavailable_reason` — true of the plugin-config
