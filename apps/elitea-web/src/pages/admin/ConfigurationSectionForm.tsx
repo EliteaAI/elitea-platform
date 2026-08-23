@@ -2,9 +2,10 @@
  * The schema-driven form for one Configuration section — unit A14, issue #200.
  *
  * The server sends field specs; this renders a control per spec. It renders
- * exactly the widget kinds the AVAILABLE section needs — boolean, string,
- * enum-as-select, multiline string, number and the `*_links` editor — and, for a
- * spec it has no honest widget for, a disabled row saying so.
+ * exactly the widget kinds the AVAILABLE sections need — boolean, string,
+ * enum-as-select, multiline string, number, the `*_links` editor and the
+ * toolkit-to-tools map behind Guardrails — and, for a spec it has no honest
+ * widget for, a disabled row saying so.
  *
  * That last part is the whole design. The reference's `SchemaField.jsx` falls
  * back to a raw JSON CodeMirror for `object` fields and to a chips input for
@@ -12,6 +13,13 @@
  * LOOKS editable. Here it says it is not. No available section declares such a
  * field today, so the branch is unreached in production and covered by a unit
  * test — but it is the branch that keeps the next section honest when one does.
+ *
+ * The `toolMap` widget exists because Guardrails made that branch reachable.
+ * Guardrails is `order: 1`, so it is the section this page LANDS on, and two of
+ * its five fields are `{toolkit: [tools]}` maps — `blocked_tools` and
+ * `sensitive_tools`, which are the substance of the feature. Shipping them as
+ * unsupported rows would have made the page's first screen a form whose two
+ * most important controls do nothing.
  */
 import Box from '@mui/material/Box';
 import FormControlLabel from '@mui/material/FormControlLabel';
@@ -29,82 +37,24 @@ import {
   toConfigListRows,
   type ConfigListItemType,
 } from './ConfigurationListEditor';
-import type { AdminConfigField } from './api/adminConfigurationApi';
+import {
+  ConfigurationToolMapEditor,
+  fromConfigToolMapRows,
+  toConfigToolMapRows,
+} from './ConfigurationToolMapEditor';
+import { useConfigSuggestions, type AdminConfigField } from './api/adminConfigurationApi';
+import { isFieldVisible, listItemTypeFor, widgetFor } from './configurationFields';
 
-/**
- * Whether a field's `visible_when` is satisfied by the current values.
- *
- * The schema uses this to hide a dependent field — the OIDC fields behind
- * `auth_provider = oidc`, the whitelist behind `is_publish_blocked`. Absent
- * means always visible. An ARRAY of conditions means ALL of them, which is how
- * the schema's `litellm_db_name` reads.
- */
-export function isFieldVisible(
-  field: AdminConfigField,
-  values: Readonly<Record<string, unknown>>,
-): boolean {
-  const condition = field.visible_when;
-  if (condition === undefined) return true;
-  // Declared as a union of one condition or many; `Array.isArray` on a readonly
-  // array widens to `any[]`, so the narrowing is written out rather than
-  // inferred.
-  const conditions: ReadonlyArray<{ readonly field: string; readonly value: unknown }> =
-    Array.isArray(condition)
-      ? (condition as ReadonlyArray<{ readonly field: string; readonly value: unknown }>)
-      : [condition as { readonly field: string; readonly value: unknown }];
-  return conditions.every((entry) => values[entry.field] === entry.value);
-}
-
-/**
- * The widget a spec resolves to, decided once so the form and its tests cannot
- * disagree about it.
- *
- * `links` is matched on the KEY suffix rather than on the type, because the
- * schema types those fields as plain arrays — the `items` shape is what makes
- * them links, and the same suffix is what the server's validator keys on.
- */
-export type ConfigWidget =
-  | 'links'
-  | 'list'
-  | 'boolean'
-  | 'select'
-  | 'multiline'
-  | 'text'
-  | 'number'
-  | 'unavailable'
-  | 'none';
-
-export function widgetFor(field: AdminConfigField): ConfigWidget {
-  // Checked FIRST, before the type. A field the server says cannot be set must
-  // render as read-only whatever shape it has, and a later branch winning would
-  // give it a working-looking control — the failure this whole unit removes.
-  if (field.unavailable_reason !== undefined && field.unavailable_reason !== '') return 'unavailable';
-  if (field.key.endsWith('_links')) return 'links';
-  if (field.type === 'boolean') return 'boolean';
-  if (field.type === 'string') return stringWidgetFor(field);
-  if (field.type === 'integer' || field.type === 'number') return 'number';
-  // An array whose element type the schema declares — the Features page's
-  // `agent_categories` (strings) and `publish_whitelist_project_ids`
-  // (integers). An array that declares NO element type still falls through to
-  // `none`: the reference renders those as a free chips input, which invites an
-  // operator to type values the consumer will drop on the floor.
-  if (field.type === 'array' && listItemTypeFor(field) !== undefined) return 'list';
-  return 'none';
-}
-
-/** The three shapes a `string` spec can take. Split out to keep `widgetFor` flat. */
-function stringWidgetFor(field: AdminConfigField): ConfigWidget {
-  if (field.enum !== undefined && field.enum.length > 0) return 'select';
-  return field.format === 'textarea' ? 'multiline' : 'text';
-}
-
-/** The element type of an array field, when it is one this form can edit. */
-export function listItemTypeFor(field: AdminConfigField): ConfigListItemType | undefined {
-  const declared = field.items?.type;
-  if (declared === 'string') return 'string';
-  if (declared === 'integer') return 'integer';
-  return undefined;
-}
+// Re-exported so the spec-reading helpers keep ONE import path for their
+// existing consumers (`useAdminConfigurationPage`, and the two page test
+// suites). Moving the file should not have moved the module's public surface.
+export {
+  isFieldVisible,
+  isToolMapField,
+  listItemTypeFor,
+  widgetFor,
+  type ConfigWidget,
+} from './configurationFields';
 
 interface FieldProps {
   readonly field: AdminConfigField;
@@ -165,6 +115,31 @@ function LinksField({ field, value, disabled, onChange }: FieldProps) {
         disabled={disabled}
         onChange={(next) => {
           onChange(field.key, next);
+        }}
+      />
+    </Box>
+  );
+}
+
+/**
+ * The toolkit-to-tools map behind `blocked_tools` and `sensitive_tools`.
+ *
+ * The toolkit-name suggestions are fetched ONCE per field rather than per row —
+ * they are the same list for every row, and the query is shared by key anyway,
+ * but hoisting it keeps the row component free of a second network concern.
+ */
+function ToolMapField({ field, value, disabled, onChange }: FieldProps) {
+  const toolkitOptions = useConfigSuggestions(field.enum_source_keys);
+  return (
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
+      <FieldHeading field={field} />
+      <ConfigurationToolMapEditor
+        rows={toConfigToolMapRows(value)}
+        disabled={disabled}
+        toolkitOptions={toolkitOptions}
+        toolSource={field.enum_source_values}
+        onChange={(next) => {
+          onChange(field.key, fromConfigToolMapRows(next));
         }}
       />
     </Box>
@@ -311,6 +286,8 @@ function FieldRow(props: FieldProps) {
       return <UnavailableField field={props.field} value={props.value} />;
     case 'list':
       return <ListField {...props} />;
+    case 'toolMap':
+      return <ToolMapField {...props} />;
     case 'select':
       return <SelectField {...props} />;
     case 'number':
