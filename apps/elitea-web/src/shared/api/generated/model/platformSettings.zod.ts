@@ -71,6 +71,12 @@ export const PlatformSettings = zod
       .describe(
         "A14 (issue 200): the second voice flag. Leaves the control VISIBLE but non-interactive with an admin tooltip, which the button already renders (`tooltipAdminDisabled`) against a constant hardcoded to `false`.\n",
       ),
+    blocked_toolkits: zod
+      .array(zod.string())
+      .optional()
+      .describe(
+        "The guardrails blocklist, as canonical comparison keys (lowercased, every non-alphanumeric character stripped, so `GitHub`, `git_hub` and `github` are one key). Written by the admin Configuration page's Guardrails section and marshalled from `centry.platform_config`.\n\nIt is published so the product UI can mark an EXISTING toolkit blocked. The server deliberately does not filter the toolkit instance list: an administrator who blocks `github` must still be able to see and delete the github toolkits that already exist, or their settings and vault references are stranded behind no surface at all. A client shown those rows needs to know which of them are blocked, or it renders a toolkit as usable that no agent will run.\n\nCanonical keys rather than the operator's raw strings, because the list is for COMPARISON and never for display. Sending the raw values would make correctness depend on the client repeating a normalisation rule it can only get wrong.\n\nOptional for the same reason as mcp_in_menu_enabled: it is always present in the response, but a client pinned to an older deployment must not fail validation on its absence.\n",
+      ),
   })
   .describe(
     "NOTE(W2): defaults at eliteacore\/handler.go:52-63 — the ten booleans are built unconditionally and the DB overlay (:74-76) can only add or override, never delete, so they are always present (hence required). On the sole documented route (project-less) the DB branch is skipped entirely and the response is exactly the ten booleans.\n",

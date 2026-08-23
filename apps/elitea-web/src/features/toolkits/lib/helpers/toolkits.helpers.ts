@@ -34,13 +34,21 @@
  *     exported (`entities/credential/index.ts`) — `entities/` is a legal
  *     downward import, reused instead of a second copy.
  *  3. `BLOCKED_TOOLKITS` (`common/constants.js:19`,
- *     `getEnvVar('blocked_toolkits', [])`) — `shared/config`'s schema has
- *     no `blocked_toolkits` key (real, disclosed gap — the SAME one
- *     `features/agents/lib/toolkitBlocklist.ts` already documents for its
- *     own copy of this exact function). `isToolkitTypeBlocked` below takes
- *     the blocklist as a parameter instead of reading a module-level
- *     constant; a page/widget-layer caller wires a real source once
- *     `shared/config` grows the key.
+ *     `getEnvVar('blocked_toolkits', [])`) — the gap that entry described is
+ *     closed: the list is published by
+ *     `GET /elitea_core/platform_settings/prompt_lib` and read by
+ *     `features/agents/api/useBlockedToolkitTypes`.
+ *
+ *     THIS copy of `isToolkitTypeBlocked` still has no production caller, and
+ *     that is not a gap to close here. The baseline has exactly two consumers
+ *     of the function — `ToolCard.jsx` (ported and now wired through
+ *     `features/agents`) and `ParticipantStatusRunner.jsx`. This app's
+ *     `ParticipantStatusRunner` accepts the function through a slot and has
+ *     ZERO render sites: it is not exported from the feature and appears in no
+ *     JSX anywhere, so supplying it a blocklist would wire a real value into a
+ *     component nothing mounts. That is the defect class this whole effort
+ *     removes, so it is recorded rather than fed. Wiring it belongs with
+ *     whatever change gives the runner a mount site.
  *  4. `getToolIconByType` (`common/toolkitUtils.jsx`, ~30 brand SVGs) — this
  *     app has not ported a full per-toolkit-type brand-icon resolver
  *     anywhere (grepped `shared/ui/icons/`: partial brand coverage only —
