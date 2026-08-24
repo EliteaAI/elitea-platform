@@ -14,6 +14,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"errors"
 
@@ -48,46 +49,68 @@ func OIDCConfigFromEnv() (*OIDCConfig, error) {
 	return cfg, nil
 }
 
+// OIDCHandler serves the browser OIDC login and callback.
+//
+// Its CONFIGURATION is resolved per request rather than held here, so an
+// operator authoring a provider on the admin page takes effect without a
+// restart. See oidc_providers.go for the precedence, the cache and the one
+// thing that still needs a restart.
 type OIDCHandler struct {
-	provider      *oidc.Provider
-	verifier      *oidc.IDTokenVerifier
-	oauth2Cfg     *oauth2.Config
 	pool          *pgxpool.Pool
 	secretKey     string
 	secureCookies bool
+
+	// providers and secretSource are the authored store. Both nil unless
+	// WithProviderStore was applied, in which case only envRuntime is used.
+	providers    IdentityProviderSource
+	secretSource IdentitySecretSource
+
+	// envRuntime is the fallback built from OIDC_ISSUER_URL at boot. Nil on a
+	// deployment configured only through the admin page.
+	envRuntime *oidcRuntime
+
+	runtimeMu    sync.Mutex
+	runtimeCache map[string]*oidcRuntime
 }
 
+// NewOIDCHandler builds the handler.
+//
+// `cfg` MAY BE NIL. A deployment that federates through a stored provider and
+// sets no OIDC environment variables is the ordinary case once the admin editor
+// exists, and it must not be forced to restate its provider in the environment
+// to get the routes mounted.
 func NewOIDCHandler(ctx context.Context, cfg *OIDCConfig, pool *pgxpool.Pool, secretKey string) (*OIDCHandler, error) {
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
-	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery failed for %s: %w", cfg.IssuerURL, err)
-	}
-
-	oauth2Cfg := &oauth2.Config{
-		ClientID:     cfg.ClientID,
-		ClientSecret: cfg.ClientSecret,
-		RedirectURL:  cfg.RedirectURI,
-		Endpoint:     provider.Endpoint(),
-		Scopes:       []string{oidc.ScopeOpenID, "profile", "email"},
-	}
-
-	verifier := provider.Verifier(&oidc.Config{ClientID: cfg.ClientID})
-
 	// COOKIE_SECURE=false disables the Secure flag — useful for E2E stacks
 	// that run over plain HTTP on localhost.
 	secureCookies := os.Getenv("COOKIE_SECURE") != "false"
 
-	return &OIDCHandler{
-		provider:      provider,
-		verifier:      verifier,
-		oauth2Cfg:     oauth2Cfg,
+	handler := &OIDCHandler{
 		pool:          pool,
 		secretKey:     secretKey,
 		secureCookies: secureCookies,
-	}, nil
+		runtimeCache:  map[string]*oidcRuntime{},
+	}
+	if cfg != nil {
+		environment, err := newOIDCRuntimeFromEnvironment(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		handler.envRuntime = environment
+	}
+	return handler, nil
 }
 
 func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
+	runtime, err := h.runtime(r.Context())
+	if err != nil {
+		// The cause is logged, never returned: it names the issuer, the vault
+		// entry, or the database, and this response goes to an unauthenticated
+		// browser.
+		slog.Error("OIDC: no usable identity provider for this login", "err", err)
+		http.Error(w, "single sign-on is not available", http.StatusServiceUnavailable)
+		return
+	}
+
 	targetTo := safeRedirectTarget(r.URL.Query().Get("target_to"))
 
 	rawState := make([]byte, 16)
@@ -130,8 +153,57 @@ func (h *OIDCHandler) Login(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   300,
 	})
 
-	authURL := h.oauth2Cfg.AuthCodeURL(stateValue, oidc.Nonce(nonce))
+	// PKCE. The verifier stays in a cookie on this browser and never leaves it;
+	// only its S256 challenge is sent to the identity provider. Without it, an
+	// authorization code intercepted between the provider and this callback can
+	// be redeemed by whoever holds it. The state cookie does not close that: it
+	// proves the callback belongs to a login this server started, not that the
+	// code was redeemed by the browser that started it.
+	pkceVerifier := oauth2.GenerateVerifier()
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcPKCECookie,
+		Value:    pkceVerifier,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   300,
+	})
+
+	authURL := runtime.oauth2Cfg.AuthCodeURL(stateValue,
+		oidc.Nonce(nonce), oauth2.S256ChallengeOption(pkceVerifier))
 	http.Redirect(w, r, authURL, http.StatusFound)
+}
+
+// oidcPKCECookie holds the PKCE code verifier of ONE login attempt.
+//
+// It is a cookie for the same reason the nonce is: this handler keeps no
+// server-side login state, so the one place a per-attempt secret can live is the
+// browser that started the attempt. HttpOnly keeps it out of reach of page
+// script, and the five-minute lifetime bounds a stale attempt.
+const oidcPKCECookie = "oidc_pkce"
+
+// consumeCodeVerifier clears the PKCE cookie and returns its value.
+//
+// A MISSING verifier is not silently tolerated. The authorization request
+// carried a challenge, so the token endpoint will demand the verifier; sending
+// none would fail at the provider with an error about the client rather than
+// about this browser's cookie.
+func (h *OIDCHandler) consumeCodeVerifier(w http.ResponseWriter, r *http.Request) (string, bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     oidcPKCECookie,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   h.secureCookies,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	cookie, err := r.Cookie(oidcPKCECookie)
+	if err != nil || cookie.Value == "" {
+		return "", false
+	}
+	return cookie.Value, true
 }
 
 // oidcNonceCookie holds the nonce of ONE login attempt.
@@ -166,6 +238,16 @@ func (h *OIDCHandler) consumeNonce(w http.ResponseWriter, r *http.Request, token
 
 func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+
+	// Resolved FIRST, and from the same source Login used. A callback that
+	// resolved a different provider from the login that started it would verify
+	// the token against the wrong issuer.
+	runtime, err := h.runtime(ctx)
+	if err != nil {
+		slog.Error("OIDC: no usable identity provider for this callback", "err", err)
+		http.Error(w, "single sign-on is not available", http.StatusServiceUnavailable)
+		return
+	}
 
 	stateCookie, err := r.Cookie("oidc_state")
 	if err != nil || stateCookie.Value == "" {
@@ -220,7 +302,13 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.oauth2Cfg.Exchange(ctx, code)
+	codeVerifier, ok := h.consumeCodeVerifier(w, r)
+	if !ok {
+		http.Error(w, "missing PKCE verifier cookie", http.StatusBadRequest)
+		return
+	}
+
+	token, err := runtime.oauth2Cfg.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
 		slog.Error("OIDC token exchange failed", "err", err)
 		http.Error(w, "token exchange failed", http.StatusInternalServerError)
@@ -234,7 +322,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idToken, err := h.verifier.Verify(ctx, rawIDToken)
+	idToken, err := runtime.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		slog.Error("OIDC: id_token verification failed", "err", err)
 		http.Error(w, "id_token verification failed", http.StatusUnauthorized)
@@ -259,7 +347,7 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	// client was never the subject of is accepted. The reviewed protocol
 	// verifier applies the same rule (internal/infra/identity/oidc/protocol.go).
 	if (len(idToken.Audience) > 1 && claims.AuthorizedParty == "") ||
-		(claims.AuthorizedParty != "" && claims.AuthorizedParty != h.oauth2Cfg.ClientID) {
+		(claims.AuthorizedParty != "" && claims.AuthorizedParty != runtime.oauth2Cfg.ClientID) {
 		slog.Error("OIDC: id_token authorized party is not this client", "sub", claims.Sub)
 		http.Error(w, "id_token verification failed", http.StatusUnauthorized)
 		return
@@ -288,7 +376,8 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name, claims.EmailVerified)
+	userID, err := h.provisionUser(ctx, claims.Sub, claims.Email, claims.Name,
+		claims.EmailVerified, runtime.requireEmailVerified)
 	if err != nil {
 		if errors.Is(err, errUserSuspended) {
 			slog.Warn("OIDC: suspended user attempted login", "email", claims.Email)
@@ -324,7 +413,8 @@ func (h *OIDCHandler) Callback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   86400,
 	})
 
-	slog.Info("OIDC login successful", "email", claims.Email, "user_id", userID)
+	slog.Info("OIDC login successful",
+		"email", claims.Email, "user_id", userID, "provider", runtime.origin)
 	http.Redirect(w, r, targetTo, http.StatusFound)
 }
 
@@ -382,6 +472,7 @@ func (h *OIDCHandler) provisionUser(
 	ctx context.Context,
 	sub, email, name string,
 	emailVerified *bool,
+	requireVerifiedEmail bool,
 ) (string, error) {
 	providerRef := "oidc:" + sub
 
@@ -391,7 +482,7 @@ func (h *OIDCHandler) provisionUser(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	userID, err := resolveProvisionedUser(ctx, tx, providerRef, email, name, emailVerified)
+	userID, err := resolveProvisionedUser(ctx, tx, providerRef, email, name, emailVerified, requireVerifiedEmail)
 	if err != nil {
 		return "", err
 	}
@@ -410,6 +501,7 @@ func resolveProvisionedUser(
 	tx pgx.Tx,
 	providerRef, email, name string,
 	emailVerified *bool,
+	requireVerifiedEmail bool,
 ) (int, error) {
 	// Serializes two concurrent first logins for the same subject, so only one
 	// of them creates the link. Mirrors AcquireAuthProviderAdvisoryLock.
@@ -426,7 +518,7 @@ func resolveProvisionedUser(
 	if linked {
 		return userID, nil
 	}
-	return joinAccountByEmail(ctx, tx, providerRef, email, name, emailVerified)
+	return joinAccountByEmail(ctx, tx, providerRef, email, name, emailVerified, requireVerifiedEmail)
 }
 
 // reuseLinkedAccount returns the account this provider subject already owns.
@@ -495,8 +587,9 @@ func joinAccountByEmail(
 	tx pgx.Tx,
 	providerRef, email, name string,
 	emailVerified *bool,
+	requireVerifiedEmail bool,
 ) (int, error) {
-	if oidcRequiresVerifiedEmail() && (emailVerified == nil || !*emailVerified) {
+	if requireVerifiedEmail && (emailVerified == nil || !*emailVerified) {
 		return 0, errEmailNotVerified
 	}
 

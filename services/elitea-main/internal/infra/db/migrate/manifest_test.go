@@ -145,7 +145,15 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	//
 	// 92 stays empty. Nothing needs to fill it: LoadManifest sorts by version and
 	// Head() reads the last entry, so a gap costs nothing.
-	require.EqualValues(t, 94, Head(shared))
+	// 95: shared/0095_identity_providers.sql, the typed identity provider
+	// revision. It replaces the four environment variables that were this
+	// service's only federation configuration, and gives the admin
+	// Configuration page's Authentication section a store and a reader.
+	// 96: shared/0096_scim_provisioning.sql, the side table SCIM 2.0 user
+	// provisioning needs. It holds the identity provider's externalId and the
+	// resource timestamps, keyed by user id — the account row itself is
+	// pylon-owned and is read and updated, never reshaped.
+	require.EqualValues(t, 96, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

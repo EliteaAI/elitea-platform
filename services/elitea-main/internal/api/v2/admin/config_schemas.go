@@ -127,6 +127,36 @@ const (
 		"@eliteaai/elitea-assistant package is not a dependency and SupportAssistantWidget has no render site, so " +
 		"enabling it would change a flag no rendered surface reads."
 
+	// authProvidersElsewhereUnavailable — the Authentication section is now a
+	// pointer to a real surface, in the same way `mcp_servers` is.
+	//
+	// The reason it is not a form HERE has not changed and cannot: every field
+	// it declares addresses a key inside a pylon plugin's YAML, and two of them
+	// (`client_secret`, and a SAML service provider key) are credentials that
+	// `rejectCredentialField` refuses into a plaintext `centry.platform_config`
+	// row — correctly, because every holder of `runtime.plugins` can read those
+	// rows. A flat list of field values also cannot express "this document is
+	// an OIDC provider and these are its invariants", which is the shape the
+	// configuration provenance specification requires by name.
+	//
+	// What HAS changed is that the values now have somewhere to go and
+	// something that reads them. `elitea_auth.identity_providers` (shared
+	// migration 0095) holds one typed revision per provider, the admin surface
+	// at `/admin/identity_providers/administration` authors it, and the browser
+	// login path resolves the enabled definition on every login.
+	//
+	// FORM USERS ARE NOT PART OF THAT, and this says so. The form provider's
+	// user list is a file the deployment mounts
+	// (`authcomposition.FormProviderConfig.UsersJSONFile`), read once at
+	// startup after the deployment's own environment and vault resolution. It
+	// is not a row this service may rewrite, and an editor here would present
+	// a control whose saves the next restart discards.
+	authProvidersElsewhereUnavailable = "identity providers are authored on the Authentication editor on this page, " +
+		"which writes typed OIDC and SAML definitions rather than plugin configuration. The plugin-config value " +
+		"endpoints cannot serve this section: two of its fields are credentials, and those are sealed in the " +
+		"platform vault instead of stored in a settings row. Form users stay in the deployment's mounted user file " +
+		"and are not editable here."
+
 	// publishValidationRulesUnavailable is a FIELD-level reason, not a section
 	// one. The rest of `agent_publishing` is enforced for real; this one field
 	// alone has nothing behind it. `runPublishValidation` in
@@ -1019,78 +1049,29 @@ func adminPanelSection() map[string]any {
 
 func authSection() map[string]any {
 	return map[string]any{
-		"id":                 "auth",
-		"unavailable_reason": pylonPluginConfigUnavailable,
+		"id": "auth",
+		// managed_surface names the dedicated surface that really holds this
+		// section's data, so the client renders the right editor WITHOUT a
+		// hardcoded list of section ids. See mcpServersSection() for why that
+		// distinction is the server's to make.
+		"managed_surface":    "identity_providers",
+		"unavailable_reason": authProvidersElsewhereUnavailable,
 		"title":              "Authentication",
-		"description":        "Configure the authentication provider and identity settings.",
+		"description":        "Configure the identity providers this deployment federates logins through.",
 		"order":              7,
 		"icon":               "lock",
-		"fields": []map[string]any{
-			{
-				"key":              "auth_provider",
-				"type":             "string",
-				"title":            "Authentication Provider",
-				"description":      "The authentication method used for user login.",
-				"path":             "auth_provider",
-				"section":          "auth",
-				"default":          "form",
-				"enum":             []string{"form", "oidc"},
-				"requires_restart": true,
-			},
-			{
-				"key":              "form_users",
-				"type":             "array",
-				"title":            "Form Users",
-				"description":      "Users who can log in with the form-based authentication provider. Each user needs a login name, email address, and password.",
-				"path":             "users",
-				"section":          "auth",
-				"default":          []any{},
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "form"},
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"login":    map[string]any{"type": "string"},
-						"password": map[string]any{"type": "string"},
-						"email":    map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"key":              "oidc_metadata_endpoint",
-				"type":             "string",
-				"title":            "OIDC Metadata Endpoint",
-				"description":      "The OpenID Connect discovery endpoint URL (e.g. https://idp.example.com/.well-known/openid-configuration).",
-				"path":             "metadata_endpoint",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-			{
-				"key":              "oidc_client_id",
-				"type":             "string",
-				"title":            "OIDC Client ID",
-				"description":      "The client identifier registered with the identity provider.",
-				"path":             "client_id",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-			{
-				"key":              "oidc_client_secret",
-				"type":             "string",
-				"format":           "password",
-				"title":            "OIDC Client Secret",
-				"description":      "The client secret for authenticating with the identity provider.",
-				"path":             "client_secret",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-		},
+		// No fields, for the same reason mcpServersSection() declares none.
+		//
+		// The five this section used to declare — `auth_provider`,
+		// `form_users`, and the three OIDC values — each addressed a key inside
+		// a pylon plugin's YAML, and two of them were `format: password`.
+		// Declaring them here would describe controls this page cannot serve,
+		// which is the "renders as a working control and is not one" failure
+		// rejectUnavailableField exists to stop. The typed editor at
+		// `/admin/identity_providers/administration` collects the real
+		// equivalents, and it collects more of them than these five could
+		// express.
+		"fields": []map[string]any{},
 	}
 }
 

@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"net/url"
 	"strings"
@@ -30,4 +32,37 @@ func safeRedirectTarget(value string) string {
 		return "/"
 	}
 	return value
+}
+
+// signBrowserValue appends a keyed MAC to a per-login value carried in a cookie.
+//
+// The browser holds the value and can read it; the MAC is what stops it being
+// EDITED. Both the OIDC state cookie and the SAML request cookie carry a
+// server-chosen identifier plus a redirect target, and a target the browser
+// could rewrite would be an open redirect through the login.
+//
+// The separator is "." and the value may not contain one, which
+// verifyBrowserValue enforces by splitting on the LAST one rather than the
+// first. Splitting on the first would let a value carrying a dot move the
+// boundary and present part of itself as the signature.
+func signBrowserValue(secret, value string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(value))
+	return value + "." + hex.EncodeToString(mac.Sum(nil))
+}
+
+// verifyBrowserValue returns the signed value, or false when the MAC does not
+// match. The comparison is constant time.
+func verifyBrowserValue(secret, cookie string) (string, bool) {
+	separator := strings.LastIndex(cookie, ".")
+	if separator < 0 {
+		return "", false
+	}
+	value, signature := cookie[:separator], cookie[separator+1:]
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(value))
+	if !hmac.Equal([]byte(signature), []byte(hex.EncodeToString(mac.Sum(nil)))) {
+		return "", false
+	}
+	return value, true
 }
