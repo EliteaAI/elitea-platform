@@ -152,7 +152,10 @@ export const GovernanceTable = memo(function GovernanceTable({
       },
       {
         field: 'actions',
-        headerName: '',
+        // Named, not blank. An empty column header is an axe `empty-table-header`
+        // violation (caught by checkA11y in journey J37b), and the sibling admin
+        // tables label theirs the same way. `common.actions` already exists.
+        headerName: t('common.actions', 'Actions'),
         width: 96,
         sortable: false,
         filterable: false,
@@ -163,14 +166,22 @@ export const GovernanceTable = memo(function GovernanceTable({
           // them. Hiding the row instead would leave an operator hunting for a
           // definition that does exist.
           if (!params.row.editable) {
+            const reason = t(
+              'pages.admin.governance.readOnlyRow',
+              'This entry is authored on the budget-alerts surface. Editing it here would discard its settings.',
+            );
+            // `titleAccess` renders an SVG <title>, so the reason has an
+            // accessible name of its own. A Tooltip alone is hover-only: a
+            // keyboard or screen-reader user would meet an unexplained icon
+            // where the other rows offer two buttons.
             return (
-              <Tooltip
-                title={t(
-                  'pages.admin.governance.readOnlyRow',
-                  'This entry is authored on the budget-alerts surface. Editing it here would discard its settings.',
-                )}
-              >
-                <LockOutlinedIcon fontSize="small" color="disabled" data-testid="governance-row-readonly" />
+              <Tooltip title={reason}>
+                <LockOutlinedIcon
+                  fontSize="small"
+                  color="disabled"
+                  titleAccess={reason}
+                  data-testid="governance-row-readonly"
+                />
               </Tooltip>
             );
           }
