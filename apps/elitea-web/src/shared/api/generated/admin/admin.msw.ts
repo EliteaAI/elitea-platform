@@ -269,6 +269,13 @@ export const getGetPlatformSettingsResponseMock = (
     faker.datatype.boolean(),
     undefined,
   ]),
+  blocked_toolkits: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
