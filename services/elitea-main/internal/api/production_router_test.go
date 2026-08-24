@@ -1614,6 +1614,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 
 	want := []string{
 		"DELETE /api/v2/admin/gateway/governance/{id}",
+		"DELETE /api/v2/admin/gateway/models/{id}",
 		"DELETE /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"DELETE /api/v2/admin/modes/administration",
 		"DELETE /api/v2/admin/users/{mode}/{projectID}",
@@ -1660,6 +1661,8 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/auth_users/{mode}",
 		"GET /api/v2/admin/gateway/*/budget-alerts",
 		"GET /api/v2/admin/gateway/governance",
+		"GET /api/v2/admin/gateway/models",
+		"GET /api/v2/admin/gateway/status",
 		"GET /api/v2/admin/maintenance/{mode}",
 		"GET /api/v2/admin/mcp_prebuilt_servers/administration",
 		"GET /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
@@ -1936,6 +1939,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /app/{projectID}/mcp/*",
 		"PUT /api/v2/admin/gateway/*/budget-alerts",
 		"PUT /api/v2/admin/gateway/governance/{id}",
+		"PUT /api/v2/admin/gateway/models",
 		"PUT /api/v2/admin/maintenance/{mode}",
 		"PUT /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"PUT /api/v2/admin/moderation_status/administration",

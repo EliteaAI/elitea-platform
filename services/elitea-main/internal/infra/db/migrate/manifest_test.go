@@ -145,7 +145,14 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	//
 	// 92 stays empty. Nothing needs to fill it: LoadManifest sorts by version and
 	// Head() reads the last entry, so a gap costs nothing.
-	require.EqualValues(t, 94, Head(shared))
+	//
+	// 95: shared/0095_gateway_model_price_override.sql, which lets an operator
+	// author a model price that the scheduler's price-sync UPSERT will not
+	// overwrite. The column is the handshake between two writers of the same
+	// row: without it the syncer's ON CONFLICT DO UPDATE reassigns every price
+	// column from EXCLUDED, so an authored price is correct until the next tick
+	// and then silently reverts.
+	require.EqualValues(t, 95, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

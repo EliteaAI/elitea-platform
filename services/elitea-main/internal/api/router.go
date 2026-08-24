@@ -183,7 +183,18 @@ type RouterConfig struct {
 	// routes there.
 	ObjectStore      storage.ObjectStore
 	BudgetAlertStore *gateway.BudgetAlertStore
-	SessionSecret    string
+	// GatewayStatus reads elitea-llm-gateway's `GET /governance/status` for the
+	// admin LLM Proxy section — the only surface that can tell an operator that
+	// a saved governance row was REJECTED, is INERT, or that the enforced
+	// snapshot is STALE.
+	//
+	// Typed as the interface so tests substitute a fake. Leave it nil on a
+	// deployment with no gateway address: the handler reports "not configured"
+	// as a state, and assigning a nil *gateway.GatewayStatusClient into it
+	// instead would produce a non-nil interface holding a nil pointer, which
+	// defeats that check and calls a method on a nil receiver (#86).
+	GatewayStatus gateway.StatusReader
+	SessionSecret string
 	// PATSigner signs the personal access tokens the /api/v2/auth/token route
 	// returns. Set it whenever the deployment validates a token with a key
 	// that is NOT SessionSecret. A form authentication graph does exactly
@@ -1239,11 +1250,38 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				}
 				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
 				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)
+				// The LLM Proxy surface: the gateway's enforcement status and
+				// the model price catalogue, joined to the usage that makes the
+				// catalogue actionable. It shares this group's permission
+				// deliberately — it explains and prices the same enforcement
+				// the governance CRUD beside it authors, and a second
+				// permission string would need its own grant migration to reach
+				// anybody (the #386 shape, one block up).
+				//
+				// `cfg.GatewayStatus` may be nil. A deployment with no gateway
+				// address is supported, and the handler reports that posture
+				// rather than the composition refusing to build — but it is
+				// passed as a typed field rather than assigned into the
+				// interface here, because boxing a nil *GatewayStatusClient
+				// would make the handler's `status == nil` check false and turn
+				// "not configured" into a nil-receiver call.
+				//
+				// The pool is passed only when it is non-nil, for the same
+				// reason: `llmProxyQuerier` is an interface, and a nil
+				// *pgxpool.Pool boxed into it is NOT nil, so the handler's
+				// "no database pool" branches would never run and the first
+				// read would panic on a nil receiver instead.
+				var llmProxyDB gateway.LLMProxyQuerier
+				if cfg.Pool != nil {
+					llmProxyDB = cfg.Pool
+				}
+				llmProxyHandler := gateway.NewLLMProxyHandler(llmProxyDB, cfg.GatewayStatus)
 				r.Group(func(r chi.Router) {
 					r.Use(central("configuration.governance"))
 					r.Route("/gateway", func(r chi.Router) {
 						r.Mount("/", budgetAlertHandler.Routes())
 						governanceHandler.Register(r)
+						llmProxyHandler.Register(r)
 					})
 				})
 			})

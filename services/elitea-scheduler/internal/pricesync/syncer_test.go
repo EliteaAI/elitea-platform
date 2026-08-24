@@ -192,6 +192,59 @@ func TestUpsertSQLCoversEveryPriceColumn(t *testing.T) {
 	}
 }
 
+// TestUpsertSkipsOperatorOverriddenRows pins the guard shared migration 0095
+// added: the ON CONFLICT DO UPDATE must not apply to a row an operator has
+// priced by hand.
+//
+// The failure it prevents is silent in exactly the way the rest of this file
+// worries about. Drop the WHERE and every sync still succeeds, every log line
+// still reports the same counts, and the only visible effect is that an
+// authored price reverts to the upstream number some time after it was saved —
+// discovered, if at all, on a bill. Nothing else in this package or in
+// elitea-main would fail.
+//
+// The assertion is deliberately on the UPDATE half only. Guarding the INSERT
+// would be wrong: a (provider, model_name) pair the catalog has never held
+// cannot carry an override, so a first sync must still create it.
+func TestUpsertSkipsOperatorOverriddenRows(t *testing.T) {
+	src := &fakeSource{name: "litellm", denom: PerToken, raws: []RawModelPrice{
+		{Provider: "openai", ModelName: "gpt-4o", InputCost: fptr(0.0000025)},
+	}}
+	tx := &fakeTx{locked: true}
+	s := NewSyncer(&fakeDB{tx: tx}, []PriceSource{src}, quietLogger())
+
+	if _, err := s.Sync(context.Background()); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if len(tx.execSQL) != 1 {
+		t.Fatalf("want 1 upsert statement, got %d", len(tx.execSQL))
+	}
+	sql := tx.execSQL[0]
+
+	idx := strings.Index(sql, "ON CONFLICT")
+	if idx < 0 {
+		t.Fatalf("upsert statement has no ON CONFLICT clause:\n%s", sql)
+	}
+	insertHalf, updateHalf := sql[:idx], sql[idx:]
+
+	if !strings.Contains(updateHalf, "WHERE NOT gateway_models.price_overridden") {
+		t.Errorf("ON CONFLICT DO UPDATE has no price_overridden guard: an operator-authored "+
+			"price would be silently reverted by the next sync tick:\n%s", updateHalf)
+	}
+	// The guard must qualify the TARGET row, not EXCLUDED. `EXCLUDED.price_overridden`
+	// is the value this sync proposes (always false — the syncer never authors an
+	// override), so a guard written that way would be true for every row and skip
+	// nothing at all, while reading exactly like a working guard.
+	if strings.Contains(updateHalf, "EXCLUDED.price_overridden") {
+		t.Errorf("the override guard reads EXCLUDED.price_overridden, which is the incoming " +
+			"row rather than the stored one, so it never skips anything")
+	}
+	if strings.Contains(insertHalf, "price_overridden") {
+		t.Errorf("the INSERT half names price_overridden: the syncer must never author or " +
+			"clear an override, only decline to overwrite one")
+	}
+}
+
 // TestUpsertBindsEveryPlaceholder pins the second half of the same hazard: the
 // column list, the VALUES placeholders and the Go argument list must agree in
 // COUNT. Adding a column to the statement and forgetting its argument shifts

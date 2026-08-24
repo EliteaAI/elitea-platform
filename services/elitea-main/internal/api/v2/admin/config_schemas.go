@@ -164,7 +164,7 @@ func configSections() []map[string]any {
 		skillPublishingSection(),
 		mcpServersSection(),
 		observabilitySection(),
-		litellmSection(),
+		llmProxySection(),
 		governanceSection(),
 		runtimeSection(),
 		adminPanelSection(),
@@ -545,132 +545,80 @@ func observabilitySection() map[string]any {
 	}
 }
 
-func litellmSection() map[string]any {
+// llmProxyUnavailable explains why the ordinary plugin-config form cannot
+// serve this section.
+//
+// It is a different sentence from pylonPluginConfigUnavailable on purpose. That
+// reason says "these values address a Pylon plugin descriptor and nothing here
+// reads them", which was true of the LiteLLM section this replaces and is not
+// true of anything on this one: every value the LLM Proxy section shows is read,
+// and most of it is read on the billed request path. The reason it is not a form
+// is narrower — the surface is three unrelated shapes (a live status report, a
+// price catalogue keyed on provider+model, and one global alert setting), and a
+// flat form over one value document cannot express any of them.
+const llmProxyUnavailable = "the LLM proxy is not configured as plugin values on this platform. Its runtime " +
+	"status is read from the gateway itself, its model prices are rows in gateway.gateway_models keyed on " +
+	"provider and model, and neither is a field in a settings document. The dedicated editor at " +
+	"/api/v2/admin/gateway serves all three; this page's value endpoints cannot."
+
+// llmProxySection is the admin surface for Elitea's LLM gateway.
+//
+// ## What replaced what
+//
+// This section stands where `litellmSection()` stood. LiteLLM is gone — ADR-0015
+// replaced it with `services/elitea-llm-gateway`, a standalone service built on
+// maximhq/bifrost's core — and every field the old section declared described
+// that removed subsystem: which LiteLLM to talk to, its master key, its database,
+// and three action buttons that reconciled teams and keys inside it. None of them
+// has a referent any more, so none of them is carried over. A setting whose
+// subject no longer exists is not a setting an operator should be shown.
+//
+// What replaces them is not a translation of those fields. It is the subset of
+// Bifrost's own admin UI that this platform can actually back with real data:
+//
+//   - **Runtime status** — Bifrost's Observability/health view. Ours reports what
+//     the gateway HOLDS: the loaded governance snapshot, its age, rows that were
+//     rejected or are inert, and whether rate limits are enforceable at all.
+//     Nothing else in this platform can tell an operator that a saved rule is not
+//     in force.
+//   - **Model catalogue and pricing** — Bifrost's Model Catalog and Pricing
+//     Overrides. `gateway.gateway_models` is the cost basis for every billed
+//     request, and a model missing from it is billed at a rate the gateway
+//     invents rather than at a real one, so this is the one screen where a
+//     missing row is a silent, ongoing billing fault.
+//   - **Budget alerting** — the global soft-alert threshold. The endpoints have
+//     existed since #322 with nothing calling them.
+//
+// Deliberately absent, because this platform cannot back them honestly: Bifrost's
+// per-request Logs (no request-log store exists — `llm_usage_events` carries
+// billing dimensions only, with no latency, status or payload), Virtual Keys (the
+// Bifrost VK slot carries the Elitea project id; there is no key to mint or
+// rotate), and provider/key CRUD (provider credentials are per-project
+// `ai_credentials` rows in `p_{id}.configuration` sealed in the Fernet vault, not
+// global gateway config — they are authored per project, not here).
+//
+// ## Why it carries no fields
+//
+// `managed_surface` routes the client to the dedicated editor, exactly as
+// mcpServersSection() does. Declaring fields as well would describe controls the
+// plugin-config value endpoints cannot serve, which is the failure
+// rejectUnavailableField exists to prevent.
+func llmProxySection() map[string]any {
 	return map[string]any{
-		"id":                 "litellm",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "LiteLLM",
-		"description":        "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
-		"order":              4,
-		"icon":               "model_training",
-		"fields": []map[string]any{
-			{
-				"key":              "litellm_mode",
-				"type":             "string",
-				"title":            "LiteLLM Mode",
-				"description":      "Use the built-in Elitea LiteLLM proxy or connect to an external instance.",
-				"path":             "litellm_mode",
-				"section":          "litellm",
-				"default":          "built-in",
-				"enum":             []string{"built-in", "external"},
-				"requires_restart": true,
-			},
-			{
-				"key":              "litellm_database_mode",
-				"type":             "string",
-				"title":            "Database",
-				"description":      "Use the shared Elitea database or a custom PostgreSQL connection string.",
-				"path":             "litellm_database_mode",
-				"section":          "litellm",
-				"default":          "elitea",
-				"enum":             []string{"elitea", "custom"},
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":              "litellm_db_name",
-				"type":             "string",
-				"title":            "LiteLLM Database Name",
-				"description":      "Database name for LiteLLM on the shared PostgreSQL server. Uses POSTGRES_* env vars for host/credentials.",
-				"path":             "litellm_db_name",
-				"section":          "litellm",
-				"default":          "litellm",
-				"requires_restart": true,
-				"visible_when": []map[string]any{
-					{"field": "litellm_mode", "value": "built-in"},
-					{"field": "litellm_database_mode", "value": "elitea"},
-				},
-			},
-			{
-				"key":              "database_url",
-				"type":             "string",
-				"format":           "password",
-				"title":            "Custom Database URL",
-				"description":      "PostgreSQL connection string. Example: postgresql://user:pass@host:5432/litellm_db",
-				"path":             "database_url",
-				"section":          "litellm",
-				"default":          nil,
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_database_mode", "value": "custom"},
-			},
-			{
-				"key":              "external_litellm_url",
-				"type":             "string",
-				"title":            "External LiteLLM URL",
-				"description":      "Base URL of the external LiteLLM instance (e.g., https://litellm.example.com/llm).",
-				"path":             "external_litellm_url",
-				"section":          "litellm",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "external"},
-			},
-			{
-				"key":              "litellm_master_key",
-				"type":             "string",
-				"format":           "password",
-				"title":            "Master Key",
-				"description":      "API key for authenticating LiteLLM proxy requests.",
-				"path":             "litellm_master_key",
-				"section":          "litellm",
-				"default":          nil,
-				"requires_restart": true,
-			},
-			{
-				"key":              "log_request_response_data",
-				"type":             "boolean",
-				"title":            "Log Request/Response Data",
-				"description":      "Store full prompts and completions in LiteLLM spend logs.",
-				"path":             "log_request_response_data",
-				"section":          "litellm",
-				"default":          false,
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":         "allow_project_own_llms",
-				"type":        "boolean",
-				"title":       "Allow Projects to Bring Own LLMs",
-				"description": "When disabled, only public project models are available to all projects.",
-				"path":        "allow_project_own_llms",
-				"section":     "litellm",
-				"default":     true,
-			},
-			{
-				"key":          "sync_llm_entities",
-				"type":         "action",
-				"title":        "Sync LLM Entities",
-				"description":  "Reconcile all teams, keys, and models across all projects. Long-running operation.",
-				"section":      "litellm",
-				"action_task":  "sync_llm_entities",
-				"visible_when": map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":         "import_llm_models",
-				"type":        "action",
-				"title":       "Import Models from LiteLLM",
-				"description": "Discover unmanaged models in LiteLLM, create configuration records, and update team access for all projects.",
-				"section":     "litellm",
-				"action_task": "import_llm_models",
-			},
-			{
-				"key":         "seed_llm_keys",
-				"type":        "action",
-				"title":       "Seed Project Keys",
-				"description": "Create missing LiteLLM teams and API keys for all projects. Use after initial setup or if projects are missing access.",
-				"section":     "litellm",
-				"action_task": "seed_llm_keys",
-			},
-		},
+		"id": "llm_proxy",
+		// The surface name, not the section id, is what the client keys its
+		// editor registry on — see mcpServersSection() for why that distinction
+		// is load-bearing.
+		"managed_surface":    "llm_proxy",
+		"unavailable_reason": llmProxyUnavailable,
+		"title":              "LLM Proxy",
+		"description": "Elitea's LLM gateway: runtime enforcement status, the model price catalogue that " +
+			"every billed request is costed against, and the global budget-alert threshold.",
+		"order": 4,
+		"icon":  "hub",
+		// No fields: this section's data is three shapes, none of them a value
+		// in a settings document. See the doc comment above.
+		"fields": []map[string]any{},
 	}
 }
 
