@@ -52,8 +52,13 @@ function bindingUrl(id: string): string {
  * the group first pushed — they keep their access when the group lets go, and
  * the table says so, because otherwise an operator would expect removing them
  * from the group to remove them from the project.
+ *
+ * NOT exported: it is reached through `AdminScimGroupBinding.members`, and
+ * nothing names it on its own. An exported type with no importer fails the dead
+ * code gate, which is what that gate is for — an unused export is a contract
+ * this app does not actually have.
  */
-export interface AdminScimGroupMember {
+interface AdminScimGroupMember {
   readonly user_id: number;
   readonly user_name: string;
   readonly display_name?: string;
