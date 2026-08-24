@@ -296,3 +296,68 @@ func TestANonStringSecretIsNotStringifiedOnItsWayOut(t *testing.T) {
 		t.Errorf("secrets = %v, want a non-string value reported as absent", item.Secrets)
 	}
 }
+
+// TestTheMountedSurfaceAnswersThePathsTheClientCalls.
+//
+// The admin client calls `/admin/gateway/providers` with NO trailing slash,
+// while the router's pinned pattern is `/providers/` — chi's Mount registers
+// both, but that is a property of chi rather than of anything in this file, and
+// a future refactor from Mount to Route would change it silently. A 404 here
+// would be a Providers tab that renders its empty state forever on a deployment
+// where everything else is correct.
+//
+// 503 is the PASS condition, not 200: the handler under test has no database
+// pool, so a routed request refuses for want of one. That makes the two answers
+// discriminate exactly what this test is about — 404 means the path never
+// reached the handler, 503 means it did.
+func TestTheMountedSurfaceAnswersThePathsTheClientCalls(t *testing.T) {
+	handler := &Handler{publicProjectID: 1}
+
+	root := chi.NewRouter()
+	root.Route("/gateway", func(r chi.Router) {
+		r.Mount("/providers", handler.GlobalProviderRoutes())
+	})
+
+	for _, probe := range []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/gateway/providers"},
+		{http.MethodGet, "/gateway/providers/"},
+		{http.MethodPost, "/gateway/providers"},
+		{http.MethodPut, "/gateway/providers/4"},
+		{http.MethodDelete, "/gateway/providers/4"},
+	} {
+		recorder := httptest.NewRecorder()
+		root.ServeHTTP(recorder, httptest.NewRequest(probe.method, probe.path, nil))
+
+		if recorder.Code == http.StatusNotFound {
+			t.Errorf("%s %s answered 404; the path never reached the handler",
+				probe.method, probe.path)
+			continue
+		}
+		if recorder.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s %s = %d, want 503 (routed, then refused for want of a pool)",
+				probe.method, probe.path, recorder.Code)
+		}
+	}
+}
+
+// TestTheConfigIDReachesTheDelegatedHandler — the mount must bind `{configID}`,
+// or an edit and a delete would address whatever row the handler defaulted to.
+func TestTheConfigIDReachesTheDelegatedHandler(t *testing.T) {
+	var seen string
+	root := chi.NewRouter()
+	sub := chi.NewRouter()
+	sub.Delete("/{configID}", func(_ http.ResponseWriter, r *http.Request) {
+		seen = chi.URLParam(r, "configID")
+	})
+	root.Route("/gateway", func(r chi.Router) { r.Mount("/providers", sub) })
+
+	root.ServeHTTP(httptest.NewRecorder(),
+		httptest.NewRequest(http.MethodDelete, "/gateway/providers/4", nil))
+
+	if seen != "4" {
+		t.Errorf("configID = %q, want %q", seen, "4")
+	}
+}
