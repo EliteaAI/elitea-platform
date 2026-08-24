@@ -70,6 +70,14 @@ impl OrdinaryNoToolProfile {
         Self::validate_with_mode(request, CommonProfileMode::Continuation)
     }
 
+    /// Validate a direct `LlmAgent` shell while Main supplies only one
+    /// claim-fetched delegated-authorization decision.
+    pub(crate) fn validate_delegated_authorization_resume(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::validate_with_mode(request, CommonProfileMode::McpAuthorization)
+    }
+
     /// Validate the model/session shell shared by a stored pipeline.
     ///
     /// The model fields remain part of the frozen application contract even

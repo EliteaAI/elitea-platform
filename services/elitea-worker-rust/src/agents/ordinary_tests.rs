@@ -27,6 +27,7 @@ use crate::protocol::control::test_runtime_context_authority;
 use crate::protocol::node_event::encode_current_node_event_json;
 use crate::toolkits::{
     McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
+    mcp_authorization_required_fixture,
 };
 use crate::transport::model_facade::ModelFacade;
 use crate::transport::model_gateway::{
@@ -450,6 +451,33 @@ fn attach_remote_mcp_tool(request: &mut super::request::AgentExecutionRequest) {
 struct AgentMcpConnector {
     calls: AtomicUsize,
     tool_calls: Arc<AtomicUsize>,
+}
+
+struct AgentDelegatedAuthorizationMcpConnector {
+    calls: AtomicUsize,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpConnector for AgentDelegatedAuthorizationMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        if config.access_token_for_test() != Some("runtime-secret") {
+            return Err(mcp_authorization_required_fixture(
+                config,
+                "Bearer resource_metadata=\"https://mcp.example.invalid/.well-known/oauth-protected-resource\"",
+            ));
+        }
+        Ok(Arc::new(BasicToolset::new(
+            "authorized_fixture_mcp",
+            vec![Arc::new(AgentMcpTool {
+                calls: Arc::clone(&self.tool_calls),
+            })],
+        )))
+    }
 }
 
 #[async_trait]
@@ -1071,6 +1099,227 @@ async fn application_and_adhoc_execute_adk_mcp_tools_in_the_direct_llm_loop() {
             r#"{"release":"1.2","risk":"low"}"#
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn application_and_adhoc_resume_model_owned_delegated_authorization() {
+    for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
+        run_delegated_authorization_resume(kind, true).await;
+        run_delegated_authorization_resume(kind, false).await;
+    }
+}
+
+#[allow(clippy::too_many_lines)] // One initial pause and exact resume form one behavioral proof.
+async fn run_delegated_authorization_resume(kind: AgentExecutionKind, authorize: bool) {
+    let (runtime_context, context_calls) = runtime_context_client_for_redemptions(2);
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(model_response()),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("delegated authorization model gateway");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentDelegatedAuthorizationMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions = Arc::new(InMemorySessionService::new());
+    let shared_sessions: Arc<dyn SessionService> = sessions;
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(Arc::clone(&shared_sessions));
+
+    let mut initial_request = ordinary_request(kind);
+    attach_remote_mcp_tool(&mut initial_request);
+    let initial = AuthorizedNativeAssembly::new(
+        &initial_request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let mut paused = assembler
+        .assemble(initial)
+        .await
+        .expect("initial delegated authorization assembly");
+    paused
+        .project_start(chrono::Utc::now())
+        .expect("delegated authorization start");
+    let (mut run, mut projector, _completion) = paused.start().expect("initial native start");
+    let mut public_events = Vec::new();
+    while let Some(event) = run.next_event().await.expect("initial native event") {
+        for projected in projector.project(&event).expect("projected auth event") {
+            public_events.push(
+                serde_json::from_slice::<serde_json::Value>(
+                    &encode_current_node_event_json(&projected)
+                        .expect("canonical authorization browser event"),
+                )
+                .expect("authorization browser event JSON"),
+            );
+        }
+    }
+    assert!(projector.is_paused());
+    let card = public_events
+        .iter()
+        .find(|event| event["type"] == "mcp_authorization_required")
+        .expect("root model-owned authorization card");
+    assert_eq!(card["response_metadata"]["tool_call_id"], "call_mcp");
+    assert_eq!(
+        card["response_metadata"]["tool_args"],
+        serde_json::json!({})
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let mut resume_request = ordinary_request(kind);
+    resume_request.binding.request_content_digest = if authorize { [13; 32] } else { [14; 32] };
+    attach_remote_mcp_tool(&mut resume_request);
+    resume_request.payload.should_continue = true;
+    if authorize {
+        resume_request.payload.mcp_tokens.insert(
+            "https://mcp.example.invalid/v1/mcp".to_owned(),
+            serde_json::json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        resume_request
+            .payload
+            .user_declined_mcp_servers
+            .push(serde_json::json!({
+                "server_url": "https://mcp.example.invalid/v1/mcp"
+            }));
+    }
+    let resume = AuthorizedNativeAssembly::new(
+        &resume_request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    );
+    let resumed = assembler
+        .assemble(resume)
+        .await
+        .expect("delegated authorization continuation");
+    let (mut run, _projector, completion) = resumed.start().expect("resumed native start");
+    while run
+        .next_event()
+        .await
+        .expect("resumed authorization event")
+        .is_some()
+    {}
+    let _completed = completion.select().await.expect("resumed completion");
+    assert_eq!(context_calls.load(Ordering::Acquire), 2);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(tool_calls.load(Ordering::Acquire), usize::from(authorize));
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 2, "resume must not replan the pending call");
+    let resumed: serde_json::Value =
+        serde_json::from_slice(&captured[1].body).expect("resumed model request");
+    let tool_message = resumed["messages"]
+        .as_array()
+        .expect("resumed messages")
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_mcp")
+        .expect("same original call result");
+    if authorize {
+        assert!(
+            tool_message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("risk"))
+        );
+    } else {
+        let declined: serde_json::Value = serde_json::from_str(
+            tool_message["content"]
+                .as_str()
+                .expect("structured declined result"),
+        )
+        .expect("declined result JSON");
+        assert_eq!(declined["type"], "mcp_auth_decision");
+        assert_eq!(declined["status"], "declined");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn delegated_authorization_does_not_approve_a_distinct_sensitive_action() {
+    let (runtime_context, _) = runtime_context_client_for_redemptions(2);
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(mcp_tool_call_response())],
+        test_model_gateway_config(),
+    )
+    .expect("authorization plus sensitive model gateway");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentDelegatedAuthorizationMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions = Arc::new(InMemorySessionService::new());
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        sensitive_mcp_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(sessions as Arc<dyn SessionService>);
+
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_remote_mcp_tool(&mut request);
+    let mut invocation = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+        .expect("initial authorization assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("initial authorization start");
+    let (mut run, mut projector, _) = invocation.start().expect("initial authorization run");
+    while let Some(event) = run.next_event().await.expect("initial authorization event") {
+        let _ = projector.project(&event).expect("initial auth projection");
+    }
+    assert!(projector.is_paused());
+
+    let mut resume = ordinary_request(AgentExecutionKind::Application);
+    resume.binding.request_content_digest = [15; 32];
+    attach_remote_mcp_tool(&mut resume);
+    resume.payload.should_continue = true;
+    resume.payload.mcp_tokens.insert(
+        "https://mcp.example.invalid/v1/mcp".to_owned(),
+        serde_json::json!({"access_token": "runtime-secret"}),
+    );
+    let mut invocation = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &resume,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+        .expect("authorized replay assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("authorized replay start");
+    let (mut run, mut projector, _) = invocation.start().expect("authorized replay run");
+    let mut sensitive_cards = 0;
+    while let Some(event) = run.next_event().await.expect("authorized replay event") {
+        for projected in projector.project(&event).expect("sensitive projection") {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected).expect("sensitive browser event"),
+            )
+            .expect("sensitive browser JSON");
+            sensitive_cards += usize::from(value["type"] == "agent_hitl_interrupt");
+        }
+    }
+    assert!(projector.is_paused());
+    assert_eq!(sensitive_cards, 1);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(connector.calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        captured.lock().expect("captured model requests").len(),
+        1,
+        "the exact replay must pause before another provider request"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

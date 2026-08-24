@@ -17,17 +17,20 @@ mod snapshot;
 #[cfg(test)]
 pub(crate) use delegated_auth::delegated_authorization_error_fixture;
 pub(crate) use delegated_auth::{
-    DelegatedAuthorizationRequirement, delegated_authorization_requirement,
+    DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
+    DelegatedAuthorizationRequirement, decode_delegated_authorization_requirement,
+    delegated_authorization_declined_result, delegated_authorization_requirement,
+    encode_delegated_authorization_requirement,
 };
 pub(crate) use materialize::{
     ToolsetMaterializationError, ToolsetMaterializationErrorCode, materialize_configured_toolsets,
 };
-#[cfg(test)]
-pub(crate) use mcp::RemoteMcpConfig;
 pub(crate) use mcp::{
     AdkHttpMcpConnector, McpConnector, McpMaterializationError, McpMaterializationErrorCode,
-    materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens,
+    materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens_and_authorization,
 };
+#[cfg(test)]
+pub(crate) use mcp::{RemoteMcpConfig, mcp_authorization_required_fixture};
 pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy};
 pub(crate) use snapshot::{
     AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotError,

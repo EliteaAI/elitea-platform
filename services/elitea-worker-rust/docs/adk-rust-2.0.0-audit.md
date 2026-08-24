@@ -409,6 +409,20 @@ same-call result and zero provider-tool dispatch before one child continuation.
 Incremental tool-progress chunks remain a separate gap, and approved effects
 still require durable outcome reconciliation.
 
+Delegated authorization now reuses these two native persistence shapes rather
+than adding another table or Python-style custom runnable. A root `LlmAgent`
+confirmation is tagged with a sanitized materialization requirement before the
+standard `SessionService` persists it. A pipeline LLM confirmation embeds its
+existing replay envelope in the `mcp_auth` graph interrupt. Authorize rebuilds
+the exact remote MCP toolset with Main's claim-fetched same-server token and
+re-emits the original function call without a new provider planning request.
+Skip installs the same-call no-dispatch adapter and returns the SDK-compatible
+`mcp_auth_decision`. An authorization approval carries no ADK confirmation
+decision, so a distinct sensitive-action policy can still pause the replayed
+call. This covers one latest materializer-known root or graph call; the current
+Go-to-Rust input still lacks the exact authorization request ID/action required
+for safe parallel and nested delegated-auth continuation.
+
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.
 The migration ledger is an eighth physical bookkeeping table, while four

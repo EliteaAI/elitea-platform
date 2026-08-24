@@ -246,8 +246,7 @@ where
                             ),
                         ));
                     };
-                    this.state =
-                        AgentAuthorizationJobState::Running(Box::pin(run_authorization(*inputs)));
+                    this.state = AgentAuthorizationJobState::Running(run_authorization(inputs));
                 }
                 AgentAuthorizationJobState::Running(operation) => {
                     let Poll::Ready(completion) = operation.as_mut().poll(context) else {
@@ -268,9 +267,9 @@ where
     }
 }
 
-async fn run_authorization<R, C, T, K, D>(
-    inputs: AgentAuthorizationInputs<R, C, T, K, D>,
-) -> AgentAuthorizationJobCompletion
+fn run_authorization<R, C, T, K, D>(
+    inputs: BoxedAuthorizationInputs<R, C, T, K, D>,
+) -> OwnedFuture<AgentAuthorizationJobCompletion>
 where
     R: ControlRpc + 'static,
     C: RedisRetirementClient + 'static,
@@ -278,48 +277,50 @@ where
     K: UnixMillisClock,
     D: AuthorizedAgentLifecycle,
 {
-    let AgentAuthorizationInputs {
-        prepared,
-        control,
-        retirer,
-        replay,
-        clock,
-        recovery_config,
-        authorized,
-    } = inputs;
-    match control
-        .authorize_agent_invocation(prepared.into_candidate())
-        .await
-    {
-        InvocationAuthorizationDecision::AuthorizedNow(run) => {
-            let expected_kind = run.execution_kind();
-            let completion = authorized.run(*run).await;
-            if completion.execution_kind() == expected_kind {
-                AgentAuthorizationJobCompletion::Authorized(completion)
-            } else {
-                AgentAuthorizationJobCompletion::InvalidState(
-                    AgentAuthorizationJobError::InvalidState(
-                        "the authorized lifecycle returned a mismatched execution kind",
-                    ),
+    Box::pin(async move {
+        let AgentAuthorizationInputs {
+            prepared,
+            control,
+            retirer,
+            replay,
+            clock,
+            recovery_config,
+            authorized,
+        } = *inputs;
+        match control
+            .authorize_agent_invocation(prepared.into_candidate())
+            .await
+        {
+            InvocationAuthorizationDecision::AuthorizedNow(run) => {
+                let expected_kind = run.execution_kind();
+                let completion = authorized.run(*run).await;
+                if completion.execution_kind() == expected_kind {
+                    AgentAuthorizationJobCompletion::Authorized(completion)
+                } else {
+                    AgentAuthorizationJobCompletion::InvalidState(
+                        AgentAuthorizationJobError::InvalidState(
+                            "the authorized lifecycle returned a mismatched execution kind",
+                        ),
+                    )
+                }
+            }
+            InvocationAuthorizationDecision::AlreadyAuthorized(terminal)
+            | InvocationAuthorizationDecision::Rejected(terminal) => {
+                AgentAuthorizationJobCompletion::Terminal(
+                    publish_agent_failure_terminal(
+                        control,
+                        retirer.as_ref(),
+                        replay.as_ref(),
+                        *terminal,
+                        clock,
+                        recovery_config,
+                    )
+                    .await,
                 )
             }
+            InvocationAuthorizationDecision::Unknown(unknown) => {
+                AgentAuthorizationJobCompletion::Unknown(unknown.close_no_ack().await)
+            }
         }
-        InvocationAuthorizationDecision::AlreadyAuthorized(terminal)
-        | InvocationAuthorizationDecision::Rejected(terminal) => {
-            AgentAuthorizationJobCompletion::Terminal(
-                publish_agent_failure_terminal(
-                    control,
-                    retirer.as_ref(),
-                    replay.as_ref(),
-                    *terminal,
-                    clock,
-                    recovery_config,
-                )
-                .await,
-            )
-        }
-        InvocationAuthorizationDecision::Unknown(unknown) => {
-            AgentAuthorizationJobCompletion::Unknown(unknown.close_no_ack().await)
-        }
-    }
+    })
 }

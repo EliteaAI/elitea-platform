@@ -12,7 +12,7 @@ use super::delegated_auth::delegated_authorization_requirement;
 use super::mcp::{
     McpConnector, McpMaterializationError, McpMaterializationErrorCode, RemoteMcpConfig,
     materialize_mcp_toolsets, materialize_mcp_toolsets_with_tokens,
-    mcp_authorization_required_fixture,
+    materialize_mcp_toolsets_with_tokens_and_authorization, mcp_authorization_required_fixture,
 };
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::FrozenToolSnapshot;
@@ -271,6 +271,19 @@ async fn mcp_auth_challenge_materializes_selected_placeholder_and_exact_token_re
     );
     assert!(!format!("{error:?} {error}").contains("not-projected"));
 
+    let (_, authorization) = materialize_mcp_toolsets_with_tokens_and_authorization(
+        &snapshot,
+        &AuthorizationConnector,
+        &policy(&[]),
+        &Map::new(),
+    )
+    .await
+    .expect("authorization catalog");
+    let guarded = authorization
+        .requirement_for("lookup_release")
+        .expect("selected guarded tool");
+    assert_eq!(guarded.server_url(), requirement.server_url());
+
     let tokens = Map::from_iter([(
         "https://mcp.example.invalid/v1/mcp".to_owned(),
         json!({"access_token": "runtime-secret"}),
@@ -279,6 +292,15 @@ async fn mcp_auth_challenge_materializes_selected_placeholder_and_exact_token_re
         materialize_mcp_toolsets_with_tokens(&snapshot, &TokenConnector, &policy(&[]), &tokens)
             .await
             .expect("token-bound rebuild");
+    let (_, authorization) = materialize_mcp_toolsets_with_tokens_and_authorization(
+        &snapshot,
+        &TokenConnector,
+        &policy(&[]),
+        &tokens,
+    )
+    .await
+    .expect("authorized catalog rebuild");
+    assert!(authorization.requirement_for("lookup_release").is_none());
     let readonly: Arc<dyn ReadonlyContext> = context();
     assert_eq!(
         rebuilt[0]

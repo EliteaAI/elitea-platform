@@ -16,11 +16,12 @@ use std::sync::Arc;
 use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::graph::Checkpointer;
 use adk_rust::session::{
-    AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, SessionService,
+    AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, Session, SessionService,
 };
 use adk_rust::{
-    AdkIdentity, Agent, Content, Event, GenerateContentConfig, Llm, RunConfig, SessionId,
-    ToolConcurrencyConfig, ToolExecutionStrategy, Toolset, UserId,
+    AdkError, AdkIdentity, Agent, Content, Event, EventStream, GenerateContentConfig,
+    InvocationContext, Llm, RunConfig, SessionId, ToolConcurrencyConfig, ToolExecutionStrategy,
+    Toolset, UserId,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -36,8 +37,8 @@ use super::application_tools::{
 use super::assembly::OrdinaryNoToolProfile;
 use super::context_management::ContextManagementPlan;
 use super::direct_hitl::{
-    DirectHitlDecision, DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode,
-    DirectHitlRunInput, ResolvedDirectHitlStart,
+    DirectDelegatedAuthorizationContinuation, DirectHitlDecision, DirectHitlDecisionSet,
+    DirectHitlError, DirectHitlErrorCode, DirectHitlRunInput, ResolvedDirectHitlStart,
 };
 use super::events::{
     AgentEventProjectionContext, AgentEventProjectionError, AgentEventProjectionErrorCode,
@@ -63,6 +64,10 @@ use crate::state::{
     CheckpointLimits, CheckpointWriterAuthority, PostgresCheckpointError, PostgresCheckpointer,
     PostgresSessionError, PostgresSessionService, SessionLimits, SessionWriterAuthority,
     StateWriterLease,
+};
+use crate::toolkits::{
+    DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
+    encode_delegated_authorization_requirement,
 };
 
 const APP_NAME: &str = "elitea-agent-v1";
@@ -129,6 +134,35 @@ impl ApplicationRuntimeProjection {
     }
 }
 
+/// Invocation-owned toolsets and the runtime catalogs that describe them.
+pub(crate) struct OrdinaryRuntimeBindings {
+    toolsets: Vec<Arc<dyn Toolset>>,
+    sensitive_tools: SensitiveToolCatalog,
+    delegated_authorization: DelegatedAuthorizationCatalog,
+    application_runtime: ApplicationRuntimeProjection,
+}
+
+impl OrdinaryRuntimeBindings {
+    #[must_use]
+    pub(crate) const fn new(
+        toolsets: Vec<Arc<dyn Toolset>>,
+        sensitive_tools: SensitiveToolCatalog,
+        delegated_authorization: DelegatedAuthorizationCatalog,
+        application_runtime: ApplicationRuntimeProjection,
+    ) -> Self {
+        Self {
+            toolsets,
+            sensitive_tools,
+            delegated_authorization,
+            application_runtime,
+        }
+    }
+
+    fn has_confirmation_guards(&self) -> bool {
+        !self.sensitive_tools.is_empty() || !self.delegated_authorization.is_empty()
+    }
+}
+
 pub(crate) struct PipelineRuntimeBindings {
     pub(crate) nodes: super::graph::compiler::PipelineNodeRuntimes,
     pub(crate) applications: ApplicationRuntimeProjection,
@@ -145,6 +179,73 @@ fn application_event_agent(
         events,
         applications,
     ))
+}
+
+fn delegated_authorization_agent(
+    agent: Arc<dyn Agent>,
+    authorization: DelegatedAuthorizationCatalog,
+) -> Arc<dyn Agent> {
+    if authorization.is_empty() {
+        agent
+    } else {
+        Arc::new(DelegatedAuthorizationEventAgent {
+            inner: agent,
+            authorization,
+        })
+    }
+}
+
+struct DelegatedAuthorizationEventAgent {
+    inner: Arc<dyn Agent>,
+    authorization: DelegatedAuthorizationCatalog,
+}
+
+#[async_trait]
+impl Agent for DelegatedAuthorizationEventAgent {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn sub_agents(&self) -> &[Arc<dyn Agent>] {
+        self.inner.sub_agents()
+    }
+
+    async fn run(&self, context: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let mut events = self.inner.run(context).await?;
+        let authorization = self.authorization.clone();
+        Ok(Box::pin(async_stream::stream! {
+            while let Some(event) = adk_rust::futures::StreamExt::next(&mut events).await {
+                let mut event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
+                };
+                if let Some(request) = event.actions.tool_confirmation.as_ref()
+                    && let Some(requirement) = authorization.requirement_for(&request.tool_name)
+                {
+                    let Some(encoded) = encode_delegated_authorization_requirement(requirement) else {
+                        yield Err(AdkError::agent("delegated authorization metadata could not be encoded"));
+                        return;
+                    };
+                    if event
+                        .provider_metadata
+                        .insert(DELEGATED_AUTHORIZATION_METADATA_KEY.to_owned(), encoded)
+                        .is_some()
+                    {
+                        yield Err(AdkError::agent("delegated authorization metadata was duplicated"));
+                        return;
+                    }
+                }
+                yield Ok(event);
+            }
+        }))
+    }
 }
 
 /// Non-authority command fields needed by local ADK and browser projection.
@@ -992,6 +1093,31 @@ pub(crate) async fn assemble_ordinary_native_with_sessions_and_options<M>(
 where
     M: BoundOrdinaryAgentModel,
 {
+    assemble_ordinary_native_with_sessions_and_runtime_catalogs(
+        model,
+        plan,
+        OrdinaryRuntimeBindings::new(
+            toolsets,
+            sensitive_tools,
+            DelegatedAuthorizationCatalog::default(),
+            application_runtime,
+        ),
+        execution_mode,
+        sessions,
+    )
+    .await
+}
+
+pub(crate) async fn assemble_ordinary_native_with_sessions_and_runtime_catalogs<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    runtime: OrdinaryRuntimeBindings,
+    execution_mode: NativeToolExecutionMode,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
     let OrdinaryNativeAgentPlan {
         user_id,
         session_id,
@@ -1011,34 +1137,18 @@ where
         generation: _,
     } = plan;
     context_management.prepare_runner_composition();
-    let adk_model = model.adk_model();
-    let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
-        .model(adk_model)
-        .generate_content_config(generation_config)
-        .max_iterations(max_iterations)
-        .disallow_transfer_to_parent(true)
-        .disallow_transfer_to_peers(true);
-    if execution_mode == NativeToolExecutionMode::ParallelApplications {
-        if !sensitive_tools.is_empty() {
-            return Err(invalid_configuration());
-        }
-        builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
+    let parallel = execution_mode == NativeToolExecutionMode::ParallelApplications;
+    if parallel && runtime.has_confirmation_guards() {
+        return Err(invalid_configuration());
     }
-    for toolset in toolsets {
-        builder = builder.toolset(toolset);
-    }
-    for tool_name in sensitive_tools.tool_names() {
-        builder = builder.require_tool_confirmation(tool_name);
-    }
-    let ApplicationRuntimeProjection {
-        presentations: application_tools,
-        events: application_events,
-        resume: _,
-    } = application_runtime;
-    let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
-    let agent = application_events.map_or(agent.clone(), |events| {
-        application_event_agent(agent, events, application_tools.clone())
-    });
+    let (agent, projector) = build_runtime_agent(
+        model.adk_model(),
+        generation_config,
+        max_iterations,
+        projection,
+        runtime,
+        parallel,
+    )?;
     let (session, created) =
         restore_or_create_session(sessions.as_ref(), &user_id, &session_id).await?;
     let identity = session
@@ -1067,10 +1177,7 @@ where
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector =
-        AgentEventProjector::with_tool_catalogs(projection, sensitive_tools, application_tools)
-            .map_err(projection_configuration)?;
-    let invocation = if execution_mode == NativeToolExecutionMode::ParallelApplications {
+    let invocation = if parallel {
         NativeAgentInvocation::new_with_run_config(
             runner,
             user_id,
@@ -1086,6 +1193,58 @@ where
         projector,
         OrdinaryAgentCompletion { model, thread_id },
     ))
+}
+
+fn build_runtime_agent(
+    model: Arc<dyn Llm>,
+    generation_config: GenerateContentConfig,
+    max_iterations: u32,
+    projection: AgentEventProjectionContext,
+    runtime: OrdinaryRuntimeBindings,
+    parallel: bool,
+) -> Result<(Arc<dyn Agent>, AgentEventProjector), NativeAgentAssemblyError> {
+    let OrdinaryRuntimeBindings {
+        toolsets,
+        sensitive_tools,
+        delegated_authorization,
+        application_runtime,
+    } = runtime;
+    let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
+        .model(model)
+        .generate_content_config(generation_config)
+        .max_iterations(max_iterations)
+        .disallow_transfer_to_parent(true)
+        .disallow_transfer_to_peers(true);
+    if parallel {
+        builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
+    }
+    for toolset in toolsets {
+        builder = builder.toolset(toolset);
+    }
+    for tool_name in sensitive_tools.tool_names() {
+        builder = builder.require_tool_confirmation(tool_name);
+    }
+    for tool_name in delegated_authorization.tool_names() {
+        builder = builder.require_tool_confirmation(tool_name);
+    }
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+        resume: _,
+    } = application_runtime;
+    let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
+    let agent = delegated_authorization_agent(agent, delegated_authorization.clone());
+    let agent = application_events.map_or(agent.clone(), |events| {
+        application_event_agent(agent, events, application_tools.clone())
+    });
+    let projector = AgentEventProjector::with_runtime_catalogs(
+        projection,
+        sensitive_tools,
+        delegated_authorization,
+        application_tools,
+    )
+    .map_err(projection_configuration)?;
+    Ok((agent, projector))
 }
 
 fn parallel_application_run_config() -> RunConfig {
@@ -1119,9 +1278,12 @@ where
     assemble_direct_hitl_resume_with_sessions_and_applications(
         model,
         plan,
-        toolsets,
-        sensitive_tools,
-        ApplicationRuntimeProjection::default(),
+        OrdinaryRuntimeBindings::new(
+            toolsets,
+            sensitive_tools,
+            DelegatedAuthorizationCatalog::default(),
+            ApplicationRuntimeProjection::default(),
+        ),
         DirectHitlDecisionSet::single(decision),
         sessions,
     )
@@ -1132,10 +1294,147 @@ where
 pub(crate) async fn assemble_direct_hitl_resume_with_sessions_and_applications<M>(
     model: M,
     plan: OrdinaryNativeAgentPlan,
-    toolsets: Vec<Arc<dyn Toolset>>,
-    sensitive_tools: SensitiveToolCatalog,
-    application_runtime: ApplicationRuntimeProjection,
+    runtime: OrdinaryRuntimeBindings,
     decisions: DirectHitlDecisionSet,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
+    assemble_direct_resume_with_sessions_and_applications(
+        model,
+        plan,
+        runtime,
+        DirectResumeStart::Sensitive(decisions),
+        sessions,
+    )
+    .await
+}
+
+pub(crate) async fn assemble_delegated_authorization_resume_with_sessions<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    runtime: OrdinaryRuntimeBindings,
+    continuation: DirectDelegatedAuthorizationContinuation,
+    sessions: Arc<dyn SessionService>,
+) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
+where
+    M: BoundOrdinaryAgentModel,
+{
+    assemble_direct_resume_with_sessions_and_applications(
+        model,
+        plan,
+        runtime,
+        DirectResumeStart::DelegatedAuthorization(continuation),
+        sessions,
+    )
+    .await
+}
+
+enum DirectResumeStart {
+    Sensitive(DirectHitlDecisionSet),
+    DelegatedAuthorization(DirectDelegatedAuthorizationContinuation),
+}
+
+struct PreparedDirectResume {
+    model: Arc<dyn Llm>,
+    run_input: DirectHitlRunInput,
+    runtime: OrdinaryRuntimeBindings,
+    parallel_applications: bool,
+}
+
+async fn prepare_direct_resume(
+    model: Arc<dyn Llm>,
+    stored: &dyn Session,
+    runtime: OrdinaryRuntimeBindings,
+    start: DirectResumeStart,
+) -> Result<PreparedDirectResume, NativeAgentAssemblyError> {
+    let OrdinaryRuntimeBindings {
+        toolsets,
+        sensitive_tools,
+        delegated_authorization,
+        application_runtime,
+    } = runtime;
+    let (resolved, delegated_resume) = match start {
+        DirectResumeStart::Sensitive(decisions) => (
+            decisions
+                .resolve(stored)
+                .map_err(|error| direct_hitl_error(&error))?,
+            false,
+        ),
+        DirectResumeStart::DelegatedAuthorization(continuation) => (
+            ResolvedDirectHitlStart::Direct(Box::new(
+                continuation
+                    .resolve(stored)
+                    .map_err(|error| direct_hitl_error(&error))?,
+            )),
+            true,
+        ),
+    };
+    let ApplicationRuntimeProjection {
+        presentations: application_tools,
+        events: application_events,
+        resume,
+    } = application_runtime;
+    let (model, run_input, toolsets, parallel_applications) = match resolved {
+        ResolvedDirectHitlStart::Direct(decision) => {
+            let replay = if delegated_resume {
+                (*decision)
+                    .into_delegated_authorization_replay(&delegated_authorization)
+                    .map_err(|error| direct_hitl_error(&error))?
+            } else {
+                (*decision)
+                    .into_direct_replay(&sensitive_tools)
+                    .map_err(|error| direct_hitl_error(&error))?
+            };
+            let prepared = replay.bind(model);
+            let (replay_model, run_input, toolsets) = prepared.into_parts(toolsets);
+            (replay_model, run_input, toolsets, false)
+        }
+        ResolvedDirectHitlStart::Nested(decisions) => {
+            if delegated_resume {
+                return Err(invalid_configuration());
+            }
+            let coordinator = resume.as_ref().ok_or_else(invalid_configuration)?;
+            let prepared = prepare_nested_application_resume(
+                &stored.events().all(),
+                decisions,
+                &application_tools,
+                coordinator,
+                model,
+            )
+            .await?;
+            let (replay_model, user_content, run_config) = prepared.into_parts();
+            (
+                replay_model,
+                DirectHitlRunInput::from_parts(user_content, run_config),
+                toolsets,
+                true,
+            )
+        }
+    };
+    Ok(PreparedDirectResume {
+        model,
+        run_input,
+        runtime: OrdinaryRuntimeBindings::new(
+            toolsets,
+            sensitive_tools,
+            delegated_authorization,
+            ApplicationRuntimeProjection {
+                presentations: application_tools,
+                events: application_events,
+                resume: None,
+            },
+        ),
+        parallel_applications,
+    })
+}
+
+async fn assemble_direct_resume_with_sessions_and_applications<M>(
+    model: M,
+    plan: OrdinaryNativeAgentPlan,
+    runtime: OrdinaryRuntimeBindings,
+    start: DirectResumeStart,
     sessions: Arc<dyn SessionService>,
 ) -> Result<AssembledNativeAgentInvocation<OrdinaryAgentCompletion<M>>, NativeAgentAssemblyError>
 where
@@ -1170,72 +1469,24 @@ where
         })
         .await
         .map_err(|_| dependency_unavailable())?;
-    let resolved = decisions
-        .resolve(stored.as_ref())
-        .map_err(|error| direct_hitl_error(&error))?;
-    let ApplicationRuntimeProjection {
-        presentations: application_tools,
-        events: application_events,
-        resume,
-    } = application_runtime;
-    let (replay_model, run_input, toolsets, parallel_applications) = match resolved {
-        ResolvedDirectHitlStart::Direct(decision) => {
-            let replay = (*decision)
-                .into_direct_replay(&sensitive_tools)
-                .map_err(|error| direct_hitl_error(&error))?;
-            let prepared = replay.bind(model.adk_model());
-            let (replay_model, run_input, toolsets) = prepared.into_parts(toolsets);
-            (replay_model, run_input, toolsets, false)
-        }
-        ResolvedDirectHitlStart::Nested(decisions) => {
-            let coordinator = resume.as_ref().ok_or_else(invalid_configuration)?;
-            let prepared = prepare_nested_application_resume(
-                &stored.events().all(),
-                decisions,
-                &application_tools,
-                coordinator,
-                model.adk_model(),
-            )
-            .await?;
-            let (replay_model, user_content, run_config) = prepared.into_parts();
-            (
-                replay_model,
-                DirectHitlRunInput::from_parts(user_content, run_config),
-                toolsets,
-                true,
-            )
-        }
-    };
-    let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
-        .model(replay_model)
-        .generate_content_config(generation_config)
-        .max_iterations(max_iterations)
-        .disallow_transfer_to_parent(true)
-        .disallow_transfer_to_peers(true);
-    if parallel_applications {
-        builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
-    }
-    for toolset in toolsets {
-        builder = builder.toolset(toolset);
-    }
-    for tool_name in sensitive_tools.tool_names() {
-        builder = builder.require_tool_confirmation(tool_name);
-    }
-    let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
-    let agent = application_events.map_or(agent.clone(), |events| {
-        application_event_agent(agent, events, application_tools.clone())
-    });
+    let prepared =
+        prepare_direct_resume(model.adk_model(), stored.as_ref(), runtime, start).await?;
+    let (agent, projector) = build_runtime_agent(
+        prepared.model,
+        generation_config,
+        max_iterations,
+        projection,
+        prepared.runtime,
+        prepared.parallel_applications,
+    )?;
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
         .agent(agent)
         .session_service(sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
-    let projector =
-        AgentEventProjector::with_tool_catalogs(projection, sensitive_tools, application_tools)
-            .map_err(projection_configuration)?;
     Ok(AssembledNativeAgentInvocation::new(
-        NativeAgentInvocation::new_direct_hitl(runner, user_id, session_id, run_input),
+        NativeAgentInvocation::new_direct_hitl(runner, user_id, session_id, prepared.run_input),
         projector,
         OrdinaryAgentCompletion { model, thread_id },
     ))
@@ -1251,7 +1502,7 @@ fn direct_hitl_error(error: &DirectHitlError) -> NativeAgentAssemblyError {
         }
         DirectHitlErrorCode::ResourceExhausted => NativeAgentAssemblyErrorCode::ResourceExhausted,
     };
-    NativeAgentAssemblyError::new(code, "the direct sensitive-tool replay was rejected")
+    NativeAgentAssemblyError::new(code, "the direct tool continuation replay was rejected")
 }
 
 async fn restore_or_create_session(

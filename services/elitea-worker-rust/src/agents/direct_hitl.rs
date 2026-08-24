@@ -16,7 +16,7 @@
 
 #![allow(dead_code)] // Resume execution remains capability-gated.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -37,6 +37,11 @@ use serde_json::Value;
 use super::events::{DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY};
 use super::request::AgentExecutionPayload;
 use super::sensitive_tools::SensitiveToolCatalog;
+use crate::toolkits::{
+    DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
+    DelegatedAuthorizationRequirement, decode_delegated_authorization_requirement,
+    delegated_authorization_declined_result,
+};
 
 const MAX_IDENTITY_BYTES: usize = 512;
 const MAX_COMMENT_BYTES: usize = 2_000;
@@ -140,6 +145,185 @@ pub(crate) struct DirectHitlDecision {
 /// subset of a parallel pause.
 pub(crate) struct DirectHitlDecisionSet {
     decisions: Vec<DirectHitlDecision>,
+}
+
+#[derive(Clone, Copy)]
+enum DirectDelegatedAuthorizationAction {
+    Authorize,
+    Skip,
+}
+
+/// Claim-fetched root-agent authorization continuation. Main's current wire
+/// does not carry the browser card identity, so this binds only one exact
+/// server to the latest unadvanced authorization confirmation in the durable
+/// ADK session and fails closed for an ambiguous set.
+pub(crate) struct DirectDelegatedAuthorizationContinuation {
+    action: DirectDelegatedAuthorizationAction,
+    server_url: String,
+}
+
+impl DirectDelegatedAuthorizationContinuation {
+    pub(crate) fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, DirectHitlError> {
+        if !payload.should_continue
+            || payload.hitl_resume
+            || payload.hitl_action.is_some()
+            || payload.hitl_value.is_some()
+            || !payload.hitl_decisions.is_empty()
+            || payload.checkpoint_id.is_some()
+            || payload.auto_approve_sensitive_actions
+            || !payload.ignored_mcp_servers.is_empty()
+        {
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        let (action, server_urls) = if !payload.mcp_tokens.is_empty()
+            && payload.user_declined_mcp_servers.is_empty()
+        {
+            (
+                DirectDelegatedAuthorizationAction::Authorize,
+                payload.mcp_tokens.keys().cloned().collect::<BTreeSet<_>>(),
+            )
+        } else if payload.mcp_tokens.is_empty() && !payload.user_declined_mcp_servers.is_empty() {
+            let urls = payload
+                .user_declined_mcp_servers
+                .iter()
+                .map(declined_server_url)
+                .collect::<Option<BTreeSet<_>>>()
+                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
+            (
+                DirectDelegatedAuthorizationAction::Skip,
+                urls.into_iter().map(ToOwned::to_owned).collect(),
+            )
+        } else {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
+        };
+        if server_urls.len() != 1 || server_urls.iter().any(|url| !valid_server_url(url)) {
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        Ok(Self {
+            action,
+            server_url: server_urls
+                .into_iter()
+                .next()
+                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?,
+        })
+    }
+
+    pub(crate) fn resolve(
+        self,
+        session: &dyn adk_rust::session::Session,
+    ) -> Result<ResolvedDirectHitlDecision, DirectHitlError> {
+        let events = session.events().all();
+        let confirmation_index = events
+            .iter()
+            .rposition(|event| {
+                event.actions.tool_confirmation.is_some()
+                    && event
+                        .provider_metadata
+                        .contains_key(DELEGATED_AUTHORIZATION_METADATA_KEY)
+            })
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))?;
+        let confirmation_event = &events[confirmation_index];
+        if application_route(confirmation_event)?.is_some() {
+            return Err(DirectHitlError::new(
+                DirectHitlErrorCode::UnsupportedCapability,
+            ));
+        }
+        let requirement = confirmation_event
+            .provider_metadata
+            .get(DELEGATED_AUTHORIZATION_METADATA_KEY)
+            .and_then(|value| decode_delegated_authorization_requirement(value))
+            .filter(|requirement| requirement.server_url() == self.server_url)
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))?;
+        let request = confirmation_event
+            .actions
+            .tool_confirmation
+            .as_ref()
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::CorruptSession))?;
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_identity(value))
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::CorruptSession))?;
+        if !valid_identity(&request.tool_name)
+            || encoded_value_len(&request.args)? > MAX_CALL_VALUE_BYTES
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
+        let matching_calls = events[..confirmation_index]
+            .iter()
+            .filter(|event| event.invocation_id == confirmation_event.invocation_id)
+            .flat_map(Event::tool_calls)
+            .filter(|call| {
+                call.call_id == Some(call_id)
+                    && call.name == request.tool_name
+                    && call.args == &request.args
+            })
+            .count();
+        if matching_calls != 1 {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
+        let (interrupt_id, call_digest) = sensitive_call_identity(
+            &confirmation_event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )?;
+        let decision = match self.action {
+            DirectDelegatedAuthorizationAction::Authorize => ToolConfirmationDecision::Approve,
+            DirectDelegatedAuthorizationAction::Skip => ToolConfirmationDecision::Deny,
+        };
+        let user_content = replay_user_content(&interrupt_id, decision);
+        let persisted = persisted_replay_state_with_confirmation(
+            &events[confirmation_index + 1..],
+            &user_content,
+            call_id,
+            &request.tool_name,
+            &request.args,
+            match self.action {
+                DirectDelegatedAuthorizationAction::Authorize => None,
+                DirectDelegatedAuthorizationAction::Skip => Some(ToolConfirmationDecision::Deny),
+            },
+        )?;
+        Ok(ResolvedDirectHitlDecision {
+            invocation_id: confirmation_event.invocation_id.clone(),
+            interrupt_id,
+            call_digest,
+            call_id: call_id.to_owned(),
+            tool_name: request.tool_name.clone(),
+            arguments: request.args.clone(),
+            fingerprint: tool_call_fingerprint(&request.tool_name, &request.args),
+            decision,
+            denial_comment: None,
+            user_content,
+            resume_mode: persisted.mode,
+            persisted_result: persisted.result,
+            application_route: None,
+            delegated_authorization: Some(requirement),
+        })
+    }
+}
+
+fn declined_server_url(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(value) => Some(value),
+        Value::Object(value) => value.get("server_url").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+fn valid_server_url(value: &str) -> bool {
+    reqwest::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.query().is_none()
+            && url.fragment().is_none()
+    })
 }
 
 impl DirectHitlDecisionSet {
@@ -378,6 +562,7 @@ impl DirectHitlDecision {
             resume_mode: persisted.mode,
             persisted_result: persisted.result,
             application_route,
+            delegated_authorization: None,
         })
     }
 }
@@ -480,6 +665,7 @@ pub(crate) struct ResolvedDirectHitlDecision {
     resume_mode: ReplayResumeMode,
     persisted_result: Option<Value>,
     application_route: Option<DirectHitlApplicationRoute>,
+    delegated_authorization: Option<DelegatedAuthorizationRequirement>,
 }
 
 pub(crate) enum ResolvedDirectHitlStart {
@@ -506,6 +692,7 @@ pub(crate) struct DirectHitlReplay {
     user_content: Content,
     resume_mode: ReplayResumeMode,
     blocked_result: Option<Value>,
+    approve_confirmation: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -533,6 +720,9 @@ impl ResolvedDirectHitlDecision {
         self,
         sensitive_tools: &SensitiveToolCatalog,
     ) -> Result<DirectHitlReplay, DirectHitlError> {
+        if self.delegated_authorization.is_some() {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
         let policy = sensitive_tools
             .policy_for(&self.tool_name)
             .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::UnsupportedCapability))?;
@@ -571,6 +761,49 @@ impl ResolvedDirectHitlDecision {
             user_content: self.user_content,
             resume_mode: self.resume_mode,
             blocked_result,
+            approve_confirmation: true,
+        })
+    }
+
+    pub(crate) fn into_delegated_authorization_replay(
+        self,
+        authorization: &DelegatedAuthorizationCatalog,
+    ) -> Result<DirectHitlReplay, DirectHitlError> {
+        let requirement = self
+            .delegated_authorization
+            .as_ref()
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::CorruptSession))?;
+        let blocked_result = if self.decision == ToolConfirmationDecision::Deny {
+            let materialized = authorization
+                .requirement_for(&self.tool_name)
+                .filter(|materialized| *materialized == requirement)
+                .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::StaleDecision))?;
+            Some(delegated_authorization_declined_result(
+                materialized,
+                &self.tool_name,
+            ))
+        } else {
+            if authorization.requirement_for(&self.tool_name).is_some() {
+                return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+            }
+            None
+        };
+        if matches!(self.resume_mode, ReplayResumeMode::ContinueAfterResult)
+            && blocked_result
+                .as_ref()
+                .is_some_and(|expected| self.persisted_result.as_ref() != Some(expected))
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+        }
+        Ok(DirectHitlReplay {
+            call_id: self.call_id,
+            tool_name: self.tool_name,
+            arguments: self.arguments,
+            fingerprint: self.fingerprint,
+            user_content: self.user_content,
+            resume_mode: self.resume_mode,
+            approve_confirmation: blocked_result.is_some(),
+            blocked_result,
         })
     }
 }
@@ -581,12 +814,14 @@ impl DirectHitlReplay {
         let mut run_config = RunConfig::default();
         let state = match self.resume_mode {
             ReplayResumeMode::ExecuteCall => {
-                run_config
-                    .tool_confirmation_decisions
-                    .insert(self.call_id.clone(), ToolConfirmationDecision::Approve);
-                run_config
-                    .tool_confirmation_fingerprints
-                    .insert(self.call_id.clone(), self.fingerprint);
+                if self.approve_confirmation {
+                    run_config
+                        .tool_confirmation_decisions
+                        .insert(self.call_id.clone(), ToolConfirmationDecision::Approve);
+                    run_config
+                        .tool_confirmation_fingerprints
+                        .insert(self.call_id.clone(), self.fingerprint);
+                }
                 REPLAY_PENDING
             }
             ReplayResumeMode::ContinueAfterResult => REPLAY_EMITTED,
@@ -1048,6 +1283,24 @@ fn persisted_replay_state(
     arguments: &Value,
     decision: ToolConfirmationDecision,
 ) -> Result<PersistedReplayState, DirectHitlError> {
+    persisted_replay_state_with_confirmation(
+        events,
+        user_content,
+        call_id,
+        tool_name,
+        arguments,
+        Some(decision),
+    )
+}
+
+fn persisted_replay_state_with_confirmation(
+    events: &[Event],
+    user_content: &Content,
+    call_id: &str,
+    tool_name: &str,
+    arguments: &Value,
+    confirmation_decision: Option<ToolConfirmationDecision>,
+) -> Result<PersistedReplayState, DirectHitlError> {
     let mut replay_invocation = None;
     let mut call_pending = false;
     let mut result_persisted = None;
@@ -1065,9 +1318,13 @@ fn persisted_replay_state(
             continue;
         }
         if call_pending {
-            let Some(result) =
-                exact_replay_result(event, replay_invocation, call_id, tool_name, decision)
-            else {
+            let Some(result) = exact_replay_result(
+                event,
+                replay_invocation,
+                call_id,
+                tool_name,
+                confirmation_decision,
+            ) else {
                 return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
             };
             result_persisted = Some(result.clone());
@@ -1124,7 +1381,7 @@ fn exact_replay_result<'a>(
     replay_invocation: Option<&str>,
     call_id: &str,
     tool_name: &str,
-    decision: ToolConfirmationDecision,
+    confirmation_decision: Option<ToolConfirmationDecision>,
 ) -> Option<&'a Value> {
     let results = event.tool_results();
     (replay_invocation == Some(event.invocation_id.as_str())
@@ -1133,8 +1390,8 @@ fn exact_replay_result<'a>(
         && results[0].name == tool_name
         && event.tool_calls().is_empty()
         && event.actions.tool_confirmation.is_none()
-        && event.actions.tool_confirmation_decision == Some(decision))
-    .then_some(results[0].response)
+        && event.actions.tool_confirmation_decision == confirmation_decision)
+        .then_some(results[0].response)
 }
 
 pub(crate) fn blocked_tool_result(

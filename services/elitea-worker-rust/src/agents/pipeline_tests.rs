@@ -17,7 +17,8 @@ use tonic::body::Body;
 
 use super::assembly_tests::ordinary_request;
 use super::events::{
-    pipeline_application_event_binding, pipeline_hitl_event_binding, pipeline_tool_event_binding,
+    pipeline_application_event_binding, pipeline_hitl_event_binding,
+    pipeline_mcp_auth_event_binding, pipeline_tool_event_binding,
 };
 use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, StrictNodeToolset};
 use super::request::AgentExecutionKind;
@@ -33,6 +34,7 @@ use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::encode_current_node_event_json;
 use crate::toolkits::{
     McpConnector, McpMaterializationError, RemoteMcpConfig, ToolAdmissionPolicy,
+    mcp_authorization_required_fixture,
 };
 use crate::transport::model_facade::ModelFacade;
 use crate::transport::model_gateway::{
@@ -1921,6 +1923,34 @@ struct PipelineMcpConnector {
     read_only: bool,
 }
 
+struct DelegatedAuthorizationPipelineMcpConnector {
+    connections: Arc<AtomicUsize>,
+    tool_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpConnector for DelegatedAuthorizationPipelineMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        if config.access_token_for_test() != Some("runtime-secret") {
+            return Err(mcp_authorization_required_fixture(
+                config,
+                "Bearer resource_metadata=\"https://mcp.example.invalid/.well-known/oauth-protected-resource\"",
+            ));
+        }
+        Ok(Arc::new(BasicToolset::new(
+            "authorized_fixture_mcp",
+            vec![Arc::new(PipelineMcpTool {
+                calls: Arc::clone(&self.tool_calls),
+                read_only: true,
+            })],
+        )))
+    }
+}
+
 #[async_trait]
 impl McpConnector for PipelineMcpConnector {
     async fn connect(
@@ -1993,6 +2023,249 @@ async fn llm_node_block_actions_replay_same_call_as_structured_tool_result() {
         "release is under legal hold",
     )
     .await;
+}
+
+#[tokio::test]
+async fn llm_node_delegated_authorization_replays_original_call_after_token_rebuild() {
+    let (assembler, captured, connections, tool_calls) =
+        delegated_authorization_llm_assembler("continued after authorization", false);
+    let mut request = llm_mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        &["lookup_release"],
+    );
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("guarded LLM-node invocation");
+    let (paused, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let authorization = paused
+        .iter()
+        .find(|event| event["type"] == "mcp_authorization_required")
+        .expect("model-owned authorization card");
+    assert_eq!(
+        authorization["response_metadata"]["tool_call_id"],
+        "call_mcp"
+    );
+    assert_eq!(authorization["response_metadata"]["tool_args"], json!({}));
+    let binding = pipeline_mcp_auth_event_binding(
+        &graph_interrupt.expect("private LLM authorization interrupt"),
+        "elitea-agent",
+        &private_thread,
+    )
+    .expect("checkpoint-bound LLM authorization");
+    assert_eq!(binding.tool_call_id(), "call_mcp");
+    assert!(binding.llm_replay().is_some());
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    request.binding.request_content_digest = [11; 32];
+    request.payload.should_continue = true;
+    request.payload.mcp_tokens.insert(
+        "https://mcp.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    );
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized same-call continuation");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "continued after authorization")
+    );
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 1);
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 2, "resume must not ask the model to replan");
+    let continuation: Value =
+        serde_json::from_slice(&captured[1].body).expect("continuation request JSON");
+    let tool_message = continuation["messages"]
+        .as_array()
+        .expect("continuation messages")
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_mcp")
+        .expect("normal result closes original call");
+    assert!(
+        tool_message["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("risk"))
+    );
+}
+
+#[tokio::test]
+async fn llm_node_delegated_authorization_skip_closes_original_call_without_dispatch() {
+    let (assembler, captured, connections, tool_calls) =
+        delegated_authorization_llm_assembler("continued after authorization skip", false);
+    let mut request = llm_mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        &["lookup_release"],
+    );
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("guarded LLM-node invocation");
+    let (paused, _) = collect_pipeline_pause_events(invocation).await;
+    assert!(
+        paused
+            .iter()
+            .any(|event| event["type"] == "mcp_authorization_required")
+    );
+
+    request.binding.request_content_digest = [12; 32];
+    request.payload.should_continue = true;
+    request
+        .payload
+        .user_declined_mcp_servers
+        .push(json!({"server_url": "https://mcp.example.invalid/v1/mcp"}));
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("declined same-call continuation");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "continued after authorization skip")
+    );
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 2, "resume must not ask the model to replan");
+    let continuation: Value =
+        serde_json::from_slice(&captured[1].body).expect("continuation request JSON");
+    let tool_message = continuation["messages"]
+        .as_array()
+        .expect("continuation messages")
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_mcp")
+        .expect("decline result closes original call");
+    let declined: Value = serde_json::from_str(
+        tool_message["content"]
+            .as_str()
+            .expect("structured decline result"),
+    )
+    .expect("decline result JSON");
+    assert_eq!(declined["type"], "mcp_auth_decision");
+    assert_eq!(declined["status"], "declined");
+    assert_eq!(declined["tool_name"], "lookup_release");
+}
+
+#[tokio::test]
+async fn llm_node_authorization_does_not_approve_distinct_sensitive_guard() {
+    let (assembler, captured, connections, tool_calls) =
+        delegated_authorization_llm_assembler("must remain unreachable", true);
+    let mut request = llm_mcp_pipeline_request(
+        "release intelligence",
+        &["lookup_release"],
+        &["lookup_release"],
+    );
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("guarded LLM-node invocation");
+    let (paused, _) = collect_pipeline_pause_events(invocation).await;
+    assert!(
+        paused
+            .iter()
+            .any(|event| event["type"] == "mcp_authorization_required")
+    );
+
+    request.binding.request_content_digest = [13; 32];
+    request.payload.should_continue = true;
+    request.payload.mcp_tokens.insert(
+        "https://mcp.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    );
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("authorized same-call continuation");
+    let (paused, _) = collect_pipeline_pause_events(invocation).await;
+    assert_eq!(
+        paused
+            .iter()
+            .filter(|event| event["type"] == "agent_hitl_interrupt")
+            .count(),
+        1,
+        "the distinct sensitive policy must still pause the exact call"
+    );
+    assert!(
+        paused
+            .iter()
+            .all(|event| event["type"] != "mcp_authorization_required")
+    );
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+    assert_eq!(
+        captured.lock().expect("captured model requests").len(),
+        1,
+        "neither confirmation pause may replan the model-selected call"
+    );
+}
+
+fn delegated_authorization_llm_assembler(
+    final_text: &str,
+    sensitive: bool,
+) -> (
+    PipelineNativeAgentAssembler,
+    CapturedModelRequests,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let token_response = || {
+        runtime_response(&json!({
+            "schema_version": "elitea.runtime.elitea-client-token.v1",
+            "project_id": 17,
+            "token": "ephemeral-pipeline-token"
+        }))
+    };
+    let runtime = RuntimeContextClient::with_rpc(
+        PipelineRuntimeContextFixture {
+            responses: Mutex::new(VecDeque::from([token_response(), token_response()])),
+            calls: Arc::new(AtomicUsize::new(0)),
+            paths: Arc::new(Mutex::new(Vec::new())),
+        },
+        RuntimeContextConfig {
+            origin: "https://content.internal".to_owned(),
+            deadline: Duration::from_secs(1),
+            max_response_bytes: 32 * 1_024,
+            max_application_response_bytes: 1_024 * 1_024,
+        },
+    )
+    .expect("pipeline runtime-context fixture");
+    let (gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response(final_text)),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("pipeline model gateway fixture");
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let mut assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(
+        Arc::new(PlatformClient::new(Arc::new(runtime))),
+        Arc::new(ModelFacade::from_gateway(gateway)),
+    )
+    .with_mcp_connector(Arc::new(DelegatedAuthorizationPipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        tool_calls: Arc::clone(&tool_calls),
+    }));
+    if sensitive {
+        assembler = assembler.with_tool_policy(sensitive_pipeline_mcp_policy());
+    }
+    (assembler, captured, connections, tool_calls)
 }
 
 async fn run_llm_node_block(action: &str, comment: Option<&str>, expected_reason: &str) {

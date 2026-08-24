@@ -27,7 +27,9 @@ use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use zeroize::Zeroizing;
 
-use super::delegated_auth::{DelegatedAuthorizationRequirement, delegated_authorization_error};
+use super::delegated_auth::{
+    DelegatedAuthorizationCatalog, DelegatedAuthorizationRequirement, delegated_authorization_error,
+};
 use super::invocation::admit_materialized_toolset;
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::{AdmittedToolSnapshot, FrozenToolKind, FrozenToolReference};
@@ -271,6 +273,20 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens(
     policy: &Arc<ToolAdmissionPolicy>,
     mcp_tokens: &Map<String, Value>,
 ) -> Result<Vec<Arc<dyn Toolset>>, McpMaterializationError> {
+    materialize_mcp_toolsets_with_tokens_and_authorization(snapshot, connector, policy, mcp_tokens)
+        .await
+        .map(|(toolsets, _)| toolsets)
+}
+
+/// Materialize MCP toolsets and retain the sanitized identity of selected
+/// placeholder tools whose server rejected discovery with an OAuth challenge.
+/// LLM runtimes use this catalog to pause before dispatching the original call.
+pub(crate) async fn materialize_mcp_toolsets_with_tokens_and_authorization(
+    snapshot: &AdmittedToolSnapshot<'_>,
+    connector: &dyn McpConnector,
+    policy: &Arc<ToolAdmissionPolicy>,
+    mcp_tokens: &Map<String, Value>,
+) -> Result<(Vec<Arc<dyn Toolset>>, DelegatedAuthorizationCatalog), McpMaterializationError> {
     let references = snapshot
         .iter()
         .filter(|reference| reference.kind() == FrozenToolKind::Mcp)
@@ -280,6 +296,7 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens(
     }
 
     let mut toolsets = Vec::with_capacity(references.len());
+    let mut authorization = DelegatedAuthorizationCatalog::default();
     for reference in references {
         let config = RemoteMcpConfig::parse(reference, mcp_tokens)?;
         let discovered = match connector.connect(&config).await {
@@ -300,6 +317,15 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens(
                             as Arc<dyn Tool>
                     })
                     .collect::<Vec<_>>();
+                for name in config.selected_tools() {
+                    if policy.tool_decision(reference.tool_type(), name)
+                        == super::policy::ToolAdmissionDecision::Allowed
+                    {
+                        authorization
+                            .insert(name, requirement.clone())
+                            .map_err(|()| invalid_configuration())?;
+                    }
+                }
                 let admitted = admit_materialized_toolset(
                     reference.toolkit_name(),
                     reference.tool_type(),
@@ -352,7 +378,7 @@ pub(crate) async fn materialize_mcp_toolsets_with_tokens(
         })?;
         toolsets.push(Arc::new(admitted) as Arc<dyn Toolset>);
     }
-    Ok(toolsets)
+    Ok((toolsets, authorization))
 }
 
 fn select_tools(

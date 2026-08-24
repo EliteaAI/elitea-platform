@@ -29,7 +29,9 @@ use super::yaml::{valid_graph_id, valid_output_key};
 use super::{PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PipelineNodeEventScope, PipelineNodeEventSender};
 use crate::agents::direct_hitl::blocked_tool_result;
 use crate::agents::events::mask_sensitive_arguments;
-use crate::toolkits::SensitiveToolPolicy;
+use crate::toolkits::{
+    DelegatedAuthorizationRequirement, SensitiveToolPolicy, delegated_authorization_declined_result,
+};
 
 const MAX_NODE_YAML_BYTES: usize = 64 * 1024;
 const MAX_MAPPING_ENTRIES: usize = 16;
@@ -484,6 +486,10 @@ struct PipelineLlmReplayDecision {
     tool_name: String,
     arguments: Value,
     fingerprint: String,
+    /// Authorization approval rematerializes the real tool and replays the
+    /// call without pre-approving a separate sensitive-tool confirmation.
+    #[serde(default)]
+    defer_confirmation: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     blocked_result: Option<Value>,
 }
@@ -570,8 +576,15 @@ impl PipelineLlmReplayEnvelope {
             {
                 return Err(LlmExecutionError::InvalidInputMapping);
             }
-            if let Some(result) = &decision.blocked_result
-                && result.get("type").and_then(Value::as_str) != Some("sensitive_tool_blocked")
+            if decision.defer_confirmation && decision.blocked_result.is_some() {
+                return Err(LlmExecutionError::InvalidInputMapping);
+            }
+            if let Some(result_type) = decision
+                .blocked_result
+                .as_ref()
+                .and_then(|result| result.get("type"))
+                .and_then(Value::as_str)
+                && !matches!(result_type, "sensitive_tool_blocked" | "mcp_auth_decision")
             {
                 return Err(LlmExecutionError::InvalidInputMapping);
             }
@@ -620,7 +633,9 @@ impl PipelineLlmReplayEnvelope {
             .into_iter()
             .find(|call| call.call_id == call_id && call.tool_name == tool_name)
             .ok_or(LlmExecutionError::InvalidInputMapping)?;
-        if self.decisions.contains_key(call_id) {
+        if self.decisions.get(call_id).is_some_and(|decision| {
+            !decision.defer_confirmation || decision.blocked_result.is_some()
+        }) {
             return Err(LlmExecutionError::InvalidInputMapping);
         }
         let blocked_result = (!approve).then(|| {
@@ -639,7 +654,38 @@ impl PipelineLlmReplayEnvelope {
                 tool_name: tool_name.to_owned(),
                 arguments: call.arguments.clone(),
                 fingerprint: tool_call_fingerprint(tool_name, call.arguments),
+                defer_confirmation: false,
                 blocked_result,
+            },
+        );
+        self.validate()?;
+        serde_json::to_value(self).map_err(|_| LlmExecutionError::InvalidInputMapping)
+    }
+
+    pub(crate) fn resolve_authorization_decision(
+        mut self,
+        call_id: &str,
+        tool_name: &str,
+        authorize: bool,
+        requirement: &DelegatedAuthorizationRequirement,
+    ) -> Result<Value, LlmExecutionError> {
+        self.validate()?;
+        let call = replay_calls(&self.pending_content)?
+            .into_iter()
+            .find(|call| call.call_id == call_id && call.tool_name == tool_name)
+            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+        if self.decisions.contains_key(call_id) {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        self.decisions.insert(
+            call_id.to_owned(),
+            PipelineLlmReplayDecision {
+                tool_name: tool_name.to_owned(),
+                arguments: call.arguments.clone(),
+                fingerprint: tool_call_fingerprint(tool_name, call.arguments),
+                defer_confirmation: authorize,
+                blocked_result: (!authorize)
+                    .then(|| delegated_authorization_declined_result(requirement, tool_name)),
             },
         );
         self.validate()?;
@@ -648,6 +694,9 @@ impl PipelineLlmReplayEnvelope {
 
     fn apply_run_config(&self, run_config: &mut RunConfig) {
         for (call_id, decision) in &self.decisions {
+            if decision.defer_confirmation {
+                continue;
+            }
             run_config
                 .tool_confirmation_decisions
                 .insert(call_id.clone(), ToolConfirmationDecision::Approve);
@@ -684,6 +733,14 @@ impl PipelineLlmReplayEnvelope {
 
     fn decisions(&self) -> &BTreeMap<String, PipelineLlmReplayDecision> {
         &self.decisions
+    }
+
+    pub(crate) fn has_deferred_authorization_for(&self, tool_name: &str) -> bool {
+        self.decisions.values().any(|decision| {
+            decision.tool_name == tool_name
+                && decision.defer_confirmation
+                && decision.blocked_result.is_none()
+        })
     }
 
     pub(crate) fn definition_digest(&self) -> &str {
@@ -759,6 +816,13 @@ pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
     ) -> Result<Arc<dyn Agent>, LlmExecutionError>;
 
     fn sensitive_policy(&self, _tool_name: &str) -> Option<SensitiveToolPolicy> {
+        None
+    }
+
+    fn delegated_authorization(
+        &self,
+        _tool_name: &str,
+    ) -> Option<DelegatedAuthorizationRequirement> {
         None
     }
 
@@ -914,7 +978,14 @@ impl LlmNode {
             .function_call_id
             .as_deref()
             .filter(|value| valid_replay_identity(value))
-            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+            .ok_or(LlmExecutionError::InvalidInputMapping)?
+            .to_owned();
+        if let Some(requirement) = self
+            .factory
+            .delegated_authorization(&confirmation.request.tool_name)
+        {
+            return self.authorization_interrupt(&call_id, confirmation, &requirement);
+        }
         let policy = self
             .factory
             .sensitive_policy(&confirmation.request.tool_name)
@@ -931,7 +1002,7 @@ impl LlmNode {
         let masked = mask_sensitive_arguments(&confirmation.request.args, 0)
             .map_err(|_| LlmExecutionError::ResourceExhausted)?;
         let argument_digest = confirmation_argument_digest(
-            call_id,
+            &call_id,
             &confirmation.request.tool_name,
             &confirmation.request.args,
         )?;
@@ -960,6 +1031,46 @@ impl LlmNode {
             policy.policy_message(),
             data,
         ))
+    }
+
+    fn authorization_interrupt(
+        &self,
+        call_id: &str,
+        confirmation: PipelineLlmConfirmation,
+        requirement: &DelegatedAuthorizationRequirement,
+    ) -> Result<NodeOutput, LlmExecutionError> {
+        let message = requirement.user_message();
+        if message.is_empty() || message.len() > MAX_CONFIRMATION_MESSAGE_BYTES {
+            return Err(LlmExecutionError::ResourceExhausted);
+        }
+        let argument_digest = confirmation_argument_digest(
+            call_id,
+            &confirmation.request.tool_name,
+            &confirmation.request.args,
+        )?;
+        let replay = serde_json::to_value(confirmation.replay)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        let data = json!({
+            "schema_revision": "elitea.graph.mcp-authorization.v1",
+            "type": "hitl",
+            "guardrail_type": "mcp_auth",
+            "node_name": self.name(),
+            "message": message,
+            "available_actions": ["authorize", "skip"],
+            "routes": {},
+            "definition_digest": self.definition.digest_label(),
+            "tool_call_id": call_id,
+            "tool_name": confirmation.request.tool_name,
+            "toolkit_name": requirement.toolkit_name(),
+            "toolkit_type": requirement.toolkit_type(),
+            "tool_args": {},
+            "argument_digest": argument_digest,
+            "server_url": requirement.server_url(),
+            "resource_metadata_url": requirement.resource_metadata_url(),
+            "www_authenticate": requirement.www_authenticate(),
+            "llm_replay": replay,
+        });
+        Ok(NodeOutput::interrupt_with_data(&message, data))
     }
 }
 

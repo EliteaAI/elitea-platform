@@ -44,9 +44,10 @@ use super::session::{
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::state::{CheckpointLimits, SessionLimits};
 use crate::toolkits::{
-    AdkHttpMcpConnector, AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, McpConnector,
+    AdkHttpMcpConnector, AdmittedToolSnapshot, DelegatedAuthorizationCatalog,
+    DelegatedAuthorizationRequirement, FrozenToolKind, FrozenToolSnapshot, McpConnector,
     SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy,
-    materialize_configured_toolsets, materialize_mcp_toolsets_with_tokens,
+    materialize_configured_toolsets, materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
     ModelAdapterKind, ModelFacade, ModelInvocation, ModelReasoningEffort,
@@ -385,14 +386,15 @@ impl PipelineNativeAgentAssembler {
         let mut materialized =
             materialize_configured_toolsets(&selected_snapshot, &self.tool_policy)
                 .map_err(|_| unsupported_pipeline_runtime())?;
-        let mut mcp = materialize_mcp_toolsets_with_tokens(
-            &selected_snapshot,
-            self.mcp_connector.as_ref(),
-            &self.tool_policy,
-            mcp_tokens,
-        )
-        .await
-        .map_err(|_| unsupported_pipeline_runtime())?;
+        let (mut mcp, delegated_authorization) =
+            materialize_mcp_toolsets_with_tokens_and_authorization(
+                &selected_snapshot,
+                self.mcp_connector.as_ref(),
+                &self.tool_policy,
+                mcp_tokens,
+            )
+            .await
+            .map_err(|_| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
         let toolsets = toolsets_by_alias(materialized)?;
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
@@ -421,6 +423,7 @@ impl PipelineNativeAgentAssembler {
                 model_facade,
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
+                delegated_authorization,
                 node_events: node_event_sender,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
@@ -598,14 +601,15 @@ impl PipelineNativeAgentAssembler {
         let selected = snapshot.retain_toolkit_names(&aliases);
         let mut materialized = materialize_configured_toolsets(&selected, &self.tool_policy)
             .map_err(|_| unsupported_pipeline_runtime())?;
-        let mut mcp = materialize_mcp_toolsets_with_tokens(
-            &selected,
-            self.mcp_connector.as_ref(),
-            &self.tool_policy,
-            mcp_tokens,
-        )
-        .await
-        .map_err(|_| unsupported_pipeline_runtime())?;
+        let (mut mcp, delegated_authorization) =
+            materialize_mcp_toolsets_with_tokens_and_authorization(
+                &selected,
+                self.mcp_connector.as_ref(),
+                &self.tool_policy,
+                mcp_tokens,
+            )
+            .await
+            .map_err(|_| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
         let toolsets = toolsets_by_alias(materialized)?;
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
@@ -616,6 +620,7 @@ impl PipelineNativeAgentAssembler {
                 model_facade,
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
+                delegated_authorization,
                 node_events,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
@@ -684,6 +689,7 @@ struct NativePipelineLlmAgentFactory {
     model_facade: Arc<ModelFacade>,
     toolsets: std::collections::BTreeMap<String, Arc<dyn Toolset>>,
     sensitive_tools: BTreeMap<String, SensitiveToolPolicy>,
+    delegated_authorization: DelegatedAuthorizationCatalog,
     node_events: PipelineNodeEventSender,
 }
 
@@ -835,6 +841,16 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         }
         let (model, selected_toolsets) =
             prepare_pipeline_llm_replay(model.adk_model(), selected_toolsets, replay);
+        if replay.is_some_and(|replay| {
+            self.delegated_authorization
+                .tool_names()
+                .any(|tool_name| replay.has_deferred_authorization_for(tool_name))
+        }) {
+            // An authorize continuation must rematerialize the real tool. If
+            // the protected server still yields a placeholder, do not turn
+            // that failed authorization into a model-visible tool error.
+            return Err(LlmExecutionError::Unavailable);
+        }
         let mut builder = LlmAgentBuilder::new(definition.id())
             .description("Elitea stored-pipeline LLM node")
             .model(model)
@@ -856,6 +872,9 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         for tool_name in self.sensitive_tools.keys() {
             builder = builder.require_tool_confirmation(tool_name);
         }
+        for tool_name in self.delegated_authorization.tool_names() {
+            builder = builder.require_tool_confirmation(tool_name);
+        }
         builder
             .build()
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
@@ -864,6 +883,15 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
 
     fn sensitive_policy(&self, tool_name: &str) -> Option<SensitiveToolPolicy> {
         self.sensitive_tools.get(tool_name).cloned()
+    }
+
+    fn delegated_authorization(
+        &self,
+        tool_name: &str,
+    ) -> Option<DelegatedAuthorizationRequirement> {
+        self.delegated_authorization
+            .requirement_for(tool_name)
+            .cloned()
     }
 
     fn event_sender(&self) -> Option<PipelineNodeEventSender> {

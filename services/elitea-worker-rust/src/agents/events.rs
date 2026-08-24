@@ -35,6 +35,10 @@ use crate::protocol::elitea::runtime::v1::NodeEventV1;
 use crate::protocol::node_event::{
     MAX_CURRENT_NODE_EVENT_JSON_BYTES, encode_current_node_event_json,
 };
+use crate::toolkits::{
+    DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
+    decode_delegated_authorization_requirement,
+};
 
 const MAX_TOOL_CALLS_PER_MODEL_TURN: usize = 16;
 const MAX_PROJECTED_EVENTS_PER_ADK_EVENT: usize = 3 + 2 * MAX_TOOL_CALLS_PER_MODEL_TURN;
@@ -580,6 +584,7 @@ pub(crate) struct AgentEventProjector {
     invocation_id: Option<String>,
     active_tools: BTreeMap<String, ActiveToolCall>,
     sensitive_tools: SensitiveToolCatalog,
+    delegated_authorization: DelegatedAuthorizationCatalog,
     application_tools: ApplicationToolPresentationCatalog,
     descendants: BTreeMap<String, DescendantAgentProjector>,
     pipeline_result: Option<String>,
@@ -609,6 +614,20 @@ impl AgentEventProjector {
         sensitive_tools: SensitiveToolCatalog,
         application_tools: ApplicationToolPresentationCatalog,
     ) -> Result<Self, AgentEventProjectionError> {
+        Self::with_runtime_catalogs(
+            context,
+            sensitive_tools,
+            DelegatedAuthorizationCatalog::default(),
+            application_tools,
+        )
+    }
+
+    pub(crate) fn with_runtime_catalogs(
+        context: AgentEventProjectionContext,
+        sensitive_tools: SensitiveToolCatalog,
+        delegated_authorization: DelegatedAuthorizationCatalog,
+        application_tools: ApplicationToolPresentationCatalog,
+    ) -> Result<Self, AgentEventProjectionError> {
         validate_context(&context)?;
         Ok(Self {
             context,
@@ -616,6 +635,7 @@ impl AgentEventProjector {
             invocation_id: None,
             active_tools: BTreeMap::new(),
             sensitive_tools,
+            delegated_authorization,
             application_tools,
             descendants: BTreeMap::new(),
             pipeline_result: None,
@@ -699,7 +719,14 @@ impl AgentEventProjector {
             return Err(AgentEventProjectionError::invalid_state());
         }
         if event.actions.tool_confirmation.is_some() {
-            let batch = self.project_sensitive_confirmation(event)?;
+            let batch = if event
+                .provider_metadata
+                .contains_key(DELEGATED_AUTHORIZATION_METADATA_KEY)
+            {
+                self.project_delegated_authorization_confirmation(event)?
+            } else {
+                self.project_sensitive_confirmation(event)?
+            };
             self.bind_invocation_id(event);
             return Ok(batch);
         }
@@ -998,6 +1025,82 @@ impl AgentEventProjector {
         Ok(batch)
     }
 
+    fn project_delegated_authorization_confirmation(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        validate_confirmation_event(event, &self.context.root_agent_name)?;
+        if !matches!(self.state, ProjectionState::Complete(_)) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let request = event
+            .actions
+            .tool_confirmation
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_tool_identity(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        validate_tool_event_value(&request.args)?;
+        let _active = self
+            .active_tools
+            .get(call_id)
+            .filter(|active| active.name == request.tool_name && active.arguments == request.args)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let requirement = event
+            .provider_metadata
+            .get(DELEGATED_AUTHORIZATION_METADATA_KEY)
+            .and_then(|value| decode_delegated_authorization_requirement(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if self
+            .delegated_authorization
+            .requirement_for(&request.tool_name)
+            != Some(&requirement)
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let (interrupt_id, call_digest) = sensitive_call_identity(
+            &event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        let message = requirement.user_message();
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "root_thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "guardrail_type": "mcp_auth",
+            "interrupt_id": interrupt_id,
+            "call_digest": call_digest,
+            "node_name": "delegated_authorization_guard",
+            "message": message,
+            "available_actions": ["authorize", "skip"],
+            "tool_call_id": call_id,
+            "tool_name": request.tool_name,
+            "toolkit_name": requirement.toolkit_name(),
+            "toolkit_type": requirement.toolkit_type(),
+            "tool_args": {},
+            "server_url": requirement.server_url(),
+            "resource_metadata_url": requirement.resource_metadata_url(),
+            "www_authenticate": requirement.www_authenticate(),
+            "resume_strategy": "root",
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "mcp_authorization_required",
+            &Value::String(message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
     fn project_pipeline_printer(
         &mut self,
         event: &Event,
@@ -1174,8 +1277,7 @@ impl AgentEventProjector {
         if !matches!(
             self.state,
             ProjectionState::Started | ProjectionState::Complete(_)
-        ) || !self.active_tools.is_empty()
-        {
+        ) {
             return Err(AgentEventProjectionError::invalid_state());
         }
         let checkpoint_thread_id = self
@@ -1189,6 +1291,25 @@ impl AgentEventProjector {
             &self.context.root_agent_name,
             checkpoint_thread_id,
         )?;
+        if let Some(replay) = binding.llm_replay() {
+            let active = self
+                .active_tools
+                .get(binding.tool_call_id())
+                .filter(|active| active.name == binding.tool_name())
+                .ok_or_else(AgentEventProjectionError::invalid_state)?;
+            if !replay
+                .matches_pending_call(
+                    binding.tool_call_id(),
+                    binding.tool_name(),
+                    &active.arguments,
+                )
+                .map_err(|_| AgentEventProjectionError::invalid_state())?
+            {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
+        } else if !self.active_tools.is_empty() {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
         let data = binding.data;
         let metadata = json!({
             "thread_id": self.context.thread_id,
@@ -1998,6 +2119,8 @@ struct PipelineMcpAuthData {
     server_url: String,
     resource_metadata_url: Option<String>,
     www_authenticate: Option<String>,
+    #[serde(default)]
+    llm_replay: Option<PipelineLlmReplayEnvelope>,
 }
 
 impl PipelineMcpAuthData {
@@ -2026,6 +2149,14 @@ impl PipelineMcpAuthData {
             })
         {
             return Err(AgentEventProjectionError::invalid_state());
+        }
+        if let Some(replay) = &self.llm_replay {
+            replay
+                .validate()
+                .map_err(|_| AgentEventProjectionError::invalid_state())?;
+            if replay.definition_digest() != self.definition_digest {
+                return Err(AgentEventProjectionError::invalid_state());
+            }
         }
         validate_pipeline_hitl_message(&self.message)
     }
@@ -2173,6 +2304,30 @@ impl PipelineMcpAuthEventBinding {
 
     pub(crate) fn server_url(&self) -> &str {
         &self.data.server_url
+    }
+
+    pub(crate) fn tool_name(&self) -> &str {
+        &self.data.tool_name
+    }
+
+    pub(crate) fn toolkit_name(&self) -> &str {
+        &self.data.toolkit_name
+    }
+
+    pub(crate) fn toolkit_type(&self) -> &str {
+        &self.data.toolkit_type
+    }
+
+    pub(crate) fn resource_metadata_url(&self) -> Option<&str> {
+        self.data.resource_metadata_url.as_deref()
+    }
+
+    pub(crate) fn www_authenticate(&self) -> Option<&str> {
+        self.data.www_authenticate.as_deref()
+    }
+
+    pub(crate) fn llm_replay(&self) -> Option<&PipelineLlmReplayEnvelope> {
+        self.data.llm_replay.as_ref()
     }
 }
 

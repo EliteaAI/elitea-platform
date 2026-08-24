@@ -20,7 +20,8 @@ use chrono::{DateTime, Utc};
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::direct_hitl::{
-    DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode, DirectHitlRunInput,
+    DirectDelegatedAuthorizationContinuation, DirectHitlDecisionSet, DirectHitlError,
+    DirectHitlErrorCode, DirectHitlRunInput,
 };
 use super::events::{
     AgentEventProjectionError, AgentEventProjector, CompletedAgentBrowserOutput,
@@ -206,6 +207,9 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             AdmittedNativeStart::DirectHitl(_) => {
                 OrdinaryNoToolProfile::validate_direct_hitl_resume(self.request)?
             }
+            AdmittedNativeStart::DelegatedAuthorization(_) => {
+                OrdinaryNoToolProfile::validate_delegated_authorization_resume(self.request)?
+            }
         };
         let plan = OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?;
         let toolsets = FrozenToolSnapshot::from_request(self.request)
@@ -220,6 +224,7 @@ impl<'a> AuthorizedNativeAssembly<'a> {
             plan,
             toolsets,
             start,
+            mcp_tokens: &self.request.payload.mcp_tokens,
         })
     }
 
@@ -367,16 +372,17 @@ impl<'a> AdmittedPipelineNativeAssembly<'a> {
     }
 }
 
-/// The only two direct-agent start modes admitted before PAT redemption.
+/// The direct-agent start modes admitted before PAT redemption.
 pub(crate) enum AdmittedNativeStart {
     Fresh,
     DirectHitl(DirectHitlDecisionSet),
+    DelegatedAuthorization(DirectDelegatedAuthorizationContinuation),
 }
 
 impl AdmittedNativeStart {
     #[must_use]
     pub(crate) const fn is_resume(&self) -> bool {
-        matches!(self, Self::DirectHitl(_))
+        !matches!(self, Self::Fresh)
     }
 }
 
@@ -390,6 +396,7 @@ pub(crate) struct AdmittedOrdinaryNativeAssembly<'a> {
     plan: OrdinaryNativeAgentPlan,
     toolsets: AdmittedToolSnapshot<'a>,
     start: AdmittedNativeStart,
+    mcp_tokens: &'a serde_json::Map<String, serde_json::Value>,
 }
 
 impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
@@ -425,6 +432,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             plan,
             toolsets,
             start,
+            mcp_tokens,
             ..
         } = self;
         let context = client.redeem_elitea_context(&runtime_context).await?;
@@ -433,6 +441,7 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
             plan,
             toolsets,
             start,
+            mcp_tokens,
             context,
             runtime_context,
             session,
@@ -443,40 +452,15 @@ impl<'a> AdmittedOrdinaryNativeAssembly<'a> {
 
 /// Admitted ordinary assembly after its sole claim-scoped PAT redemption.
 pub(crate) struct RedeemedOrdinaryNativeAssembly<'a> {
-    profile: OrdinaryNoToolProfile,
-    plan: OrdinaryNativeAgentPlan,
-    toolsets: AdmittedToolSnapshot<'a>,
-    start: AdmittedNativeStart,
-    context: ClaimScopedEliteaContext,
-    runtime_context: ClaimBoundRuntimeContextAuthority,
-    session: ClaimBoundSessionAuthority,
-    state_writer_lease: Arc<dyn StateWriterLease>,
-}
-
-impl<'a> RedeemedOrdinaryNativeAssembly<'a> {
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        OrdinaryNoToolProfile,
-        OrdinaryNativeAgentPlan,
-        AdmittedToolSnapshot<'a>,
-        AdmittedNativeStart,
-        ClaimScopedEliteaContext,
-        ClaimBoundRuntimeContextAuthority,
-        ClaimBoundSessionAuthority,
-        Arc<dyn StateWriterLease>,
-    ) {
-        (
-            self.profile,
-            self.plan,
-            self.toolsets,
-            self.start,
-            self.context,
-            self.runtime_context,
-            self.session,
-            self.state_writer_lease,
-        )
-    }
+    pub(super) profile: OrdinaryNoToolProfile,
+    pub(super) plan: OrdinaryNativeAgentPlan,
+    pub(super) toolsets: AdmittedToolSnapshot<'a>,
+    pub(super) start: AdmittedNativeStart,
+    pub(super) mcp_tokens: &'a serde_json::Map<String, serde_json::Value>,
+    pub(super) context: ClaimScopedEliteaContext,
+    pub(super) runtime_context: ClaimBoundRuntimeContextAuthority,
+    pub(super) session: ClaimBoundSessionAuthority,
+    pub(super) state_writer_lease: Arc<dyn StateWriterLease>,
 }
 
 fn admit_native_start(
@@ -485,6 +469,14 @@ fn admit_native_start(
     let payload = &request.payload;
     if !has_continuation(request) {
         return Ok(AdmittedNativeStart::Fresh);
+    }
+    if payload.should_continue
+        && !payload.hitl_resume
+        && (!payload.mcp_tokens.is_empty() || !payload.user_declined_mcp_servers.is_empty())
+    {
+        return DirectDelegatedAuthorizationContinuation::from_payload(payload)
+            .map(AdmittedNativeStart::DelegatedAuthorization)
+            .map_err(|error| direct_hitl_admission_error(&error));
     }
     DirectHitlDecisionSet::from_payload(payload)
         .map(AdmittedNativeStart::DirectHitl)
@@ -498,6 +490,9 @@ fn has_continuation(request: &AgentExecutionRequest) -> bool {
         || payload.hitl_action.is_some()
         || payload.hitl_value.is_some()
         || !payload.hitl_decisions.is_empty()
+        || !payload.mcp_tokens.is_empty()
+        || !payload.ignored_mcp_servers.is_empty()
+        || !payload.user_declined_mcp_servers.is_empty()
 }
 
 fn direct_hitl_admission_error(error: &DirectHitlError) -> NativeAgentAssemblyError {

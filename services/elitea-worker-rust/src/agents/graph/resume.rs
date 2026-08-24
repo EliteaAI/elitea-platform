@@ -26,6 +26,7 @@ use crate::agents::events::{
     pipeline_mcp_auth_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
 };
 use crate::agents::request::AgentExecutionPayload;
+use crate::toolkits::DelegatedAuthorizationRequirement;
 
 const MAX_COMMENT_BYTES: usize = 8 * 1024;
 const MAX_EDIT_BYTES: usize = 64 * 1024;
@@ -128,10 +129,53 @@ impl PipelineMcpAuthorizationContinuation {
         if checkpoint.thread_id != thread_id
             || checkpoint.checkpoint_id != binding.checkpoint_id()
             || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
-            || checkpoint
-                .state
-                .get(DIRECT_TOOL_RESUME_STATE_KEY)
-                .is_some_and(|value| value != &json!({}))
+        {
+            return Err(PipelineResumeError::stale());
+        }
+        if let Some(replay) = binding.llm_replay().cloned() {
+            let predecessor = pipeline_leaf_state_entry(
+                checkpointer,
+                &checkpoint.state,
+                binding.nested_checkpoints(),
+                binding.node_name(),
+                LLM_TOOL_RESUME_STATE_KEY,
+            )
+            .await?;
+            if !replay
+                .matches_checkpoint_predecessor(predecessor.as_ref())
+                .map_err(|_| PipelineResumeError::corrupt())?
+            {
+                return Err(PipelineResumeError::stale());
+            }
+            let requirement = DelegatedAuthorizationRequirement::new(
+                binding.toolkit_name().to_owned(),
+                binding.toolkit_type().to_owned(),
+                binding.server_url().to_owned(),
+                binding.resource_metadata_url().map(ToOwned::to_owned),
+                binding.www_authenticate().map(ToOwned::to_owned),
+            )
+            .ok_or_else(PipelineResumeError::corrupt)?;
+            let resolved = replay
+                .resolve_authorization_decision(
+                    binding.tool_call_id(),
+                    binding.tool_name(),
+                    matches!(self.action, PipelineMcpAuthorizationAction::Authorize),
+                    &requirement,
+                )
+                .map_err(|_| PipelineResumeError::corrupt())?;
+            return Ok(PipelineResume {
+                state: [(
+                    LLM_TOOL_RESUME_STATE_KEY.to_owned(),
+                    json!({binding.node_name(): resolved}),
+                )]
+                .into_iter()
+                .collect(),
+            });
+        }
+        if checkpoint
+            .state
+            .get(DIRECT_TOOL_RESUME_STATE_KEY)
+            .is_some_and(|value| value != &json!({}))
         {
             return Err(PipelineResumeError::stale());
         }

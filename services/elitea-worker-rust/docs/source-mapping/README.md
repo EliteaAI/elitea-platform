@@ -144,8 +144,8 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. Delegated LLM auth-control
-  replay, prebuilt/static MCP, remote effects, child variables, nested static Printer
+  fallback, normalized-label and common-Runner proof. Parallel/nested exact
+  delegated authorization, prebuilt/static MCP, remote effects, child variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain
   separate gates. Saved-pipeline child events and configured/sensitive HITL
@@ -211,6 +211,9 @@ Maintained Rust runtime ownership registry:
   correlation. The concrete agent delivery processor now keeps one raw Redis
   PEL owner alive through claim, output preflight, preparation, supervised
   native execution and retirement for both application and ad-hoc commands.
+  `agent_invocation.rs` keeps authorization inputs boxed until its async frame
+  is allocated, preserving the default thread-stack bound as runtime variants
+  grow.
   Normal bootstrap must drain its Redis processing futures before closing the
   coordinator. Export/retention policy and process bootstrap remain
   deployment-owned.
