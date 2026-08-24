@@ -48,7 +48,7 @@
  * The page reaches this component through a server-declared `managed_surface`,
  * never through a hardcoded section id — see `./Configuration.tsx`.
  */
-import { useMemo, useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -56,6 +56,7 @@ import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
@@ -99,14 +100,29 @@ function ModelCatalogueAlerts({
   readError,
   loadError,
   clearError,
+  unpricedError,
 }: {
   /** The reason the server attached to an otherwise-200 catalogue read. */
   readonly readError: string | undefined;
   readonly loadError: unknown;
   readonly clearError: unknown;
+  /** Why the unpriced check could not run. */
+  readonly unpricedError: string | undefined;
 }) {
   return (
     <>
+      {/* Stated explicitly, because an unpriced report that FAILED renders the
+          same as one that found nothing — no alert at all — and "no unpriced
+          models" is the reassuring reading an operator would take from it. */}
+      {unpricedError !== undefined ? (
+        <Alert severity="warning" data-testid="llm-proxy-unpriced-error">
+          {t(
+            'pages.admin.llmProxy.models.unpricedError',
+            'The check for called-but-unpriced models could not be run, so this page cannot say whether any exist: {{reason}}',
+            { reason: unpricedError },
+          )}
+        </Alert>
+      ) : null}
       {readError !== undefined ? (
         <Alert severity="warning" data-testid="llm-proxy-models-error">
           {readError}
@@ -131,6 +147,71 @@ function ModelCatalogueAlerts({
 }
 
 /**
+ * The catalogue's three terminal states: loading, nothing to show, or a page of
+ * rows that may have been capped.
+ *
+ * Extracted so ModelsTab stays under the complexity gate and remains its own
+ * state machine rather than a chain of nested ternaries.
+ */
+function ModelCatalogueResults({
+  isPending,
+  items,
+  truncated,
+  searching,
+  onEdit,
+  onClearOverride,
+}: {
+  readonly isPending: boolean;
+  readonly items: readonly LlmModelRow[];
+  readonly truncated: boolean;
+  /** Whether a search term is active, which changes what "empty" means. */
+  readonly searching: boolean;
+  readonly onEdit: (row: LlmModelRow) => void;
+  readonly onClearOverride: (row: LlmModelRow) => void;
+}) {
+  if (isPending) {
+    return (
+      <LinearProgress aria-label={t('pages.admin.llmProxy.models.loading', 'Loading models')} />
+    );
+  }
+
+  if (items.length === 0) {
+    // "No results for this search" and "the catalogue is empty" are different
+    // facts, and the second is alarming while the first is routine. Conflating
+    // them would tell an operator who mistyped a model name that their price
+    // catalogue had vanished.
+    return (
+      <Typography variant="bodyMedium" color="text.secondary" data-testid="llm-proxy-models-empty">
+        {searching
+          ? t('pages.admin.llmProxy.models.noMatches', 'No models match that search.')
+          : t(
+              'pages.admin.llmProxy.models.empty',
+              "The price catalogue is empty. It is normally filled by the automatic price sync; until it is, every recorded cost comes from the gateway's fallback rates rather than from real prices.",
+            )}
+      </Typography>
+    );
+  }
+
+  return (
+    <>
+      {/* A capped page says so. A short list that looks complete is how an
+          operator concludes a model is absent from the catalogue when it is
+          merely past the cap — and then prices a duplicate. */}
+      {truncated ? (
+        <Alert severity="info" data-testid="llm-proxy-truncated">
+          {t(
+            'pages.admin.llmProxy.models.truncated',
+            'Showing the first {{count}} models. Search to narrow the list.',
+            { count: items.length },
+          )}
+        </Alert>
+      ) : null}
+      <ModelCatalogueTable items={items} onEdit={onEdit} onClearOverride={onClearOverride} />
+    </>
+  );
+}
+
+/**
  * The Models tab.
  *
  * Extracted so the editor stays a tab shell and this stays the catalogue's own
@@ -138,10 +219,17 @@ function ModelCatalogueAlerts({
  * the same reason.
  */
 function ModelsTab() {
-  const [window, setWindow] = useState<UsageWindow>('24h');
+  // `usageWindow`, not `window`: the latter would shadow the DOM global for the
+  // whole of this function.
+  const [usageWindow, setUsageWindow] = useState<UsageWindow>('24h');
+  const [search, setSearch] = useState('');
   const [editor, setEditor] = useState<PriceEditorState | undefined>(undefined);
 
-  const { data, isPending, error } = useAdminLlmModels(window);
+  // The search term reaches the SERVER, because the catalogue is capped there:
+  // filtering only what was already returned would silently exclude every model
+  // past the cap, which is the failure the cap itself has to avoid.
+  const deferredSearch = useDeferredValue(search);
+  const { data, isPending, error } = useAdminLlmModels(usageWindow, deferredSearch);
   const savePrice = useSaveAdminLlmModelPrice();
   const clearOverride = useClearAdminLlmModelOverride();
 
@@ -191,7 +279,15 @@ function ModelsTab() {
           flexWrap: 'wrap',
         }}
       >
-        <UsageWindowSelect window={window} onChange={setWindow} />
+        <UsageWindowSelect usageWindow={usageWindow} onChange={setUsageWindow} />
+        <TextField
+          size="small"
+          label={t('pages.admin.llmProxy.models.search', 'Search models')}
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          sx={{ minWidth: '16rem' }}
+          slotProps={{ htmlInput: { 'data-testid': 'llm-proxy-search' } }}
+        />
         <Button
           variant="outlined"
           size="small"
@@ -206,6 +302,7 @@ function ModelsTab() {
         readError={data?.error}
         loadError={error}
         clearError={clearOverride.error}
+        unpricedError={data?.unpriced_error}
       />
 
       <UnpricedModelsAlert
@@ -213,29 +310,14 @@ function ModelsTab() {
         onPrice={(model) => setEditor({ row: undefined, unpriced: model })}
       />
 
-      {isPending ? (
-        <LinearProgress aria-label={t('pages.admin.llmProxy.models.loading', 'Loading models')} />
-      ) : items.length === 0 ? (
-        // An empty catalogue is a state, not a failure: a deployment whose price
-        // sync has not run yet has one. Saying so is more useful than a blank
-        // table, and distinguishes it from a failed read above.
-        <Typography
-          variant="bodyMedium"
-          color="text.secondary"
-          data-testid="llm-proxy-models-empty"
-        >
-          {t(
-            'pages.admin.llmProxy.models.empty',
-            "The price catalogue is empty. It is normally filled by the automatic price sync; until it is, every recorded cost comes from the gateway's fallback rates rather than from real prices.",
-          )}
-        </Typography>
-      ) : (
-        <ModelCatalogueTable
-          items={items}
-          onEdit={(row) => setEditor({ row, unpriced: undefined })}
-          onClearOverride={(row) => clearOverride.mutate(row.id)}
-        />
-      )}
+      <ModelCatalogueResults
+        isPending={isPending}
+        items={items}
+        truncated={data?.truncated === true}
+        searching={deferredSearch !== ''}
+        onEdit={(row) => setEditor({ row, unpriced: undefined })}
+        onClearOverride={(row) => clearOverride.mutate(row.id)}
+      />
 
       <LlmProxyPriceDialog
         open={editor !== undefined}

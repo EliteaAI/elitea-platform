@@ -190,6 +190,22 @@ export interface LlmModelCatalogue {
   readonly unpriced: readonly UnpricedLlmModel[];
   readonly window: string;
   /**
+   * Whether the catalogue page was capped. The price sync ingests LiteLLM's
+   * whole price sheet, so the full table runs to roughly 1800 rows; the server
+   * returns the first 200 by (provider, model) and says so here, and the screen
+   * turns that into a prompt to search rather than a silently short list.
+   */
+  readonly truncated?: boolean;
+  /**
+   * Why the unpriced report could not be produced, when it could not be.
+   *
+   * Distinct from `error`, which refuses the whole read. An empty `unpriced`
+   * renders no alert at all, so a failed check would otherwise look exactly like
+   * a deployment where every called model is priced — the single conclusion this
+   * panel exists to stop an operator reaching by accident.
+   */
+  readonly unpriced_error?: string;
+  /**
    * Set when the catalogue could not be read. The server answers 200 with an
    * empty list and this reason rather than a 5xx, so the rest of the section
    * stays usable — the same shape the governance list uses.
@@ -210,7 +226,8 @@ const llmProxyKeys = {
   all: ['admin', 'llmProxy'] as const,
   status: () => ['admin', 'llmProxy', 'status'] as const,
   models: ['admin', 'llmProxy', 'models'] as const,
-  modelList: (window: UsageWindow) => ['admin', 'llmProxy', 'models', window] as const,
+  modelList: (usageWindow: UsageWindow, search: string) =>
+    ['admin', 'llmProxy', 'models', usageWindow, search] as const,
 };
 
 /**
@@ -233,20 +250,46 @@ export function useGatewayStatus(): UseQueryResult<GatewayStatus, Error> {
   });
 }
 
-/** `GET /admin/gateway/models?window=`. */
-export function useAdminLlmModels(window: UsageWindow): UseQueryResult<LlmModelCatalogue, Error> {
+/**
+ * Fills in what an absent or partial body leaves out.
+ *
+ * Both error fields are carried through when present and omitted when not — the
+ * distinction matters: `error` refuses the whole read, `unpriced_error` says
+ * only that the unpriced check did not run, and an empty `unpriced` with
+ * neither set is the genuine "nothing unpriced" answer.
+ */
+function normaliseCatalogue(
+  body: LlmModelCatalogue | undefined,
+  usageWindow: UsageWindow,
+): LlmModelCatalogue {
+  // Early return for the absent body, so the field list below is not six
+  // optional chains deep.
+  if (body === undefined) {
+    return { items: [], unpriced: [], window: usageWindow, truncated: false };
+  }
+  return {
+    items: body.items ?? [],
+    unpriced: body.unpriced ?? [],
+    window: body.window ?? usageWindow,
+    truncated: body.truncated ?? false,
+    ...(body.error !== undefined ? { error: body.error } : {}),
+    ...(body.unpriced_error !== undefined ? { unpriced_error: body.unpriced_error } : {}),
+  };
+}
+
+/** `GET /admin/gateway/models?window=&q=`. */
+export function useAdminLlmModels(
+  usageWindow: UsageWindow,
+  search: string,
+): UseQueryResult<LlmModelCatalogue, Error> {
   return useQuery({
-    queryKey: llmProxyKeys.modelList(window),
+    queryKey: llmProxyKeys.modelList(usageWindow, search),
     queryFn: async (): Promise<LlmModelCatalogue> => {
-      const body = unwrapBody(
-        await eliteaFetch<unknown>(`${MODELS_URL}?window=${encodeURIComponent(window)}`),
-      ) as LlmModelCatalogue | undefined;
-      return {
-        items: body?.items ?? [],
-        unpriced: body?.unpriced ?? [],
-        window: body?.window ?? window,
-        ...(body?.error !== undefined ? { error: body.error } : {}),
-      };
+      const query = new URLSearchParams({ window: usageWindow });
+      if (search !== '') query.set('q', search);
+      const body = unwrapBody(await eliteaFetch<unknown>(`${MODELS_URL}?${query.toString()}`)) as
+        LlmModelCatalogue | undefined;
+      return normaliseCatalogue(body, usageWindow);
     },
   });
 }
@@ -303,77 +346,5 @@ export function useClearAdminLlmModelOverride(): UseMutationResult<void, Error, 
       });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: llmProxyKeys.models }),
-  });
-}
-
-/**
- * The global budget soft-alert config (`GET|PUT /admin/gateway/budget-alerts`).
- *
- * These endpoints have existed since #322 with nothing calling them, so the
- * platform-wide alert threshold has been server-only: settable with curl and
- * invisible everywhere else. It belongs on this section because it governs the
- * same budgets the gateway enforces.
- *
- * `threshold_pct` is the DEFAULT. A project whose `gateway.project_budget` row
- * carries its own `soft_alert_pct` uses that instead, so changing this value
- * does not move every project's alert — which is why the form says so rather
- * than implying a global effect.
- */
-export interface BudgetAlertConfig {
-  readonly enabled: boolean;
-  readonly threshold_pct: number;
-}
-
-const BUDGET_ALERTS_URL = `${GATEWAY_URL}/budget-alerts`;
-
-const budgetAlertKeys = {
-  all: ['admin', 'llmProxy', 'budgetAlerts'] as const,
-};
-
-/**
- * `GET /admin/gateway/budget-alerts`.
- *
- * `refetchOnWindowFocus` is off, as it is on every other config form in this app
- * (`shared/api/configurationsApi`). The alerts panel seeds its inputs from this
- * query's data, and the app default refetches on focus past a 30 s stale time —
- * so an operator who typed a new threshold, alt-tabbed to check a number, and
- * came back would find their edit silently replaced by the stored value, with
- * nothing on screen saying it had happened.
- */
-export function useBudgetAlertConfig(): UseQueryResult<BudgetAlertConfig, Error> {
-  return useQuery({
-    refetchOnWindowFocus: false,
-    queryKey: budgetAlertKeys.all,
-    queryFn: async (): Promise<BudgetAlertConfig> => {
-      const body = unwrapBody(await eliteaFetch<unknown>(BUDGET_ALERTS_URL)) as
-        BudgetAlertConfig | undefined;
-      // The server answers with the shipped defaults when no row exists, so an
-      // undefined body here is a transport shape problem rather than an
-      // unconfigured platform. Defaulting to `enabled: false` would report
-      // alerting as OFF on a deployment where it is on.
-      if (body === undefined) throw new Error('budget alert config missing from the response');
-      return body;
-    },
-  });
-}
-
-/**
- * `PUT /admin/gateway/budget-alerts`.
- *
- * A PARTIAL update: the server leaves an omitted field as it was. Both are sent
- * together here because the form edits both, but the partial shape is why a
- * future control for one of them does not need to know the other's value.
- */
-export function useSaveBudgetAlertConfig(): UseMutationResult<void, Error, BudgetAlertConfig> {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: async (config: BudgetAlertConfig) => {
-      await eliteaFetch<unknown>(BUDGET_ALERTS_URL, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: budgetAlertKeys.all }),
   });
 }

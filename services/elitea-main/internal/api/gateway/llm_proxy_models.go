@@ -119,11 +119,21 @@ type LLMProxyQuerier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// modelQueryTimeout bounds every catalogue read and write. The catalogue is a
-// few thousand rows at most and the usage rollup is an indexed aggregate, so a
-// query that has not answered by now is a database in trouble rather than a
-// large result.
-const modelQueryTimeout = 5 * time.Second
+// modelWriteTimeout bounds a catalogue write. A write touches one row by unique
+// key, so a slow one is a database in trouble rather than a large result.
+const modelWriteTimeout = 5 * time.Second
+
+// modelReadTimeout bounds a catalogue read, and is deliberately larger than the
+// write budget.
+//
+// A read aggregates every gateway.llm_usage_events row inside the window: at
+// ?window=30d on a deployment that writes one row per billed request, that is
+// millions of rows, served by the (occurred_at) index alone. Five seconds is a
+// realistic figure for a small deployment and an unrealistic one for a large,
+// and the failure it produces is the worst kind for this screen — the pricing
+// data becomes unreadable on exactly the deployments where mispricing costs
+// most, reported as "the catalogue could not be read".
+const modelReadTimeout = 20 * time.Second
 
 // usageWindows are the reporting windows this surface offers, mapped to their
 // interval. A closed set rather than a free-form duration: the value reaches a
@@ -284,7 +294,25 @@ func resolveWindow(raw string) (string, time.Duration) {
 	return defaultUsageWindow, usageWindows[defaultUsageWindow]
 }
 
-// listModelsSQL reads the catalogue with the window's usage folded in.
+// maxCatalogueRows bounds one catalogue page.
+//
+// The price sync ingests LiteLLM's whole price sheet — on the order of 1800
+// entries — so an unbounded read serialises hundreds of kilobytes and the client
+// mounts a table row for every one of them. The cap is paired with `?q=`
+// (below) and with a `truncated` flag, so a bounded response is never a silently
+// short one: an operator who cannot see the model they want narrows the search
+// rather than scrolling a list that was cut off without saying so.
+const maxCatalogueRows = 200
+
+// listModelsSQL reads one page of the catalogue with the window's usage folded
+// in, optionally narrowed by a search term.
+//
+// $2 is the search term, already lowercased and wrapped in %; the empty-string
+// case is handled by the `$2 = ”` short-circuit rather than by a second
+// statement, so there is one query plan to reason about.
+//
+// $3 is the row cap. It is applied AFTER the ORDER BY, so the page is the first
+// N by (provider, model_name) rather than an arbitrary N.
 //
 // A LEFT JOIN onto a pre-aggregated usage subquery, not a join onto the raw
 // events: aggregating first keeps the row count at one per catalogue entry,
@@ -313,7 +341,9 @@ const listModelsSQL = `
 	         WHERE occurred_at >= now() - $1::interval
 	         GROUP BY provider, model
 	  ) u ON u.provider = m.provider AND u.model = m.model_name
-	 ORDER BY m.provider, m.model_name`
+	 WHERE $2 = '' OR lower(m.model_name) LIKE $2 OR lower(m.provider) LIKE $2
+	 ORDER BY m.provider, m.model_name
+	 LIMIT $3`
 
 // unpricedModelsSQL finds pairs that were called in the window and have no
 // catalogue row. The NOT EXISTS is against the catalogue rather than an anti-join
@@ -339,11 +369,12 @@ const unpricedModelsSQL = `
 // explained empty state instead of a generic failure, and an operator can still
 // reach the rest of the section.
 func (h *LLMProxyHandler) ListModels(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), modelQueryTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), modelReadTimeout)
 	defer cancel()
 
 	window, interval := resolveWindow(r.URL.Query().Get("window"))
 	pgInterval := strconv.FormatInt(int64(interval/time.Second), 10) + " seconds"
+	search := searchPattern(r.URL.Query().Get("q"))
 
 	if h == nil || h.db == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -353,7 +384,7 @@ func (h *LLMProxyHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := h.queryModels(ctx, pgInterval)
+	items, err := h.queryModels(ctx, pgInterval, search)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"items": []ModelRow{}, "unpriced": []UnpricedModel{}, "window": window,
@@ -361,24 +392,59 @@ func (h *LLMProxyHandler) ListModels(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// The unpriced report is best-effort BESIDE the catalogue. If it fails, the
-	// catalogue is still worth showing; returning nothing because the secondary
-	// query failed would withhold the data that did load.
-	unpriced, _ := h.queryUnpriced(ctx, pgInterval)
+
+	// The unpriced report is a SEPARATE query, and its failure is reported
+	// separately rather than discarded.
+	//
+	// Swallowing it was a real defect: an empty list renders as no alert at all,
+	// so a query that failed looked exactly like a deployment where every called
+	// model is priced — the one conclusion this panel exists to prevent an
+	// operator from reaching by accident. The catalogue is still worth showing
+	// when this fails, so it is a field beside the data rather than a refusal of
+	// the whole read.
+	unpriced, unpricedErr := h.queryUnpriced(ctx, pgInterval)
 	if unpriced == nil {
 		unpriced = []UnpricedModel{}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"items":    items,
 		"unpriced": unpriced,
 		"window":   window,
 		"total":    len(items),
-	})
+		// `truncated` says the catalogue was capped, so a short list is never
+		// mistaken for a complete one. The client turns it into a prompt to
+		// search rather than into an error.
+		"truncated": len(items) >= maxCatalogueRows,
+	}
+	if unpricedErr != nil {
+		body["unpriced_error"] = unpricedErr.Error()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
-func (h *LLMProxyHandler) queryModels(ctx context.Context, pgInterval string) ([]ModelRow, error) {
-	rows, err := h.db.Query(ctx, listModelsSQL, pgInterval)
+// likeEscaper neutralises the LIKE metacharacters. Backslash is PostgreSQL's
+// default LIKE escape character, so it must itself be doubled first — declared
+// once here rather than built per request.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+
+// searchPattern turns a raw ?q= into the LIKE pattern listModelsSQL expects, or
+// "" for no filter. Lowercased here so the statement can compare against
+// lower(...) on both columns, and the wildcards are added here so the SQL never
+// concatenates user input.
+func searchPattern(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	// The LIKE metacharacters are escaped: a model name legitimately contains
+	// neither, but a search for "gpt_4" must not silently match "gpt-4".
+	escaped := likeEscaper.Replace(strings.ToLower(trimmed))
+	return "%" + escaped + "%"
+}
+
+func (h *LLMProxyHandler) queryModels(ctx context.Context, pgInterval, search string) ([]ModelRow, error) {
+	rows, err := h.db.Query(ctx, listModelsSQL, pgInterval, search, maxCatalogueRows)
 	if err != nil {
 		return nil, fmt.Errorf("read model catalogue: %w", err)
 	}
@@ -494,7 +560,7 @@ const invalidTextRepresentation = "22P02"
 
 // UpsertModel serves PUT /gateway/models — author a price override.
 func (h *LLMProxyHandler) UpsertModel(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), modelQueryTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), modelWriteTimeout)
 	defer cancel()
 
 	if h == nil || h.db == nil {
@@ -549,7 +615,7 @@ const clearOverrideSQL = `
 // the row editor's remove action sends, but nothing is deleted: see
 // clearOverrideSQL.
 func (h *LLMProxyHandler) ClearModelOverride(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), modelQueryTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), modelWriteTimeout)
 	defer cancel()
 
 	if h == nil || h.db == nil {

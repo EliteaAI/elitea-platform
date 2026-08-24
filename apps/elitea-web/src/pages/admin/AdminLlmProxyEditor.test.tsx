@@ -247,6 +247,46 @@ describe('Admin › LLM Proxy › Models', () => {
     expect(writes()).toHaveLength(0);
   });
 
+  it('says so when the unpriced check could not run, rather than showing nothing', async () => {
+    recorded = [];
+    server.use(
+      http.get('*/admin/gateway/status', () => HttpResponse.json(REACHABLE_STATUS)),
+      http.get('*/admin/gateway/models', () =>
+        HttpResponse.json({
+          ...CATALOGUE,
+          unpriced: [],
+          unpriced_error: 'read unpriced models: timeout',
+        }),
+      ),
+    );
+
+    renderAdminRoute(<AdminLlmProxyEditor />);
+    await openModelsTab();
+
+    // An empty `unpriced` renders no alert at all, so without this the operator
+    // would read a failed check as "every called model is priced" — the one
+    // conclusion this panel exists to prevent.
+    const failed = await screen.findByTestId('llm-proxy-unpriced-error');
+    expect(failed).toHaveTextContent(/cannot say whether any exist/i);
+    expect(failed).toHaveTextContent(/timeout/);
+    expect(screen.queryByTestId('llm-proxy-unpriced')).not.toBeInTheDocument();
+  });
+
+  it('says a capped page is capped, so a short list is not read as complete', async () => {
+    recorded = [];
+    server.use(
+      http.get('*/admin/gateway/status', () => HttpResponse.json(REACHABLE_STATUS)),
+      http.get('*/admin/gateway/models', () =>
+        HttpResponse.json({ ...CATALOGUE, truncated: true }),
+      ),
+    );
+
+    renderAdminRoute(<AdminLlmProxyEditor />);
+    await openModelsTab();
+
+    expect(await screen.findByTestId('llm-proxy-truncated')).toBeInTheDocument();
+  });
+
   it('offers to resume the sync only for a row that is actually overridden', async () => {
     renderAdminRoute(<AdminLlmProxyEditor />);
     await openModelsTab();

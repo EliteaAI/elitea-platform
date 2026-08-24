@@ -33,7 +33,7 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 
 import { configFailureReason } from './api/adminConfigurationApi';
-import { useBudgetAlertConfig, useSaveBudgetAlertConfig } from './api/adminLlmProxyApi';
+import { useBudgetAlertConfig, useSaveBudgetAlertConfig } from './api/adminBudgetAlertsApi';
 
 /** The server's range for the threshold. Mirrored here as UX; the server decides. */
 const MIN_THRESHOLD = 1;

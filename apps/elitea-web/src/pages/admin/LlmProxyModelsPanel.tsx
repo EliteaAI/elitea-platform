@@ -59,8 +59,17 @@ function priceLabel(value: number | null): string {
   return `$${value.toFixed(8).replace(/\.?0+$/, '')}`;
 }
 
-/** Renders a cost with a fixed precision, so a column of them lines up. */
+/**
+ * Renders a cost with a fixed precision, so a column of them lines up.
+ *
+ * A non-zero value below the displayed precision renders as "<$0.0001" rather
+ * than "$0.0000". This screen exists to separate a model that billed something
+ * from one that billed NOTHING — an uncatalogued audio model bills zero and no
+ * budget can stop it — and rounding a real sub-cent spend to the same string as
+ * a true zero hides exactly that distinction.
+ */
 function costLabel(value: number): string {
+  if (value > 0 && value < 0.0001) return '<$0.0001';
   return `$${value.toFixed(4)}`;
 }
 
@@ -214,10 +223,13 @@ export function ModelCatalogueTable({
 
 /** The window selector above the table. */
 export function UsageWindowSelect({
-  window,
+  usageWindow,
   onChange,
 }: {
-  readonly window: UsageWindow;
+  // Named `usageWindow`, not `window`: the latter shadows the DOM global inside
+  // this function, so a later edit reaching for `window.matchMedia` or
+  // `window.location` here would silently be reading a string like '24h'.
+  readonly usageWindow: UsageWindow;
   readonly onChange: (next: UsageWindow) => void;
 }) {
   return (
@@ -225,7 +237,7 @@ export function UsageWindowSelect({
       select
       size="small"
       label={t('pages.admin.llmProxy.models.window', 'Usage window')}
-      value={window}
+      value={usageWindow}
       onChange={(event) => onChange(event.target.value as UsageWindow)}
       sx={{ minWidth: '10rem' }}
       slotProps={{ htmlInput: { 'data-testid': 'llm-proxy-window' } }}
