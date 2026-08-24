@@ -64,9 +64,12 @@ package admin
 //     extra steps. `validateLinks` accepts http and https only. This is the one
 //     writable section, so it is the one place a hostile value could actually
 //     land.
-//  2. **Credentials.** Several fields in the (unavailable) `auth` and `litellm`
-//     sections are `format: password` — an OIDC client secret, a LiteLLM master
-//     key, a Postgres URL with a password in it. Those belong in the vault
+//  2. **Credentials.** Several fields in the (unavailable) `auth` section are
+//     `format: password` — an OIDC client secret, a Postgres URL with a password
+//     in it. The retired `litellm` section carried more of them (a proxy master
+//     key, a database URL); `llm_proxy` replaced it and declares no fields at
+//     all, which removes the hazard for that section rather than managing it.
+//     Credentials belong in the vault
 //     (`centry.secrets_*`, see internal/api/v2/secrets), never in a plaintext
 //     settings row readable by anyone who can read this table. Even though those
 //     sections are already refused as unavailable, `rejectCredentialFields`

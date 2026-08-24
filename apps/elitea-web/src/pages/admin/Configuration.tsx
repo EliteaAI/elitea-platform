@@ -110,8 +110,10 @@ import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminIdentityProvidersEditor } from './AdminIdentityProvidersEditor';
+import { AdminLlmProxyEditor } from './AdminLlmProxyEditor';
 import { AdminMcpServersEditor } from './AdminMcpServersEditor';
 import { IDENTITY_PROVIDERS_MANAGED_SURFACE } from './api/adminIdentityProvidersApi';
+import { LLM_PROXY_MANAGED_SURFACE } from './api/adminLlmProxyApi';
 import { MCP_SERVERS_MANAGED_SURFACE } from './api/adminMcpServersApi';
 import { ConfigurationSectionForm } from './ConfigurationSectionForm';
 import { useAdminConfigurationPage, type AdminConfigurationPageState } from './useAdminConfigurationPage';
@@ -133,6 +135,7 @@ import { useAdminConfigurationPage, type AdminConfigurationPageState } from './u
 const MANAGED_SECTION_EDITORS: Readonly<Record<string, ComponentType>> = {
   [MCP_SERVERS_MANAGED_SURFACE]: AdminMcpServersEditor,
   [IDENTITY_PROVIDERS_MANAGED_SURFACE]: AdminIdentityProvidersEditor,
+  [LLM_PROXY_MANAGED_SURFACE]: AdminLlmProxyEditor,
 };
 
 /** The dedicated editor for a section, when this build has one. */

@@ -502,7 +502,7 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// freeze started reading it. Its consumers are recorded in
 		// TestSchemaDeclaresAvailabilityForEverySection below, and its own
 		// round trip is asserted in guardrails_postgres_integration_test.go.
-		"mcp_servers", "observability", "litellm", "runtime",
+		"mcp_servers", "observability", "llm_proxy", "runtime",
 		"admin_panel", "auth", "dedicated_banner", "support_assistant",
 		"maintenance",
 	} {

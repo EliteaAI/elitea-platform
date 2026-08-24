@@ -127,10 +127,15 @@ adminTest('J34a: Guardrails offers a real form, including its two tool maps', as
 adminTest('J34b: the sections with no backend say so instead of showing a form', async ({ page }) => {
   await openConfiguration(page);
 
-  // Guardrails left this list when it gained consumers — see J34a, and
+  // Guardrails left this list when it gained consumers — see J34a;
   // Authentication left it when it gained a typed store and a login path that
-  // reads it — see J34f.
-  for (const section of ['LiteLLM', 'Maintenance', 'Advanced']) {
+  // reads it — see J34f; and LiteLLM left it by ceasing to exist, replaced by
+  // the managed LLM Proxy section — see J34g.
+  //
+  // Runtime replaces LiteLLM here. It has to be a section that is STILL
+  // unavailable, or this journey asserts a refusal that no longer happens and
+  // would pass only by never reaching the click.
+  for (const section of ['Runtime', 'Maintenance', 'Advanced']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -209,6 +214,63 @@ adminTest('J34e: the MCP Servers section renders its editor, not a refusal', asy
   // would mean the route refused, which is what this asserts is NOT happening.
   await expect(page.getByTestId('admin-mcp-servers-empty')).toBeVisible();
   await expect(page.getByTestId('admin-mcp-servers-error')).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34g: the LLM Proxy section renders its editor, not a refusal', async ({ page }) => {
+  await openConfiguration(page);
+
+  // The section that replaced LiteLLM. LiteLLM is gone — ADR-0015 replaced it
+  // with the Bifrost-based elitea-llm-gateway — so the old name must not be on
+  // this page at all: an operator who finds it would look for controls over a
+  // subsystem that no longer exists.
+  await expect(page.getByRole('button', { name: /LiteLLM/ })).toHaveCount(0);
+
+  const llmProxy = page.getByRole('button', { name: /LLM Proxy/ });
+  await expect(llmProxy).toBeVisible();
+  // Editable despite still declaring an `unavailable_reason` — true of the
+  // plugin-config value endpoints, which cannot serve a live status report or a
+  // price catalogue — because it also declares a `managed_surface`. Marking it
+  // would send an operator away from the only page that can edit it.
+  await expect(llmProxy.getByText('Not available here')).toHaveCount(0);
+
+  await llmProxy.click();
+
+  // The editor's own control, so this proves the dedicated surface MOUNTED —
+  // not merely that the refusal notice is absent, which a blank pane would also
+  // satisfy.
+  await expect(page.getByTestId('llm-proxy-tabs')).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The status panel reaches the gateway through elitea-main. On a stack with no
+  // gateway wired it reports that as a state rather than as a load failure, so
+  // either the loaded snapshot or the explained unreachable notice is correct
+  // here — what must NOT happen is the panel failing to read its own route.
+  await expect(page.getByTestId('llm-proxy-status-error')).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34h: the LLM Proxy model catalogue is authorised and answers', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Models & pricing' }).click();
+
+  // Wait for a POSITIVE terminal state before judging. `llm-proxy-add-price`
+  // renders unconditionally and the error test-ids are absent while the request
+  // is still in flight, so asserting only those would pass against a route that
+  // 403s or 500s a moment later — absence read as success.
+  //
+  // A fresh deployment has not run a price sync, so the empty state is the
+  // truthful branch; a stack with a catalogue shows the table. Either proves the
+  // read completed.
+  await expect(
+    page.getByTestId('llm-proxy-models-empty').or(page.getByTestId('llm-proxy-models-table')),
+  ).toBeVisible();
+  await expect(page.getByTestId('llm-proxy-add-price')).toBeVisible();
+  await expect(page.getByTestId('llm-proxy-models-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-proxy-models-error')).toHaveCount(0);
 
   await checkA11y(page);
 });

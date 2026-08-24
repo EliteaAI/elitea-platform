@@ -44,8 +44,10 @@ func NewSyncer(db DB, sources []PriceSource, logger *slog.Logger) *Syncer {
 //  3. In one transaction: take pg_try_advisory_xact_lock (bail if another
 //     replica holds it), UPSERT all rows, commit (which releases the xact lock).
 //
-// It returns the number of rows upserted. A run where the lock is held by another
-// replica returns (0, nil) — a benign no-op, not an error.
+// It returns the number of rows OFFERED to the catalog, which since shared
+// migration 0097 is an upper bound on the number written: the UPSERT's DO UPDATE
+// skips a row an operator has priced by hand. A run where the lock is held by
+// another replica returns (0, nil) — a benign no-op, not an error.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	merged, err := s.collect(ctx)
 	if err != nil {
@@ -92,11 +94,23 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			// What was missing was the diagnosis. Name the migration in the
 			// error so an operator reads the cause instead of an opaque
 			// "column does not exist" from a table they did not change.
+			//
+			// The message names the COLUMN Postgres refused, not one fixed
+			// migration. There are now two that can produce 42703 here —
+			// 0086_gateway_audio_prices.sql for the per-second and
+			// per-character columns, and 0097_gateway_model_price_override.sql
+			// for the price_overridden guard — and a scheduler rolled ahead of
+			// either one fails identically. Naming only 0086, as this did, sends
+			// an operator to verify a migration that is already applied while
+			// the catalog silently stops updating.
 			if isUndefinedColumn(err) {
-				s.logger.Error("pricesync: the price catalog is missing columns this build writes; "+
-					"apply migration 0086_gateway_audio_prices.sql. No prices were refreshed this pass; "+
-					"the catalog keeps its previous values and the next pass retries.",
-					"model", m.ModelName, "provider", m.Provider, "err", err)
+				s.logger.Error("pricesync: the price catalog is missing a column this build writes; "+
+					"apply the pending elitea-main shared migrations (0086_gateway_audio_prices.sql adds the "+
+					"audio price columns, 0097_gateway_model_price_override.sql adds price_overridden). "+
+					"No prices were refreshed this pass; the catalog keeps its previous values and the next "+
+					"pass retries.",
+					"model", m.ModelName, "provider", m.Provider,
+					"missing_column", undefinedColumnName(err), "err", err)
 			}
 			return 0, err
 		}
@@ -104,7 +118,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	s.logger.Info("pricesync: catalog upserted", "models", len(merged))
+	// len(merged) is the number of rows OFFERED, which since 0097 is not the
+	// number written: a row an operator has priced by hand is skipped by the
+	// DO UPDATE's guard. Postgres does not report that per statement without a
+	// RETURNING clause per row, and nothing consumes this count except a log
+	// line, so it is reported for what it is rather than made exact.
+	s.logger.Info("pricesync: catalog pass complete", "models_offered", len(merged))
 	return len(merged), nil
 }
 
@@ -195,6 +214,15 @@ func priceDrifts(a, b float64) bool {
 // NULL on every new model). Both failures look like a correct sync in the logs,
 // because the upsert reports success either way. TestUpsertSQLCoversEveryPriceColumn
 // pins the pairing.
+//
+// The DO UPDATE carries a WHERE (shared migration 0097). A row an operator has
+// priced by hand — `price_overridden` — is left exactly as authored, and the
+// upstream number is discarded for that pair rather than applied. Without the
+// guard an authored price is correct only until the next tick of this worker
+// and then reverts with nothing on any screen reporting that it did, which is
+// the same "saves into a void" failure the admin surface exists to remove. The
+// INSERT half is deliberately NOT guarded: a pair this catalog has never seen
+// cannot be overridden, so a first sync still creates it normally.
 func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) error {
 	const q = `
 		INSERT INTO gateway.gateway_models (
@@ -219,7 +247,8 @@ func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) erro
 			source                              = EXCLUDED.source,
 			source_synced_at                    = EXCLUDED.source_synced_at,
 			last_sync_at                        = EXCLUDED.last_sync_at,
-			updated_at                          = now()`
+			updated_at                          = now()
+		WHERE NOT gateway_models.price_overridden`
 	return tx.Exec(ctx, q,
 		m.Provider, m.ModelName,
 		m.InputCostPer1M, m.OutputCostPer1M,
@@ -237,6 +266,17 @@ func (s *Syncer) upsert(ctx context.Context, tx Tx, m NormalizedModelPrice) erro
 // gateway's reader names the same constant for the same reason
 // (elitea-llm-gateway/internal/cost/schema_probe.go).
 const undefinedColumnCode = "42703"
+
+// undefinedColumnName returns the column PostgreSQL refused, or "" when the
+// error carries no column name. It exists so the 42703 diagnostic can name what
+// is actually missing instead of guessing which migration is behind.
+func undefinedColumnName(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ColumnName
+	}
+	return ""
+}
 
 // isUndefinedColumn reports whether err is PostgreSQL 42703.
 //
