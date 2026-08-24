@@ -82,7 +82,7 @@ export type GovernanceType = (typeof GOVERNANCE_TYPES)[number];
  * for their governance rows should see every row that exists; the actions are
  * withheld.
  */
-export const READ_ONLY_GOVERNANCE_TYPE = 'budget_alert';
+const READ_ONLY_GOVERNANCE_TYPE = 'budget_alert';
 
 /** Whether this row may be edited or deleted from this page. */
 export function isEditableGovernanceRow(row: GovernanceRow): boolean {
