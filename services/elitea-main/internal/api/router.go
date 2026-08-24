@@ -56,6 +56,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -146,14 +147,23 @@ type RouterConfig struct {
 	// Unassigned, the endpoint serves no "$defs", and the web client's toolkit
 	// credential picker and index schedule credential select stay unreachable.
 	ToolkitSettingsDefinitions v2toolkits.ToolkitSettingsDefinitionSource
-	SkillsRepo                 v2skills.Repository
-	FoldersRepo                v2folders.Repository
-	TagsRepo                   v2tags.Repository
-	AnalyticsRepo              v2analytics.Repository
-	ConvsRepo                  v2convs.Repository
-	WebhookRepo                webhook.Repository
-	RedisClient                *goredis.Client
-	EventSource                v2events.EventSource
+	// ToolkitRegistry enumerates built-in toolkit types and their tools for
+	// `GET /admin/plugin_config_suggestions/administration/{key}`, which is what
+	// populates the guardrail fields' pickers on the admin Configuration page.
+	// It is the same digest-pinned snapshot as ToolkitArgumentSchemas, declared
+	// separately because it answers a different question and because a handler
+	// should not be handed a schema source in order to ask for a name list.
+	// Unassigned, the two toolkit suggestion sources answer 501 with a reason
+	// rather than an empty list.
+	ToolkitRegistry admin.ToolkitRegistrySource
+	SkillsRepo      v2skills.Repository
+	FoldersRepo     v2folders.Repository
+	TagsRepo        v2tags.Repository
+	AnalyticsRepo   v2analytics.Repository
+	ConvsRepo       v2convs.Repository
+	WebhookRepo     webhook.Repository
+	RedisClient     *goredis.Client
+	EventSource     v2events.EventSource
 	// ProjectVectorStore provisions a new project's PgVector credentials and
 	// its `vectorstorage` configuration row (#371). It is injected because the
 	// composition needs the Configurations runtime's finder, unsecreter and
@@ -849,6 +859,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			adminHandler := admin.NewHandler(
 				cfg.Pool,
 				admin.WithPermissionResolver(permissionResolver),
+				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
 				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 			)
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
@@ -1541,11 +1552,22 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				}
 
 				// Toolkits
-				toolkitHandler := v2toolkits.NewHandler(
-					cfg.Pool,
+				// The guardrails source is constructed here rather than injected
+				// through RouterConfig: it needs only the pool this config
+				// already carries, and internal/platformconfig is a leaf the api
+				// layer already depends on (eliteacore reads its flags). A
+				// deployment with no pool gets no source, and every toolkit
+				// surface behaves as it did before guardrails existed — which is
+				// the only honest answer when there is no store to read a policy
+				// from.
+				toolkitOptions := []v2toolkits.Option{
 					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
 					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
-				)
+				}
+				if guardrailPolicies, err := platformconfig.NewGuardrailPolicyAdapter(cfg.Pool); err == nil {
+					toolkitOptions = append(toolkitOptions, v2toolkits.WithGuardrails(guardrailPolicies))
+				}
+				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, toolkitOptions...)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
 				//
 				// NOTE the split, which was wrong until #129: /tools/ is the

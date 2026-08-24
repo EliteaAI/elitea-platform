@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useCallback } from 'react';
 
+import { useBlockedToolkitTypes } from '../api/useBlockedToolkitTypes';
 import { useDisassociateToolkit } from '../lib/hooks/useDisassociateToolkit.hooks';
 import type { ToolRemovalUpdate } from '../lib/hooks/useDisassociateToolkit.hooks';
 import { useSaveSelectedTools } from '../lib/hooks/useSaveSelectedTools.hooks';
@@ -118,6 +119,12 @@ export function AgentToolRow({ tool, index, isDuplicate, disabled, viewMode, ent
     onToolsChange: toolsState.onToolsChange,
   });
 
+  // The guardrails blocklist, finally sourced. `ToolCard.types.ts` declared
+  // this field and no production caller ever filled it, so `isBlockedToolkit`
+  // was structurally always false and the "blocked by your organization"
+  // banner could not appear on any screen — see the hook's own header.
+  const blockedToolkitTypes = useBlockedToolkitTypes();
+
   const handleDisassociate = useCallback(
     ({ isAttachmentToolkit }: { readonly isAttachmentToolkit: boolean }) => {
       void onDisassociateTool({ tool, isAttachmentToolkit });
@@ -135,6 +142,7 @@ export function AgentToolRow({ tool, index, isDuplicate, disabled, viewMode, ent
         viewMode,
         versionId: entity.versionId,
         attachmentToolkitId: entity.attachmentToolkitId,
+        blockedToolkitTypes,
       }}
       icon={{ url: tool.icon_meta?.url }}
       disassociate={{ onDisassociateTool: handleDisassociate, isDisassociating: isLoading }}

@@ -1,5 +1,9 @@
-import { screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
+import { HttpResponse, http } from 'msw';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { server } from '@/test/setup';
 
 import type { AgentToolAssociation } from '../lib/types';
 
@@ -57,5 +61,88 @@ describe('AgentToolRow', () => {
     // the toggle alone would pass against a card that still rendered inputs.
     expect(screen.queryByTestId('agent-variables')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('TOKEN')).not.toBeInTheDocument();
+  });
+});
+
+
+/**
+ * The guardrails blocklist reaching the card.
+ *
+ * `ToolCard` has always been able to render the "blocked by your organization"
+ * banner, and `ToolCard.test.tsx` covered it by passing `blockedToolkitTypes`
+ * directly. What could not be covered was the COMPOSITION: no production caller
+ * ever supplied that field, so `isBlockedToolkit` was structurally always false
+ * and the banner was unreachable on every real screen. These two cases are the
+ * regression guard for exactly that — they fail if the prop is dropped again,
+ * which the ToolCard-level test cannot notice.
+ */
+const SETTINGS_URL = '/api/v2/elitea_core/platform_settings/prompt_lib';
+
+const PLATFORM_SETTINGS = {
+  chat_enabled: true,
+  applications_enabled: true,
+  skills_enabled: true,
+  toolkits_enabled: true,
+  datasources_enabled: true,
+  pipelines_enabled: true,
+  publishing_enabled: true,
+  moderation_enabled: true,
+  mcp_enabled: true,
+  support_chat_enabled: true,
+};
+
+const GITHUB_TOOL: AgentToolAssociation = {
+  id: 'tool-2',
+  tool_id: 78,
+  type: 'github',
+  name: 'Team repo',
+  settings: {},
+};
+
+function renderToolOfType(tool: AgentToolAssociation) {
+  return renderWithRouterAndProject(
+    <AgentToolRow
+      tool={tool}
+      index={0}
+      isDuplicate={false}
+      disabled={false}
+      viewMode="owner"
+      entity={{ applicationId: 42, versionId: 100, projectId: 'proj-1' }}
+      toolsState={{ tools: [tool], initialTools: [tool], dirty: false, onToolsChange: vi.fn(), onToolRemoved: vi.fn() }}
+    />,
+    'proj-1',
+  );
+}
+
+describe('the guardrails blocklist', () => {
+  beforeEach(() => {
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+  });
+
+  afterEach(() => {
+    resetGeneratedClient();
+  });
+
+  it('marks a toolkit whose type the admin blocked', async () => {
+    // Published in a different naming style from the tool's own type, so this
+    // fails if the row forwards the list without the canonical matcher.
+    server.use(http.get(SETTINGS_URL, () => HttpResponse.json({ ...PLATFORM_SETTINGS, blocked_toolkits: ['Git-Hub'] })));
+
+    renderToolOfType(GITHUB_TOOL);
+    await waitFor(() => {
+      expect(screen.getByText(/blocked by your organization/i)).toBeInTheDocument();
+    });
+  });
+
+  it('leaves an unblocked toolkit alone', async () => {
+    server.use(http.get(SETTINGS_URL, () => HttpResponse.json({ ...PLATFORM_SETTINGS, blocked_toolkits: ['shell'] })));
+
+    renderToolOfType(GITHUB_TOOL);
+    // Settled: the banner's absence has to outlive the query resolving, or this
+    // would pass against a row that never reads the list at all.
+    await waitFor(() => {
+      expect(screen.getByText(/Team repo/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/blocked by your organization/i)).not.toBeInTheDocument();
   });
 });

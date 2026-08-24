@@ -2115,5 +2115,12 @@
   "pages.admin.mcpServers.error.save": "Failed to save that MCP server.",
   "pages.admin.mcpServers.noSecret": "None",
   "pages.admin.mcpServers.remove": "Remove",
-  "pages.admin.mcpServers.tableLabel": "MCP servers"
+  "pages.admin.mcpServers.tableLabel": "MCP servers",
+  "pages.admin.configuration.toolMap.add": "Add toolkit",
+  "pages.admin.configuration.toolMap.duplicate": "Another row already covers this toolkit. Matching ignores case and separators, so only one of them would be saved.",
+  "pages.admin.configuration.toolMap.empty": "No toolkits are listed.",
+  "pages.admin.configuration.toolMap.remove": "Remove this toolkit",
+  "pages.admin.configuration.toolMap.toolkit": "Toolkit type",
+  "pages.admin.configuration.toolMap.tools": "Tools",
+  "pages.admin.configuration.toolMap.toolsPlaceholder": "Add a tool name"
 }

@@ -154,6 +154,26 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	defaults["voice_features_enabled"] = voice.enabled
 	defaults["voice_features_temporarily_disabled"] = voice.temporarilyDisabled
 
+	// The guardrails blocklist, for the product UI to mark a toolkit blocked.
+	//
+	// This is the counterpart of a decision taken on the server: the toolkit
+	// INSTANCE list is deliberately not filtered, so an administrator can still
+	// see and delete toolkits of a type they have blocked rather than having
+	// them vanish with their stored settings and vault references. A client that
+	// is shown those rows needs to know which of them are blocked, or it renders
+	// a toolkit as usable that no agent will run.
+	//
+	// It is the canonical keys that are published, not the operator's raw
+	// strings. The client compares with the same normalisation
+	// (`canonToolkitKey` in apps/elitea-web) and sending the raw values would
+	// make correctness depend on the client repeating a rule it can only get
+	// wrong — the list is for comparison, never for display.
+	//
+	// Added rather than overlaid, for the reason the MCP pair above is: the
+	// schema declares `additionalProperties: true`, so this is an addition the
+	// contract already permits and no spec edit follows.
+	defaults["blocked_toolkits"] = h.blockedToolkits(r.Context())
+
 	writeJSON(w, http.StatusOK, defaults)
 }
 

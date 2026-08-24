@@ -62,6 +62,12 @@ class AgentExecutionPayload:
     parallel_reconcile: dict[str, Any] | None
     parallel_terminal_errors: list[Any]
     next_input_suggestion: dict[str, Any]
+    # The platform-wide toolkit guardrails resolved at admission, or None when
+    # the field was absent. None and {} are DIFFERENT: absent leaves the worker
+    # on its environment configuration (ELITEA_SENSITIVE_TOOLS and friends),
+    # which is what keeps a deployment that predates the field working; an empty
+    # object means the platform resolved a policy and it is empty.
+    toolkit_guardrails: dict[str, Any] | None
     exception_handling_enabled: bool | None
     debug_mode: bool | None
 

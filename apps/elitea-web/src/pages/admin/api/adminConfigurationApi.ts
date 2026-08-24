@@ -47,12 +47,15 @@ function sectionValuesUrl(sectionId: string): string {
 /**
  * One field of a section, as the server declares it.
  *
- * This is a subset of what the schema carries. The omitted members are real, and
- * omitted because nothing here renders them: `enum_source`/`enum_source_keys`
- * feed suggestion lookups whose endpoint answers 501 (the toolkit registry they
- * read is a Pylon surface), and `sync_targets`/`_is_sync_target` describe fanning
- * a value out to a second pylon. Declaring them would imply this page honours
- * them.
+ * This is a subset of what the schema carries. `sync_targets`/`_is_sync_target`
+ * are still omitted — they describe fanning a value out to a second pylon, which
+ * has no meaning here — and declaring them would imply this page honours them.
+ *
+ * The `enum_source` family USED to be omitted for the same reason, on the
+ * grounds that its endpoint answered 501 because "the toolkit registry is a
+ * Pylon surface". That stopped being true: `plugin_config_suggestions` now reads
+ * the digest-pinned SDK toolkit snapshot, and the Guardrails section's fields
+ * declare all three of these.
  */
 export interface AdminConfigField {
   readonly key: string;
@@ -64,6 +67,24 @@ export interface AdminConfigField {
   readonly default?: unknown;
   /** The element type of an `array` field, when the schema declares one. */
   readonly items?: { readonly type?: string };
+  /**
+   * The value shape of an `object` field — the two guardrail tool maps declare
+   * `{type: 'array', items: {type: 'string'}}`.
+   *
+   * Without it an object field has no editable shape and falls through to the
+   * unsupported row, which is the correct answer for an object whose values
+   * could be anything.
+   */
+  readonly additionalProperties?: {
+    readonly type?: string;
+    readonly items?: { readonly type?: string };
+  };
+  /** Suggestion source for a scalar or array field's values (`toolkit_names`). */
+  readonly enum_source?: string;
+  /** Suggestion source for an object field's KEYS (`toolkit_names`). */
+  readonly enum_source_keys?: string;
+  /** Suggestion source for an object field's VALUES (`toolkit_tools`). */
+  readonly enum_source_values?: string;
   /**
    * The FIELD-level twin of the section-level reason — unit A14's Features page.
    *
@@ -241,4 +262,74 @@ export function useSaveAdminConfigValues(): UseMutationResult<void, Error, Admin
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: adminConfigKeys.all }),
   });
+}
+
+/* ── suggestions ─────────────────────────────────────────────────────────── */
+
+/**
+ * `GET /admin/plugin_config_suggestions/administration/{source}`.
+ *
+ * The pickers behind the Guardrails fields. The endpoint answers
+ * `{values, labels}`; only `values` is read here, because for both toolkit
+ * sources the identifier IS the display text and the server sends `labels`
+ * empty rather than inventing prettified names.
+ *
+ * ## Why a failure is not surfaced as an error
+ *
+ * Every control that uses these is FREE-SOLO: the operator can type a toolkit or
+ * tool name the registry does not know, and must be able to — `blocked_tools`
+ * legitimately names types the pinned snapshot does not declare, and
+ * `sensitive_tools` uses the `*` wildcard, which is not a toolkit name at all.
+ * So a 501 or a network fault degrades to "no suggestions", never to a blocked
+ * field. `retry: false` keeps a deployment whose registry is unwired from
+ * re-asking on every keystroke-driven remount.
+ */
+function suggestionsUrl(source: string, toolkit?: string): string {
+  const base = `/admin/plugin_config_suggestions/${ADMIN_MODE}/${encodeURIComponent(source)}`;
+  return toolkit === undefined ? base : `${base}?toolkit=${encodeURIComponent(toolkit)}`;
+}
+
+async function fetchSuggestions(source: string, toolkit?: string): Promise<readonly string[]> {
+  const body = unwrapBody(await eliteaFetch<unknown>(suggestionsUrl(source, toolkit))) as
+    | { values?: unknown }
+    | undefined;
+  const values = body?.values;
+  if (!Array.isArray(values)) return [];
+  return values.filter((entry): entry is string => typeof entry === 'string');
+}
+
+/** Suggestions for a source that takes no parameter (`toolkit_names`, `projects`). */
+export function useConfigSuggestions(source: string | undefined): readonly string[] {
+  const query = useQuery({
+    queryKey: ['admin', 'configuration', 'suggestions', source ?? ''],
+    enabled: source !== undefined && source !== '',
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => fetchSuggestions(source ?? ''),
+  });
+  return query.data ?? [];
+}
+
+/**
+ * Suggestions for `toolkit_tools`, which is scoped to one toolkit.
+ *
+ * Disabled while the toolkit is blank or is the `*` wildcard: there is no such
+ * toolkit to enumerate tools for, and asking would spend a request to be told an
+ * empty list. The wildcard row therefore offers no tool suggestions, which is
+ * honest — a wildcard entry applies to every toolkit, so no single toolkit's
+ * tool list is the right one to offer.
+ */
+export function useToolkitToolSuggestions(
+  source: string | undefined,
+  toolkit: string,
+): readonly string[] {
+  const trimmed = toolkit.trim();
+  const query = useQuery({
+    queryKey: ['admin', 'configuration', 'suggestions', source ?? '', trimmed],
+    enabled: source !== undefined && source !== '' && trimmed !== '' && trimmed !== '*',
+    retry: false,
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => fetchSuggestions(source ?? '', trimmed),
+  });
+  return query.data ?? [];
 }

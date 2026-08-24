@@ -444,6 +444,15 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		request.ProjectID,
 		request.ActorUserID,
 	)
+	// Resolved once for the whole branch below. A resume and a regenerate are
+	// executions like any other: the sensitive-tool policy governs what the
+	// agent may do WITHOUT asking, and a resumed turn that arrived without one
+	// would run the rest of its tool calls unguarded — on the very path a user
+	// reached by answering an authorization prompt.
+	toolkitGuardrails, err := service.resolveToolkitGuardrails(ctx)
+	if err != nil {
+		return nil, nil, "", err
+	}
 	switch target.Kind {
 	case CurrentRegenerationApplication:
 		start := CurrentApplicationStartRequest{
@@ -467,7 +476,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 			return nil, nil, "", err
 		}
 		resolved.VersionDetails = frozen
-		input, err = currentApplicationInput(start, resolved, suggestionPolicy)
+		input, err = currentApplicationInput(start, resolved, suggestionPolicy, toolkitGuardrails)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -500,7 +509,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		if err != nil {
 			return nil, nil, "", err
 		}
-		input, err = currentAdhocInput(start, resolved, frozen, suggestionPolicy)
+		input, err = currentAdhocInput(start, resolved, frozen, suggestionPolicy, toolkitGuardrails)
 		if err != nil {
 			return nil, nil, "", err
 		}

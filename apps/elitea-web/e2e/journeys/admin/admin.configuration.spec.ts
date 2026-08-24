@@ -12,12 +12,19 @@
  * unit. The round trip it proved now lives in journey 35 (`admin.features.spec.ts`),
  * unchanged in substance and asserted against the same public route.
  *
- * What is left on this page is every section this platform cannot serve — Pylon
- * plugin configuration, a maintenance hook that does not exist, an LLM
+ * Most of what is left on this page is every section this platform cannot serve
+ * — Pylon plugin configuration, a maintenance hook that does not exist, an LLM
  * governance surface nothing enforces. That is a true and useful thing for the
- * page to say, and it is what this journey asserts: not that a form renders, but
- * that each pane states a server-declared REASON and each endpoint refuses the
- * write rather than accepting and discarding it.
+ * page to say, and it is most of what this journey asserts: not that a form
+ * renders, but that each pane states a server-declared REASON and each endpoint
+ * refuses the write rather than accepting and discarding it.
+ *
+ * **Guardrails is the exception, and is now the page's landing section.** It was
+ * on the unavailable list until the toolkit surfaces, the toolkit write paths
+ * and the agent tool freeze started reading `toolkit_security.*`. So this
+ * journey no longer says "everything here is unavailable"; it says which
+ * sections are, which one is not, and — because the difference is the whole
+ * point of the page — that the two look different.
  *
  * Before unit A14 every one of those sections answered 200 on both verbs — the
  * GET with schema defaults, the PUT with an empty object and the request body
@@ -44,7 +51,7 @@ async function openConfiguration(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: /Guardrails/ })).toBeVisible({ timeout: 20_000 });
 }
 
-adminTest('J34: every section except MCP Servers is marked unavailable before it is opened', async ({ page }) => {
+adminTest('J34: the sidebar marks what this deployment cannot configure', async ({ page }) => {
   await openConfiguration(page);
 
   await expect(page.getByText('Failed to load the configuration sections.')).toHaveCount(0);
@@ -53,44 +60,51 @@ adminTest('J34: every section except MCP Servers is marked unavailable before it
   // legible before the operator clicks anything.
   const marks = page.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  // Still > 5, unchanged from before this branch: the catalogue took ONE
-  // section out of the unavailable set and 11 remain. Lowering the bound to
-  // absorb the change would have weakened the assertion for nothing.
-  expect(await marks.count(), 'the Pylon-configuration sections are all unavailable').toBeGreaterThan(5);
+  expect(await marks.count(), 'most Configuration sections remain unavailable').toBeGreaterThan(5);
 
-  // MCP Servers is the ONE exception, and the exception is the point: the
-  // section still declares an `unavailable_reason` — true of the plugin-config
-  // value endpoints, which cannot serve a catalogue that carries a client
-  // secret — but it also declares a `managed_surface`, and the page renders
-  // that surface's editor instead. Marking it "Not available here" would send
-  // an operator away from the only page that can edit it.
-  const mcpEntry = page.getByRole('button', { name: /MCP Servers/ });
-  await expect(mcpEntry).toBeVisible();
-  await expect(mcpEntry.getByText('Not available here')).toHaveCount(0);
+  // Guardrails is NOT among them, and is the section the page lands on. The
+  // count above cannot show that on its own: it would still pass if every
+  // section were unavailable, which is what it asserted before guardrails had
+  // consumers.
+  const guardrails = page.getByRole('button', { name: /Guardrails/ });
+  await expect(guardrails).toBeVisible();
+  await expect(guardrails.getByText('Not available here')).toHaveCount(0);
 
-  // And no save control exists anywhere on the page. The catalogue editor's
-  // own Save lives inside its dialog, which no assertion here has opened.
-  await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  // MCP Servers is the OTHER exception, for a different reason, and the
+  // difference is worth keeping visible: Guardrails dropped its
+  // `unavailable_reason` outright, while MCP Servers still declares one — true
+  // of the plugin-config value endpoints, which cannot serve a catalogue that
+  // carries a client secret — and is editable anyway because it also declares
+  // a `managed_surface`. Marking it would send an operator away from the only
+  // page that can edit it.
+  const mcpServers = page.getByRole('button', { name: /MCP Servers/ });
+  await expect(mcpServers).toBeVisible();
+  await expect(mcpServers.getByText('Not available here')).toHaveCount(0);
 
   await checkA11y(page);
 });
 
-adminTest('J34a: the MCP Servers section renders its editor, not a refusal', async ({ page }) => {
+adminTest('J34a: Guardrails offers a real form, including its two tool maps', async ({ page }) => {
   await openConfiguration(page);
+  await page.getByRole('button', { name: /Guardrails/ }).click();
 
-  await page.getByRole('button', { name: /MCP Servers/ }).click();
-
-  // The editor's own control, so this proves the dedicated surface MOUNTED —
-  // not merely that the refusal notice is absent, which a blank pane would also
-  // satisfy.
-  await expect(page.getByTestId('admin-mcp-servers-add')).toBeVisible();
+  // A save control exists here and nowhere else on this page — the difference
+  // between a section with a backend and a section without one.
+  await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
   await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
 
-  // The catalogue read is authorised and answered. A fresh deployment catalogues
-  // nothing, so the empty state is the truthful branch here; the error alert
-  // would mean the route refused, which is what this asserts is NOT happening.
-  await expect(page.getByTestId('admin-mcp-servers-empty')).toBeVisible();
-  await expect(page.getByTestId('admin-mcp-servers-error')).toHaveCount(0);
+  // The two map fields render as EDITORS, not as the "no editor for this field
+  // yet" row. Guardrails is order 1, so this is the first screen of the page,
+  // and `blocked_tools`/`sensitive_tools` are the substance of the feature —
+  // shipping them inert would have made the landing screen a form whose two
+  // most important controls do nothing.
+  // Named per field: two identically-labelled buttons on one screen would be
+  // ambiguous to a screen reader and to this assertion alike.
+  await expect(page.getByRole('button', { name: 'Add toolkit — Blocked Tools' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add toolkit — Sensitive Action Tools' })).toBeVisible();
+  await expect(
+    page.getByText('This platform has no editor for this field yet', { exact: false }),
+  ).toHaveCount(0);
 
   await checkA11y(page);
 });
@@ -98,7 +112,8 @@ adminTest('J34a: the MCP Servers section renders its editor, not a refusal', asy
 adminTest('J34b: the sections with no backend say so instead of showing a form', async ({ page }) => {
   await openConfiguration(page);
 
-  for (const section of ['Guardrails', 'Authentication', 'Maintenance', 'Advanced']) {
+  // Guardrails left this list when it gained consumers — see J34a.
+  for (const section of ['Authentication', 'Maintenance', 'Advanced']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -138,4 +153,24 @@ adminTest('J34d: the sections the Features page owns are not offered here', asyn
   for (const moved of ['Help Center', 'MCP Configuration', 'Agent Publishing', 'Voice Features']) {
     await expect(page.getByRole('button', { name: new RegExp(moved) })).toHaveCount(0);
   }
+});
+
+adminTest('J34e: the MCP Servers section renders its editor, not a refusal', async ({ page }) => {
+  await openConfiguration(page);
+
+  await page.getByRole('button', { name: /MCP Servers/ }).click();
+
+  // The editor's own control, so this proves the dedicated surface MOUNTED —
+  // not merely that the refusal notice is absent, which a blank pane would also
+  // satisfy.
+  await expect(page.getByTestId('admin-mcp-servers-add')).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The catalogue read is authorised and answered. A fresh deployment catalogues
+  // nothing, so the empty state is the truthful branch here; the error alert
+  // would mean the route refused, which is what this asserts is NOT happening.
+  await expect(page.getByTestId('admin-mcp-servers-empty')).toBeVisible();
+  await expect(page.getByTestId('admin-mcp-servers-error')).toHaveCount(0);
+
+  await checkA11y(page);
 });

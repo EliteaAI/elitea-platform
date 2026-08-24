@@ -12,8 +12,9 @@ import (
 )
 
 type Handler struct {
-	pool     *pgxpool.Pool
-	resolver auth.PermissionResolver
+	pool        *pgxpool.Pool
+	resolver    auth.PermissionResolver
+	suggestions ToolkitRegistrySource
 	// The pre-built MCP server catalogue and the vault its client secrets are
 	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
 	// is applied, and the catalogue routes answer 503 while either is.
@@ -35,6 +36,23 @@ type Option func(*Handler)
 // proceeding unchecked.
 func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(h *Handler) { h.resolver = resolver }
+}
+
+// WithToolkitRegistry supplies the toolkit registry behind
+// `GET /admin/plugin_config_suggestions/{mode}/{key}` — see config_suggestions.go.
+// Unassigned, the two toolkit sources report that this deployment cannot
+// enumerate them, rather than answering an empty list.
+func WithToolkitRegistry(source ToolkitRegistrySource) Option {
+	return func(h *Handler) {
+		// A nil interface is not stored, so an unwired composition root leaves
+		// the field nil rather than boxing one. A nil POINTER inside a non-nil
+		// interface still gets past this, which is why the handler also treats an
+		// empty registry as no registry — see toolkitRegistryTypes.
+		if source == nil {
+			return
+		}
+		h.suggestions = source
+	}
 }
 
 func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
@@ -175,23 +193,7 @@ func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-// PluginConfigSuggestions answered `[]` — a BARE ARRAY, where every client reads
-// `data.values` and `data.labels` (admin_ui's `SchemaField.jsx`). So the field
-// that asked for suggestions got `undefined`, not an empty list, on top of the
-// list being empty.
-//
-// The sources pylon serves are `toolkit_names` and `toolkit_tools` (read out of
-// the elitea_core plugin's in-process toolkit registry) and `projects`. The
-// first two have no source of truth in this service. Rather than answer an empty
-// list for a source this platform cannot enumerate, it says so — and the only
-// sections whose fields declare an `enum_source` are unavailable anyway, so no
-// rendered control depends on this today.
-func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"error": "configuration value suggestions are sourced from the Pylon toolkit registry, " +
-			"which has no equivalent in this service",
-	})
-}
+// PluginConfigSuggestions is implemented in config_suggestions.go.
 
 // `ModerationStatuses` and `ModerationStatusSingle` used to sit here: two copies
 // of a `_ *http.Request` stub answering a fixed empty page, one mounted ungated
