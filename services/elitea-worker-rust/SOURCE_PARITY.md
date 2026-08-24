@@ -76,8 +76,17 @@ its exact-server token, and Skip returns `mcp_auth_decision` under each original
 call ID with zero dispatch. The current Main authorization continuation still
 needs to normalize its exact decision set into the already-versioned
 `hitl_decisions` JSON field before this parallel path can be activated; no new
-protobuf field is required. Pipeline-Agent nested authorization and concrete
-SharePoint/OpenAPI families remain gaps.
+protobuf field is required. A pipeline Agent node now carries the same exact
+parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
+remains public, partial sets fail before materialization, Skip closes each
+original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
+atomically. Concrete SharePoint/OpenAPI families remain gaps.
+
+This checkpoint supersedes older broad table wording below that lists
+parallel/nested authorization or pipeline-Agent authorization as a generic
+open gate. The remaining authorization gates are Main decision-list
+normalization, platform OAuth/DCR, runtime-discovered configured families,
+concrete SharePoint/OpenAPI clients and production activation.
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |

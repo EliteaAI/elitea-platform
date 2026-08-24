@@ -208,9 +208,11 @@ Parallel nested authorization inside direct saved agents now binds every card
 to the persisted interrupt, provider call and application hierarchy, and the
 worker resumes a complete Authorize/Skip set without replanning. Main still
 needs to normalize its current separate authorization continuation into the
-existing Rust decision-list field before activation. Nested authorization
-inside a pipeline Agent node and configured families whose challenge appears
-only during execution require their own adapters.
+existing Rust decision-list field before activation. The same exact replay now
+crosses a pipeline Agent node through its existing graph checkpoint: parallel
+Authorize/Skip and mixed sensitive/auth leaves retain their hierarchy, while a
+partial set fails before materialization or dispatch. Configured families whose
+challenge appears only during execution still require their own adapters.
 
 ## Native direct Toolkit/MCP-node boundary
 

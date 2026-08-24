@@ -543,15 +543,6 @@ fn pipeline_runtime_cycles_with_capture(
     pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths)
 }
 
-fn pipeline_runtime_from_responses(
-    responses: VecDeque<Response<Body>>,
-    outcomes: Vec<TestModelGatewayOutcome>,
-    calls: Arc<AtomicUsize>,
-    paths: Arc<Mutex<Vec<String>>>,
-) -> PipelineChildRuntime {
-    pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths).0
-}
-
 fn pipeline_runtime_from_responses_with_capture(
     responses: VecDeque<Response<Body>>,
     outcomes: Vec<TestModelGatewayOutcome>,
@@ -586,6 +577,11 @@ fn pipeline_runtime_from_responses_with_capture(
 }
 
 fn recursive_sensitive_pipeline_runtime() -> PipelineChildRuntime {
+    recursive_sensitive_pipeline_runtime_with_capture().0
+}
+
+fn recursive_sensitive_pipeline_runtime_with_capture()
+-> (PipelineChildRuntime, CapturedModelRequests) {
     let calls = Arc::new(AtomicUsize::new(0));
     let paths = Arc::new(Mutex::new(Vec::new()));
     let responses = (0..3)
@@ -673,7 +669,129 @@ fn recursive_sensitive_pipeline_runtime() -> PipelineChildRuntime {
             pipeline_text_response("parallel orchestrator summary"),
         ),
     ];
-    pipeline_runtime_from_responses(responses, outcomes, calls, paths)
+    pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths)
+}
+
+fn mixed_guardrail_pipeline_runtime_with_capture() -> (PipelineChildRuntime, CapturedModelRequests)
+{
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let responses = (0..2)
+        .flat_map(|_| {
+            [
+                runtime_response(&json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": "ephemeral-pipeline-token"
+                })),
+                application_runtime_response(
+                    3,
+                    4,
+                    &json!({
+                        "agent_type": "agent",
+                        "instructions": "Delegate both release checks in parallel.",
+                        "meta": {},
+                        "variables": [],
+                        "tools": [
+                            saved_application_tool_with_id(45, 32, 42, "sensitive-resolver"),
+                            saved_application_tool_with_id(46, 33, 43, "auth-resolver"),
+                        ],
+                        "llm_settings": {
+                            "model_name": "mixed-orchestrator-model",
+                            "model_project_id": 23,
+                            "max_tokens": 2048,
+                            "reasoning_effort": null,
+                            "temperature": 0.2,
+                            "openai_compatible": true
+                        }
+                    }),
+                ),
+                application_runtime_response(
+                    32,
+                    42,
+                    &mixed_guardrail_child_version(
+                        "sensitive-model",
+                        "sensitive evidence",
+                        "https://sensitive.example.invalid/v1/mcp",
+                        "lookup_sensitive",
+                    ),
+                ),
+                application_runtime_response(
+                    33,
+                    43,
+                    &mixed_guardrail_child_version(
+                        "auth-model",
+                        "authorized evidence",
+                        "https://auth.example.invalid/v1/mcp",
+                        "lookup_auth",
+                    ),
+                ),
+            ]
+        })
+        .collect::<VecDeque<_>>();
+    let outcomes = vec![
+        model_response_for(
+            "mixed-orchestrator-model",
+            pipeline_mixed_saved_agent_call_response(),
+        ),
+        model_response_for(
+            "sensitive-model",
+            pipeline_named_mcp_tool_call_response("call_sensitive_mcp", "lookup_sensitive"),
+        ),
+        model_response_for(
+            "auth-model",
+            pipeline_named_mcp_tool_call_response("call_auth_mcp", "lookup_auth"),
+        ),
+        model_response_for(
+            "sensitive-model",
+            pipeline_text_response("sensitive leaf complete"),
+        ),
+        model_response_for("auth-model", pipeline_text_response("auth leaf complete")),
+        model_response_for(
+            "mixed-orchestrator-model",
+            pipeline_text_response("mixed guardrails complete"),
+        ),
+    ];
+    pipeline_runtime_from_responses_with_capture(responses, outcomes, calls, paths)
+}
+
+fn mixed_guardrail_child_version(
+    model_name: &str,
+    toolkit_name: &str,
+    server_url: &str,
+    tool_name: &str,
+) -> Value {
+    json!({
+        "agent_type": "agent",
+        "instructions": "Read the selected release evidence.",
+        "meta": {},
+        "variables": [],
+        "tools": [{
+            "id": 92,
+            "type": "mcp",
+            "toolkit_name": toolkit_name,
+            "settings": {
+                "url": server_url,
+                "headers": null,
+                "client_id": null,
+                "client_secret": null,
+                "scopes": null,
+                "timeout": 30,
+                "selected_tools": [tool_name],
+                "enable_caching": true,
+                "cache_ttl": 300,
+                "ssl_verify": true
+            }
+        }],
+        "llm_settings": {
+            "model_name": model_name,
+            "model_project_id": 24,
+            "max_tokens": 2048,
+            "reasoning_effort": null,
+            "temperature": 0.2,
+            "openai_compatible": true
+        }
+    })
 }
 
 fn application_runtime_response(
@@ -805,9 +923,56 @@ fn pipeline_application_resume_request(
     resume
 }
 
+fn pipeline_application_authorization_resume_request(
+    interrupt_ids: Vec<String>,
+    action: &str,
+    digest: [u8; 32],
+) -> super::request::AgentExecutionRequest {
+    let single = interrupt_ids.len() == 1;
+    let mut resume = agent_pipeline_request("release-agent", "agent");
+    resume.binding.request_content_digest = digest;
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = single.then(|| action.to_owned());
+    resume.payload.hitl_value = single.then(String::new);
+    resume.payload.hitl_decisions = interrupt_ids
+        .into_iter()
+        .map(|interrupt_id| {
+            json!({
+                "interrupt_id": interrupt_id,
+                "tool_call_id": "call_mcp",
+                "guardrail_type": "mcp_auth",
+                "action": action,
+                "value": "",
+            })
+        })
+        .collect();
+    if action == "authorize" {
+        resume.payload.mcp_tokens.insert(
+            "https://mcp.example.invalid/v1/mcp".to_owned(),
+            json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        resume
+            .payload
+            .user_declined_mcp_servers
+            .push(json!({"server_url": "https://mcp.example.invalid/v1/mcp"}));
+    }
+    resume
+}
+
 fn saved_application_tool(application_id: u64, version_id: u64, alias: &str) -> Value {
+    saved_application_tool_with_id(45, application_id, version_id, alias)
+}
+
+fn saved_application_tool_with_id(
+    id: u64,
+    application_id: u64,
+    version_id: u64,
+    alias: &str,
+) -> Value {
     json!({
-        "id": 45,
+        "id": id,
         "type": "application",
         "name": alias,
         "description": "Resolve one release name.",
@@ -843,12 +1008,29 @@ fn pipeline_parallel_saved_agent_call_response() -> Response<Body> {
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
 
+fn pipeline_mixed_saved_agent_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_sensitive_child\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_32_v_42\",\"arguments\":\"{\\\"task\\\":\\\"Resolve sensitive evidence\\\"}\"}},{\"index\":1,\"id\":\"call_auth_child\",\"type\":\"function\",\"function\":{\"name\":\"elitea_agent_33_v_43\",\"arguments\":\"{\\\"task\\\":\\\"Resolve authorized evidence\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
 fn pipeline_mcp_tool_call_response() -> Response<Body> {
     let raw = concat!(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn pipeline_named_mcp_tool_call_response(call_id: &str, tool_name: &str) -> Response<Body> {
+    let raw = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"tool_calls\":[{{\"index\":0,\"id\":{call_id:?},\"type\":\"function\",\"function\":{{\"name\":{tool_name:?},\"arguments\":\"{{\\\"release\\\":\\\"1.2\\\"}}\"}}}}]}},\"finish_reason\":null}}]}}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
     );
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
@@ -1490,6 +1672,268 @@ async fn pipeline_agent_node_resumes_parallel_nested_confirmations_without_ident
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn pipeline_agent_node_resumes_parallel_nested_authorization_for_authorize_and_skip() {
+    run_pipeline_agent_node_nested_authorization(true).await;
+    run_pipeline_agent_node_nested_authorization(false).await;
+}
+
+#[allow(clippy::too_many_lines)] // Pause, fail-closed partial set, and exact replay are one proof.
+async fn run_pipeline_agent_node_nested_authorization(authorize: bool) {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let ((platform, model_facade, context_calls, _paths), captured) =
+        recursive_sensitive_pipeline_runtime_with_capture();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(DelegatedAuthorizationPipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        tool_calls: Arc::clone(&tool_calls),
+    }));
+    let request = agent_pipeline_request("release-agent", "agent");
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("recursive pipeline Agent authorization participant");
+    let (paused, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let cards = paused
+        .iter()
+        .filter(|event| event["type"] == "mcp_authorization_required")
+        .collect::<Vec<_>>();
+    assert_eq!(cards.len(), 2);
+    let paths = cards
+        .iter()
+        .map(|event| event["response_metadata"]["parent_agent_path"].clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        paths,
+        HashSet::from([
+            json!([
+                {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+                {"name": "name-resolver", "call_id": "call_first", "sibling_ordinal": 1},
+            ]),
+            json!([
+                {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+                {"name": "name-resolver", "call_id": "call_last", "sibling_ordinal": 2},
+            ]),
+        ])
+    );
+    let mut interrupt_ids = cards
+        .iter()
+        .map(|event| {
+            assert_eq!(event["response_metadata"]["tool_call_id"], "call_mcp");
+            event["response_metadata"]["interrupt_id"]
+                .as_str()
+                .expect("nested authorization identity")
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    interrupt_ids.sort_unstable();
+    assert_ne!(interrupt_ids[0], interrupt_ids[1]);
+    let graph_interrupt = graph_interrupt.expect("private pipeline Application checkpoint");
+    let binding =
+        pipeline_application_event_binding(&graph_interrupt, "elitea-agent", &private_thread)
+            .expect("pipeline Application authorization checkpoint binding");
+    assert_eq!(binding.application_call_id(), "pipeline:delegate:0");
+    assert_eq!(
+        binding
+            .interrupt_ids()
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>(),
+        interrupt_ids.iter().cloned().collect::<HashSet<_>>()
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let action = if authorize { "authorize" } else { "skip" };
+    let partial = pipeline_application_authorization_resume_request(
+        vec![interrupt_ids[0].clone()],
+        action,
+        if authorize { [14; 32] } else { [15; 32] },
+    );
+    let Err(partial) = assembler.assemble(authorized(&partial)).await else {
+        panic!("partial parallel authorization set resumed the pipeline Agent node");
+    };
+    assert_eq!(partial.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let resume = pipeline_application_authorization_resume_request(
+        interrupt_ids,
+        action,
+        if authorize { [16; 32] } else { [17; 32] },
+    );
+    let invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("parallel nested authorization checkpoint resume");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "parallel orchestrator summary")
+    );
+    assert_eq!(
+        tool_calls.load(Ordering::Acquire),
+        usize::from(authorize) * 2
+    );
+    assert_eq!(connections.load(Ordering::Acquire), 2);
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(
+        captured.len(),
+        6,
+        "resume must not replan saved-agent calls"
+    );
+    if !authorize {
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|request| request
+                    .body
+                    .windows("mcp_auth_decision".len())
+                    .any(|window| window == b"mcp_auth_decision"))
+                .count(),
+            2,
+            "each skipped leaf must close the original call with a structured result"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)] // Mixed public cards and one atomic replay are one proof.
+async fn pipeline_agent_node_resumes_parallel_mixed_sensitive_and_authorization_guards() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let ((platform, model_facade, context_calls, _paths), captured) =
+        mixed_guardrail_pipeline_runtime_with_capture();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let sensitive_calls = Arc::new(AtomicUsize::new(0));
+    let authorization_calls = Arc::new(AtomicUsize::new(0));
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(platform, model_facade)
+    .with_mcp_connector(Arc::new(MixedGuardrailPipelineMcpConnector {
+        connections: Arc::clone(&connections),
+        sensitive_calls: Arc::clone(&sensitive_calls),
+        authorization_calls: Arc::clone(&authorization_calls),
+    }))
+    .with_tool_policy(Arc::new(runtime_tool_policy(&json!({
+        "toolkit_security": {
+            "sensitive_tools": {"mcp": ["lookup_sensitive"]},
+            "sensitive_action_company_name": "Example Org"
+        }
+    }))));
+    let request = agent_pipeline_request("release-agent", "agent");
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("mixed nested guardrail participant");
+    let (paused, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let sensitive = paused
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .expect("nested sensitive card");
+    let authorization = paused
+        .iter()
+        .find(|event| event["type"] == "mcp_authorization_required")
+        .expect("nested authorization card");
+    assert_eq!(
+        sensitive["response_metadata"]["parent_agent_path"],
+        json!([
+            {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+            {"name": "sensitive-resolver", "call_id": "call_sensitive_child", "sibling_ordinal": 1},
+        ])
+    );
+    assert_eq!(
+        authorization["response_metadata"]["parent_agent_path"],
+        json!([
+            {"name": "release-agent", "call_id": "pipeline:delegate:0", "sibling_ordinal": 1},
+            {"name": "auth-resolver", "call_id": "call_auth_child", "sibling_ordinal": 2},
+        ])
+    );
+    let sensitive_interrupt_id =
+        sensitive["response_metadata"]["hitl_interrupts"][0]["interrupt_id"]
+            .as_str()
+            .expect("nested sensitive identity")
+            .to_owned();
+    let authorization_interrupt_id = authorization["response_metadata"]["interrupt_id"]
+        .as_str()
+        .expect("nested authorization identity")
+        .to_owned();
+    let binding = pipeline_application_event_binding(
+        &graph_interrupt.expect("private mixed-guardrail graph checkpoint"),
+        "elitea-agent",
+        &private_thread,
+    )
+    .expect("mixed-guardrail pipeline Application binding");
+    assert_eq!(
+        binding
+            .interrupt_ids()
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>(),
+        HashSet::from([
+            sensitive_interrupt_id.clone(),
+            authorization_interrupt_id.clone(),
+        ])
+    );
+    assert_eq!(sensitive_calls.load(Ordering::Acquire), 0);
+    assert_eq!(authorization_calls.load(Ordering::Acquire), 0);
+
+    let mut resume = agent_pipeline_request("release-agent", "agent");
+    resume.binding.request_content_digest = [18; 32];
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_decisions = vec![
+        json!({
+            "interrupt_id": sensitive_interrupt_id,
+            "tool_call_id": "call_sensitive_mcp",
+            "guardrail_type": "sensitive_tool",
+            "action": "approve",
+            "value": "",
+        }),
+        json!({
+            "interrupt_id": authorization_interrupt_id,
+            "tool_call_id": "call_auth_mcp",
+            "guardrail_type": "mcp_auth",
+            "action": "authorize",
+            "value": "",
+        }),
+    ];
+    resume.payload.mcp_tokens.insert(
+        "https://auth.example.invalid/v1/mcp".to_owned(),
+        json!({"access_token": "runtime-secret"}),
+    );
+    let invocation = assembler
+        .assemble(authorized(&resume))
+        .await
+        .expect("atomic mixed-guardrail checkpoint resume");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "mixed guardrails complete")
+    );
+    assert_eq!(sensitive_calls.load(Ordering::Acquire), 1);
+    assert_eq!(authorization_calls.load(Ordering::Acquire), 1);
+    assert_eq!(connections.load(Ordering::Acquire), 4);
+    assert_eq!(context_calls.load(Ordering::Acquire), 8);
+    assert_eq!(
+        captured.lock().expect("captured model requests").len(),
+        6,
+        "resume must replay both exact child calls without replanning"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn pipeline_agent_node_block_preserves_same_call_structured_result_without_dispatch() {
     let sessions = Arc::new(InMemorySessionService::new());
     let checkpointer = Arc::new(MemoryCheckpointer::new());
@@ -1928,6 +2372,43 @@ struct DelegatedAuthorizationPipelineMcpConnector {
     tool_calls: Arc<AtomicUsize>,
 }
 
+struct MixedGuardrailPipelineMcpConnector {
+    connections: Arc<AtomicUsize>,
+    sensitive_calls: Arc<AtomicUsize>,
+    authorization_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl McpConnector for MixedGuardrailPipelineMcpConnector {
+    async fn connect(
+        &self,
+        config: &RemoteMcpConfig,
+    ) -> Result<Arc<dyn Toolset>, McpMaterializationError> {
+        self.connections.fetch_add(1, Ordering::AcqRel);
+        let (name, calls) = match config.endpoint() {
+            "https://sensitive.example.invalid/v1/mcp" => {
+                ("lookup_sensitive", Arc::clone(&self.sensitive_calls))
+            }
+            "https://auth.example.invalid/v1/mcp"
+                if config.access_token_for_test() == Some("runtime-secret") =>
+            {
+                ("lookup_auth", Arc::clone(&self.authorization_calls))
+            }
+            "https://auth.example.invalid/v1/mcp" => {
+                return Err(mcp_authorization_required_fixture(
+                    config,
+                    "Bearer resource_metadata=\"https://auth.example.invalid/.well-known/oauth-protected-resource\"",
+                ));
+            }
+            _ => unreachable!("mixed-guardrail fixture received an unexpected MCP endpoint"),
+        };
+        Ok(Arc::new(BasicToolset::new(
+            "mixed_guardrail_fixture_mcp",
+            vec![Arc::new(NamedPipelineMcpTool { name, calls })],
+        )))
+    }
+}
+
 #[async_trait]
 impl McpConnector for DelegatedAuthorizationPipelineMcpConnector {
     async fn connect(
@@ -1972,6 +2453,48 @@ impl McpConnector for PipelineMcpConnector {
 struct PipelineMcpTool {
     calls: Arc<AtomicUsize>,
     read_only: bool,
+}
+
+struct NamedPipelineMcpTool {
+    name: &'static str,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for NamedPipelineMcpTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn description(&self) -> &'static str {
+        "Read one mixed-guardrail release fixture."
+    }
+
+    fn parameters_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "properties": {"release": {"type": "string"}},
+            "required": ["release"],
+            "additionalProperties": false
+        }))
+    }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
+
+    fn is_concurrency_safe(&self) -> bool {
+        true
+    }
+
+    async fn execute(
+        &self,
+        _context: Arc<dyn ToolContext>,
+        arguments: Value,
+    ) -> adk_rust::Result<Value> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        Ok(json!({"release": arguments["release"], "source": self.name}))
+    }
 }
 
 #[async_trait]

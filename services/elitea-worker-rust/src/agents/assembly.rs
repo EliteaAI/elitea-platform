@@ -93,33 +93,28 @@ impl OrdinaryNoToolProfile {
             CommonProfileMode::Fresh
         };
         let common = validate_common_profile(request, mode)?;
-        if request.kind != AgentExecutionKind::Application {
-            return Err(unsupported_profile());
-        }
-        // Pipeline LLM nodes bind only the exact aliases selected in YAML.
-        // The complete frozen toolkit list is therefore valid here; authority
-        // reduction and blocked/sensitive admission happen before any client
-        // or credential can be materialized.
-        let model = application_model_for_agent_type(request, "pipeline")?;
-        Ok(Self {
-            kind: request.kind,
-            instructions: model.instructions,
-            model_name: model.model_name,
-            model_provider: model.model_provider,
-            model_project_id: model.model_project_id,
-            max_tokens: model.max_tokens,
-            reasoning_effort: model.reasoning_effort,
-            temperature: model.temperature,
-            step_limit: validate_step_limit(request.payload.steps_limit)?,
-            chat_history: common.chat_history,
-            context_management: common.context_management,
-        })
+        Self::pipeline_shell(request, common)
     }
 
     pub(crate) fn validate_pipeline_mcp_authorization_shell(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
         let common = validate_common_profile(request, CommonProfileMode::McpAuthorization)?;
+        Self::pipeline_shell(request, common)
+    }
+
+    pub(crate) fn validate_pipeline_guardrail_authorization_shell(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        let common =
+            validate_common_profile(request, CommonProfileMode::DirectGuardrailContinuation)?;
+        Self::pipeline_shell(request, common)
+    }
+
+    fn pipeline_shell(
+        request: &AgentExecutionRequest,
+        common: CommonProfile,
+    ) -> Result<Self, NativeAgentAssemblyError> {
         if request.kind != AgentExecutionKind::Application {
             return Err(unsupported_profile());
         }

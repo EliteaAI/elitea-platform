@@ -256,10 +256,16 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         } else {
             PipelineNativeStart::Fresh
         };
-        let mut profile = if matches!(&start, PipelineNativeStart::McpAuthorization(_)) {
-            PipelineExecutionProfile::validate_mcp_authorization_resume(self.request)?
-        } else {
-            PipelineExecutionProfile::validate(self.request, start.is_resume())?
+        let mut profile = match &start {
+            PipelineNativeStart::McpAuthorization(_) => {
+                PipelineExecutionProfile::validate_mcp_authorization_resume(self.request)?
+            }
+            PipelineNativeStart::Hitl(decision)
+                if decision.has_delegated_authorization_actions() =>
+            {
+                PipelineExecutionProfile::validate_guardrail_authorization_resume(self.request)?
+            }
+            _ => PipelineExecutionProfile::validate(self.request, start.is_resume())?,
         };
         let frozen_toolsets =
             FrozenToolSnapshot::from_request(self.request).map_err(tool_snapshot_error)?;

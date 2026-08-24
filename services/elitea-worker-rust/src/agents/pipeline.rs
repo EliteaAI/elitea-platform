@@ -117,6 +117,21 @@ impl PipelineExecutionProfile {
         })
     }
 
+    pub(crate) fn validate_guardrail_authorization_resume(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        let shell =
+            OrdinaryNoToolProfile::validate_pipeline_guardrail_authorization_shell(request)?;
+        let definition = PipelineDefinition::from_yaml(shell.instructions())
+            .map_err(|error| pipeline_configuration_error(&error))?;
+        Ok(Self {
+            shell,
+            definition,
+            sensitive_direct_tools: BTreeMap::new(),
+            sensitive_llm_tools: BTreeMap::new(),
+        })
+    }
+
     fn from_nested_version(
         version: &serde_json::Map<String, serde_json::Value>,
         fallback: &OrdinaryNoToolProfile,

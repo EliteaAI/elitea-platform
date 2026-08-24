@@ -394,6 +394,14 @@ pub(crate) enum PipelineContinuationDecision {
 }
 
 impl PipelineContinuationDecision {
+    pub(crate) fn has_delegated_authorization_actions(&self) -> bool {
+        matches!(
+            self,
+            Self::Sensitive { application, .. }
+                if application.has_delegated_authorization_actions()
+        )
+    }
+
     pub(crate) fn from_payload(
         payload: &AgentExecutionPayload,
     ) -> Result<Self, PipelineResumeError> {

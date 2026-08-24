@@ -43,12 +43,13 @@ passing upstream test does not register a production worker capability.
 | Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The production connector reloads the ACL password and TLS files, opens and pings both restricted connections, and installs them through the serialized generation owner; retryable loss replaces only that generation without replaying an ambiguous command. The stop-aware delivery runtime is composed with the native processor. Signal/global-deadline bootstrap and a real Redis 7 reconnect/reclaim system test remain. A later memory/session Redis backend must use separate keys and failure semantics |
 
 Delegated-authorization status: broad “MCP OAuth remains gated” wording in the
-Graph, Event and Sensitive/HITL rows now means parallel/nested exact-card
-continuation and concrete unported configured families. It does not include the
-direct-node path or one materializer-known remote-MCP call in root/pipeline LLM
-loops; those Authorize/Skip paths are implemented as described in the dedicated
-row. Rust intentionally replaces the Python proxy plus model-called auth-control
-round trip with native confirmation on the original guarded call.
+Graph, Event and Sensitive/HITL rows now means Main activation, platform
+OAuth/DCR and concrete unported configured families. It does not include the
+direct-node path or materializer-known remote-MCP calls in root/pipeline LLM,
+direct saved-agent or pipeline Agent-node hierarchies; those Authorize/Skip
+paths are implemented as described in the dedicated row. Rust intentionally
+replaces the Python proxy plus model-called auth-control round trip with native
+confirmation on the original guarded call.
 
 Pipeline LLM progress checkpoint: ADK's nested `LlmAgent` remains the model/tool
 loop owner, while `src/agents/graph/node_events.rs` multiplexes its native
@@ -356,10 +357,10 @@ identity/reconciliation are composed. Read/write/delete grouping is catalog
 metadata and never grants effect authority.
 
 Broad table rows above that still call MCP OAuth/on-demand authorization a gate
-refer to the remaining parallel/nested exact-ID contract, platform OAuth/DCR,
-runtime-discovered configured families, and production activation. The root and
-pipeline-LLM materializer-known authorization path is implemented by the
-specific MCP/delegated-Toolkit row.
+refer to platform OAuth/DCR, runtime-discovered configured families, concrete
+SharePoint/OpenAPI materializers and production activation. Root, pipeline-LLM,
+direct nested-agent and pipeline Agent-node materializer-known authorization
+paths are implemented by the specific MCP/delegated-Toolkit row.
 
 ## Future explicit pipeline parallel-node decision
 
@@ -462,5 +463,7 @@ sensitive calls. The browser-visible hierarchy stays call-bound, an exact
 Authorize/Skip set is validated against persisted interrupts and exact-server
 authority, and Skip produces a structured same-call result without dispatch.
 Older table cells that broadly say parallel/nested authorization remains closed
-refer now to Main decision-list activation and the separate pipeline-Agent
-nested variant, not this implemented direct-agent scope.
+refer now to Main decision-list activation, platform OAuth/DCR and concrete
+unported configured families. The same complete-set replay now crosses a
+pipeline Agent node through its graph checkpoint, including mixed
+sensitive/auth leaves; partial authority fails before materialization.

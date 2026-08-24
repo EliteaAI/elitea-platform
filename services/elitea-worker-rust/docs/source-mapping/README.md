@@ -102,7 +102,9 @@ Maintained Rust runtime ownership registry:
   Recursive direct-agent confirmation resume uses the root `SessionService`
   transcript and an invocation-scoped replay tree rather than another child
   session or interrupt table. The same tree retains nested auth catalogs and
-  routes exact Authorize/Skip decisions at each leaf. Saved-pipeline Agent-node
+  routes exact Authorize/Skip decisions at each leaf, including when the root
+  saved participant is invoked by a pipeline Agent node and bound to that
+  graph checkpoint. Saved-pipeline Agent-node
   descendant streaming and checkpoint hierarchy are instead owned by `graph/application.rs`,
   `graph/node_events.rs` and the common event projector;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
@@ -135,7 +137,10 @@ Maintained Rust runtime ownership registry:
   out of browser output. Sensitive confirmations inside a direct saved Agent
   remain the only public cards; an internal graph interrupt binds their exact
   ID set to the pending Agent node, while approve/reject/block reuses the same
-  call-bound application replay coordinator. Parallel nested leaves with the
+  call-bound application replay coordinator. Delegated-auth cards use that same
+  binding and coordinator; complete parallel Authorize/Skip or mixed
+  sensitive/auth sets replay atomically, while incomplete authority dispatches
+  nothing. Parallel nested leaves with the
   same provider call ID remain separated by invocation hierarchy. The current
   materializer supports one selected child
   pipeline level and fails closed if that child declares another Agent node.

@@ -427,8 +427,13 @@ and dispatches no real tool. The current Go continuation producer still emits
 authorization as a separate single-card shape. Production activation therefore
 requires a small Main normalization into the existing versioned
 `hitl_decisions` JSON field; it does not require another interrupt table or a
-protobuf expansion. Nested authorization owned by a pipeline Agent node remains
-a separate graph slice.
+protobuf expansion. Nested authorization owned by a pipeline Agent node uses
+the same native lineage: its existing graph interrupt binds the complete
+descendant ID set to the pending node/checkpoint, while the application replay
+coordinator consumes exact Authorize/Skip or mixed sensitive/auth decisions.
+Focused tests prove hierarchy retention, partial-set rejection before
+materialization, same-call Skip results, exact authorized dispatch and no model
+replanning. Main normalization remains the production activation gap.
 
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.

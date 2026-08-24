@@ -353,6 +353,19 @@ impl DirectHitlDecisionSet {
         }
     }
 
+    /// Select the pipeline shell that may carry claim-fetched MCP authority.
+    ///
+    /// This is not authorization: `resolve` still binds every action and exact
+    /// server set to the persisted confirmation before any tool dispatch.
+    pub(crate) fn has_delegated_authorization_actions(&self) -> bool {
+        self.decisions.iter().any(|decision| {
+            matches!(
+                decision.action,
+                DirectHitlAction::Authorize | DirectHitlAction::Skip
+            )
+        })
+    }
+
     pub(crate) fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, DirectHitlError> {
         if !payload.should_continue
             || !payload.hitl_resume
