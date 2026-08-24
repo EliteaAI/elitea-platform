@@ -17,6 +17,7 @@
  *   | --- | --- | --- |
  *   | Observability / health | **Status** | the gateway's `GET /governance/status` |
  *   | Model Catalog + Pricing Overrides | **Models** | `gateway.gateway_models` + `llm_usage_events` |
+ *   | Usage | **Usage** | `gateway.llm_usage_events` |
  *   | Alerting | **Alerts** | `gateway.governance_config` soft-alert row |
  *
  * ## What is deliberately not here, and why
@@ -27,8 +28,13 @@
  *
  *   - **Logs / request inspection.** No request-log store exists. The only
  *     per-request artefact is `llm_usage_events`, which carries billing
- *     dimensions and no latency, status, error or payload. It can support the
- *     usage columns on the Models tab and nothing more.
+ *     dimensions — provider, model, tokens, requests, cost, time — and no
+ *     latency, status code, error or payload. That is enough for the Usage tab
+ *     and for the usage columns on the Models tab; it is not enough for a log
+ *     viewer, and building one means a new table and a gateway writer before any
+ *     screen is worth drawing. A "logs" tab over the ledger would show a list of
+ *     successful requests and no failures at all, which is the opposite of what
+ *     an operator opens a log for.
  *   - **Virtual keys.** Bifrost's virtual-key slot carries the Elitea project
  *     id. There is no key to mint, rotate or revoke.
  *   - **Providers and keys.** Provider credentials are per-project
@@ -65,6 +71,7 @@ import { LlmProxyAlertsPanel } from './LlmProxyAlertsPanel';
 import { ModelCatalogueTable, UnpricedModelsAlert, UsageWindowSelect } from './LlmProxyModelsPanel';
 import { LlmProxyPriceDialog } from './LlmProxyPriceDialog';
 import { LlmProxyStatusPanel } from './LlmProxyStatusPanel';
+import { LlmProxyUsagePanel } from './LlmProxyUsagePanel';
 import { configFailureReason } from './api/adminConfigurationApi';
 import {
   useAdminLlmModels,
@@ -76,7 +83,7 @@ import {
   type UsageWindow,
 } from './api/adminLlmProxyApi';
 
-type TabId = 'status' | 'models' | 'alerts';
+type TabId = 'status' | 'models' | 'usage' | 'alerts';
 
 /** What the price dialog is currently open on, if anything. */
 interface PriceEditorState {
@@ -344,11 +351,13 @@ export function AdminLlmProxyEditor() {
       >
         <Tab value="status" label={t('pages.admin.llmProxy.tab.status', 'Status')} />
         <Tab value="models" label={t('pages.admin.llmProxy.tab.models', 'Models & pricing')} />
+        <Tab value="usage" label={t('pages.admin.llmProxy.tab.usage', 'Usage')} />
         <Tab value="alerts" label={t('pages.admin.llmProxy.tab.alerts', 'Budget alerts')} />
       </Tabs>
 
       {tab === 'status' ? <LlmProxyStatusPanel /> : null}
       {tab === 'models' ? <ModelsTab /> : null}
+      {tab === 'usage' ? <LlmProxyUsagePanel /> : null}
       {tab === 'alerts' ? <LlmProxyAlertsPanel /> : null}
     </Box>
   );

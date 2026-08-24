@@ -275,6 +275,7 @@ func NewLLMProxyHandler(db LLMProxyQuerier, status StatusReader) *LLMProxyHandle
 func (h *LLMProxyHandler) Register(r chi.Router) {
 	r.Get("/status", h.Status)
 	r.Get("/models", h.ListModels)
+	r.Get("/usage", h.Usage)
 	r.Put("/models", h.UpsertModel)
 	r.Delete("/models/{id}", h.ClearModelOverride)
 }

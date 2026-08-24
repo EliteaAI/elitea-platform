@@ -355,3 +355,35 @@ adminTest('J34j: the Maintenance section is an editable form', async ({ page }) 
 
   await checkA11y(page);
 });
+
+adminTest('J34k: the LLM Proxy usage report is authorised and answers', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Usage' }).click();
+
+  // The screen LiteLLM's admin UI had and the Bifrost port lost — migration
+  // 0084 recorded the loss in its own header ("a meter and nothing else").
+  //
+  // Wait on a POSITIVE terminal state. The totals tiles render for a zero
+  // report as well as a busy one, so their presence proves the read COMPLETED,
+  // where asserting only the absence of the error test-ids would pass while the
+  // request was still in flight — absence read as success.
+  await expect(page.getByTestId('llm-proxy-usage-totals')).toBeVisible();
+  await expect(page.getByTestId('llm-proxy-usage-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-proxy-usage-error')).toHaveCount(0);
+
+  // Each breakdown is its own statement on the server: a section that failed
+  // must not be indistinguishable from one with no spend in it. On a fresh
+  // deployment the ledger is empty, so the explained empty state is the
+  // truthful branch and a table is the other; a per-section ERROR is neither.
+  for (const section of ['models', 'projects', 'members']) {
+    await expect(
+      page
+        .getByTestId(`llm-proxy-usage-${section}`)
+        .or(page.getByTestId(`llm-proxy-usage-${section}-empty`)),
+    ).toBeVisible();
+    await expect(page.getByTestId(`llm-proxy-usage-${section}-error`)).toHaveCount(0);
+  }
+
+  await checkA11y(page);
+});
