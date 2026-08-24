@@ -148,8 +148,11 @@ export interface GatewayStatus {
  * written by the price sync and read by nothing, so they are neither shown nor
  * writable here — and the server's upsert never names them, so a value the sync
  * put there survives an override untouched.
+ *
+ * Not exported: it is a base for the two types below and has no caller of its
+ * own, which the knip dead-code gate refuses.
  */
-export interface LlmModelPrices {
+interface LlmModelPrices {
   readonly input_cost_per_1m_tokens: number | null;
   readonly output_cost_per_1m_tokens: number | null;
   readonly input_cost_per_1m_seconds: number | null;
