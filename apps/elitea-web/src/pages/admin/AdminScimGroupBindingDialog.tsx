@@ -33,12 +33,8 @@ import TextField from "@mui/material/TextField";
 
 import { t } from "@/shared/i18n";
 
-import {
-  useAdminProjects,
-  useProjectRoles,
-  type AdminProjectRow,
-  type ProjectRole,
-} from "./api/adminProjectsApi";
+import { useAdminProjects, type AdminProjectRow } from "./api/adminProjectsApi";
+import { useAdminScimGroupProjectRoles } from "./api/adminScimGroupBindingsApi";
 import type {
   AdminScimGroupBinding,
   AdminScimGroupBindingDraft,
@@ -153,11 +149,24 @@ function RoleField({
 }: {
   readonly typed: boolean;
   readonly loading: boolean;
-  readonly roles: readonly ProjectRole[];
+  readonly roles: readonly string[];
   readonly projectChosen: boolean;
   readonly value: string;
   readonly onChange: (role: string) => void;
 }) {
+  if (!typed && projectChosen && !loading && roles.length === 0) {
+    // An EMPTY answer is a true one: this project carries no roles, so no
+    // binding on it can grant anything. Offering the platform defaults here is
+    // how a control comes to suggest a value its own save refuses.
+    return (
+      <Alert severity="warning" data-testid="admin-scim-binding-no-roles">
+        {t(
+          "pages.admin.scimGroups.dialog.noRoles",
+          "This project has no roles, so a group cannot grant anything on it. Provision the project, or choose another.",
+        )}
+      </Alert>
+    );
+  }
   if (typed) {
     return (
       <TextField
@@ -192,8 +201,8 @@ function RoleField({
       slotProps={{ htmlInput: { "data-testid": "admin-scim-binding-role" } }}
     >
       {roles.map((role) => (
-        <MenuItem key={role.id} value={role.name}>
-          {role.name}
+        <MenuItem key={role} value={role}>
+          {role}
         </MenuItem>
       ))}
     </TextField>
@@ -242,9 +251,11 @@ export function AdminScimGroupBindingDialog({
   const projectsUnavailable = projectsQuery.error != null;
 
   const numericProjectId = Number(projectId);
-  const rolesQuery = useProjectRoles(
-    Number.isInteger(numericProjectId) ? numericProjectId : 0,
-  );
+  // The project's OWN roles, and only once a project is chosen. NOT the general
+  // role listing: it answers a hardcoded admin/editor/viewer for a project that
+  // carries no role rows, and a control fed by that offers a role its own save
+  // then refuses. See useAdminScimGroupProjectRoles.
+  const rolesQuery = useAdminScimGroupProjectRoles(numericProjectId);
   const roles = useMemo(() => rolesQuery.data ?? [], [rolesQuery.data]);
   const rolesUnavailable = rolesQuery.error != null;
 

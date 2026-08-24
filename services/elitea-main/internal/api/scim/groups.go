@@ -151,16 +151,32 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := h.directory.AdoptGroup(r.Context(), group.ID, body.ExternalID, displayName); err != nil {
-		h.writeGroupFailure(w, err, "adopt group binding")
-		return
-	}
+	// The MEMBERSHIP IS APPLIED FIRST, and the identifier is stamped after.
+	//
+	// The two are separate writes, so one of them can fail with the other
+	// applied, and the order decides which state a failed push leaves behind.
+	// Stamping first leaves a binding carrying an external id and a name it
+	// acquired from a push the provider recorded as FAILED — an identifier the
+	// operator never saw applied, which the next lookup then resolves by.
+	// Applying first leaves the membership the push asked for and a binding
+	// still matched by name, which is exactly what the next push repeats.
+	//
 	// A create states the whole membership, so it REPLACES: a second push of a
 	// group that has changed since the first must not leave the people it
 	// dropped inside the project.
 	group, err = h.directory.ReplaceGroupMembers(r.Context(), group.ID, members)
 	if err != nil {
 		h.writeGroupFailure(w, err, "apply group members")
+		return
+	}
+	if err := h.directory.AdoptGroup(r.Context(), group.ID, body.ExternalID, displayName); err != nil {
+		h.writeGroupFailure(w, err, "adopt group binding")
+		return
+	}
+	// Re-read, so the resource returned carries the identifier just stamped
+	// rather than the one the membership write saw.
+	if group, err = h.directory.GetGroup(r.Context(), group.ID); err != nil {
+		h.writeGroupFailure(w, err, "read group")
 		return
 	}
 	w.Header().Set("Location", BasePath+"/Groups/"+strconv.FormatInt(group.ID, 10))
@@ -268,38 +284,68 @@ func (h *Handler) PatchGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	group, err := h.directory.GetGroup(r.Context(), id)
-	if err != nil {
-		h.writeGroupFailure(w, err, "read group")
-		return
-	}
+	// EVERY member value is resolved BEFORE anything is applied, and the whole
+	// set of operations is then applied in ONE store call — which is one
+	// transaction. A PATCH is sent once, so an operation that lands while a
+	// later one is refused is a change nothing will report and nothing will
+	// repeat.
+	applied := make([]scimdirectory.GroupOperation, 0, len(operations))
 	for _, operation := range operations {
-		if operation.displayName != "" {
-			if group, err = h.directory.RenameGroup(r.Context(), id, operation.displayName); err != nil {
-				h.writeGroupFailure(w, err, "rename group")
-				return
-			}
+		if operation.kind == patchRename {
+			applied = append(applied, scimdirectory.GroupOperation{
+				Kind: scimdirectory.GroupRename, DisplayName: operation.displayName,
+			})
 			continue
 		}
-
-		members, ok := h.resolveMemberValues(w, r, operation.members)
+		// A removal resolves LENIENTLY; see resolveMemberValues.
+		members, ok := h.resolveMemberValues(w, r, operation.members, operation.kind == patchRemoveMembers)
 		if !ok {
 			return
 		}
 		switch operation.kind {
 		case patchAddMembers:
-			group, err = h.directory.AddGroupMembers(r.Context(), id, members)
+			applied = append(applied, scimdirectory.GroupOperation{
+				Kind: scimdirectory.GroupAddMembers, Members: members,
+			})
 		case patchReplaceMembers:
-			group, err = h.directory.ReplaceGroupMembers(r.Context(), id, members)
+			applied = append(applied, scimdirectory.GroupOperation{
+				Kind: scimdirectory.GroupReplaceMembers, Members: members,
+			})
 		case patchRemoveMembers:
-			group, err = h.directory.RemoveGroupMembers(r.Context(), id, members)
+			if len(members) == 0 {
+				// Every value named an account that does not exist, so there is
+				// nothing this group can be holding for them. Applying an empty
+				// removal would be a no-op; skipping it keeps the operation out
+				// of the transaction entirely.
+				continue
+			}
+			applied = append(applied, scimdirectory.GroupOperation{
+				Kind: scimdirectory.GroupRemoveMembers, Members: members,
+			})
 		case patchRemoveAllMembers:
-			group, err = h.directory.ReplaceGroupMembers(r.Context(), id, nil)
+			applied = append(applied, scimdirectory.GroupOperation{
+				Kind: scimdirectory.GroupReplaceMembers, Members: nil,
+			})
 		}
+	}
+
+	if len(applied) == 0 {
+		// Every operation was understood and none of them changes anything this
+		// service stores. The resource is returned unchanged, which is a true
+		// answer: nothing was refused and nothing was applied.
+		group, err := h.directory.GetGroup(r.Context(), id)
 		if err != nil {
-			h.writeGroupFailure(w, err, "patch group members")
+			h.writeGroupFailure(w, err, "read group")
 			return
 		}
+		writeJSON(w, http.StatusOK, groupResource(group))
+		return
+	}
+
+	group, err := h.directory.ApplyGroupOperations(r.Context(), id, applied)
+	if err != nil {
+		h.writeGroupFailure(w, err, "patch group")
+		return
 	}
 	writeJSON(w, http.StatusOK, groupResource(group))
 }
@@ -342,7 +388,7 @@ func readGroupPatch(operations []patchOperation) ([]groupPatch, string) {
 			parsed = append(parsed, groupPatch{kind: patchRename, displayName: strings.TrimSpace(name)})
 
 		case lowered == "members":
-			values, err := memberValues(operation.Value)
+			values, stated, err := memberValues(operation.Value)
 			if err != "" {
 				return nil, err
 			}
@@ -352,8 +398,19 @@ func readGroupPatch(operations []patchOperation) ([]groupPatch, string) {
 			case "replace":
 				parsed = append(parsed, groupPatch{kind: patchReplaceMembers, members: values})
 			case "remove":
-				if len(values) == 0 {
+				// AN OMITTED VALUE MEANS "REMOVE THEM ALL". AN EMPTY LIST DOES
+				// NOT, and the difference is the whole membership of a group.
+				//
+				// RFC 7644 §3.5.2.2 defines a remove with a path and no value as
+				// removing the attribute. A client that computed a delta and
+				// found nothing to remove sends `"value": []` — and reading that
+				// as the attribute-wide removal empties the group behind a 200
+				// nobody has a reason to look at.
+				if !stated {
 					parsed = append(parsed, groupPatch{kind: patchRemoveAllMembers})
+					continue
+				}
+				if len(values) == 0 {
 					continue
 				}
 				parsed = append(parsed, groupPatch{kind: patchRemoveMembers, members: values})
@@ -409,9 +466,15 @@ func readGroupPatch(operations []patchOperation) ([]groupPatch, string) {
 }
 
 // memberValues reads the `value` of every member in a patch operation value.
-func memberValues(raw json.RawMessage) ([]string, string) {
-	if len(raw) == 0 {
-		return nil, ""
+//
+// `stated` reports whether the operation CARRIED a value at all, which is not
+// the same question as whether that value listed anybody. An omitted value and
+// an empty list mean different things to a remove, and collapsing them empties
+// groups; see the remove branch above. A JSON `null` counts as omitted, because
+// that is what several clients send for an absent attribute.
+func memberValues(raw json.RawMessage) (values []string, stated bool, problem string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false, ""
 	}
 	var members []struct {
 		Value string `json:"value"`
@@ -422,18 +485,18 @@ func memberValues(raw json.RawMessage) ([]string, string) {
 			Value string `json:"value"`
 		}
 		if json.Unmarshal(raw, &single) != nil {
-			return nil, "the members value must be a member object or an array of them"
+			return nil, true, "the members value must be a member object or an array of them"
 		}
 		members = append(members, single)
 	}
-	values := make([]string, 0, len(members))
+	values = make([]string, 0, len(members))
 	for _, member := range members {
 		if strings.TrimSpace(member.Value) == "" {
-			return nil, "every member needs a value naming the account"
+			return nil, true, "every member needs a value naming the account"
 		}
 		values = append(values, strings.TrimSpace(member.Value))
 	}
-	return values, ""
+	return values, true, ""
 }
 
 // bracketedMemberValue reads `members[value eq "7"]`.
@@ -475,17 +538,32 @@ func (h *Handler) resolveMembers(w http.ResponseWriter, r *http.Request, body gr
 		}
 		values = append(values, member.Value)
 	}
-	return h.resolveMemberValues(w, r, values)
+	return h.resolveMemberValues(w, r, values, false)
 }
 
-// resolveMemberValues maps every member value onto an account id, and refuses
-// the whole request if one of them cannot be resolved.
+// resolveMemberValues maps every member value onto an account id.
 //
-// It is all-or-nothing ON PURPOSE. Applying the members that resolved and
-// dropping the rest would answer 200 for a group whose membership this service
-// only partly holds, and the identity provider would never send the dropped
-// ones again.
-func (h *Handler) resolveMemberValues(w http.ResponseWriter, r *http.Request, values []string) ([]int, bool) {
+// # A GRANT is all-or-nothing
+//
+// If one value cannot be resolved the whole request is refused. Applying the
+// members that resolved and dropping the rest would answer 200 for a group
+// whose membership this service only partly holds, and the identity provider
+// would never send the dropped ones again.
+//
+// # A REMOVAL skips what it cannot find
+//
+// `lenient` is set for a removal, and there a value naming no account is not an
+// approximation — it is a membership that cannot exist, so skipping it reaches
+// exactly the state the client asked for. Refusing instead WEDGES the group:
+// an administrator hard-deletes an account from the admin Users page, the
+// identity provider removes that person from the group, and every sync from
+// then on fails on a member who could never be in the project.
+//
+// An AMBIGUOUS value is refused either way. Removing "whichever of these two
+// accounts the database returns first" is not a state anybody asked for.
+func (h *Handler) resolveMemberValues(
+	w http.ResponseWriter, r *http.Request, values []string, lenient bool,
+) ([]int, bool) {
 	members := make([]int, 0, len(values))
 	seen := make(map[int]struct{}, len(values))
 	for _, value := range values {
@@ -496,6 +574,11 @@ func (h *Handler) resolveMemberValues(w http.ResponseWriter, r *http.Request, va
 		)
 		switch {
 		case errors.As(err, &unknown):
+			if lenient {
+				slog.Info("SCIM: skipped a group member removal that names no account",
+					"value", value)
+				continue
+			}
 			writeError(w, http.StatusBadRequest, "invalidValue",
 				"no account carries the member value "+strconv.Quote(value)+
 					". A member is matched by its platform id, its externalId or its address, "+

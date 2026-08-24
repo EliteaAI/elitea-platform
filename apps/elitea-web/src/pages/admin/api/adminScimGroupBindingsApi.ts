@@ -10,6 +10,7 @@
  * Wire contract: `services/elitea-main/internal/api/v2/admin/scim_group_bindings.go`.
  *
  *   GET    /admin/scim_group_bindings/administration
+ *   GET    /admin/scim_group_bindings/administration/project_roles/{projectID}
  *   POST   /admin/scim_group_bindings/administration
  *   PUT    /admin/scim_group_bindings/administration/{id}
  *   DELETE /admin/scim_group_bindings/administration/{id}
@@ -65,6 +66,14 @@ interface AdminScimGroupMember {
   readonly granted: boolean;
 }
 
+/** One page of bindings, with the total the page was taken from. */
+export interface AdminScimGroupBindingPage {
+  readonly bindings: readonly AdminScimGroupBinding[];
+  readonly total: number;
+  readonly limit: number;
+  readonly offset: number;
+}
+
 /** One authored binding, as the server renders it. */
 export interface AdminScimGroupBinding {
   readonly id: string;
@@ -93,22 +102,83 @@ export interface AdminScimGroupBindingDraft {
  */
 const adminScimGroupBindingKeys = {
   all: ["admin", "scimGroupBindings"] as const,
-  list: () => ["admin", "scimGroupBindings", "list"] as const,
+  list: (offset: number) =>
+    ["admin", "scimGroupBindings", "list", offset] as const,
+  projectRoles: (projectId: number) =>
+    ["admin", "scimGroupBindings", "projectRoles", projectId] as const,
 };
 
-/** `GET /admin/scim_group_bindings/administration`. */
-export function useAdminScimGroupBindings(): UseQueryResult<
-  readonly AdminScimGroupBinding[],
-  Error
-> {
+/** The page this screen reads. The server bounds a larger request to 500. */
+export const SCIM_GROUP_BINDING_PAGE_SIZE = 100;
+
+/**
+ * `GET /admin/scim_group_bindings/administration` — one page.
+ *
+ * The TOTAL is carried through, not discarded. A screen that renders a page and
+ * says nothing about the rest is a screen on which a binding past that page
+ * cannot be found, edited or removed — and an operator who cannot find one
+ * authors a duplicate that the unique group name then refuses.
+ */
+export function useAdminScimGroupBindings(
+  offset = 0,
+): UseQueryResult<AdminScimGroupBindingPage, Error> {
   return useQuery({
-    queryKey: adminScimGroupBindingKeys.list(),
-    queryFn: async (): Promise<readonly AdminScimGroupBinding[]> => {
+    queryKey: adminScimGroupBindingKeys.list(offset),
+    queryFn: async (): Promise<AdminScimGroupBindingPage> => {
       // `eliteaFetch` resolves the transport envelope, not the body. Forgetting
       // to peel the body is the silent empty state #132 shipped.
-      const body = unwrapBody(await eliteaFetch<unknown>(BINDINGS_URL)) as
-        { bindings?: AdminScimGroupBinding[] } | undefined;
-      return body?.bindings ?? [];
+      const body = unwrapBody(
+        await eliteaFetch<unknown>(
+          `${BINDINGS_URL}?limit=${String(SCIM_GROUP_BINDING_PAGE_SIZE)}&offset=${String(offset)}`,
+        ),
+      ) as
+        | {
+            bindings?: AdminScimGroupBinding[];
+            total?: number;
+            limit?: number;
+            offset?: number;
+          }
+        | undefined;
+      const bindings = body?.bindings ?? [];
+      return {
+        bindings,
+        // The total falls back to what ARRIVED rather than to zero: a missing
+        // total must not read as "there is nothing else".
+        total: body?.total ?? bindings.length,
+        limit: body?.limit ?? SCIM_GROUP_BINDING_PAGE_SIZE,
+        offset: body?.offset ?? offset,
+      };
+    },
+  });
+}
+
+/**
+ * `GET /admin/scim_group_bindings/administration/project_roles/{projectID}` —
+ * the roles the chosen project REALLY has.
+ *
+ * NOT `useProjectRoles` from `./adminProjectsApi`. That reads
+ * `/admin/roles/{mode}/{projectID}`, whose handler answers a hardcoded
+ * admin/editor/viewer for a project carrying no role rows
+ * (`internal/api/v2/eliteacore/handler.go`). A picker fed by that offers a role
+ * the project does not have, the operator picks it, and the save is refused by
+ * a value the control itself supplied.
+ *
+ * Disabled until a project is chosen, so the dialog does not ask about project
+ * zero on its way to asking about a real one.
+ */
+export function useAdminScimGroupProjectRoles(
+  projectId: number,
+): UseQueryResult<readonly string[], Error> {
+  return useQuery({
+    queryKey: adminScimGroupBindingKeys.projectRoles(projectId),
+    enabled: Number.isInteger(projectId) && projectId > 0,
+    queryFn: async (): Promise<readonly string[]> => {
+      const body = unwrapBody(
+        await eliteaFetch<unknown>(
+          `${BINDINGS_URL}/project_roles/${String(projectId)}`,
+        ),
+      ) as { roles?: string[] } | undefined;
+      return body?.roles ?? [];
     },
   });
 }

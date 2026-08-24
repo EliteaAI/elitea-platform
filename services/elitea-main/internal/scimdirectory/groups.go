@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ErrNoBinding reports that no binding names the pushed group. It is what makes
@@ -393,6 +394,51 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	return tx.Commit(ctx)
 }
 
+// ProjectRoleNames lists the roles a project really has, in the order they were
+// created.
+//
+// It exists because the admin screen must offer the roles of the project the
+// operator chose, and the general role listing
+// (`/admin/roles/{mode}/{projectID}`, internal/api/v2/eliteacore/handler.go)
+// answers a HARDCODED admin/editor/viewer when a project carries no role rows.
+// That fallback is fine where it came from and wrong here: a picker fed by it
+// offers roles the project does not have, and the save is then refused by a
+// value the control itself supplied.
+//
+// An empty result is a true answer — the project has no roles — and the screen
+// says so rather than filling the gap.
+func (s *Store) ProjectRoleNames(ctx context.Context, projectID int) ([]string, error) {
+	if s == nil || s.pool == nil {
+		return nil, ErrNoPool
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT true FROM centry.project WHERE id = $1`, projectID).Scan(&exists); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, UnknownProjectError{ProjectID: projectID}
+		}
+		return nil, err
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT name FROM public.auth_core__project_role
+		  WHERE project_id = $1 ORDER BY id`, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	names := make([]string, 0, 4)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
 /* ── membership ────────────────────────────────────────────────────────── */
 
 // ReplaceGroupMembers makes the group's membership exactly what was sent.
@@ -402,25 +448,31 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 // this group never granted are untouched.
 func (s *Store) ReplaceGroupMembers(ctx context.Context, id int64, members []int) (Group, error) {
 	return s.applyMembers(ctx, id, func(ctx context.Context, tx pgx.Tx, binding Group) error {
-		existing, err := ledgerMembers(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		wanted := make(map[int]struct{}, len(members))
-		for _, member := range members {
-			wanted[member] = struct{}{}
-		}
-		var removed []int
-		for _, member := range existing {
-			if _, keep := wanted[member]; !keep {
-				removed = append(removed, member)
-			}
-		}
-		if err := revokeMembers(ctx, tx, binding, removed); err != nil {
-			return err
-		}
-		return grantMembers(ctx, tx, binding, members)
+		return replaceMembers(ctx, tx, binding, members)
 	})
+}
+
+// replaceMembers is the body of a replace, so ApplyGroupOperations and
+// ReplaceGroupMembers cannot come to mean different things.
+func replaceMembers(ctx context.Context, tx pgx.Tx, binding Group, members []int) error {
+	existing, err := ledgerMembers(ctx, tx, binding.ID)
+	if err != nil {
+		return err
+	}
+	wanted := make(map[int]struct{}, len(members))
+	for _, member := range members {
+		wanted[member] = struct{}{}
+	}
+	var removed []int
+	for _, member := range existing {
+		if _, keep := wanted[member]; !keep {
+			removed = append(removed, member)
+		}
+	}
+	if err := revokeMembers(ctx, tx, binding, removed); err != nil {
+		return err
+	}
+	return grantMembers(ctx, tx, binding, members)
 }
 
 // AddGroupMembers grants the members named, and leaves the rest of the group
@@ -438,6 +490,69 @@ func (s *Store) RemoveGroupMembers(ctx context.Context, id int64, members []int)
 	})
 }
 
+// GroupOperationKind names one step of a PATCH.
+type GroupOperationKind int
+
+const (
+	// GroupAddMembers grants the members named and leaves the rest alone.
+	GroupAddMembers GroupOperationKind = iota
+	// GroupReplaceMembers makes the membership exactly the members named.
+	GroupReplaceMembers
+	// GroupRemoveMembers withdraws the members named.
+	GroupRemoveMembers
+	// GroupRename applies a displayName change.
+	GroupRename
+)
+
+// GroupOperation is one understood step of a PATCH.
+type GroupOperation struct {
+	Kind        GroupOperationKind
+	Members     []int
+	DisplayName string
+}
+
+// ApplyGroupOperations applies a whole PATCH in ONE transaction.
+//
+// # Why the whole request, and not a call per operation
+//
+// An identity provider sends a membership delta as several operations in one
+// request — Entra ID's is `[{add members …}, {remove members …}]` — and it
+// sends that request once. Applying the operations through separate calls means
+// a failure in the second commits the first and reports the whole PATCH as
+// failed, so the group keeps somebody it was told to drop and nothing will say
+// so again.
+//
+// Here the binding is locked once and every operation runs inside that
+// transaction, so the request either lands whole or leaves nothing behind.
+func (s *Store) ApplyGroupOperations(ctx context.Context, id int64, operations []GroupOperation) (Group, error) {
+	return s.applyMembers(ctx, id, func(ctx context.Context, tx pgx.Tx, binding Group) error {
+		for _, operation := range operations {
+			switch operation.Kind {
+			case GroupRename:
+				if err := renameBinding(ctx, tx, id, operation.DisplayName); err != nil {
+					return err
+				}
+
+			case GroupAddMembers:
+				if err := grantMembers(ctx, tx, binding, operation.Members); err != nil {
+					return err
+				}
+
+			case GroupReplaceMembers:
+				if err := replaceMembers(ctx, tx, binding, operation.Members); err != nil {
+					return err
+				}
+
+			case GroupRemoveMembers:
+				if err := revokeMembers(ctx, tx, binding, operation.Members); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // RenameGroup applies a `displayName` change from the identity provider.
 func (s *Store) RenameGroup(ctx context.Context, id int64, displayName string) (Group, error) {
 	if s == nil || s.pool == nil {
@@ -447,20 +562,33 @@ func (s *Store) RenameGroup(ctx context.Context, id int64, displayName string) (
 	if displayName == "" {
 		return Group{}, errors.New("scimdirectory: displayName is required")
 	}
-	tag, err := s.pool.Exec(ctx,
+	if err := renameBinding(ctx, s.pool, id, displayName); err != nil {
+		return Group{}, err
+	}
+	return s.GetGroup(ctx, id)
+}
+
+// execer is the write half of a pool and a transaction, so a rename is one
+// statement whether it runs alone or inside a PATCH.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+func renameBinding(ctx context.Context, db execer, id int64, displayName string) error {
+	tag, err := db.Exec(ctx,
 		`UPDATE elitea_auth.scim_group_bindings
 		    SET display_name = $2, updated_at = now() WHERE id = $1`,
 		id, displayName)
 	if isUniqueViolation(err) {
-		return Group{}, ErrConflict
+		return ErrConflict
 	}
 	if err != nil {
-		return Group{}, err
+		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return Group{}, ErrNotFound
+		return ErrNotFound
 	}
-	return s.GetGroup(ctx, id)
+	return nil
 }
 
 // applyMembers runs one membership change inside a transaction that holds the
@@ -614,11 +742,22 @@ func revokeMembers(ctx context.Context, tx pgx.Tx, binding Group, members []int)
 		// Another binding may still claim the same membership. The ledger row
 		// of THIS binding is already deleted, so what remains is every other
 		// claim.
+		//
+		// `AND granted` is load-bearing, and it is the SAME question the grant
+		// side asks above. A ledger row with `granted = false` records that its
+		// binding FOUND the membership, not that it holds it — such a row must
+		// not keep a membership alive.
+		//
+		// Without the clause: a manual member is claimed by group A
+		// (granted = false), an administrator then removes the membership by
+		// hand, group B pushes and creates it (granted = true), and B letting go
+		// finds A's row and skips the delete. A letting go skips it too. The
+		// person keeps a role that no binding grants and no push can withdraw.
 		var claimed bool
 		if err := tx.QueryRow(ctx,
 			`SELECT EXISTS (
 			     SELECT 1 FROM elitea_auth.scim_group_members
-			      WHERE user_id = $1 AND role_id = $2
+			      WHERE user_id = $1 AND role_id = $2 AND granted
 			 )`, member, roleID).Scan(&claimed); err != nil {
 			return err
 		}

@@ -206,6 +206,140 @@ func TestASecondGroupsClaimKeepsAMembershipAlive(t *testing.T) {
 	require.False(t, holdsRole(t, pool, project, alice, "editor"))
 }
 
+// A ledger row that only CLAIMS a membership must not keep it alive.
+//
+// The revoke asks whether another binding still GRANTS the membership, which is
+// the same question the grant side asks. Asking merely whether another row
+// mentions it strands the membership: nothing grants it, and no push can take
+// it away.
+func TestAClaimThatGrantedNothingDoesNotStrandAMembership(t *testing.T) {
+	pool := newGroupPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	project := seedProject(t, pool, "Platform", 0)
+	alice := seedUser(t, pool, "alice@corp.com")
+	grantRoleByHand(t, pool, project, alice, "editor")
+
+	first, err := store.CreateBinding(ctx, "Platform Team", project, "editor")
+	require.NoError(t, err)
+	// The first group finds the membership rather than granting it.
+	group, err := store.ReplaceGroupMembers(ctx, first.ID, []int{alice})
+	require.NoError(t, err)
+	require.False(t, memberOf(group, alice).Granted)
+
+	// An administrator then removes the membership by hand.
+	_, err = pool.Exec(ctx,
+		`DELETE FROM auth_core__project_user_role WHERE project_id = $1 AND user_id = $2`,
+		project, alice)
+	require.NoError(t, err)
+
+	// A second group pushes her, and this time the push CREATES it.
+	second, err := store.CreateBinding(ctx, "Release Team", project, "editor")
+	require.NoError(t, err)
+	group, err = store.ReplaceGroupMembers(ctx, second.ID, []int{alice})
+	require.NoError(t, err)
+	require.True(t, memberOf(group, alice).Granted)
+
+	// The group that granted it lets go. The first group's row claims her but
+	// granted nothing, so it must not hold the membership open.
+	_, err = store.ReplaceGroupMembers(ctx, second.ID, nil)
+	require.NoError(t, err)
+	require.False(t, holdsRole(t, pool, project, alice, "editor"),
+		"a claim that granted nothing must not keep the membership alive")
+}
+
+/* ── one PATCH, one transaction ────────────────────────────────────────── */
+
+// A PATCH is sent once. An operation that lands while a later one is refused is
+// a change the client believes it did not make, and nothing will send it again.
+func TestAPatchWhoseLaterOperationFailsLeavesNothingBehind(t *testing.T) {
+	pool := newGroupPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	project := seedProject(t, pool, "Platform", 0)
+	alice := seedUser(t, pool, "alice@corp.com")
+	bob := seedUser(t, pool, "bob@corp.com")
+	binding, err := store.CreateBinding(ctx, "Platform Team", project, "editor")
+	require.NoError(t, err)
+	_, err = store.ReplaceGroupMembers(ctx, binding.ID, []int{alice})
+	require.NoError(t, err)
+
+	// The role goes away between the grant and the patch, so the SECOND
+	// operation below cannot be applied.
+	_, err = pool.Exec(ctx,
+		`DELETE FROM auth_core__project_role WHERE project_id = $1 AND name = 'editor'`, project)
+	require.NoError(t, err)
+
+	_, err = store.ApplyGroupOperations(ctx, binding.ID, []GroupOperation{
+		{Kind: GroupRemoveMembers, Members: []int{alice}},
+		{Kind: GroupAddMembers, Members: []int{bob}},
+	})
+	var missing RoleMissingError
+	require.ErrorAs(t, err, &missing)
+
+	// The removal in the first operation was rolled back with the failure.
+	group, err := store.GetGroup(ctx, binding.ID)
+	require.NoError(t, err)
+	require.Len(t, group.Members, 1)
+	require.Equal(t, alice, group.Members[0].UserID)
+}
+
+// The operations of one PATCH are applied IN ORDER, which is what makes the
+// add/remove delta an identity provider sends mean what it says.
+func TestThePatchOperationsAreAppliedInOrder(t *testing.T) {
+	pool := newGroupPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	project := seedProject(t, pool, "Platform", 0)
+	alice := seedUser(t, pool, "alice@corp.com")
+	bob := seedUser(t, pool, "bob@corp.com")
+	binding, err := store.CreateBinding(ctx, "Platform Team", project, "editor")
+	require.NoError(t, err)
+	_, err = store.ReplaceGroupMembers(ctx, binding.ID, []int{alice})
+	require.NoError(t, err)
+
+	group, err := store.ApplyGroupOperations(ctx, binding.ID, []GroupOperation{
+		{Kind: GroupAddMembers, Members: []int{bob}},
+		{Kind: GroupRemoveMembers, Members: []int{alice}},
+		{Kind: GroupRename, DisplayName: "Core Platform"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "Core Platform", group.DisplayName)
+	require.Len(t, group.Members, 1)
+	require.Equal(t, bob, group.Members[0].UserID)
+	require.True(t, holdsRole(t, pool, project, bob, "editor"))
+	require.False(t, holdsRole(t, pool, project, alice, "editor"))
+}
+
+/* ── the roles a project really has ────────────────────────────────────── */
+
+// The binding editor's role control reads THIS, not the general role listing,
+// which answers a hardcoded admin/editor/viewer for a project with no roles. A
+// picker fed by that offers a role the save then refuses.
+func TestProjectRoleNamesAnswersWhatTheProjectHas(t *testing.T) {
+	pool := newGroupPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	project := seedProject(t, pool, "Platform", 0)
+	roles, err := store.ProjectRoleNames(ctx, project)
+	require.NoError(t, err)
+	require.Equal(t, []string{"admin", "editor", "viewer", "system"}, roles)
+
+	// A project with no roles answers an EMPTY list rather than a default set.
+	_, err = pool.Exec(ctx, `DELETE FROM auth_core__project_role WHERE project_id = $1`, project)
+	require.NoError(t, err)
+	roles, err = store.ProjectRoleNames(ctx, project)
+	require.NoError(t, err)
+	require.Empty(t, roles)
+
+	_, err = store.ProjectRoleNames(ctx, 4242)
+	require.ErrorAs(t, err, &UnknownProjectError{})
+}
+
 /* ── deleting a group is not deleting a project ────────────────────────── */
 
 func TestDeletingAGroupWithdrawsItsAccessAndLeavesTheProjectStanding(t *testing.T) {

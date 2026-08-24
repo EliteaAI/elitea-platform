@@ -61,6 +61,7 @@ import (
 // the ones that come before the database is read.
 type SCIMGroupBindingStore interface {
 	ListGroups(ctx context.Context, filter scimdirectory.Filter, startIndex, count int) ([]scimdirectory.Group, int, error)
+	ProjectRoleNames(ctx context.Context, projectID int) ([]string, error)
 	CreateBinding(ctx context.Context, displayName string, projectID int, roleName string) (scimdirectory.Group, error)
 	UpdateBinding(ctx context.Context, id int64, displayName string, projectID int, roleName string) (scimdirectory.Group, error)
 	DeleteGroup(ctx context.Context, id int64) error
@@ -81,9 +82,19 @@ func WithSCIMGroupBindings(store SCIMGroupBindingStore) Option {
 	}
 }
 
-// scimGroupBindingPageSize bounds the listing. It is the SCIM directory's own
-// maximum page, so this screen and a SCIM client see the same set.
-const scimGroupBindingPageSize = 500
+// scimGroupBindingPageSize is the DEFAULT page, and scimGroupBindingMaxPage the
+// largest one a caller may ask for. The maximum is the SCIM directory's own, so
+// this screen and a SCIM client see the same set.
+//
+// The listing is PAGED rather than capped. A capped listing renders its first
+// page and reports a larger total, and every binding past the cap is then
+// unreachable from any screen — an operator looking for one concludes it does
+// not exist and authors a duplicate, which the unique index refuses for a
+// reason they cannot see.
+const (
+	scimGroupBindingPageSize = 100
+	scimGroupBindingMaxPage  = 500
+)
 
 // scimGroupBindingBody is the wire shape of one authored binding.
 type scimGroupBindingBody struct {
@@ -157,12 +168,17 @@ func (h *Handler) scimGroupBindingsReady(w http.ResponseWriter) bool {
 }
 
 // SCIMGroupBindingList answers `GET /admin/scim_group_bindings/administration`.
+//
+// `limit` and `offset` page it, and the response carries `total`, `limit` and
+// `offset` so the caller can tell a full listing from a page of one.
 func (h *Handler) SCIMGroupBindingList(w http.ResponseWriter, r *http.Request) {
 	if !h.scimGroupBindingsReady(w) {
 		return
 	}
+	limit, offset := scimGroupBindingPaging(r)
+	// The store's index is ONE-BASED, as SCIM's is.
 	groups, total, err := h.scimGroupBindings.ListGroups(
-		r.Context(), scimdirectory.Filter{}, 1, scimGroupBindingPageSize)
+		r.Context(), scimdirectory.Filter{}, offset+1, limit)
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable,
 			map[string]any{"error": "the group bindings could not be read"})
@@ -172,7 +188,64 @@ func (h *Handler) SCIMGroupBindingList(w http.ResponseWriter, r *http.Request) {
 	for _, group := range groups {
 		views = append(views, scimGroupBindingToView(group))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"bindings": views, "total": total})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"bindings": views, "total": total, "limit": limit, "offset": offset,
+	})
+}
+
+// scimGroupBindingPaging reads `limit` and `offset`, clamped.
+//
+// An unreadable or negative value falls back to the default rather than
+// refusing: a paging parameter is the caller's convenience, and a 400 here
+// would make the screen unusable over a typo in a URL.
+func scimGroupBindingPaging(r *http.Request) (limit, offset int) {
+	limit, offset = scimGroupBindingPageSize, 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = min(parsed, scimGroupBindingMaxPage)
+		}
+	}
+	if raw := r.URL.Query().Get("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			offset = parsed
+		}
+	}
+	return limit, offset
+}
+
+// SCIMGroupBindingProjectRoles answers
+// `GET /admin/scim_group_bindings/administration/project_roles/{projectID}`.
+//
+// # Why this exists beside `/admin/roles/{mode}/{projectID}`
+//
+// That listing answers a HARDCODED admin/editor/viewer when a project carries
+// no role rows (internal/api/v2/eliteacore/handler.go). It is a reasonable
+// default where it came from, and it is the wrong source for this screen: a
+// picker fed by it offers a role the project does not have, the operator
+// chooses it, and the save is refused by a value the control supplied.
+//
+// This route answers what the project HAS, empty list included.
+func (h *Handler) SCIMGroupBindingProjectRoles(w http.ResponseWriter, r *http.Request) {
+	if !h.scimGroupBindingsReady(w) {
+		return
+	}
+	projectID, err := strconv.Atoi(chi.URLParam(r, "projectID"))
+	if err != nil || projectID <= 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such project"})
+		return
+	}
+	roles, err := h.scimGroupBindings.ProjectRoleNames(r.Context(), projectID)
+	if err != nil {
+		var unknownProject scimdirectory.UnknownProjectError
+		if errors.As(err, &unknownProject) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "no such project"})
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]any{"error": "the project roles could not be read"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"roles": roles, "total": len(roles)})
 }
 
 // SCIMGroupBindingCreate answers `POST /admin/scim_group_bindings/administration`.

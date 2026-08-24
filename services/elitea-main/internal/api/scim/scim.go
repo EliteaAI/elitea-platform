@@ -127,6 +127,11 @@ type Directory interface {
 	AddGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
 	ReplaceGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
 	RemoveGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
+	// ApplyGroupOperations applies a whole PATCH in one transaction. It is a
+	// separate method rather than a loop over the three above because a PATCH
+	// is sent once: an operation that lands while a later one is refused is a
+	// change the client believes it did not make.
+	ApplyGroupOperations(ctx context.Context, id int64, operations []scimdirectory.GroupOperation) (scimdirectory.Group, error)
 	DeleteGroup(ctx context.Context, id int64) error
 	ResolveMember(ctx context.Context, value string) (int, error)
 }

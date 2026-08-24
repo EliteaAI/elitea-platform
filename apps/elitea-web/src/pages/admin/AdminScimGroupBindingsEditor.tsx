@@ -25,23 +25,17 @@ import { useMemo, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
-import Stack from "@mui/material/Stack";
-import Table from "@mui/material/Table";
-import TableBody from "@mui/material/TableBody";
-import TableCell from "@mui/material/TableCell";
-import TableHead from "@mui/material/TableHead";
-import TableRow from "@mui/material/TableRow";
 import Typography from "@mui/material/Typography";
 
 import { t } from "@/shared/i18n";
 
 import { AdminScimGroupBindingDialog } from "./AdminScimGroupBindingDialog";
+import { AdminScimGroupBindingTable } from "./AdminScimGroupBindingTable";
 import { configFailureReason } from "./api/adminConfigurationApi";
 import {
   useAdminScimGroupBindings,
@@ -51,48 +45,12 @@ import {
   type AdminScimGroupBindingDraft,
 } from "./api/adminScimGroupBindingsApi";
 
-/** The members cell. It names who the group granted and who it merely found. */
-function MemberSummary({
-  binding,
-}: {
-  readonly binding: AdminScimGroupBinding;
-}) {
-  const granted = binding.members.filter((member) => member.granted).length;
-  const found = binding.members.length - granted;
-  if (binding.members.length === 0) {
-    return (
-      <Typography variant="bodySmall" color="text.secondary">
-        {t("pages.admin.scimGroups.table.noMembers", "No push has arrived yet")}
-      </Typography>
-    );
-  }
-  return (
-    <Stack direction="row" spacing={1}>
-      <Chip
-        size="small"
-        label={t("pages.admin.scimGroups.table.granted", "{{count}} granted", {
-          count: granted,
-        })}
-      />
-      {found > 0 ? (
-        <Chip
-          size="small"
-          variant="outlined"
-          label={t(
-            "pages.admin.scimGroups.table.alreadyMembers",
-            "{{count}} already members",
-            {
-              count: found,
-            },
-          )}
-        />
-      ) : null}
-    </Stack>
-  );
-}
-
 export function AdminScimGroupBindingsEditor() {
-  const listQuery = useAdminScimGroupBindings();
+  // The page offset this screen is showing. A binding past the first page must
+  // stay reachable: an operator who cannot find one authors a duplicate, and
+  // the unique group name then refuses it for a reason no screen explains.
+  const [offset, setOffset] = useState(0);
+  const listQuery = useAdminScimGroupBindings(offset);
   const saveMutation = useSaveAdminScimGroupBinding();
   const deleteMutation = useDeleteAdminScimGroupBinding();
 
@@ -106,8 +64,14 @@ export function AdminScimGroupBindingsEditor() {
   const [saveError, setSaveError] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
 
+  const listQueryPage = listQuery.data;
   // A new array each render would defeat every memo downstream.
-  const bindings = useMemo(() => listQuery.data ?? [], [listQuery.data]);
+  const bindings = useMemo(
+    () => listQueryPage?.bindings ?? [],
+    [listQueryPage],
+  );
+  const total = listQueryPage?.total ?? bindings.length;
+  const hasMore = offset + bindings.length < total;
 
   const handleSubmit = (draft: AdminScimGroupBindingDraft): void => {
     setSaveError(undefined);
@@ -225,75 +189,20 @@ export function AdminScimGroupBindingsEditor() {
         </Typography>
       ) : null}
 
-      {bindings.length > 0 ? (
-        <Table
-          size="small"
-          aria-label={t("pages.admin.scimGroups.table.label", "Group bindings")}
-        >
-          <TableHead>
-            <TableRow>
-              <TableCell>
-                {t("pages.admin.scimGroups.table.group", "Group")}
-              </TableCell>
-              <TableCell>
-                {t("pages.admin.scimGroups.table.project", "Project")}
-              </TableCell>
-              <TableCell>
-                {t("pages.admin.scimGroups.table.role", "Role")}
-              </TableCell>
-              <TableCell>
-                {t("pages.admin.scimGroups.table.members", "Members")}
-              </TableCell>
-              <TableCell align="right">
-                {t("pages.admin.scimGroups.table.actions", "Actions")}
-              </TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {bindings.map((binding) => (
-              <TableRow
-                key={binding.id}
-                data-testid={`admin-scim-group-binding-${binding.id}`}
-              >
-                <TableCell>{binding.display_name}</TableCell>
-                <TableCell>
-                  {binding.project_name === undefined ||
-                  binding.project_name === ""
-                    ? `#${String(binding.project_id)}`
-                    : `${binding.project_name} (#${String(binding.project_id)})`}
-                </TableCell>
-                <TableCell>{binding.role_name}</TableCell>
-                <TableCell>
-                  <MemberSummary binding={binding} />
-                </TableCell>
-                <TableCell align="right">
-                  <Button
-                    size="small"
-                    onClick={() => {
-                      setEditing(binding);
-                      setSaveError(undefined);
-                      setDialogOpen(true);
-                    }}
-                    sx={{ textTransform: "none" }}
-                  >
-                    {t("pages.admin.scimGroups.table.edit", "Edit")}
-                  </Button>
-                  <Button
-                    size="small"
-                    color="error"
-                    onClick={() => {
-                      setPendingDelete(binding);
-                    }}
-                    sx={{ textTransform: "none" }}
-                  >
-                    {t("pages.admin.scimGroups.table.remove", "Remove")}
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      ) : null}
+      <AdminScimGroupBindingTable
+        bindings={bindings}
+        total={total}
+        offset={offset}
+        hasMore={hasMore}
+        busy={listQuery.isFetching}
+        onEdit={(binding) => {
+          setEditing(binding);
+          setSaveError(undefined);
+          setDialogOpen(true);
+        }}
+        onRemove={setPendingDelete}
+        onOffset={setOffset}
+      />
 
       <AdminScimGroupBindingDialog
         open={dialogOpen}

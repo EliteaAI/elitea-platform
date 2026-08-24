@@ -1685,6 +1685,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/runtime_remote/{mode}",
 		"GET /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
 		"GET /api/v2/admin/scim_group_bindings/administration",
+		"GET /api/v2/admin/scim_group_bindings/administration/project_roles/{projectID}",
 		"GET /api/v2/admin/system_info/prompt_lib",
 		"GET /api/v2/admin/system_info/{mode}",
 		"GET /api/v2/admin/tasks/{mode}",

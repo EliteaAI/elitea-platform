@@ -30,16 +30,29 @@ type stubBindingStore struct {
 	groups  []scimdirectory.Group
 	created []scimdirectory.Group
 	deleted []int64
+	roles   []string
 	err     error
+	// listedAt records the (startIndex, count) each listing asked for, so a
+	// test can assert the page a request produced rather than the rows a stub
+	// chose to return.
+	listedAt [][2]int
 }
 
 func (s *stubBindingStore) ListGroups(
-	context.Context, scimdirectory.Filter, int, int,
+	_ context.Context, _ scimdirectory.Filter, startIndex, count int,
 ) ([]scimdirectory.Group, int, error) {
 	if s.err != nil {
 		return nil, 0, s.err
 	}
+	s.listedAt = append(s.listedAt, [2]int{startIndex, count})
 	return s.groups, len(s.groups), nil
+}
+
+func (s *stubBindingStore) ProjectRoleNames(context.Context, int) ([]string, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.roles, nil
 }
 
 func (s *stubBindingStore) CreateBinding(
@@ -80,6 +93,7 @@ func serveBinding(
 	t.Helper()
 	router := chi.NewRouter()
 	router.Get("/bindings", handler.SCIMGroupBindingList)
+	router.Get("/bindings/project_roles/{projectID}", handler.SCIMGroupBindingProjectRoles)
 	router.Post("/bindings", handler.SCIMGroupBindingCreate)
 	router.Put("/bindings/{id}", handler.SCIMGroupBindingSave)
 	router.Delete("/bindings/{id}", handler.SCIMGroupBindingDelete)
@@ -185,4 +199,68 @@ func TestDeletingABindingReachesTheStoreAndAnswersNoContent(t *testing.T) {
 	recorder := serveBinding(t, handler, http.MethodDelete, "/bindings/7", "")
 	require.Equal(t, http.StatusNoContent, recorder.Code)
 	require.Equal(t, []int64{7}, store.deleted)
+}
+
+/* ── the listing is paged, not capped ──────────────────────────────────── */
+
+// A capped listing renders its first page and reports a larger total, and every
+// binding past the cap is unreachable from any screen: an operator looking for
+// one concludes it does not exist and authors a duplicate, which the unique
+// index then refuses for a reason they cannot see.
+func TestTheListingPagesRatherThanCappingSilently(t *testing.T) {
+	store := &stubBindingStore{}
+	handler := NewHandler(nil, WithSCIMGroupBindings(store))
+
+	recorder := serveBinding(t, handler, http.MethodGet, "/bindings", "")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// The default page, and the store's one-based index.
+	require.Equal(t, [2]int{1, 100}, store.listedAt[0])
+
+	recorder = serveBinding(t, handler, http.MethodGet, "/bindings?limit=25&offset=50", "")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, [2]int{51, 25}, store.listedAt[1])
+
+	// The page a caller can ask for is bounded, and the response says which
+	// page it answered so a client can tell a full listing from a page of one.
+	recorder = serveBinding(t, handler, http.MethodGet, "/bindings?limit=100000", "")
+	require.Equal(t, [2]int{1, 500}, store.listedAt[2])
+	body := bindingBody(t, recorder)
+	require.EqualValues(t, 500, body["limit"])
+	require.EqualValues(t, 0, body["offset"])
+	require.Contains(t, body, "total")
+}
+
+/* ── the role control reads the project's own roles ────────────────────── */
+
+// `/admin/roles/{mode}/{projectID}` answers a hardcoded admin/editor/viewer for
+// a project that carries no role rows. A picker fed by that offers a role the
+// project does not have, and the save is then refused by a value the control
+// itself supplied — so this surface answers what the project HAS, empty
+// included.
+func TestTheProjectRolesRouteAnswersWhatTheProjectHas(t *testing.T) {
+	store := &stubBindingStore{roles: []string{"admin", "editor", "viewer", "system"}}
+	handler := NewHandler(nil, WithSCIMGroupBindings(store))
+
+	recorder := serveBinding(t, handler, http.MethodGet, "/bindings/project_roles/12", "")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Equal(t, []any{"admin", "editor", "viewer", "system"}, bindingBody(t, recorder)["roles"])
+
+	empty := NewHandler(nil, WithSCIMGroupBindings(&stubBindingStore{}))
+	recorder = serveBinding(t, empty, http.MethodGet, "/bindings/project_roles/12", "")
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Empty(t, bindingBody(t, recorder)["roles"],
+		"a project with no roles answers an empty list, never a default set")
+}
+
+func TestTheProjectRolesRouteRefusesAnUnusableProjectId(t *testing.T) {
+	handler := NewHandler(nil, WithSCIMGroupBindings(&stubBindingStore{}))
+	for _, target := range []string{"/bindings/project_roles/0", "/bindings/project_roles/-1"} {
+		require.Equal(t, http.StatusNotFound,
+			serveBinding(t, handler, http.MethodGet, target, "").Code, target)
+	}
+
+	unknown := NewHandler(nil, WithSCIMGroupBindings(
+		&stubBindingStore{err: scimdirectory.UnknownProjectError{ProjectID: 42}}))
+	require.Equal(t, http.StatusNotFound,
+		serveBinding(t, unknown, http.MethodGet, "/bindings/project_roles/42", "").Code)
 }

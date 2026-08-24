@@ -1060,6 +1060,16 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// apply.
 				r.With(central(admin.UserProjectPermissionsViewPermission)).
 					Get("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingList)
+				// The roles a project REALLY has, for the binding editor's role
+				// control. `/admin/roles/{mode}/{projectID}` answers a hardcoded
+				// admin/editor/viewer for a project with no role rows, which
+				// would make this control offer a role the save then refuses.
+				//
+				// A static segment ahead of `{id}`: chi matches the literal
+				// first, so this cannot shadow the binding routes below.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/scim_group_bindings/administration/project_roles/{projectID}",
+						adminHandler.SCIMGroupBindingProjectRoles)
 				r.With(central(admin.UserProjectPermissionsEditPermission)).
 					Post("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingCreate)
 				r.With(central(admin.UserProjectPermissionsEditPermission)).

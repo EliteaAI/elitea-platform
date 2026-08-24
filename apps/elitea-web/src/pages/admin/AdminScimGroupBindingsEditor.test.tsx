@@ -29,6 +29,19 @@ import { server } from "@/test/setup";
 import { AdminScimGroupBindingsEditor } from "./AdminScimGroupBindingsEditor";
 import { renderAdminRoute } from "./__tests__/testRouter";
 
+const BINDING_TEMPLATE = {
+  id: "7",
+  display_name: "Platform Team",
+  external_id: "grp-1",
+  project_id: 12,
+  project_name: "Platform",
+  role_name: "editor",
+  members: [
+    { user_id: 1, user_name: "e2e-admin@autotest.local", granted: true },
+    { user_id: 2, user_name: "e2e-member@autotest.local", granted: false },
+  ],
+};
+
 const BINDINGS = [
   {
     id: "7",
@@ -53,12 +66,42 @@ interface RecordedRequest {
 let recorded: RecordedRequest[] = [];
 
 function useBindingHandlers(
-  options: { saveStatus?: number; saveBody?: Record<string, string> } = {},
+  options: {
+    saveStatus?: number;
+    saveBody?: Record<string, string>;
+    bindings?: (typeof BINDINGS)[number][];
+    total?: number;
+    projectRoles?: string[];
+  } = {},
 ): void {
   server.use(
+    http.get(
+      "*/admin/scim_group_bindings/administration/project_roles/*",
+      ({ request }) => {
+        recorded.push({ method: "GET", url: request.url, body: null });
+        return HttpResponse.json({
+          roles: options.projectRoles ?? [
+            "admin",
+            "editor",
+            "viewer",
+            "system",
+          ],
+          total: 4,
+        });
+      },
+    ),
     http.get("*/admin/scim_group_bindings/administration", ({ request }) => {
       recorded.push({ method: "GET", url: request.url, body: null });
-      return HttpResponse.json({ bindings: BINDINGS, total: BINDINGS.length });
+      const url = new URL(request.url);
+      const offset = Number(url.searchParams.get("offset") ?? "0");
+      const limit = Number(url.searchParams.get("limit") ?? "100");
+      const all = options.bindings ?? BINDINGS;
+      return HttpResponse.json({
+        bindings: all.slice(offset, offset + limit),
+        total: options.total ?? all.length,
+        limit,
+        offset,
+      });
     }),
     http.post(
       "*/admin/scim_group_bindings/administration",
@@ -104,14 +147,13 @@ function useBindingHandlers(
     http.get("*/admin/projects/administration", () =>
       HttpResponse.json({ rows: [{ id: 12, name: "Platform" }], total: 1 }),
     ),
+    // The GENERAL role listing, which answers a hardcoded admin/editor/viewer
+    // for a project with no roles. It is stubbed with a set this screen must
+    // never render, so a test fails if the dialog reads it.
     http.get("*/admin/roles/administration/*", () =>
       HttpResponse.json({
-        rows: [
-          { id: "1", name: "admin" },
-          { id: "2", name: "editor" },
-          { id: "3", name: "viewer" },
-        ],
-        total: 3,
+        rows: [{ id: "9", name: "from-the-general-listing" }],
+        total: 1,
       }),
     ),
   );
@@ -250,6 +292,76 @@ describe("Admin › Authentication › SCIM group bindings", () => {
     expect(writes()[0]?.url).toContain(
       "/admin/scim_group_bindings/administration/7",
     );
+  });
+
+  it("offers the project's own roles, never the general listing's defaults", async () => {
+    useBindingHandlers({
+      projectRoles: ["admin", "editor", "viewer", "system"],
+    });
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminScimGroupBindingsEditor />);
+    await screen.findByText("Platform Team");
+
+    await user.click(screen.getByTestId("admin-scim-group-bindings-add"));
+    await user.click(screen.getByLabelText("Project"));
+    await user.click(
+      await screen.findByText("Platform (#12)", { selector: "li" }),
+    );
+    await user.click(screen.getByLabelText("Role"));
+
+    // `system` is a real project role and is offered; the general listing's
+    // fallback set does not carry it, and its marker value must be absent.
+    expect(
+      await screen.findByRole("option", { name: "system" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "from-the-general-listing" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says a project has no roles rather than offering defaults", async () => {
+    useBindingHandlers({ projectRoles: [] });
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminScimGroupBindingsEditor />);
+    await screen.findByText("Platform Team");
+
+    await user.click(screen.getByTestId("admin-scim-group-bindings-add"));
+    await user.click(screen.getByLabelText("Project"));
+    await user.click(
+      await screen.findByText("Platform (#12)", { selector: "li" }),
+    );
+
+    // A control that offered a role here would offer a value its own save
+    // refuses.
+    expect(
+      await screen.findByTestId("admin-scim-binding-no-roles"),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Role")).not.toBeInTheDocument();
+  });
+
+  it("pages rather than hiding the bindings past the first page", async () => {
+    const many = Array.from({ length: 120 }, (_, index) => ({
+      ...BINDING_TEMPLATE,
+      id: String(index + 1),
+      display_name: `Group ${String(index + 1)}`,
+    }));
+    useBindingHandlers({ bindings: many });
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminScimGroupBindingsEditor />);
+
+    await screen.findByText("Group 1");
+    // The screen says what it is NOT showing, so a binding past the page is
+    // known to exist rather than assumed absent.
+    expect(
+      screen.getByTestId("admin-scim-group-bindings-paging"),
+    ).toHaveTextContent("Showing 1–100 of 120 bindings");
+    expect(screen.queryByText("Group 101")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("admin-scim-group-bindings-next"));
+
+    // And the rest are reachable.
+    expect(await screen.findByText("Group 101")).toBeInTheDocument();
+    expect(screen.queryByText("Group 1")).not.toBeInTheDocument();
   });
 
   it('does not report "no group is bound" while the listing is failing', async () => {

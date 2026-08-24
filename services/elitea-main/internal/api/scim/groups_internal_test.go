@@ -49,7 +49,11 @@ type groupState struct {
 	replaced [][]int
 	removed  [][]int
 	deleted  []int64
-	filter   scimdirectory.Filter
+	applied  [][]scimdirectory.GroupOperation
+	// order records the create path's two writes in the order they arrived, so
+	// a test can assert which one a failure would have left behind.
+	order  []string
+	filter scimdirectory.Filter
 }
 
 func newGroupState() *groupState {
@@ -113,6 +117,7 @@ func (d *recordingDirectory) AdoptGroup(_ context.Context, id int64, externalID,
 		return scimdirectory.ErrNotFound
 	}
 	d.groups.adopted = append(d.groups.adopted, externalID)
+	d.groups.order = append(d.groups.order, "adopt")
 	if binding.group.ExternalID == "" {
 		binding.group.ExternalID = externalID
 	}
@@ -154,6 +159,7 @@ func (d *recordingDirectory) ReplaceGroupMembers(
 		return scimdirectory.Group{}, scimdirectory.ErrNotFound
 	}
 	d.groups.replaced = append(d.groups.replaced, members)
+	d.groups.order = append(d.groups.order, "members")
 	binding.members = members
 	return binding.resolved(), nil
 }
@@ -167,6 +173,36 @@ func (d *recordingDirectory) RemoveGroupMembers(
 	}
 	d.groups.removed = append(d.groups.removed, members)
 	return binding.resolved(), nil
+}
+
+// ApplyGroupOperations records the operations of ONE patch, and applies them
+// through the same recorders the single-operation calls use — so a test can
+// still assert what reached the store, and a test can also assert that the
+// whole patch arrived as one call.
+func (d *recordingDirectory) ApplyGroupOperations(
+	ctx context.Context, id int64, operations []scimdirectory.GroupOperation,
+) (scimdirectory.Group, error) {
+	d.groups.applied = append(d.groups.applied, operations)
+	group, err := d.GetGroup(ctx, id)
+	if err != nil {
+		return scimdirectory.Group{}, err
+	}
+	for _, operation := range operations {
+		switch operation.Kind {
+		case scimdirectory.GroupRename:
+			group, err = d.RenameGroup(ctx, id, operation.DisplayName)
+		case scimdirectory.GroupAddMembers:
+			group, err = d.AddGroupMembers(ctx, id, operation.Members)
+		case scimdirectory.GroupReplaceMembers:
+			group, err = d.ReplaceGroupMembers(ctx, id, operation.Members)
+		case scimdirectory.GroupRemoveMembers:
+			group, err = d.RemoveGroupMembers(ctx, id, operation.Members)
+		}
+		if err != nil {
+			return scimdirectory.Group{}, err
+		}
+	}
+	return group, nil
 }
 
 func (d *recordingDirectory) DeleteGroup(_ context.Context, id int64) error {
@@ -432,4 +468,123 @@ func TestTheDiscoveryDocumentsAdvertiseGroupsBecauseGroupsAreServed(t *testing.T
 	}
 	require.True(t, ids[schemaGroup])
 	require.True(t, ids[schemaProjectGrant])
+}
+
+/* ── an empty removal list is not "remove everybody" ───────────────────── */
+
+// The difference between an OMITTED value and an EMPTY one is a group's whole
+// membership. A client that computed a delta and found nothing to remove sends
+// `"value": []`, and reading that as the attribute-wide removal empties the
+// project behind a 200 nobody has a reason to look at.
+func TestARemoveWithAnEmptyMemberListRemovesNobody(t *testing.T) {
+	directory := newRecordingDirectory()
+	directory.groups.bindings[7].members = []int{42, 43}
+
+	recorder := serve(t, directory, http.MethodPatch, "/Groups/7",
+		`{"Operations":[{"op":"remove","path":"members","value":[]}]}`)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Empty(t, directory.groups.replaced, "an empty list must not empty the group")
+	require.Empty(t, directory.groups.removed)
+	require.Equal(t, []int{42, 43}, directory.groups.bindings[7].members)
+}
+
+// An OMITTED value still means the attribute-wide removal RFC 7644 §3.5.2.2
+// defines. A JSON null counts as omitted, which is what several clients send.
+func TestARemoveWithNoMemberValueStillEmptiesTheGroup(t *testing.T) {
+	for _, body := range []string{
+		`{"Operations":[{"op":"remove","path":"members"}]}`,
+		`{"Operations":[{"op":"remove","path":"members","value":null}]}`,
+	} {
+		directory := newRecordingDirectory()
+		directory.groups.bindings[7].members = []int{42, 43}
+
+		recorder := serve(t, directory, http.MethodPatch, "/Groups/7", body)
+
+		require.Equal(t, http.StatusOK, recorder.Code, body)
+		require.Equal(t, [][]int{nil}, directory.groups.replaced, body)
+		require.Empty(t, directory.groups.bindings[7].members, body)
+	}
+}
+
+/* ── a removal of somebody who does not exist is not a wedge ───────────── */
+
+// A hard-deleted account must not stop a group from syncing. The removal names
+// a membership that cannot exist, so skipping it reaches exactly the state the
+// client asked for — and refusing means every later sync of that group fails on
+// the same operation forever.
+func TestARemovalOfADeletedAccountIsSkippedRatherThanRefused(t *testing.T) {
+	directory := newRecordingDirectory()
+	recorder := serve(t, directory, http.MethodPatch, "/Groups/7", `{"Operations":[
+		{"op":"add","path":"members","value":[{"value":"42"}]},
+		{"op":"remove","path":"members[value eq \"nobody@corp.com\"]"}
+	]}`)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	// The add still landed, and the unresolvable removal was dropped rather
+	// than taking the whole request down with it.
+	require.Equal(t, [][]int{{42}}, directory.groups.added)
+	require.Empty(t, directory.groups.removed)
+}
+
+// A GRANT still refuses an unresolvable member: applying the ones that resolved
+// would report a membership this service only partly holds.
+func TestAnUnresolvableMemberInAnAddStillRefusesTheWholeRequest(t *testing.T) {
+	directory := newRecordingDirectory()
+	recorder := serve(t, directory, http.MethodPatch, "/Groups/7",
+		`{"Operations":[{"op":"add","path":"members","value":[{"value":"42"},{"value":"nobody@corp.com"}]}]}`)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Empty(t, directory.groups.added)
+	require.Empty(t, directory.groups.applied)
+}
+
+// An AMBIGUOUS value is refused on a removal too. Removing whichever of two
+// accounts the database returns first is not a state anybody asked for.
+func TestAnAmbiguousMemberValueIsRefusedOnARemovalAsWell(t *testing.T) {
+	directory := newRecordingDirectory()
+	recorder := serve(t, directory, http.MethodPatch, "/Groups/7",
+		`{"Operations":[{"op":"remove","path":"members","value":[{"value":"ambiguous"}]}]}`)
+
+	require.Equal(t, http.StatusBadRequest, recorder.Code)
+	require.Empty(t, directory.groups.removed)
+}
+
+/* ── one PATCH reaches the store as one call ───────────────────────────── */
+
+// The delta shape Entra ID sends is two operations in one request. They must
+// arrive at the store together: applied through separate calls, a failure in
+// the second commits the first and reports the whole PATCH as failed, so the
+// group keeps somebody it was told to drop and nothing says so again.
+func TestOnePatchIsAppliedAsOneCallSoItCannotLandByHalves(t *testing.T) {
+	directory := newRecordingDirectory()
+	directory.groups.bindings[7].members = []int{43}
+
+	recorder := serve(t, directory, http.MethodPatch, "/Groups/7", `{"Operations":[
+		{"op":"add","path":"members","value":[{"value":"42"}]},
+		{"op":"remove","path":"members[value eq \"43\"]"}
+	]}`)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Len(t, directory.groups.applied, 1, "one request, one store call")
+	require.Equal(t, []scimdirectory.GroupOperation{
+		{Kind: scimdirectory.GroupAddMembers, Members: []int{42}},
+		{Kind: scimdirectory.GroupRemoveMembers, Members: []int{43}},
+	}, directory.groups.applied[0])
+}
+
+/* ── a create applies the membership before it stamps the identifier ───── */
+
+// The two writes can fail independently, and the order decides what a failed
+// push leaves behind. Stamping first leaves an identifier the operator never
+// saw applied on a push the provider recorded as failed.
+func TestACreateAppliesTheMembershipBeforeItStampsTheIdentifier(t *testing.T) {
+	directory := newRecordingDirectory()
+	recorder := serve(t, directory, http.MethodPost, "/Groups",
+		`{"displayName":"Platform Team","externalId":"grp-1","members":[{"value":"42"}]}`)
+
+	require.Equal(t, http.StatusCreated, recorder.Code)
+	require.Equal(t, []string{"members", "adopt"}, directory.groups.order)
+	// And the resource returned carries the identifier that was just stamped.
+	require.Equal(t, "grp-1", decodeBody(t, recorder)["externalId"])
 }
