@@ -26,6 +26,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// providerHandler builds a handler carrying the REAL pinned catalogue, because
+// the catalogue is what decides which types this surface admits.
+func providerHandler() *Handler {
+	return NewHandler(nil, WithPublicProjectID(1))
+}
+
 // providerRequest builds a request carrying a chi route context, as the router
 // would. Without one, `pinPublicProject` has nowhere to write the project id.
 func providerRequest(method, target, body string) *http.Request {
@@ -89,7 +95,7 @@ func TestOnlyAProviderCredentialTypeMayBePublished(t *testing.T) {
 		}
 		request := providerRequest(http.MethodPost, "/", body)
 
-		if _, ok := rewriteGlobalProviderBody(recorder, request, true); ok {
+		if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true); ok {
 			t.Errorf("type %q was admitted as a platform provider", configType)
 			continue
 		}
@@ -99,21 +105,78 @@ func TestOnlyAProviderCredentialTypeMayBePublished(t *testing.T) {
 	}
 }
 
-// TestEveryGatewayProviderTypeIsAdmitted — the other direction. A refusal list
-// that also refuses the real providers is a surface nobody can use, and it
+// TestTheCataloguedProviderTypesAreAdmitted — the other direction. A refusal
+// list that also refuses the real providers is a surface nobody can use, and it
 // would look identical in the test above.
-func TestEveryGatewayProviderTypeIsAdmitted(t *testing.T) {
+func TestTheCataloguedProviderTypesAreAdmitted(t *testing.T) {
 	for _, configType := range []string{
-		"open_ai", "azure_open_ai", "open_ai_azure", "ai_dial", "anthropic",
-		"ollama", "amazon_bedrock", "vertex_ai", "vllm",
+		"open_ai", "azure_open_ai", "ai_dial", "ollama", "amazon_bedrock", "vertex_ai",
 	} {
 		recorder := httptest.NewRecorder()
 		request := providerRequest(http.MethodPost, "/",
 			`{"elitea_title":"x","type":"`+configType+`"}`)
 
-		if _, ok := rewriteGlobalProviderBody(recorder, request, true); !ok {
+		if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true); !ok {
 			t.Errorf("provider type %q was refused (status %d, body %s)",
 				configType, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+// TestAGatewayTypeTheCatalogueDoesNotDescribeIsRefused.
+//
+// THE BUG THIS PREVENTS. `CurrentProviderCredentialType` admits nine types; the
+// pinned catalogue describes six. For the other three the catalogue lookup
+// misses TWICE, and both misses are silent:
+//
+//   - `sectionFor` returns "", so the row is stored with `section = ”` and the
+//     gateway's `WHERE section = 'ai_credentials'` never sees it;
+//   - `sealConfigurationSecrets` keeps the data verbatim, so the api_key is
+//     written into the row IN PLAINTEXT — in the public project's schema, the
+//     one schema every tenant on the platform can read.
+//
+// The result would be an inert credential with a leaked key, and every signal
+// on the admin screen still reading healthy.
+func TestAGatewayTypeTheCatalogueDoesNotDescribeIsRefused(t *testing.T) {
+	for _, configType := range []string{"open_ai_azure", "anthropic", "vllm"} {
+		recorder := httptest.NewRecorder()
+		request := providerRequest(http.MethodPost, "/",
+			`{"elitea_title":"x","type":"`+configType+`"}`)
+
+		if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true); ok {
+			t.Errorf("type %q was published: the catalogue cannot place or seal it", configType)
+			continue
+		}
+		// The message names the admitted set. The refusal an operator most often
+		// hits here is a type the GATEWAY supports and this deployment's
+		// catalogue does not describe, and "unsupported" would send them looking
+		// in the wrong place.
+		if !strings.Contains(recorder.Body.String(), "open_ai") {
+			t.Errorf("type %q: the refusal does not name what IS admitted: %s",
+				configType, recorder.Body.String())
+		}
+	}
+}
+
+// TestEveryAdmittedTypeCanBeBothPlacedAndSealed is the invariant behind the
+// list above, checked against the catalogue rather than against a copy of it —
+// so adding a type to the registry snapshot without a data schema fails here
+// instead of in production.
+func TestEveryAdmittedTypeCanBeBothPlacedAndSealed(t *testing.T) {
+	handler := providerHandler()
+	admitted := handler.admittedGlobalProviderTypes()
+	if len(admitted) == 0 {
+		t.Fatal("no provider type is admitted; the catalogue or the section name changed")
+	}
+
+	for _, configType := range admitted {
+		if section := handler.sectionFor(configType, ""); section != GlobalProviderSection {
+			t.Errorf("type %q resolves to section %q, not %q — the row would be invisible "+
+				"to the gateway", configType, section, GlobalProviderSection)
+		}
+		if _, ok := handler.configurationDataProperties(configType); !ok {
+			t.Errorf("type %q has no data schema, so its secret would be stored in plaintext",
+				configType)
 		}
 	}
 }
@@ -123,7 +186,7 @@ func TestAPlatformProviderIsAlwaysShared(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := providerRequest(http.MethodPost, "/", `{"elitea_title":"x","type":"open_ai"}`)
 
-	rewritten, ok := rewriteGlobalProviderBody(recorder, request, true)
+	rewritten, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true)
 	if !ok {
 		t.Fatalf("refused: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -154,7 +217,7 @@ func TestAnExplicitlyUnsharedWriteIsRefusedRatherThanOverridden(t *testing.T) {
 		request := providerRequest(http.MethodPost, "/",
 			`{"elitea_title":"x","type":"open_ai","shared":`+shared+`}`)
 
-		if _, ok := rewriteGlobalProviderBody(recorder, request, true); ok {
+		if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true); ok {
 			t.Errorf("shared:%s was silently overridden rather than refused", shared)
 		}
 		if recorder.Code != http.StatusBadRequest {
@@ -170,7 +233,7 @@ func TestAnUpdateMayOmitTheType(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := providerRequest(http.MethodPut, "/7", `{"elitea_title":"renamed"}`)
 
-	if _, ok := rewriteGlobalProviderBody(recorder, request, false); !ok {
+	if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, false); !ok {
 		t.Fatalf("a partial update was refused: %d %s", recorder.Code, recorder.Body.String())
 	}
 }
@@ -182,7 +245,7 @@ func TestAnUpdateMayNotChangeTheTypeToANonProvider(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := providerRequest(http.MethodPut, "/7", `{"type":"github"}`)
 
-	if _, ok := rewriteGlobalProviderBody(recorder, request, false); ok {
+	if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, false); ok {
 		t.Error("an update retyped a platform provider to a toolkit credential")
 	}
 }
@@ -198,7 +261,7 @@ func TestAnOversizedBodyIsRefusedByTheRewrite(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := providerRequest(http.MethodPost, "/", oversized)
 
-	if _, ok := rewriteGlobalProviderBody(recorder, request, true); ok {
+	if _, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true); ok {
 		t.Fatal("an oversized body was buffered and admitted")
 	}
 	if recorder.Code != http.StatusRequestEntityTooLarge {

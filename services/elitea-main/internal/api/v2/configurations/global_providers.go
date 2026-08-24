@@ -71,6 +71,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -252,6 +253,11 @@ func (h *Handler) ListGlobalProviders(w http.ResponseWriter, r *http.Request) {
 		// every credential is published correctly into a schema the gateway
 		// does not read.
 		"public_project_id": h.publicProjectID,
+		// The types this deployment will publish, so the form offers exactly
+		// what the server admits. A hardcoded client list would drift from the
+		// catalogue the moment a registry snapshot changed, and the drift would
+		// show up as a refusal on save rather than as an absent option.
+		"provider_types": h.admittedGlobalProviderTypes(),
 	})
 }
 
@@ -329,7 +335,7 @@ func (h *Handler) CreateGlobalProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rewritten, ok := rewriteGlobalProviderBody(w, request, true)
+	rewritten, ok := h.rewriteGlobalProviderBody(w, request, true)
 	if !ok {
 		return
 	}
@@ -346,7 +352,7 @@ func (h *Handler) UpdateGlobalProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rewritten, ok := rewriteGlobalProviderBody(w, request, false)
+	rewritten, ok := h.rewriteGlobalProviderBody(w, request, false)
 	if !ok {
 		return
 	}
@@ -382,7 +388,7 @@ const maxGlobalProviderBodyBytes = maxConfigurationRequestBytes
 // `requireType` is true for a create and false for an update, matching the two
 // handlers' own contracts: a create with no type stores an empty `section` and
 // is useless, while an update names only the fields it changes.
-func rewriteGlobalProviderBody(
+func (h *Handler) rewriteGlobalProviderBody(
 	w http.ResponseWriter, r *http.Request, requireType bool,
 ) (*http.Request, bool) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxGlobalProviderBodyBytes+1))
@@ -404,7 +410,7 @@ func rewriteGlobalProviderBody(
 		body = map[string]any{}
 	}
 
-	if !admitGlobalProviderType(w, body, requireType) {
+	if !h.admitGlobalProviderType(w, body, requireType) {
 		return nil, false
 	}
 
@@ -434,14 +440,67 @@ func rewriteGlobalProviderBody(
 	return request, true
 }
 
-// admitGlobalProviderType refuses a type no runtime can dispatch to, and — more
-// importantly — refuses one that is not a provider credential at all.
+// admittedGlobalProviderTypes are the credential types this surface will
+// publish: the ones the GATEWAY can dispatch to AND the pinned catalogue
+// describes, in the catalogue's own order.
 //
-// The second is the security property. Without it this route writes any row
-// into the public project's configuration table: a toolkit credential, a model,
-// a project context — every one of them readable or usable by every tenant,
-// authored under a permission granted for governance.
-func admitGlobalProviderType(w http.ResponseWriter, body map[string]any, required bool) bool {
+// THE INTERSECTION IS THE POINT, and getting it wrong is not a validation
+// nicety — it publishes a broken, leaking row. Two things depend on the
+// catalogue having an entry, and both fail silently without one:
+//
+//   - `sectionFor` resolves the `section` column from the catalogue entry. No
+//     entry means the row is stored with `section = ”`, and the gateway's
+//     credential read is `WHERE section = 'ai_credentials'`. The credential is
+//     stored, listed, admitted by provider admission, and invisible.
+//   - `sealConfigurationSecrets` reads the entry's data schema to find the
+//     password fields. No entry means "keep the data verbatim" — so the api_key
+//     is written into the row IN PLAINTEXT, in the public project's schema,
+//     which is the one schema every tenant on the platform can read.
+//
+// `CurrentProviderCredentialType` alone admits nine types; the catalogue
+// describes six. The three it does not — `open_ai_azure`, `anthropic` and
+// `vllm` — are exactly the three the gateway added on its own
+// (lifecycle_reconciler.go says so). Publishing one of those from here would
+// produce an inert row with a plaintext key in it, and every signal on the
+// admin screen would still read healthy.
+//
+// They are REFUSED rather than special-cased. Making them work means adding
+// them to the pinned catalogue with their data schemas, which is a change to
+// the registry snapshot and belongs there — not a bypass here that reproduces
+// the sealing gap under a different name.
+func (h *Handler) admittedGlobalProviderTypes() []string {
+	if h.catalog == nil {
+		return nil
+	}
+	entries := h.catalog.PinnedEntries(GlobalProviderSection)
+	types := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if configurationapp.CurrentProviderCredentialType(entry.Type) {
+			types = append(types, entry.Type)
+		}
+	}
+	return types
+}
+
+// admitsGlobalProviderType reports whether one type is on that list.
+func (h *Handler) admitsGlobalProviderType(configType string) bool {
+	for _, admitted := range h.admittedGlobalProviderTypes() {
+		if admitted == configType {
+			return true
+		}
+	}
+	return false
+}
+
+// admitGlobalProviderType refuses a type this surface cannot publish safely.
+//
+// It is also what stops this route from being a general-purpose writer for the
+// public project's whole configuration table: without it the same request
+// authors a toolkit credential, a model row or a project context in a schema
+// every tenant reads, under a permission granted for governance.
+func (h *Handler) admitGlobalProviderType(
+	w http.ResponseWriter, body map[string]any, required bool,
+) bool {
 	raw, present := body["type"]
 	if !present {
 		if required {
@@ -451,9 +510,14 @@ func admitGlobalProviderType(w http.ResponseWriter, body map[string]any, require
 		return true
 	}
 	configType, isString := raw.(string)
-	if !isString || !configurationapp.CurrentProviderCredentialType(configType) {
+	if !isString || !h.admitsGlobalProviderType(configType) {
+		// The message names the admitted set rather than only refusing, because
+		// the refusal an operator most often hits is a type the gateway DOES
+		// support and this deployment's catalogue does not describe — and
+		// "unsupported" would send them looking in the wrong place.
 		apierr.WriteStatus(w, http.StatusBadRequest,
-			"not an LLM provider credential type the gateway can dispatch to")
+			"this platform can publish credentials of these types only: "+
+				strings.Join(h.admittedGlobalProviderTypes(), ", "))
 		return false
 	}
 	return true

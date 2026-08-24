@@ -52,12 +52,17 @@ import { unwrapBody } from '@/shared/api/unwrap';
 const PROVIDERS_URL = '/admin/gateway/providers';
 
 /**
- * The credential types the gateway can dispatch to.
+ * Every credential type this app knows how to draw a form for.
  *
- * The server refuses everything else — that refusal is the security boundary,
- * not this list, which exists so the form offers a select rather than a free
- * text field an operator can only get wrong. Kept in the same order the gateway
- * documents them.
+ * IT IS NOT THE LIST THE SELECT OFFERS. What a deployment will actually publish
+ * comes from the server, as `provider_types` on the listing, and is narrower:
+ * the gateway can dispatch to nine types while the pinned configuration
+ * catalogue describes six, and a type outside the catalogue cannot be given a
+ * `section` or have its key sealed. This list exists so the form has field
+ * definitions ready when a deployment's catalogue grows — see
+ * `../llmProviderForm.ts`.
+ *
+ * The server's refusal is the security boundary, never this list.
  */
 export const LLM_PROVIDER_TYPES = [
   'open_ai',
@@ -107,6 +112,13 @@ export interface LlmProviderList {
   readonly items: readonly LlmProvider[];
   readonly total: number;
   /**
+   * The credential types THIS deployment will publish, from its own catalogue.
+   * Read rather than assumed: a hardcoded client list drifts from the registry
+   * snapshot, and the drift shows up as a refusal on save rather than as an
+   * absent option.
+   */
+  readonly provider_types: readonly string[];
+  /**
    * Which project this deployment treats as the shared one. Echoed so an
    * operator can confirm it: getting it wrong is the failure where every
    * credential is published correctly into a schema the gateway never reads.
@@ -144,6 +156,7 @@ export function useAdminLlmProviders(): UseQueryResult<LlmProviderList, Error> {
         items: body?.items ?? [],
         total: body?.total ?? 0,
         public_project_id: body?.public_project_id ?? 0,
+        provider_types: body?.provider_types ?? [],
       };
     },
   });

@@ -33,6 +33,16 @@ import { server } from '@/test/setup';
 import { LlmProxyProvidersPanel } from './LlmProxyProvidersPanel';
 import { renderAdminRoute } from './__tests__/testRouter';
 
+/** What the server's catalogue admits — six types, not the gateway's nine. */
+const PROVIDER_TYPES = [
+  'open_ai',
+  'azure_open_ai',
+  'ai_dial',
+  'amazon_bedrock',
+  'vertex_ai',
+  'ollama',
+];
+
 const SEALED_OPENAI = {
   id: 4,
   uuid: 'uuid-4',
@@ -51,7 +61,12 @@ const SEALED_OPENAI = {
 function useProviders(items: unknown[], publicProjectID = 1): void {
   server.use(
     http.get('*/admin/gateway/providers', () =>
-      HttpResponse.json({ items, total: items.length, public_project_id: publicProjectID }),
+      HttpResponse.json({
+        items,
+        total: items.length,
+        public_project_id: publicProjectID,
+        provider_types: PROVIDER_TYPES,
+      }),
     ),
   );
 }
@@ -302,5 +317,50 @@ describe('LlmProxyProvidersPanel — the gateway shared scope', () => {
 
     await screen.findByTestId('llm-providers-table');
     expect(screen.queryByTestId('llm-providers-scope-mismatch')).toBeNull();
+  });
+});
+
+
+describe('LlmProxyProvidersPanel — the offered provider types', () => {
+  // The select must show what the SERVER admits, not what this app can draw.
+  // The gateway dispatches to nine types; a deployment's catalogue describes
+  // six, and a type outside it cannot be given a `section` or have its key
+  // sealed. Offering one would produce a save the server refuses — or worse, on
+  // a build whose check drifted, an inert row with a plaintext key.
+  it('offers only the types the server admits', async () => {
+    useProviders([]);
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('llm-providers-add'));
+    await userEvent.click(await screen.findByRole('combobox'));
+
+    expect(await screen.findByRole('option', { name: 'OpenAI' })).toBeVisible();
+    // The three the gateway supports and the catalogue does not describe.
+    for (const absent of ['Anthropic', 'vLLM', 'Azure OpenAI (legacy naming)']) {
+      expect(screen.queryByRole('option', { name: absent })).toBeNull();
+    }
+  });
+
+  it('drops a server-admitted type this build cannot draw a form for', async () => {
+    server.use(
+      http.get('*/admin/gateway/providers', () =>
+        HttpResponse.json({
+          items: [],
+          total: 0,
+          public_project_id: 1,
+          // A type from a newer catalogue. Offering it would give the operator
+          // an empty form and a credential saved with no key in it.
+          provider_types: ['open_ai', 'some_future_provider'],
+        }),
+      ),
+    );
+    renderAdminRoute(<LlmProxyProvidersPanel />);
+
+    await userEvent.click(await screen.findByTestId('llm-providers-add'));
+    await userEvent.click(await screen.findByRole('combobox'));
+
+    const options = await screen.findAllByRole('option');
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent('OpenAI');
   });
 });

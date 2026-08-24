@@ -54,6 +54,11 @@ import {
 
 export interface LlmProviderDialogProps {
   readonly open: boolean;
+  /**
+   * The types THIS deployment will publish, from the server. Narrower than
+   * `LLM_PROVIDER_TYPES`, which is only what this app can draw a form for.
+   */
+  readonly providerTypes: readonly string[];
   /** `undefined` ⇒ create; a row ⇒ edit it. */
   readonly editing: LlmProvider | undefined;
   readonly isSaving: boolean;
@@ -71,6 +76,7 @@ function initialValuesFor(editing: LlmProvider | undefined): Record<string, stri
 
 export function LlmProviderDialog({
   open,
+  providerTypes,
   editing,
   isSaving,
   serverError,
@@ -81,14 +87,24 @@ export function LlmProviderDialog({
   const [type, setType] = useState<LlmProviderType>('open_ai');
   const [values, setValues] = useState<Record<string, string>>({});
 
+  // The intersection: what the server admits AND this app can draw. A type the
+  // server admits and this build has no field definitions for is DROPPED rather
+  // than offered as an empty form — the operator would save a credential with no
+  // key in it and be told it succeeded.
+  const offered = LLM_PROVIDER_TYPES.filter((known) => providerTypes.includes(known));
+
   // Reset on OPEN, not on every render of a closed dialog: a dialog that reset
   // while open would discard what the operator was typing whenever the parent
   // re-rendered — which it does on every list refetch.
   useEffect(() => {
     if (!open) return;
     setName(editing?.elitea_title ?? '');
-    setType((editing?.type as LlmProviderType | undefined) ?? 'open_ai');
+    setType((editing?.type as LlmProviderType | undefined) ?? offered[0] ?? 'open_ai');
     setValues(initialValuesFor(editing));
+    // `offered` is derived from props and is stable for one open dialog; it is
+    // read rather than depended on so a list refetch cannot reset a form the
+    // operator is filling in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, editing]);
 
   const fields = providerFields(type);
@@ -157,7 +173,7 @@ export function LlmProviderDialog({
               : undefined
           }
         >
-          {LLM_PROVIDER_TYPES.map((value) => (
+          {offered.map((value) => (
             <MenuItem key={value} value={value}>
               {providerTypeLabel(value)}
             </MenuItem>

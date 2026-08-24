@@ -374,6 +374,7 @@ export function LlmProxyProvidersPanel(): ReactNode {
 
       <LlmProviderDialog
         open={editor.open}
+        providerTypes={data?.provider_types ?? []}
         editing={editor.row}
         isSaving={createProvider.isPending || updateProvider.isPending}
         serverError={saveError}
