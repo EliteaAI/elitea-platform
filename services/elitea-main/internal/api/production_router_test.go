@@ -1615,6 +1615,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 	want := []string{
 		"DELETE /api/v2/admin/gateway/governance/{id}",
 		"DELETE /api/v2/admin/gateway/models/{id}",
+		"DELETE /api/v2/admin/identity_providers/administration/{key}",
 		"DELETE /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"DELETE /api/v2/admin/modes/administration",
 		"DELETE /api/v2/admin/users/{mode}/{projectID}",
@@ -1647,6 +1648,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
 		// Project DELETE (#333). Destructive: it drops the tenant schema.
 		"DELETE /api/v2/projects/project/{mode}/{projectID}",
+		"DELETE /api/v2/scim/v2/Groups",
+		"DELETE /api/v2/scim/v2/Groups/*",
+		"DELETE /api/v2/scim/v2/Users/{id}",
 		"DELETE /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
@@ -1663,6 +1667,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/gateway/governance",
 		"GET /api/v2/admin/gateway/models",
 		"GET /api/v2/admin/gateway/status",
+		"GET /api/v2/admin/identity_providers/administration",
 		"GET /api/v2/admin/maintenance/{mode}",
 		"GET /api/v2/admin/mcp_prebuilt_servers/administration",
 		"GET /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
@@ -1803,6 +1808,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/projects/statistics/{projectID}",
 		"GET /api/v2/scheduling/schedules/administration/{projectID}",
 		"GET /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"GET /api/v2/scim/v2/Groups",
+		"GET /api/v2/scim/v2/Groups/*",
+		"GET /api/v2/scim/v2/ResourceTypes",
+		"GET /api/v2/scim/v2/Schemas",
+		"GET /api/v2/scim/v2/ServiceProviderConfig",
+		"GET /api/v2/scim/v2/Users",
+		"GET /api/v2/scim/v2/Users/{id}",
 		"GET /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"GET /api/v2/secrets/secret/{projectID}/{name}",
 		"GET /api/v2/secrets/secrets/{mode}/{projectID}",
@@ -1847,6 +1859,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
 		// The expanded version READ the SDK calls with a body-less PATCH (#336).
 		"PATCH /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"PATCH /api/v2/scim/v2/Groups",
+		"PATCH /api/v2/scim/v2/Groups/*",
+		"PATCH /api/v2/scim/v2/Users/{id}",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",
@@ -1923,6 +1938,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		// Project CREATE (#333). The handler refuses any {mode} other than
 		// `administration`, matching the reference's route table.
 		"POST /api/v2/projects/project/{mode}",
+		"POST /api/v2/scim/v2/Groups",
+		"POST /api/v2/scim/v2/Groups/*",
+		"POST /api/v2/scim/v2/Users",
 		"POST /api/v2/secrets/hide/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secrets/{mode}/{projectID}",
@@ -1940,6 +1958,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/admin/gateway/*/budget-alerts",
 		"PUT /api/v2/admin/gateway/governance/{id}",
 		"PUT /api/v2/admin/gateway/models",
+		"PUT /api/v2/admin/identity_providers/administration/{key}",
 		"PUT /api/v2/admin/maintenance/{mode}",
 		"PUT /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"PUT /api/v2/admin/moderation_status/administration",
@@ -1976,6 +1995,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/projects/quota/{projectID}",
 		"PUT /api/v2/scheduling/schedules/administration/{projectID}",
 		"PUT /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"PUT /api/v2/scim/v2/Groups",
+		"PUT /api/v2/scim/v2/Groups/*",
+		"PUT /api/v2/scim/v2/Users/{id}",
 		"PUT /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"PUT /api/v2/social/author",
 		"PUT /api/v2/social/author/",
@@ -2137,13 +2159,17 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 		{method: http.MethodGet, path: "/forward-auth/auth_form/logout", want: http.StatusFound},
 		{method: http.MethodHead, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
 		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
-		// GET 500s here because newCompleteProductionRouter's OIDCHandler is
-		// a zero-value test double with no real OAuth2 config — a real
-		// OIDCHandler (as main.go constructs via NewOIDCHandler, which does
-		// live OIDC discovery) redirects (302) instead. Pinned exactly
-		// rather than accepted as "any non-2xx" so a change to *this*
-		// specific crash doesn't slip past silently either.
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusInternalServerError},
+		// GET 503s here because newCompleteProductionRouter's OIDCHandler is a
+		// zero-value test double: it holds neither an environment runtime nor a
+		// provider store, so it resolves no identity provider and says so. A
+		// real OIDCHandler redirects (302) instead.
+		//
+		// This WAS a 500, and the 500 was a nil dereference on the handler's
+		// oauth2 configuration. Resolving the provider per request replaced the
+		// crash with a refusal that names the condition. Pinned exactly rather
+		// than accepted as "any non-2xx", so a change back to a crash does not
+		// slip past either.
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusServiceUnavailable},
 		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
 		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
 		// Not a registered route: the OIDC callback path is "auth_oidc/callback",
@@ -2152,6 +2178,17 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		// SAML. All three refuse with 503 here: the handler holds no provider
+		// store, so it federates nothing and says so. None of them can answer a
+		// success without a verified assertion, which is what this test is for.
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/metadata", want: http.StatusServiceUnavailable},
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/login", want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/forward-auth/auth_saml/acs", want: http.StatusServiceUnavailable},
+		// The assertion consumer service is POST-only: the authentication
+		// request asks for the HTTP-POST binding, and a GET here would be a
+		// login attempt carrying the assertion in the URL.
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/acs", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/forward-auth/auth_saml/login", want: http.StatusMethodNotAllowed},
 	}
 
 	for _, route := range routes {
@@ -2181,6 +2218,12 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 		AuthValidator:  testTokenValidator{user: authenticatedTestUser()},
 		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
 		OIDCHandler:    &v2auth.OIDCHandler{},
+		// A zero-value SAML handler: it holds no provider store, so every one
+		// of its routes resolves no provider and refuses. It is wired anyway so
+		// the browser-auth surface below PINS the SAML paths — a handler left
+		// out of this router would let all three routes be removed without a
+		// test noticing.
+		SAMLHandler:    &v2auth.SAMLHandler{},
 		SessionSecret:  sessionSecret,
 		Shadow:         shadow.NewComparator(shadow.Config{Timeout: time.Second}),
 		ShadowMetrics:  shadow.NewMetrics(10),

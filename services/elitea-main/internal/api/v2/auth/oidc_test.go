@@ -132,7 +132,7 @@ func statementIndex(t *testing.T, tx *scriptedTx, fragment string) int {
 func TestProvisioningReadsTheProviderSubjectBeforeTheEmail(t *testing.T) {
 	tx := &scriptedTx{rows: []scriptedRow{{values: []any{7, false}}}}
 
-	userID, err := resolveProvisionedUser(context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil)
+	userID, err := resolveProvisionedUser(context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil, false)
 	if err != nil {
 		t.Fatalf("resolveProvisionedUser: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestALinkedSubjectWithANewEmailKeepsItsAccount(t *testing.T) {
 	tx := &scriptedTx{rows: []scriptedRow{{values: []any{7, false}}}}
 
 	userID, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-A", "alice.smith@corp.com", "Alice", nil,
+		context.Background(), tx, "oidc:sub-A", "alice.smith@corp.com", "Alice", nil, false,
 	)
 	if err != nil {
 		t.Fatalf("resolveProvisionedUser: %v", err)
@@ -175,7 +175,7 @@ func TestALinkedSubjectOnASuspendedAccountIsRefused(t *testing.T) {
 	tx := &scriptedTx{rows: []scriptedRow{{values: []any{7, true}}}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil,
+		context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil, false,
 	); !errors.Is(err, errUserSuspended) {
 		t.Fatalf("error is %v, want errUserSuspended", err)
 	}
@@ -194,7 +194,7 @@ func TestANewSubjectCannotJoinAnAccountBoundToAnotherSubject(t *testing.T) {
 	}}
 
 	_, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-B", "alice@corp.com", "Mallory", nil,
+		context.Background(), tx, "oidc:sub-B", "alice@corp.com", "Mallory", nil, false,
 	)
 	if !errors.Is(err, errIdentityConflict) {
 		t.Fatalf("error is %v, want errIdentityConflict", err)
@@ -220,7 +220,7 @@ func TestTheBoundAccountGuardReadsOnlyThisHandlersNamespace(t *testing.T) {
 	}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-E", "legacy@corp.com", "Legacy", nil,
+		context.Background(), tx, "oidc:sub-E", "legacy@corp.com", "Legacy", nil, false,
 	); err != nil {
 		t.Fatalf("resolveProvisionedUser: %v", err)
 	}
@@ -229,12 +229,33 @@ func TestTheBoundAccountGuardReadsOnlyThisHandlersNamespace(t *testing.T) {
 	if index < 0 {
 		t.Fatalf("the email fallback did not run: %v", tx.statements)
 	}
-	if !strings.Contains(tx.statements[index], "bound.provider_ref LIKE 'oidc:%'") {
+	// The guard must still BE there, and must still be scoped rather than blind.
+	//
+	// It is asserted as a PARAMETERISED match, not as a literal namespace. The
+	// literal is what let the SAML path through: this test read
+	// `LIKE 'oidc:%'`, SAML wrote `saml:`, and the guard silently stopped
+	// applying to it while this assertion went on passing. The namespaces it
+	// covers are now a Go value, and WHICH accounts it refuses is proved
+	// against a real database in provisioning_postgres_integration_test.go —
+	// where a scripted transaction cannot reach, because PostgreSQL does the
+	// matching.
+	if !strings.Contains(tx.statements[index], "bound.provider_ref LIKE ANY") {
+		t.Fatalf("the bound-account guard is missing from the email fallback: %s", tx.statements[index])
+	}
+	if strings.Contains(tx.statements[index], "'%'") {
 		t.Fatalf(
 			"the bound-account guard is namespace-blind, so a legacy bare ref locks the "+
 				"account out: %s",
 			tx.statements[index],
 		)
+	}
+	// And the namespaces it is given are the ones this service writes. A
+	// protocol added without extending this list is a protocol the guard does
+	// not cover.
+	patterns := federatedRefPatterns()
+	if len(patterns) != 2 ||
+		patterns[0] != OIDCProviderRefPrefix+"%" || patterns[1] != SAMLProviderRefPrefix+"%" {
+		t.Fatalf("the guard covers %v, want one pattern per federated namespace", patterns)
 	}
 }
 
@@ -248,7 +269,7 @@ func TestANewSubjectOnASuspendedAddressIsReportedAsSuspended(t *testing.T) {
 	}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-B", "alice@corp.com", "Alice", nil,
+		context.Background(), tx, "oidc:sub-B", "alice@corp.com", "Alice", nil, false,
 	); !errors.Is(err, errUserSuspended) {
 		t.Fatalf("error is %v, want errUserSuspended", err)
 	}
@@ -264,7 +285,7 @@ func TestAFirstLoginCreatesAndLinksTheAccount(t *testing.T) {
 	}}
 
 	userID, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-C", "carol@corp.com", "Carol", nil,
+		context.Background(), tx, "oidc:sub-C", "carol@corp.com", "Carol", nil, false,
 	)
 	if err != nil {
 		t.Fatalf("resolveProvisionedUser: %v", err)
@@ -288,20 +309,25 @@ func TestALinkOwnedByAnotherAccountIsRefusedRatherThanSwallowed(t *testing.T) {
 	}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-A", "carol@corp.com", "Carol", nil,
+		context.Background(), tx, "oidc:sub-A", "carol@corp.com", "Carol", nil, false,
 	); !errors.Is(err, errIdentityConflict) {
 		t.Fatalf("error is %v, want errIdentityConflict", err)
 	}
 }
 
-// OIDC_REQUIRE_EMAIL_VERIFIED makes an ABSENT email_verified claim fatal on the
-// fallback — the one path where the address decides anything.
+// Requiring a verified address makes an ABSENT email_verified claim fatal on
+// the fallback — the one path where the address decides anything.
+//
+// The flag is a PARAMETER rather than an environment read. It has two sources
+// now: the authored provider document's `require_email_verified`, and
+// OIDC_REQUIRE_EMAIL_VERIFIED for the environment fallback runtime. Both are
+// resolved in oidc_providers.go and arrive here as one boolean, so this test
+// covers the rule for either source.
 func TestTheEmailFallbackCanRequireAVerifiedAddress(t *testing.T) {
-	t.Setenv("OIDC_REQUIRE_EMAIL_VERIFIED", "true")
 	tx := &scriptedTx{rows: []scriptedRow{{err: pgx.ErrNoRows}}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-D", "dave@corp.com", "Dave", nil,
+		context.Background(), tx, "oidc:sub-D", "dave@corp.com", "Dave", nil, true,
 	); !errors.Is(err, errEmailNotVerified) {
 		t.Fatalf("error is %v, want errEmailNotVerified", err)
 	}
@@ -313,9 +339,23 @@ func TestTheEmailFallbackCanRequireAVerifiedAddress(t *testing.T) {
 		{values: []any{12}},
 	}}
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-D", "dave@corp.com", "Dave", &verified,
+		context.Background(), tx, "oidc:sub-D", "dave@corp.com", "Dave", &verified, true,
 	); err != nil {
 		t.Fatalf("a verified address was refused: %v", err)
+	}
+
+	// And with the requirement OFF, the same absent claim is accepted. Without
+	// this half, a parameter wired to a constant `true` would pass the test
+	// above and silently refuse every provider that omits the claim.
+	tx = &scriptedTx{rows: []scriptedRow{
+		{err: pgx.ErrNoRows},
+		{values: []any{13}},
+		{values: []any{13}},
+	}}
+	if _, err := resolveProvisionedUser(
+		context.Background(), tx, "oidc:sub-E", "erin@corp.com", "Erin", nil, false,
+	); err != nil {
+		t.Fatalf("an absent claim was refused with the requirement off: %v", err)
 	}
 }
 
@@ -326,7 +366,7 @@ func TestALinkedSubjectIsNotHeldToTheVerifiedAddressRule(t *testing.T) {
 	tx := &scriptedTx{rows: []scriptedRow{{values: []any{7, false}}}}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil,
+		context.Background(), tx, "oidc:sub-A", "alice@corp.com", "Alice", nil, false,
 	); err != nil {
 		t.Fatalf("a linked subject was refused: %v", err)
 	}
@@ -341,7 +381,7 @@ func TestARepairedAddressThatIsTakenIsRefusedRatherThanFailing(t *testing.T) {
 	}
 
 	if _, err := resolveProvisionedUser(
-		context.Background(), tx, "oidc:sub-A", "taken@corp.com", "Alice", nil,
+		context.Background(), tx, "oidc:sub-A", "taken@corp.com", "Alice", nil, false,
 	); !errors.Is(err, errIdentityConflict) {
 		t.Fatalf("error is %v, want errIdentityConflict", err)
 	}

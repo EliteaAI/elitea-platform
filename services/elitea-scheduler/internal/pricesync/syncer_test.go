@@ -192,7 +192,7 @@ func TestUpsertSQLCoversEveryPriceColumn(t *testing.T) {
 	}
 }
 
-// TestUpsertSkipsOperatorOverriddenRows pins the guard shared migration 0095
+// TestUpsertSkipsOperatorOverriddenRows pins the guard shared migration 0097
 // added: the ON CONFLICT DO UPDATE must not apply to a row an operator has
 // priced by hand.
 //

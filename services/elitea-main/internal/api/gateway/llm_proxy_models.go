@@ -44,7 +44,7 @@ package gateway
 //
 // Writing a price here would be pointless on its own: price-sync UPSERTs on the
 // same unique key and its DO UPDATE reassigns every price column. Shared
-// migration 0095 adds `price_overridden`, and the syncer's DO UPDATE now
+// migration 0097 adds `price_overridden`, and the syncer's DO UPDATE now
 // carries `WHERE NOT gateway_models.price_overridden`. So a row this surface
 // authors is one the sync declines to touch, and a row it has not authored
 // continues to track upstream exactly as before.
@@ -205,7 +205,7 @@ type ModelRow struct {
 	UpdatedAt      string `json:"updated_at,omitempty"`
 
 	// Overridden reports that an operator authored these prices and the sync
-	// leaves them alone (migration 0095).
+	// leaves them alone (migration 0097).
 	Overridden   bool   `json:"price_overridden"`
 	OverriddenAt string `json:"price_overridden_at,omitempty"`
 	OverriddenBy string `json:"price_overridden_by,omitempty"`

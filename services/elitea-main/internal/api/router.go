@@ -13,6 +13,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	scimapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/scim"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/admin"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
@@ -50,6 +51,7 @@ import (
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/identityproviders"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -57,6 +59,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/scimdirectory"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
@@ -73,6 +76,7 @@ type AuthDeps struct {
 	ForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
 	SessionHandler            *v2auth.SessionHandler
 	OIDCHandler               *v2auth.OIDCHandler
+	SAMLHandler               *v2auth.SAMLHandler
 	SessionSecret             string
 }
 
@@ -102,6 +106,7 @@ type RouterConfig struct {
 	PrincipalValidator apimw.PrincipalValidator
 	SessionHandler     *v2auth.SessionHandler
 	OIDCHandler        *v2auth.OIDCHandler
+	SAMLHandler        *v2auth.SAMLHandler
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
 	// ArtifactPermissionResolver overrides the legacyrbac.NewPostgresResolver
@@ -621,6 +626,9 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	if cfg.OIDCHandler == nil {
 		cfg.OIDCHandler = cfg.Auth.OIDCHandler
 	}
+	if cfg.SAMLHandler == nil {
+		cfg.SAMLHandler = cfg.Auth.SAMLHandler
+	}
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = cfg.Auth.SessionSecret
 	}
@@ -667,6 +675,24 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/auth_oidc/callback", cfg.OIDCHandler.Callback)
 			}
 			r.Get("/auth_oidc/logout", cfg.SessionHandler.Logout)
+			// SAML 2.0. Three routes, and the shapes are not
+			// interchangeable: metadata and login are GET navigations, and
+			// the assertion consumer service is a POST because the
+			// authentication request asks for the HTTP-POST binding.
+			//
+			// `/auth_saml/logout` clears the local session, as the OIDC one
+			// above does. Federated single logout — sending a LogoutRequest to
+			// the identity provider's SLO endpoint — is NOT mounted: it needs
+			// the session index of the assertion that started the session, and
+			// this deployment's session cookie does not carry one. Mounting a
+			// route that silently only cleared the local session would tell an
+			// operator their users were signed out everywhere.
+			if cfg.SAMLHandler != nil {
+				r.Get("/auth_saml/metadata", cfg.SAMLHandler.Metadata)
+				r.Get("/auth_saml/login", cfg.SAMLHandler.Login)
+				r.Post("/auth_saml/acs", cfg.SAMLHandler.ACS)
+				r.Get("/auth_saml/logout", cfg.SessionHandler.Logout)
+			}
 		})
 	}
 
@@ -829,6 +855,14 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			prebuiltMCPStore := mcpregistry.NewPrebuiltStore(cfg.Pool)
 			prebuiltMCPVault := v2secrets.NewHandler(cfg.Pool)
 
+			// The TYPED identity provider definitions (shared migration 0095) —
+			// the real surface behind the Configuration page's "Authentication"
+			// section. It shares the vault above rather than opening a second
+			// one, for the reason stated there: two vault handlers on two pools
+			// is how a write path and a read path come to disagree about which
+			// database holds the credential.
+			identityProviderStore := identityproviders.NewStore(cfg.Pool)
+
 			coreHandler := v2core.NewHandler(
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
@@ -872,6 +906,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithPermissionResolver(permissionResolver),
 				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
 				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
+				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
 			)
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
 			// The admin panel's surface. Every route below is gated on the same
@@ -923,6 +958,24 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// resolvable.
 			requireProjectsView := central("projects.projects.projects.view")
 			requireProjectsEdit := central("projects.projects.projects.edit")
+
+			// SCIM 2.0 user provisioning (shared migration 0096).
+			//
+			// Mounted UNDER /api/v2, not at the root, so it inherits the one
+			// authentication middleware this service has rather than acquiring a
+			// second identity check. The base URL an operator pastes into their
+			// identity provider is therefore `https://<host>/api/v2/scim/v2`;
+			// internal/api/scim states that in its package comment, next to the
+			// paths themselves.
+			//
+			// The gate is `admin.auth.users` in administration mode — the SAME
+			// permission the admin Users page's write routes carry above. A SCIM
+			// client creating and deactivating accounts is doing what that page
+			// does, so no new permission string arrives here and the grant gate
+			// in router_permission_grant_gate_test.go stays untripped.
+			r.With(requireAdminUsers).Mount(scimapi.MountPath,
+				scimapi.NewHandler(scimdirectory.NewStore(cfg.Pool)).Routes())
+
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
 				//
@@ -1046,6 +1099,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Put("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPSave)
 				r.With(requireRuntimePlugins).
 					Delete("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPDelete)
+				// The TYPED identity provider definitions — the real surface
+				// behind the Configuration page's "Authentication" section,
+				// which stays unavailable because its rows are plaintext and a
+				// provider carries a client secret (config_schemas.go).
+				//
+				// The permission is the SAME `runtime.plugins` that section
+				// already required, so an operator who could edit it can author
+				// a provider, and no new permission string arrives without a
+				// grant (router_permission_grant_gate_test.go).
+				//
+				// The mode segment is static `administration`: federation is a
+				// deployment fact with no project-scoped view, so another mode
+				// 404s rather than being answered under a scope that does not
+				// apply.
+				r.With(requireRuntimePlugins).
+					Get("/identity_providers/administration", adminHandler.IdentityProviderList)
+				r.With(requireRuntimePlugins).
+					Put("/identity_providers/administration/{key}", adminHandler.IdentityProviderSave)
+				r.With(requireRuntimePlugins).
+					Delete("/identity_providers/administration/{key}", adminHandler.IdentityProviderDelete)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

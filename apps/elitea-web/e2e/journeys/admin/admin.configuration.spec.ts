@@ -88,6 +88,14 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   await expect(mcpServers).toBeVisible();
   await expect(mcpServers.getByText('Not available here')).toHaveCount(0);
 
+  // Authentication is the third exception, and the same shape as MCP Servers:
+  // it keeps its `unavailable_reason` — true of the plugin-config value
+  // endpoints, which cannot hold an OIDC client secret — and declares a
+  // `managed_surface` that this build renders.
+  const authentication = page.getByRole('button', { name: /Authentication/ });
+  await expect(authentication).toBeVisible();
+  await expect(authentication.getByText('Not available here')).toHaveCount(0);
+
   await checkA11y(page);
 });
 
@@ -119,8 +127,10 @@ adminTest('J34a: Guardrails offers a real form, including its two tool maps', as
 adminTest('J34b: the sections with no backend say so instead of showing a form', async ({ page }) => {
   await openConfiguration(page);
 
-  // Guardrails left this list when it gained consumers — see J34a.
-  for (const section of ['Authentication', 'Maintenance', 'Advanced']) {
+  // Guardrails left this list when it gained consumers — see J34a, and
+  // Authentication left it when it gained a typed store and a login path that
+  // reads it — see J34f.
+  for (const section of ['LiteLLM', 'Maintenance', 'Advanced']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -149,6 +159,27 @@ adminTest('J34c: an unavailable section refuses its write rather than discarding
     return response.status;
   });
   expect(status, 'an unavailable section must refuse its write, not accept and discard it').toBe(501);
+});
+
+adminTest('J34f: the Authentication section renders its editor, not a refusal', async ({ page }) => {
+  await openConfiguration(page);
+
+  await page.getByRole('button', { name: /Authentication/ }).click();
+
+  // The editor's own control, so this proves the dedicated surface MOUNTED —
+  // not merely that the refusal notice is absent, which a blank pane would also
+  // satisfy.
+  await expect(page.getByTestId('admin-identity-providers-add')).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The provider read is authorised and answered. This stack federates its
+  // logins through the environment rather than an authored row, so the empty
+  // state is the truthful branch here; the error alert would mean the route
+  // refused, which is what this asserts is NOT happening.
+  await expect(page.getByTestId('admin-identity-providers-empty')).toBeVisible();
+  await expect(page.getByTestId('admin-identity-providers-error')).toHaveCount(0);
+
+  await checkA11y(page);
 });
 
 adminTest('J34d: the sections the Features page owns are not offered here', async ({ page }) => {

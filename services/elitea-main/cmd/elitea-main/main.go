@@ -43,6 +43,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/identityproviders"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -382,17 +383,76 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load OIDC configuration: %w", err)
 	}
-	if oidcCfg != nil {
+	// A deployment can now federate through an AUTHORED provider instead of the
+	// environment (`elitea_auth.identity_providers`, shared migration 0095), so
+	// the environment is no longer the only thing that can turn OIDC on.
+	//
+	// Whether the routes are MOUNTED stays a boot decision, and it has to:
+	// internal/api/production_router.go allows exactly one browser-auth plane to
+	// own /forward-auth, so which plane owns it cannot change under a running
+	// process. What the mounted routes DO is resolved per request, so editing,
+	// replacing or disabling a provider needs no restart — only introducing the
+	// first one on a deployment that had none does.
+	identityProviderStore := identityproviders.NewStore(pool)
+	var storedSAMLProvider, storedOIDCProvider bool
+	storedSAMLProvider, err = v2auth.HasEnabledSAMLProvider(ctx, identityProviderStore)
+	if err == nil {
+		storedOIDCProvider, err = v2auth.HasEnabledOIDCProvider(ctx, identityProviderStore)
+	}
+	switch {
+	case err == nil:
+	case identityproviders.IsSchemaMissing(err):
+		// The migration has not been applied to this database yet. Warn and
+		// continue WITHOUT the browser-auth plane, which is what this
+		// deployment did before the table existed at all.
+		//
+		// Failing the boot here would turn a schema-ordering hiccup — a pod
+		// that starts before the migration job finishes — into a total outage,
+		// and it would do so on deployments that use form authentication and
+		// never federate a login.
+		logger.Warn("identity provider table is absent; starting without single sign-on",
+			"err", err)
+	default:
+		// Any OTHER read failure IS fatal. A deployment that can reach its
+		// database and still cannot read this table must not start silently
+		// unfederated, with every login answering "single sign-on is not
+		// available" and no statement of why.
+		return fmt.Errorf("read the enabled identity provider: %w", err)
+	}
+	var oidcSAMLHandler *v2auth.SAMLHandler
+	if oidcCfg != nil || storedOIDCProvider || storedSAMLProvider {
 		appSecretKey := os.Getenv("APPLICATION_SECRET_KEY")
 		if appSecretKey == "" {
-			return errors.New("APPLICATION_SECRET_KEY is required when OIDC_ISSUER_URL is set")
+			return errors.New("APPLICATION_SECRET_KEY is required when single sign-on is configured")
 		}
 		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
 		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
 		if err != nil {
 			return fmt.Errorf("initialize OIDC handler: %w", err)
 		}
-		logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
+		vault := v2secrets.NewHandler(pool)
+		oidcOIDCHandler = oidcOIDCHandler.WithProviderStore(identityProviderStore, vault)
+		switch {
+		case storedOIDCProvider:
+			logger.Info("OIDC authentication enabled from an authored identity provider")
+		case oidcCfg != nil:
+			logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
+		}
+
+		// The SAML handler is built whenever the browser plane is mounted at
+		// all, not only when a SAML provider exists today. Its routes resolve
+		// their provider per request and answer 503 while none is enabled, so
+		// authoring the first SAML provider on a deployment that already
+		// federates OIDC needs no restart. The reverse — a deployment with NO
+		// browser plane at boot — still does, because which plane owns
+		// /forward-auth is fixed there (internal/api/production_router.go).
+		oidcSAMLHandler = v2auth.NewSAMLHandler(
+			pool, appSecretKey, identityProviderStore, vault,
+			os.Getenv("COOKIE_SECURE") != "false",
+		)
+		if storedSAMLProvider {
+			logger.Info("SAML authentication enabled from an authored identity provider")
+		}
 	}
 
 	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
@@ -1284,6 +1344,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ForwardedIdentityVerifier: apiGroupAuth.ForwardedIdentityVerifier,
 			SessionHandler:            oidcSessionHandler,
 			OIDCHandler:               oidcOIDCHandler,
+			SAMLHandler:               oidcSAMLHandler,
 		},
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,

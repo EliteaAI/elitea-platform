@@ -31,7 +31,7 @@
  * ## An override is permanent until it is cleared
  *
  * Saving a price sets `price_overridden`, and the scheduler's price-sync UPSERT
- * skips those rows (shared migration 0095). That is what makes the edit stick —
+ * skips those rows (shared migration 0097). That is what makes the edit stick —
  * and also why clearing it matters: a row left overridden never tracks upstream
  * again. `useClearAdminLlmModelOverride` hands it back to the sync, and does NOT
  * delete the row, so the model stays priced until the sync refreshes it.

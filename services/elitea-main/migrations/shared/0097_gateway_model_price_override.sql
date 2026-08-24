@@ -1,7 +1,13 @@
--- 0095_gateway_model_price_override.sql
+-- 0097_gateway_model_price_override.sql
 --
 -- Lets an operator author a model price that the upstream price sync will not
 -- overwrite.
+--
+-- Written as 0095 and renumbered on merge: 0095_identity_providers.sql and
+-- 0096_scim_provisioning.sql landed on main while this was in review. Both
+-- authors were right when they wrote the number, and only one could keep it —
+-- which is why scripts/database/check-migration-version.sh reads the base
+-- branch at check time rather than the pull request's own history.
 --
 -- ── Why this column has to exist before the editor does ──────────────────────
 --

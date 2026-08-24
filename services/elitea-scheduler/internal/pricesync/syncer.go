@@ -45,7 +45,7 @@ func NewSyncer(db DB, sources []PriceSource, logger *slog.Logger) *Syncer {
 //     replica holds it), UPSERT all rows, commit (which releases the xact lock).
 //
 // It returns the number of rows OFFERED to the catalog, which since shared
-// migration 0095 is an upper bound on the number written: the UPSERT's DO UPDATE
+// migration 0097 is an upper bound on the number written: the UPSERT's DO UPDATE
 // skips a row an operator has priced by hand. A run where the lock is held by
 // another replica returns (0, nil) — a benign no-op, not an error.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
@@ -98,7 +98,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			// The message names the COLUMN Postgres refused, not one fixed
 			// migration. There are now two that can produce 42703 here —
 			// 0086_gateway_audio_prices.sql for the per-second and
-			// per-character columns, and 0095_gateway_model_price_override.sql
+			// per-character columns, and 0097_gateway_model_price_override.sql
 			// for the price_overridden guard — and a scheduler rolled ahead of
 			// either one fails identically. Naming only 0086, as this did, sends
 			// an operator to verify a migration that is already applied while
@@ -106,7 +106,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			if isUndefinedColumn(err) {
 				s.logger.Error("pricesync: the price catalog is missing a column this build writes; "+
 					"apply the pending elitea-main shared migrations (0086_gateway_audio_prices.sql adds the "+
-					"audio price columns, 0095_gateway_model_price_override.sql adds price_overridden). "+
+					"audio price columns, 0097_gateway_model_price_override.sql adds price_overridden). "+
 					"No prices were refreshed this pass; the catalog keeps its previous values and the next "+
 					"pass retries.",
 					"model", m.ModelName, "provider", m.Provider,
@@ -118,7 +118,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	// len(merged) is the number of rows OFFERED, which since 0095 is not the
+	// len(merged) is the number of rows OFFERED, which since 0097 is not the
 	// number written: a row an operator has priced by hand is skipped by the
 	// DO UPDATE's guard. Postgres does not report that per statement without a
 	// RETURNING clause per row, and nothing consumes this count except a log
@@ -215,7 +215,7 @@ func priceDrifts(a, b float64) bool {
 // because the upsert reports success either way. TestUpsertSQLCoversEveryPriceColumn
 // pins the pairing.
 //
-// The DO UPDATE carries a WHERE (shared migration 0095). A row an operator has
+// The DO UPDATE carries a WHERE (shared migration 0097). A row an operator has
 // priced by hand — `price_overridden` — is left exactly as authored, and the
 // upstream number is discarded for that pair rather than applied. Without the
 // guard an authored price is correct only until the next tick of this worker

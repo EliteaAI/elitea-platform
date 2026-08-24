@@ -145,14 +145,27 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	//
 	// 92 stays empty. Nothing needs to fill it: LoadManifest sorts by version and
 	// Head() reads the last entry, so a gap costs nothing.
-	//
-	// 95: shared/0095_gateway_model_price_override.sql, which lets an operator
+	// 95: shared/0095_identity_providers.sql, the typed identity provider
+	// revision. It replaces the four environment variables that were this
+	// service's only federation configuration, and gives the admin
+	// Configuration page's Authentication section a store and a reader.
+	// 96: shared/0096_scim_provisioning.sql, the side table SCIM 2.0 user
+	// provisioning needs. It holds the identity provider's externalId and the
+	// resource timestamps, keyed by user id — the account row itself is
+	// pylon-owned and is read and updated, never reshaped.
+	// 97: shared/0097_gateway_model_price_override.sql, which lets an operator
 	// author a model price that the scheduler's price-sync UPSERT will not
 	// overwrite. The column is the handshake between two writers of the same
 	// row: without it the syncer's ON CONFLICT DO UPDATE reassigns every price
 	// column from EXCLUDED, so an authored price is correct until the next tick
 	// and then silently reverts.
-	require.EqualValues(t, 95, Head(shared))
+	//
+	// It was written as 0095 and renumbered on merge: 0095 and 0096 landed on
+	// main while this was in review. Both authors were right when they wrote the
+	// number and only one could stay — the same collision 0094's header records,
+	// and the reason check-migration-version.sh reads the base branch at check
+	// time rather than the pull request's own history.
+	require.EqualValues(t, 97, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
