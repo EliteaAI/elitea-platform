@@ -38,10 +38,14 @@ type recordingDirectory struct {
 	replaced     []scimdirectory.User
 	activeCalls  []bool
 	listedFilter scimdirectory.Filter
+	// groups holds the /Groups half of the fake. It is a pointer to a type
+	// declared in groups_internal_test.go so the group tests own their own
+	// state, and a users test that never touches a group reads unchanged.
+	groups *groupState
 }
 
 func newRecordingDirectory() *recordingDirectory {
-	return &recordingDirectory{users: map[int]scimdirectory.User{
+	return &recordingDirectory{groups: newGroupState(), users: map[int]scimdirectory.User{
 		42: {
 			ID: 42, UserName: "alice@corp.com", DisplayName: "Alice", Active: true,
 			ExternalID: "00u1abc", CreatedAt: time.Unix(1, 0), UpdatedAt: time.Unix(2, 0),
@@ -322,17 +326,6 @@ func TestADeleteDeactivatesRatherThanAnsweringWithNothingBehindIt(t *testing.T) 
 
 /* ── the surfaces that declare what this is ────────────────────────────── */
 
-// Groups is declared unsupported rather than left to 404 or answered with an
-// empty list. An empty list would tell an identity provider that every group
-// push had succeeded.
-func TestGroupsSaysItIsNotImplemented(t *testing.T) {
-	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPatch} {
-		recorder := serve(t, newRecordingDirectory(), method, "/Groups", `{}`)
-		require.Equal(t, http.StatusNotImplemented, recorder.Code, "method %s", method)
-		require.Contains(t, decodeBody(t, recorder)["detail"], "per-project roles")
-	}
-}
-
 // The configuration document must report what this handler DOES. One that
 // over-reports is how a client comes to send requests the server then fails.
 func TestTheServiceProviderConfigReportsWhatIsImplemented(t *testing.T) {
@@ -345,15 +338,10 @@ func TestTheServiceProviderConfigReportsWhatIsImplemented(t *testing.T) {
 	require.Equal(t, false, body["changePassword"].(map[string]any)["supported"])
 }
 
-// ResourceTypes lists User and NOT Group, so a client never discovers an
-// endpoint that refuses everything.
-func TestResourceTypesDoesNotAdvertiseGroups(t *testing.T) {
-	body := decodeBody(t, serve(t, newRecordingDirectory(), http.MethodGet, "/ResourceTypes", ""))
-
-	resources := body["Resources"].([]any)
-	require.Len(t, resources, 1)
-	require.Equal(t, "User", resources[0].(map[string]any)["id"])
-}
+// ResourceTypes and the group catalogue moved to groups_internal_test.go when
+// /Groups became a served resource. What is asserted there is the same rule
+// read the other way round: the catalogue lists what this tree answers, so a
+// client neither misses a resource nor discovers one that refuses everything.
 
 /* ── an unwired handler refuses ────────────────────────────────────────── */
 

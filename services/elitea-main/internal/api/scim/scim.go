@@ -34,18 +34,24 @@
 // does instead is create a service account, grant it the administration role,
 // and mint a token — all of which the platform already supports.
 //
-// # Users only, and Groups says so rather than pretending
+// # Groups map onto a project, and the missing half is authored
 //
-// `/Groups` is NOT implemented, and `ServiceProviderConfig` and `ResourceTypes`
-// both say so rather than advertising a resource that answers nothing. The
-// reason is that this platform has no group a SCIM Group could BE. Its
-// authorisation is roles resolved per project, plus a central administration
-// mode; a SCIM Group carries a flat name and a member list with no project in
-// it, so any mapping would have to invent the missing half — and the wrong
-// invention silently grants people access to projects.
+// `/Groups` IS implemented, and `ResourceTypes` lists it. It did not exist in
+// the first revision of this package, which refused it with 501 and a reason
+// that was true about the data: a SCIM group carries a flat name and a member
+// list, this platform's membership is always (user, PROJECT, ROLE), and a group
+// says nothing about either half of what it would have to grant.
 //
-// Advertising `/Groups` and answering an empty list would be worse than
-// refusing: an identity provider would report every group push as succeeding.
+// What changed is where the missing half comes from. It is AUTHORED, in
+// `elitea_auth.scim_group_bindings` (shared migration 0097), by an
+// administrator, before any push: one binding names one project and one role,
+// and a group push supplies only the members. So the identity provider decides
+// WHO, and this deployment decides WHAT THEY GET — neither can invent the
+// other. ADR-0021 supersedes ADR-0020's decision 8 and records this.
+//
+// A group with no binding is refused BY NAME. It is not answered with an empty
+// list, and it does not provision a project: see internal/api/scim/groups.go for
+// what each verb does and does not do.
 
 package scim
 
@@ -77,7 +83,16 @@ const BasePath = "/api/v2/scim/v2"
 const MountPath = "/scim/v2"
 
 const (
-	schemaUser         = "urn:ietf:params:scim:schemas:core:2.0:User"
+	schemaUser  = "urn:ietf:params:scim:schemas:core:2.0:User"
+	schemaGroup = "urn:ietf:params:scim:schemas:core:2.0:Group"
+	// schemaProjectGrant is THIS SERVICE'S extension, and it is read-only.
+	//
+	// It carries the project and the role a group grants, so an operator
+	// reading their identity provider's log can see what a push did without
+	// opening the admin screen. It is returned and never accepted: a client that
+	// sent it would be choosing a project, and choosing the project is what the
+	// authored binding exists to keep out of the identity provider's hands.
+	schemaProjectGrant = "urn:elitea:params:scim:schemas:extension:projectgrant:2.0:Group"
 	schemaListResponse = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 	schemaError        = "urn:ietf:params:scim:api:messages:2.0:Error"
 	schemaProviderCfg  = "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
@@ -103,6 +118,17 @@ type Directory interface {
 	Create(ctx context.Context, user scimdirectory.User) (scimdirectory.User, error)
 	Replace(ctx context.Context, id int, user scimdirectory.User) (scimdirectory.User, error)
 	SetActive(ctx context.Context, id int, active bool) (scimdirectory.User, error)
+
+	ListGroups(ctx context.Context, filter scimdirectory.Filter, startIndex, count int) ([]scimdirectory.Group, int, error)
+	GetGroup(ctx context.Context, id int64) (scimdirectory.Group, error)
+	LookupGroup(ctx context.Context, externalID, displayName string) (scimdirectory.Group, error)
+	AdoptGroup(ctx context.Context, id int64, externalID, displayName string) error
+	RenameGroup(ctx context.Context, id int64, displayName string) (scimdirectory.Group, error)
+	AddGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
+	ReplaceGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
+	RemoveGroupMembers(ctx context.Context, id int64, members []int) (scimdirectory.Group, error)
+	DeleteGroup(ctx context.Context, id int64) error
+	ResolveMember(ctx context.Context, value string) (int, error)
 }
 
 // Handler serves the SCIM tree.
@@ -133,30 +159,13 @@ func (h *Handler) Routes() chi.Router {
 	router.Patch("/Users/{id}", h.PatchUser)
 	router.Delete("/Users/{id}", h.DeleteUser)
 
-	// /Groups is declared unsupported rather than left to 404. A 404 reads as
-	// "wrong URL" and sends an operator to check their base path; this says
-	// what is actually true. See the package comment for why there is no group
-	// to map onto.
-	//
-	// Registered per METHOD rather than with HandleFunc, which would bind all
-	// nine of chi's verbs — including CONNECT and TRACE — and put eighteen
-	// entries into the router's published surface for a resource that does
-	// nothing. These five are what a SCIM client sends.
-	for _, method := range []string{
-		http.MethodGet, http.MethodPost, http.MethodPut,
-		http.MethodPatch, http.MethodDelete,
-	} {
-		router.Method(method, "/Groups", http.HandlerFunc(h.groupsUnsupported))
-		router.Method(method, "/Groups/*", http.HandlerFunc(h.groupsUnsupported))
-	}
+	router.Get("/Groups", h.ListGroups)
+	router.Post("/Groups", h.CreateGroup)
+	router.Get("/Groups/{id}", h.GetGroup)
+	router.Put("/Groups/{id}", h.ReplaceGroup)
+	router.Patch("/Groups/{id}", h.PatchGroup)
+	router.Delete("/Groups/{id}", h.DeleteGroup)
 	return router
-}
-
-func (h *Handler) groupsUnsupported(w http.ResponseWriter, _ *http.Request) {
-	writeError(w, http.StatusNotImplemented, "",
-		"group provisioning is not implemented: this platform authorises through per-project roles, "+
-			"which a SCIM group cannot express, so a group push would be accepted and enforce nothing. "+
-			"Provision users here and assign their roles in the admin panel.")
 }
 
 // ready reports whether the directory is wired, answering 503 when it is not.
@@ -205,8 +214,8 @@ func (h *Handler) ServiceProviderConfig(w http.ResponseWriter, _ *http.Request) 
 	})
 }
 
-// ResourceTypes answers `GET /ResourceTypes`. It lists User and NOT Group; see
-// the package comment.
+// ResourceTypes answers `GET /ResourceTypes`. It lists User and Group, both of
+// which this tree serves.
 func (h *Handler) ResourceTypes(w http.ResponseWriter, _ *http.Request) {
 	userType := map[string]any{
 		"schemas":     []string{schemaResourceType},
@@ -220,16 +229,35 @@ func (h *Handler) ResourceTypes(w http.ResponseWriter, _ *http.Request) {
 			"location":     BasePath + "/ResourceTypes/User",
 		},
 	}
-	writeJSON(w, http.StatusOK, listResponse([]any{userType}, 1, 1))
+	groupType := map[string]any{
+		"schemas":  []string{schemaResourceType},
+		"id":       "Group",
+		"name":     "Group",
+		"endpoint": "/Groups",
+		"description": "An identity provider group bound to one project role. " +
+			"The project and the role are authored on this deployment; a push carries the members.",
+		"schema": schemaGroup,
+		// The extension is declared REQUIRED FALSE because a client never sends
+		// it. It is announced so the values it returns are not an undocumented
+		// attribute appearing in a response.
+		"schemaExtensions": []map[string]any{{
+			"schema": schemaProjectGrant, "required": false,
+		}},
+		"meta": map[string]any{
+			"resourceType": "ResourceType",
+			"location":     BasePath + "/ResourceTypes/Group",
+		},
+	}
+	writeJSON(w, http.StatusOK, listResponse([]any{userType, groupType}, 2, 2))
 }
 
 // Schemas answers `GET /Schemas` with the attributes this directory really
 // reads.
 //
-// It describes FIVE attributes and no more. A client uses this document to
-// decide what to send, so listing the whole core User schema would invite it to
-// push a manager, a department and a set of phone numbers that this service
-// stores nowhere.
+// Each document describes the attributes this service ACTS ON and no more. A
+// client uses it to decide what to send, so listing the whole core schema would
+// invite it to push a manager, a department and a set of phone numbers that this
+// service stores nowhere.
 func (h *Handler) Schemas(w http.ResponseWriter, _ *http.Request) {
 	attribute := func(name, kind, description string) map[string]any {
 		return map[string]any{
@@ -252,7 +280,78 @@ func (h *Handler) Schemas(w http.ResponseWriter, _ *http.Request) {
 		},
 		"meta": map[string]any{"resourceType": "Schema", "location": BasePath + "/Schemas/" + schemaUser},
 	}
-	writeJSON(w, http.StatusOK, listResponse([]any{userSchema}, 1, 1))
+	groupSchema := map[string]any{
+		"id":   schemaGroup,
+		"name": "Group",
+		"description": "An identity provider group bound to one project role. " +
+			"The binding is authored on this deployment; a push carries the members.",
+		"attributes": []map[string]any{
+			{
+				"name": "displayName", "type": "string", "multiValued": false,
+				"description": "The group name. It matches the name on the authored binding, " +
+					"and a rename is applied to the binding it already resolved to.",
+				"required": true, "caseExact": false, "mutability": "readWrite",
+				"returned": "default", "uniqueness": "server",
+			},
+			{
+				"name": "externalId", "type": "string", "multiValued": false,
+				"description": "The identity provider's own identifier for the group.",
+				"required":    false, "caseExact": false, "mutability": "readWrite",
+				"returned": "default", "uniqueness": "server",
+			},
+			{
+				"name": "members", "type": "complex", "multiValued": true,
+				"description": "The accounts that hold the bound role. A member value is the " +
+					"platform id, the externalId or the address of an account that already exists; " +
+					"a value that resolves to no account, or to more than one, is refused.",
+				"required": false, "caseExact": false, "mutability": "readWrite",
+				"returned": "default", "uniqueness": "none",
+				"subAttributes": []map[string]any{
+					{
+						"name": "value", "type": "string", "multiValued": false,
+						"description": "The account this member names.",
+						"required":    true, "caseExact": false, "mutability": "immutable",
+						"returned": "default", "uniqueness": "none",
+					},
+					{
+						"name": "display", "type": "string", "multiValued": false,
+						"description": "The account's address. Returned, never read.",
+						"required":    false, "caseExact": false, "mutability": "readOnly",
+						"returned": "default", "uniqueness": "none",
+					},
+				},
+			},
+		},
+		"meta": map[string]any{"resourceType": "Schema", "location": BasePath + "/Schemas/" + schemaGroup},
+	}
+	grantSchema := map[string]any{
+		"id":   schemaProjectGrant,
+		"name": "Project grant",
+		"description": "What a group grants on this deployment. Authored by an administrator, " +
+			"returned on every group, and never accepted on a write.",
+		"attributes": []map[string]any{
+			{
+				"name": "projectId", "type": "integer", "multiValued": false,
+				"description": "The project the members join.",
+				"required":    false, "caseExact": false, "mutability": "readOnly",
+				"returned": "default", "uniqueness": "none",
+			},
+			{
+				"name": "projectName", "type": "string", "multiValued": false,
+				"description": "That project's name.",
+				"required":    false, "caseExact": false, "mutability": "readOnly",
+				"returned": "default", "uniqueness": "none",
+			},
+			{
+				"name": "role", "type": "string", "multiValued": false,
+				"description": "The project role every member receives.",
+				"required":    false, "caseExact": false, "mutability": "readOnly",
+				"returned": "default", "uniqueness": "none",
+			},
+		},
+		"meta": map[string]any{"resourceType": "Schema", "location": BasePath + "/Schemas/" + schemaProjectGrant},
+	}
+	writeJSON(w, http.StatusOK, listResponse([]any{userSchema, groupSchema, grantSchema}, 3, 3))
 }
 
 func uniquenessOf(name string) string {
@@ -304,6 +403,45 @@ func userResource(user scimdirectory.User) map[string]any {
 	// empty externalId may take it as an instruction to clear its own mapping.
 	if user.ExternalID != "" {
 		resource["externalId"] = user.ExternalID
+	}
+	return resource
+}
+
+// groupResource renders one bound group.
+//
+// The member `value` is the platform account id — the same id `/Users` returns —
+// because that is the identifier a client sends back on the next PATCH. The
+// address is rendered as `display`, which is a label; a client that matched on
+// it would break the first time somebody's address changed.
+func groupResource(group scimdirectory.Group) map[string]any {
+	members := make([]map[string]any, 0, len(group.Members))
+	for _, member := range group.Members {
+		members = append(members, map[string]any{
+			"value":   strconv.Itoa(member.UserID),
+			"display": member.UserName,
+			"type":    "User",
+			"$ref":    BasePath + "/Users/" + strconv.Itoa(member.UserID),
+		})
+	}
+	resource := map[string]any{
+		"schemas":     []string{schemaGroup, schemaProjectGrant},
+		"id":          strconv.FormatInt(group.ID, 10),
+		"displayName": group.DisplayName,
+		"members":     members,
+		schemaProjectGrant: map[string]any{
+			"projectId":   group.ProjectID,
+			"projectName": group.ProjectName,
+			"role":        group.RoleName,
+		},
+		"meta": map[string]any{
+			"resourceType": "Group",
+			"created":      group.CreatedAt.UTC().Format(time.RFC3339),
+			"lastModified": group.UpdatedAt.UTC().Format(time.RFC3339),
+			"location":     BasePath + "/Groups/" + strconv.FormatInt(group.ID, 10),
+		},
+	}
+	if group.ExternalID != "" {
+		resource["externalId"] = group.ExternalID
 	}
 	return resource
 }

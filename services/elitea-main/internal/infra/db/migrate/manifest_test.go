@@ -153,7 +153,12 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// provisioning needs. It holds the identity provider's externalId and the
 	// resource timestamps, keyed by user id — the account row itself is
 	// pylon-owned and is read and updated, never reshaped.
-	require.EqualValues(t, 96, Head(shared))
+	// 97: shared/0097_scim_group_bindings.sql, the authored binding of one SCIM
+	// group to one project role, and the ledger of what a push granted. It
+	// reverses 0096's refusal of /Groups: the project and the role are authored
+	// by an administrator before any push, so the identity provider supplies the
+	// membership and never invents the half a SCIM group cannot carry.
+	require.EqualValues(t, 97, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

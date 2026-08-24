@@ -19,11 +19,11 @@ package scimdirectory
 //
 // # What is supported
 //
-//	userName    eq | ne | co | sw | ew  "value"
-//	externalId  eq | ne | co | sw | ew  "value"
-//	displayName eq | ne | co | sw | ew  "value"
-//	id          eq                      "value"
-//	active      eq | ne                 true | false
+//	userName    eq | ne | co | sw | ew  "value"    (users)
+//	externalId  eq | ne | co | sw | ew  "value"    (users and groups)
+//	displayName eq | ne | co | sw | ew  "value"    (users and groups)
+//	id          eq                      "value"    (users and groups)
+//	active      eq | ne                 true | false (users)
 //
 // Attribute names are matched case-insensitively, as RFC 7644 requires. Nothing
 // else is: no `and`, no `or`, no `not`, no `pr`, no grouping. Each of those is a
@@ -41,6 +41,14 @@ type Filter struct {
 	attribute string
 	operator  string
 	value     string
+	// columns is the attribute-to-column map the expression was parsed
+	// against, carried so `clause` renders the SQL of the resource the filter
+	// was read FOR. A users filter and a groups filter are the same shape over
+	// different tables, and a filter that rendered the other resource's columns
+	// would be a query that fails at the database — or, worse, one that
+	// succeeds against a column of the same name and answers about the wrong
+	// rows.
+	columns map[string]string
 	// present is false for the empty filter. A zero Filter must match
 	// everything, because "no filter" is how a client asks for the whole
 	// directory — and a zero value that matched nothing would answer that
@@ -62,9 +70,9 @@ func (e UnsupportedFilterError) Error() string {
 	return fmt.Sprintf("unsupported filter %q: %s", e.Expression, e.Reason)
 }
 
-// filterableAttributes maps the SCIM attribute name to its column, and is the
-// closed set this parser accepts.
-var filterableAttributes = map[string]string{
+// userAttributes maps the SCIM User attribute name to its column, and is the
+// closed set the /Users parser accepts.
+var userAttributes = map[string]string{
 	"username":    "lower(account.email)",
 	"externalid":  "COALESCE(scim.external_id, '')",
 	"displayname": "COALESCE(account.name, '')",
@@ -72,11 +80,32 @@ var filterableAttributes = map[string]string{
 	"active":      "NOT account.suspended",
 }
 
-// ParseFilter reads one `filter` query parameter.
+// groupAttributes is the same closed set for the /Groups resource.
+//
+// `members` is deliberately absent. An identity provider that filtered groups by
+// member would be asking a question this parser cannot answer, and the answer it
+// would get from an ignored filter — every group — is the one that silently
+// grants access. It is refused by name, like every other unsupported attribute.
+var groupAttributes = map[string]string{
+	"displayname": "binding.display_name",
+	"externalid":  "binding.external_id",
+	"id":          "binding.id::text",
+}
+
+// ParseFilter reads one `filter` query parameter of a /Users listing.
 //
 // An empty string is the empty filter, not an error: a listing with no filter is
 // the ordinary way to page the whole directory.
 func ParseFilter(expression string) (Filter, error) {
+	return parseFilter(expression, userAttributes)
+}
+
+// ParseGroupFilter reads one `filter` query parameter of a /Groups listing.
+func ParseGroupFilter(expression string) (Filter, error) {
+	return parseFilter(expression, groupAttributes)
+}
+
+func parseFilter(expression string, columns map[string]string) (Filter, error) {
 	trimmed := strings.TrimSpace(expression)
 	if trimmed == "" {
 		return Filter{}, nil
@@ -104,10 +133,13 @@ func ParseFilter(expression string) (Filter, error) {
 	}
 
 	attribute := strings.ToLower(parts[0])
-	if _, ok := filterableAttributes[attribute]; !ok {
+	if _, ok := columns[attribute]; !ok {
 		return Filter{}, UnsupportedFilterError{
 			Expression: expression,
-			Reason:     "this directory can only filter on userName, externalId, displayName, id and active",
+			// The message names what THIS resource can be filtered on, read
+			// from the same map the parser accepts against, so it can never
+			// advertise an attribute the parser then refuses.
+			Reason: "this directory can only filter on " + attributeList(columns),
 		}
 	}
 
@@ -132,7 +164,10 @@ func ParseFilter(expression string) (Filter, error) {
 				Reason:     "active can only be compared with true or false",
 			}
 		}
-		return Filter{attribute: attribute, operator: operator, value: value, present: true}, nil
+		return Filter{
+			attribute: attribute, operator: operator, value: value,
+			present: true, columns: columns,
+		}, nil
 	}
 
 	switch operator {
@@ -149,7 +184,34 @@ func ParseFilter(expression string) (Filter, error) {
 			Reason:     "id can only be compared with eq",
 		}
 	}
-	return Filter{attribute: attribute, operator: operator, value: value, present: true}, nil
+	return Filter{
+		attribute: attribute, operator: operator, value: value,
+		present: true, columns: columns,
+	}, nil
+}
+
+// attributeList renders a closed set as the SCIM attribute names an operator
+// configured, in a stable order.
+func attributeList(columns map[string]string) string {
+	names := make([]string, 0, len(columns))
+	for _, name := range []string{"username", "externalid", "displayname", "id", "active"} {
+		if _, ok := columns[name]; ok {
+			names = append(names, scimAttributeNames[name])
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
+// scimAttributeNames is the spelling a client sends and an operator configures.
+// The parser folds case to match; a refusal that echoed the folded name would
+// send an operator looking for `externalid` in a provider that calls it
+// `externalId`.
+var scimAttributeNames = map[string]string{
+	"username":    "userName",
+	"externalid":  "externalId",
+	"displayname": "displayName",
+	"id":          "id",
+	"active":      "active",
 }
 
 // clause renders the filter as SQL and its arguments.
@@ -162,7 +224,7 @@ func (f Filter) clause() (string, []any) {
 	if !f.present {
 		return "", nil
 	}
-	column := filterableAttributes[f.attribute]
+	column := f.columns[f.attribute]
 
 	if f.attribute == "active" {
 		wanted := f.value == "true"

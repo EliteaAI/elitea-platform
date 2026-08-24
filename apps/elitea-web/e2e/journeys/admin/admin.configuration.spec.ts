@@ -179,6 +179,17 @@ adminTest('J34f: the Authentication section renders its editor, not a refusal', 
   await expect(page.getByTestId('admin-identity-providers-empty')).toBeVisible();
   await expect(page.getByTestId('admin-identity-providers-error')).toHaveCount(0);
 
+  // SCIM group provisioning renders in the SAME section: a provider federates
+  // the login and SCIM pushes the directory, and one of the two is not
+  // configuration an operator finds on another screen.
+  //
+  // Its own read is authorised and answered too. The empty state is the
+  // truthful branch on this stack — no group is bound — and the error alert
+  // would mean the route refused, which is what this asserts is NOT happening.
+  await expect(page.getByTestId('admin-scim-group-bindings-add')).toBeVisible();
+  await expect(page.getByTestId('admin-scim-group-bindings-empty')).toBeVisible();
+  await expect(page.getByTestId('admin-scim-group-bindings-error')).toHaveCount(0);
+
   await checkA11y(page);
 });
 
