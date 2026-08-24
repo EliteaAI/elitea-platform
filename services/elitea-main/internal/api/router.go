@@ -825,6 +825,22 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			SessionSecret:             cfg.SessionSecret,
 		}))
 
+		// Maintenance mode, immediately AFTER authentication and before
+		// anything that does work.
+		//
+		// The ordering is load-bearing in both directions. It has to be after
+		// Auth, because the only caller it admits is one whose administration
+		// permissions can be resolved, and that needs a principal on the
+		// context. It has to be before the cutover router and the shadow
+		// comparator, because during a maintenance window a refused request must
+		// not be proxied to pylon or sampled for comparison — a window that
+		// stops elitea-main while traffic keeps reaching the legacy runtime is
+		// not a maintenance window.
+		r.Use(apimw.Maintenance(apimw.MaintenanceConfig{
+			Pool:     cfg.Pool,
+			Resolver: permissionResolver,
+		}))
+
 		if cfg.CutoverRouter != nil {
 			r.Use(cfg.CutoverRouter.Middleware)
 		}

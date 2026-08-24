@@ -570,7 +570,7 @@ func TestSectionPermissionFailsClosedWithoutAResolver(t *testing.T) {
 	principal := auth.User{ID: "7", Email: "operator@example.com"}
 	router := configRouter(admin.NewHandler(pool), &principal)
 
-	for _, section := range []string{"service_descriptors", "advanced", "governance"} {
+	for _, section := range []string{"service_descriptors", "governance"} {
 		recorder := configDo(t, router, http.MethodGet,
 			"/admin/plugin_config_values/administration/"+section, nil)
 		if recorder.Code != http.StatusForbidden {
@@ -591,9 +591,9 @@ func TestSectionPermissionRefusesACallerWithoutIt(t *testing.T) {
 	router := configRouter(handler, &principal)
 
 	recorder := configDo(t, router, http.MethodGet,
-		"/admin/plugin_config_values/administration/advanced", nil)
+		"/admin/plugin_config_values/administration/governance", nil)
 	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("advanced status = %d, want 403 for a caller without configuration.advanced (body %s)",
+		t.Fatalf("governance status = %d, want 403 for a caller without configuration.governance (body %s)",
 			recorder.Code, recorder.Body.String())
 	}
 }

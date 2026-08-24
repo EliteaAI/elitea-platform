@@ -129,13 +129,19 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
 
   // Guardrails left this list when it gained consumers — see J34a;
   // Authentication left it when it gained a typed store and a login path that
-  // reads it — see J34f; and LiteLLM left it by ceasing to exist, replaced by
-  // the managed LLM Proxy section — see J34g.
+  // reads it — see J34f; LiteLLM left it by ceasing to exist, replaced by the
+  // managed LLM Proxy section — see J34g; and Banner and Maintenance left it
+  // by gaining, respectively, a renderer in the app shell and an enforcing
+  // middleware — see J34i and J34j.
   //
-  // Runtime replaces LiteLLM here. It has to be a section that is STILL
-  // unavailable, or this journey asserts a refusal that no longer happens and
-  // would pass only by never reaching the click.
-  for (const section of ['Runtime', 'Maintenance', 'Advanced']) {
+  // Advanced did not leave this list, it left the PAGE: its subject is Pylon
+  // plugin loading, which the target architecture removes deliberately, so the
+  // section is gone rather than permanently withheld.
+  //
+  // Every name here has to be a section that is STILL unavailable, or this
+  // journey asserts a refusal that no longer happens and would pass only by
+  // never reaching the click.
+  for (const section of ['Runtime', 'Admin Panel']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -282,6 +288,70 @@ adminTest('J34h: the LLM Proxy model catalogue is authorised and answers', async
   await expect(page.getByTestId('llm-proxy-add-price')).toBeVisible();
   await expect(page.getByTestId('llm-proxy-models-load-error')).toHaveCount(0);
   await expect(page.getByTestId('llm-proxy-models-error')).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34i: the Banner section is an editable form, and the save round-trips', async ({ page }) => {
+  await openConfiguration(page);
+
+  const banner = page.getByRole('button', { name: /^Banner/ });
+  await expect(banner).toBeVisible();
+  // It left the unavailable list by acquiring a consumer: `platform_settings`
+  // publishes the resolved banner and `widgets/app-shell` renders it. Before
+  // that the legacy SPA took the banner from a BUILD-TIME environment variable,
+  // so this form wrote rows nothing anywhere read.
+  await expect(banner.getByText('Not available here')).toHaveCount(0);
+
+  await banner.click();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  const message = page.getByRole('textbox', { name: 'Banner Message' });
+  await expect(message).toBeVisible();
+
+  // The round trip, and then back. Leaving the banner up would put a bar across
+  // the top of every screen for every journey that runs after this one —
+  // `describe.configure({mode: 'serial'})` means they share this deployment.
+  const raised = 'Journey 34 banner check.';
+  await message.fill(raised);
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByTestId('admin-configuration-saved')).toBeVisible();
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /^Banner/ }).click();
+  // The value came back from the STORE, not from the form state that wrote it —
+  // a save that reported success and stored nothing looks identical until the
+  // reload.
+  await expect(page.getByRole('textbox', { name: 'Banner Message' })).toHaveValue(raised);
+
+  await page.getByRole('textbox', { name: 'Banner Message' }).fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByTestId('admin-configuration-saved')).toBeVisible();
+
+  await checkA11y(page);
+});
+
+adminTest('J34j: the Maintenance section is an editable form', async ({ page }) => {
+  await openConfiguration(page);
+
+  const maintenance = page.getByRole('button', { name: /Maintenance/ });
+  await expect(maintenance).toBeVisible();
+  await expect(maintenance.getByText('Not available here')).toHaveCount(0);
+
+  await maintenance.click();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: 'Maintenance Mode' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Splash Message' })).toBeVisible();
+
+  // THE SWITCH IS NOT FLIPPED HERE, deliberately. Enabling it would make
+  // elitea-main answer 503 to every non-admin request on this deployment, and
+  // these journeys share one stack in serial — every later journey that signs in
+  // as anyone else would fail against a platform this test closed. The
+  // enforcement itself is covered where it can be covered in isolation:
+  // `internal/api/middleware/maintenance_internal_test.go` for who is admitted
+  // and what escapes the window, and `widgets/app-shell`'s tests for the splash
+  // replacing the shell and an exempt caller keeping the product.
+  await expect(page.getByRole('checkbox', { name: 'Maintenance Mode' })).not.toBeChecked();
 
   await checkA11y(page);
 });

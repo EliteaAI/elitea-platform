@@ -42,29 +42,16 @@ const (
 		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
 		"would have no effect. Use the Pylon admin panel while the hybrid deployment is running."
 
-	// extraUIConfigUnavailable covers the `extra_ui_config.*` sections other
-	// than `resources`. These are not Pylon RUNTIME concerns — they are product
-	// settings that legacy delivered by injecting the whole of elitea_core's
-	// `extra_ui_config` into `window.elitea_ui_config`. They are unavailable for
-	// the narrower reason that no surface in this platform reads them yet, which
-	// is a gap to close rather than a boundary to respect.
-	extraUIConfigUnavailable = "nothing in this platform reads this setting yet. The legacy UI received it by " +
-		"injecting the plugin's extra_ui_config into the page; no equivalent consumer has been built here, so the " +
-		"control is withheld rather than shown saving into a void."
-
-	// maintenanceSplashUnavailable — pylon's maintenance mode is a gevent router
-	// hook installed on the bootstrap plugin's persisted state, serving a 503
-	// splash to anyone whose administration-mode roles do not include admin
-	// (legacy/plugins/bootstrap/tools/splash.py). Nothing in this service
-	// installs such a hook, and inventing one would be a new product feature.
-	maintenanceSplashUnavailable = "maintenance mode is a Pylon request hook that serves a 503 splash to non-admin " +
-		"users; this platform installs no such hook, so the switch would toggle a setting nothing enforces."
-
-	// advancedRuntimeUnavailable — the Advanced section is raw plugin YAML
-	// editing, per-pylon log tailing and plugin update/reload. All four of its
-	// endpoints are Pylon runtime introspection.
-	advancedRuntimeUnavailable = "the Advanced section edits raw plugin YAML, tails pylon logs and reloads plugins " +
-		"on live Pylon runtimes. Those runtimes are not part of this platform."
+	// extraUIConfigUnavailable used to cover the `extra_ui_config.*` sections
+	// other than `resources` — settings the legacy UI received by injecting
+	// elitea_core's `extra_ui_config` into the page, withheld here for the
+	// narrower reason that nothing read them YET. It was described as a gap to
+	// close rather than a boundary to respect, and every section that held it
+	// has now closed its gap: `resources` first (the Help Center),
+	// `support_assistant` by acquiring the specific reason below, and
+	// `dedicated_banner` by acquiring a consumer. The constant is gone rather
+	// than kept for a future section, so the next one to need it has to state
+	// what reads it before it can be written.
 
 	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
 	// through this endpoint even in the reference: elitea-main has its own CRUD
@@ -186,6 +173,28 @@ const (
 	configPageFeatures = "features"
 )
 
+// ## The Advanced section is GONE, not withheld
+//
+// It used to be declared here with an `unavailable_reason` saying that it edits
+// raw plugin YAML, tails pylon logs and reloads plugins on live Pylon runtimes,
+// and that those runtimes are not part of this platform. Every word of that was
+// true, and it is why the section is now absent instead.
+//
+// A withheld section is a promise: it tells an operator that the capability
+// belongs on this page and is coming. Advanced is the one section on this page
+// whose subject the target architecture removes ON PURPOSE — AGENTS.md names
+// Pylon plugin loading and the Arbiter bus as things this platform does not
+// preserve — so there is nothing to arrive. Leaving the row in the sidebar
+// spends a permanent line of the operator's attention on a control that will
+// never exist, which is the same failure mode as a form that saves into a void,
+// one step removed.
+//
+// `configuration.advanced` therefore leaves declaredPermissions() with it
+// (roles.go). A deployment whose legacy roles still grant the name keeps it in
+// the matrix — the catalogue is the union of granted and declared — so no
+// existing grant is invalidated; the name simply stops being one this service
+// declares a gate for.
+
 func configSections() []map[string]any {
 	return []map[string]any{
 		guardrailsSection(),
@@ -205,7 +214,6 @@ func configSections() []map[string]any {
 		voiceFeaturesSection(),
 		serviceDescriptorsSection(),
 		maintenanceSection(),
-		advancedSection(),
 	}
 }
 
@@ -1135,15 +1143,35 @@ func resourcesSection() map[string]any {
 	}
 }
 
+// dedicatedBannerSection — the platform-wide notification banner. LIVE.
+//
+// It carried extraUIConfigUnavailable ("nothing in this platform reads this
+// setting yet") and the reason was accurate: the legacy SPA read the banner from
+// a BUILD-TIME environment variable, `VITE_MAINTENANCE_BANNER`, so the rows this
+// form wrote were read by nothing anywhere — not here and not in the reference
+// deployment either. The admin control and the rendered banner were two
+// unconnected things that happened to share a name.
+//
+// They are connected now. `platformconfig.LoadBanner` resolves these five keys,
+// `GET /elitea_core/platform_settings/prompt_lib` marshals the result as
+// `dedicated_banner`, and apps/elitea-web's `MaintenanceBanner` renders it in the
+// app shell. That also makes it a RUNTIME control rather than a redeploy, which
+// is the point of a banner: an operator raising one is telling users about
+// something that is happening now.
+//
+// The `path` values are kept as they were. They are legacy provenance — where
+// pylon would have written the key inside `extra_ui_config` — and nothing here
+// reads them; the storage key is `key`, in `centry.platform_config` under this
+// section id. They stay because a deployment migrating from pylon needs the two
+// namings to be traceable to each other.
 func dedicatedBannerSection() map[string]any {
 	return map[string]any{
-		"id":                 "dedicated_banner",
-		"unavailable_reason": extraUIConfigUnavailable,
-		"title":              "Banner",
-		"description":        "Enable dedicated banner to communicate important notifications across the platform.",
-		"order":              89,
-		"icon":               "campaign",
-		"always_visible":     true,
+		"id":             "dedicated_banner",
+		"title":          "Banner",
+		"description":    "Enable dedicated banner to communicate important notifications across the platform.",
+		"order":          89,
+		"icon":           "campaign",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
 				"key":         "banner_enabled",
@@ -1184,13 +1212,15 @@ func dedicatedBannerSection() map[string]any {
 				"enum":        []string{"info", "warning"},
 			},
 			{
-				"key":         "banner_message",
-				"type":        "string",
-				"title":       "Banner Message",
-				"description": "The message content displayed in the banner. Supports Markdown formatting.",
-				"path":        "extra_ui_config.vite_maintenance_banner.message",
-				"section":     "dedicated_banner",
-				"default":     "",
+				"key":    "banner_message",
+				"type":   "string",
+				"format": "textarea",
+				"title":  "Banner Message",
+				"description": "The message content displayed in the banner. Supports Markdown formatting. " +
+					"An enabled banner with no message renders nothing.",
+				"path":    "extra_ui_config.vite_maintenance_banner.message",
+				"section": "dedicated_banner",
+				"default": "",
 			},
 		},
 	}
@@ -1310,29 +1340,81 @@ func voiceFeaturesSection() map[string]any {
 	}
 }
 
+// maintenanceSection — the platform maintenance switch. LIVE, and ENFORCED.
+//
+// It carried maintenanceSplashUnavailable, which said the switch "would toggle a
+// setting nothing enforces". That was true and it is the sentence this section
+// had to earn its way out of: something enforces it now.
+//
+// WHAT REPLACED THE PYLON HOOK. In pylon this was a gevent router hook installed
+// on the bootstrap plugin's persisted state, which intercepted every request,
+// called `auth_authorize` over RPC, read the caller's administration-mode roles
+// and served a 503 splash to anyone who was not an admin
+// (legacy/plugins/bootstrap/tools/splash.py). Here it is
+// `internal/api/middleware`'s Maintenance middleware on the `/api/v2` group,
+// which asks the same question of the same permission model and answers 503 with
+// the copy authored below.
+//
+// The port is deliberately NOT a byte-for-byte one, in two places:
+//
+//   - The splash is JSON and a client-side page, not `splash_template` HTML. The
+//     pylon hook returned a WSGI app serving a stored HTML document because it
+//     sat in front of everything, including the SPA's own assets. This
+//     middleware sits on the JSON API only — the SPA still loads — so the
+//     product can render its own splash in its own theme, and an operator
+//     authors words rather than markup. A stored HTML template editable from an
+//     admin form is also an XSS surface aimed at every user of the platform, and
+//     declining to build one is not a gap.
+//   - There is no bypass cookie. `splash_bypass_cookie`/`splash_bypass_token`
+//     were a shared static secret in plugin config that granted full access to
+//     anyone who had ever seen it. The admin permission is the bypass.
+//
+// WHO GETS THROUGH. Holders of `runtime.plugins` in administration mode — the
+// permission pylon's own maintenance.py declares on this surface — plus the
+// routes an admin needs in order to sign in and turn the switch back off. The
+// middleware owns that list; see its doc comment for why each entry is on it.
 func maintenanceSection() map[string]any {
 	return map[string]any{
-		"id":                 "maintenance",
-		"unavailable_reason": maintenanceSplashUnavailable,
-		"title":              "Maintenance",
-		"description":        "Enable maintenance mode to show a splash screen to all non-admin users.",
-		"order":              91,
-		"icon":               "construction",
-		"always_visible":     true,
-		"fields":             []map[string]any{},
-	}
-}
-
-func advancedSection() map[string]any {
-	return map[string]any{
-		"id":                  "advanced",
-		"unavailable_reason":  advancedRuntimeUnavailable,
-		"title":               "Advanced",
-		"description":         "View and edit raw plugin configurations for all connected pylons.",
-		"order":               100,
-		"icon":                "code",
-		"always_visible":      true,
-		"required_permission": "configuration.advanced",
-		"fields":              []map[string]any{},
+		"id":    "maintenance",
+		"title": "Maintenance",
+		"description": "Enable maintenance mode to refuse the API to everyone without administration " +
+			"access and show them a splash screen. Administrators keep full access, so this switch can " +
+			"always be turned off from here.",
+		"order":          91,
+		"icon":           "construction",
+		"always_visible": true,
+		// The same permission the middleware bypasses on. A caller who cannot
+		// be admitted during a maintenance window must not be able to start one
+		// either.
+		"required_permission": "runtime.plugins",
+		"fields": []map[string]any{
+			{
+				"key":   "maintenance_enabled",
+				"type":  "boolean",
+				"title": "Maintenance Mode",
+				"description": "When enabled, every API request from a user without administration access " +
+					"is refused with 503 and the splash below.",
+				"section": "maintenance",
+				"default": false,
+			},
+			{
+				"key":         "maintenance_title",
+				"type":        "string",
+				"title":       "Splash Title",
+				"description": "Heading shown on the splash screen. Left empty, a default is used.",
+				"section":     "maintenance",
+				"default":     "",
+			},
+			{
+				"key":    "maintenance_message",
+				"type":   "string",
+				"format": "textarea",
+				"title":  "Splash Message",
+				"description": "Body text shown on the splash screen — say what is happening and when it " +
+					"ends. Supports Markdown formatting. Left empty, a default is used.",
+				"section": "maintenance",
+				"default": "",
+			},
+		},
 	}
 }

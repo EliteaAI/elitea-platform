@@ -2392,5 +2392,6 @@
   "pages.admin.llmProxy.models.search": "Search models",
   "pages.admin.llmProxy.models.truncated": "Showing the first {{count}} models. Search to narrow the list.",
   "pages.admin.llmProxy.models.unpricedError": "The check for called-but-unpriced models could not be run, so this page cannot say whether any exist: {{reason}}",
-  "pages.admin.llmProxy.models.noMatches": "No models match that search."
+  "pages.admin.llmProxy.models.noMatches": "No models match that search.",
+  "widgets.appShell.banner.dismiss": "Dismiss"
 }

@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react';
+import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getListProjectsMockHandler } from '@/shared/api/generated/applications/applications.msw';
@@ -76,6 +77,65 @@ afterEach(() => {
 });
 
 describe('AppShell', () => {
+  /** The maintenance state `platform_settings` publishes for this caller. */
+  function maintenanceHandler(maintenance: {
+    enabled: boolean;
+    title: string;
+    message: string;
+    bypass: boolean;
+  }) {
+    return http.get('*/elitea_core/platform_settings/prompt_lib', () =>
+      HttpResponse.json({ chat_enabled: true, maintenance }),
+    );
+  }
+
+  // A maintenance window replaces the WHOLE shell for a user the API is
+  // refusing — sidebar included. Rendering the product around the splash would
+  // leave every control looking usable over an API answering 503 to all of
+  // them, which is the confusion the splash exists to remove.
+  it('replaces the shell with the splash during a maintenance window', async () => {
+    server.use(
+      maintenanceHandler({
+        enabled: true,
+        title: 'Scheduled upgrade',
+        message: 'Back at 14:00 UTC.',
+        bypass: false,
+      }),
+    );
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+
+    expect(await screen.findByTestId('maintenance-splash')).toBeInTheDocument();
+    expect(screen.queryByText('page content')).toBeNull();
+    expect(screen.queryByTestId('sidebar-create-button')).toBeNull();
+  });
+
+  // …and NOT for an administrator, who is the one person who has to be able to
+  // reach the admin panel and end the window. `bypass` is resolved by the
+  // server from the same permission the middleware admits on; this widget
+  // honours it rather than repeating the rule.
+  it('leaves the product intact for a caller the server marks as exempt', async () => {
+    server.use(
+      maintenanceHandler({
+        enabled: true,
+        title: 'Scheduled upgrade',
+        message: 'Back at 14:00 UTC.',
+        bypass: true,
+      }),
+    );
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+
+    expect(await screen.findByText('page content')).toBeInTheDocument();
+    expect(screen.queryByTestId('maintenance-splash')).toBeNull();
+  });
+
   it('renders the sidebar and the page content together', async () => {
     await renderWithNavigation(
       <AppShell>
