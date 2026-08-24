@@ -127,10 +127,15 @@ adminTest('J34a: Guardrails offers a real form, including its two tool maps', as
 adminTest('J34b: the sections with no backend say so instead of showing a form', async ({ page }) => {
   await openConfiguration(page);
 
-  // Guardrails left this list when it gained consumers — see J34a, and
+  // Guardrails left this list when it gained consumers — see J34a;
   // Authentication left it when it gained a typed store and a login path that
-  // reads it — see J34f.
-  for (const section of ['LiteLLM', 'Maintenance', 'Advanced']) {
+  // reads it — see J34f; and LiteLLM left it by ceasing to exist, replaced by
+  // the managed LLM Proxy section — see J34g.
+  //
+  // Runtime replaces LiteLLM here. It has to be a section that is STILL
+  // unavailable, or this journey asserts a refusal that no longer happens and
+  // would pass only by never reaching the click.
+  for (const section of ['Runtime', 'Maintenance', 'Advanced']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -213,7 +218,7 @@ adminTest('J34e: the MCP Servers section renders its editor, not a refusal', asy
   await checkA11y(page);
 });
 
-adminTest('J34f: the LLM Proxy section renders its editor, not a refusal', async ({ page }) => {
+adminTest('J34g: the LLM Proxy section renders its editor, not a refusal', async ({ page }) => {
   await openConfiguration(page);
 
   // The section that replaced LiteLLM. LiteLLM is gone — ADR-0015 replaced it
@@ -247,7 +252,7 @@ adminTest('J34f: the LLM Proxy section renders its editor, not a refusal', async
   await checkA11y(page);
 });
 
-adminTest('J34g: the LLM Proxy model catalogue is authorised and answers', async ({ page }) => {
+adminTest('J34h: the LLM Proxy model catalogue is authorised and answers', async ({ page }) => {
   await openConfiguration(page);
   await page.getByRole('button', { name: /LLM Proxy/ }).click();
   await page.getByRole('tab', { name: 'Models & pricing' }).click();
