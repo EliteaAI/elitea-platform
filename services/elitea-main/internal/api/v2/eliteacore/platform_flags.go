@@ -21,6 +21,15 @@ package eliteacore
 //	                                 widgets/chat's VoiceButton
 //	vite_voice_features_temporarily_disabled
 //	                               → voiceFlags, ditto
+//	blocked_toolkits               → blockedToolkits, marshalled into
+//	                                 PlatformSettings so the product UI can mark
+//	                                 an existing toolkit blocked
+//
+// The other four `guardrails` fields are read outside this package, and this is
+// the whole of that list: `blocked_toolkits` and `blocked_tools` in the toolkit
+// API surfaces (internal/api/v2/toolkits/guardrails.go) and in the agent tool
+// freeze (internal/application/agentexecution/tools.go); `sensitive_tools` and
+// the two dialog-copy fields in the agent execution input the worker reads.
 //
 // A flag with no entry in that list does not belong on the available side of the
 // page. `config_schemas.go` states the same fact from the other end, as an
@@ -34,14 +43,26 @@ package eliteacore
 // agent categories, loading the shell's feature flags. A store that cannot be
 // read is an operational fault, and resolving it to "MCP is disabled" or
 // "publishing is blocked" would turn a database hiccup into a platform-wide
-// outage of a subsystem nobody switched off. The one place that is NOT true is
-// the admin page's own read (`config_values.go`), which reports the failure,
-// because an operator editing configuration must never be shown defaults as if
-// they were the stored state.
+// outage of a subsystem nobody switched off.
+//
+// Two places are NOT permissive, and both are permissive-would-be-wrong rather
+// than exceptions to a style:
+//
+//   - the admin page's own read (`config_values.go`) reports the failure,
+//     because an operator editing configuration must never be shown defaults as
+//     if they were the stored state;
+//   - the agent tool freeze (internal/application/agentexecution/tools.go) fails
+//     the execution, because there the permissive answer is "nothing is
+//     blocked", which runs exactly the tools an operator disabled.
+//
+// `blockedToolkits` below stays permissive because it only decides how the UI
+// PAINTS a toolkit; it enforces nothing.
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
@@ -174,4 +195,31 @@ func (h *Handler) extraAgentCategories(ctx context.Context) []string {
 		return nil
 	}
 	return values.Strings(platformconfig.KeyAgentCategories)
+}
+
+// blockedToolkits resolves the guardrails blocklist for PlatformSettings.
+//
+// An unreadable store yields an EMPTY list, and that is the permissive answer on
+// purpose: this value only decides whether the UI paints a toolkit as blocked,
+// and painting every toolkit blocked because one row would not load would be a
+// far louder failure than painting none. The enforcement that matters does not
+// live here — the catalogue refuses, and the agent freeze fails the execution
+// outright rather than run unguarded.
+//
+// It returns a non-nil slice so the field encodes as `[]` rather than `null`;
+// a client that has to distinguish those two has been handed the server's
+// problem.
+func (h *Handler) blockedToolkits(ctx context.Context) []string {
+	policy, err := platformconfig.LoadGuardrails(ctx, h.pool)
+	if err != nil {
+		slog.ErrorContext(ctx, "platform_settings: guardrails read failed; reporting no blocked toolkits",
+			"err", err)
+		return []string{}
+	}
+	blocked := policy.BlockedToolkits()
+	if blocked == nil {
+		return []string{}
+	}
+	sort.Strings(blocked)
+	return blocked
 }

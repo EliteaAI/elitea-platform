@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -127,6 +128,7 @@ type CurrentApplicationStartService struct {
 	regenerationResolver CurrentRegenerationResolver
 	continuationResolver CurrentContinuationResolver
 	suggestionResolver   NextInputSuggestionPolicyResolver
+	guardrails           CurrentAgentGuardrailResolver
 	freezer              CurrentApplicationVersionFreezer
 	admissions           admissionSubmitter
 }
@@ -137,17 +139,20 @@ func NewCurrentApplicationStartService(
 	regenerationResolver CurrentRegenerationResolver,
 	continuationResolver CurrentContinuationResolver,
 	suggestionResolver NextInputSuggestionPolicyResolver,
+	guardrailPolicies CurrentAgentGuardrailResolver,
 	freezer CurrentApplicationVersionFreezer,
 	admissions admissionSubmitter,
 ) (*CurrentApplicationStartService, error) {
 	if resolver == nil || adhocResolver == nil || regenerationResolver == nil ||
-		continuationResolver == nil || suggestionResolver == nil || freezer == nil || admissions == nil {
+		continuationResolver == nil || suggestionResolver == nil || guardrailPolicies == nil ||
+		freezer == nil || admissions == nil {
 		return nil, errors.New("current application start dependencies are required")
 	}
 	return &CurrentApplicationStartService{
 		resolver: resolver, adhocResolver: adhocResolver,
 		regenerationResolver: regenerationResolver,
 		continuationResolver: continuationResolver,
+		guardrails:           guardrailPolicies,
 		suggestionResolver:   suggestionResolver,
 		freezer:              freezer, admissions: admissions,
 	}, nil
@@ -193,7 +198,11 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 		request.ProjectID,
 		request.ActorUserID,
 	)
-	input, err := currentApplicationInput(request, target, suggestionPolicy)
+	toolkitGuardrails, err := service.resolveToolkitGuardrails(ctx)
+	if err != nil {
+		return CurrentApplicationStartOutcome{}, err
+	}
+	input, err := currentApplicationInput(request, target, suggestionPolicy, toolkitGuardrails)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
@@ -234,6 +243,7 @@ func currentApplicationInput(
 	request CurrentApplicationStartRequest,
 	target CurrentApplicationTarget,
 	nextInputSuggestion json.RawMessage,
+	toolkitGuardrails json.RawMessage,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	skills, err := projectCurrentApplicationSkills(request.UserInput, target.VersionDetails)
 	if err != nil {
@@ -275,7 +285,41 @@ func currentApplicationInput(
 		AttachedSkills: skills.attached, InputAttachments: []byte(`[]`),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
+		ToolkitGuardrails:   bytes.Clone(toolkitGuardrails),
 	}, nil
+}
+
+// resolveToolkitGuardrails marshals the live guardrails policy for the worker.
+//
+// It FAILS the turn on a read error, which is the opposite of what
+// resolveNextInputSuggestionPolicy below does with its own dependency, and the
+// difference is not a style choice:
+//
+//   - a suggestion policy is optional execution metadata. Losing it costs the
+//     user a follow-up prompt, so an unavailable dependency degrades to `null`
+//     rather than refusing the turn.
+//   - a guardrails policy decides which tool calls stop and ask the user for
+//     authorization. Its degraded value is "no tool is sensitive", which means
+//     the run proceeds and executes, unprompted, exactly the actions an operator
+//     marked as requiring approval. There is no safe default to fall back to, so
+//     the turn does not start.
+//
+// The freeze has already read the same policy a few lines earlier and failed the
+// turn if it could not, so reaching a failure here means the store went away in
+// between. Failing twice for the same reason is correct; silently succeeding the
+// second time would make the freeze's guarantee conditional on timing.
+func (service *CurrentApplicationStartService) resolveToolkitGuardrails(
+	ctx context.Context,
+) (json.RawMessage, error) {
+	policy, err := service.guardrails.ResolveCurrentAgentGuardrails(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolve current toolkit guardrails: %w", err)
+	}
+	encoded, err := json.Marshal(policy.Runtime())
+	if err != nil {
+		return nil, fmt.Errorf("encode current toolkit guardrails: %w", err)
+	}
+	return encoded, nil
 }
 
 func (service *CurrentApplicationStartService) resolveNextInputSuggestionPolicy(

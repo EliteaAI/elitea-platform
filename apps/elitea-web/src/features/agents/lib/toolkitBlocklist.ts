@@ -6,18 +6,24 @@
  * import from either way — `no-sideways-features`, absolute, see this
  * batch's brief).
  *
- * **Real, disclosed gap:** the baseline's `isToolkitTypeBlocked` reads a
- * module-level `BLOCKED_TOOLKITS` constant (`common/constants.js:19`,
- * `getEnvVar('blocked_toolkits', [])`) — an org-guardrails blocklist
- * delivered via runtime config. `shared/config`'s schema (`shared/config/
- * schema.ts`) has no `blocked_toolkits` key (grepped directly, zero hits),
- * so this app has no way to read that list yet. `isToolkitTypeBlocked`
- * below takes the blocklist as a parameter instead of reading a module-level
- * constant — the comparison LOGIC is ported faithfully (verbatim
- * `canonToolkitKey` normalisation), only the list's SOURCE moves to the
- * caller, same shape of deviation `entities/toolkit`'s own promoted files
- * use for config gaps. `ToolCard.jsx`'s caller (a page/widget layer) can
- * wire a real source once `shared/config` grows the key.
+ * **The gap this documented is CLOSED.** It read: the baseline's
+ * `isToolkitTypeBlocked` reads a module-level `BLOCKED_TOOLKITS` constant
+ * (`common/constants.js:19`, `getEnvVar('blocked_toolkits', [])`) delivered via
+ * runtime config, `shared/config` has no such key, so the list's SOURCE moves
+ * to the caller until one exists.
+ *
+ * No caller ever passed it. `isBlockedToolkit` was therefore computed on every
+ * ToolCard render and was structurally always `false`, so the "blocked by your
+ * organization" banner could not appear on any screen — the parameter was
+ * supplied only by tests.
+ *
+ * The source exists now, and it is better than the baseline's: the admin
+ * Configuration page's Guardrails section writes `blocked_toolkits` into
+ * `centry.platform_config`, and `GET /elitea_core/platform_settings/prompt_lib`
+ * publishes it, so the list is per-deployment configuration rather than a build
+ * -time environment variable. `../api/useBlockedToolkitTypes` reads it and
+ * `AgentToolRow` passes it. Taking the list as a PARAMETER is kept — it is the
+ * better shape regardless, and it is what makes this function testable.
  */
 
 /** Separator/case-insensitive key, matching the SDK/admin guardrail normalization so 'GitHub', 'github' and 'git_hub' all collapse to the same comparison key. */

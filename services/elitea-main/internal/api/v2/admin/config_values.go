@@ -566,8 +566,79 @@ func validateFieldValue(key string, field map[string]any, value any) string {
 		}
 		return validateArrayItems(key, field, entries)
 	case "object":
-		if _, ok := value.(map[string]any); !ok {
+		entries, ok := value.(map[string]any)
+		if !ok {
 			return fmt.Sprintf("%q must be an object", key)
+		}
+		return validateObjectEntries(key, field, entries)
+	}
+	return ""
+}
+
+// Bounds on a map-valued field. `blocked_tools` and `sensitive_tools` are the
+// only two, and both are read on paths that run per request and per agent
+// execution — the toolkit catalogue and the agent tool freeze. An unbounded map
+// is therefore not merely untidy: it is a cost every caller pays forever, paid
+// once by whoever pasted it.
+//
+// The numbers are generous against the real shape of the data. The pinned SDK
+// registry has 52 toolkit types, and the largest of them declares well under a
+// hundred tools.
+const (
+	maxConfigObjectKeys      = 256
+	maxConfigObjectListItems = 512
+)
+
+// validateObjectEntries checks a map-valued field against the element type its
+// `additionalProperties` declares.
+//
+// This is `validateArrayItems`' argument one level up, and it applies with more
+// force here. Both map fields are read back by code that type-asserts as it
+// walks — `Values.StringLists` skips a value that is not an array and skips an
+// element that is not a string — so `{"github": "create_issue"}` (a string where
+// a list belongs) would be accepted, persisted, echoed by the GET, rendered in
+// the form, and silently ignored by every consumer. The operator would have
+// every reason to believe they had blocked that tool.
+//
+// The KEY is left unconstrained on purpose: it is a toolkit identifier, and the
+// matching layer canonicalises it and drops what canonicalises to nothing
+// (internal/domain/guardrails). Refusing an unknown toolkit name here would also
+// refuse a toolkit type that a later SDK revision adds, and refusing `"*"` would
+// refuse the wildcard the sensitive-tool map legitimately uses.
+func validateObjectEntries(key string, field map[string]any, entries map[string]any) string {
+	if len(entries) > maxConfigObjectKeys {
+		return fmt.Sprintf("%q has too many entries (limit %d)", key, maxConfigObjectKeys)
+	}
+
+	additional, _ := field["additionalProperties"].(map[string]any)
+	valueType, _ := additional["type"].(string)
+	if valueType == "" {
+		return ""
+	}
+
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		switch valueType {
+		case "array":
+			items, ok := entries[name].([]any)
+			if !ok {
+				return fmt.Sprintf("%q[%q] must be an array", key, name)
+			}
+			if len(items) > maxConfigObjectListItems {
+				return fmt.Sprintf("%q[%q] has too many entries (limit %d)", key, name, maxConfigObjectListItems)
+			}
+			if reason := validateArrayItems(fmt.Sprintf("%s[%q]", key, name), additional, items); reason != "" {
+				return reason
+			}
+		case "string":
+			if _, ok := entries[name].(string); !ok {
+				return fmt.Sprintf("%q[%q] must be a string", key, name)
+			}
 		}
 	}
 	return ""

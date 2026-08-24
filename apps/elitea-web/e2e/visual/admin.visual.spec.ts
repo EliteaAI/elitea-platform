@@ -250,13 +250,22 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // @covers /admin/app/configuration
     name: 'admin-configuration',
     path: '/admin/app/configuration',
-    // The unavailable Alert — see this file's classification note below on why
-    // a refusal screen is a legitimate baseline and a scaffolding screen is
-    // not. NOT the "This deployment publishes no configuration sections." text:
-    // `activeSection` is `undefined` while `sections` is still `[]`, so that
-    // string is the LOADING state as well as the empty one.
+    // The Guardrails form's own Save control.
+    //
+    // This used to be `admin-configuration-unavailable`, the 501 refusal Alert,
+    // because the page's first section (`guardrails`, order 1) had no backend.
+    // It has one now, so the landing screen is a FORM and that testid no longer
+    // exists anywhere on it — which is why this landmark had to move rather
+    // than the baseline simply being regenerated.
+    //
+    // Save is the right replacement for the same reason the Alert was: it
+    // renders only once the section's values have loaded, so it cannot be
+    // mistaken for a loading state. NOT the "This deployment publishes no
+    // configuration sections." text: `activeSection` is `undefined` while
+    // `sections` is still `[]`, so that string is the LOADING state as well as
+    // the empty one.
     // Measured: loaded YES, stalled no.
-    landmark: (page) => page.getByTestId('admin-configuration-unavailable'),
+    landmark: (page) => page.getByRole('button', { name: 'Save' }),
     light: true,
   },
   {

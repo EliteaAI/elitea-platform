@@ -67,7 +67,27 @@ message AgentExecutionInputV1 {
   // reads Pylon configuration directly and treats suggestion generation as a
   // best-effort post-response side effect.
   bytes next_input_suggestion = 37;
-  reserved 38 to 63;
+  // The platform-wide toolkit guardrails, as one bounded, non-secret JSON
+  // object: `sensitive_tools`, `blocked_toolkits`, `blocked_tools` and the two
+  // authorization-dialog copy fields.
+  //
+  // It travels with the RUN rather than with the container. The worker's
+  // guardrail middleware reads process-global state configured from
+  // `ELITEA_SENSITIVE_TOOLS`-style environment variables, which means a policy
+  // change needs a redeploy and every tenant on a worker pool shares one answer.
+  // The admin Configuration page writes this policy per platform and expects it
+  // to take effect on the next call, so the resolved policy is stamped here at
+  // admission and applied by the worker before it builds the agent.
+  //
+  // ABSENT is meaningful and is not the same as empty: an absent field leaves
+  // the worker on its environment configuration exactly as before, which is what
+  // keeps existing deployments working. An empty object means the platform
+  // resolved a policy and it is empty.
+  //
+  // Guardrail identifiers only — never credentials. The tool and toolkit names
+  // here are the same public identifiers the toolkit catalogue already serves.
+  bytes toolkit_guardrails = 38;
+  reserved 39 to 63;
 }
 
 enum AgentExecutionTerminalStateV1 {

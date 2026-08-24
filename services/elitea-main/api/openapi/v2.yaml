@@ -1890,6 +1890,36 @@ components:
             but non-interactive with an admin tooltip, which the button already
             renders (`tooltipAdminDisabled`) against a constant hardcoded to
             `false`.
+        blocked_toolkits:
+          type: array
+          items:
+            type: string
+          description: >
+            The guardrails blocklist, as canonical comparison keys (lowercased,
+            every non-alphanumeric character stripped, so `GitHub`, `git_hub`
+            and `github` are one key). Written by the admin Configuration
+            page's Guardrails section and marshalled from
+            `centry.platform_config`.
+
+
+            It is published so the product UI can mark an EXISTING toolkit
+            blocked. The server deliberately does not filter the toolkit
+            instance list: an administrator who blocks `github` must still be
+            able to see and delete the github toolkits that already exist, or
+            their settings and vault references are stranded behind no surface
+            at all. A client shown those rows needs to know which of them are
+            blocked, or it renders a toolkit as usable that no agent will run.
+
+
+            Canonical keys rather than the operator's raw strings, because the
+            list is for COMPARISON and never for display. Sending the raw values
+            would make correctness depend on the client repeating a
+            normalisation rule it can only get wrong.
+
+
+            Optional for the same reason as mcp_in_menu_enabled: it is always
+            present in the response, but a client pinned to an older deployment
+            must not fail validation on its absence.
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): the ten boolean defaults (always present) are overlaid with

@@ -12,19 +12,26 @@
  * unit. The round trip it proved now lives in journey 35 (`admin.features.spec.ts`),
  * unchanged in substance and asserted against the same public route.
  *
- * What is left on this page is every section this platform cannot serve HERE —
- * Pylon plugin configuration, a maintenance hook that does not exist, and LLM
- * governance, which is authored on its own page. That last one changed reason
- * rather than status: it used to be withheld because nothing enforced it, and
- * #218 made the gateway read and enforce `gateway.governance_config`, so the
- * section now points at `/admin/app/governance` and says the definitions take
- * effect. It stays unavailable here because a governance corpus is a list of
- * scoped rows and this page is a flat form over one value document.
- *
- * That is a true and useful thing for the page to say, and it is what this
- * journey asserts: not that a form renders, but that each pane states a
- * server-declared REASON and each endpoint refuses the write rather than
+ * Most of what is left on this page is every section this platform cannot serve
+ * HERE — Pylon plugin configuration, and a maintenance hook that does not
+ * exist. That is a true and useful thing for the page to say, and it is most of
+ * what this journey asserts: not that a form renders, but that each pane states
+ * a server-declared REASON and each endpoint refuses the write rather than
  * accepting and discarding it.
+ *
+ * **Guardrails is the exception, and is now the page's landing section.** It was
+ * on the unavailable list until the toolkit surfaces, the toolkit write paths
+ * and the agent tool freeze started reading `toolkit_security.*`. So this
+ * journey no longer says "everything here is unavailable"; it says which
+ * sections are, which one is not, and — because the difference is the whole
+ * point of the page — that the two look different.
+ *
+ * **LLM Governance is unavailable for a CHANGED REASON, not a changed status.**
+ * It used to be withheld because nothing enforced it. #218 made the gateway
+ * read and enforce `gateway.governance_config`, so the section now points at
+ * `/admin/app/governance` and says the definitions take effect. It stays
+ * unavailable HERE because a governance corpus is a list of scoped rows and
+ * this page is a flat form over one value document.
  *
  * Before unit A14 every one of those sections answered 200 on both verbs — the
  * GET with schema defaults, the PUT with an empty object and the request body
@@ -51,7 +58,7 @@ async function openConfiguration(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: /Guardrails/ })).toBeVisible({ timeout: 20_000 });
 }
 
-adminTest('J34: every section on this page is marked unavailable before it is opened', async ({ page }) => {
+adminTest('J34: the sidebar marks what this deployment cannot configure', async ({ page }) => {
   await openConfiguration(page);
 
   await expect(page.getByText('Failed to load the configuration sections.')).toHaveCount(0);
@@ -60,10 +67,40 @@ adminTest('J34: every section on this page is marked unavailable before it is op
   // legible before the operator clicks anything.
   const marks = page.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  expect(await marks.count(), 'every remaining Configuration section is unavailable').toBeGreaterThan(5);
+  expect(await marks.count(), 'most Configuration sections remain unavailable').toBeGreaterThan(5);
 
-  // And no save control exists anywhere on the page.
-  await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  // Guardrails is NOT among them, and is the section the page lands on. The
+  // count above cannot show that on its own: it would still pass if every
+  // section were unavailable, which is what it asserted before guardrails had
+  // consumers.
+  const guardrails = page.getByRole('button', { name: /Guardrails/ });
+  await expect(guardrails).toBeVisible();
+  await expect(guardrails.getByText('Not available here')).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34a: Guardrails offers a real form, including its two tool maps', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /Guardrails/ }).click();
+
+  // A save control exists here and nowhere else on this page — the difference
+  // between a section with a backend and a section without one.
+  await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The two map fields render as EDITORS, not as the "no editor for this field
+  // yet" row. Guardrails is order 1, so this is the first screen of the page,
+  // and `blocked_tools`/`sensitive_tools` are the substance of the feature —
+  // shipping them inert would have made the landing screen a form whose two
+  // most important controls do nothing.
+  // Named per field: two identically-labelled buttons on one screen would be
+  // ambiguous to a screen reader and to this assertion alike.
+  await expect(page.getByRole('button', { name: 'Add toolkit — Blocked Tools' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add toolkit — Sensitive Action Tools' })).toBeVisible();
+  await expect(
+    page.getByText('This platform has no editor for this field yet', { exact: false }),
+  ).toHaveCount(0);
 
   await checkA11y(page);
 });
@@ -71,7 +108,8 @@ adminTest('J34: every section on this page is marked unavailable before it is op
 adminTest('J34b: the sections with no backend say so instead of showing a form', async ({ page }) => {
   await openConfiguration(page);
 
-  for (const section of ['Guardrails', 'Authentication', 'Maintenance', 'Advanced']) {
+  // Guardrails left this list when it gained consumers — see J34a.
+  for (const section of ['Authentication', 'Maintenance', 'Advanced']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
