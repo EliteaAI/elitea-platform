@@ -31,6 +31,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/workloadauth"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 const (
@@ -494,12 +496,17 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct next-input-suggestion policy resolver: %w", targetErr)
 		}
+		agentGuardrails, targetErr := platformconfig.NewGuardrailPolicyAdapter(dependencies.AdmissionPool)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent guardrail policy source: %w", targetErr)
+		}
 		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
 			agentTargets,
 			agentTargets,
 			agentTargets,
 			agentTargets,
 			nextInputSuggestionResolver,
+			agentGuardrails,
 			agentVersions,
 			agentAdmissions,
 		)

@@ -146,7 +146,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	freezer := &currentApplicationVersionFreezerStub{}
-	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, resolver, freezer, admissions)
+	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{}, freezer, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +222,7 @@ func TestCurrentApplicationStartDoesNotBlockWhenSuggestionPolicyIsUnavailable(t 
 		resolver,
 		resolver,
 		resolver,
+		&currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)
@@ -263,9 +264,8 @@ func TestCurrentApplicationStartPreservesPipelineYAMLInTheExistingApplicationCon
 		ExecutionID: "pipeline-execution", CommandID: "pipeline-command", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +325,7 @@ func TestCurrentApplicationStartIsDeterministicAcrossIdempotentRetries(t *testin
 		resolver,
 		resolver,
 		resolver,
+		&currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)
@@ -369,6 +370,7 @@ func TestCurrentApplicationStartKeepsStableThreadAndProjectsHistoryAcrossDistinc
 		resolver,
 		resolver,
 		resolver,
+		&currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)
@@ -422,6 +424,7 @@ func TestCurrentApplicationStartRejectsUnsupportedTargetBeforeAdmission(t *testi
 		resolver,
 		resolver,
 		resolver,
+		&currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{},
 		admissions,
 	)

@@ -35,6 +35,7 @@
 package guardrails
 
 import (
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -321,4 +322,69 @@ func (p Policy) MessageTemplate() string {
 		return DefaultSensitiveActionMessageTemplate
 	}
 	return p.messageTemplate
+}
+
+// RuntimePolicy is the projection handed to the worker in the agent execution
+// input, and it is deliberately a separate type from Policy.
+//
+// Policy is a matcher: its maps are sets, keyed for lookup. This is a document,
+// ordered and JSON-shaped, because it crosses a process boundary into Python and
+// is compared byte-for-byte by the admission path's idempotency. Sorting every
+// list and marshalling through a struct is what stops two identical policies
+// producing two different payloads for the same turn.
+//
+// The field names are the SDK's keyword arguments
+// (`elitea_sdk.runtime.toolkits.security.configure_sensitive_tools` /
+// `configure_blocklist`), so the worker maps them across without a translation
+// table that could drift.
+type RuntimePolicy struct {
+	BlockedToolkits []string            `json:"blocked_toolkits"`
+	BlockedTools    map[string][]string `json:"blocked_tools"`
+	SensitiveTools  map[string][]string `json:"sensitive_tools"`
+	CompanyName     string              `json:"sensitive_action_company_name"`
+	MessageTemplate string              `json:"sensitive_action_message_template"`
+}
+
+// Runtime projects the policy for transport.
+//
+// CANONICAL keys are sent, not the operator's raw strings. The worker
+// canonicalises whatever it receives through the same rule, and canonicalising a
+// canonical key is a no-op, so this is lossless for matching and removes a class
+// of disagreement: the two sides cannot normalise differently if only one of them
+// ever normalises. The `"*"` wildcard survives because canonicalToolkitKey
+// preserves it.
+//
+// The blocklist travels too, even though the freeze has already stripped blocked
+// toolkits and tools out of this execution's input. That is defence in depth
+// rather than duplication: the freeze can only remove what the saved agent
+// NAMES, and a tool that reaches the graph another way — discovered from an MCP
+// server at runtime, or surfaced by a nested toolkit — was never in the frozen
+// list to be removed. The worker's own filter is the backstop for those.
+//
+// The dialog copy is sent RAW. It is display text, not a match key, and
+// canonicalising it would strip the punctuation and placeholder braces the
+// template is made of.
+func (p Policy) Runtime() RuntimePolicy {
+	blockedToolkits := p.BlockedToolkits()
+	sort.Strings(blockedToolkits)
+	return RuntimePolicy{
+		BlockedToolkits: blockedToolkits,
+		BlockedTools:    sortedToolMapping(p.blockedTools),
+		SensitiveTools:  sortedToolMapping(p.sensitiveTools),
+		CompanyName:     p.CompanyName(),
+		MessageTemplate: p.MessageTemplate(),
+	}
+}
+
+func sortedToolMapping(mapping map[string]map[string]struct{}) map[string][]string {
+	out := make(map[string][]string, len(mapping))
+	for toolkit, tools := range mapping {
+		names := make([]string, 0, len(tools))
+		for name := range tools {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		out[toolkit] = names
+	}
+	return out
 }
