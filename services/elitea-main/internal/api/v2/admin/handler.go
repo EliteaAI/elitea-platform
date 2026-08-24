@@ -20,6 +20,12 @@ type Handler struct {
 	// is applied, and the catalogue routes answer 503 while either is.
 	prebuiltMCP      *mcpregistry.PrebuiltStore
 	prebuiltMCPVault PrebuiltSecretStore
+	// The typed identity provider definitions and the vault their secrets are
+	// sealed into (identity_providers.go). Both nil unless
+	// WithIdentityProviders is applied, and those routes answer 503 while
+	// either is.
+	identityProviders     IdentityProviderStore
+	identityProviderVault IdentityProviderSecretStore
 }
 
 // Option configures a Handler at construction time.

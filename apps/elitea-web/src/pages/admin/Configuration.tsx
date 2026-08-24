@@ -25,9 +25,19 @@
  * carries an `unavailable_reason` or none, and the value endpoints answer 501
  * with that same string. This page renders what it is told; it does not decide.
  *
- *   - **Guardrails, MCP Servers, Observability, LiteLLM, Runtime, Admin Panel,
- *     Authentication** — Pylon plugin configuration. Unavailable, with the
- *     reason.
+ *   - **Observability, LiteLLM, Runtime, Admin Panel** — Pylon plugin
+ *     configuration. Unavailable, with the reason.
+ *   - **Guardrails** — live, and the first section that left the list above. Its
+ *     fields address `toolkit_security.*` like a plugin's, but the test was
+ *     never "the path looks like a plugin's": it is "does anything here read
+ *     the values". Four things now do.
+ *   - **MCP Servers** and **Authentication** — available through DEDICATED
+ *     surfaces, declared by the server as a `managed_surface`. Both KEEP their
+ *     `unavailable_reason`, and both keep it for the same reason: their data
+ *     includes a credential, and the plugin-config value endpoints store a
+ *     section's fields as plaintext rows readable by every holder of
+ *     `runtime.plugins`. So the value endpoints still refuse, and the editor is
+ *     somewhere those rows are not involved.
  *   - **Banner** — a product setting the legacy UI received through
  *     `window.elitea_ui_config`. Unavailable for the narrower reason that
  *     nothing in this platform reads it YET.
@@ -43,7 +53,7 @@
  *     200-with-empty.
  *   - **Service Descriptors** — a page of its own in this port, not yet done.
  *
- * ## Every section on this page is currently unavailable, and that is accurate
+ * ## What is left unavailable here is accurate
  *
  * #217 built this page with one live section, `resources`, and recorded that it
  * had put it here only because that is where the server's schema had it and
@@ -54,12 +64,13 @@
  * `mcp_exposure.*` and `publishing_guardrail.*` fields that used to sit inside
  * Guardrails.
  *
- * What is left is every section this platform cannot serve. The page therefore
- * renders only refusals — which is a true statement about this deployment and a
- * far more useful one than a form over values nothing reads. `pages/admin/
- * Features.tsx` is where a setting that DOES something is authored today; when
- * a Configuration section acquires a consumer, removing its
- * `unavailable_reason` is all that is needed here.
+ * What is left refusing is every section this platform cannot serve — a true
+ * statement about this deployment, and a far more useful one than a form over
+ * values nothing reads. A section leaves that group in one of two ways: it
+ * acquires a consumer and its `unavailable_reason` is removed (Guardrails), or
+ * its data needs a shape and a secret store this page cannot provide and it
+ * acquires a `managed_surface` (MCP Servers, Authentication). Neither is a
+ * change this file makes: both are declared by the server.
  *
  * The behaviour is shared with Features through `useAdminConfigSectionsPage`;
  * this file is layout and the page's identity.
@@ -98,7 +109,9 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import { AdminIdentityProvidersEditor } from './AdminIdentityProvidersEditor';
 import { AdminMcpServersEditor } from './AdminMcpServersEditor';
+import { IDENTITY_PROVIDERS_MANAGED_SURFACE } from './api/adminIdentityProvidersApi';
 import { MCP_SERVERS_MANAGED_SURFACE } from './api/adminMcpServersApi';
 import { ConfigurationSectionForm } from './ConfigurationSectionForm';
 import { useAdminConfigurationPage, type AdminConfigurationPageState } from './useAdminConfigurationPage';
@@ -119,6 +132,7 @@ import { useAdminConfigurationPage, type AdminConfigurationPageState } from './u
  */
 const MANAGED_SECTION_EDITORS: Readonly<Record<string, ComponentType>> = {
   [MCP_SERVERS_MANAGED_SURFACE]: AdminMcpServersEditor,
+  [IDENTITY_PROVIDERS_MANAGED_SURFACE]: AdminIdentityProvidersEditor,
 };
 
 /** The dedicated editor for a section, when this build has one. */
