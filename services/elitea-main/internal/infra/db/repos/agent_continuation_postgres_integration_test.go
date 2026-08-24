@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1298,7 +1299,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 	}
 }
 
-func TestPostgresCurrentAuthorizationContinuationConsumesExactSingleRequestAtomically(t *testing.T) {
+func TestPostgresCurrentAuthorizationContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -1352,13 +1353,7 @@ WHERE uuid = $1`, responseID, questionID); err != nil {
 	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("ambiguous sibling authorization resolve error=%v", err)
 	}
-	if _, err := tx.Exec(t.Context(), `
-UPDATE chat_message_group
-SET meta = jsonb_set(meta, '{authorization_requests}',
-    jsonb_build_array((meta -> 'authorization_requests') -> 0))
-WHERE uuid = $1`, responseID); err != nil {
-		t.Fatal(err)
-	}
+	resolve.AuthorizationRequestID = ""
 	resolved, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve)
 	if err != nil {
 		t.Fatal(err)
@@ -1385,18 +1380,22 @@ WHERE uuid = $1`, responseID); err != nil {
 		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
 		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
 		ResponseMessageID: responseID, ExecutionGeneration: questionID,
-		ThreadID: "thread-authorization-1", AuthorizationRequestID: "mcp_auth_sharepoint-1",
-		AuthorizationAction: "authorize", ExecutionID: "execution-authorization-resumed",
+		ThreadID: "thread-authorization-1",
+		HitlDecisions: []byte(`[
+  {"interrupt_id":"mcp_auth_sharepoint-1","tool_call_id":"call-sharepoint-search-1","guardrail_type":"mcp_auth","action":"authorize"},
+  {"interrupt_id":"tool-run-openapi-2","guardrail_type":"mcp_auth","action":"skip"}
+]`),
+		ExecutionID: "execution-authorization-resumed",
 	}
 	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("wrong actor resume error=%v", err)
 	}
 	resume.ActorUserID = 11
-	resume.AuthorizationAction = "approve"
+	resume.HitlDecisions = bytes.Replace(resume.HitlDecisions, []byte(`"authorize"`), []byte(`"approve"`), 1)
 	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("unsupported action resume error=%v", err)
 	}
-	resume.AuthorizationAction = "authorize"
+	resume.HitlDecisions = bytes.Replace(resume.HitlDecisions, []byte(`"approve"`), []byte(`"authorize"`), 1)
 	row, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume)
 	if err != nil {
 		t.Fatal(err)
@@ -1427,7 +1426,8 @@ WHERE response.uuid = $1`, responseID).Scan(
 		t.Fatal(err)
 	}
 	if !isStreaming || taskID != "execution-authorization-resumed" || hasPending ||
-		len(resolvedIDs) != 1 || resolvedIDs[0] != "mcp_auth_sharepoint-1" {
+		len(resolvedIDs) != 2 || resolvedIDs[0] != "mcp_auth_sharepoint-1" ||
+		resolvedIDs[1] != "tool-run-openapi-2" {
 		t.Fatalf("streaming=%v task=%q pending=%v resolved=%v",
 			isStreaming, taskID, hasPending, resolvedIDs)
 	}

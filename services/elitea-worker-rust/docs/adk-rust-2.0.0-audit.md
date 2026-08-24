@@ -437,7 +437,8 @@ Focused tests prove hierarchy retention, partial-set rejection before
 materialization, same-call Skip results, exact authorized dispatch and no model
 replanning. The delivery lifecycle now exposes every card as ordinary progress
 and binds one ordered exact-ID/hierarchy aggregate to the `PausedMcpAuth`
-terminal at ADK EOS. Main plural/mixed decision admission, independent partial
+terminal at ADK EOS. Main now admits and atomically consumes a bounded exact
+complete same-family decision set while retaining the scalar route. Independent partial
 resume and mixed sensitive/auth terminal aggregation remain production
 activation gaps.
 

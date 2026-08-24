@@ -463,9 +463,9 @@ sensitive calls. The browser-visible hierarchy stays call-bound, an exact
 Authorize/Skip set is validated against persisted interrupts and exact-server
 authority, and Skip produces a structured same-call result without dispatch.
 Older table cells that broadly say parallel/nested authorization remains closed
-refer now to Main plural/mixed decision activation, independent partial sibling
-resume, platform OAuth/DCR and concrete unported configured families. Main's exact
-single-card authorization route already produces the shared `mcp_auth`
-decision-list shape and fails closed when hidden sibling cards exist. The same complete-set replay now crosses a
+refer now to independent partial sibling resume, mixed-guardrail terminal
+aggregation, platform OAuth/DCR and concrete unported configured families. Main's
+scalar and bounded complete-set routes produce the shared `mcp_auth`
+decision-list shape and consume siblings atomically. The same complete-set replay now crosses a
 pipeline Agent node through its graph checkpoint, including mixed
 sensitive/auth leaves; partial authority fails before materialization.

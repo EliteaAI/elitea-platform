@@ -292,6 +292,10 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 			InterruptID:         "tool-run-sharepoint-1",
 			ToolCallID:          "call-sharepoint-search-1",
 			AvailableActions:    []string{"authorize", "skip"},
+			AuthorizationRequests: []CurrentAuthorizationRequest{{
+				InterruptID: "tool-run-sharepoint-1", ToolCallID: "call-sharepoint-search-1",
+				AvailableActions: []string{"authorize", "skip"},
+			}},
 		},
 		target: CurrentApplicationTarget{
 			ApplicationID: 31, ApplicationVersionID: 41,
@@ -361,6 +365,77 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 	}
 }
 
+func TestCurrentApplicationAuthorizationContinuationCarriesExactCompleteDecisionSet(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			ContinuationKind: CurrentContinuationAuthorization,
+			Kind:             CurrentRegenerationApplication, TargetParticipantID: 21,
+			QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:  "resolve records", ThreadID: "thread-current-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			AuthorizationRequests: []CurrentAuthorizationRequest{
+				{InterruptID: "auth-2", ToolCallID: "call-2", AvailableActions: []string{"authorize", "skip"}},
+				{InterruptID: "auth-1", ToolCallID: "call-1", AvailableActions: []string{"authorize", "skip"}},
+			},
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Be careful",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-parallel-authorization", CommandID: "command-parallel-authorization", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver,
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationAuthorization,
+		HITLDecisions: []CurrentHITLDecision{
+			{InterruptID: "auth-2", GuardrailType: "mcp_auth", Action: "skip"},
+			{InterruptID: "auth-1", GuardrailType: "mcp_auth", Action: "authorize"},
+		},
+		MCPTokens:         json.RawMessage(`{"https://records.example.test":{"access_token":"runtime-secret"}}`),
+		IgnoredMCPServers: json.RawMessage(`[]`), DeclinedMCPServers: json.RawMessage(`[]`),
+	}
+
+	_, err = service.ContinueCurrentAgent(context.Background(), request)
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	turn := admission.CurrentContinueTurn
+	if turn == nil || turn.InterruptID != "" || turn.Action != "" ||
+		turn.ContinuationKind != CurrentContinuationAuthorization {
+		t.Fatalf("turn=%+v", turn)
+	}
+	if admission.Input.HitlAction != nil || admission.Input.HitlValue != nil {
+		t.Fatalf("plural authorization must not mint a scalar alias: %+v", admission.Input)
+	}
+	var decisions []CurrentHITLDecision
+	if json.Unmarshal(admission.Input.HitlDecisions, &decisions) != nil || len(decisions) != 2 ||
+		decisions[0].InterruptID != "auth-1" || decisions[0].ToolCallID != "call-1" ||
+		decisions[1].InterruptID != "auth-2" || decisions[1].ToolCallID != "call-2" {
+		t.Fatalf("normalized authorization decisions=%s", admission.Input.HitlDecisions)
+	}
+	if err := turn.Validate(); err != nil {
+		t.Fatalf("plural authorization turn must remain authoritative: %v", err)
+	}
+}
+
 func TestCurrentAuthorizationContinuationRejectsDifferentInvocation(t *testing.T) {
 	resolver := &currentApplicationResolverStub{continuationTarget: CurrentContinuationTarget{
 		ContinuationKind: CurrentContinuationAuthorization,
@@ -368,6 +443,9 @@ func TestCurrentAuthorizationContinuationRejectsDifferentInvocation(t *testing.T
 		QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e", UserInput: "authorize toolkit",
 		ThreadID: "thread-current-1", ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
 		InterruptID: "tool-run-current", AvailableActions: []string{"authorize", "skip"},
+		AuthorizationRequests: []CurrentAuthorizationRequest{{
+			InterruptID: "tool-run-current", AvailableActions: []string{"authorize", "skip"},
+		}},
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(

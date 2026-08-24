@@ -1460,15 +1460,21 @@ WHERE conversation.uuid = $2::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-  AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
-  AND EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      WHERE COALESCE(
-          NULLIF(request.value ->> 'interrupt_id', ''),
-          NULLIF(request.value ->> 'tool_run_id', ''),
-          request.value ->> 'tool_call_id'
-      ) = $5::text
+  AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+  AND (
+      $5::text = ''
+      OR (
+          jsonb_array_length(response.meta -> 'authorization_requests') = 1
+          AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+              WHERE COALESCE(
+                  NULLIF(request.value ->> 'interrupt_id', ''),
+                  NULLIF(request.value ->> 'tool_run_id', ''),
+                  request.value ->> 'tool_call_id'
+              ) = $5::text
+          )
+      )
   )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
@@ -1727,7 +1733,7 @@ func (q *Queries) ResolveCurrentRegeneration(ctx context.Context, arg ResolveCur
 
 const resumeCurrentAgentAuthorization = `-- name: ResumeCurrentAgentAuthorization :one
 WITH resolved AS MATERIALIZED (
-    SELECT response.id, response.uuid
+    SELECT response.id, response.uuid, submitted.value AS decisions
     FROM chat_message_group AS response
     JOIN chat_conversations AS conversation
       ON conversation.id = response.conversation_id
@@ -1748,39 +1754,79 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = $3::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
-    WHERE conversation.uuid = $4::uuid
-      AND response.uuid = $5::uuid
-      AND question.uuid = $6::uuid
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof($4::jsonb) = 'array'
+                THEN $4::jsonb
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS submitted
+    WHERE conversation.uuid = $5::uuid
+      AND response.uuid = $6::uuid
+      AND question.uuid = $7::uuid
       AND NOT response.is_streaming
-      AND response.meta ->> 'execution_generation' = $7::text
-      AND response.meta ->> 'thread_id' = $8::text
+      AND response.meta ->> 'execution_generation' = $8::text
+      AND response.meta ->> 'thread_id' = $9::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-      AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
-      AND EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-          WHERE COALESCE(
+      AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND (
+          SELECT count(DISTINCT COALESCE(
               NULLIF(request.value ->> 'interrupt_id', ''),
               NULLIF(request.value ->> 'tool_run_id', ''),
               request.value ->> 'tool_call_id'
-          ) = $9::text
-      )
-      AND $10::text IN ('authorize', 'skip')
+          ))
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+      ) = jsonb_array_length(response.meta -> 'authorization_requests')
       AND (
-          conversation.author_id = $11::bigint
-          OR (question_author.entity_meta ->> 'id')::bigint = $11::bigint
+          SELECT count(DISTINCT decision.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+      ) = jsonb_array_length(submitted.value)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+          WHERE jsonb_typeof(decision.value) <> 'object'
+             OR COALESCE(decision.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(decision.value ->> 'guardrail_type', '') <> 'mcp_auth'
+             OR COALESCE(decision.value ->> 'action', '') NOT IN ('authorize', 'skip')
+             OR COALESCE(decision.value ->> 'value', '') <> ''
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+          WHERE jsonb_typeof(request.value) <> 'object'
+             OR COALESCE(
+                 NULLIF(request.value ->> 'interrupt_id', ''),
+                 NULLIF(request.value ->> 'tool_run_id', ''),
+                 request.value ->> 'tool_call_id'
+             ) = ''
+             OR NOT EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(submitted.value) AS decision(value)
+                 WHERE decision.value ->> 'interrupt_id' = COALESCE(
+                     NULLIF(request.value ->> 'interrupt_id', ''),
+                     NULLIF(request.value ->> 'tool_run_id', ''),
+                     request.value ->> 'tool_call_id'
+                 )
+                   AND COALESCE(decision.value ->> 'tool_call_id', '') =
+                       COALESCE(request.value ->> 'tool_call_id', '')
+             )
+      )
+      AND (
+          conversation.author_id = $10::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = $10::bigint
       )
       AND (
           (
-              $12::text = 'adhoc'
+              $11::text = 'adhoc'
               AND response_author.entity_name = 'dummy'
               AND $3::integer = 0
               AND $2::integer = 0
           )
           OR (
-              $12::text = 'application'
+              $11::text = 'application'
               AND response_author.entity_name = 'application'
-              AND (response_author.entity_meta ->> 'project_id')::integer = $13::integer
+              AND (response_author.entity_meta ->> 'project_id')::integer = $12::integer
               AND application_version.id IS NOT NULL
           )
       )
@@ -1791,10 +1837,16 @@ WITH resolved AS MATERIALIZED (
             || jsonb_build_object(
                 'resolved_authorization_request_ids',
                 COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
-                    || jsonb_build_array($9::text)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_agg(decision.value ->> 'interrupt_id')
+                            FROM jsonb_array_elements(resolved.decisions) AS decision(value)
+                        ),
+                        '[]'::jsonb
+                    )
             ),
         is_streaming = TRUE,
-        task_id = $14::text,
+        task_id = $13::text,
         updated_at = clock_timestamp()
     FROM resolved
     WHERE response.id = resolved.id
@@ -1806,20 +1858,19 @@ FROM updated
 `
 
 type ResumeCurrentAgentAuthorizationParams struct {
-	TargetParticipantID    int32       `db:"target_participant_id" json:"target_participant_id"`
-	ApplicationVersionID   int32       `db:"application_version_id" json:"application_version_id"`
-	ApplicationID          int32       `db:"application_id" json:"application_id"`
-	ConversationUuid       pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
-	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
-	QuestionID             pgtype.UUID `db:"question_id" json:"question_id"`
-	ExecutionGeneration    string      `db:"execution_generation" json:"execution_generation"`
-	ThreadID               string      `db:"thread_id" json:"thread_id"`
-	AuthorizationRequestID string      `db:"authorization_request_id" json:"authorization_request_id"`
-	AuthorizationAction    string      `db:"authorization_action" json:"authorization_action"`
-	ActorUserID            int64       `db:"actor_user_id" json:"actor_user_id"`
-	ContinuationKind       string      `db:"continuation_kind" json:"continuation_kind"`
-	ProjectID              int32       `db:"project_id" json:"project_id"`
-	ExecutionID            string      `db:"execution_id" json:"execution_id"`
+	TargetParticipantID  int32       `db:"target_participant_id" json:"target_participant_id"`
+	ApplicationVersionID int32       `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32       `db:"application_id" json:"application_id"`
+	HitlDecisions        []byte      `db:"hitl_decisions" json:"hitl_decisions"`
+	ConversationUuid     pgtype.UUID `db:"conversation_uuid" json:"conversation_uuid"`
+	ResponseMessageID    pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionID           pgtype.UUID `db:"question_id" json:"question_id"`
+	ExecutionGeneration  string      `db:"execution_generation" json:"execution_generation"`
+	ThreadID             string      `db:"thread_id" json:"thread_id"`
+	ActorUserID          int64       `db:"actor_user_id" json:"actor_user_id"`
+	ContinuationKind     string      `db:"continuation_kind" json:"continuation_kind"`
+	ProjectID            int32       `db:"project_id" json:"project_id"`
+	ExecutionID          string      `db:"execution_id" json:"execution_id"`
 }
 
 type ResumeCurrentAgentAuthorizationRow struct {
@@ -1832,13 +1883,12 @@ func (q *Queries) ResumeCurrentAgentAuthorization(ctx context.Context, arg Resum
 		arg.TargetParticipantID,
 		arg.ApplicationVersionID,
 		arg.ApplicationID,
+		arg.HitlDecisions,
 		arg.ConversationUuid,
 		arg.ResponseMessageID,
 		arg.QuestionID,
 		arg.ExecutionGeneration,
 		arg.ThreadID,
-		arg.AuthorizationRequestID,
-		arg.AuthorizationAction,
 		arg.ActorUserID,
 		arg.ContinuationKind,
 		arg.ProjectID,

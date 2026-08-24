@@ -53,8 +53,8 @@ func (request CurrentContinuationResolveRequest) Validate() error {
 		return ErrInvalidCurrentAgentStart
 	}
 	if request.normalizedKind() == CurrentContinuationAuthorization &&
-		(request.AuthorizationID == "" || len(request.AuthorizationID) > 512 ||
-			strings.ContainsRune(request.AuthorizationID, '\x00')) {
+		request.AuthorizationID != "" &&
+		(len(request.AuthorizationID) > 512 || strings.ContainsRune(request.AuthorizationID, '\x00')) {
 		return ErrInvalidCurrentAgentStart
 	}
 	if request.normalizedKind() == CurrentContinuationHITL && request.AuthorizationID != "" {
@@ -74,21 +74,28 @@ func (request CurrentContinuationResolveRequest) normalizedKind() CurrentContinu
 // current project schema. Browser input never selects the graph checkpoint,
 // execution generation, participant, question, or interrupt identity.
 type CurrentContinuationTarget struct {
-	ContinuationKind    CurrentContinuationKind
-	Kind                CurrentRegenerationKind
-	TargetParticipantID int64
-	QuestionID          string
-	UserInput           string
-	ThreadID            string
-	ExecutionGeneration string
-	InterruptID         string
-	ToolCallID          string
-	AvailableActions    []string
-	HITLInterrupts      []CurrentHITLInterrupt
+	ContinuationKind      CurrentContinuationKind
+	Kind                  CurrentRegenerationKind
+	TargetParticipantID   int64
+	QuestionID            string
+	UserInput             string
+	ThreadID              string
+	ExecutionGeneration   string
+	InterruptID           string
+	ToolCallID            string
+	AvailableActions      []string
+	HITLInterrupts        []CurrentHITLInterrupt
+	AuthorizationRequests []CurrentAuthorizationRequest
 }
 
 type CurrentHITLInterrupt struct {
 	InterruptID      string
+	AvailableActions []string
+}
+
+type CurrentAuthorizationRequest struct {
+	InterruptID      string
+	ToolCallID       string
 	AvailableActions []string
 }
 
@@ -114,7 +121,8 @@ func (target CurrentContinuationTarget) Validate() error {
 		return ErrUnsupportedCurrentAgentStart
 	}
 	if kind == CurrentContinuationHITL {
-		if len(target.HITLInterrupts) == 0 || len(target.HITLInterrupts) > maxCurrentHITLDecisions {
+		if len(target.HITLInterrupts) == 0 || len(target.HITLInterrupts) > maxCurrentHITLDecisions ||
+			len(target.AuthorizationRequests) != 0 {
 			return ErrUnsupportedCurrentAgentStart
 		}
 		seen := make(map[string]struct{}, len(target.HITLInterrupts))
@@ -136,17 +144,37 @@ func (target CurrentContinuationTarget) Validate() error {
 		}
 		return nil
 	}
-	if target.InterruptID == "" || len(target.InterruptID) > 512 ||
-		strings.ContainsRune(target.InterruptID, '\x00') ||
-		(target.ToolCallID != "" && (len(target.ToolCallID) > 512 || strings.ContainsRune(target.ToolCallID, '\x00'))) ||
-		len(target.AvailableActions) == 0 ||
-		len(target.AvailableActions) > 8 || len(target.HITLInterrupts) != 0 {
+	if len(target.AuthorizationRequests) == 0 ||
+		len(target.AuthorizationRequests) > maxCurrentHITLDecisions || len(target.HITLInterrupts) != 0 {
 		return ErrUnsupportedCurrentAgentStart
 	}
-	for _, action := range target.AvailableActions {
-		if !currentAuthorizationAction(action) {
+	seen := make(map[string]struct{}, len(target.AuthorizationRequests))
+	for _, request := range target.AuthorizationRequests {
+		if request.InterruptID == "" || len(request.InterruptID) > 512 ||
+			strings.ContainsRune(request.InterruptID, '\x00') ||
+			(request.ToolCallID != "" && (len(request.ToolCallID) > 512 || strings.ContainsRune(request.ToolCallID, '\x00'))) ||
+			len(request.AvailableActions) == 0 || len(request.AvailableActions) > 8 {
 			return ErrUnsupportedCurrentAgentStart
 		}
+		if _, duplicate := seen[request.InterruptID]; duplicate {
+			return ErrUnsupportedCurrentAgentStart
+		}
+		seen[request.InterruptID] = struct{}{}
+		for _, action := range request.AvailableActions {
+			if !currentAuthorizationAction(action) {
+				return ErrUnsupportedCurrentAgentStart
+			}
+		}
+	}
+	if target.InterruptID != "" &&
+		(len(target.AuthorizationRequests) != 1 ||
+			target.AuthorizationRequests[0].InterruptID != target.InterruptID ||
+			target.AuthorizationRequests[0].ToolCallID != target.ToolCallID ||
+			!slices.Equal(target.AuthorizationRequests[0].AvailableActions, target.AvailableActions)) {
+		return ErrUnsupportedCurrentAgentStart
+	}
+	if target.InterruptID == "" && (target.ToolCallID != "" || len(target.AvailableActions) != 0) {
+		return ErrUnsupportedCurrentAgentStart
 	}
 	return nil
 }
@@ -191,13 +219,13 @@ func (request CurrentContinuationRequest) Validate() error {
 		}
 		return nil
 	}
-	if kind != CurrentContinuationAuthorization || !currentAuthorizationAction(request.Action) ||
-		request.Value != "" || request.AuthorizationID == "" || len(request.AuthorizationID) > 512 ||
-		strings.ContainsRune(request.AuthorizationID, '\x00') || !validJSONObject(request.MCPTokens) ||
+	if kind != CurrentContinuationAuthorization || request.Value != "" ||
+		!validJSONObject(request.MCPTokens) ||
 		!validJSONArray(request.IgnoredMCPServers) || !validJSONArray(request.DeclinedMCPServers) {
 		return ErrInvalidCurrentAgentStart
 	}
-	return nil
+	_, err := request.normalizedAuthorizationDecisions()
+	return err
 }
 
 func (request CurrentContinuationRequest) normalizedHITLDecisions() ([]CurrentHITLDecision, error) {
@@ -247,6 +275,59 @@ func validCurrentAuthorizationDecision(decision CurrentHITLDecision) bool {
 		!strings.ContainsRune(decision.InterruptID, '\x00') &&
 		(decision.ToolCallID == "" ||
 			(len(decision.ToolCallID) <= 512 && !strings.ContainsRune(decision.ToolCallID, '\x00')))
+}
+
+func (request CurrentContinuationRequest) normalizedAuthorizationDecisions() ([]CurrentHITLDecision, error) {
+	if len(request.HITLDecisions) == 0 {
+		decision := CurrentHITLDecision{
+			InterruptID:   request.AuthorizationID,
+			GuardrailType: "mcp_auth",
+			Action:        request.Action,
+		}
+		if !validCurrentAuthorizationDecision(decision) {
+			return nil, ErrInvalidCurrentAgentStart
+		}
+		return []CurrentHITLDecision{decision}, nil
+	}
+	if request.AuthorizationID != "" || request.Action != "" ||
+		len(request.HITLDecisions) > maxCurrentHITLDecisions {
+		return nil, ErrInvalidCurrentAgentStart
+	}
+	seen := make(map[string]struct{}, len(request.HITLDecisions))
+	decisions := append([]CurrentHITLDecision(nil), request.HITLDecisions...)
+	for _, decision := range decisions {
+		if !validCurrentAuthorizationDecision(decision) {
+			return nil, ErrInvalidCurrentAgentStart
+		}
+		if _, duplicate := seen[decision.InterruptID]; duplicate {
+			return nil, ErrInvalidCurrentAgentStart
+		}
+		seen[decision.InterruptID] = struct{}{}
+	}
+	return decisions, nil
+}
+
+func decisionsMatchCurrentAuthorizationRequests(
+	decisions []CurrentHITLDecision,
+	requests []CurrentAuthorizationRequest,
+) bool {
+	if len(decisions) != len(requests) || len(decisions) == 0 {
+		return false
+	}
+	remaining := make(map[string]CurrentAuthorizationRequest, len(requests))
+	for _, request := range requests {
+		remaining[request.InterruptID] = request
+	}
+	for index := range decisions {
+		request, exists := remaining[decisions[index].InterruptID]
+		if !exists || !slices.Contains(request.AvailableActions, decisions[index].Action) ||
+			(decisions[index].ToolCallID != "" && decisions[index].ToolCallID != request.ToolCallID) {
+			return false
+		}
+		decisions[index].ToolCallID = request.ToolCallID
+		delete(remaining, decisions[index].InterruptID)
+	}
+	return len(remaining) == 0
 }
 
 func decisionsMatchCurrentHITLInterrupts(
@@ -321,9 +402,11 @@ func (turn CurrentContinueTurn) Validate() error {
 	}
 	if kind == CurrentContinuationAuthorization {
 		var decisions []CurrentHITLDecision
-		if json.Unmarshal(turn.HITLDecisions, &decisions) != nil || len(decisions) != 1 ||
-			!validCurrentAuthorizationDecision(decisions[0]) ||
-			decisions[0].InterruptID != turn.InterruptID || decisions[0].Action != turn.Action {
+		if json.Unmarshal(turn.HITLDecisions, &decisions) != nil ||
+			!validCurrentAuthorizationDecisions(decisions) ||
+			(len(decisions) == 1 &&
+				(decisions[0].InterruptID != turn.InterruptID || decisions[0].Action != turn.Action)) ||
+			(len(decisions) > 1 && (turn.InterruptID != "" || turn.Action != "")) {
 			return ErrInvalidCurrentAgentStart
 		}
 	}
@@ -350,6 +433,23 @@ func validCurrentHITLDecisionsJSON(raw json.RawMessage) bool {
 	seen := make(map[string]struct{}, len(decisions))
 	for _, decision := range decisions {
 		if !validCurrentHITLDecision(decision, true) {
+			return false
+		}
+		if _, duplicate := seen[decision.InterruptID]; duplicate {
+			return false
+		}
+		seen[decision.InterruptID] = struct{}{}
+	}
+	return true
+}
+
+func validCurrentAuthorizationDecisions(decisions []CurrentHITLDecision) bool {
+	if len(decisions) == 0 || len(decisions) > maxCurrentHITLDecisions {
+		return false
+	}
+	seen := make(map[string]struct{}, len(decisions))
+	for _, decision := range decisions {
+		if !validCurrentAuthorizationDecision(decision) {
 			return false
 		}
 		if _, duplicate := seen[decision.InterruptID]; duplicate {
@@ -394,19 +494,22 @@ func (service *CurrentApplicationStartService) ContinueCurrentAgent(
 		targetKind = CurrentContinuationHITL
 	}
 	if err := target.Validate(); err != nil || targetKind != request.normalizedKind() ||
-		(request.normalizedKind() == CurrentContinuationAuthorization && target.InterruptID != request.AuthorizationID) ||
 		(request.ThreadID != "" && request.ThreadID != target.ThreadID) ||
 		request.ProjectID > math.MaxInt32 || request.ActorUserID > math.MaxInt32 ||
 		target.TargetParticipantID > math.MaxInt32 {
 		return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
 	}
-	decisions, err := request.normalizedHITLDecisions()
+	var decisions []CurrentHITLDecision
 	if request.normalizedKind() == CurrentContinuationHITL {
+		decisions, err = request.normalizedHITLDecisions()
 		if err != nil || !decisionsMatchCurrentHITLInterrupts(decisions, target.HITLInterrupts) {
 			return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
 		}
-	} else if !slices.Contains(target.AvailableActions, request.Action) {
-		return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
+	} else {
+		decisions, err = request.normalizedAuthorizationDecisions()
+		if err != nil || !decisionsMatchCurrentAuthorizationRequests(decisions, target.AuthorizationRequests) {
+			return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
+		}
 	}
 
 	input, turn, capabilityID, err := service.currentContinuationInput(ctx, request, target, decisions)
@@ -529,20 +632,21 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	input.ExecutionGeneration = stringPointer(target.ExecutionGeneration)
 	input.ShouldContinue = true
 	if request.normalizedKind() == CurrentContinuationAuthorization {
-		decision := CurrentHITLDecision{
-			InterruptID: target.InterruptID, ToolCallID: target.ToolCallID,
-			GuardrailType: "mcp_auth", Action: request.Action,
-		}
-		encodedDecisions, err := json.Marshal([]CurrentHITLDecision{decision})
+		slices.SortFunc(decisions, func(left, right CurrentHITLDecision) int {
+			return strings.Compare(left.InterruptID, right.InterruptID)
+		})
+		encodedDecisions, err := json.Marshal(decisions)
 		if err != nil {
 			return nil, nil, "", ErrInvalidCurrentAgentStart
 		}
-		turn.InterruptID = target.InterruptID
-		turn.Action = request.Action
+		if len(decisions) == 1 {
+			turn.InterruptID = decisions[0].InterruptID
+			turn.Action = decisions[0].Action
+			input.HitlAction = stringPointer(decisions[0].Action)
+			input.HitlValue = stringPointer("")
+		}
 		turn.HITLDecisions = bytes.Clone(encodedDecisions)
 		input.HitlResume = true
-		input.HitlAction = stringPointer(request.Action)
-		input.HitlValue = stringPointer("")
 		input.HitlDecisions = encodedDecisions
 		input.McpTokens = bytes.Clone(request.MCPTokens)
 		input.IgnoredMcpServers = bytes.Clone(request.IgnoredMCPServers)

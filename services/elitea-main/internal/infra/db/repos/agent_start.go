@@ -345,11 +345,11 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 					ToolCallID  string `json:"tool_call_id"`
 				}
 				if json.Unmarshal([]byte(row.AuthorizationRequestsJson), &authorizationRequests) != nil ||
-					len(authorizationRequests) != 1 {
+					len(authorizationRequests) == 0 || len(authorizationRequests) > 16 {
 					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 				}
-				matched := 0
-				matchedToolCallID := ""
+				targetRequests := make([]agentexecutionapp.CurrentAuthorizationRequest, 0, len(authorizationRequests))
+				seen := make(map[string]struct{}, len(authorizationRequests))
 				for _, authorizationRequest := range authorizationRequests {
 					requestID := authorizationRequest.InterruptID
 					if requestID == "" {
@@ -358,25 +358,36 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 					if requestID == "" {
 						requestID = authorizationRequest.ToolCallID
 					}
-					if requestID == request.AuthorizationID {
-						matched++
-						matchedToolCallID = authorizationRequest.ToolCallID
+					if requestID == "" {
+						return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 					}
+					if _, duplicate := seen[requestID]; duplicate {
+						return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+					}
+					seen[requestID] = struct{}{}
+					targetRequests = append(targetRequests, agentexecutionapp.CurrentAuthorizationRequest{
+						InterruptID: requestID, ToolCallID: authorizationRequest.ToolCallID,
+						AvailableActions: []string{"authorize", "skip"},
+					})
 				}
-				if matched != 1 {
+				if request.AuthorizationID != "" &&
+					(len(targetRequests) != 1 || targetRequests[0].InterruptID != request.AuthorizationID) {
 					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 				}
 				target = agentexecutionapp.CurrentContinuationTarget{
-					ContinuationKind:    agentexecutionapp.CurrentContinuationAuthorization,
-					Kind:                agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
-					TargetParticipantID: int64(row.TargetParticipantID),
-					QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(),
-					UserInput:           row.UserInput,
-					ThreadID:            row.ThreadID,
-					ExecutionGeneration: row.ExecutionGeneration,
-					InterruptID:         request.AuthorizationID,
-					ToolCallID:          matchedToolCallID,
-					AvailableActions:    []string{"authorize", "skip"},
+					ContinuationKind:      agentexecutionapp.CurrentContinuationAuthorization,
+					Kind:                  agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
+					TargetParticipantID:   int64(row.TargetParticipantID),
+					QuestionID:            uuid.UUID(row.QuestionID.Bytes).String(),
+					UserInput:             row.UserInput,
+					ThreadID:              row.ThreadID,
+					ExecutionGeneration:   row.ExecutionGeneration,
+					AuthorizationRequests: targetRequests,
+				}
+				if request.AuthorizationID != "" {
+					target.InterruptID = targetRequests[0].InterruptID
+					target.ToolCallID = targetRequests[0].ToolCallID
+					target.AvailableActions = append([]string(nil), targetRequests[0].AvailableActions...)
 				}
 				if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
 					target.Validate() != nil {

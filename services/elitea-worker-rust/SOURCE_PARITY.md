@@ -77,14 +77,14 @@ call ID with zero dispatch. Main now normalizes its exact single-card
 authorization continuation into the already-versioned `hitl_decisions` JSON
 field, preserving `interrupt_id`, the original `tool_call_id` and
 `guardrail_type=mcp_auth`; the standalone Python worker accepts and forwards the
-same shared command to the current SDK. Main rejects a persisted multi-card
-authorization pause on this scalar route instead of deleting unresolved
-siblings. The Rust delivery owner now exposes each same-family pause card as
+same shared command to the current SDK. Main retains that scalar route and now
+also accepts one bounded exact complete authorization decision set, rehydrates
+persisted call IDs, and consumes every sibling atomically. Incomplete sets do
+not resume the worker. The Rust delivery owner now exposes each same-family pause card as
 ordinary progress and binds one bounded ordered exact-ID/call/hierarchy
-aggregate as the sole paused terminal after ADK EOS. A bounded plural/mixed
-Main continuation, independent partial sibling resume and mixed-guardrail
-terminal aggregate remain required before the parallel path can be activated;
-no new protobuf field is required. A pipeline Agent node now carries the same exact
+aggregate as the sole paused terminal after ADK EOS. Independent partial
+sibling resume and mixed-guardrail terminal aggregation remain explicit gaps;
+no new protobuf field was required. A pipeline Agent node now carries the same exact
 parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
 remains public, partial sets fail before materialization, Skip closes each
 original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
@@ -92,8 +92,8 @@ atomically. Concrete SharePoint/OpenAPI families remain gaps.
 
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic
-open gate. The remaining authorization gates are Main plural/mixed decision-set
-activation, independent partial sibling resume, mixed-guardrail aggregation,
+open gate. The remaining authorization gates are independent partial sibling
+resume, mixed-guardrail aggregation,
 platform OAuth/DCR, runtime-discovered configured families,
 concrete SharePoint/OpenAPI clients and production activation.
 

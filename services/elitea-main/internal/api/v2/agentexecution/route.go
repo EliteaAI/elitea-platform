@@ -425,17 +425,24 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 		}
 		continuation.Kind = agentexecutionapp.CurrentContinuationHITL
 	case CurrentAuthorizationContinuationContract:
-		if body.HITLResume || body.HITLAction != "" || !absentJSON(body.HITLValue) ||
-			!emptyJSONArray(body.HITLDecisions) || !currentJSONObject(body.MCPTokens) ||
+		decisions, decisionsValid := currentAuthorizationDecisions(body.HITLDecisions)
+		if body.HITLAction != "" || !absentJSON(body.HITLValue) || !decisionsValid ||
+			!currentJSONObject(body.MCPTokens) ||
 			!currentJSONArray(body.IgnoredMCPServers) || !currentJSONArray(body.UserDeclinedMCPServers) ||
-			body.AuthorizationRequestID == "" ||
-			(body.AuthorizationAction != "authorize" && body.AuthorizationAction != "skip") {
+			(len(decisions) == 0 && (body.HITLResume || body.AuthorizationRequestID == "" ||
+				(body.AuthorizationAction != "authorize" && body.AuthorizationAction != "skip"))) ||
+			(len(decisions) != 0 && (!body.HITLResume || body.AuthorizationRequestID != "" ||
+				body.AuthorizationAction != "")) {
 			writeUnsupported(writer)
 			return
 		}
 		continuation.Kind = agentexecutionapp.CurrentContinuationAuthorization
-		continuation.AuthorizationID = body.AuthorizationRequestID
-		continuation.Action = body.AuthorizationAction
+		if len(decisions) == 0 {
+			continuation.AuthorizationID = body.AuthorizationRequestID
+			continuation.Action = body.AuthorizationAction
+		} else {
+			continuation.HITLDecisions = decisions
+		}
 		continuation.MCPTokens = bytes.Clone(body.MCPTokens)
 		continuation.IgnoredMCPServers = bytes.Clone(body.IgnoredMCPServers)
 		continuation.DeclinedMCPServers = bytes.Clone(body.UserDeclinedMCPServers)
@@ -570,6 +577,37 @@ func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLD
 			return nil, false
 		}
 		if value, exists := object["value"]; exists && json.Unmarshal(value, &decision.Value) != nil {
+			return nil, false
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, true
+}
+
+func currentAuthorizationDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
+	if emptyJSONArray(raw) {
+		return nil, true
+	}
+	var objects []map[string]json.RawMessage
+	if json.Unmarshal(raw, &objects) != nil || len(objects) == 0 || len(objects) > 16 {
+		return nil, false
+	}
+	decisions := make([]agentexecutionapp.CurrentHITLDecision, 0, len(objects))
+	for _, object := range objects {
+		for key := range object {
+			switch key {
+			case "interrupt_id", "tool_call_id", "guardrail_type", "action":
+			default:
+				return nil, false
+			}
+		}
+		var decision agentexecutionapp.CurrentHITLDecision
+		if json.Unmarshal(object["interrupt_id"], &decision.InterruptID) != nil ||
+			json.Unmarshal(object["guardrail_type"], &decision.GuardrailType) != nil ||
+			json.Unmarshal(object["action"], &decision.Action) != nil {
+			return nil, false
+		}
+		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
 			return nil, false
 		}
 		decisions = append(decisions, decision)

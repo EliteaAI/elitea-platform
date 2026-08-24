@@ -891,22 +891,28 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-  AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
-  AND EXISTS (
-      SELECT 1
-      FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      WHERE COALESCE(
-          NULLIF(request.value ->> 'interrupt_id', ''),
-          NULLIF(request.value ->> 'tool_run_id', ''),
-          request.value ->> 'tool_call_id'
-      ) = sqlc.arg(authorization_request_id)::text
+  AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+  AND (
+      sqlc.arg(authorization_request_id)::text = ''
+      OR (
+          jsonb_array_length(response.meta -> 'authorization_requests') = 1
+          AND EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+              WHERE COALESCE(
+                  NULLIF(request.value ->> 'interrupt_id', ''),
+                  NULLIF(request.value ->> 'tool_run_id', ''),
+                  request.value ->> 'tool_call_id'
+              ) = sqlc.arg(authorization_request_id)::text
+          )
+      )
   )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> '';
 
 -- name: ResumeCurrentAgentAuthorization :one
 WITH resolved AS MATERIALIZED (
-    SELECT response.id, response.uuid
+    SELECT response.id, response.uuid, submitted.value AS decisions
     FROM chat_message_group AS response
     JOIN chat_conversations AS conversation
       ON conversation.id = response.conversation_id
@@ -927,6 +933,13 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = sqlc.arg(application_id)::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(sqlc.arg(hitl_decisions)::jsonb) = 'array'
+                THEN sqlc.arg(hitl_decisions)::jsonb
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS submitted
     WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       AND response.uuid = sqlc.arg(response_message_id)::uuid
       AND question.uuid = sqlc.arg(question_id)::uuid
@@ -934,17 +947,50 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
       AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-      AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
-      AND EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-          WHERE COALESCE(
+      AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND (
+          SELECT count(DISTINCT COALESCE(
               NULLIF(request.value ->> 'interrupt_id', ''),
               NULLIF(request.value ->> 'tool_run_id', ''),
               request.value ->> 'tool_call_id'
-          ) = sqlc.arg(authorization_request_id)::text
+          ))
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+      ) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND (
+          SELECT count(DISTINCT decision.value ->> 'interrupt_id')
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+      ) = jsonb_array_length(submitted.value)
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(submitted.value) AS decision(value)
+          WHERE jsonb_typeof(decision.value) <> 'object'
+             OR COALESCE(decision.value ->> 'interrupt_id', '') = ''
+             OR COALESCE(decision.value ->> 'guardrail_type', '') <> 'mcp_auth'
+             OR COALESCE(decision.value ->> 'action', '') NOT IN ('authorize', 'skip')
+             OR COALESCE(decision.value ->> 'value', '') <> ''
       )
-      AND sqlc.arg(authorization_action)::text IN ('authorize', 'skip')
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+          WHERE jsonb_typeof(request.value) <> 'object'
+             OR COALESCE(
+                 NULLIF(request.value ->> 'interrupt_id', ''),
+                 NULLIF(request.value ->> 'tool_run_id', ''),
+                 request.value ->> 'tool_call_id'
+             ) = ''
+             OR NOT EXISTS (
+                 SELECT 1
+                 FROM jsonb_array_elements(submitted.value) AS decision(value)
+                 WHERE decision.value ->> 'interrupt_id' = COALESCE(
+                     NULLIF(request.value ->> 'interrupt_id', ''),
+                     NULLIF(request.value ->> 'tool_run_id', ''),
+                     request.value ->> 'tool_call_id'
+                 )
+                   AND COALESCE(decision.value ->> 'tool_call_id', '') =
+                       COALESCE(request.value ->> 'tool_call_id', '')
+             )
+      )
       AND (
           conversation.author_id = sqlc.arg(actor_user_id)::bigint
           OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
@@ -970,7 +1016,13 @@ WITH resolved AS MATERIALIZED (
             || jsonb_build_object(
                 'resolved_authorization_request_ids',
                 COALESCE(response.meta -> 'resolved_authorization_request_ids', '[]'::jsonb)
-                    || jsonb_build_array(sqlc.arg(authorization_request_id)::text)
+                    || COALESCE(
+                        (
+                            SELECT jsonb_agg(decision.value ->> 'interrupt_id')
+                            FROM jsonb_array_elements(resolved.decisions) AS decision(value)
+                        ),
+                        '[]'::jsonb
+                    )
             ),
         is_streaming = TRUE,
         task_id = sqlc.arg(execution_id)::text,

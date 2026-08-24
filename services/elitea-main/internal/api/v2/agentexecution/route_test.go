@@ -286,6 +286,36 @@ func TestCurrentAuthorizationContinuationRouteCarriesExactInvocationAndCredentia
 	}
 }
 
+func TestCurrentAuthorizationContinuationRouteAcceptsBoundedExactDecisionSet(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-parallel-authorization", CommandID: "command-parallel-authorization",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentAuthorizationContinuationBody(), `"hitl_resume":false`, `"hitl_resume":true`, 1)
+	body = strings.Replace(
+		body,
+		`"hitl_decisions":[]`,
+		`"hitl_decisions":[{"interrupt_id":"auth-2","tool_call_id":"call-2","guardrail_type":"mcp_auth","action":"skip"},{"interrupt_id":"auth-1","tool_call_id":"call-1","guardrail_type":"mcp_auth","action":"authorize"}]`,
+		1,
+	)
+	body = strings.Replace(body, `"authorization_request_id":"tool-run-sharepoint-1"`, `"authorization_request_id":""`, 1)
+	body = strings.Replace(body, `"authorization_action":"authorize"`, `"authorization_action":""`, 1)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentAuthorizationContinuationRequest(body))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationAuthorization ||
+		request.AuthorizationID != "" || request.Action != "" ||
+		len(request.HITLDecisions) != 2 ||
+		request.HITLDecisions[0].InterruptID != "auth-2" ||
+		request.HITLDecisions[1].GuardrailType != "mcp_auth" {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
 func TestCurrentAuthorizationContinuationRouteRejectsAmbiguousAndMissingIdentity(t *testing.T) {
 	useCase := &currentStartUseCaseStub{}
 	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
