@@ -70,8 +70,11 @@ bounded object or string answer into the existing protobuf string value. Rust
 then returns `User answered...` under the original tool-call ID, marks the
 confirmation approved and continues without executing the placeholder,
 injecting a user turn or replanning the call. Direct and pipeline checkpointed
-E2E tests prove the same-call provider transcript. Nested-parallel
-clarification aggregation remains an activation regression.
+E2E tests prove the same-call provider transcript. A nested-parallel E2E also
+proves that two calls to the same saved child publish distinct hierarchy-bound
+clarification cards, reject a partial decision set, and resume each exact child
+with its own answer without replanning. Resume revalidates `ask_user` against
+the rematerialized child's frozen internal-tool catalog.
 
 Current delegated-authorization checkpoint: materializer-known remote MCP
 challenges now use ADK's native confirmation on the original model-selected

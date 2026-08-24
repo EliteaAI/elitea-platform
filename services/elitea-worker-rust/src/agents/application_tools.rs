@@ -444,6 +444,10 @@ fn insert_resume_decision(
         if index + 1 == chain_length {
             let leaf_is_admitted = if decision.is_delegated_authorization() {
                 true
+            } else if decision.is_clarifying_question() {
+                current_catalog
+                    .nested_internal_tools(&hop.tool_name)
+                    .is_some_and(InternalToolCatalog::ask_user_enabled)
             } else {
                 current_catalog
                     .nested_sensitive_tools(&hop.tool_name)
@@ -825,6 +829,7 @@ pub(crate) struct MaterializedApplicationTool {
     child_tools: ApplicationToolPresentationCatalog,
     sensitive_tools: SensitiveToolCatalog,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    internal_tools: InternalToolCatalog,
     pub(crate) tool: Arc<dyn Tool>,
 }
 
@@ -834,6 +839,7 @@ struct BuiltApplication {
     child_tools: ApplicationToolPresentationCatalog,
     sensitive_tools: SensitiveToolCatalog,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    internal_tools: InternalToolCatalog,
 }
 
 /// One root toolset plus its frozen browser-presentation join.
@@ -930,6 +936,7 @@ pub(crate) async fn materialize_application_runtime(
                 ApplicationToolGuardCatalogs::new(
                     entry.sensitive_tools.clone(),
                     entry.delegated_authorization.clone(),
+                    entry.internal_tools,
                 ),
             )
             .map_err(|_| invalid_configuration())?;
@@ -986,6 +993,7 @@ pub(crate) async fn materialize_application_tools(
             child_tools: application.child_tools.clone(),
             sensitive_tools: application.sensitive_tools.clone(),
             delegated_authorization: application.delegated_authorization.clone(),
+            internal_tools: application.internal_tools,
             tool: Arc::new(ApplicationAgentTool::new(
                 application,
                 identity,
@@ -1128,6 +1136,7 @@ impl ApplicationAssemblyState<'_> {
                         ApplicationToolGuardCatalogs::new(
                             application.sensitive_tools.clone(),
                             application.delegated_authorization.clone(),
+                            application.internal_tools,
                         ),
                     )
                     .map_err(|_| invalid_configuration())?;
@@ -1141,7 +1150,7 @@ impl ApplicationAssemblyState<'_> {
                 nested_tools,
             )));
         }
-        if has_non_application_tools && child_tools.has_sensitive_descendant() {
+        if has_non_application_tools && child_tools.has_guarded_descendant() {
             return Err(unsupported_capability());
         }
         let description = application_description(&reference, &capabilities);
@@ -1169,6 +1178,7 @@ impl ApplicationAssemblyState<'_> {
             child_tools,
             sensitive_tools,
             delegated_authorization,
+            internal_tools,
         }))
     }
 

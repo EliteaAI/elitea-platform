@@ -99,7 +99,10 @@ Maintained Rust runtime ownership registry:
   the fail-closed tool implementation is never dispatched. Main
   `agentexecution/{start,adhoc,continue}.go`, the current routes and
   `agent_chat.sql` now project the bounded selection and canonicalize object or
-  string answers without changing the protobuf. Other internal tools remain
+  string answers without changing the protobuf. Parallel saved-child
+  clarifications retain separate hierarchy/checkpoint identities, require one
+  atomic complete answer set, and replay each answer into its exact child call.
+  Other internal tools remain
   separately gated.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
@@ -116,10 +119,13 @@ Maintained Rust runtime ownership registry:
   `AgentTool` buffers child events and cannot expose an exact nested hierarchy.
   Recursive direct-agent confirmation resume uses the root `SessionService`
   transcript and an invocation-scoped replay tree rather than another child
-  session or interrupt table. The same tree retains nested auth catalogs and
-  routes exact Authorize/Skip decisions at each leaf, including when the root
-  saved participant is invoked by a pipeline Agent node and bound to that
-  graph checkpoint. Saved-pipeline Agent-node
+  session or interrupt table. The same tree retains nested sensitive,
+  delegated-auth and internal-tool catalogs. It routes exact Authorize/Skip or
+  `ask_user` Answer decisions at each leaf, including parallel calls to the
+  same saved child and when the root saved participant is invoked by a pipeline
+  Agent node and bound to that graph checkpoint. `ordinary_tests.rs` owns the
+  distinct hierarchy, complete-set admission, frozen-scope and no-replanning
+  regression. Saved-pipeline Agent-node
   descendant streaming and checkpoint hierarchy are instead owned by `graph/application.rs`,
   `graph/node_events.rs` and the common event projector;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context

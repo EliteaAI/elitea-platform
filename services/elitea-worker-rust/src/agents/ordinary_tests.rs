@@ -212,6 +212,32 @@ fn runtime_context_with_sensitive_child() -> (RuntimeContextClient, Arc<AtomicUs
     (client, calls)
 }
 
+fn runtime_context_with_ask_user_child() -> (RuntimeContextClient, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let responses = (0..3)
+        .flat_map(|_| {
+            let mut child = nested_agent_version(
+                "Resolve only the delegated name.",
+                "child-model",
+                23,
+                vec![],
+            );
+            child["meta"] = serde_json::json!({"internal_tools": ["ask_user"]});
+            [
+                runtime_context_response(&serde_json::json!({
+                    "schema_version": "elitea.runtime.elitea-client-token.v1",
+                    "project_id": 17,
+                    "token": TOKEN,
+                })),
+                application_version_response(31, 41, child),
+            ]
+        })
+        .collect();
+    let client = runtime_context_client_from(responses, Arc::clone(&calls), paths);
+    (client, calls)
+}
+
 fn runtime_context_with_recursive_sensitive_child(
     cycles: usize,
 ) -> (RuntimeContextClient, Arc<AtomicUsize>) {
@@ -296,6 +322,38 @@ fn mcp_tool_call_response() -> Response<Body> {
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn ask_user_tool_call_response() -> Response<Body> {
+    let arguments = serde_json::json!({
+        "questions": [{
+            "question": "Which full name should I resolve?",
+            "header": "Name",
+            "options": [
+                {"label": "Olivia Lovelace"},
+                {"label": "Sasha Grey"}
+            ],
+            "allow_other": true
+        }]
+    })
+    .to_string();
+    let chunk = serde_json::json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_ask_user",
+                    "type": "function",
+                    "function": {"name": "ask_user", "arguments": arguments}
+                }]
+            },
+            "finish_reason": null
+        }]
+    });
+    let raw = format!(
+        "data: {chunk}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{{\"prompt_tokens\":3,\"completion_tokens\":2}}}}\n\ndata: [DONE]\n\n"
     );
     test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
 }
@@ -1626,6 +1684,168 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
     assert_eq!(connector.calls.load(Ordering::Acquire), 3);
     assert_eq!(captured.lock().expect("captured model requests").len(), 6);
     assert_persisted_nested_interrupts(&sessions, &user_id, &session_id, 2).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)] // Initial parallel pause and atomic exact-child resume are one proof.
+async fn parallel_nested_ask_user_resumes_each_exact_child_without_replanning() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let (runtime_context, context_calls) = runtime_context_with_ask_user_child();
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(parallel_nested_agent_call_response()),
+            TestModelGatewayOutcome::Response(ask_user_tool_call_response()),
+            TestModelGatewayOutcome::Response(ask_user_tool_call_response()),
+            TestModelGatewayOutcome::Response(text_response("resolved clarified child")),
+            TestModelGatewayOutcome::Response(text_response("resolved clarified child")),
+            TestModelGatewayOutcome::Response(text_response("root clarified answer")),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("parallel nested ask_user model gateway");
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    )
+    .with_sessions(sessions);
+
+    let mut invocation = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+        .expect("parallel nested ask_user assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("parallel nested ask_user start");
+    let (mut native, mut projector, _) = invocation.start().expect("ask_user native start");
+    let mut cards = Vec::new();
+    while let Some(event) = native.next_event().await.expect("nested ask_user event") {
+        for projected in projector
+            .project(&event)
+            .expect("nested ask_user projection")
+        {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected).expect("nested ask_user browser event"),
+            )
+            .expect("nested ask_user browser JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                cards.push(value);
+            }
+        }
+    }
+
+    assert!(projector.is_paused());
+    assert_parallel_nested_interrupts(&cards);
+    let mut decisions = cards
+        .iter()
+        .map(|card| {
+            let pending = &card["response_metadata"]["hitl_interrupts"][0];
+            assert_eq!(pending["guardrail_type"], "clarifying_question");
+            assert_eq!(pending["tool_call_id"], "call_ask_user");
+            assert_eq!(pending["available_actions"], serde_json::json!(["answer"]));
+            assert_eq!(pending["questions"][0]["id"], "q1");
+            let parent_call = card["response_metadata"]["parent_agent_path"][0]["call_id"]
+                .as_str()
+                .expect("clarification parent call");
+            let answer = match parent_call {
+                "call_olivia" => "Olivia Lovelace",
+                "call_sasha" => "Sasha Grey",
+                other => panic!("unexpected clarification parent call: {other}"),
+            };
+            (
+                pending["interrupt_id"]
+                    .as_str()
+                    .expect("clarification interrupt identity")
+                    .to_owned(),
+                serde_json::json!({"q1": answer}).to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    decisions.sort_unstable();
+    assert_eq!(decisions.len(), 2);
+    assert_eq!(context_calls.load(Ordering::Acquire), 2);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 3);
+
+    let mut partial = ordinary_request(AgentExecutionKind::Application);
+    partial.binding.request_content_digest = [23; 32];
+    attach_nested_agent(&mut partial);
+    partial.payload.should_continue = true;
+    partial.payload.hitl_resume = true;
+    partial.payload.hitl_action = Some("answer".to_owned());
+    partial.payload.hitl_value = Some(decisions[0].1.clone());
+    partial.payload.hitl_decisions = vec![serde_json::json!({
+        "interrupt_id": decisions[0].0,
+        "tool_call_id": "call_ask_user",
+        "guardrail_type": "clarifying_question",
+        "action": "answer",
+        "value": decisions[0].1,
+    })];
+    let Err(error) = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &partial,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+    else {
+        panic!("partial parallel clarification set must fail closed");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+    assert_eq!(context_calls.load(Ordering::Acquire), 4);
+    assert_eq!(captured.lock().expect("captured model requests").len(), 3);
+
+    let mut resume = ordinary_request(AgentExecutionKind::Application);
+    resume.binding.request_content_digest = [24; 32];
+    attach_nested_agent(&mut resume);
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = None;
+    resume.payload.hitl_value = None;
+    resume.payload.hitl_decisions = decisions
+        .into_iter()
+        .map(|(interrupt_id, answer)| {
+            serde_json::json!({
+                "interrupt_id": interrupt_id,
+                "tool_call_id": "call_ask_user",
+                "guardrail_type": "clarifying_question",
+                "action": "answer",
+                "value": answer,
+            })
+        })
+        .collect();
+    let output = drain_nested_resume(&assembler, resume).await;
+    assert_eq!(output, "root clarified answer");
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 6, "resume must not replan child calls");
+    let tool_results = captured
+        .iter()
+        .filter_map(|request| serde_json::from_slice::<serde_json::Value>(&request.body).ok())
+        .flat_map(|request| request["messages"].as_array().cloned().unwrap_or_default())
+        .filter(|message| message["role"] == "tool" && message["tool_call_id"] == "call_ask_user")
+        .filter_map(|message| {
+            message["content"]
+                .as_str()
+                .and_then(|content| serde_json::from_str::<String>(content).ok())
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        tool_results,
+        HashSet::from([
+            "User answered:\n- Which full name should I resolve?: Olivia Lovelace".to_owned(),
+            "User answered:\n- Which full name should I resolve?: Sasha Grey".to_owned(),
+        ])
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

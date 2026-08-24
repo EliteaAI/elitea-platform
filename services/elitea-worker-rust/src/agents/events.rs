@@ -31,7 +31,7 @@ use super::graph::{
 };
 use super::internal_tools::{
     ASK_USER_ANSWER_ACTION, ASK_USER_GUARDRAIL_TYPE, ASK_USER_METADATA_KEY, ASK_USER_TOOL_NAME,
-    decode_ask_user_request,
+    InternalToolCatalog, decode_ask_user_request,
 };
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
@@ -283,16 +283,19 @@ struct ApplicationToolPresentation {
 pub(crate) struct ApplicationToolGuardCatalogs {
     sensitive_tools: SensitiveToolCatalog,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    internal_tools: InternalToolCatalog,
 }
 
 impl ApplicationToolGuardCatalogs {
     pub(crate) const fn new(
         sensitive_tools: SensitiveToolCatalog,
         delegated_authorization: DelegatedAuthorizationCatalog,
+        internal_tools: InternalToolCatalog,
     ) -> Self {
         Self {
             sensitive_tools,
             delegated_authorization,
+            internal_tools,
         }
     }
 }
@@ -379,11 +382,18 @@ impl ApplicationToolPresentationCatalog {
             .map(|presentation| &presentation.guards.sensitive_tools)
     }
 
+    pub(crate) fn nested_internal_tools(&self, tool_name: &str) -> Option<InternalToolCatalog> {
+        self.get(tool_name)
+            .map(|presentation| presentation.guards.internal_tools)
+    }
+
     #[must_use]
-    pub(crate) fn has_sensitive_descendant(&self) -> bool {
+    pub(crate) fn has_guarded_descendant(&self) -> bool {
         self.by_tool_name.values().any(|presentation| {
             !presentation.guards.sensitive_tools.is_empty()
-                || presentation.child_tools.has_sensitive_descendant()
+                || !presentation.guards.delegated_authorization.is_empty()
+                || !presentation.guards.internal_tools.is_empty()
+                || presentation.child_tools.has_guarded_descendant()
         })
     }
 }

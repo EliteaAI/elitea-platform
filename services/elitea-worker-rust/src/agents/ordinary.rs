@@ -325,7 +325,7 @@ fn unsupported_session_resume() -> NativeAgentAssemblyError {
 fn unsupported_mixed_nested_hitl() -> NativeAgentAssemblyError {
     NativeAgentAssemblyError::new(
         NativeAgentAssemblyErrorCode::UnsupportedCapability,
-        "nested sensitive-tool pauses require an application-only delegation set",
+        "nested HITL pauses require an application-only delegation set",
     )
 }
 
@@ -333,7 +333,7 @@ fn validate_nested_application_hitl_scope(
     application_only: bool,
     applications: &super::events::ApplicationToolPresentationCatalog,
 ) -> Result<(), NativeAgentAssemblyError> {
-    if !application_only && applications.has_sensitive_descendant() {
+    if !application_only && applications.has_guarded_descendant() {
         return Err(unsupported_mixed_nested_hitl());
     }
     Ok(())
