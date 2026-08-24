@@ -71,11 +71,14 @@ refresh these pins because all three Python sources continue to evolve.
 
 `src/toolkits/policy.rs::ToolAdmissionPolicy` implements the current SDK's
 case-, prefix- and separator-insensitive blocklist membership without its
-mutable module globals. One immutable policy generation is intended to be held
-by `Arc`: reconfiguration swaps the generation for new work, while an in-flight
-invocation finishes under the exact policy that admitted it. The future serve
-composition owns that swap; this slice does not read process environment or
-Main configuration directly.
+mutable module globals. One immutable policy generation is held by `Arc`, so an
+in-flight invocation finishes under the exact policy that admitted it. The
+production `serve` command requires a separate bounded regular-file snapshot
+containing the current runtime `toolkit_security` dictionary; it does not read
+ambient process environment or treat a missing dictionary as an empty policy.
+The shared Python-compatible deployment-v1 document is unchanged. Container
+orchestration still has to project that dictionary, and an atomic refresh owner
+for later admin/runtime changes remains a production gate.
 
 Whole-toolkit restrictions filter the frozen snapshot before any credential or
 client can be materialized. Specific-tool restrictions are evaluated again on
@@ -114,7 +117,7 @@ later function call.
 | SDK `tools/__init__.py::{toolkit_config_schema,get_tools}` | Toolkit registry, selected tools, dispatch, blocked tools and metadata | `src/toolkits/registry.rs`, `src/toolkits/materialize.rs` | Complete family/tool inventory and invalid-selection tests | Planned |
 | SDK `runtime/toolkits/tools.py::get_tools` | Runtime toolsets before standard/community dispatch | `src/toolkits/materialize.rs` | Runtime/family dispatch tests | Planned |
 | SDK `tools/base/tool.py::BaseAction` and `tools/elitea_base.py::BaseToolApiWrapper.run` | Map selected tool name to bounded invocation | `src/toolkits/invocation.rs` | Native ADK metadata, top-level null normalization, bounds, cancellation and safe-error tests | Implemented shared kernel; family operations remain planned |
-| SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs` | Alias, scope, bound and pre-materialization filter corpus | Implemented foundation; serve-time config generation swap remains planned |
+| SDK `runtime/toolkits/security.py` | Separator-insensitive blocked toolkit/tool policy | `src/toolkits/policy.rs`, `src/execution/production.rs` | Alias, scope, bound, strict mounted-snapshot and pre-materialization filter corpus | Startup generation is production-wired and immutable per invocation; container projection and atomic later-generation refresh remain planned |
 | SDK `runtime/middleware/sensitive_tool_guard.py` | Sensitive-tool policy and confirmation admission | `src/agents/{sensitive_tools,direct_hitl}.rs` | Runtime dictionary binding, exact call-bound interrupt, strict decision/stale-session corpus, approved-effect rejection, one read-only native replay, structured reject/block-with-comment results and restart-before/after-result recovery | Partial capability-disabled path. Initial pause, exact read-only approval and same-call-ID blocked result are proven through ADK. A denied effect is never dispatched; an approved effect still requires durable intent/outcome ownership. Production request registration remains gated |
 
 ## Family inventory

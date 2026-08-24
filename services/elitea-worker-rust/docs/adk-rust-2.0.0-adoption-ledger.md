@@ -40,7 +40,7 @@ passing upstream test does not register a production worker capability.
 | Managed runtime | Optional `managed-runtime` exposes another lifecycle abstraction | Defer | Its façade is a useful shape, but the audited implementation keeps its checkpoint manager, sequence counter, parking lot and active channels in process. Injecting the PostgreSQL `SessionService` would persist conversation events, not the parked execution frame. Main plus the worker delivery coordinator therefore remain the only execution authority; revisit only as an internal adapter after proving restart-safe external checkpoint/parking injection cannot duplicate claims, settlement or recovery |
 | Semantic memory | Optional memory service and database/Redis/SQLite backends | Defer and wrap | Define tenant/project/agent namespace, consent, retention, deletion, embedding/provider and poisoning policy before enabling global agent or graph memory |
 | Realtime/voice | Optional realtime runner and transport/provider features | Defer and wrap | Map current voice/ASR/TTS session behavior, cancellation, quotas and `NodeEventV1`/media boundaries first; do not enable the enterprise preset |
-| Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The production connector reloads the ACL password and TLS files, opens and pings both restricted connections, and installs them through the serialized generation owner; retryable loss replaces only that generation without replaying an ambiguous command. The stop-aware delivery runtime is composed with the native processor. Signal/global-deadline bootstrap and a real Redis 7 reconnect/reclaim system test remain. A later memory/session Redis backend must use separate keys and failure semantics |
+| Redis | ADK offers optional execution-state backends | Do not substitute | The restricted redis-rs transport owns Elitea command intake, PEL reclaim/heartbeat and exact post-settlement retirement. The production connector reloads the ACL password and TLS files, opens and pings both restricted connections, and installs them through the serialized generation owner; retryable loss replaces only that generation without replaying an ambiguous command. The executable process owns SIGINT/SIGTERM and one global drain deadline around the stop-aware delivery runtime plus native processor. A real Redis 7 reconnect/reclaim system test remains. A later memory/session Redis backend must use separate keys and failure semantics |
 
 Delegated-authorization status: broad “MCP OAuth remains gated” wording in the
 Graph, Event and Sensitive/HITL rows now means Main activation, platform
@@ -440,12 +440,15 @@ stream. Normal shutdown must stop and drain the Redis delivery runtime before
 stopping and closing the invocation coordinator; a hard drain timeout belongs
 to the one process-wide exit budget, because dropping only the waiter cannot
 cancel already supervised native work.
-Production capability registration still waits for signal/global-deadline bootstrap,
-input-free running/ambiguous recovery, real provider, session,
-tool and policy proof plus cross-process integration. Config, trust, clients,
-state pool and the runtime constructor are composed, but the authoritative frozen runtime/admin
-`toolkit_security` snapshot has no production delivery source yet and must not
-default to an empty policy. `smallvec`,
+Production capability registration still waits for input-free
+running/ambiguous recovery, real provider, session, tool and policy proof plus
+cross-process integration. Config, trust, clients, state pool, native runtime,
+CLI `serve`, SIGINT/SIGTERM ownership and a process-wide drain deadline are
+composed. `serve` separately requires a bounded mounted snapshot containing the
+current runtime/admin `toolkit_security` dictionary, so the shared Python
+deployment-v1 document is unchanged and absence never defaults to an empty
+policy. Container orchestration still has to produce that snapshot, and atomic
+generation refresh remains open. `smallvec`,
 `crossbeam` and lock-free queues are not architecture requirements. Add them
 only after representative profiles identify an allocation or contention hot
 path and a benchmark proves an end-to-end gain without weakening cancellation

@@ -38,7 +38,7 @@ sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-toki
 subtle = "=2.6.1"
 tempfile = "=3.27.0"
 thiserror = "=2.0.20"
-tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring"] }
 tokio-stream = "=0.1.19"
 tonic = { version = "=0.14.2", features = ["tls-ring"] }

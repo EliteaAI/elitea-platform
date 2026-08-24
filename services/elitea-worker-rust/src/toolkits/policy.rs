@@ -147,6 +147,18 @@ impl ToolAdmissionPolicy {
             return Self::new(&[], &BTreeMap::new());
         };
         let security = security.as_object().ok_or_else(invalid_configuration)?;
+        if security.keys().any(|key| {
+            !matches!(
+                key.as_str(),
+                "blocked_toolkits"
+                    | "blocked_tools"
+                    | "sensitive_tools"
+                    | "sensitive_action_company_name"
+                    | "sensitive_action_message_template"
+            )
+        }) {
+            return Err(invalid_configuration());
+        }
         let blocked_toolkits = parse_string_array(security.get("blocked_toolkits"))?;
         let blocked_tools = parse_tool_map(security.get("blocked_tools"))?;
         let sensitive_tools = parse_tool_map(security.get("sensitive_tools"))?;

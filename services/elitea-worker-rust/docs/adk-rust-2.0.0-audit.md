@@ -470,10 +470,11 @@ Lua surfaces are the fixed owned-Pending heartbeat and exact retirement
 scripts; no `XADD`, group creation, arbitrary ACK/delete or general Redis API is
 exported.
 
-The remaining production proof is composition rather than another client
-abstraction: a fair bounded serve loop must interleave new intake and Redis 7
-reclaim, heartbeat queued and running ownership, reconnect only at the outer
-attempt boundary, and drain on shutdown. A real TLS/ACL Redis 7 component must
+The remaining production proof is deployment rather than another client
+abstraction: the executable serve loop now interleaves new intake and Redis 7
+reclaim, heartbeats queued and running ownership, reconnects only at the outer
+attempt boundary, and drains on SIGINT/SIGTERM under one process deadline. A
+real TLS/ACL Redis 7 component must
 exercise response-loss/reclaim/retirement. redis-rs allocates the complete RESP
 frame before Rust's semantic bounds run, so the dedicated ACL plane and Main's
 producer capacity gate remain mandatory; a pre-allocation parser limit is a

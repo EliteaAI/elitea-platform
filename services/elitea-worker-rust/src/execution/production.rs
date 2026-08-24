@@ -1,11 +1,12 @@
 //! Production composition of the already-proven agent delivery/runtime pieces.
 
-#![allow(dead_code)] // Capability registration and process signals remain closed.
-
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde_json::Value;
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 use tonic::transport::Channel;
 
@@ -22,9 +23,12 @@ use crate::agents::native_runtime::NativeRuntimeAssembler;
 use crate::agents::ordinary::OrdinaryNativeAgentAssembler;
 use crate::agents::pipeline::PipelineNativeAgentAssembler;
 use crate::bootstrap::ProductionTransportBundle;
+use crate::config::{RuntimeConfigError, load_deploy_config, read_regular_file};
 use crate::spool::SpoolLimits;
 use crate::state::{CheckpointLimits, SessionLimits};
-use crate::toolkits::ToolAdmissionPolicy;
+use crate::toolkits::{
+    ToolAdmissionPolicy, ToolAdmissionPolicyError, ToolAdmissionPolicyErrorCode,
+};
 use crate::transport::redis_commands::{RedisCommandRetirer, RedisRetirementConfig};
 use crate::transport::redis_connector::ProductionRedisConnector;
 use crate::transport::redis_generation::RedisStreamsHandle;
@@ -48,6 +52,127 @@ type ProductionProcessor = AgentDeliveryProcessor<
     ProductionLifecycle,
     crate::transport::InputContentClient,
 >;
+
+const MAX_TOOLKIT_SECURITY_SNAPSHOT_BYTES: usize = 1024 * 1024;
+
+/// Stable process-level failure. It carries no path, endpoint, credential,
+/// provider text or execution data and is therefore safe at the CLI boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProductionServeError {
+    code: &'static str,
+    retryable: bool,
+    message: &'static str,
+}
+
+impl ProductionServeError {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        self.code
+    }
+
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        self.retryable
+    }
+}
+
+impl fmt::Display for ProductionServeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for ProductionServeError {}
+
+struct ShutdownSignals {
+    interrupt: Signal,
+    terminate: Signal,
+}
+
+impl ShutdownSignals {
+    fn install() -> Result<Self, ProductionServeError> {
+        Ok(Self {
+            interrupt: signal(SignalKind::interrupt()).map_err(|_| signal_unavailable())?,
+            terminate: signal(SignalKind::terminate()).map_err(|_| signal_unavailable())?,
+        })
+    }
+
+    async fn receive(&mut self) -> Result<(), ProductionServeError> {
+        let received = tokio::select! {
+            received = self.interrupt.recv() => received,
+            received = self.terminate.recv() => received,
+        };
+        received.ok_or_else(signal_unavailable)
+    }
+}
+
+/// Load the two independent production snapshots, connect dependencies and run
+/// until SIGINT/SIGTERM requests one bounded drain. Toolkit policy is a
+/// separate argument so the shared `elitea.runtime-deploy.v1` document remains
+/// byte-compatible with the Python worker during parallel operation.
+pub async fn serve_from_config(
+    deployment_path: &Path,
+    toolkit_security_path: &Path,
+) -> Result<(), ProductionServeError> {
+    let mut signals = ShutdownSignals::install()?;
+    let deployment =
+        Arc::new(load_deploy_config(deployment_path).map_err(|error| map_config_error(&error))?);
+    let tool_policy = load_tool_policy(toolkit_security_path)?;
+    tracing::info!(
+        event = "production_startup_admitted",
+        policy_generation = "startup_snapshot",
+    );
+
+    let connect = ProductionTransportBundle::connect(Arc::clone(&deployment));
+    tokio::pin!(connect);
+    let bundle = tokio::select! {
+        result = &mut connect => result.map_err(map_bootstrap_error)?,
+        requested = signals.receive() => {
+            requested?;
+            tracing::info!(event = "production_stop_before_intake");
+            return Ok(());
+        }
+    };
+    let runtime =
+        ProductionAgentRuntime::from_bundle(bundle, tool_policy).map_err(|_| invalid_runtime())?;
+    let shutdown_timeout = Duration::from_millis(deployment.limits.shutdown_timeout_millis);
+    let (stop, stopped) = watch::channel(false);
+    let mut running = Box::pin(runtime.run(stopped));
+    tracing::info!(event = "production_intake_started");
+
+    tokio::select! {
+        result = &mut running => result.map_err(map_runtime_error),
+        requested = signals.receive() => {
+            requested?;
+            tracing::info!(event = "production_stop_requested");
+            if stop.send(true).is_err() {
+                return running.await.map_err(map_runtime_error);
+            }
+            match tokio::time::timeout(shutdown_timeout, running).await {
+                Ok(result) => result.map_err(map_runtime_error),
+                Err(_) => Err(shutdown_timeout_error()),
+            }
+        }
+    }
+}
+
+fn load_tool_policy(path: &Path) -> Result<Arc<ToolAdmissionPolicy>, ProductionServeError> {
+    let raw = read_regular_file(
+        path,
+        MAX_TOOLKIT_SECURITY_SNAPSHOT_BYTES,
+        false,
+        "toolkit security snapshot",
+    )
+    .map_err(|error| map_config_error(&error))?;
+    let runtime = serde_json::from_slice::<Value>(&raw).map_err(|_| invalid_policy())?;
+    let runtime = runtime.as_object().ok_or_else(invalid_policy)?;
+    if !runtime.contains_key("toolkit_security") {
+        return Err(invalid_policy());
+    }
+    ToolAdmissionPolicy::from_runtime_config(runtime)
+        .map(Arc::new)
+        .map_err(|error| map_policy_error(&error))
+}
 
 /// Stable composition failure before Redis intake or command authority exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -246,9 +371,99 @@ impl fmt::Display for ProductionAgentRuntimeError {
 
 impl std::error::Error for ProductionAgentRuntimeError {}
 
+const fn map_config_error(error: &RuntimeConfigError) -> ProductionServeError {
+    match error {
+        RuntimeConfigError::InvalidConfiguration(_) => ProductionServeError {
+            code: "worker_serve.invalid_configuration",
+            retryable: false,
+            message: "the worker serve configuration is invalid",
+        },
+        RuntimeConfigError::ResourceExhausted(_) => ProductionServeError {
+            code: "worker_serve.resource_exhausted",
+            retryable: false,
+            message: "the worker serve configuration exceeds an approved limit",
+        },
+        RuntimeConfigError::Unavailable { .. } => ProductionServeError {
+            code: "worker_serve.configuration_unavailable",
+            retryable: true,
+            message: "the worker serve configuration is unavailable",
+        },
+    }
+}
+
+const fn map_policy_error(error: &ToolAdmissionPolicyError) -> ProductionServeError {
+    match error.code() {
+        ToolAdmissionPolicyErrorCode::InvalidConfiguration => invalid_policy(),
+        ToolAdmissionPolicyErrorCode::ResourceExhausted => ProductionServeError {
+            code: "worker_serve.toolkit_policy_exhausted",
+            retryable: false,
+            message: "the toolkit security snapshot exceeds an approved limit",
+        },
+    }
+}
+
+const fn map_bootstrap_error(
+    error: crate::bootstrap::ProductionBootstrapError,
+) -> ProductionServeError {
+    ProductionServeError {
+        code: error.code(),
+        retryable: error.retryable(),
+        message: "the worker production dependencies could not be admitted",
+    }
+}
+
+const fn map_runtime_error(error: ProductionAgentRuntimeError) -> ProductionServeError {
+    ProductionServeError {
+        code: error.code(),
+        retryable: error.retryable(),
+        message: "the production agent runtime stopped before a complete drain",
+    }
+}
+
+const fn invalid_policy() -> ProductionServeError {
+    ProductionServeError {
+        code: "worker_serve.toolkit_policy_invalid",
+        retryable: false,
+        message: "the toolkit security snapshot is invalid",
+    }
+}
+
+const fn invalid_runtime() -> ProductionServeError {
+    ProductionServeError {
+        code: "worker_serve.runtime_invalid",
+        retryable: false,
+        message: "the production agent runtime configuration is invalid",
+    }
+}
+
+const fn signal_unavailable() -> ProductionServeError {
+    ProductionServeError {
+        code: "worker_serve.signal_unavailable",
+        retryable: false,
+        message: "the worker shutdown signal owner is unavailable",
+    }
+}
+
+const fn shutdown_timeout_error() -> ProductionServeError {
+    ProductionServeError {
+        code: "worker_serve.shutdown_timeout",
+        retryable: true,
+        message: "the worker did not drain before its shutdown deadline",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ProductionAgentRuntimeError, ProductionRuntimeBuildError};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::{
+        ProductionAgentRuntimeError, ProductionRuntimeBuildError, load_tool_policy,
+        shutdown_timeout_error,
+    };
 
     #[test]
     fn production_runtime_failures_are_data_free() {
@@ -263,5 +478,46 @@ mod tests {
         assert_eq!(runtime.code(), "redis_delivery.drain_timeout");
         assert!(runtime.retryable());
         assert!(!runtime.to_string().contains("redis_delivery"));
+        let shutdown = shutdown_timeout_error();
+        assert_eq!(shutdown.code(), "worker_serve.shutdown_timeout");
+        assert!(shutdown.retryable());
+    }
+
+    #[test]
+    fn production_policy_snapshot_is_explicit_strict_and_data_free() {
+        let root = tempdir().expect("temporary policy directory");
+        let root_path = root
+            .path()
+            .canonicalize()
+            .expect("canonical temporary policy directory");
+        let path = root_path.join("toolkit-security.json");
+        let cases = [
+            (
+                json!({"toolkit_security": {}}),
+                true,
+                "explicit empty policy is an authoritative generation",
+            ),
+            (
+                json!({}),
+                false,
+                "a missing dictionary must not become an empty policy",
+            ),
+            (
+                json!({"toolkit_security": {"sensitve_tools": {"github": ["secret-value"]}}}),
+                false,
+                "a misspelled security field must fail closed",
+            ),
+        ];
+        for (value, accepted, description) in cases {
+            fs::write(&path, serde_json::to_vec(&value).expect("policy JSON"))
+                .expect("write policy");
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("policy permissions");
+            let result = load_tool_policy(&path);
+            assert_eq!(result.is_ok(), accepted, "{description}");
+            if let Err(error) = result {
+                assert!(!format!("{error:?} {error}").contains("secret-value"));
+            }
+        }
     }
 }

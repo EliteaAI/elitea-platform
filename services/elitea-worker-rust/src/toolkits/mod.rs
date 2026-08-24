@@ -32,7 +32,10 @@ pub(crate) use mcp::{
 };
 #[cfg(test)]
 pub(crate) use mcp::{RemoteMcpConfig, mcp_authorization_required_fixture};
-pub(crate) use policy::{SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy};
+pub(crate) use policy::{
+    SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy, ToolAdmissionPolicyError,
+    ToolAdmissionPolicyErrorCode,
+};
 pub(crate) use snapshot::{
     AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotError,
     FrozenToolSnapshotErrorCode,

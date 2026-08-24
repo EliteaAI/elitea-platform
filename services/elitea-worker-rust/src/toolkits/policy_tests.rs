@@ -207,6 +207,7 @@ fn malformed_runtime_security_dictionary_fails_without_echoing_values() {
         json!({"toolkit_security": {"blocked_tools": {"github": secret}}}),
         json!({"toolkit_security": {"sensitive_tools": []}}),
         json!({"toolkit_security": {"sensitive_action_company_name": 7}}),
+        json!({"toolkit_security": {"sensitve_tools": {"github": [secret]}}}),
     ] {
         let error = ToolAdmissionPolicy::from_runtime_config(
             runtime.as_object().expect("runtime configuration object"),
