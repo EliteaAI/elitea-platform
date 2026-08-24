@@ -44,6 +44,11 @@ type Handler struct {
 	permissionResolver auth.PermissionResolver
 	httpClient         *http.Client
 	store              storage.ObjectStore
+	// The pre-built MCP server catalogue and the vault holding its client
+	// secrets (mcp_prebuilt_resolution.go). Both nil unless
+	// WithPrebuiltMCPCatalogue is applied, in which case resolution is a no-op.
+	prebuiltMCP      *mcpregistry.PrebuiltStore
+	prebuiltMCPVault PrebuiltSecretReader
 }
 
 type Option func(*Handler)
@@ -3344,6 +3349,12 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 		RefreshToken  string `json:"refresh_token,omitempty"`
 		Scope         string `json:"scope,omitempty"`
 		ToolkitID     string `json:"toolkit_id,omitempty"`
+		// ToolkitType names the pre-built catalogue entry whose credentials
+		// this exchange should use. apps/elitea-web has always sent it
+		// (features/mcps/api/mcpOAuthClient.ts); until the catalogue existed
+		// there was nothing here to look it up in, so it was decoded into
+		// nothing. pylon reads the same field at mcp_oauth_proxy.py:112.
+		ToolkitType string `json:"toolkit_type,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -3381,6 +3392,28 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// The catalogue is the LAST source consulted, after the request body and
+	// after the toolkit's own stored settings. That is pylon's priority order
+	// and the safe one: an operator's platform-wide default must not override a
+	// credential the project configured for itself.
+	if clientID == "" || clientSecret == "" {
+		resolved, err := h.resolvePrebuiltSettings(ctx, map[string]any{
+			"client_id":     clientID,
+			"client_secret": clientSecret,
+		}, body.ToolkitType)
+		if err != nil {
+			// Exchanging with a half-resolved client would send an empty or
+			// absent secret and be rejected by the authorisation server, which
+			// reports it as a bad client rather than as this service failing to
+			// read its own catalogue.
+			writeJSON(w, http.StatusServiceUnavailable,
+				map[string]any{"error": "prebuilt_catalogue_unavailable"})
+			return
+		}
+		clientID = stringSetting(resolved, "client_id", clientID)
+		clientSecret = stringSetting(resolved, "client_secret", clientSecret)
 	}
 
 	grantType := body.GrantType
@@ -3534,14 +3567,41 @@ func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	// private certificate authority configures the service trust bundle
 	// (WithHTTPClient), which is auditable, rather than switching verification
 	// off per request, which is not.
+	// A pre-built MCP toolkit leaves the platform to supply the endpoint and the
+	// credentials, which is what pylon's `resolve_mcp_prebuilt_settings` does
+	// from its plugin configuration. The catalogue is a table here (shared
+	// migration 0094); the resolution fills only fields the caller left empty,
+	// so a toolkit that carries its own URL still wins.
+	if mcpregistry.IsPrebuiltToolkitType(body.ToolkitType) {
+		resolved, err := h.resolvePrebuiltSettings(r.Context(), map[string]any{
+			"url":     body.URL,
+			"headers": headersAsAny(body.Headers),
+			"timeout": body.Timeout,
+		}, body.ToolkitType)
+		if err != nil {
+			// An unreadable catalogue is not an uncatalogued toolkit. Proceeding
+			// would open the connection without the credentials the operator
+			// configured, and the remote server's 401 would name none of this.
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"success": false,
+				"error":   "the pre-built MCP catalogue could not be read",
+			})
+			return
+		}
+		body.URL = stringSetting(resolved, "url", body.URL)
+		body.Headers = headerSettings(resolved, body.Headers)
+		body.Timeout = intSetting(resolved, "timeout", body.Timeout)
+	}
+
 	if strings.TrimSpace(body.URL) == "" {
-		// pylon fills a missing URL for a pre-built MCP toolkit from its own
-		// plugin configuration (`resolve_mcp_prebuilt_settings`). That
-		// catalogue does not exist in this stack, so the URL must be supplied
-		// rather than invented.
+		// Still empty: either the toolkit is not a pre-built one, or no
+		// catalogue entry defines it. The URL must be supplied rather than
+		// invented, and the message names the catalogue so an operator who
+		// expected it to be filled knows where to look.
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"success": false,
-			"error":   "url is required: this service does not hold the pre-built MCP catalogue",
+			"error": "url is required: no pre-built MCP catalogue entry supplies one for this " +
+				"toolkit type",
 		})
 		return
 	}

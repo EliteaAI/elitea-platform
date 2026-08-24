@@ -130,13 +130,22 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// and carries the correction 0067's checksum-immutable header could not: the
 	// gateway now DOES read this table (#218). The constraint is NOT VALID so an
 	// existing row with an unknown type does not fail the release.
+	// 94: shared/0094_mcp_prebuilt_catalogue.sql, the platform-wide catalogue of
+	// pre-built MCP servers. It replaces the indexer_worker plugin descriptor
+	// block that pylon distributes over the Arbiter event bus, which this service
+	// has no way to read.
 	//
-	// There is no 92 here yet. shared/0092_mcp_prebuilt_catalogue.sql is on its
-	// own branch and claimed the number first; this file yielded rather than
-	// racing it. Head() reads the LAST entry, so the gap does not move this
-	// assertion — it moves to 93 either way, and lands on 93 whichever of the
-	// two merges first.
-	require.EqualValues(t, 93, Head(shared))
+	// It was written as 0092 and renumbered here. 0093's header records that it
+	// left 0092 free for this file, and 92 IS still free — but a free number is
+	// not the rule. scripts/database/check-migration-version.sh requires an added
+	// migration to be ABOVE the base head, gap or no gap, so that two deployments
+	// applying the corpus at different times apply it in the same order. The
+	// ledger would have tolerated the back-fill; the policy does not, and the
+	// policy is the stricter of the two on purpose.
+	//
+	// 92 stays empty. Nothing needs to fill it: LoadManifest sorts by version and
+	// Head() reads the last entry, so a gap costs nothing.
+	require.EqualValues(t, 94, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

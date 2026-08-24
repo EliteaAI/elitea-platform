@@ -265,6 +265,11 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // `sections` is still `[]`, so that string is the LOADING state as well as
     // the empty one.
     // Measured: loaded YES, stalled no.
+    //
+    // NOT the MCP catalogue editor, even though the MCP Servers section also
+    // became editable. The landing section is the first one the page can serve
+    // and `guardrails` is order 1, so Guardrails keeps the slot; the catalogue
+    // is one click away and journey J34e covers it.
     landmark: (page) => page.getByRole('button', { name: 'Save' }),
     light: true,
   },

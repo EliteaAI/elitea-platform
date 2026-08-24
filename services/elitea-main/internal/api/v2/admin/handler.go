@@ -8,12 +8,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
 
 type Handler struct {
 	pool        *pgxpool.Pool
 	resolver    auth.PermissionResolver
 	suggestions ToolkitRegistrySource
+	// The pre-built MCP server catalogue and the vault its client secrets are
+	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
+	// is applied, and the catalogue routes answer 503 while either is.
+	prebuiltMCP      *mcpregistry.PrebuiltStore
+	prebuiltMCPVault PrebuiltSecretStore
 }
 
 // Option configures a Handler at construction time.

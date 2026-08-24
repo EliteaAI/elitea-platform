@@ -444,26 +444,61 @@ func skillPublishingSection() map[string]any {
 	}
 }
 
+// mcpServersUnavailable sends this section's caller to the surface that really
+// holds the catalogue.
+//
+// This section used to carry pylonPluginConfigUnavailable, and that WAS true of
+// it: the values addressed the indexer_worker plugin descriptor, collected over
+// the Arbiter bus, and nothing here read them. It is no longer the whole truth,
+// because the catalogue itself now exists — shared migration 0094,
+// `internal/mcpregistry` and the three routes in mcp_prebuilt.go — so a reader
+// told only "Pylon plugin runtimes" would conclude the feature is missing when
+// it is merely somewhere else.
+//
+// The section stays unavailable rather than becoming writable for one reason,
+// and it is the same reason rejectCredentialField exists: a catalogue entry
+// carries a client secret, and this page's fields are stored as plaintext JSONB
+// rows in centry.platform_config that every holder of `runtime.plugins` can
+// read. The dedicated surface seals the secret into the platform vault and
+// returns a mask. Serving the same data here would mean either storing that
+// credential in clear text or accepting a save that silently drops it.
+const mcpServersUnavailable = "MCP server definitions are not stored as plugin configuration on this " +
+	"platform: an entry carries a client secret, and the values on this page are kept as plaintext " +
+	"rows readable by everyone who can open it. The catalogue lives at " +
+	"/api/v2/admin/mcp_prebuilt_servers/administration, which seals each client secret into the " +
+	"platform vault and never returns it. It takes effect on the next call rather than on the next " +
+	"restart, so no field here carries requires_restart."
+
 func mcpServersSection() map[string]any {
 	return map[string]any{
-		"id":                 "mcp_servers",
-		"unavailable_reason": pylonPluginConfigUnavailable,
+		"id": "mcp_servers",
+		// managed_surface names the dedicated surface that really holds this
+		// section's data, so the client can render the right editor WITHOUT a
+		// hardcoded list of section ids.
+		//
+		// That distinction is the whole reason this key exists on the server.
+		// The reference keeps section placement in two client-side lists that
+		// have to stay each other's exact complement by hand, and #217 already
+		// corrected one instance of it. A client that special-cased
+		// `id == "mcp_servers"` would be the same mistake in a new place: the
+		// server would move the catalogue and the client would go on rendering
+		// an editor for a surface that no longer exists.
+		//
+		// `unavailable_reason` STAYS. It is still true of the plugin-config
+		// value endpoints, which cannot serve this section — a client that
+		// cannot render the managed surface must still be told why the ordinary
+		// form is missing, and the two value endpoints must keep refusing.
+		"managed_surface":    "mcp_prebuilt_servers",
+		"unavailable_reason": mcpServersUnavailable,
 		"title":              "MCP Servers",
 		"description":        "Configure Model Context Protocol server definitions available to the indexer runtime.",
 		"order":              2,
 		"icon":               "dns",
-		"fields": []map[string]any{
-			{
-				"key":              "mcp_servers",
-				"type":             "object",
-				"title":            "MCP Server Definitions",
-				"description":      "Pre-configured MCP servers that appear as selectable toolkits. Supports stdio (local subprocess) and http (remote) server types.",
-				"path":             "mcp_servers",
-				"section":          "mcp_servers",
-				"default":          map[string]any{},
-				"requires_restart": true,
-			},
-		},
+		// No fields. The one field this section declared was the whole
+		// `mcp_servers` object, and declaring it here would describe a control
+		// that this page cannot serve — the same "renders as a working control
+		// and is not one" failure rejectUnavailableField was written for.
+		"fields": []map[string]any{},
 	}
 }
 

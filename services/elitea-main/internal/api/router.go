@@ -55,6 +55,7 @@ import (
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -801,10 +802,27 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		r.Route("/api/v2", func(r chi.Router) {
 			mountRuntimeRoutes(r, cfg.RuntimeRoutes)
 
+			// The PRE-BUILT MCP server catalogue (shared migration 0094) and
+			// the platform vault its client secrets are sealed into.
+			//
+			// One store and one vault seam, built once and given to BOTH the
+			// admin surface that writes the catalogue and the eliteacore
+			// handlers that read it. Building two would let the write path and
+			// the read path disagree about which pool they are on — the shape
+			// of #128, where a route answered while its backing was never
+			// composed.
+			//
+			// v2secrets.NewHandler is used as the vault here for the same reason
+			// projectprovisioning uses it: it is the one type in this service
+			// that can open and write a centry vault.
+			prebuiltMCPStore := mcpregistry.NewPrebuiltStore(cfg.Pool)
+			prebuiltMCPVault := v2secrets.NewHandler(cfg.Pool)
+
 			coreHandler := v2core.NewHandler(
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
 				v2core.WithObjectStore(cfg.ObjectStore),
+				v2core.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 			)
 
 			// === Auth endpoints ===
@@ -842,6 +860,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				cfg.Pool,
 				admin.WithPermissionResolver(permissionResolver),
 				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
+				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 			)
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
 			// The admin panel's surface. Every route below is gated on the same
@@ -996,6 +1015,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Get("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValues)
 				r.With(requireRuntimePlugins).
 					Put("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValuesSave)
+				// The PRE-BUILT MCP server catalogue — the real surface behind
+				// the Configuration page's "MCP Servers" section, which stays
+				// unavailable because its rows are plaintext and a catalogue
+				// entry carries a client secret (config_schemas.go).
+				//
+				// The permission is the SAME `runtime.plugins` the section it
+				// replaces already required, so an operator who could edit that
+				// section can edit the catalogue, and no new permission string
+				// arrives without a grant (router_permission_grant_gate_test.go).
+				//
+				// The mode segment is static `administration`: the catalogue is
+				// platform-wide and there is no project-scoped view of it, so
+				// another mode 404s rather than being answered with the same
+				// rows under a scope that does not apply to them.
+				r.With(requireRuntimePlugins).
+					Get("/mcp_prebuilt_servers/administration", adminHandler.PrebuiltMCPList)
+				r.With(requireRuntimePlugins).
+					Put("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPSave)
+				r.With(requireRuntimePlugins).
+					Delete("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPDelete)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the

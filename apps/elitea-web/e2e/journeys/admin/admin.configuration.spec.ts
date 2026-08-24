@@ -77,6 +77,17 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   await expect(guardrails).toBeVisible();
   await expect(guardrails.getByText('Not available here')).toHaveCount(0);
 
+  // MCP Servers is the OTHER exception, for a different reason, and the
+  // difference is worth keeping visible: Guardrails dropped its
+  // `unavailable_reason` outright, while MCP Servers still declares one — true
+  // of the plugin-config value endpoints, which cannot serve a catalogue that
+  // carries a client secret — and is editable anyway because it also declares
+  // a `managed_surface`. Marking it would send an operator away from the only
+  // page that can edit it.
+  const mcpServers = page.getByRole('button', { name: /MCP Servers/ });
+  await expect(mcpServers).toBeVisible();
+  await expect(mcpServers.getByText('Not available here')).toHaveCount(0);
+
   await checkA11y(page);
 });
 
@@ -149,4 +160,24 @@ adminTest('J34d: the sections the Features page owns are not offered here', asyn
   for (const moved of ['Help Center', 'MCP Configuration', 'Agent Publishing', 'Voice Features']) {
     await expect(page.getByRole('button', { name: new RegExp(moved) })).toHaveCount(0);
   }
+});
+
+adminTest('J34e: the MCP Servers section renders its editor, not a refusal', async ({ page }) => {
+  await openConfiguration(page);
+
+  await page.getByRole('button', { name: /MCP Servers/ }).click();
+
+  // The editor's own control, so this proves the dedicated surface MOUNTED —
+  // not merely that the refusal notice is absent, which a blank pane would also
+  // satisfy.
+  await expect(page.getByTestId('admin-mcp-servers-add')).toBeVisible();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  // The catalogue read is authorised and answered. A fresh deployment catalogues
+  // nothing, so the empty state is the truthful branch here; the error alert
+  // would mean the route refused, which is what this asserts is NOT happening.
+  await expect(page.getByTestId('admin-mcp-servers-empty')).toBeVisible();
+  await expect(page.getByTestId('admin-mcp-servers-error')).toHaveCount(0);
+
+  await checkA11y(page);
 });

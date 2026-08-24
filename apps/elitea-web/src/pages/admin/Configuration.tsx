@@ -84,6 +84,8 @@
  * and sections carrying a `required_permission` are checked again inside the
  * handler because that permission depends on the section.
  */
+import type { ComponentType } from 'react';
+
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -96,9 +98,36 @@ import Typography from '@mui/material/Typography';
 import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import { AdminMcpServersEditor } from './AdminMcpServersEditor';
+import { MCP_SERVERS_MANAGED_SURFACE } from './api/adminMcpServersApi';
 import { ConfigurationSectionForm } from './ConfigurationSectionForm';
 import { useAdminConfigurationPage, type AdminConfigurationPageState } from './useAdminConfigurationPage';
 
+/**
+ * The sections this app can render a DEDICATED editor for, keyed by the
+ * server's `managed_surface`.
+ *
+ * One registry, in one place, keyed on the server's word rather than on a
+ * section id. That is the correction #217 made when it moved
+ * `service_descriptors`: the reference keeps section placement in two
+ * client-side lists that must stay each other's complement by hand, and the
+ * drift is invisible until a section renders on the wrong page or on both.
+ *
+ * A section whose `managed_surface` is NOT in this map falls through to its
+ * `unavailable_reason`, so a surface this build does not know how to render
+ * degrades to the honest explanation rather than to a blank pane.
+ */
+const MANAGED_SECTION_EDITORS: Readonly<Record<string, ComponentType>> = {
+  [MCP_SERVERS_MANAGED_SURFACE]: AdminMcpServersEditor,
+};
+
+/** The dedicated editor for a section, when this build has one. */
+function managedEditorFor(
+  section: { readonly managed_surface?: string } | undefined,
+): ComponentType | undefined {
+  const surface = section?.managed_surface;
+  return surface === undefined ? undefined : MANAGED_SECTION_EDITORS[surface];
+}
 
 function SectionBody({ state }: { readonly state: AdminConfigurationPageState }) {
   if (state.activeSection === undefined) {
@@ -107,6 +136,15 @@ function SectionBody({ state }: { readonly state: AdminConfigurationPageState })
         {t('pages.admin.configuration.empty', 'This deployment publishes no configuration sections.')}
       </Typography>
     );
+  }
+
+  // A managed section is rendered by its own editor, BEFORE the unavailability
+  // check. The section keeps its `unavailable_reason` — it is still true of the
+  // plugin-config value endpoints, which cannot serve this data — so a build
+  // that does not recognise the surface still explains itself.
+  const ManagedEditor = managedEditorFor(state.activeSection);
+  if (ManagedEditor !== undefined) {
+    return <ManagedEditor />;
   }
 
   if (state.unavailableReason !== undefined) {
@@ -135,15 +173,28 @@ function SectionBody({ state }: { readonly state: AdminConfigurationPageState })
     );
   }
 
+  return <SectionForm state={state} />;
+}
+
+/**
+ * The ordinary schema-driven form for an available section.
+ *
+ * Split out of `SectionBody` so that function stays a chain of early returns
+ * over the states a section can be in — unavailable, managed, failed, loading,
+ * ready — and the form itself is one thing. Both were over the complexity gate
+ * as one function, and the gate was right: the branching was the part that had
+ * grown, not the markup.
+ */
+function SectionForm({ state }: { readonly state: AdminConfigurationPageState }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      {state.activeSection.description !== undefined && state.activeSection.description !== '' ? (
+      {state.activeSection?.description !== undefined && state.activeSection.description !== '' ? (
         <Typography variant="bodySmall" color="text.secondary">
           {state.activeSection.description}
         </Typography>
       ) : null}
       <ConfigurationSectionForm
-        fields={state.activeSection.fields ?? []}
+        fields={state.activeSection?.fields ?? []}
         values={state.values}
         disabled={state.isSaving}
         onChange={state.onFieldChange}
@@ -230,8 +281,13 @@ export function AdminConfiguration() {
                 // The sidebar says which sections this deployment can serve
                 // BEFORE the operator clicks one. Discovering it only on arrival
                 // makes the page feel broken rather than scoped.
+                // A section with a dedicated editor is NOT "not available
+                // here": it is available, through its own surface. Labelling it
+                // otherwise would send an operator away from the one page that
+                // can edit it.
                 secondary={
-                  section.unavailable_reason === undefined
+                  section.unavailable_reason === undefined ||
+                  managedEditorFor(section) !== undefined
                     ? undefined
                     : t('pages.admin.configuration.sectionUnavailable', 'Not available here')
                 }
