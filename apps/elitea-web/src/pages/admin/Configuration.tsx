@@ -31,9 +31,13 @@
  *   - **Banner** — a product setting the legacy UI received through
  *     `window.elitea_ui_config`. Unavailable for the narrower reason that
  *     nothing in this platform reads it YET.
- *   - **LLM Governance** — authored through `/admin/gateway/governance`, not
- *     here, and withheld because the gateway does not read what that surface
- *     writes.
+ *   - **LLM Governance** — authored on its own page (`./GatewayGovernance.tsx`,
+ *     `/admin/app/governance`), not here. It is the ONE section whose reason
+ *     changed rather than whose status did: it was withheld because nothing
+ *     read `gateway.governance_config`, and #218 made the LLM gateway read and
+ *     enforce every enabled row. It stays unavailable HERE because a governance
+ *     corpus is a list of scoped rows and this page is a flat form over one
+ *     value document — the row editor is the only shape that can express it.
  *   - **Maintenance** and **Advanced** — a Pylon request hook and Pylon runtime
  *     introspection respectively. Both endpoints now answer 501 rather than
  *     200-with-empty.

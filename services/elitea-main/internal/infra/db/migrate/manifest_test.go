@@ -129,7 +129,21 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// of pre-built MCP servers. It replaces the indexer_worker plugin
 	// descriptor block that pylon distributes over the Arbiter event bus, which
 	// this service has no way to read.
-	require.EqualValues(t, 92, Head(shared))
+	//
+	// This is the number 0093's header said it had yielded. The gap it recorded
+	// is closed by this merge: 92 and 93 are both present, so `requireComplete`
+	// has both to find and neither branch had to renumber.
+	//
+	// A database that already applied 93 picks 92 up on its next run. That is
+	// allowed on purpose — validateRecordedLedger checks version MEMBERSHIP,
+	// name and checksum, never monotonic order — so filling a gap behind an
+	// applied migration is not the "database ahead" fault it resembles.
+	// 93: shared/0093_governance_config_type_check.sql, which constrains
+	// gateway.governance_config.type to the value set every reader switches on,
+	// and carries the correction 0067's checksum-immutable header could not: the
+	// gateway now DOES read this table (#218). The constraint is NOT VALID so an
+	// existing row with an unknown type does not fail the release.
+	require.EqualValues(t, 93, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

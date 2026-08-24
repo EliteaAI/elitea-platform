@@ -93,6 +93,21 @@ env:
   # exhausted budget; raise it to cut budget reads. A non-positive or
   # unparsable value keeps the 15 s default.
   LLM_REALTIME_BUDGET_RECHECK_SEC: "15"
+  # How often the gateway re-reads the authored governance definitions from
+  # gateway.governance_config (issue #218). It is the bound on how long an
+  # operator waits between saving a definition on /admin/gateway/governance and
+  # this gateway enforcing it.
+  #
+  # There is NO event-driven reload. The poll is the only path, on purpose: a
+  # replica that missed an event because it was starting, or because NATS was
+  # down, must still converge. Lower it to shorten the wait; raise it to cut one
+  # small SELECT per replica per interval. A non-positive or unparsable value
+  # keeps the 30 s default.
+  #
+  # GET /governance/status on the internal listener reports the snapshot's
+  # loaded_at, every row the gateway REJECTED, and every row that loaded but can
+  # match nothing. Read it before concluding a rule is not working.
+  LLM_GOVERNANCE_REFRESH_SEC: "30"
   # Ceiling on concurrent realtime sessions per replica; the per-project cap is
   # this divided by 8 (floor 1). Each session pins four goroutines and two open
   # sockets for as long as the caller talks, and a hijacked connection has its

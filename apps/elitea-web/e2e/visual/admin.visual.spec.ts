@@ -286,6 +286,23 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     landmark: (page) => page.getByRole('switch', { name: 'Enable MCP' }),
   },
   {
+    // @covers /admin/app/governance
+    name: 'admin-governance',
+    path: '/admin/app/governance',
+    // The seeded `budget_alert` row's name cell.
+    //
+    // NOT the DataGrid's no-rows label, which was the first choice and was
+    // wrong: this stack seeds one governance row (the #322 platform soft-alert
+    // config), so that label never renders and the landmark could not resolve.
+    // NOT the propagation Alert either — it states a property of the GATEWAY,
+    // not of the query, so it is present in the loading frame too and would
+    // pin a loading state as the reference (#159, #174).
+    //
+    // A cell of a seeded row is the one thing here that proves the list query
+    // RESOLVED. Measured: loaded YES, stalled no.
+    landmark: (page) => page.getByRole('gridcell', { name: 'global', exact: true }),
+  },
+  {
     // @covers /admin/app/service-descriptors
     name: 'admin-service-descriptors',
     path: '/admin/app/service-descriptors',

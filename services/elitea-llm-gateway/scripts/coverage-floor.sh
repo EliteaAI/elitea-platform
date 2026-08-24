@@ -18,6 +18,12 @@ PROFILE="${1:-coverage.out}"
 # 84.2%) by coverage_boost_test.go; floor now 85 with headroom.
 declare -a FLOORS=(
   "internal/governance:93"
+  # internal/policy is the authored-governance enforcement plane (#218): model
+  # and MCP allowlists, rate limits, credential rate policy and CEL routing. It
+  # decides what a request is ALLOWED to do, so it belongs on this list for the
+  # same reason the budget gate does. Floor set just below the level it landed
+  # at (87.2%).
+  "internal/policy:85"
   "internal/llmproxy:85"
   "internal/failmode:88"
   "internal/cost:94"

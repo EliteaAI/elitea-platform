@@ -44,7 +44,9 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/server"
 )
 
@@ -249,6 +251,63 @@ func main() {
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
 	mux.HandleFunc("/readyz", makeReadyzHandler(govStore, unwired))
+
+	// The authored-governance plane (issue #218). It is a SEPARATE wiring from
+	// the budget engine above and has different preconditions:
+	//
+	//   - It needs only a DATABASE POOL. A gateway with no NATS still enforces
+	//     model allowlists, MCP allowlists, routing rules and rate policy; only
+	//     the per-minute rate limits need a counter.
+	//   - It survives a NATS-less deployment, which the budget engine does not.
+	//
+	// Wiring them together would have made every authored control depend on
+	// NATS, which is how the definitions came to be enforced nowhere.
+	var (
+		policyStore   *policy.Store
+		policyLimiter *policy.Limiter
+	)
+	if pool != nil {
+		policyStore = policy.NewStore(policy.Config{
+			DB:              policy.NewPoolQuerier(pool),
+			Logger:          logger,
+			RefreshInterval: cfg.GovernanceRefresh,
+		})
+		// Start performs the FIRST load synchronously, so the gateway is
+		// enforcing what an operator authored before it serves a request.
+		policyStore.Start(ctx)
+
+		if rc, ok := nc.(policy.RateCounter); ok && nc != nil {
+			policyLimiter = policy.NewLimiter(policy.LimiterConfig{
+				Counter: rc,
+				Subject: nats.RateLimitSubject,
+				Logger:  logger,
+			})
+			logger.Info("GOVERNANCE ENFORCEMENT ENABLED: authored definitions are read from "+
+				"gateway.governance_config, and per-minute rate limits run on the shared NATS counter",
+				"refresh", cfg.GovernanceRefresh)
+		} else {
+			logger.Warn("GOVERNANCE RATE LIMITS DISABLED: no NATS counter is available, so an authored " +
+				"tokens_per_min or requests_per_min ceiling is loaded and NOT enforced. Every other authored " +
+				"control — model allowlists, MCP allowlists, routing rules, rate policy — is in force. " +
+				"GET /governance/status reports this as rate_limits_enforceable=false")
+		}
+		var usage llmproxy.BudgetUsageReader
+		if govStore != nil {
+			usage = govStore
+			// An authored budget row becomes the FALLBACK ceiling for a project
+			// with no gateway.project_budget row. Without this the budget rows
+			// on the governance page would load, appear in /governance/status,
+			// and gate nothing — the same shape of gap the whole issue is about.
+			govStore.SetBudgetDefaults(policyBudgetDefaults{store: policyStore})
+		}
+		budgetOpts = append(budgetOpts, llmproxy.WithGovernancePolicy(policyStore, policyLimiter, usage))
+	} else {
+		logger.Warn("GOVERNANCE ENFORCEMENT DISABLED: no database pool, so no authored governance definition " +
+			"is read or enforced")
+	}
+
+	// The operator's answer to "is the rule I saved actually in force?".
+	mux.HandleFunc("/governance/status", makeGovernanceStatusHandler(policyStore, policyLimiter))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert

@@ -238,6 +238,13 @@ func validateGovernanceRow(row GovernanceRow) error {
 	if strings.TrimSpace(row.Name) == "" {
 		return errors.New("name is required")
 	}
+	// The scope check runs for EVERY type, before the type switch. A scope the
+	// gateway cannot evaluate makes the row inert whatever it carries, so
+	// refusing it once here beats repeating the check in each branch and
+	// missing one.
+	if err := validateGovernanceScope(row.Data); err != nil {
+		return err
+	}
 	switch row.Type {
 	case "routing_rule":
 		return validateRoutingRule(row.Data)
@@ -245,6 +252,30 @@ func validateGovernanceRow(row GovernanceRow) error {
 		return validateBudgetAlertData(row.Data)
 	}
 	return nil
+}
+
+// validateGovernanceScope refuses a scope this platform cannot evaluate.
+//
+// `scope.team_ids` names teams. There are none: no migration creates a teams
+// table and no /llm request carries a team, so the gateway marks such a row
+// INERT — it loads, it appears in the list, and it can never match. Refusing it
+// on write is the difference between an operator learning that now and learning
+// it after an incident in which the rule they trusted did nothing.
+//
+// The admin schema no longer offers the field. This check is what covers the
+// paths the schema does not: the REST API, a database restore, and any older
+// client still sending it.
+func validateGovernanceScope(data map[string]any) error {
+	scope, ok := data["scope"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	teams, ok := scope["team_ids"].([]any)
+	if !ok || len(teams) == 0 {
+		return nil
+	}
+	return errors.New("scope.team_ids is not supported: this platform has no teams, so a team-scoped " +
+		"governance entry could never match a request. Scope the entry by project instead")
 }
 
 // validateBudgetAlertData rejects a global soft-alert row this surface would

@@ -68,17 +68,30 @@ const (
 
 	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
 	// through this endpoint even in the reference: elitea-main has its own CRUD
-	// at `/admin/gateway/governance` writing `gateway.governance_config`. That
-	// surface is real, but nothing reads it — see internal/api/gateway/governance.go
-	// and the note in the PR: the gateway's GovernanceStore never queries the
-	// table, despite two artefacts claiming that it does. #466 corrected the
-	// second claim, in governanceSection() below. The first claim is still in
-	// the header of migrations/shared/0067_gateway_budget_schema.sql; that file
-	// is checksum-immutable once applied (internal/infra/db/migrate/manifest.go),
-	// so a later migration, not an edit, must carry the correction. #218 owns it.
+	// at `/admin/gateway/governance` writing `gateway.governance_config`, and
+	// the SPA's page for it is `pages/admin/GatewayGovernance.tsx`.
+	//
+	// The reason this section is unavailable has CHANGED, and the change is the
+	// point of #218. It used to be withheld because nothing read the table: the
+	// gateway's budget engine never queried it, so a rule saved anywhere was
+	// enforced nowhere. That is no longer true — the gateway now reads every
+	// enabled row and enforces it on the /llm path (elitea-llm-gateway
+	// internal/policy). The section stays unavailable HERE for the narrower and
+	// older reason: this page is a flat form over one value document, and a
+	// governance corpus is a list of rows with per-row scope. The row editor is
+	// the surface that can express that; this form is not.
+	//
+	// The stale claim in the header of
+	// migrations/shared/0067_gateway_budget_schema.sql — which said the gateway
+	// reads these rows at load, and was wrong when it was written — has become
+	// accurate by the gateway catching up with it. Migration 0093 records that,
+	// because 0067 is checksum-immutable once applied
+	// (internal/infra/db/migrate/manifest.go) and cannot be edited.
 	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
-		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
-		"saved through either surface are not enforced."
+		"page, because a governance corpus is a list of scoped rows and this page is a flat form over a single " +
+		"value document. Definitions saved there ARE enforced: the LLM gateway reads gateway.governance_config and " +
+		"applies budgets, rate limits, model and MCP allowlists, credential rate policy and CEL routing rules on " +
+		"every /llm request."
 
 	// serviceDescriptorsElsewhereUnavailable — the section is unavailable for
 	// the SAME reason its own page is, and says so in the same words.
@@ -671,29 +684,43 @@ func litellmSection() map[string]any {
 // governance CRUD routes (§4) — this attribute is convenience only.
 //
 // All values authored here are DEFINITIONS written to the global
-// gateway.governance_config table. NOTHING READS THEM. `grep -rn
-// governance_config services/elitea-llm-gateway` returns no hit, and the
-// gateway's GovernanceStore is constructed with no pool, so no definition
-// written through this schema or through /admin/gateway/governance reaches an
-// admission check. Budget limits are USD numbers (§5.1); a gateway that begins
-// to read them must scale them to nano-USD for counter comparison.
+// gateway.governance_config table, and the gateway now enforces them.
 //
-// This comment asserted the opposite until #466, while
-// governanceElsewhereUnavailable (this file, ~line 70) denied it. The denial was
-// correct. The `description` below carried the same false assertion into the
-// admin-page payload, where an operator read it, authored a rule, and believed a
-// limit was in force.
+// The history matters, because this comment has been wrong in both directions.
+// It first asserted enforcement that did not exist while
+// governanceElsewhereUnavailable (this file, ~line 70) correctly denied it;
+// #466 removed the false assertion, and an operator had by then authored a rule
+// and believed a limit was in force. #218 closed the gap the other way round —
+// the gateway reads the table now (elitea-llm-gateway internal/policy), so the
+// two statements agree again, on the other value.
 //
-// Do not restore an enforcement claim in either place. Issue #218 owns the
-// decision about whether the gateway must read this table, and the two
-// statements are pinned together by TestGovernanceSchemaMakesNoEnforcementClaim
-// in config_schemas_claims_internal_test.go.
+// Budget limits are USD numbers (§5.1). The gateway scales them to nano-USD at
+// the counter boundary and nowhere earlier; the three denominations in §5.1 are
+// not interchangeable.
+//
+// FOUR CONTROLS ARE ENFORCED WITH A CAVEAT, and the caveat belongs with the
+// schema rather than in a release note:
+//
+//   - A token rate limit is applied to the request AFTER the one that crossed
+//     it, because a request's token cost is unknown until the provider answers.
+//   - Rate limits need the gateway's NATS counter. Without it they load and do
+//     nothing; the gateway's GET /governance/status reports that.
+//   - `scope.team_ids` is not offered and is rejected on write: this platform
+//     has no teams for it to name.
+//   - A CEL rule may not reference team_id, tokens_used, complexity_tier or
+//     headers. The gateway cannot supply them, and a rule that names one is
+//     refused here rather than accepted and never matched — see
+//     unevaluableCELVariables in routing_cel.go.
+//
+// The claim in this comment, in the `description` below and in
+// governanceElsewhereUnavailable are pinned together by the guards in
+// config_schemas_claims_internal_test.go. Keep all three true at once.
 func governanceSection() map[string]any {
 	return map[string]any{
 		"id":                  "governance",
 		"unavailable_reason":  governanceElsewhereUnavailable,
 		"title":               "LLM Governance",
-		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are stored, but the gateway does not enforce them yet.",
+		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are enforced by the LLM gateway on every request.",
 		"order":               5,
 		"icon":                "policy",
 		"required_permission": "configuration.governance",
@@ -817,17 +844,6 @@ func governanceSection() map[string]any {
 				"section":     "governance",
 				"default":     []any{},
 				"enum_source": "projects",
-			},
-			{
-				"key":         "scope_team_ids",
-				"type":        "array",
-				"items":       map[string]any{"type": "integer"},
-				"title":       "Scoped Teams",
-				"description": "Teams this governance entry applies to. Empty means all teams.",
-				"path":        "scope.team_ids",
-				"section":     "governance",
-				"default":     []any{},
-				"enum_source": "gateway_teams",
 			},
 			// --- MCP allowlist ---
 			{

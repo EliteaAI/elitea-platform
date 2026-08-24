@@ -20,6 +20,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 )
 
 // billingCtxTimeout is the deadline for the background billing context used
@@ -268,6 +269,14 @@ func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode ad
 				}
 			}
 		}
+	}
+
+	// The authored per-minute ceilings run next, and BEFORE the budget gate.
+	// Both are reads, so the order is not about cost: a request over its rate
+	// limit must be refused as a rate limit, and letting the budget gate answer
+	// first would report the wrong reason whenever a project is over both.
+	if v := h.rateVerdict(ctx, model, mode); !v.allow {
+		return v
 	}
 
 	if h.budgetGate == nil {
@@ -630,7 +639,35 @@ func (h *Handler) updateUsageUnits(
 			"metric", MetricAudioDefaultPriced)
 	}
 
-	if actualCost.TotalNanoUSD <= 0 {
+	// The authored credential rate policy decides whether this cost reaches the
+	// counter at all (policy_gate.go). It runs AFTER pricing on purpose: the
+	// price is what an operator sees in the ledger for a zero-rated request,
+	// and skipping the lookup would make a zero-rate-metered row indistinguishable
+	// from a genuinely free one.
+	ratePolicy := h.ratePolicyFor(ctx, provider, model)
+	switch ratePolicy {
+	case policy.RatePolicyExcluded:
+		h.logger.DebugContext(ctx, "governance: the authored rate policy excludes this usage from accounting",
+			"provider", provider, "model", model, "cost_nano", actualCost.TotalNanoUSD)
+		// The tokens still count toward the rate limit. `excluded` is a BILLING
+		// treatment, not an exemption from the ceilings that protect the
+		// platform from load.
+		h.recordPolicyTokens(ctx, provider, model, u.InputTokens+u.OutputTokens, now)
+		return billNotBillable
+	case policy.RatePolicyZeroRateMetered:
+		h.logger.DebugContext(ctx, "governance: the authored rate policy meters this usage at zero cost",
+			"provider", provider, "model", model, "priced_nano", actualCost.TotalNanoUSD)
+		actualCost.TotalNanoUSD = 0
+	}
+
+	// The completed request's tokens go onto its rate-limit window. This is the
+	// only place the authoritative token count is known.
+	h.recordPolicyTokens(ctx, provider, model, u.InputTokens+u.OutputTokens, now)
+
+	// A zero-rate-metered request continues past this guard deliberately: it
+	// must still produce a ledger row, which is the whole difference between
+	// `zero-rate-metered` and `excluded`. The counter moves by zero.
+	if actualCost.TotalNanoUSD <= 0 && ratePolicy != policy.RatePolicyZeroRateMetered {
 		return billNotBillable // nothing to bill
 	}
 

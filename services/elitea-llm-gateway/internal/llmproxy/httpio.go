@@ -3,6 +3,7 @@ package llmproxy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +31,30 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
 		return false
 	}
 	return true
+}
+
+// decodeJSONRaw decodes the body AND returns the bytes it decoded.
+//
+// It exists for the MCP allowlist, which must see the request as the caller
+// wrote it. Decoding into a bifrost request type drops any tool entry bifrost
+// does not model, so a check built on the decoded value would be blind to
+// exactly the servers it is supposed to judge (policy.MCPServersFromRequest).
+//
+// Buffering is safe and bounded: MaxBytesReader already caps the body at
+// maxRequestBody before a byte is read, and the same cap applied to the
+// streaming decode this replaces.
+func decodeJSONRaw(w http.ResponseWriter, r *http.Request, dst interface{}) ([]byte, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	raw, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error(), "")
+		return nil, false
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error(), "")
+		return nil, false
+	}
+	return raw, true
 }
 
 // writeJSON applies response-header hygiene, sets the JSON content type, writes

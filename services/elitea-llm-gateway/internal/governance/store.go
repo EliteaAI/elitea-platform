@@ -61,6 +61,38 @@ type GovernanceStore struct {
 	// and set Params.OutageExceededMax = true to force FORCED_CLOSED.
 	brkMu         sync.RWMutex
 	breakerOpenAt time.Time // zero means breaker is not open
+
+	// defaults supplies an AUTHORED fallback ceiling for a project that has no
+	// gateway.project_budget row (issue #218). nil means the old behaviour: no
+	// row is unlimited.
+	//
+	// It can only make the decision STRICTER. The branch it feeds is the one
+	// that used to return "unlimited, always allow", so a project gains a
+	// ceiling it did not have and never loses one it did — the fallback cannot
+	// override a real project_budget row, because that branch is only reached
+	// when there is none.
+	defaults BudgetDefaults
+}
+
+// BudgetDefaults supplies the authored global budget for a project with no
+// per-project row. *policy.Snapshot answers this through an adapter in the
+// composition root; the interface keeps internal/governance free of a
+// dependency on the definition plane.
+type BudgetDefaults interface {
+	// DefaultBudgetNano returns the ceiling in nano-USD, the soft-alert
+	// percentage, and the per-project fail-mode override. ok is false when no
+	// authored budget applies, which restores the unlimited behaviour.
+	DefaultBudgetNano(projectID int) (limitNano int64, softAlertPct int, failMode string, ok bool)
+}
+
+// SetBudgetDefaults arms the authored fallback ceiling. It is called once from
+// the composition root, before the gateway serves, so no request observes a
+// half-wired store.
+func (g *GovernanceStore) SetBudgetDefaults(d BudgetDefaults) {
+	if g == nil {
+		return
+	}
+	g.defaults = d
 }
 
 // NewGovernanceStore assembles a GovernanceStore from the four pre-built
@@ -164,8 +196,25 @@ func (g *GovernanceStore) CheckBudget(
 	snap, snapErr := g.store.ReadSnapshot(ctx, projectID, scope, scopeID, periodStartUnix)
 	if snapErr != nil {
 		if errors.Is(snapErr, failmode.ErrNoBudgetRow) {
-			// No budget config ⇒ unlimited; always allow (except FORCED_CLOSED).
+			// No per-project budget row. Before an authored fallback exists this
+			// is unlimited; with one, the operator's global ceiling applies.
+			//
+			// AccumulatedNano stays 0 and Found stays false, which is what the
+			// FSM already assumes for a budgeted project with no accumulator
+			// row: no spend recorded this period. The authoritative NATS
+			// counter, read above, is what actually gates the request on the
+			// healthy path.
 			snap = failmode.Snapshot{IsUnlimited: true}
+			if g.defaults != nil {
+				if limitNano, softPct, failMode, ok := g.defaults.DefaultBudgetNano(projectID); ok && limitNano > 0 {
+					snap = failmode.Snapshot{
+						IsUnlimited:   false,
+						HardLimitNano: limitNano,
+						SoftAlertPct:  softPct,
+						NatsFailMode:  failmode.FailMode(failMode),
+					}
+				}
+			}
 		} else {
 			// PG read failed and NATS is also down ⇒ Block503 (no data).
 			if !natsUp {
