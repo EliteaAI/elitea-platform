@@ -18,6 +18,7 @@
  *   | Observability / health | **Status** | the gateway's `GET /governance/status` |
  *   | Model Catalog + Pricing Overrides | **Models** | `gateway.gateway_models` + `llm_usage_events` |
  *   | Usage | **Usage** | `gateway.llm_usage_events` |
+ *   | Logs / request inspection | **Logs** | `gateway.llm_request_logs` |
  *   | Providers & keys | **Providers & models** | the public project's shared rows |
  *   | Alerting | **Alerts** | `gateway.governance_config` soft-alert row |
  *
@@ -27,15 +28,17 @@
  * from this platform, and a screen that renders a control over nothing is worse
  * than its absence — it reports success for a setting nothing reads:
  *
- *   - **Logs / request inspection.** No request-log store exists. The only
- *     per-request artefact is `llm_usage_events`, which carries billing
- *     dimensions — provider, model, tokens, requests, cost, time — and no
- *     latency, status code, error or payload. That is enough for the Usage tab
- *     and for the usage columns on the Models tab; it is not enough for a log
- *     viewer, and building one means a new table and a gateway writer before any
- *     screen is worth drawing. A "logs" tab over the ledger would show a list of
- *     successful requests and no failures at all, which is the opposite of what
- *     an operator opens a log for.
+ *   - **Logs / request inspection.** STALE CLAIM, corrected: this said no
+ *     request-log store exists, and that building one "means a new table and a
+ *     gateway writer before any screen is worth drawing". That was the right
+ *     diagnosis and both now exist — shared migration 0099 and the gateway's
+ *     `internal/requestlog`, which records one row per request off the request
+ *     path. The Logs tab reads it.
+ *
+ *     What the tab still cannot show is the PAYLOAD, and that is structural
+ *     rather than pending: the table has no column a prompt, a completion or an
+ *     upstream error string could reach. The tab says so rather than leaving an
+ *     operator to discover it.
  *   - **Providers.** STALE CLAIM, corrected. This said provider credentials
  *     are per-project rows "not global gateway config, so they do not belong on
  *     a platform screen". The premise was half right and the conclusion was
@@ -76,6 +79,7 @@ import { t } from '@/shared/i18n';
 import { LlmProxyAlertsPanel } from './LlmProxyAlertsPanel';
 import { ModelCatalogueTable, UnpricedModelsAlert, UsageWindowSelect } from './LlmProxyModelsPanel';
 import { LlmProxyPriceDialog } from './LlmProxyPriceDialog';
+import { LlmProxyLogsPanel } from './LlmProxyLogsPanel';
 import { LlmProxyProvidersPanel } from './LlmProxyProvidersPanel';
 import { LlmProxyStatusPanel } from './LlmProxyStatusPanel';
 import { LlmProxyUsagePanel } from './LlmProxyUsagePanel';
@@ -90,7 +94,7 @@ import {
   type UsageWindow,
 } from './api/adminLlmProxyApi';
 
-type TabId = 'status' | 'providers' | 'models' | 'usage' | 'alerts';
+type TabId = 'status' | 'providers' | 'models' | 'usage' | 'logs' | 'alerts';
 
 /** What the price dialog is currently open on, if anything. */
 interface PriceEditorState {
@@ -363,6 +367,7 @@ export function AdminLlmProxyEditor() {
         />
         <Tab value="models" label={t('pages.admin.llmProxy.tab.models', 'Models & pricing')} />
         <Tab value="usage" label={t('pages.admin.llmProxy.tab.usage', 'Usage')} />
+        <Tab value="logs" label={t('pages.admin.llmProxy.tab.logs', 'Logs')} />
         <Tab value="alerts" label={t('pages.admin.llmProxy.tab.alerts', 'Budget alerts')} />
       </Tabs>
 
@@ -370,6 +375,7 @@ export function AdminLlmProxyEditor() {
       {tab === 'providers' ? <LlmProxyProvidersPanel /> : null}
       {tab === 'models' ? <ModelsTab /> : null}
       {tab === 'usage' ? <LlmProxyUsagePanel /> : null}
+      {tab === 'logs' ? <LlmProxyLogsPanel /> : null}
       {tab === 'alerts' ? <LlmProxyAlertsPanel /> : null}
     </Box>
   );

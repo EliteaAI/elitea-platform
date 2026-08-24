@@ -485,3 +485,41 @@ adminTest('J34l: platform providers are authored from the admin panel', async ({
 
   await checkA11y(page);
 });
+
+adminTest('J34m: the LLM Proxy request log is authorised and answers', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Logs' }).click();
+
+  // The tab the Usage report cannot be: a billing delta rides only a BILLED
+  // request, so a refusal never reaches the ledger Usage reads. This reads
+  // gateway.llm_request_logs, written by the gateway off the request path.
+  //
+  // Wait on a POSITIVE terminal state. The summary tiles render for an empty
+  // window as well as a busy one, so their presence proves the read COMPLETED —
+  // where asserting only the absence of the error test-ids would pass while the
+  // request was still in flight.
+  await expect(page.getByTestId('llm-logs-summary')).toBeVisible();
+  await expect(page.getByTestId('llm-logs-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-logs-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-logs-summary-error')).toHaveCount(0);
+
+  // Either rows or the explained empty state — both prove the page resolved.
+  await expect(
+    page.getByTestId('llm-logs-table').or(page.getByTestId('llm-logs-empty')),
+  ).toBeVisible();
+
+  // The one thing this screen must always say, whatever the window holds: it
+  // records no prompts and no responses, and has no column that could.
+  await expect(page.getByTestId('llm-logs-no-payload')).toBeVisible();
+
+  // The failures filter narrows SERVER-side; the page is capped there, so a
+  // client-side filter would silently exclude everything past the cap.
+  await page.getByRole('switch', { name: 'Failures only' }).click();
+  await expect(
+    page.getByTestId('llm-logs-table').or(page.getByTestId('llm-logs-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('llm-logs-load-error')).toHaveCount(0);
+
+  await checkA11y(page);
+});
