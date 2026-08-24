@@ -54,7 +54,7 @@ Detailed ledgers:
 
 Maintained Rust runtime ownership registry:
 
-- `src/agents/{native_runtime,assembly,ordinary,pipeline,session,events,sensitive_tools,direct_hitl}.rs`: strict
+- `src/agents/{native_runtime,assembly,ordinary,pipeline,session,events,sensitive_tools,direct_hitl,internal_tools}.rs`: strict
   frozen-kind routing plus direct
   saved-agent and ad-hoc `LlmAgent` admission, common injected
   `SessionService`/Runner composition, request-independent definition lineage,
@@ -89,6 +89,18 @@ Maintained Rust runtime ownership registry:
   Main also admits and atomically consumes a bounded exact complete decision
   set. Independent partial-sibling resume and mixed-guardrail terminal
   aggregation remain closed.
+  The runtime-owned `ask_user` internal tool is admitted explicitly rather
+  than through a configured-tool snapshot. Direct agents, recursively saved
+  direct agents and selected pipeline LLM nodes bind it through native ADK
+  confirmation. Its normalized 1-4 question payload is stored on the ordinary
+  session or graph interrupt, projected as `clarifying_question`, and an
+  `answer` continuation supplies the SDK-compatible text result under the
+  original provider call ID. The answer is never injected as a user turn and
+  the fail-closed tool implementation is never dispatched. Main
+  `agentexecution/{start,adhoc,continue}.go`, the current routes and
+  `agent_chat.sql` now project the bounded selection and canonicalize object or
+  string answers without changing the protobuf. Other internal tools remain
+  separately gated.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
@@ -176,12 +188,16 @@ Maintained Rust runtime ownership registry:
   claim-scoped exact-resource delegated-token map as MCP and returns a merged
   authorization catalog to root, pipeline and recursively saved agents;
 - `src/toolkits/families/openapi/{config,spec,client,tools}.rs`: bounded dynamic
-  OpenAPI 3.x operation materialization from an inline JSON/YAML document,
-  exact selected-operation names/descriptions/schemas, fixed-origin request
-  construction, per-parameter `style`/`explode`/`allowReserved` RFC 3986 query
-  serialization over a raw HTTP URI, API-key, invocation-scoped expiring
-  client-credentials tokens and delegated OAuth modes, and schema-complete guarded
-  tools for native same-call pause/resume. Remote specifications, legacy auth
+  OpenAPI 3.x tool generation from an inline JSON/YAML document. This is not a
+  static catalog: each admitted operation supplies its tool name, description,
+  argument schema, method, path, parameter locations and body contract from the
+  specification, while the toolkit instance supplies the exact base URL and
+  authorization. The invocation client then serializes that operation's data
+  according to the spec. Per-parameter `style`/`explode` and
+  `allowReserved`-conditional RFC 3986 query serialization operate over a raw
+  HTTP URI; API-key, invocation-scoped expiring client-credentials and
+  delegated OAuth modes produce schema-complete guarded tools for native
+  same-call pause/resume. Remote specifications, legacy auth
   objects, rich OAuth discovery/DCR, runtime 401 re-authorization, non-JSON
   bodies and artifact/binary routing remain closed;
 - `src/toolkits/families/sharepoint/{config,client,tools}.rs`: delegated Azure

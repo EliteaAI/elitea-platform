@@ -409,7 +409,7 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 			return
 		}
 		if len(decisions) == 0 {
-			value, valid := currentHITLStringValue(body.HITLValue)
+			value, valid := currentHITLValue(body.HITLAction, body.HITLValue)
 			if !currentRootHITLAction(body.HITLAction) || !valid {
 				writeUnsupported(writer)
 				return
@@ -533,7 +533,7 @@ func currentJSONArray(raw json.RawMessage) bool {
 
 func currentRootHITLAction(action string) bool {
 	switch action {
-	case "approve", "reject", "edit", "block_with_comment":
+	case "approve", "reject", "edit", "block_with_comment", "answer":
 		return true
 	default:
 		return false
@@ -549,6 +549,26 @@ func currentHITLStringValue(raw json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func currentHITLValue(action string, raw json.RawMessage) (string, bool) {
+	if action != "answer" {
+		return currentHITLStringValue(raw)
+	}
+	trimmed := bytes.TrimSpace(raw)
+	if !json.Valid(trimmed) || len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) ||
+		(trimmed[0] != '{' && trimmed[0] != '"') {
+		return "", false
+	}
+	var decoded any
+	if json.Unmarshal(trimmed, &decoded) != nil {
+		return "", false
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		return "", false
+	}
+	return string(canonical), true
 }
 
 func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLDecision, bool) {
@@ -576,8 +596,12 @@ func currentHITLDecisions(raw json.RawMessage) ([]agentexecutionapp.CurrentHITLD
 		if value, exists := object["tool_call_id"]; exists && json.Unmarshal(value, &decision.ToolCallID) != nil {
 			return nil, false
 		}
-		if value, exists := object["value"]; exists && json.Unmarshal(value, &decision.Value) != nil {
-			return nil, false
+		if value, exists := object["value"]; exists {
+			var valid bool
+			decision.Value, valid = currentHITLValue(decision.Action, value)
+			if !valid {
+				return nil, false
+			}
 		}
 		decisions = append(decisions, decision)
 	}

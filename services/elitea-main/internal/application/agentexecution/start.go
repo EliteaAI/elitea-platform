@@ -69,6 +69,7 @@ type CurrentApplicationTarget struct {
 	Variables            json.RawMessage
 	VersionDetails       json.RawMessage
 	ChatHistory          json.RawMessage
+	InternalTools        json.RawMessage
 }
 
 type CurrentApplicationResolver interface {
@@ -167,7 +168,8 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if request.ProjectID > math.MaxInt32 || request.ActorUserID > math.MaxInt32 ||
 		target.ApplicationID <= 0 || target.ApplicationVersionID <= 0 ||
 		!validJSONArray(target.Variables) || !validJSONObject(target.VersionDetails) ||
-		!validJSONArray(target.ChatHistory) {
+		!validJSONArray(target.ChatHistory) ||
+		(len(target.InternalTools) != 0 && !validJSONArray(target.InternalTools)) {
 		return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
 	}
 	frozenVersion, err := service.freezer.FreezeCurrentApplicationVersion(
@@ -256,6 +258,10 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, err
 	}
+	internalTools, err := currentRuntimeInternalTools(target.InternalTools)
+	if err != nil {
+		return nil, err
+	}
 	threadID := request.ConversationUUID
 	conversationID := request.ConversationUUID
 	executionGeneration := request.QuestionID
@@ -266,7 +272,7 @@ func currentApplicationInput(
 		// thread; it does not replace the current chat-history projection.
 		Llm: llm, ChatHistory: bytes.Clone(target.ChatHistory),
 		UserInput: userInput, ThreadId: &threadID, Tools: []byte(`[]`),
-		Application: application, InternalTools: []byte(`[]`),
+		Application: application, InternalTools: internalTools,
 		McpTokens: []byte(`{}`), IgnoredMcpServers: []byte(`[]`),
 		UserDeclinedMcpServers: []byte(`[]`), HitlDecisions: []byte(`[]`),
 		ExecutionGeneration: &executionGeneration, Meta: []byte(`{}`),
@@ -276,6 +282,34 @@ func currentApplicationInput(
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 	}, nil
+}
+
+func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 {
+		return []byte(`[]`), nil
+	}
+	var configured []string
+	if !validJSONArray(raw) || json.Unmarshal(raw, &configured) != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	selected := make([]string, 0, 1)
+	for _, name := range configured {
+		switch name {
+		case "internal_mcp":
+			// Internal MCP is materialized through the frozen tools projection.
+		case "ask_user":
+			if len(selected) == 0 {
+				selected = append(selected, name)
+			}
+		default:
+			return nil, ErrUnsupportedCurrentAgentStart
+		}
+	}
+	encoded, err := json.Marshal(selected)
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	return encoded, nil
 }
 
 func (service *CurrentApplicationStartService) resolveNextInputSuggestionPolicy(

@@ -200,6 +200,8 @@ impl OrdinaryNativeAgentAssembler {
             mcp_tokens,
         )
         .await?;
+        let internal_tools = profile.internal_tools();
+        toolsets.extend(internal_tools.toolsets());
         let mut application_runtime = ApplicationRuntimeProjection::default();
         if let Some(materialized) = materialize_application_toolset(
             tool_snapshot,
@@ -225,7 +227,11 @@ impl OrdinaryNativeAgentAssembler {
             );
         }
         tracing::Span::current().record("materialized_toolset_count", toolsets.len());
-        let fresh_execution_mode = if application_only && sensitive_tools.is_empty() {
+        let fresh_execution_mode = if application_only
+            && sensitive_tools.is_empty()
+            && delegated_authorization.is_empty()
+            && internal_tools.is_empty()
+        {
             NativeToolExecutionMode::ParallelApplications
         } else {
             NativeToolExecutionMode::Sequential
@@ -236,7 +242,8 @@ impl OrdinaryNativeAgentAssembler {
                 sensitive_tools,
                 delegated_authorization,
                 application_runtime,
-            ),
+            )
+            .with_internal_tools(internal_tools),
             fresh_execution_mode,
         ))
     }

@@ -139,6 +139,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		Variables:      json.RawMessage(`[{"name":"region","value":"eu"}]`),
 		VersionDetails: json.RawMessage(`{"id":41,"application_id":31,"agent_type":"agent","instructions":"Be concise","llm_settings":{"model_name":"test"},"meta":{},"tools":[]}`),
 		ChatHistory:    json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"earlier"}],"additional_kwargs":{}}]`),
+		InternalTools:  json.RawMessage(`["internal_mcp","ask_user"]`),
 	}}
 	admittedAt := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
 	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
@@ -189,6 +190,7 @@ func TestCurrentApplicationStartBuildsAuthoritativeParityInputAndTurn(t *testing
 		!bytes.Equal(submitted.Input.GetUserInput(), []byte(`"hello"`)) ||
 		!bytes.Equal(submitted.Input.GetLlm(), []byte(`{"kwargs":{"openai_compatible":false}}`)) ||
 		!bytes.Equal(submitted.Input.GetChatHistory(), resolver.target.ChatHistory) ||
+		!bytes.Equal(submitted.Input.GetInternalTools(), []byte(`["ask_user"]`)) ||
 		!bytes.Equal(submitted.Input.GetMcpTokens(), []byte(`{}`)) {
 		t.Fatalf("agent input drifted: %+v", submitted.Input)
 	}

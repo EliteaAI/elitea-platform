@@ -29,6 +29,10 @@ use super::graph::{
     PIPELINE_COMPLETED_METADATA_VALUE, PIPELINE_NODE_METADATA_KEY, PRINTER_PAUSE_METADATA_KEY,
     PipelineLlmReplayEnvelope, PipelineNodeEventScope, PrinterPauseMetadata,
 };
+use super::internal_tools::{
+    ASK_USER_ANSWER_ACTION, ASK_USER_GUARDRAIL_TYPE, ASK_USER_METADATA_KEY, ASK_USER_TOOL_NAME,
+    decode_ask_user_request,
+};
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::protocol::ProtocolError;
 use crate::protocol::elitea::runtime::v1::NodeEventV1;
@@ -50,9 +54,11 @@ const MAX_TOOL_EVENT_VALUE_BYTES: usize = 40 * 1_024;
 const PIPELINE_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-hitl-interrupt.v1\0";
 const PIPELINE_TOOL_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-tool-hitl-interrupt.v1\0";
 const PIPELINE_MCP_AUTH_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-mcp-auth-interrupt.v1\0";
+const PIPELINE_CLARIFYING_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-clarifying-interrupt.v1\0";
 const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
 const PIPELINE_TOOL_HITL_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
 const PIPELINE_MCP_AUTH_SCHEMA: &str = "elitea.graph.mcp-authorization.v1";
+const PIPELINE_CLARIFYING_SCHEMA: &str = "elitea.graph.clarifying-question.v1";
 const MAX_PIPELINE_HITL_MESSAGE_BYTES: usize = 8 * 1024;
 const MAX_NESTED_PIPELINE_CHECKPOINTS: usize = 3;
 const MAX_PIPELINE_INTERRUPT_MESSAGE_BYTES: usize = MAX_PIPELINE_HITL_MESSAGE_BYTES
@@ -732,7 +738,9 @@ impl AgentEventProjector {
             return Err(AgentEventProjectionError::invalid_state());
         }
         if event.actions.tool_confirmation.is_some() {
-            let batch = if event
+            let batch = if event.provider_metadata.contains_key(ASK_USER_METADATA_KEY) {
+                self.project_clarifying_question(event)?
+            } else if event
                 .provider_metadata
                 .contains_key(DELEGATED_AUTHORIZATION_METADATA_KEY)
             {
@@ -910,6 +918,7 @@ impl AgentEventProjector {
             "pipeline_hitl" => self.project_pipeline_hitl(event, &payload),
             "sensitive_tool" => self.project_pipeline_tool_confirmation(event, &payload),
             "mcp_auth" => self.project_pipeline_mcp_authorization(event, &payload),
+            ASK_USER_GUARDRAIL_TYPE => self.project_pipeline_clarifying_question(event, &payload),
             "application_sensitive_tool" => {
                 self.project_pipeline_application_confirmation(event, &payload)
             }
@@ -1024,6 +1033,87 @@ impl AgentEventProjector {
             }],
             "node_name": "sensitive_tool_guard",
             "available_actions": ["approve", "reject", "block_with_comment"],
+            "routes": {},
+            "edit_state_key": Value::Null,
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "agent_hitl_interrupt",
+            &Value::String(message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    fn project_clarifying_question(
+        &mut self,
+        event: &Event,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        validate_confirmation_event(event, &self.context.root_agent_name)?;
+        if !matches!(self.state, ProjectionState::Complete(_)) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let request = event
+            .actions
+            .tool_confirmation
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let call_id = request
+            .function_call_id
+            .as_deref()
+            .filter(|value| valid_tool_identity(value))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if request.tool_name != ASK_USER_TOOL_NAME {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_tool_event_value(&request.args)?;
+        let _active = self
+            .active_tools
+            .get(call_id)
+            .filter(|active| active.name == request.tool_name && active.arguments == request.args)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let questions = event
+            .provider_metadata
+            .get(ASK_USER_METADATA_KEY)
+            .and_then(|value| decode_ask_user_request(value))
+            .filter(|value| value.matches_arguments(&request.args))
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let (interrupt_id, call_digest) = sensitive_call_identity(
+            &event.invocation_id,
+            call_id,
+            &request.tool_name,
+            &request.args,
+        )
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        let message = questions.message().to_owned();
+        let question_values = questions.questions_value();
+        let tool_args = questions.arguments_value();
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "message": message,
+            "hitl_interrupt": true,
+            "hitl_interrupts": [{
+                "type": "hitl",
+                "interrupt_id": interrupt_id,
+                "call_digest": call_digest,
+                "guardrail_type": ASK_USER_GUARDRAIL_TYPE,
+                "node_name": ASK_USER_TOOL_NAME,
+                "message": message,
+                "questions": question_values,
+                "available_actions": [ASK_USER_ANSWER_ACTION],
+                "routes": {},
+                "tool_call_id": call_id,
+                "tool_name": ASK_USER_TOOL_NAME,
+                "toolkit_name": ASK_USER_TOOL_NAME,
+                "toolkit_type": "internal",
+                "tool_args": tool_args,
+            }],
+            "node_name": ASK_USER_TOOL_NAME,
+            "available_actions": [ASK_USER_ANSWER_ACTION],
             "routes": {},
             "edit_state_key": Value::Null,
         });
@@ -1349,6 +1439,87 @@ impl AgentEventProjector {
         batch.push(self.event(
             "mcp_authorization_required",
             &Value::String(data.message),
+            None,
+            &metadata,
+            event.timestamp,
+        )?)?;
+        self.state = ProjectionState::Paused;
+        Ok(batch)
+    }
+
+    fn project_pipeline_clarifying_question(
+        &mut self,
+        event: &Event,
+        payload: &GraphInterruptPayload,
+    ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
+        if !matches!(
+            self.state,
+            ProjectionState::Started | ProjectionState::Complete(_)
+        ) {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let checkpoint_thread_id = self
+            .context
+            .graph_checkpoint_thread_id
+            .as_deref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        let binding = pipeline_clarifying_event_binding_from_payload(
+            event,
+            payload,
+            &self.context.root_agent_name,
+            checkpoint_thread_id,
+        )?;
+        let active = self
+            .active_tools
+            .get(binding.tool_call_id())
+            .filter(|active| active.name == binding.tool_name())
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if !binding
+            .llm_replay()
+            .matches_pending_call(
+                binding.tool_call_id(),
+                binding.tool_name(),
+                &active.arguments,
+            )
+            .map_err(|_| AgentEventProjectionError::invalid_state())?
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        let data = binding.data;
+        let message = data.message.clone();
+        let pending = json!({
+            "type": "hitl",
+            "interrupt_id": binding.interrupt_id,
+            "call_digest": binding.call_digest,
+            "guardrail_type": ASK_USER_GUARDRAIL_TYPE,
+            "node_name": data.node_name,
+            "message": data.message,
+            "questions": data.questions,
+            "available_actions": [ASK_USER_ANSWER_ACTION],
+            "routes": {},
+            "tool_call_id": data.tool_call_id,
+            "tool_name": ASK_USER_TOOL_NAME,
+            "toolkit_name": ASK_USER_TOOL_NAME,
+            "toolkit_type": "internal",
+            "tool_args": data.tool_args,
+            "definition_digest": data.definition_digest,
+            "argument_digest": data.argument_digest,
+        });
+        let metadata = json!({
+            "thread_id": self.context.thread_id,
+            "chat_project_id": self.context.chat_project_id,
+            "message": message,
+            "hitl_interrupt": pending,
+            "hitl_interrupts": [pending],
+            "node_name": data.node_name,
+            "available_actions": [ASK_USER_ANSWER_ACTION],
+            "routes": {},
+            "edit_state_key": Value::Null,
+        });
+        let mut batch = ProjectedAgentEventBatch::new();
+        batch.push(self.event(
+            "agent_hitl_interrupt",
+            &Value::String(message),
             None,
             &metadata,
             event.timestamp,
@@ -2114,6 +2285,56 @@ struct PipelineToolHitlData {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PipelineClarifyingData {
+    schema_revision: String,
+    #[serde(rename = "type")]
+    interrupt_type: String,
+    guardrail_type: String,
+    node_name: String,
+    message: String,
+    questions: Value,
+    available_actions: Vec<String>,
+    routes: BTreeMap<String, String>,
+    definition_digest: String,
+    tool_call_id: String,
+    tool_name: String,
+    tool_args: Value,
+    argument_digest: String,
+    llm_replay: PipelineLlmReplayEnvelope,
+}
+
+impl PipelineClarifyingData {
+    fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
+        let request = super::internal_tools::AskUserRequest::from_arguments(&self.tool_args)
+            .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        if self.schema_revision != PIPELINE_CLARIFYING_SCHEMA
+            || self.interrupt_type != "hitl"
+            || self.guardrail_type != ASK_USER_GUARDRAIL_TYPE
+            || self.message != graph_message
+            || self.message != request.message()
+            || self.questions != request.questions_value()
+            || self.available_actions != [ASK_USER_ANSWER_ACTION]
+            || !self.routes.is_empty()
+            || !valid_pipeline_node_identity(&self.node_name)
+            || !valid_sha256_label(&self.definition_digest)
+            || !valid_sha256_label(&self.argument_digest)
+            || !valid_tool_identity(&self.tool_call_id)
+            || self.tool_name != ASK_USER_TOOL_NAME
+        {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        self.llm_replay
+            .validate()
+            .map_err(|_| AgentEventProjectionError::invalid_state())?;
+        if self.llm_replay.definition_digest() != self.definition_digest {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        validate_pipeline_hitl_message(&self.message)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PipelineMcpAuthData {
     schema_revision: String,
     #[serde(rename = "type")]
@@ -2274,6 +2495,59 @@ pub(crate) struct PipelineToolHitlEventBinding {
     checkpoint_id: String,
     nested_checkpoints: Vec<NestedPipelineCheckpoint>,
     data: PipelineToolHitlData,
+}
+
+pub(crate) struct PipelineClarifyingEventBinding {
+    interrupt_id: String,
+    call_digest: String,
+    checkpoint_id: String,
+    nested_checkpoints: Vec<NestedPipelineCheckpoint>,
+    data: PipelineClarifyingData,
+}
+
+impl PipelineClarifyingEventBinding {
+    pub(crate) fn interrupt_id(&self) -> &str {
+        &self.interrupt_id
+    }
+
+    pub(crate) fn checkpoint_id(&self) -> &str {
+        &self.checkpoint_id
+    }
+
+    pub(crate) fn pending_node_name(&self) -> &str {
+        self.nested_checkpoints.first().map_or(
+            self.data.node_name.as_str(),
+            NestedPipelineCheckpoint::node_name,
+        )
+    }
+
+    pub(crate) fn nested_checkpoints(&self) -> &[NestedPipelineCheckpoint] {
+        &self.nested_checkpoints
+    }
+
+    pub(crate) fn node_name(&self) -> &str {
+        &self.data.node_name
+    }
+
+    pub(crate) fn definition_digest(&self) -> &str {
+        &self.data.definition_digest
+    }
+
+    pub(crate) fn tool_call_id(&self) -> &str {
+        &self.data.tool_call_id
+    }
+
+    pub(crate) fn tool_name(&self) -> &str {
+        &self.data.tool_name
+    }
+
+    pub(crate) fn argument_digest(&self) -> &str {
+        &self.data.argument_digest
+    }
+
+    pub(crate) const fn llm_replay(&self) -> &PipelineLlmReplayEnvelope {
+        &self.data.llm_replay
+    }
 }
 
 pub(crate) struct PipelineMcpAuthEventBinding {
@@ -2560,6 +2834,16 @@ pub(crate) fn pipeline_tool_event_binding(
     pipeline_tool_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
 }
 
+pub(crate) fn pipeline_clarifying_event_binding(
+    event: &Event,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineClarifyingEventBinding, AgentEventProjectionError> {
+    let payload = GraphInterruptPayload::from_event(event)
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    pipeline_clarifying_event_binding_from_payload(event, &payload, root_agent_name, thread_id)
+}
+
 pub(crate) fn pipeline_mcp_auth_event_binding(
     event: &Event,
     root_agent_name: &str,
@@ -2696,6 +2980,41 @@ fn pipeline_tool_event_binding_from_payload(
     let (interrupt_id, call_digest) =
         pipeline_tool_hitl_identity(&event.invocation_id, payload, &data)?;
     Ok(PipelineToolHitlEventBinding {
+        interrupt_id,
+        call_digest,
+        checkpoint_id: payload.checkpoint_id.clone(),
+        nested_checkpoints,
+        data,
+    })
+}
+
+fn pipeline_clarifying_event_binding_from_payload(
+    event: &Event,
+    payload: &GraphInterruptPayload,
+    root_agent_name: &str,
+    thread_id: &str,
+) -> Result<PipelineClarifyingEventBinding, AgentEventProjectionError> {
+    validate_graph_interrupt_event(event, root_agent_name)?;
+    if payload.kind != "dynamic"
+        || payload.node.is_some()
+        || payload.thread_id != thread_id
+        || !valid_graph_checkpoint_identity(&payload.checkpoint_id)
+    {
+        return Err(AgentEventProjectionError::invalid_state());
+    }
+    let message = payload
+        .message
+        .as_deref()
+        .ok_or_else(AgentEventProjectionError::invalid_state)?;
+    validate_pipeline_interrupt_envelope_message(message)?;
+    let (raw_data, nested_checkpoints) = pipeline_interrupt_data(payload, thread_id)?;
+    let data = serde_json::from_value::<PipelineClarifyingData>(raw_data)
+        .map_err(|_| AgentEventProjectionError::invalid_state())?;
+    validate_pipeline_interrupt_message(message, &data.message, &nested_checkpoints)?;
+    data.validate(&data.message)?;
+    let (interrupt_id, call_digest) =
+        pipeline_clarifying_identity(&event.invocation_id, payload, &data)?;
+    Ok(PipelineClarifyingEventBinding {
         interrupt_id,
         call_digest,
         checkpoint_id: payload.checkpoint_id.clone(),
@@ -2904,6 +3223,15 @@ fn nested_pipeline_interrupt_identity(
         }
         "mcp_auth" => {
             let binding = pipeline_mcp_auth_event_binding_from_payload(
+                event,
+                payload,
+                root_agent_name,
+                root_thread_id,
+            )?;
+            (binding.interrupt_id, binding.call_digest)
+        }
+        ASK_USER_GUARDRAIL_TYPE => {
+            let binding = pipeline_clarifying_event_binding_from_payload(
                 event,
                 payload,
                 root_agent_name,
@@ -3123,6 +3451,39 @@ fn pipeline_mcp_auth_identity(
     let digest = context.finish();
     Ok((
         format!("mcp_auth_g1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
+        format!("sha256:{}", hex(digest.as_ref())),
+    ))
+}
+
+fn pipeline_clarifying_identity(
+    invocation_id: &str,
+    payload: &GraphInterruptPayload,
+    data: &PipelineClarifyingData,
+) -> Result<(String, String), AgentEventProjectionError> {
+    let canonical = canonical_json(
+        payload
+            .data
+            .as_ref()
+            .ok_or_else(AgentEventProjectionError::invalid_state)?,
+    )?;
+    let mut context = digest::Context::new(&digest::SHA256);
+    context.update(PIPELINE_CLARIFYING_DIGEST_DOMAIN);
+    for field in [
+        invocation_id.as_bytes(),
+        payload.thread_id.as_bytes(),
+        payload.checkpoint_id.as_bytes(),
+        data.node_name.as_bytes(),
+        data.definition_digest.as_bytes(),
+        data.tool_call_id.as_bytes(),
+        data.argument_digest.as_bytes(),
+        canonical.as_slice(),
+    ] {
+        context.update(&(field.len() as u64).to_be_bytes());
+        context.update(field);
+    }
+    let digest = context.finish();
+    Ok((
+        format!("hitl_gq1:{}", URL_SAFE_NO_PAD.encode(digest.as_ref())),
         format!("sha256:{}", hex(digest.as_ref())),
     ))
 }

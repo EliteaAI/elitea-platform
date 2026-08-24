@@ -23,7 +23,7 @@ func TestCurrentAdhocStartBuildsCurrentMainChatInputAndTurn(t *testing.T) {
 		Instructions:        "Project chat instructions\n\nUser defaults",
 		Tools:               toolJSON,
 		ChatHistory:         json.RawMessage(`[{"role":"user","content":[{"type":"text","text":"earlier"}],"additional_kwargs":{}}]`),
-		ConversationMeta:    json.RawMessage(`{"persona":"qa","steps_limit":12}`),
+		ConversationMeta:    json.RawMessage(`{"persona":"qa","steps_limit":12,"internal_tools":["internal_mcp","ask_user"]}`),
 	}}
 	admittedAt := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
 	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
@@ -63,7 +63,8 @@ func TestCurrentAdhocStartBuildsCurrentMainChatInputAndTurn(t *testing.T) {
 		input.GetExecutionGeneration() != request.QuestionID ||
 		input.GetPersona() != "qa" || input.GetStepsLimit() != 12 ||
 		!bytes.Equal(input.GetUserInput(), []byte(`"follow up"`)) ||
-		!bytes.Equal(input.GetChatHistory(), resolver.adhocTarget.ChatHistory) {
+		!bytes.Equal(input.GetChatHistory(), resolver.adhocTarget.ChatHistory) ||
+		!bytes.Equal(input.GetInternalTools(), []byte(`["ask_user"]`)) {
 		t.Fatalf("ad-hoc input identity drifted: %+v", input)
 	}
 	var llm map[string]any

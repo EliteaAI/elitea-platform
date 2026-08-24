@@ -32,6 +32,7 @@ use super::graph::{
     PipelineLlmReplayEnvelope, PipelineNodeEventSender, ResolvedApplicationParticipant,
     ResolvedDirectTool, pipeline_node_event_channel, prepare_pipeline_llm_replay,
 };
+use super::internal_tools::{ASK_USER_TOOL_NAME, ASK_USER_TOOLSET_NAME};
 use super::request::AgentExecutionRequest;
 use super::runtime::{
     AssembledNativeAgentInvocation, AuthorizedNativeAssembly, NativeAgentAssembler,
@@ -173,6 +174,14 @@ impl PipelineExecutionProfile {
         self.sensitive_direct_tools.clear();
         self.sensitive_llm_tools.clear();
         for selection in self.definition.llm_tool_selections() {
+            if selection.alias() == ASK_USER_TOOLSET_NAME {
+                if !self.shell.internal_tools().ask_user_enabled()
+                    || selection.tools() != [ASK_USER_TOOL_NAME]
+                {
+                    return Err(invalid_pipeline_tool_scope());
+                }
+                continue;
+            }
             let mut matches = snapshot
                 .iter()
                 .filter(|reference| reference.toolkit_name() == selection.alias());
@@ -419,7 +428,15 @@ impl PipelineNativeAgentAssembler {
             .merge(mcp_delegated_authorization)
             .map_err(|()| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
-        let toolsets = toolsets_by_alias(materialized)?;
+        let mut toolsets = toolsets_by_alias(materialized)?;
+        for toolset in profile.shell().internal_tools().toolsets() {
+            if toolsets
+                .insert(toolset.name().to_owned(), toolset)
+                .is_some()
+            {
+                return Err(invalid_pipeline_tool_scope());
+            }
+        }
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
         let application_runtime =
             context
@@ -447,6 +464,7 @@ impl PipelineNativeAgentAssembler {
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
                 delegated_authorization,
+                ask_user_enabled: profile.shell().internal_tools().ask_user_enabled(),
                 node_events: node_event_sender,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
@@ -643,7 +661,15 @@ impl PipelineNativeAgentAssembler {
             .merge(mcp_delegated_authorization)
             .map_err(|()| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
-        let toolsets = toolsets_by_alias(materialized)?;
+        let mut toolsets = toolsets_by_alias(materialized)?;
+        for toolset in profile.shell().internal_tools().toolsets() {
+            if toolsets
+                .insert(toolset.name().to_owned(), toolset)
+                .is_some()
+            {
+                return Err(invalid_pipeline_tool_scope());
+            }
+        }
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
         let llm_factory = profile.definition().has_llm_nodes().then(|| {
             Arc::new(NativePipelineLlmAgentFactory {
@@ -653,6 +679,7 @@ impl PipelineNativeAgentAssembler {
                 toolsets,
                 sensitive_tools: profile.sensitive_llm_tools(),
                 delegated_authorization,
+                ask_user_enabled: profile.shell().internal_tools().ask_user_enabled(),
                 node_events,
             }) as Arc<dyn PipelineLlmAgentFactory>
         });
@@ -722,6 +749,7 @@ struct NativePipelineLlmAgentFactory {
     toolsets: std::collections::BTreeMap<String, Arc<dyn Toolset>>,
     sensitive_tools: BTreeMap<String, SensitiveToolPolicy>,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    ask_user_enabled: bool,
     node_events: PipelineNodeEventSender,
 }
 
@@ -907,6 +935,14 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         for tool_name in self.delegated_authorization.tool_names() {
             builder = builder.require_tool_confirmation(tool_name);
         }
+        if self.ask_user_enabled
+            && definition.tool_selections().iter().any(|selection| {
+                selection.alias() == ASK_USER_TOOLSET_NAME
+                    && selection.tools() == [ASK_USER_TOOL_NAME]
+            })
+        {
+            builder = builder.require_tool_confirmation(ASK_USER_TOOL_NAME);
+        }
         builder
             .build()
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
@@ -924,6 +960,10 @@ impl PipelineLlmAgentFactory for NativePipelineLlmAgentFactory {
         self.delegated_authorization
             .requirement_for(tool_name)
             .cloned()
+    }
+
+    fn ask_user_enabled(&self, tool_name: &str) -> bool {
+        self.ask_user_enabled && tool_name == ASK_USER_TOOL_NAME
     }
 
     fn event_sender(&self) -> Option<PipelineNodeEventSender> {

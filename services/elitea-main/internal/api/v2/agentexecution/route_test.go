@@ -259,6 +259,25 @@ func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	}
 }
 
+func TestCurrentContinuationRouteCanonicalizesStructuredClarificationAnswer(t *testing.T) {
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-answer", CommandID: "command-answer",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	body := strings.Replace(validCurrentContinuationBody(), `"hitl_action":"edit"`, `"hitl_action":"answer"`, 1)
+	body = strings.Replace(body, `"hitl_value":"delete only merged branches"`, `"hitl_value":{"q2":["Safe","Fast"],"q1":"Staging"}`, 1)
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentContinuationRequest(body))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Action != "answer" || request.Value != `{"q1":"Staging","q2":["Safe","Fast"]}` {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
 func TestCurrentAuthorizationContinuationRouteCarriesExactInvocationAndCredentials(t *testing.T) {
 	if CurrentAuthorizationContinuationContract != "agent.continue.authorization.v1" {
 		t.Fatalf("authorization continuation contract drifted: %q", CurrentAuthorizationContinuationContract)

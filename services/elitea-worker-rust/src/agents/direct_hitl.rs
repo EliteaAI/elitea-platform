@@ -35,6 +35,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::events::{DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY};
+use super::internal_tools::{ASK_USER_METADATA_KEY, AskUserRequest, decode_ask_user_request};
 use super::request::AgentExecutionPayload;
 use super::sensitive_tools::SensitiveToolCatalog;
 use crate::toolkits::{
@@ -45,6 +46,7 @@ use crate::toolkits::{
 
 const MAX_IDENTITY_BYTES: usize = 512;
 const MAX_COMMENT_BYTES: usize = 2_000;
+const MAX_ANSWER_BYTES: usize = 16 * 1_024;
 const MAX_CALL_VALUE_BYTES: usize = 40 * 1_024;
 const MAX_JSON_DEPTH: usize = 64;
 const MAX_DIRECT_HITL_DECISIONS: usize = 16;
@@ -116,6 +118,7 @@ enum DirectHitlAction {
     BlockWithComment,
     Authorize,
     Skip,
+    Answer,
 }
 
 #[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
@@ -123,6 +126,7 @@ enum DirectHitlAction {
 enum DirectGuardrailType {
     SensitiveTool,
     McpAuth,
+    ClarifyingQuestion,
 }
 
 #[derive(Deserialize)]
@@ -147,7 +151,7 @@ pub(crate) struct DirectHitlDecision {
     tool_call_id: Option<String>,
     guardrail_type: Option<DirectGuardrailType>,
     action: DirectHitlAction,
-    comment: Option<String>,
+    value: Option<String>,
 }
 
 /// One atomic Main-authorized decision set.
@@ -316,12 +320,13 @@ impl DirectDelegatedAuthorizationContinuation {
             arguments: request.args.clone(),
             fingerprint: tool_call_fingerprint(&request.tool_name, &request.args),
             decision,
-            denial_comment: None,
+            decision_value: None,
             user_content,
             resume_mode: persisted.mode,
             persisted_result: persisted.result,
             application_route: None,
             delegated_authorization: Some(requirement),
+            clarifying_question: None,
         })
     }
 }
@@ -536,8 +541,16 @@ impl DirectHitlDecision {
         {
             return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
         }
-        let comment = if matches!(raw.action, DirectHitlAction::BlockWithComment) {
-            if raw.value.is_empty() || raw.value.len() > MAX_COMMENT_BYTES {
+        let value = if matches!(
+            raw.action,
+            DirectHitlAction::BlockWithComment | DirectHitlAction::Answer
+        ) {
+            let maximum = if matches!(raw.action, DirectHitlAction::Answer) {
+                MAX_ANSWER_BYTES
+            } else {
+                MAX_COMMENT_BYTES
+            };
+            if raw.value.is_empty() || raw.value.len() > maximum || raw.value.contains('\0') {
                 return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
             }
             Some(raw.value)
@@ -552,12 +565,12 @@ impl DirectHitlDecision {
             tool_call_id: (!raw.tool_call_id.is_empty()).then_some(raw.tool_call_id),
             guardrail_type: raw.guardrail_type,
             action: raw.action,
-            comment,
+            value,
         })
     }
 
     fn raw_value(&self) -> &str {
-        self.comment.as_deref().unwrap_or("")
+        self.value.as_deref().unwrap_or("")
     }
 
     /// Resolve this decision against the latest persisted ADK confirmation.
@@ -624,7 +637,7 @@ impl DirectHitlDecision {
         if matching_calls != 1 {
             return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
         }
-        let (decision, delegated_authorization) =
+        let (decision, delegated_authorization, clarifying_question) =
             resolved_guardrail_decision(confirmation_event, self.guardrail_type, self.action)?;
         let is_delegated_authorization = delegated_authorization.is_some();
         let user_content = replay_user_content(&interrupt_id, decision);
@@ -669,12 +682,13 @@ impl DirectHitlDecision {
             arguments: request.args.clone(),
             fingerprint: tool_call_fingerprint(&request.tool_name, &request.args),
             decision,
-            denial_comment: self.comment,
+            decision_value: self.value,
             user_content,
             resume_mode: persisted.mode,
             persisted_result: persisted.result,
             application_route,
             delegated_authorization,
+            clarifying_question,
         })
     }
 }
@@ -687,6 +701,7 @@ fn resolved_guardrail_decision(
     (
         ToolConfirmationDecision,
         Option<DelegatedAuthorizationRequirement>,
+        Option<AskUserRequest>,
     ),
     DirectHitlError,
 > {
@@ -695,20 +710,37 @@ fn resolved_guardrail_decision(
         .get(DELEGATED_AUTHORIZATION_METADATA_KEY)
         .and_then(|value| decode_delegated_authorization_requirement(value));
     let is_authorization = authorization.is_some();
-    if submitted_guardrail
-        .is_some_and(|guardrail| (guardrail == DirectGuardrailType::McpAuth) != is_authorization)
-    {
+    let clarifying_question = confirmation
+        .provider_metadata
+        .get(ASK_USER_METADATA_KEY)
+        .and_then(|value| decode_ask_user_request(value));
+    if is_authorization && clarifying_question.is_some() {
+        return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+    }
+    let expected_guardrail = if is_authorization {
+        DirectGuardrailType::McpAuth
+    } else if clarifying_question.is_some() {
+        DirectGuardrailType::ClarifyingQuestion
+    } else {
+        DirectGuardrailType::SensitiveTool
+    };
+    if submitted_guardrail.is_some_and(|guardrail| guardrail != expected_guardrail) {
         return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
     }
-    let decision = match (is_authorization, action) {
-        (false, DirectHitlAction::Approve) | (true, DirectHitlAction::Authorize) => {
+    let decision = match (expected_guardrail, action) {
+        (DirectGuardrailType::SensitiveTool, DirectHitlAction::Approve)
+        | (DirectGuardrailType::McpAuth, DirectHitlAction::Authorize)
+        | (DirectGuardrailType::ClarifyingQuestion, DirectHitlAction::Answer) => {
             ToolConfirmationDecision::Approve
         }
-        (false, DirectHitlAction::Reject | DirectHitlAction::BlockWithComment)
-        | (true, DirectHitlAction::Skip) => ToolConfirmationDecision::Deny,
+        (
+            DirectGuardrailType::SensitiveTool,
+            DirectHitlAction::Reject | DirectHitlAction::BlockWithComment,
+        )
+        | (DirectGuardrailType::McpAuth, DirectHitlAction::Skip) => ToolConfirmationDecision::Deny,
         _ => return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision)),
     };
-    Ok((decision, authorization))
+    Ok((decision, authorization, clarifying_question))
 }
 
 impl DirectHitlAction {
@@ -719,6 +751,7 @@ impl DirectHitlAction {
             Self::BlockWithComment => "block_with_comment",
             Self::Authorize => "authorize",
             Self::Skip => "skip",
+            Self::Answer => "answer",
         }
     }
 }
@@ -806,12 +839,13 @@ pub(crate) struct ResolvedDirectHitlDecision {
     arguments: Value,
     fingerprint: String,
     decision: ToolConfirmationDecision,
-    denial_comment: Option<String>,
+    decision_value: Option<String>,
     user_content: Content,
     resume_mode: ReplayResumeMode,
     persisted_result: Option<Value>,
     application_route: Option<DirectHitlApplicationRoute>,
     delegated_authorization: Option<DelegatedAuthorizationRequirement>,
+    clarifying_question: Option<AskUserRequest>,
 }
 
 pub(crate) enum ResolvedDirectHitlStart {
@@ -838,6 +872,7 @@ pub(crate) struct DirectHitlReplay {
     user_content: Content,
     resume_mode: ReplayResumeMode,
     blocked_result: Option<Value>,
+    replacement_decision: Option<ToolConfirmationDecision>,
     approve_confirmation: bool,
 }
 
@@ -861,6 +896,10 @@ impl ResolvedDirectHitlDecision {
         self.delegated_authorization.is_some()
     }
 
+    pub(crate) const fn is_clarifying_question(&self) -> bool {
+        self.clarifying_question.is_some()
+    }
+
     /// Narrow one resolved decision to the safe direct replay boundary.
     ///
     /// Approved calls must be read-only until durable effect ownership exists.
@@ -870,7 +909,7 @@ impl ResolvedDirectHitlDecision {
         self,
         sensitive_tools: &SensitiveToolCatalog,
     ) -> Result<DirectHitlReplay, DirectHitlError> {
-        if self.delegated_authorization.is_some() {
+        if self.delegated_authorization.is_some() || self.clarifying_question.is_some() {
             return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
         }
         let policy = sensitive_tools
@@ -882,7 +921,7 @@ impl ResolvedDirectHitlDecision {
                 policy.toolkit_name(),
                 policy.toolkit_type(),
                 policy.action_name(),
-                self.denial_comment.as_deref(),
+                self.decision_value.as_deref(),
             ))
         } else {
             None
@@ -911,6 +950,47 @@ impl ResolvedDirectHitlDecision {
             user_content: self.user_content,
             resume_mode: self.resume_mode,
             blocked_result,
+            replacement_decision: (self.decision == ToolConfirmationDecision::Deny)
+                .then_some(ToolConfirmationDecision::Deny),
+            approve_confirmation: true,
+        })
+    }
+
+    pub(crate) fn into_clarifying_question_replay(
+        self,
+    ) -> Result<DirectHitlReplay, DirectHitlError> {
+        if self.delegated_authorization.is_some()
+            || self.decision != ToolConfirmationDecision::Approve
+            || self.tool_name != super::internal_tools::ASK_USER_TOOL_NAME
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
+        }
+        let request = self
+            .clarifying_question
+            .as_ref()
+            .filter(|request| request.matches_arguments(&self.arguments))
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::CorruptSession))?;
+        let answer = self
+            .decision_value
+            .as_deref()
+            .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
+        let result = request
+            .format_answer(answer)
+            .map_err(|_| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))?;
+        if matches!(self.resume_mode, ReplayResumeMode::ContinueAfterResult)
+            && self.persisted_result.as_ref() != Some(&result)
+        {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+        }
+        Ok(DirectHitlReplay {
+            call_id: self.call_id,
+            tool_name: self.tool_name,
+            arguments: self.arguments,
+            fingerprint: self.fingerprint,
+            user_content: self.user_content,
+            resume_mode: self.resume_mode,
+            blocked_result: Some(result),
+            replacement_decision: Some(ToolConfirmationDecision::Approve),
             approve_confirmation: true,
         })
     }
@@ -953,6 +1033,9 @@ impl ResolvedDirectHitlDecision {
             user_content: self.user_content,
             resume_mode: self.resume_mode,
             approve_confirmation: blocked_result.is_some(),
+            replacement_decision: blocked_result
+                .as_ref()
+                .map(|_| ToolConfirmationDecision::Deny),
             blocked_result,
         })
     }
@@ -979,6 +1062,7 @@ impl DirectHitlReplay {
         let call_id = self.call_id;
         let tool_name = self.tool_name;
         let arguments = self.arguments;
+        let replacement_decision = self.replacement_decision;
         let model: Arc<dyn Llm> = Arc::new(DirectHitlReplayModel {
             delegate,
             state: AtomicU8::new(state),
@@ -998,6 +1082,8 @@ impl DirectHitlReplay {
                 tool_name,
                 arguments,
                 response,
+                confirmation_decision: replacement_decision
+                    .unwrap_or(ToolConfirmationDecision::Deny),
             }),
         }
     }
@@ -1060,6 +1146,7 @@ struct BlockedToolReplay {
     tool_name: String,
     arguments: Value,
     response: Value,
+    confirmation_decision: ToolConfirmationDecision,
 }
 
 struct BlockedToolset {
@@ -1159,7 +1246,7 @@ impl Tool for BlockedTool {
             ));
         }
         let mut actions = context.actions();
-        actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Deny);
+        actions.tool_confirmation_decision = Some(self.blocked.confirmation_decision);
         context.set_actions(actions);
         Ok(self.blocked.response.clone())
     }
@@ -1390,7 +1477,9 @@ impl ResolvedDirectHitlDecision {
 
     #[cfg(test)]
     pub(crate) fn denial_comment(&self) -> Option<&str> {
-        self.denial_comment.as_deref()
+        (self.decision == ToolConfirmationDecision::Deny)
+            .then_some(self.decision_value.as_deref())
+            .flatten()
     }
 
     #[cfg(test)]

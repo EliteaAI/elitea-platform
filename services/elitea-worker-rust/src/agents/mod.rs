@@ -6,6 +6,7 @@ pub(crate) mod context_management;
 pub(crate) mod direct_hitl;
 pub(crate) mod events;
 pub mod graph;
+pub(crate) mod internal_tools;
 pub(crate) mod native_runtime;
 pub(crate) mod ordinary;
 pub(crate) mod pipeline;

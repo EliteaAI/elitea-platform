@@ -35,9 +35,12 @@ use super::events::{
     APPLICATION_BRANCH_ROOT, ApplicationToolGuardCatalogs, ApplicationToolPresentationCatalog,
     DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
 };
+use super::internal_tools::{ASK_USER_TOOL_NAME, InternalToolCatalog};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
-use super::session::{BoundOrdinaryAgentModel, delegated_authorization_agent};
+use super::session::{
+    BoundOrdinaryAgentModel, clarifying_question_agent, delegated_authorization_agent,
+};
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::toolkits::{
     AdmittedToolSnapshot, DelegatedAuthorizationCatalog, FrozenToolKind, FrozenToolSnapshot,
@@ -1090,6 +1093,8 @@ impl ApplicationAssemblyState<'_> {
         let capabilities = configured_capabilities(&frozen);
         let (mut toolsets, sensitive_tools, delegated_authorization) =
             self.materialize_non_application_toolsets(&frozen).await?;
+        let internal_tools = profile.internal_tools();
+        toolsets.extend(internal_tools.toolsets());
         let has_non_application_tools = !toolsets.is_empty();
         let nested_references = application_references(&frozen, None)?;
         let parallel_applications = !nested_references.is_empty()
@@ -1097,7 +1102,8 @@ impl ApplicationAssemblyState<'_> {
                 .iter()
                 .all(|reference| reference.kind() == FrozenToolKind::Application)
             && sensitive_tools.is_empty()
-            && delegated_authorization.is_empty();
+            && delegated_authorization.is_empty()
+            && internal_tools.is_empty();
         let mut child_tools = ApplicationToolPresentationCatalog::default();
         if !nested_references.is_empty() {
             let mut nested_tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(nested_references.len());
@@ -1154,6 +1160,7 @@ impl ApplicationAssemblyState<'_> {
             sub_agents: Vec::new(),
             sensitive_tool_names,
             delegated_authorization: delegated_authorization.clone(),
+            internal_tools,
             parallel_applications,
         });
         Ok(Arc::new(BuiltApplication {
@@ -1334,6 +1341,7 @@ struct LazyNestedAgent {
     sub_agents: Vec<Arc<dyn Agent>>,
     sensitive_tool_names: Vec<String>,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    internal_tools: InternalToolCatalog,
     parallel_applications: bool,
 }
 
@@ -1414,6 +1422,9 @@ impl LazyNestedAgent {
         for tool_name in self.delegated_authorization.tool_names() {
             builder = builder.require_tool_confirmation(tool_name);
         }
+        if self.internal_tools.ask_user_enabled() {
+            builder = builder.require_tool_confirmation(ASK_USER_TOOL_NAME);
+        }
         if self.parallel_applications {
             builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
         }
@@ -1421,10 +1432,8 @@ impl LazyNestedAgent {
             .build()
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
             .map_err(|_| agent_configuration_error())?;
-        Ok(delegated_authorization_agent(
-            agent,
-            self.delegated_authorization.clone(),
-        ))
+        let agent = delegated_authorization_agent(agent, self.delegated_authorization.clone());
+        Ok(clarifying_question_agent(agent, self.internal_tools))
     }
 
     fn prepare_resume(
@@ -1436,6 +1445,8 @@ impl LazyNestedAgent {
             ChildApplicationResumeAction::Direct(decision) => {
                 let replay = if decision.is_delegated_authorization() {
                     (*decision).into_delegated_authorization_replay(&self.delegated_authorization)
+                } else if decision.is_clarifying_question() {
+                    (*decision).into_clarifying_question_replay()
                 } else {
                     (*decision).into_direct_replay(sensitive_tools)
                 }

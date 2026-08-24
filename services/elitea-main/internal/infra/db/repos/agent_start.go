@@ -120,10 +120,11 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 			variables := json.RawMessage(row.ApplicationVariablesJson)
 			versionDetails := json.RawMessage(row.ApplicationVersionDetailsJson)
 			chatHistory := json.RawMessage(row.ChatHistoryJson)
+			internalTools := json.RawMessage(row.InternalToolsJson)
 			if int64(row.ApplicationProjectID) != request.ProjectID ||
 				row.ApplicationID <= 0 || row.ApplicationVersionID <= 0 ||
 				!json.Valid(variables) || !json.Valid(versionDetails) ||
-				!json.Valid(chatHistory) {
+				!json.Valid(chatHistory) || !json.Valid(internalTools) {
 				return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 			}
 			if validationErr := validateCurrentApplicationNesting(
@@ -146,6 +147,7 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 				Variables:            variables,
 				VersionDetails:       versionDetails,
 				ChatHistory:          chatHistory,
+				InternalTools:        internalTools,
 			}
 			return nil
 		},

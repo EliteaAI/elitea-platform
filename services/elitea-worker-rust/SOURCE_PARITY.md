@@ -60,6 +60,19 @@ projects the native node's model/tool start and completion events with
 and suppresses the duplicate graph terminal turn. Incremental tool-progress
 chunks and approved-effect crash receipts remain explicit activation gates.
 
+Current clarification checkpoint: SDK `ask_user` is a runtime-owned dynamic
+toolset, not a configured external toolkit. Application/ad-hoc direct agents,
+recursively saved direct agents and a pipeline LLM node may bind it only when
+the frozen internal-tool selection and, for a node, exact YAML tool scope both
+name it. Native ADK confirmation persists the original call. The browser sees
+1-4 normalized questions and only the `answer` action; Main canonicalizes a
+bounded object or string answer into the existing protobuf string value. Rust
+then returns `User answered...` under the original tool-call ID, marks the
+confirmation approved and continues without executing the placeholder,
+injecting a user turn or replanning the call. Direct and pipeline checkpointed
+E2E tests prove the same-call provider transcript. Nested-parallel
+clarification aggregation remains an activation regression.
+
 Current delegated-authorization checkpoint: materializer-known remote MCP
 challenges now use ADK's native confirmation on the original model-selected
 tool in direct application/ad-hoc `LlmAgent` loops and pipeline LLM nodes. The

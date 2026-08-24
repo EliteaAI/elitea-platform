@@ -29,6 +29,9 @@ use super::yaml::{valid_graph_id, valid_output_key};
 use super::{PIPELINE_NODE_EVENT_SCOPE_STATE_KEY, PipelineNodeEventScope, PipelineNodeEventSender};
 use crate::agents::direct_hitl::blocked_tool_result;
 use crate::agents::events::mask_sensitive_arguments;
+use crate::agents::internal_tools::{
+    ASK_USER_ANSWER_ACTION, ASK_USER_GUARDRAIL_TYPE, ASK_USER_TOOL_NAME, AskUserRequest,
+};
 use crate::toolkits::{
     DelegatedAuthorizationRequirement, SensitiveToolPolicy, delegated_authorization_declined_result,
 };
@@ -692,6 +695,39 @@ impl PipelineLlmReplayEnvelope {
         serde_json::to_value(self).map_err(|_| LlmExecutionError::InvalidInputMapping)
     }
 
+    pub(crate) fn resolve_clarifying_answer(
+        mut self,
+        call_id: &str,
+        tool_name: &str,
+        answer: &str,
+    ) -> Result<Value, LlmExecutionError> {
+        self.validate()?;
+        let call = replay_calls(&self.pending_content)?
+            .into_iter()
+            .find(|call| call.call_id == call_id && call.tool_name == tool_name)
+            .ok_or(LlmExecutionError::InvalidInputMapping)?;
+        if self.decisions.contains_key(call_id) || tool_name != ASK_USER_TOOL_NAME {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let request = AskUserRequest::from_arguments(call.arguments)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        let result = request
+            .format_answer(answer)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        self.decisions.insert(
+            call_id.to_owned(),
+            PipelineLlmReplayDecision {
+                tool_name: tool_name.to_owned(),
+                arguments: call.arguments.clone(),
+                fingerprint: tool_call_fingerprint(tool_name, call.arguments),
+                defer_confirmation: false,
+                blocked_result: Some(result),
+            },
+        );
+        self.validate()?;
+        serde_json::to_value(self).map_err(|_| LlmExecutionError::InvalidInputMapping)
+    }
+
     fn apply_run_config(&self, run_config: &mut RunConfig) {
         for (call_id, decision) in &self.decisions {
             if decision.defer_confirmation {
@@ -718,6 +754,11 @@ impl PipelineLlmReplayEnvelope {
                         tool_name: decision.tool_name.clone(),
                         arguments: decision.arguments.clone(),
                         response: response.clone(),
+                        confirmation_decision: if response.is_string() {
+                            ToolConfirmationDecision::Approve
+                        } else {
+                            ToolConfirmationDecision::Deny
+                        },
                     })
             })
             .collect()
@@ -824,6 +865,10 @@ pub(crate) trait PipelineLlmAgentFactory: Send + Sync {
         _tool_name: &str,
     ) -> Option<DelegatedAuthorizationRequirement> {
         None
+    }
+
+    fn ask_user_enabled(&self, _tool_name: &str) -> bool {
+        false
     }
 
     fn event_sender(&self) -> Option<PipelineNodeEventSender> {
@@ -986,6 +1031,12 @@ impl LlmNode {
         {
             return self.authorization_interrupt(&call_id, confirmation, &requirement);
         }
+        if self
+            .factory
+            .ask_user_enabled(&confirmation.request.tool_name)
+        {
+            return self.clarifying_question_interrupt(&call_id, confirmation);
+        }
         let policy = self
             .factory
             .sensitive_policy(&confirmation.request.tool_name)
@@ -1068,6 +1119,43 @@ impl LlmNode {
             "server_url": requirement.server_url(),
             "resource_metadata_url": requirement.resource_metadata_url(),
             "www_authenticate": requirement.www_authenticate(),
+            "llm_replay": replay,
+        });
+        Ok(NodeOutput::interrupt_with_data(&message, data))
+    }
+
+    fn clarifying_question_interrupt(
+        &self,
+        call_id: &str,
+        confirmation: PipelineLlmConfirmation,
+    ) -> Result<NodeOutput, LlmExecutionError> {
+        if confirmation.request.tool_name != ASK_USER_TOOL_NAME {
+            return Err(LlmExecutionError::InvalidInputMapping);
+        }
+        let request = AskUserRequest::from_arguments(&confirmation.request.args)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        let argument_digest = confirmation_argument_digest(
+            call_id,
+            &confirmation.request.tool_name,
+            &confirmation.request.args,
+        )?;
+        let replay = serde_json::to_value(confirmation.replay)
+            .map_err(|_| LlmExecutionError::InvalidInputMapping)?;
+        let message = request.message().to_owned();
+        let data = json!({
+            "schema_revision": "elitea.graph.clarifying-question.v1",
+            "type": "hitl",
+            "guardrail_type": ASK_USER_GUARDRAIL_TYPE,
+            "node_name": self.name(),
+            "message": message,
+            "questions": request.questions_value(),
+            "available_actions": [ASK_USER_ANSWER_ACTION],
+            "routes": {},
+            "definition_digest": self.definition.digest_label(),
+            "tool_call_id": call_id,
+            "tool_name": ASK_USER_TOOL_NAME,
+            "tool_args": request.arguments_value(),
+            "argument_digest": argument_digest,
             "llm_replay": replay,
         });
         Ok(NodeOutput::interrupt_with_data(&message, data))
@@ -1364,6 +1452,7 @@ struct PipelineBlockedToolReplay {
     tool_name: String,
     arguments: Value,
     response: Value,
+    confirmation_decision: ToolConfirmationDecision,
 }
 
 struct PipelineBlockedToolset {
@@ -1469,7 +1558,7 @@ impl Tool for PipelineBlockedTool {
             ));
         }
         let mut actions = context.actions();
-        actions.tool_confirmation_decision = Some(ToolConfirmationDecision::Deny);
+        actions.tool_confirmation_decision = Some(blocked.confirmation_decision);
         context.set_actions(actions);
         Ok(blocked.response.clone())
     }

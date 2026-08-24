@@ -1972,13 +1972,14 @@ cluster topology.
 
 | Python source | Behavior | Rust target | Status / deviation |
 | --- | --- | --- | --- |
-| SDK `runtime/toolkits/mcp.py` | Remote MCP discovery and invocation | `src/toolkits/mcp.rs`, `src/adk/mcp.rs` | Planned; use ADK remote MCP primitives |
+| SDK `runtime/tools/ask_user.py` plus `runtime/toolkits/tools.py` internal-tool selection | Runtime-built clarification tool with 1-4 normalized questions and a structured UI answer | `src/agents/internal_tools.rs`, direct/nested agent session replay and pipeline LLM graph replay | Implemented capability-disabled through native ADK confirmation. Object/string answers replace the original call result; they are not new user turns. Main application/ad-hoc projection and `answer` admission are included; a nested-parallel clarification regression remains an activation gate |
+| SDK `runtime/toolkits/mcp.py` | Remote MCP discovery and invocation | `src/toolkits/mcp.rs`, `src/agents/{ordinary,pipeline}.rs` | Partial capability-disabled HTTP implementation with exact selected-tool discovery/invocation, delegated authorization and native direct/pipeline composition; prebuilt/static/stdio variants, catalog sync and Elitea-as-MCP-server remain gated |
 | SDK `runtime/toolkits/mcp_config.py` | Saved HTTP/stdio MCP definitions | MCP module plus external MCP runner client | Planned; stdio intentionally externalized |
-| SDK `runtime/toolkits/application.py` | Nested applications | `src/agents/application_tools.rs` | Planned; agent-runtime slice |
+| SDK `runtime/toolkits/application.py` | Nested applications | `src/agents/application_tools.rs`, `src/agents/graph/application.rs` | Partial capability-disabled direct-agent and saved-pipeline nesting with exact version, hierarchy, cycle/tier bounds and durable nested HITL; private immutable Main child resolution, child variables and further recursive pipeline nodes remain gated |
 | SDK `runtime/toolkits/artifact.py` | 16 artifact tools and indexing coupling | `src/toolkits/artifact.rs` | Planned; artifact service boundary required |
 | SDK `tools/memory` and `runtime/toolkits/vectorstore.py` | Four memory and four vectorstore tools | `src/toolkits/{memory,vectorstore}.rs` | Planned |
 | SDK `runtime/tools/sandbox.py` | Two Pyodide variants | External sandbox client | Intentional deviation: library abstraction is not a sandbox |
-| SDK `runtime/tools/data_analysis.py` | Generated data analysis over artifacts | External sandbox/artifact boundary | Planned after isolation design |
+| SDK `runtime/tools/data_analysis.py` | Generated data analysis over artifacts and pandas-shaped tabular operations | External sandbox/artifact boundary with Polars as the likely native data-frame engine | Planned after attachment/artifact grants and isolation design; neither pandas byte-for-byte behavior nor in-process arbitrary Python execution is implied |
 | SDK `community/inventory` | Dynamic retrieval/ingestion registry | `src/toolkits/inventory.rs` | Planned; current 14-schema versus 9-default drift must be resolved |
 
 ## Safe implementation ownership

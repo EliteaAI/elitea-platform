@@ -17,9 +17,10 @@ use tonic::body::Body;
 
 use super::assembly_tests::ordinary_request;
 use super::events::{
-    pipeline_application_event_binding, pipeline_hitl_event_binding,
-    pipeline_mcp_auth_event_binding, pipeline_tool_event_binding,
+    pipeline_application_event_binding, pipeline_clarifying_event_binding,
+    pipeline_hitl_event_binding, pipeline_mcp_auth_event_binding, pipeline_tool_event_binding,
 };
+use super::internal_tools::{ASK_USER_GUARDRAIL_TYPE, ASK_USER_TOOL_NAME};
 use super::pipeline::{PipelineExecutionProfile, PipelineNativeAgentAssembler, StrictNodeToolset};
 use super::request::AgentExecutionKind;
 use super::runtime::{
@@ -270,6 +271,24 @@ fn llm_mcp_pipeline_request(
         .and_then(Value::as_object_mut)
         .expect("application version fixture")
         .insert("instructions".to_owned(), json!(definition));
+    request
+}
+
+fn ask_user_llm_pipeline_request() -> super::request::AgentExecutionRequest {
+    let mut request = pipeline_request();
+    request.payload.internal_tools = vec![ASK_USER_TOOL_NAME.to_owned()];
+    let version = request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version fixture");
+    version.insert(
+        "instructions".to_owned(),
+        json!(
+            "state:\n  answer: str\n  messages: list\nentry_point: answer\nnodes:\n  - id: answer\n    type: llm\n    output: [answer, messages]\n    tool_names:\n      ask_user: [\"ask_user\"]\n    transition: END\n"
+        ),
+    );
     request
 }
 
@@ -1021,6 +1040,16 @@ fn pipeline_mixed_saved_agent_call_response() -> Response<Body> {
 fn pipeline_mcp_tool_call_response() -> Response<Body> {
     let raw = concat!(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_mcp\",\"type\":\"function\",\"function\":{\"name\":\"lookup_release\",\"arguments\":\"{\\\"release\\\":\\\"1.2\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
+        "data: [DONE]\n\n",
+    );
+    test_model_gateway_response(Body::new(Full::<Bytes>::from(raw)))
+}
+
+fn pipeline_ask_user_call_response() -> Response<Body> {
+    let raw = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_ask_user\",\"type\":\"function\",\"function\":{\"name\":\"ask_user\",\"arguments\":\"{\\\"questions\\\":[{\\\"question\\\":\\\"Which environment should I use?\\\",\\\"header\\\":\\\"Environment\\\",\\\"options\\\":[{\\\"label\\\":\\\"Staging\\\"},{\\\"label\\\":\\\"Production\\\"}]}]}\"}}]},\"finish_reason\":null}]}\n\n",
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}\n\n",
         "data: [DONE]\n\n",
@@ -2546,6 +2575,122 @@ async fn llm_node_block_actions_replay_same_call_as_structured_tool_result() {
         "release is under legal hold",
     )
     .await;
+}
+
+#[tokio::test]
+async fn llm_node_ask_user_resumes_the_checkpointed_call_with_the_answer_result() {
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let checkpointer = Arc::new(MemoryCheckpointer::new());
+    let token_response = || {
+        runtime_response(&json!({
+            "schema_version": "elitea.runtime.elitea-client-token.v1",
+            "project_id": 17,
+            "token": "ephemeral-pipeline-token"
+        }))
+    };
+    let runtime = RuntimeContextClient::with_rpc(
+        PipelineRuntimeContextFixture {
+            responses: Mutex::new(VecDeque::from([token_response(), token_response()])),
+            calls: Arc::new(AtomicUsize::new(0)),
+            paths: Arc::new(Mutex::new(Vec::new())),
+        },
+        RuntimeContextConfig {
+            origin: "https://content.internal".to_owned(),
+            deadline: Duration::from_secs(1),
+            max_response_bytes: 32 * 1_024,
+            max_application_response_bytes: 1_024 * 1_024,
+        },
+    )
+    .expect("ask_user runtime-context fixture");
+    let (gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(pipeline_ask_user_call_response()),
+            TestModelGatewayOutcome::Response(pipeline_text_response(
+                "continued after clarification",
+            )),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("ask_user model gateway fixture");
+    let assembler = PipelineNativeAgentAssembler::with_state(
+        Arc::clone(&sessions),
+        Arc::clone(&checkpointer) as Arc<dyn Checkpointer>,
+    )
+    .with_runtime_clients(
+        Arc::new(PlatformClient::new(Arc::new(runtime))),
+        Arc::new(ModelFacade::from_gateway(gateway)),
+    );
+    let mut request = ask_user_llm_pipeline_request();
+    let private_thread = private_pipeline_session_id(&request);
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("ask_user LLM-node invocation");
+    let (paused, graph_interrupt) = collect_pipeline_pause_events(invocation).await;
+    let clarification = paused
+        .iter()
+        .find(|event| event["type"] == "agent_hitl_interrupt")
+        .expect("ask_user browser interrupt");
+    let pending = &clarification["response_metadata"]["hitl_interrupts"][0];
+    assert_eq!(pending["guardrail_type"], ASK_USER_GUARDRAIL_TYPE);
+    assert_eq!(pending["available_actions"], json!(["answer"]));
+    assert_eq!(pending["tool_call_id"], "call_ask_user");
+    assert_eq!(pending["questions"][0]["id"], "q1");
+    let interrupt_id = pending["interrupt_id"]
+        .as_str()
+        .expect("ask_user interrupt identity")
+        .to_owned();
+    let binding = pipeline_clarifying_event_binding(
+        &graph_interrupt.expect("private ask_user graph interrupt"),
+        "elitea-agent",
+        &private_thread,
+    )
+    .expect("checkpoint-bound ask_user interruption");
+    assert_eq!(binding.tool_call_id(), "call_ask_user");
+    assert_eq!(binding.tool_name(), ASK_USER_TOOL_NAME);
+
+    let encoded_answer = r#"{"q1":"Staging"}"#;
+    request.binding.request_content_digest = [14; 32];
+    request.payload.should_continue = true;
+    request.payload.hitl_resume = true;
+    request.payload.hitl_action = Some("answer".to_owned());
+    request.payload.hitl_value = Some(encoded_answer.to_owned());
+    request.payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "call_ask_user",
+        "action": "answer",
+        "value": encoded_answer,
+    })];
+    let invocation = assembler
+        .assemble(authorized(&request))
+        .await
+        .expect("ask_user LLM-node continuation");
+    let browser = collect_pipeline_completion(invocation).await;
+    assert!(
+        browser
+            .iter()
+            .any(|event| event["content"] == "continued after clarification")
+    );
+    let captured = captured.lock().expect("ask_user model requests");
+    assert_eq!(captured.len(), 2, "resume must not ask the model to replan");
+    let continuation: Value =
+        serde_json::from_slice(&captured[1].body).expect("ask_user continuation JSON");
+    let result = continuation["messages"]
+        .as_array()
+        .expect("ask_user continuation messages")
+        .iter()
+        .find(|message| message["role"] == "tool" && message["tool_call_id"] == "call_ask_user")
+        .expect("same-call ask_user result");
+    let decoded_result: String = serde_json::from_str(
+        result["content"]
+            .as_str()
+            .expect("serialized ask_user tool content"),
+    )
+    .expect("ask_user string result");
+    assert_eq!(
+        decoded_result,
+        "User answered:\n- Which environment should I use?: Staging"
+    );
 }
 
 #[tokio::test]

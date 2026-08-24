@@ -11,6 +11,7 @@ use adk_rust::Content;
 use serde_json::{Map, Value};
 
 use super::context_management::ContextManagementPlan;
+use super::internal_tools::{InternalToolCatalog, InternalToolError};
 use super::request::{AgentExecutionKind, AgentExecutionRequest, UserInput};
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 
@@ -49,6 +50,7 @@ pub(crate) struct OrdinaryNoToolProfile {
     step_limit: u32,
     chat_history: Vec<Content>,
     context_management: ContextManagementPlan,
+    internal_tools: InternalToolCatalog,
 }
 
 impl OrdinaryNoToolProfile {
@@ -119,6 +121,7 @@ impl OrdinaryNoToolProfile {
             return Err(unsupported_profile());
         }
         let model = application_model_for_agent_type(request, "pipeline")?;
+        let internal_tools = application_internal_tools(request)?;
         Ok(Self {
             kind: request.kind,
             instructions: model.instructions,
@@ -131,6 +134,7 @@ impl OrdinaryNoToolProfile {
             step_limit: validate_step_limit(request.payload.steps_limit)?,
             chat_history: common.chat_history,
             context_management: common.context_management,
+            internal_tools,
         })
     }
 
@@ -142,6 +146,13 @@ impl OrdinaryNoToolProfile {
         let model = match request.kind {
             AgentExecutionKind::Application => application_model(request)?,
             AgentExecutionKind::Adhoc => adhoc_model(request)?,
+        };
+        let internal_tools = match request.kind {
+            AgentExecutionKind::Application => application_internal_tools(request)?,
+            AgentExecutionKind::Adhoc => {
+                InternalToolCatalog::from_names(&request.payload.internal_tools)
+                    .map_err(internal_tool_profile_error)?
+            }
         };
         Ok(Self {
             kind: request.kind,
@@ -155,6 +166,7 @@ impl OrdinaryNoToolProfile {
             step_limit: validate_step_limit(request.payload.steps_limit)?,
             chat_history: common.chat_history,
             context_management: common.context_management,
+            internal_tools,
         })
     }
 
@@ -191,7 +203,7 @@ impl OrdinaryNoToolProfile {
             Some(_) | None => return Err(invalid_profile()),
         }
         validate_feature_array(version.get("tools"), true)?;
-        validate_empty_feature_array(version.get("internal_tools"), false)?;
+        let internal_tools = internal_tools_from_version(version)?;
         validate_empty_feature_array(version.get("skills"), false)?;
         validate_application_meta(version.get("meta"))?;
         if version
@@ -249,6 +261,7 @@ impl OrdinaryNoToolProfile {
             step_limit: fallback.step_limit,
             chat_history: Vec::new(),
             context_management: ContextManagementPlan::Disabled,
+            internal_tools,
         })
     }
 
@@ -306,6 +319,11 @@ impl OrdinaryNoToolProfile {
     pub(crate) const fn context_management(&self) -> ContextManagementPlan {
         self.context_management
     }
+
+    #[must_use]
+    pub(crate) const fn internal_tools(&self) -> InternalToolCatalog {
+        self.internal_tools
+    }
 }
 
 struct CommonProfile {
@@ -345,8 +363,7 @@ fn validate_common_profile(
         mode,
         CommonProfileMode::DirectGuardrailContinuation | CommonProfileMode::McpAuthorization
     );
-    if !payload.internal_tools.is_empty()
-        || (!allows_mcp_authority && !payload.mcp_tokens.is_empty())
+    if (!allows_mcp_authority && !payload.mcp_tokens.is_empty())
         || (!allows_mcp_authority && !payload.ignored_mcp_servers.is_empty())
         || (!allows_mcp_authority && !payload.user_declined_mcp_servers.is_empty())
         || payload.checkpoint_id.is_some()
@@ -468,6 +485,35 @@ fn application_model(
     application_model_for_agent_type(request, "agent")
 }
 
+fn application_internal_tools(
+    request: &AgentExecutionRequest,
+) -> Result<InternalToolCatalog, NativeAgentAssemblyError> {
+    let version = request
+        .payload
+        .application
+        .get("version_details")
+        .and_then(Value::as_object)
+        .ok_or_else(invalid_profile)?;
+    let configured = internal_tools_from_version(version)?;
+    let conversation = InternalToolCatalog::from_names(&request.payload.internal_tools)
+        .map_err(internal_tool_profile_error)?;
+    Ok(configured.merge(conversation))
+}
+
+fn internal_tools_from_version(
+    version: &Map<String, Value>,
+) -> Result<InternalToolCatalog, NativeAgentAssemblyError> {
+    let root = InternalToolCatalog::from_values(version.get("internal_tools"))
+        .map_err(internal_tool_profile_error)?;
+    let meta = match version.get("meta") {
+        None | Some(Value::Null) => InternalToolCatalog::default(),
+        Some(Value::Object(meta)) => InternalToolCatalog::from_values(meta.get("internal_tools"))
+            .map_err(internal_tool_profile_error)?,
+        Some(_) => return Err(invalid_profile()),
+    };
+    Ok(root.merge(meta))
+}
+
 fn application_model_for_agent_type(
     request: &AgentExecutionRequest,
     expected_agent_type: &str,
@@ -494,7 +540,8 @@ fn application_model_for_agent_type(
         Some(_) | None => return Err(invalid_profile()),
     }
     validate_feature_array(version.get("tools"), true)?;
-    validate_empty_feature_array(version.get("internal_tools"), false)?;
+    InternalToolCatalog::from_values(version.get("internal_tools"))
+        .map_err(internal_tool_profile_error)?;
     validate_empty_feature_array(version.get("skills"), false)?;
     validate_application_meta(version.get("meta"))?;
     let instructions = version
@@ -576,7 +623,8 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
     if meta.contains_key("step_limit") {
         return Err(unsupported_profile());
     }
-    validate_empty_feature_array(meta.get("internal_tools"), false)?;
+    InternalToolCatalog::from_values(meta.get("internal_tools"))
+        .map_err(internal_tool_profile_error)?;
     match meta.get("lazy_tools_mode") {
         None | Some(Value::Bool(false)) => {}
         Some(Value::Bool(true)) => return Err(unsupported_profile()),
@@ -810,6 +858,14 @@ fn invalid_profile() -> NativeAgentAssemblyError {
         NativeAgentAssemblyErrorCode::InvalidInput,
         "the authorized agent profile is malformed",
     )
+}
+
+fn internal_tool_profile_error(error: InternalToolError) -> NativeAgentAssemblyError {
+    match error {
+        InternalToolError::InvalidInput => invalid_profile(),
+        InternalToolError::UnsupportedCapability => unsupported_profile(),
+        InternalToolError::ResourceExhausted => resource_exhausted_profile(),
+    }
 }
 
 fn resource_exhausted_profile() -> NativeAgentAssemblyError {

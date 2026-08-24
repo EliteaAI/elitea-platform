@@ -171,6 +171,67 @@ func TestCurrentApplicationContinuationCarriesBlockWithCommentToOneExactDecision
 	}
 }
 
+func TestCurrentApplicationContinuationCarriesClarifyingAnswerToOneExactDecision(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			Kind: CurrentRegenerationApplication, TargetParticipantID: 21,
+			QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:  "prepare the release", ThreadID: "thread-current-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			InterruptID:         "interrupt-clarifying-1",
+			AvailableActions:    []string{"answer"},
+			HITLInterrupts: []CurrentHITLInterrupt{{
+				InterruptID: "interrupt-clarifying-1", AvailableActions: []string{"answer"},
+			}},
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Clarify first",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-answer", CommandID: "command-answer", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver,
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := `{"q1":"Production","q2":["API","UI"]}`
+	_, err = service.ContinueCurrentAgent(context.Background(), CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		ThreadID:          "thread-current-1",
+		Action:            "answer", Value: answer,
+	})
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	if admission.CurrentContinueTurn == nil ||
+		admission.CurrentContinueTurn.InterruptID != resolver.continuationTarget.InterruptID ||
+		admission.CurrentContinueTurn.Action != "answer" ||
+		admission.Input.GetHitlAction() != "answer" ||
+		admission.Input.GetHitlValue() != answer {
+		t.Fatalf("admission=%+v input=%+v", admission.CurrentContinueTurn, admission.Input)
+	}
+	var decisions []map[string]string
+	if err := json.Unmarshal(admission.Input.HitlDecisions, &decisions); err != nil || len(decisions) != 1 ||
+		decisions[0]["interrupt_id"] != resolver.continuationTarget.InterruptID ||
+		decisions[0]["action"] != "answer" || decisions[0]["value"] != answer {
+		t.Fatalf("decisions=%s error=%v", admission.Input.HitlDecisions, err)
+	}
+}
+
 func TestCurrentApplicationContinuationCarriesOneAtomicDecisionPerPendingInterrupt(t *testing.T) {
 	interrupts := []CurrentHITLInterrupt{
 		{InterruptID: "interrupt-delete-1", AvailableActions: []string{"approve", "reject"}},

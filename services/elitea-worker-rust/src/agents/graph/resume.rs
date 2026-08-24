@@ -22,14 +22,16 @@ use crate::agents::direct_hitl::{
     ResolvedDirectHitlStart,
 };
 use crate::agents::events::{
-    pipeline_application_event_binding, pipeline_hitl_event_binding,
-    pipeline_mcp_auth_event_binding, pipeline_printer_event_binding, pipeline_tool_event_binding,
+    pipeline_application_event_binding, pipeline_clarifying_event_binding,
+    pipeline_hitl_event_binding, pipeline_mcp_auth_event_binding, pipeline_printer_event_binding,
+    pipeline_tool_event_binding,
 };
 use crate::agents::request::AgentExecutionPayload;
 use crate::toolkits::DelegatedAuthorizationRequirement;
 
 const MAX_COMMENT_BYTES: usize = 8 * 1024;
 const MAX_EDIT_BYTES: usize = 64 * 1024;
+const MAX_ANSWER_BYTES: usize = 16 * 1_024;
 const MAX_IDENTITY_BYTES: usize = 512;
 
 /// Current SDK-compatible continuation of a static Printer checkpoint.
@@ -342,6 +344,7 @@ enum PipelineHitlAction {
     Reject,
     Edit,
     BlockWithComment,
+    Answer,
 }
 
 impl PipelineHitlAction {
@@ -351,6 +354,7 @@ impl PipelineHitlAction {
             Self::Reject => "reject",
             Self::Edit => "edit",
             Self::BlockWithComment => "block_with_comment",
+            Self::Answer => "answer",
         }
     }
 
@@ -359,6 +363,7 @@ impl PipelineHitlAction {
             Self::Approve => "approve",
             Self::Reject | Self::BlockWithComment => "reject",
             Self::Edit => "edit",
+            Self::Answer => "answer",
         }
     }
 }
@@ -561,6 +566,13 @@ impl PipelineToolDecision {
             {
                 return Err(PipelineResumeError::invalid());
             }
+            PipelineHitlAction::Answer
+                if raw.value.is_empty()
+                    || raw.value.len() > MAX_ANSWER_BYTES
+                    || raw.value.contains('\0') =>
+            {
+                return Err(PipelineResumeError::invalid());
+            }
             PipelineHitlAction::Edit => return Err(PipelineResumeError::invalid()),
             _ => {}
         }
@@ -586,6 +598,58 @@ impl PipelineToolDecision {
             .ok_or_else(PipelineResumeError::stale)?;
         if interrupt_index + 1 != events.len() {
             return Err(PipelineResumeError::stale());
+        }
+        if self.action == PipelineHitlAction::Answer {
+            let binding = pipeline_clarifying_event_binding(
+                &events[interrupt_index],
+                root_agent_name,
+                thread_id,
+            )
+            .map_err(|_| PipelineResumeError::corrupt())?;
+            if binding.interrupt_id() != self.interrupt_id
+                || binding.tool_call_id() != self.tool_call_id
+            {
+                return Err(PipelineResumeError::stale());
+            }
+            let checkpoint = checkpointer
+                .load(thread_id)
+                .await
+                .map_err(|_| PipelineResumeError::dependency())?
+                .ok_or_else(PipelineResumeError::stale)?;
+            if checkpoint.thread_id != thread_id
+                || checkpoint.checkpoint_id != binding.checkpoint_id()
+                || checkpoint.pending_nodes.as_slice() != [binding.pending_node_name()]
+            {
+                return Err(PipelineResumeError::stale());
+            }
+            let predecessor = pipeline_leaf_state_entry(
+                checkpointer,
+                &checkpoint.state,
+                binding.nested_checkpoints(),
+                binding.node_name(),
+                LLM_TOOL_RESUME_STATE_KEY,
+            )
+            .await?;
+            if !binding
+                .llm_replay()
+                .matches_checkpoint_predecessor(predecessor.as_ref())
+                .map_err(|_| PipelineResumeError::corrupt())?
+            {
+                return Err(PipelineResumeError::stale());
+            }
+            let resolved = binding
+                .llm_replay()
+                .clone()
+                .resolve_clarifying_answer(binding.tool_call_id(), binding.tool_name(), &self.value)
+                .map_err(|_| PipelineResumeError::corrupt())?;
+            return Ok(PipelineResume {
+                state: [(
+                    LLM_TOOL_RESUME_STATE_KEY.to_owned(),
+                    json!({binding.node_name(): resolved}),
+                )]
+                .into_iter()
+                .collect(),
+            });
         }
         let binding =
             pipeline_tool_event_binding(&events[interrupt_index], root_agent_name, thread_id)

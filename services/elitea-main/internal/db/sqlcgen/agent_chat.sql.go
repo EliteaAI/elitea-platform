@@ -162,7 +162,7 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' <> 'internal_mcp'
+             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -216,7 +216,10 @@ WITH resolved AS MATERIALIZED (
                     IS DISTINCT FROM ($4::integer)::text
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
-                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
+                    '[]'::jsonb,
+                    '["ask_user"]'::jsonb
+                )
                 OR (
                     LOWER(invalid_application_version.agent_type) <> 'pipeline'
                     AND EXISTS (
@@ -417,11 +420,23 @@ WITH resolved AS MATERIALIZED (
      AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
     WHERE conversation.uuid = $5::uuid
       AND (target_participant.entity_meta ->> 'project_id')::integer = $6::integer
-      AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
-          '[]'::jsonb,
-          '["internal_mcp"]'::jsonb
+      AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+              CASE
+                  WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                  THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+                  ELSE '[]'::jsonb
+              END
+          ) AS internal_tool(value)
+          WHERE jsonb_typeof(internal_tool.value) <> 'string'
+             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
-      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
+          '[]'::jsonb,
+          '["ask_user"]'::jsonb
+      )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
           ''
@@ -830,7 +845,10 @@ LEFT JOIN LATERAL (
           AND application_participant.entity_meta ->> 'project_id'
               = ($3::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
-          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) IN (
+              '[]'::jsonb,
+              '["ask_user"]'::jsonb
+          )
           AND (
               LOWER(application_version.agent_type) = 'pipeline'
               OR NOT EXISTS (
@@ -902,7 +920,7 @@ WHERE conversation.uuid = $5::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' <> 'internal_mcp'
+         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -956,7 +974,10 @@ WHERE conversation.uuid = $5::uuid
                 IS DISTINCT FROM ($3::integer)::text
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
-            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) <> '[]'::jsonb
+            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
+                '[]'::jsonb,
+                '["ask_user"]'::jsonb
+            )
             OR (
                 LOWER(invalid_application_version.agent_type) <> 'pipeline'
                 AND EXISTS (
@@ -1118,6 +1139,7 @@ SELECT conversation.id AS conversation_id,
        (target_mapping.entity_settings ->> 'version_id')::integer AS application_version_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
        COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
+       COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)::text AS internal_tools_json,
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -1305,11 +1327,23 @@ LEFT JOIN LATERAL (
 ) AS current_history ON TRUE
 WHERE conversation.uuid = $4::uuid
   AND (target_participant.entity_meta ->> 'project_id')::integer = $5::integer
-  AND COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb) IN (
-      '[]'::jsonb,
-      '["internal_mcp"]'::jsonb
+  AND jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+          CASE
+              WHEN jsonb_typeof(COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+              THEN COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)
+              ELSE '[]'::jsonb
+          END
+      ) AS internal_tool(value)
+      WHERE jsonb_typeof(internal_tool.value) <> 'string'
+         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
-  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
+  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
+      '[]'::jsonb,
+      '["ask_user"]'::jsonb
+  )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
       ''
@@ -1380,6 +1414,7 @@ type ResolveCurrentApplicationTurnRow struct {
 	ApplicationVersionID          int32  `db:"application_version_id" json:"application_version_id"`
 	ApplicationVariablesJson      string `db:"application_variables_json" json:"application_variables_json"`
 	ChatHistoryJson               string `db:"chat_history_json" json:"chat_history_json"`
+	InternalToolsJson             string `db:"internal_tools_json" json:"internal_tools_json"`
 	ApplicationVersionDetailsJson string `db:"application_version_details_json" json:"application_version_details_json"`
 }
 
@@ -1401,6 +1436,7 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 		&i.ApplicationVersionID,
 		&i.ApplicationVariablesJson,
 		&i.ChatHistoryJson,
+		&i.InternalToolsJson,
 		&i.ApplicationVersionDetailsJson,
 	)
 	return i, err

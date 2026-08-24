@@ -256,8 +256,8 @@ func (request CurrentContinuationRequest) normalizedHITLDecisions() ([]CurrentHI
 func validCurrentHITLDecision(decision CurrentHITLDecision, requireIdentity bool) bool {
 	if decision.GuardrailType != "" || !currentRootHITLAction(decision.Action) || len(decision.Value) > maxCurrentHITLValueBytes ||
 		strings.ContainsRune(decision.Value, '\x00') ||
-		((decision.Action == "edit" || decision.Action == "block_with_comment") && decision.Value == "") ||
-		(decision.Action != "edit" && decision.Action != "block_with_comment" && decision.Value != "") {
+		((decision.Action == "edit" || decision.Action == "block_with_comment" || decision.Action == "answer") && decision.Value == "") ||
+		(decision.Action != "edit" && decision.Action != "block_with_comment" && decision.Action != "answer" && decision.Value != "") {
 		return false
 	}
 	if !requireIdentity {
@@ -688,7 +688,7 @@ func currentContinuationDatabaseID(value int64) (int32, bool) {
 
 func currentRootHITLAction(action string) bool {
 	switch action {
-	case "approve", "reject", "edit", "block_with_comment":
+	case "approve", "reject", "edit", "block_with_comment", "answer":
 		return true
 	default:
 		return false

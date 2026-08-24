@@ -17,20 +17,23 @@ use tokio::sync::Barrier;
 
 use super::assembly::OrdinaryNoToolProfile;
 use super::assembly_tests::{current_text_history, ordinary_request};
-use super::direct_hitl::DirectHitlDecision;
+use super::direct_hitl::{DirectHitlDecision, DirectHitlDecisionSet};
 use super::events::{AgentEventProjectionErrorCode, ApplicationToolPresentationCatalog};
+use super::internal_tools::{ASK_USER_GUARDRAIL_TYPE, ASK_USER_TOOL_NAME, InternalToolCatalog};
 use super::request::{AgentExecutionKind, UserInput};
 use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode};
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     ApplicationRuntimeProjection, AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel,
     NativeSessionBackend, NativeToolExecutionMode, OrdinaryNativeAgentPlan,
-    assemble_direct_hitl_resume_with_sessions, assemble_ordinary_native,
+    OrdinaryRuntimeBindings, assemble_direct_hitl_resume_with_sessions,
+    assemble_direct_hitl_resume_with_sessions_and_applications, assemble_ordinary_native,
     assemble_ordinary_native_with_sessions, assemble_ordinary_native_with_sessions_and_options,
+    assemble_ordinary_native_with_sessions_and_runtime_catalogs,
 };
 use crate::protocol::control::test_session_authority_for;
 use crate::protocol::node_event::encode_current_node_event_json;
-use crate::toolkits::ToolAdmissionPolicy;
+use crate::toolkits::{DelegatedAuthorizationCatalog, ToolAdmissionPolicy};
 
 struct FixtureBoundModel {
     model: Arc<dyn Llm>,
@@ -187,6 +190,32 @@ fn tool_call_response_with(args: Value) -> LlmResponse {
                 name: "double".to_owned(),
                 args,
                 id: Some("call-1".to_owned()),
+                thought_signature: None,
+            }],
+        }),
+        finish_reason: Some(FinishReason::Stop),
+        turn_complete: true,
+        ..LlmResponse::default()
+    }
+}
+
+fn ask_user_call_response() -> LlmResponse {
+    LlmResponse {
+        content: Some(Content {
+            role: "model".to_owned(),
+            parts: vec![Part::FunctionCall {
+                name: ASK_USER_TOOL_NAME.to_owned(),
+                args: json!({
+                    "questions": [{
+                        "question": "Which environment should I use?",
+                        "header": "Environment",
+                        "options": [
+                            {"label": "Staging", "description": "Use the staging project."},
+                            {"label": "Production", "description": "Use the production project."}
+                        ]
+                    }]
+                }),
+                id: Some("ask-call-1".to_owned()),
                 thought_signature: None,
             }],
         }),
@@ -616,6 +645,155 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
     assert!(durable_confirmation_seen);
     assert_eq!(model_calls.load(Ordering::SeqCst), 1);
     assert_eq!(tool_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn ask_user_pauses_and_resumes_as_the_original_correlated_tool_result() {
+    let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+    request.payload.internal_tools = vec![ASK_USER_TOOL_NAME.to_owned()];
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("ask_user profile");
+    let plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("ask_user native plan");
+    let internal_tools =
+        InternalToolCatalog::from_names(&request.payload.internal_tools).expect("ask_user catalog");
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model = FixtureBoundModel {
+        model: Arc::new(SequencedLlm {
+            responses: Mutex::new(VecDeque::from([ask_user_call_response()])),
+            calls: Arc::clone(&model_calls),
+        }),
+        completed: "must pause before completion".to_owned(),
+    };
+    let sessions = Arc::new(InMemorySessionService::new());
+    let injected_sessions: Arc<dyn SessionService> = sessions.clone();
+    let runtime = OrdinaryRuntimeBindings::new(
+        internal_tools.toolsets(),
+        SensitiveToolCatalog::default(),
+        DelegatedAuthorizationCatalog::default(),
+        ApplicationRuntimeProjection::default(),
+    )
+    .with_internal_tools(internal_tools);
+    let mut assembled = assemble_ordinary_native_with_sessions_and_runtime_catalogs(
+        model,
+        plan,
+        runtime,
+        NativeToolExecutionMode::Sequential,
+        injected_sessions,
+    )
+    .await
+    .expect("ask_user assembly");
+    assembled
+        .project_start(Utc::now())
+        .expect("ask_user projected start");
+    let (mut run, mut projector, _completion) = assembled.start().expect("ask_user start");
+    let mut interrupt = None;
+    while let Some(event) = run.next_event().await.expect("ask_user event") {
+        for projected in projector.project(&event).expect("ask_user projection") {
+            let value: Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected).expect("ask_user browser event"),
+            )
+            .expect("ask_user event JSON");
+            if value["type"] == "agent_hitl_interrupt" {
+                interrupt = Some(value);
+            }
+        }
+    }
+    let interrupt = interrupt.expect("ask_user interrupt");
+    let pending = &interrupt["response_metadata"]["hitl_interrupts"][0];
+    assert_eq!(pending["guardrail_type"], ASK_USER_GUARDRAIL_TYPE);
+    assert_eq!(pending["tool_call_id"], "ask-call-1");
+    assert_eq!(pending["available_actions"], json!(["answer"]));
+    assert_eq!(pending["questions"][0]["id"], "q1");
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+
+    let interrupt_id = pending["interrupt_id"]
+        .as_str()
+        .expect("ask_user public interrupt identity");
+    let encoded_answer = r#"{"q1":"Staging"}"#;
+    let mut resume_payload = ordinary_request(AgentExecutionKind::Adhoc).payload;
+    resume_payload.should_continue = true;
+    resume_payload.hitl_resume = true;
+    resume_payload.hitl_action = Some("answer".to_owned());
+    resume_payload.hitl_value = Some(encoded_answer.to_owned());
+    resume_payload.hitl_decisions = vec![json!({
+        "interrupt_id": interrupt_id,
+        "tool_call_id": "ask-call-1",
+        "action": "answer",
+        "value": encoded_answer,
+    })];
+    let decision = DirectHitlDecision::from_payload(&resume_payload).expect("ask_user decision");
+    let resume_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("ask_user resume plan");
+    let provider_calls = Arc::new(AtomicUsize::new(0));
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let resumed_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&provider_calls),
+        }),
+        completed: "continued after clarification".to_owned(),
+    };
+    let resume_runtime = OrdinaryRuntimeBindings::new(
+        internal_tools.toolsets(),
+        SensitiveToolCatalog::default(),
+        DelegatedAuthorizationCatalog::default(),
+        ApplicationRuntimeProjection::default(),
+    )
+    .with_internal_tools(internal_tools);
+    let resumed = assemble_direct_hitl_resume_with_sessions_and_applications(
+        resumed_model,
+        resume_plan,
+        resume_runtime,
+        DirectHitlDecisionSet::single(decision),
+        sessions,
+    )
+    .await
+    .expect("ask_user replay assembly");
+    let (mut resumed_run, _projector, completion) = resumed.start().expect("ask_user replay start");
+    let expected =
+        Value::String("User answered:\n- Which environment should I use?: Staging".to_owned());
+    let mut saw_answer = false;
+    while let Some(event) = resumed_run
+        .next_event()
+        .await
+        .expect("ask_user replay event")
+    {
+        saw_answer |= event.actions.tool_confirmation_decision
+            == Some(ToolConfirmationDecision::Approve)
+            && event.tool_results().iter().any(|result| {
+                result.call_id == Some("ask-call-1")
+                    && result.name == ASK_USER_TOOL_NAME
+                    && result.response == &expected
+            });
+    }
+    assert!(saw_answer);
+    assert_eq!(provider_calls.load(Ordering::SeqCst), 1);
+    completion.select().await.expect("ask_user completion");
+    let requests = captured.lock().expect("ask_user provider requests");
+    assert_eq!(requests.len(), 1);
+    let (calls, results) = count_call_parts(&requests[0], "ask-call-1");
+    assert_eq!((calls, results), (2, 1));
+    assert!(
+        requests[0]
+            .contents
+            .iter()
+            .flat_map(|content| &content.parts)
+            .any(|part| matches!(
+                part,
+                Part::FunctionResponse { function_response, id: Some(id), .. }
+                    if id == "ask-call-1"
+                        && function_response.name == ASK_USER_TOOL_NAME
+                        && function_response.response == expected
+            ))
+    );
 }
 
 #[tokio::test]

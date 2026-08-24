@@ -51,6 +51,10 @@ use super::graph::{
     EliteaGraphAgent, PIPELINE_COMPLETED_CONTENT, PipelineNodeEventReceiver,
     PipelineNodeEventStreamingAgent,
 };
+use super::internal_tools::{
+    ASK_USER_METADATA_KEY, ASK_USER_TOOL_NAME, AskUserRequest, InternalToolCatalog,
+    encode_ask_user_request,
+};
 use super::request::{AgentExecutionRequest, UserInput};
 use super::runtime::{
     AssembledNativeAgentInvocation, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
@@ -139,6 +143,7 @@ pub(crate) struct OrdinaryRuntimeBindings {
     toolsets: Vec<Arc<dyn Toolset>>,
     sensitive_tools: SensitiveToolCatalog,
     delegated_authorization: DelegatedAuthorizationCatalog,
+    internal_tools: InternalToolCatalog,
     application_runtime: ApplicationRuntimeProjection,
 }
 
@@ -154,12 +159,21 @@ impl OrdinaryRuntimeBindings {
             toolsets,
             sensitive_tools,
             delegated_authorization,
+            internal_tools: InternalToolCatalog::empty(),
             application_runtime,
         }
     }
 
+    #[must_use]
+    pub(crate) const fn with_internal_tools(mut self, internal_tools: InternalToolCatalog) -> Self {
+        self.internal_tools = internal_tools;
+        self
+    }
+
     fn has_confirmation_guards(&self) -> bool {
-        !self.sensitive_tools.is_empty() || !self.delegated_authorization.is_empty()
+        !self.sensitive_tools.is_empty()
+            || !self.delegated_authorization.is_empty()
+            || !self.internal_tools.is_empty()
     }
 }
 
@@ -192,6 +206,71 @@ pub(crate) fn delegated_authorization_agent(
             inner: agent,
             authorization,
         })
+    }
+}
+
+pub(crate) fn clarifying_question_agent(
+    agent: Arc<dyn Agent>,
+    internal_tools: InternalToolCatalog,
+) -> Arc<dyn Agent> {
+    if !internal_tools.ask_user_enabled() {
+        agent
+    } else {
+        Arc::new(ClarifyingQuestionEventAgent { inner: agent })
+    }
+}
+
+struct ClarifyingQuestionEventAgent {
+    inner: Arc<dyn Agent>,
+}
+
+#[async_trait]
+impl Agent for ClarifyingQuestionEventAgent {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn sub_agents(&self) -> &[Arc<dyn Agent>] {
+        self.inner.sub_agents()
+    }
+
+    async fn run(&self, context: Arc<dyn InvocationContext>) -> adk_rust::Result<EventStream> {
+        let mut events = self.inner.run(context).await?;
+        Ok(Box::pin(async_stream::stream! {
+            while let Some(event) = adk_rust::futures::StreamExt::next(&mut events).await {
+                let mut event = match event {
+                    Ok(event) => event,
+                    Err(error) => {
+                        yield Err(error);
+                        return;
+                    }
+                };
+                if let Some(request) = event.actions.tool_confirmation.as_ref()
+                    && request.tool_name == ASK_USER_TOOL_NAME
+                {
+                    let encoded = AskUserRequest::from_arguments(&request.args)
+                        .ok()
+                        .and_then(|request| encode_ask_user_request(&request));
+                    let Some(encoded) = encoded else {
+                        yield Err(AdkError::agent("ask_user produced an invalid clarification request"));
+                        return;
+                    };
+                    if event
+                        .provider_metadata
+                        .insert(ASK_USER_METADATA_KEY.to_owned(), encoded)
+                        .is_some()
+                    {
+                        yield Err(AdkError::agent("ask_user clarification metadata was duplicated"));
+                        return;
+                    }
+                }
+                yield Ok(event);
+            }
+        }))
     }
 }
 
@@ -1207,6 +1286,7 @@ fn build_runtime_agent(
         toolsets,
         sensitive_tools,
         delegated_authorization,
+        internal_tools,
         application_runtime,
     } = runtime;
     let mut builder = LlmAgentBuilder::new(ROOT_AGENT_NAME)
@@ -1227,6 +1307,9 @@ fn build_runtime_agent(
     for tool_name in delegated_authorization.tool_names() {
         builder = builder.require_tool_confirmation(tool_name);
     }
+    if internal_tools.ask_user_enabled() {
+        builder = builder.require_tool_confirmation(ASK_USER_TOOL_NAME);
+    }
     let ApplicationRuntimeProjection {
         presentations: application_tools,
         events: application_events,
@@ -1234,6 +1317,7 @@ fn build_runtime_agent(
     } = application_runtime;
     let agent: Arc<dyn Agent> = Arc::new(builder.build().map_err(|_| invalid_configuration())?);
     let agent = delegated_authorization_agent(agent, delegated_authorization.clone());
+    let agent = clarifying_question_agent(agent, internal_tools);
     let agent = application_events.map_or(agent.clone(), |events| {
         application_event_agent(agent, events, application_tools.clone())
     });
@@ -1353,6 +1437,7 @@ async fn prepare_direct_resume(
         toolsets,
         sensitive_tools,
         delegated_authorization,
+        internal_tools,
         application_runtime,
     } = runtime;
     let resolved = match start {
@@ -1377,6 +1462,10 @@ async fn prepare_direct_resume(
             let replay = if decision.is_delegated_authorization() {
                 (*decision)
                     .into_delegated_authorization_replay(&delegated_authorization)
+                    .map_err(|error| direct_hitl_error(&error))?
+            } else if decision.is_clarifying_question() {
+                (*decision)
+                    .into_clarifying_question_replay()
                     .map_err(|error| direct_hitl_error(&error))?
             } else {
                 (*decision)
@@ -1418,7 +1507,8 @@ async fn prepare_direct_resume(
                 events: application_events,
                 resume: None,
             },
-        ),
+        )
+        .with_internal_tools(internal_tools),
         parallel_applications,
     })
 }
