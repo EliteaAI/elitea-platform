@@ -77,7 +77,13 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   // HERE: three are Pylon plugin configuration, and two are authored on their
   // own surfaces (LLM Governance at /admin/app/governance, Service Descriptors
   // on its own page).
-  const marks = page.getByText('Not available here');
+  // SCOPED to the section list, not the page. The admin NAV RAIL carries its
+  // own "Service Descriptors" and "LLM Governance" entries, so an unscoped
+  // `getByRole('button', {name: /LLM Governance/})` matches two elements and
+  // Playwright's strict mode refuses it. The list declares
+  // `aria-label="Configuration sections"` precisely so it can be addressed.
+  const sections = page.getByRole('navigation', { name: 'Configuration sections' });
+  const marks = sections.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
   await expect(marks).toHaveCount(5);
   for (const section of [
@@ -88,7 +94,7 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
     'Service Descriptors',
   ]) {
     await expect(
-      page.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      sections.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
       `${section} is still not configurable here`,
     ).toBeVisible();
   }
@@ -99,7 +105,7 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   // else had also changed.
   for (const section of ['Banner', 'Maintenance', 'Guardrails', 'LLM Proxy', 'Authentication']) {
     await expect(
-      page.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      sections.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
       `${section} is available and must not be marked`,
     ).toHaveCount(0);
   }
@@ -107,7 +113,7 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
   // Advanced is not marked either — it is GONE. Its subject is Pylon plugin
   // loading, which the target architecture drops on purpose, so a permanent
   // "not available here" row would be a promise that can never be kept.
-  await expect(page.getByRole('button', { name: /Advanced/ })).toHaveCount(0);
+  await expect(sections.getByRole('button', { name: /Advanced/ })).toHaveCount(0);
 
   // Guardrails is NOT among them, and is the section the page lands on. The
   // count above cannot show that on its own: it would still pass if every
@@ -380,7 +386,11 @@ adminTest('J34j: the Maintenance section is an editable form', async ({ page }) 
 
   await maintenance.click();
   await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
-  await expect(page.getByRole('checkbox', { name: 'Maintenance Mode' })).toBeVisible();
+  // `switch`, not `checkbox`. The form renders a boolean as MUI's Switch, whose
+  // input carries role="switch" — the idiom admin.features.spec.ts already uses
+  // for `Enable MCP`. A `checkbox` locator finds nothing and reads as "the form
+  // did not render", which is a different and much more alarming failure.
+  await expect(page.getByRole('switch', { name: 'Maintenance Mode' })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Splash Message' })).toBeVisible();
 
   // THE SWITCH IS NOT FLIPPED HERE, deliberately. Enabling it would make
@@ -391,7 +401,7 @@ adminTest('J34j: the Maintenance section is an editable form', async ({ page }) 
   // `internal/api/middleware/maintenance_internal_test.go` for who is admitted
   // and what escapes the window, and `widgets/app-shell`'s tests for the splash
   // replacing the shell and an exempt caller keeping the product.
-  await expect(page.getByRole('checkbox', { name: 'Maintenance Mode' })).not.toBeChecked();
+  await expect(page.getByRole('switch', { name: 'Maintenance Mode' })).not.toBeChecked();
 
   await checkA11y(page);
 });
