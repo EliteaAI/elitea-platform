@@ -7,7 +7,7 @@ package scim
 //
 // # A push carries the members. It never carries the project or the role
 //
-// `elitea_auth.scim_group_bindings` (shared migration 0097) holds the half a
+// `elitea_auth.scim_group_bindings` (shared migration 0098) holds the half a
 // SCIM group cannot express, authored by an administrator before any push. So:
 //
 //   - `POST /Groups` BINDS. A group with no binding is refused by name, with

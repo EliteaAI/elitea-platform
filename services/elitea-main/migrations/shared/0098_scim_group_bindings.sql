@@ -1,4 +1,4 @@
--- 0097_scim_group_bindings.sql — the tables SCIM 2.0 GROUP provisioning needs:
+-- 0098_scim_group_bindings.sql — the tables SCIM 2.0 GROUP provisioning needs:
 -- the authored binding of one identity provider group to one project role, and
 -- the ledger of what a push granted.
 --
@@ -39,6 +39,13 @@
 -- The foreign key BETWEEN THE TWO TABLES BELOW is present, because both are
 -- created by this file. It carries the cascade that keeps the ledger from
 -- outliving the binding it describes.
+--
+-- IT WAS WRITTEN AS 0097 AND RENUMBERED ON MERGE. 0097
+-- (`0097_gateway_model_price_override.sql`) landed on main while this was in
+-- review. Both authors were right when they chose the number and only one could
+-- keep it: `scripts/database/check-migration-version.sh` reads the BASE BRANCH
+-- at check time, so a number is claimed at merge, not at authoring. 0094's
+-- header records the same collision.
 --
 -- IDEMPOTENT throughout. No BEGIN/COMMIT: the ledgered runner executes each file
 -- inside one transaction with its ledger row (migrate/runner.go apply).

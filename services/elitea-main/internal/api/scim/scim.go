@@ -43,7 +43,7 @@
 // says nothing about either half of what it would have to grant.
 //
 // What changed is where the missing half comes from. It is AUTHORED, in
-// `elitea_auth.scim_group_bindings` (shared migration 0097), by an
+// `elitea_auth.scim_group_bindings` (shared migration 0098), by an
 // administrator, before any push: one binding names one project and one role,
 // and a group push supplies only the members. So the identity provider decides
 // WHO, and this deployment decides WHAT THEY GET — neither can invent the

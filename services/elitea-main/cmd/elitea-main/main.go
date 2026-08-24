@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
@@ -1185,6 +1186,26 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
 	}
 
+	// The admin LLM Proxy section reads the gateway's own enforcement status.
+	// Same four settings again, for the third and last consumer of the hop, so
+	// an operator configures the gateway once. No identity secret: the gateway
+	// verifies no HMAC on that route.
+	var gatewayStatus gateway.StatusReader
+	if statusClient, statusErr := gateway.NewGatewayStatusClientFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+	); statusErr != nil {
+		return fmt.Errorf("compose gateway status client: %w", statusErr)
+	} else if statusClient != nil {
+		// Assigned only when non-nil, for the reason spelled out above
+		// configConnectionChecker: a nil pointer boxed into this interface is
+		// not nil, and the handler's "not configured" branch would never run.
+		gatewayStatus = statusClient
+		slog.Info("gateway status client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
 	// BF0.9c/d: the gateway proxy needs the same production-auth wiring as
 	// every other auth-protected route above, gated on formGraph != nil —
 	// assigning a nil *FormGraph directly to an interface field would produce
@@ -1353,6 +1374,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
 		ConfigConnectionChecker:       configConnectionChecker,
+		GatewayStatus:                 gatewayStatus,
 		ConfigProviderAdmission:       configProviderAdmission,
 		ObjectStore:                   objectStore,
 		ProjectVectorStore:            projectVectorStore,

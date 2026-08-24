@@ -5,7 +5,7 @@ package scimdirectory
 // Every table here is created from the statement the deployed migration
 // carries: `auth_core__*` and `centry.project` in the shape
 // internal/infra/db/migrations/001_initial.sql creates them, and the two SCIM
-// tables from shared migration 0097's own file. A test that built its own
+// tables from shared migration 0098's own file. A test that built its own
 // convenient schema would prove a copy nobody deploys.
 //
 // What is asserted is the ROW STATE after each call — who holds which role on
@@ -529,7 +529,7 @@ func newGroupPool(t *testing.T) *pgxpool.Pool {
 
 	for _, file := range []string{
 		"../../migrations/shared/0096_scim_provisioning.sql",
-		"../../migrations/shared/0097_scim_group_bindings.sql",
+		"../../migrations/shared/0098_scim_group_bindings.sql",
 	} {
 		migration, err := os.ReadFile(file)
 		require.NoError(t, err, "the migration file must be readable: this test proves IT, not a copy of it")

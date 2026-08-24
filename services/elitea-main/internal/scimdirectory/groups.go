@@ -11,7 +11,7 @@ package scimdirectory
 // nothing about a project and nothing about a role.
 //
 // The missing half is AUTHORED, in `elitea_auth.scim_group_bindings` (shared
-// migration 0097), by an administrator, before any push arrives. The binding
+// migration 0098), by an administrator, before any push arrives. The binding
 // names the project and the role; the identity provider supplies the members.
 // Neither side can invent the other's half:
 //
@@ -383,7 +383,7 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	if err := revokeMembers(ctx, tx, binding, members); err != nil {
 		return err
 	}
-	// The ledger rows go with the binding: the foreign key in 0097 carries ON
+	// The ledger rows go with the binding: the foreign key in 0098 carries ON
 	// DELETE CASCADE, and both tables are created by that file, so the cascade
 	// is one this corpus is allowed to have.
 	if _, err := tx.Exec(ctx,

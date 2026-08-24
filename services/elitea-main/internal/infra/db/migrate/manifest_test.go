@@ -153,12 +153,28 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// provisioning needs. It holds the identity provider's externalId and the
 	// resource timestamps, keyed by user id — the account row itself is
 	// pylon-owned and is read and updated, never reshaped.
-	// 97: shared/0097_scim_group_bindings.sql, the authored binding of one SCIM
+	// 97: shared/0097_gateway_model_price_override.sql, which lets an operator
+	// author a model price that the scheduler's price-sync UPSERT will not
+	// overwrite. The column is the handshake between two writers of the same
+	// row: without it the syncer's ON CONFLICT DO UPDATE reassigns every price
+	// column from EXCLUDED, so an authored price is correct until the next tick
+	// and then silently reverts.
+	//
+	// It was written as 0095 and renumbered on merge: 0095 and 0096 landed on
+	// main while this was in review. Both authors were right when they wrote the
+	// number and only one could stay — the same collision 0094's header records,
+	// and the reason check-migration-version.sh reads the base branch at check
+	// time rather than the pull request's own history.
+	// 98: shared/0098_scim_group_bindings.sql, the authored binding of one SCIM
 	// group to one project role, and the ledger of what a push granted. It
 	// reverses 0096's refusal of /Groups: the project and the role are authored
 	// by an administrator before any push, so the identity provider supplies the
 	// membership and never invents the half a SCIM group cannot carry.
-	require.EqualValues(t, 97, Head(shared))
+	//
+	// It was written as 0097 and renumbered on merge, for the reason the entry
+	// above records: 0097 landed on main while this was in review, and a number
+	// is claimed at merge rather than at authoring.
+	require.EqualValues(t, 98, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
