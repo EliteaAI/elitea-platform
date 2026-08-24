@@ -1,7 +1,7 @@
 package mcpregistry
 
 // The PostgreSQL store behind `elitea_mcp.prebuilt_servers` (shared migration
-// 0092).
+// 0094).
 
 import (
 	"context"

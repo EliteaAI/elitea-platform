@@ -802,7 +802,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		r.Route("/api/v2", func(r chi.Router) {
 			mountRuntimeRoutes(r, cfg.RuntimeRoutes)
 
-			// The PRE-BUILT MCP server catalogue (shared migration 0092) and
+			// The PRE-BUILT MCP server catalogue (shared migration 0094) and
 			// the platform vault its client secrets are sealed into.
 			//
 			// One store and one vault seam, built once and given to BOTH the

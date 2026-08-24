@@ -1,7 +1,7 @@
 package mcpregistry_test
 
 // Acceptance for the pre-built MCP catalogue store against a real PostgreSQL
-// (shared migration 0092).
+// (shared migration 0094).
 //
 // The unit tests around this package assert the RESOLUTION rules on values that
 // a test constructed. They cannot report that the table is wrong, that a
@@ -177,7 +177,7 @@ func TestPrebuiltStoreListsAnEmptyCatalogueAsEmpty(t *testing.T) {
 	require.Empty(t, entries)
 }
 
-// The constraints in 0092 are load-bearing: they are what stops a row that no
+// The constraints in 0094 are load-bearing: they are what stops a row that no
 // code path can honour from being stored by a future caller that forgets to
 // check.
 func TestPrebuiltStoreRejectsUnusableDefinitions(t *testing.T) {
@@ -214,7 +214,7 @@ func TestPrebuiltStoreWithoutAPoolReportsIt(t *testing.T) {
 
 /* ── database bootstrap ────────────────────────────────────────────────── */
 
-// newCataloguePool builds an isolated database and applies migration 0092 to
+// newCataloguePool builds an isolated database and applies migration 0094 to
 // it. The DDL is executed from the migration FILE rather than restated here, so
 // this test cannot pass against a schema the migration does not create.
 func newCataloguePool(t *testing.T) *pgxpool.Pool {
@@ -257,7 +257,7 @@ func newCataloguePool(t *testing.T) *pgxpool.Pool {
 		adminPool.Close()
 	})
 
-	migration, err := os.ReadFile("../../migrations/shared/0092_mcp_prebuilt_catalogue.sql")
+	migration, err := os.ReadFile("../../migrations/shared/0094_mcp_prebuilt_catalogue.sql")
 	require.NoError(t, err, "the migration file must be readable: this test proves IT, not a copy of it")
 	_, err = pool.Exec(ctx, string(migration))
 	require.NoError(t, err)
@@ -266,7 +266,7 @@ func newCataloguePool(t *testing.T) *pgxpool.Pool {
 	// to be idempotent, and a re-run is what a partially-applied deployment
 	// does.
 	_, err = pool.Exec(ctx, string(migration))
-	require.NoError(t, err, "migration 0092 must be idempotent")
+	require.NoError(t, err, "migration 0094 must be idempotent")
 
 	return pool
 }

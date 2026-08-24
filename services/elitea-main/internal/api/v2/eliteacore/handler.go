@@ -3570,7 +3570,7 @@ func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	// A pre-built MCP toolkit leaves the platform to supply the endpoint and the
 	// credentials, which is what pylon's `resolve_mcp_prebuilt_settings` does
 	// from its plugin configuration. The catalogue is a table here (shared
-	// migration 0092); the resolution fills only fields the caller left empty,
+	// migration 0094); the resolution fills only fields the caller left empty,
 	// so a toolkit that carries its own URL still wins.
 	if mcpregistry.IsPrebuiltToolkitType(body.ToolkitType) {
 		resolved, err := h.resolvePrebuiltSettings(r.Context(), map[string]any{

@@ -1,4 +1,4 @@
--- 0092_mcp_prebuilt_catalogue.sql — the PRE-BUILT MCP server catalogue: the
+-- 0094_mcp_prebuilt_catalogue.sql — the PRE-BUILT MCP server catalogue: the
 -- platform-wide list of MCP servers an operator offers as ready-made toolkits.
 --
 -- WHAT THIS REPLACES. In pylon the catalogue is a block of the indexer_worker

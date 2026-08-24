@@ -7,7 +7,7 @@ package secrets
 // A platform-wide feature that owns a credential on the operator's behalf,
 // rather than a person typing one into the Secrets page. The first such feature
 // is the pre-built MCP server catalogue (`internal/mcpregistry`, shared
-// migration 0092): the operator defines "GitHub Copilot" once with a client
+// migration 0094): the operator defines "GitHub Copilot" once with a client
 // secret, and every project can then pick it as a ready-made toolkit without
 // ever being shown the secret.
 //

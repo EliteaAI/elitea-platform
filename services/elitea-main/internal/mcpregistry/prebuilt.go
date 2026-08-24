@@ -15,7 +15,7 @@ package mcpregistry
 //
 // This service loads no plugins, has no descriptor to patch and speaks no
 // Arbiter, so none of that could be ported as it stands. The catalogue is a
-// table here (shared migration 0092) and the two functions are Resolve and the
+// table here (shared migration 0094) and the two functions are Resolve and the
 // store's Lookup.
 //
 // # One behaviour is deliberately better than the reference

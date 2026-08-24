@@ -2,7 +2,7 @@ package eliteacore
 
 // Resolution of the PRE-BUILT MCP server catalogue into a request's settings.
 //
-// This is the read half of shared migration 0092. The catalogue is defined by
+// This is the read half of shared migration 0094. The catalogue is defined by
 // an operator through `internal/api/v2/admin/mcp_prebuilt.go`; this file is
 // what makes a definition do something, by filling the fields a pre-built MCP
 // toolkit leaves for the platform to supply.

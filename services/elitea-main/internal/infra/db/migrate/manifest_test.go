@@ -125,25 +125,27 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// deployment gains anything; a pylon-backed database carries no per-project
 	// permission row, so the central fallback is live there and every project
 	// viewer did gain the secret listing.
-	// 92: shared/0092_mcp_prebuilt_catalogue.sql, the platform-wide catalogue
-	// of pre-built MCP servers. It replaces the indexer_worker plugin
-	// descriptor block that pylon distributes over the Arbiter event bus, which
-	// this service has no way to read.
-	//
-	// This is the number 0093's header said it had yielded. The gap it recorded
-	// is closed by this merge: 92 and 93 are both present, so `requireComplete`
-	// has both to find and neither branch had to renumber.
-	//
-	// A database that already applied 93 picks 92 up on its next run. That is
-	// allowed on purpose — validateRecordedLedger checks version MEMBERSHIP,
-	// name and checksum, never monotonic order — so filling a gap behind an
-	// applied migration is not the "database ahead" fault it resembles.
 	// 93: shared/0093_governance_config_type_check.sql, which constrains
 	// gateway.governance_config.type to the value set every reader switches on,
 	// and carries the correction 0067's checksum-immutable header could not: the
 	// gateway now DOES read this table (#218). The constraint is NOT VALID so an
 	// existing row with an unknown type does not fail the release.
-	require.EqualValues(t, 93, Head(shared))
+	// 94: shared/0094_mcp_prebuilt_catalogue.sql, the platform-wide catalogue of
+	// pre-built MCP servers. It replaces the indexer_worker plugin descriptor
+	// block that pylon distributes over the Arbiter event bus, which this service
+	// has no way to read.
+	//
+	// It was written as 0092 and renumbered here. 0093's header records that it
+	// left 0092 free for this file, and 92 IS still free — but a free number is
+	// not the rule. scripts/database/check-migration-version.sh requires an added
+	// migration to be ABOVE the base head, gap or no gap, so that two deployments
+	// applying the corpus at different times apply it in the same order. The
+	// ledger would have tolerated the back-fill; the policy does not, and the
+	// policy is the stricter of the two on purpose.
+	//
+	// 92 stays empty. Nothing needs to fill it: LoadManifest sorts by version and
+	// Head() reads the last entry, so a gap costs nothing.
+	require.EqualValues(t, 94, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

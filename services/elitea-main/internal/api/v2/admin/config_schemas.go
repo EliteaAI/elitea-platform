@@ -450,7 +450,7 @@ func skillPublishingSection() map[string]any {
 // This section used to carry pylonPluginConfigUnavailable, and that WAS true of
 // it: the values addressed the indexer_worker plugin descriptor, collected over
 // the Arbiter bus, and nothing here read them. It is no longer the whole truth,
-// because the catalogue itself now exists — shared migration 0092,
+// because the catalogue itself now exists — shared migration 0094,
 // `internal/mcpregistry` and the three routes in mcp_prebuilt.go — so a reader
 // told only "Pylon plugin runtimes" would conclude the feature is missing when
 // it is merely somewhere else.
