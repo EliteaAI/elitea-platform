@@ -174,6 +174,21 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	// contract already permits and no spec edit follows.
 	defaults["blocked_toolkits"] = h.blockedToolkits(r.Context())
 
+	// The two platform-wide announcements. Added rather than overlaid, like the
+	// MCP and voice pairs above and by the same contract permission
+	// (`additionalProperties: true`): a per-project `environment_settings` row
+	// must not be able to raise or silence a PLATFORM banner, nor claim the
+	// platform is in maintenance when it is not.
+	//
+	// These are the only two keys here that are objects rather than scalars.
+	// They are objects because each is a message plus the rules for showing it,
+	// and flattening them into `banner_enabled` / `banner_message` / … would
+	// scatter one setting across five sibling keys that a client would have to
+	// know to reassemble.
+	banner, maintenance := h.announcements(r.Context())
+	defaults["dedicated_banner"] = banner
+	defaults["maintenance"] = h.maintenancePayload(r.Context(), maintenance)
+
 	writeJSON(w, http.StatusOK, defaults)
 }
 

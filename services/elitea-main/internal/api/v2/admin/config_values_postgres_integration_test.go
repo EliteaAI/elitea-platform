@@ -484,9 +484,10 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 	_, router := newConfigEnvironment(t)
 
 	for _, section := range []string{
-		// `advanced`, `governance` and `service_descriptors` are omitted here
-		// because they additionally declare a `required_permission`, which is
-		// checked FIRST — they are covered by the permission cases below.
+		// `governance` and `service_descriptors` are omitted here because they
+		// additionally declare a `required_permission`, which is checked FIRST —
+		// they are covered by the permission cases below. `advanced` used to be
+		// the third name in that group and is gone from the schema entirely.
 		// `voice_features` was in this list until unit A14's Features page:
 		// #217 marked it unavailable because "nothing reads this setting yet",
 		// which was true of the components it had looked at
@@ -502,9 +503,24 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// freeze started reading it. Its consumers are recorded in
 		// TestSchemaDeclaresAvailabilityForEverySection below, and its own
 		// round trip is asserted in guardrails_postgres_integration_test.go.
+		//
+		// `dedicated_banner` and `maintenance` left this list together, and each
+		// for the reason it was withheld under. The banner was "nothing reads
+		// this setting yet" — true twice over, since the legacy SPA took it from
+		// a BUILD-TIME variable, so the rows this form wrote were read nowhere;
+		// `platform_settings` publishes them now and widgets/app-shell renders
+		// them. Maintenance was "the switch would toggle a setting nothing
+		// enforces"; internal/api/middleware's Maintenance gate enforces it.
+		// Both are enumerated with their consumers in
+		// TestSchemaDeclaresAvailabilityForEverySection below.
+		//
+		// `advanced` is not here either, and unlike every other name that left
+		// this list it did not become available — it was REMOVED. Its subject is
+		// Pylon plugin loading, which the target architecture drops on purpose,
+		// so there was never going to be a consumer; a section withheld forever
+		// is a promise that cannot be kept.
 		"mcp_servers", "observability", "llm_proxy", "runtime",
-		"admin_panel", "auth", "dedicated_banner", "support_assistant",
-		"maintenance",
+		"admin_panel", "auth", "support_assistant",
 	} {
 		target := "/admin/plugin_config_values/administration/" + section
 		read := configDo(t, router, http.MethodGet, target, nil)
@@ -570,7 +586,7 @@ func TestSectionPermissionFailsClosedWithoutAResolver(t *testing.T) {
 	principal := auth.User{ID: "7", Email: "operator@example.com"}
 	router := configRouter(admin.NewHandler(pool), &principal)
 
-	for _, section := range []string{"service_descriptors", "advanced", "governance"} {
+	for _, section := range []string{"service_descriptors", "governance"} {
 		recorder := configDo(t, router, http.MethodGet,
 			"/admin/plugin_config_values/administration/"+section, nil)
 		if recorder.Code != http.StatusForbidden {
@@ -591,9 +607,9 @@ func TestSectionPermissionRefusesACallerWithoutIt(t *testing.T) {
 	router := configRouter(handler, &principal)
 
 	recorder := configDo(t, router, http.MethodGet,
-		"/admin/plugin_config_values/administration/advanced", nil)
+		"/admin/plugin_config_values/administration/governance", nil)
 	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("advanced status = %d, want 403 for a caller without configuration.advanced (body %s)",
+		t.Fatalf("governance status = %d, want 403 for a caller without configuration.governance (body %s)",
 			recorder.Code, recorder.Body.String())
 	}
 }
@@ -661,10 +677,19 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	                    of the execution input; and eliteacore
 	//	                    PlatformSettings publishes blocked_toolkits so the
 	//	                    product UI can mark an existing toolkit blocked
+	//	dedicated_banner  → platformconfig.LoadBanner, marshalled by eliteacore
+	//	                    PlatformSettings as `dedicated_banner` and rendered
+	//	                    by apps/elitea-web widgets/app-shell's PlatformBanner
+	//	maintenance       → platformconfig.LoadMaintenance, ENFORCED by
+	//	                    internal/api/middleware's Maintenance gate (503 for
+	//	                    every caller without runtime.plugins) and published
+	//	                    on PlatformSettings so the SPA paints the splash
+	//	                    rather than a wall of failed requests
 	want := map[string]bool{
 		"resources": true, "mcp_configuration": true,
 		"agent_publishing": true, "voice_features": true,
-		"guardrails": true,
+		"guardrails": true, "dedicated_banner": true,
+		"maintenance": true,
 	}
 	for id := range want {
 		if !available[id] {

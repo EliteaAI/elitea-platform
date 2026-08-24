@@ -34,6 +34,8 @@ const (
 	SectionAgentPublishing  = "agent_publishing"
 	SectionVoiceFeatures    = "voice_features"
 	SectionGuardrails       = "guardrails"
+	SectionDedicatedBanner  = "dedicated_banner"
+	SectionMaintenance      = "maintenance"
 )
 
 // Field keys, for the same reason.
@@ -51,6 +53,16 @@ const (
 	KeySensitiveTools                 = "sensitive_tools"
 	KeySensitiveActionCompanyName     = "sensitive_action_company_name"
 	KeySensitiveActionMessageTemplate = "sensitive_action_message_template"
+
+	KeyBannerEnabled     = "banner_enabled"
+	KeyBannerDismissible = "banner_dismissible"
+	KeyBannerIcon        = "banner_icon"
+	KeyBannerStyle       = "banner_style"
+	KeyBannerMessage     = "banner_message"
+
+	KeyMaintenanceEnabled = "maintenance_enabled"
+	KeyMaintenanceTitle   = "maintenance_title"
+	KeyMaintenanceMessage = "maintenance_message"
 )
 
 // Values is one section's stored rows, decoded. A key ABSENT from the map has
