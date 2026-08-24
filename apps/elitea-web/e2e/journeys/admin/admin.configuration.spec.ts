@@ -65,9 +65,49 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
 
   // Marked in the SIDEBAR, so the shape of what this deployment offers is
   // legible before the operator clicks anything.
+  //
+  // ENUMERATED, not counted. This was `count() > 5`, and a count cannot tell
+  // "a section became available with a consumer behind it" from "a section lost
+  // its mark by accident" — both move the number the same way. It is the same
+  // correction config_values_postgres_integration_test.go states for the live
+  // set on the server side, and the same reason: a section changing status has
+  // to be written down next to what justifies it.
+  //
+  // These five are marked because this platform genuinely cannot serve them
+  // HERE: three are Pylon plugin configuration, and two are authored on their
+  // own surfaces (LLM Governance at /admin/app/governance, Service Descriptors
+  // on its own page).
   const marks = page.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  expect(await marks.count(), 'most Configuration sections remain unavailable').toBeGreaterThan(5);
+  await expect(marks).toHaveCount(5);
+  for (const section of [
+    'Observability',
+    'Runtime',
+    'Admin Panel',
+    'LLM Governance',
+    'Service Descriptors',
+  ]) {
+    await expect(
+      page.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      `${section} is still not configurable here`,
+    ).toBeVisible();
+  }
+
+  // And the sections that LEFT that group are not marked. Asserting only the
+  // five above would pass on a build where Banner and Maintenance had silently
+  // reverted to refusing, since the count would still be right if something
+  // else had also changed.
+  for (const section of ['Banner', 'Maintenance', 'Guardrails', 'LLM Proxy', 'Authentication']) {
+    await expect(
+      page.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      `${section} is available and must not be marked`,
+    ).toHaveCount(0);
+  }
+
+  // Advanced is not marked either — it is GONE. Its subject is Pylon plugin
+  // loading, which the target architecture drops on purpose, so a permanent
+  // "not available here" row would be a promise that can never be kept.
+  await expect(page.getByRole('button', { name: /Advanced/ })).toHaveCount(0);
 
   // Guardrails is NOT among them, and is the section the page lands on. The
   // count above cannot show that on its own: it would still pass if every

@@ -604,7 +604,10 @@ func (h *Handler) requireGlobalRowSection(
 
 	var section string
 	err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
-		`SELECT section FROM %q.configuration WHERE %s = $1`,
+		// COALESCE so a NULL section is a clean refusal rather than a scan
+		// error logged as a failure: a row with no section belongs to no
+		// surface, which is the same answer either way.
+		`SELECT COALESCE(section, '') FROM %q.configuration WHERE %s = $1`,
 		schema, configurationIDColumn(configID)), configID).Scan(&section)
 	if err != nil {
 		// A missing row and an unreadable one both answer 404 rather than 500.
