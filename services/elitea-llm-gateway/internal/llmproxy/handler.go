@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/pkg/ssewriter"
 )
 
@@ -42,6 +43,24 @@ type Handler struct {
 	// nano-USD. Post-completion only — admission passes no estimate (issue #10).
 	// Required when budgetGate is non-nil; ignored (and may be nil) otherwise.
 	costCalc CostEstimator
+
+	// policy supplies the authored governance DEFINITIONS from
+	// gateway.governance_config (policy_gate.go). nil disables every authored
+	// control — model allowlists, rate limits, MCP allowlists, routing rules
+	// and rate policy — and is the posture of a gateway with no database.
+	// It is a DIFFERENT plane from budgetGate: that one enforces spend against
+	// a counter, this one enforces what an operator wrote down.
+	policy PolicySource
+	// rateLimiter enforces the authored per-minute ceilings against the shared
+	// NATS counter. nil (or a limiter with no counter) disables rate limiting
+	// while leaving the other authored controls in force.
+	rateLimiter *policy.Limiter
+	// budgetUsage supplies the CEL `budget_used` variable to routing rules. nil
+	// resolves it to 0.
+	budgetUsage BudgetUsageReader
+	// routePick is the weighted-target draw for routing rules. nil selects a
+	// random source; a test sets it to make a weighted rule determinate.
+	routePick func(total float64) float64
 
 	// billingWg tracks in-flight async billing goroutines (Fix round-3 #2).
 	// DrainBilling() blocks until all goroutines complete. billingClosing is
@@ -506,6 +525,15 @@ func (h *Handler) buildContext(w http.ResponseWriter, r *http.Request, detach bo
 		if id.userID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyUserID, id.userID)
 		}
+		// The tenant is the governance CEL `customer_id`. It has been forwarded
+		// by the edge since the identity path was written and, until the
+		// authored-governance plane landed, nothing read it — the same shape of
+		// gap as the user id before issue #321. A routing rule scoped to a
+		// customer needs it, so it goes on the context with the rest of the
+		// identity rather than being re-read from headers later.
+		if id.tenantID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, id.tenantID)
+		}
 	}
 	return ctx, sc, true
 }
@@ -540,7 +568,8 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	// "total gateway overhead".
 	t0 := time.Now()
 	var req openai.OpenAIChatRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -557,6 +586,12 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provider, model := providerModelFromChatReq(bifReq)
+	// The authored MCP allowlist judges the servers the caller named, before
+	// the budget gate: a refused request must not move a counter.
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// Pre-flight budget check (admission only; the cost is billed post-response).
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
@@ -652,7 +687,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 // when the body sets "stream": true.
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	var req openai.OpenAIResponsesRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -669,6 +705,11 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
 	provider, model := providerModelFromResponsesReq(bifReq)
+	// The authored MCP allowlist judges the tools[] entries of type "mcp".
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
@@ -742,7 +783,8 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 // framing (design §6.2; corrects the stale "uses Chat" table).
 func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	var req anthropic.AnthropicMessageRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -758,6 +800,11 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	provider, model := providerModelFromResponsesReq(bifReq)
+	// The authored MCP allowlist judges the mcp_servers[] entries.
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// Pre-flight budget check (see Chat handler comment).
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context

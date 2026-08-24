@@ -62,6 +62,7 @@ import HubOutlinedIcon from '@mui/icons-material/HubOutlined';
 // The reference imports `@mui/icons-material/PeopleOutline`, which MUI 9 no
 // longer ships under that name; `PeopleOutlineOutlined` is the same glyph.
 import PeopleOutlineIcon from '@mui/icons-material/PeopleOutlineOutlined';
+import PolicyOutlinedIcon from '@mui/icons-material/PolicyOutlined';
 import ScheduleOutlinedIcon from '@mui/icons-material/ScheduleOutlined';
 import SecurityOutlinedIcon from '@mui/icons-material/SecurityOutlined';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -217,6 +218,19 @@ function navGroups(): readonly AdminNavGroup[] {
           // administration-mode admin roles. Keep both: the section name still
           // reaches a pylon-backed deployment.
           anyPermission: ['configuration.service_descriptors', 'runtime.airun.serviceproviders'],
+        },
+        {
+          id: 'governance',
+          path: '/governance',
+          label: t('pages.admin.nav.governance', 'LLM Governance'),
+          icon: PolicyOutlinedIcon,
+          // The permission every governance route is gated on server-side
+          // (`internal/api/router.go`, `central("configuration.governance")`),
+          // plus the `configuration` prefix that `ExpandPermissions` expands
+          // into it. Both are names this platform's administration mode issues
+          // — see this module's header on why an unissuable name is a nav item
+          // that disappears for good.
+          anyPermission: ['configuration', 'configuration.governance'],
         },
         {
           id: 'audit',

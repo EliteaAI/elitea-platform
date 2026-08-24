@@ -13,9 +13,9 @@
  * adminui handler's `BasePath` — the handler serves this SPA at that prefix and
  * rewrites its asset URLs to match.
  *
- * All ten reachable pages exist: Users, Audit Trail, Roles, Projects, Secrets,
- * Schedules & Tasks, App Requests, Configuration, Service Descriptors and
- * Features. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
+ * All eleven reachable pages exist: Users, Audit Trail, Roles, Projects,
+ * Secrets, Schedules & Tasks, App Requests, Configuration, Service Descriptors,
+ * Features and LLM Governance. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
  * ported because #201 replaces LiteLLM with Bifrost — porting an admin page for
  * a subsystem being removed would be building a control for something on its
  * way out. `adminNav.ts` therefore has no LiteLLM entry either, and its test
@@ -86,6 +86,10 @@ const AdminAppRequests = lazyRouteComponent(() => import('./AppRequests'), 'Admi
 const AdminServiceDescriptors = lazyRouteComponent(
   () => import('./ServiceDescriptors'),
   'AdminServiceDescriptors',
+);
+const AdminGatewayGovernance = lazyRouteComponent(
+  () => import('./GatewayGovernance'),
+  'AdminGatewayGovernance',
 );
 
 /**
@@ -169,6 +173,18 @@ const serviceDescriptorsRoute = createRoute({
   component: AdminServiceDescriptors,
 });
 
+/**
+ * Admin › LLM Governance (#218). The Configuration page's LLM Governance
+ * section has always pointed the operator at `/admin/gateway/governance` — an
+ * elitea-main REST route with no screen behind it in this SPA. This is that
+ * screen; the REST path is unchanged and is what the page calls.
+ */
+const governanceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/governance',
+  component: AdminGatewayGovernance,
+});
+
 const adminRouteTree = rootRoute.addChildren([
   indexRoute,
   usersRoute,
@@ -181,6 +197,7 @@ const adminRouteTree = rootRoute.addChildren([
   configurationRoute,
   serviceDescriptorsRoute,
   featuresRoute,
+  governanceRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {

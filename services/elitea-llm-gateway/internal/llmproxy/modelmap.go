@@ -216,7 +216,11 @@ func (h *Handler) mapModel(
 ) bool {
 	if h.models == nil {
 		publishRequestModel(ctx, *model)
-		return true
+		// No model map is not an exemption from governance: a deployment that
+		// forwards every model unchanged still has authored allowlists and
+		// routing rules, and skipping them here would make "no model resolver"
+		// a way to bypass the policy.
+		return h.applyPolicy(w, ctx, provider, model)
 	}
 	projectID := identityProjectFromCtx(ctx)
 	mo, outcome := h.models.resolve(ctx, projectID, requestModelCandidates(*provider, *model))
@@ -253,7 +257,10 @@ func (h *Handler) mapModel(
 			ctx.SetValue(account.ContextKeyLinkedCredential, link)
 		}
 		publishRequestModel(ctx, *model)
-		return true
+		// The authored governance plane runs LAST, on the resolved target: a
+		// routing rule may rewrite it, and the model allowlist then judges what
+		// the request will actually dispatch to (policy_gate.go).
+		return h.applyPolicy(w, ctx, provider, model)
 	case modelNotAdvertised:
 		h.logger.WarnContext(ctx, "model is not configured for this project",
 			"project_id", projectID, "model", *model)

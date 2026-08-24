@@ -171,6 +171,74 @@ decision]** are risk/policy calls an autonomous agent must NOT change without si
   still document 5/1s/30s and now disagree with the code — those live in
   `elitea-docs`, a different repository.
 
+## Authored governance (issue #218, 2026-08-23)
+
+`gateway.governance_config` is the table elitea-main's admin surface writes and
+this gateway now reads. Before #218 nothing read it: `internal/governance` is
+the budget COUNTER engine over `gateway.project_budget`, and a rule saved on the
+admin surface was enforced nowhere. The table's own migration header and the
+admin schema each claimed otherwise, and both were wrong.
+
+`internal/policy` is the new plane. It is a SEPARATE package from
+`internal/governance`, deliberately: one enforces spend against a counter, the
+other enforces what an operator wrote down. They share no state and meet in one
+place — `BudgetDefaults`, wired in the composition root.
+
+**Decisions that are policy, not mechanism. Do not change these without a human.**
+
+- **Rate limits FAIL OPEN when the NATS counter is unreachable**, and every
+  fail-open is counted (`Limiter.Degraded()`, served on `/governance/status`). A
+  rate limit protects against overload; it is not the spend control. Failing
+  closed would turn a NATS outage into a total outage, and the budget gate — which
+  IS the spend control — has its own fail-mode FSM for that decision.
+- **A failed definition refresh keeps the PREVIOUS snapshot.** Dropping to the
+  empty snapshot on a transient database fault would silently lift every
+  allowlist and every rate limit at the moment the platform is least healthy.
+  The staleness is reported instead (`Store.Status().Error` alongside
+  `last_success`).
+- **An unreadable credential rate policy bills NORMALLY.** `billed` is the only
+  safe default: the other two suppress accounting, and a definition that failed
+  to load must never be the reason spend goes unrecorded. That is the one
+  failure direction with no way back.
+- **A routing rule that ERRORS is skipped, never treated as matching.** An
+  erroring predicate says nothing about whether the rule applies, and defaulting
+  it to "apply" would let a typo in one rule re-route a whole deployment.
+- **Routing runs BEFORE the model allowlist**, both inside `mapModel`. A rule
+  must not be able to route a request to a model the operator forbade; the
+  routed target is what the allowlist judges. `TestRoutingCannotEscapeTheModelAllowlist`
+  pins the order and was mutation-verified.
+- **An authored budget is a FALLBACK only.** It is consulted on the branch that
+  used to return "no row ⇒ unlimited", so a project gains a ceiling it did not
+  have and never loses one it did. A per-project `gateway.project_budget` row
+  always wins.
+
+**Limits that are real, and are stated in the UI and in the schema rather than
+in a release note.**
+
+- **A token ceiling is enforced on the request AFTER the one that crossed it.** A
+  request's token cost is unknown until the provider answers. Doing better needs
+  a tokeniser for every provider dialect on the hot path.
+- **There is NO warm reload.** The design offers "at load, or when a warm-reload
+  event is issued"; only the poll is implemented (`LLM_GOVERNANCE_REFRESH_SEC`,
+  default 30 s). The poll converges unconditionally — a replica that missed an
+  event because it was starting, or because NATS was down, still picks the
+  change up — and a second path that is usually redundant is a second path that
+  can be silently broken. A definition takes effect within the interval.
+- **`scope.team_ids` is refused on write and makes an existing row INERT.** This
+  platform has no teams: no migration creates the table and no request carries
+  one. The row is reported, not silently dropped.
+- **Four CEL variables are declared and unevaluable** — `team_id`,
+  `tokens_used`, `complexity_tier`, `headers` — and a rule naming one is refused
+  at authoring with the reason. They stay DECLARED so the authoring and
+  enforcement environments remain identical; `policy.UnevaluableCELVariables` and
+  elitea-main's `unevaluableCELVariables` are pinned together by
+  `TestUnevaluableCELVariablesMatchTheGateway`, which reads the gateway source.
+- **`GET /governance/status`** is the operator's answer to "is the rule I saved
+  in force?". It reports the snapshot's `loaded_at`, every row REJECTED with its
+  reason, and every row that loaded but can match nothing. The admin SPA cannot
+  reach it: the admin surface does not talk to the gateway (design §5), and a
+  proxy for it is a separate decision.
+
 ## Trust boundary
 - **[human decision] Deny-by-default trusted-proxy model.** `X-Auth-*` identity
   headers are honored only from `TRUSTED_PROXY_CIDRS` (matched on RemoteAddr, not

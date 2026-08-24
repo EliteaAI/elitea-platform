@@ -13,11 +13,11 @@
  * unchanged in substance and asserted against the same public route.
  *
  * Most of what is left on this page is every section this platform cannot serve
- * — Pylon plugin configuration, a maintenance hook that does not exist, an LLM
- * governance surface nothing enforces. That is a true and useful thing for the
- * page to say, and it is most of what this journey asserts: not that a form
- * renders, but that each pane states a server-declared REASON and each endpoint
- * refuses the write rather than accepting and discarding it.
+ * HERE — Pylon plugin configuration, and a maintenance hook that does not
+ * exist. That is a true and useful thing for the page to say, and it is most of
+ * what this journey asserts: not that a form renders, but that each pane states
+ * a server-declared REASON and each endpoint refuses the write rather than
+ * accepting and discarding it.
  *
  * **Guardrails is the exception, and is now the page's landing section.** It was
  * on the unavailable list until the toolkit surfaces, the toolkit write paths
@@ -25,6 +25,13 @@
  * journey no longer says "everything here is unavailable"; it says which
  * sections are, which one is not, and — because the difference is the whole
  * point of the page — that the two look different.
+ *
+ * **LLM Governance is unavailable for a CHANGED REASON, not a changed status.**
+ * It used to be withheld because nothing enforced it. #218 made the gateway
+ * read and enforce `gateway.governance_config`, so the section now points at
+ * `/admin/app/governance` and says the definitions take effect. It stays
+ * unavailable HERE because a governance corpus is a list of scoped rows and
+ * this page is a flat form over one value document.
  *
  * Before unit A14 every one of those sections answered 200 on both verbs — the
  * GET with schema defaults, the PUT with an empty object and the request body
