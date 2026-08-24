@@ -174,7 +174,18 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It was written as 0097 and renumbered on merge, for the reason the entry
 	// above records: 0097 landed on main while this was in review, and a number
 	// is claimed at merge rather than at authoring.
-	require.EqualValues(t, 98, Head(shared))
+	// 99: shared/0099_gateway_request_logs.sql, the gateway's per-request log.
+	// It is a THIRD per-request table beside the money accumulator and the
+	// billing ledger, and the reason is that a billing delta rides only a
+	// BILLED request — so a call refused by a budget, rejected by a policy,
+	// addressed to an unresolvable model or failed upstream produces no ledger
+	// row at all. A log built over the ledger would list successes and no
+	// failures, which is the opposite of what a log is for.
+	//
+	// It stores NO request or response content, including no upstream error
+	// text: the failure column is a classification the gateway assigns, so
+	// there is no column a prompt fragment can reach.
+	require.EqualValues(t, 99, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)

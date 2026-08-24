@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/requestlog"
 )
 
 // maxRequestBody bounds a decoded JSON body so a malformed or hostile request
@@ -79,6 +81,22 @@ type openAIErrorFields struct {
 
 // writeError writes an OpenAI-shaped error body at the given status.
 func writeError(w http.ResponseWriter, status int, errType, message, code string) {
+	// Attach the gateway's own error TYPE to the request log, if one is
+	// running. The type-assertion is the whole integration: it costs nothing
+	// when the log is off, and it means the thirty-odd call sites below need to
+	// know nothing about logging.
+	//
+	// The TYPE and not the MESSAGE. The message is the one field here that can
+	// carry caller content — an upstream error routinely quotes the offending
+	// fragment of the request back — and internal/requestlog has no column it
+	// could reach.
+	if sink, ok := w.(requestlog.ErrorCodeSetter); ok {
+		classification := errType
+		if classification == "" {
+			classification = code
+		}
+		sink.SetErrorCode(classification)
+	}
 	writeJSON(w, status, openAIError{Error: openAIErrorFields{Message: message, Type: errType, Code: code}})
 }
 

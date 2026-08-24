@@ -33,6 +33,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -47,6 +48,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/requestlog"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/server"
 )
 
@@ -378,7 +380,27 @@ func main() {
 		[]byte(cfg.IdentitySecret),
 		handlerOpts...,
 	)
-	mux.Handle("/llm/", api.NewRouter(handler))
+	// The per-request log (shared migration 0099). It records one row per
+	// request the gateway serves — billed or not, succeeded or not — which is
+	// the question gateway.llm_usage_events cannot answer, because a billing
+	// delta rides only a BILLED request.
+	//
+	// Built over the same pool the credentials and models resolver use. A nil
+	// pool yields a nil recorder and the middleware becomes a pass-through, so
+	// the zero-provider bootstrap posture keeps working with no log rather than
+	// failing to start.
+	//
+	// It NEVER stores request or response content — see internal/requestlog.
+	requestLogger := requestlog.New(requestlog.NewStore(pool), logger)
+	if requestLogger != nil {
+		logger.Info("request log ENABLED",
+			"retention", requestlog.RetentionWindow.String(),
+			"buffer", requestlog.BufferSize)
+	} else {
+		logger.Warn("request log DISABLED: no database pool — the admin Logs view will be empty")
+	}
+
+	mux.Handle("/llm/", api.NewRouterWithLog(handler, requestLogger))
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -402,6 +424,24 @@ func main() {
 		slog.Error("gateway shutdown error", "err", err)
 		failed = true
 	}
+
+	// The request log drains AFTER the sequence, and deliberately OUTSIDE it.
+	//
+	// shutdownSequence is the one ordering in which no SPEND is lost, and every
+	// step in it earned its place from a reproduced money loss. A log is not
+	// spend: nothing downstream reconciles against it, and delaying the billing
+	// drain to write log rows would trade money for telemetry. Here, the HTTP
+	// surface has already quiesced, so no further record can be produced and
+	// the drain has a fixed amount of work.
+	//
+	// It IS drained rather than discarded: what is buffered describes the last
+	// second of traffic, which is exactly the window an operator investigating a
+	// crash-loop is looking for. The bound keeps a wedged database from holding
+	// the process open past its termination window.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 5*time.Second)
+	requestLogger.Stop(drainCtx)
+	cancelDrain()
+
 	if failed {
 		os.Exit(1)
 	}
