@@ -435,8 +435,11 @@ descendant ID set to the pending node/checkpoint, while the application replay
 coordinator consumes exact Authorize/Skip or mixed sensitive/auth decisions.
 Focused tests prove hierarchy retention, partial-set rejection before
 materialization, same-call Skip results, exact authorized dispatch and no model
-replanning. Main plural/mixed decision admission plus terminal-card aggregation
-remain production activation gaps.
+replanning. The delivery lifecycle now exposes every card as ordinary progress
+and binds one ordered exact-ID/hierarchy aggregate to the `PausedMcpAuth`
+terminal at ADK EOS. Main plural/mixed decision admission, independent partial
+resume and mixed sensitive/auth terminal aggregation remain production
+activation gaps.
 
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.

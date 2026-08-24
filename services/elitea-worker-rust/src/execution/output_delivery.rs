@@ -482,6 +482,7 @@ struct AckedResultArtifact {
 pub(super) enum FreshAgentTerminalSelection {
     Completed,
     PausedHitl,
+    PausedMcpAuth,
     Failure(RuntimeFailureKind),
 }
 
@@ -490,6 +491,7 @@ impl FreshAgentTerminalSelection {
         match self {
             Self::Completed => Some(AgentTerminalState::Completed),
             Self::PausedHitl => Some(AgentTerminalState::PausedHitl),
+            Self::PausedMcpAuth => Some(AgentTerminalState::PausedMcpAuth),
             Self::Failure(_) => None,
         }
     }
@@ -719,6 +721,46 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             }),
         )
         .await
+    }
+
+    /// Publish one browser-visible pause card without minting terminal-result
+    /// authority for it.
+    ///
+    /// Nested and parallel agents may expose several independently actionable
+    /// pause cards before the ADK stream reaches its durable pause boundary.
+    /// Those cards must be visible immediately, while only the final aggregate
+    /// pause event may bind the execution terminal artifact.
+    pub(super) async fn publish_pause_progress(
+        &mut self,
+        verified: &VerifiedAgentCommand,
+        event: NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        if !matches!(
+            event.r#type.as_str(),
+            "agent_hitl_interrupt" | "mcp_authorization_required"
+        ) {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the pause-progress path requires a pause event",
+            ));
+        }
+        if self.failed_closed {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher failed closed after a nonretryable outcome",
+            ));
+        }
+        if self.pending.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the progress publisher already owns a pending frame",
+            ));
+        }
+        if self.acked_result.is_some() {
+            return Err(AgentProgressPublishError::InvalidState(
+                "the durably acknowledged result must remain the last progress event",
+            ));
+        }
+        self.publish_event(verified, event, occurred_at_unix_millis, None)
+            .await
     }
 
     /// Consume the complete progress owner into one exact terminal ACK.
@@ -1326,7 +1368,7 @@ fn result_artifact_for_event(
     let event_suffix = match event.r#type.as_str() {
         "full_message" => "full-message",
         "agent_hitl_interrupt" => "hitl-interrupt",
-        "mcp_authorization_required" => "mcp-authorization",
+        "mcp_authorization_required" => "mcp-authorization-required",
         _ => {
             return Err(ProtocolError::InvalidInput(
                 "the result artifact requires a result-bearing event",

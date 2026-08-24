@@ -79,9 +79,12 @@ field, preserving `interrupt_id`, the original `tool_call_id` and
 `guardrail_type=mcp_auth`; the standalone Python worker accepts and forwards the
 same shared command to the current SDK. Main rejects a persisted multi-card
 authorization pause on this scalar route instead of deleting unresolved
-siblings. A bounded plural/mixed Main continuation and terminal-card aggregate
-remain required before the parallel path can be activated; no new protobuf
-field is required. A pipeline Agent node now carries the same exact
+siblings. The Rust delivery owner now exposes each same-family pause card as
+ordinary progress and binds one bounded ordered exact-ID/call/hierarchy
+aggregate as the sole paused terminal after ADK EOS. A bounded plural/mixed
+Main continuation, independent partial sibling resume and mixed-guardrail
+terminal aggregate remain required before the parallel path can be activated;
+no new protobuf field is required. A pipeline Agent node now carries the same exact
 parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
 remains public, partial sets fail before materialization, Skip closes each
 original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
@@ -90,7 +93,8 @@ atomically. Concrete SharePoint/OpenAPI families remain gaps.
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic
 open gate. The remaining authorization gates are Main plural/mixed decision-set
-activation, terminal-card aggregation, platform OAuth/DCR, runtime-discovered configured families,
+activation, independent partial sibling resume, mixed-guardrail aggregation,
+platform OAuth/DCR, runtime-discovered configured families,
 concrete SharePoint/OpenAPI clients and production activation.
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
@@ -129,7 +133,7 @@ concrete SharePoint/OpenAPI clients and production activation.
 | SDK `tools/zephyr_squad/{__init__,api_wrapper,zephyr_squad_cloud_client}.py`; Main current toolkit snapshot/freezer/materializer; Python worker shared SDK adapter | Fifteen Jira-backed Zephyr Squad step, BDD, cycle, folder and execution operations, inline credential materialization, empty/subset selection and `read`/`write`/`delete` grouping | `src/toolkits/families/zephyr_squad/{config,client,tools}.rs` | Eight focused inline-config/JWT-golden/exact-route/body/error/argument/model-metadata/policy tests plus future credentialed application/ad-hoc component proof | Capability-disabled complete family: all 5 reads, 8 writes and 2 deletes are present; fixed-origin JWT requests and provider results are bounded, descriptions are selection-oriented, and live materialization, exact-interrupt HITL plus cancellation-safe effect reconciliation remain gates |
 | SDK `configurations/report_portal.py` and `tools/report_portal/{__init__,api_wrapper,report_portal_client}.py`; Main configuration/toolkit catalog, freezer/materializer; Python worker shared SDK adapter | Nine project, launch, item, log, user, dashboard and raw/readable report reads, empty/subset selection, live connection-check contract and application/ad-hoc parity | `src/toolkits/families/report_portal/{config,client,tools}.rs` | Thirteen focused configuration/wire/export/text/result/bound/model-metadata/policy tests plus future credentialed application/ad-hoc component proof | Capability-disabled complete read family: all nine operations are present; raw HTML is bounded UTF-8, small raw PDF has a bounded base64 fallback, readable analysis uses deterministic HTML text, and the provider page index defaults to zero. Authorized materialization, egress policy, provider check composition, durable large-export artifact streaming and live proof remain gates |
 | `projects/centry/pylon_indexer/plugins/indexer_worker/**` | Current application/ad-hoc invocation, callback, checkpoint, child dispatch, and indexing behavior | `src/agents/`, `src/compat/`, then `src/indexing/` | Differential fixtures plus cross-process tests | Not started |
-| `adk-rust = 2.0.0` published crates | Native agent, graph, toolset, session, checkpoint, MCP, and HITL primitives | Capability owners under `src/agents`, `src/toolkits`, `src/state` and `src/transport` | Native direct-agent/graph/session/checkpoint/model/tool/MCP/HITL component and contract corpus | Adopted selectively. Direct HTTP MCP graph nodes use RMCP challenge classification plus ADK dynamic interrupts and the existing durable session/checkpoint owner. Materializer-known root and pipeline-LLM calls use native original-call confirmation. Parallel/nested exact authorization, platform OAuth/DCR, runtime-discovered configured families, MCP catalog/sync, prebuilt/static/stdio clients and Elitea-as-MCP-server exposure remain explicit gates |
+| `adk-rust = 2.0.0` published crates | Native agent, graph, toolset, session, checkpoint, MCP, and HITL primitives | Capability owners under `src/agents`, `src/toolkits`, `src/state` and `src/transport` | Native direct-agent/graph/session/checkpoint/model/tool/MCP/HITL component and contract corpus | Adopted selectively. Direct HTTP MCP graph nodes use RMCP challenge classification plus ADK dynamic interrupts and the existing durable session/checkpoint owner. Materializer-known root and pipeline-LLM calls use native original-call confirmation. Nested same-family authorization cards now aggregate under one paused terminal; independent partial resume, mixed-guardrail aggregation, platform OAuth/DCR, runtime-discovered configured families, MCP catalog/sync, prebuilt/static/stdio clients and Elitea-as-MCP-server exposure remain explicit gates |
 | This reconstruction | Fail-closed diagnostic with no production registration | `src/capabilities.rs`, `src/lib.rs` | Deterministic JSON and rejection tests | Implemented; transport availability does not enable agent execution |
 
 The tracked mapping will be expanded to source symbols and proving test files as

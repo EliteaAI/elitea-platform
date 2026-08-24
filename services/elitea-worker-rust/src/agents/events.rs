@@ -170,53 +170,48 @@ impl fmt::Display for AgentEventProjectionError {
 
 impl std::error::Error for AgentEventProjectionError {}
 
-/// Fixed-capacity projection result.
+/// Bounded projection result.
 ///
 /// A caller sends and durably acknowledges every event in order before polling
-/// the ADK stream again. Keeping the batch inline avoids a heap-backed event
-/// queue per active invocation.
+/// the ADK stream again. The event slots stay heap-owned so nested projection
+/// and async delivery never copy an 11 KiB inline array through the executor
+/// stack; capacity remains fixed at the admitted per-event maximum.
 pub(crate) struct ProjectedAgentEventBatch {
-    events: [Option<NodeEventV1>; MAX_PROJECTED_EVENTS_PER_ADK_EVENT],
-    len: usize,
+    events: Vec<NodeEventV1>,
 }
 
 impl ProjectedAgentEventBatch {
     fn new() -> Self {
         Self {
-            events: std::array::from_fn(|_| None),
-            len: 0,
+            events: Vec::with_capacity(MAX_PROJECTED_EVENTS_PER_ADK_EVENT),
         }
     }
 
     fn push(&mut self, event: NodeEventV1) -> Result<(), AgentEventProjectionError> {
-        let slot = self
-            .events
-            .get_mut(self.len)
-            .ok_or_else(AgentEventProjectionError::invalid_state)?;
-        *slot = Some(event);
-        self.len += 1;
+        if self.events.len() == MAX_PROJECTED_EVENTS_PER_ADK_EVENT {
+            return Err(AgentEventProjectionError::invalid_state());
+        }
+        self.events.push(event);
         Ok(())
     }
 
     #[must_use]
     pub(crate) const fn len(&self) -> usize {
-        self.len
+        self.events.len()
     }
 
     #[must_use]
     pub(crate) const fn is_empty(&self) -> bool {
-        self.len == 0
+        self.events.is_empty()
     }
 }
 
 impl IntoIterator for ProjectedAgentEventBatch {
     type Item = NodeEventV1;
-    type IntoIter = std::iter::Flatten<
-        std::array::IntoIter<Option<NodeEventV1>, MAX_PROJECTED_EVENTS_PER_ADK_EVENT>,
-    >;
+    type IntoIter = std::vec::IntoIter<NodeEventV1>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.events.into_iter().flatten()
+        self.events.into_iter()
     }
 }
 

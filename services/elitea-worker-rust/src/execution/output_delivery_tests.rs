@@ -35,7 +35,9 @@ use super::agent_preparation::{
 };
 use super::invocation_admission::{InvocationAdmission, InvocationAdmissionConfig};
 use super::invocation_supervisor::InvocationSupervisor;
-use super::native_agent_lifecycle::NativeAuthorizedAgentLifecycle;
+use super::native_agent_lifecycle::{
+    AgentPauseAccumulator, AgentPauseAggregationError, NativeAuthorizedAgentLifecycle,
+};
 use super::output_delivery::{
     AcceptedTerminalOutputRecovery, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightKind, AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind,
@@ -1457,6 +1459,35 @@ fn browser_hitl_interrupt() -> crate::protocol::elitea::runtime::v1::NodeEventV1
     .expect("valid HITL interrupt event")
 }
 
+fn browser_authorization_card(
+    interrupt_id: &str,
+    tool_call_id: &str,
+    parent_name: &str,
+    parent_call_id: &str,
+) -> crate::protocol::elitea::runtime::v1::NodeEventV1 {
+    let raw = json!({
+        "type": "mcp_authorization_required",
+        "content": "Toolkit authorization is required.",
+        "response_metadata": {
+            "thread_id": "thread-1",
+            "guardrail_type": "mcp_auth",
+            "interrupt_id": interrupt_id,
+            "tool_call_id": tool_call_id,
+            "tool_name": "search_records",
+            "toolkit_name": "Customer Records",
+            "toolkit_type": "openapi",
+            "server_url": "https://records.example.invalid/api",
+            "parent_agent_name": parent_name,
+            "parent_agent_call_id": parent_call_id,
+            "parent_agent_path": [{"name": parent_name, "call_id": parent_call_id}],
+            "available_actions": ["authorize", "skip"],
+            "resume_strategy": "root"
+        }
+    });
+    decode_current_node_event_json(&serde_json::to_vec(&raw).expect("authorization browser JSON"))
+        .expect("valid authorization browser event")
+}
+
 #[test]
 fn progress_session_budget_matches_the_deployed_v1_bounds() {
     assert!(AgentProgressPublisherConfig::new(1).is_ok());
@@ -1574,6 +1605,90 @@ async fn acked_sensitive_interrupt_mints_only_paused_hitl_result_authority() {
         )
     );
     assert_eq!(artifact.byte_length, browser_json.len() as u64);
+}
+
+#[tokio::test]
+async fn acked_authorization_aggregate_mints_only_paused_authorization_result_authority() {
+    let state = FakeProgressState::new([LiveProgressAction::Acknowledge], []);
+    let (_temporary, verified, mut publisher) =
+        fresh_progress_publisher(Arc::clone(&state), 2).await;
+    let event = browser_authorization_card("auth-1", "call-1", "resolver", "parent-1");
+
+    let outcome = publisher
+        .publish_result_event(&verified, event, NOW)
+        .await
+        .expect("durable authorization aggregate ACK");
+    assert_eq!(
+        outcome,
+        AgentProgressPublishOutcome::Acknowledged { sequence: 5 }
+    );
+    let (terminal_state, artifact) = publisher
+        .into_test_acked_result()
+        .expect("ACKed authorization result proof");
+    assert_eq!(terminal_state, AgentTerminalState::PausedMcpAuth);
+    assert_eq!(
+        artifact.artifact_id,
+        format!(
+            "node-event:{}:mcp-authorization-required",
+            verified.command().execution_id
+        )
+    );
+}
+
+#[test]
+fn parallel_authorization_cards_aggregate_exact_ids_calls_and_hierarchy_in_order() {
+    let first = browser_authorization_card("auth-1", "call-1", "resolver", "parent-1");
+    let second = browser_authorization_card("auth-2", "call-2", "resolver", "parent-2");
+    let mut pauses = AgentPauseAccumulator::default();
+    assert!(pauses.observe(&first).expect("first authorization card"));
+    assert!(pauses.observe(&second).expect("second authorization card"));
+
+    let aggregate = pauses.finish().expect("authorization aggregate");
+    assert!(matches!(
+        aggregate.selection,
+        super::output_delivery::FreshAgentTerminalSelection::PausedMcpAuth
+    ));
+    let metadata: serde_json::Value = serde_json::from_slice(&aggregate.event.response_metadata)
+        .expect("aggregate authorization metadata");
+    let requests = metadata["authorization_requests"]
+        .as_array()
+        .expect("authorization requests");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["interrupt_id"], "auth-1");
+    assert_eq!(requests[0]["tool_call_id"], "call-1");
+    assert_eq!(requests[0]["parent_agent_call_id"], "parent-1");
+    assert_eq!(requests[1]["interrupt_id"], "auth-2");
+    assert_eq!(requests[1]["tool_call_id"], "call-2");
+    assert_eq!(requests[1]["parent_agent_call_id"], "parent-2");
+    assert_eq!(metadata["interrupt_id"], "auth-2");
+    assert_eq!(metadata["tool_call_id"], "call-2");
+}
+
+#[test]
+fn mixed_guardrail_cards_fail_before_terminal_authority_is_selected() {
+    let sensitive = decode_current_node_event_json(
+        &serde_json::to_vec(&json!({
+            "type": "agent_hitl_interrupt",
+            "content": "approval required",
+            "response_metadata": {
+                "hitl_interrupts": [{
+                    "interrupt_id": "sensitive-1",
+                    "tool_call_id": "sensitive-call-1"
+                }]
+            }
+        }))
+        .expect("sensitive browser JSON"),
+    )
+    .expect("sensitive browser event");
+    let authorization = browser_authorization_card("auth-1", "call-1", "resolver", "parent-1");
+    let mut pauses = AgentPauseAccumulator::default();
+    assert!(pauses.observe(&sensitive).expect("sensitive card"));
+    assert!(pauses.observe(&authorization).expect("authorization card"));
+
+    assert!(matches!(
+        pauses.finish(),
+        Err(AgentPauseAggregationError::MixedGuardrails)
+    ));
 }
 
 #[tokio::test]
@@ -3034,7 +3149,7 @@ async fn sensitive_interrupt_is_the_acked_paused_hitl_terminal_and_skips_complet
         panic!("valid HITL input must reach authorization");
     };
     let progress_state =
-        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 7), []);
+        FakeProgressState::new(std::iter::repeat_n(LiveProgressAction::Acknowledge, 8), []);
     let connector = FakeProgressConnector {
         state: Arc::clone(&progress_state),
     };
@@ -3080,11 +3195,11 @@ async fn sensitive_interrupt_is_the_acked_paused_hitl_terminal_and_skips_complet
 
     assert!(matches!(
         completion.disposition(),
-        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 12, .. }
+        AgentAuthorizedLifecycleDisposition::ExecutedSettledAcked { sequence: 13, .. }
     ));
     let frames = progress_state.frames.lock().expect("HITL lifecycle frames");
-    assert_eq!(frames.len(), 8);
-    let event_types = frames[..7]
+    assert_eq!(frames.len(), 9);
+    let event_types = frames[..8]
         .iter()
         .map(|frame| match frame.payload.as_ref() {
             Some(execution_output_frame_v1::Payload::NodeEvent(event)) => event.r#type.as_str(),
@@ -3101,11 +3216,12 @@ async fn sensitive_interrupt_is_the_acked_paused_hitl_terminal_and_skips_complet
             "agent_tool_start",
             "partial_message",
             "agent_hitl_interrupt",
+            "agent_hitl_interrupt",
         ]
     );
-    let Some(execution_output_frame_v1::Payload::NodeEvent(interrupt)) = frames[6].payload.as_ref()
+    let Some(execution_output_frame_v1::Payload::NodeEvent(interrupt)) = frames[7].payload.as_ref()
     else {
-        panic!("HITL result frame must carry the interrupt");
+        panic!("aggregate HITL result frame must carry the interrupt");
     };
     let metadata: serde_json::Value =
         serde_json::from_slice(&interrupt.response_metadata).expect("HITL response metadata");
@@ -3121,7 +3237,7 @@ async fn sensitive_interrupt_is_the_acked_paused_hitl_terminal_and_skips_complet
             .any(|window| window == b"never-publish")
     );
     let Some(execution_output_frame_v1::Payload::AgentExecution(result)) =
-        frames[7].payload.as_ref()
+        frames[8].payload.as_ref()
     else {
         panic!("HITL terminal must carry the bound agent result");
     };

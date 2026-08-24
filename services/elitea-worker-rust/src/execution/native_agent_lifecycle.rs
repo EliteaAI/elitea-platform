@@ -6,9 +6,12 @@
 
 #![allow(dead_code)] // Production capability registration remains fail-closed.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use serde_json::{Map, Value};
 use tracing::Instrument as _;
 
 use super::agent_invocation::{
@@ -18,11 +21,11 @@ use super::agent_invocation::{
 use super::agent_lease::{ClaimLeaseError, ClaimLeaseStateProbe, UnixMillisClock};
 use super::agent_preparation::{
     AgentNativeAssemblyOutcome, AssembledAuthorizedAgentRun, AuthorizedAgentRun,
-    CursorBoundAuthorizedAgentRun,
+    CursorBoundAuthorizedAgentRun, StartedAuthorizedAgentRun,
 };
 use super::output_delivery::{
-    AgentProgressConnector, AgentProgressPublishOutcome, AgentTerminalRecoveryConfig,
-    AgentTerminalReplay, FreshAgentTerminalSelection,
+    AgentProgressConnector, AgentProgressPublishError, AgentProgressPublishOutcome,
+    AgentTerminalRecoveryConfig, AgentTerminalReplay, FreshAgentTerminalSelection,
 };
 use crate::agents::events::{
     AgentEventProjectionError, AgentEventProjectionErrorCode, AgentEventProjector,
@@ -32,6 +35,8 @@ use crate::agents::runtime::{
     NativeAgentAssembler, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode, NativeAgentRun,
 };
 use crate::protocol::control::AgentControlClient;
+use crate::protocol::elitea::runtime::v1::NodeEventV1;
+use crate::protocol::node_event::encode_current_node_event_json;
 use crate::protocol::output::RuntimeFailureKind;
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{RedisCommandRetirer, RedisRetirementClient};
@@ -319,13 +324,45 @@ where
             .await;
         }
     };
+    Box::pin(execute_started(
+        started,
+        control,
+        retirer,
+        clock,
+        terminal_recovery,
+    ))
+    .await
+}
+
+/// Own the post-start stream and terminal phases in a separate boxed future.
+///
+/// The authorized pre-start path already owns several large generic futures.
+/// Keeping the live ADK stream phase out of that poll frame prevents each new
+/// durable pause boundary from increasing the executor thread's stack demand.
+#[allow(clippy::too_many_lines)] // Keep pause ACK, terminal selection and retirement authority linear.
+async fn execute_started<C, S, R, RC, K>(
+    started: StartedAuthorizedAgentRun<C, S>,
+    control: Arc<AgentControlClient<R>>,
+    retirer: Arc<RedisCommandRetirer<RC>>,
+    clock: Arc<K>,
+    terminal_recovery: AgentTerminalRecoveryConfig,
+) -> AgentAuthorizedLifecycleCompletion
+where
+    C: AgentProgressConnector + AgentTerminalReplay,
+    S: crate::agents::runtime::NativeAgentCompletionSelector,
+    R: ControlRpc + 'static,
+    RC: RedisRetirementClient + 'static,
+    K: UnixMillisClock,
+{
     let (mut run, mut native, mut projector, completion_selector) = started.into_parts();
 
     let mut probe = run.lease_state_probe();
+    let mut pauses = AgentPauseAccumulator::default();
     let stream = Box::pin(drive_native_stream(
         &mut run,
         &mut native,
         &mut projector,
+        &mut pauses,
         &mut probe,
         clock.as_ref(),
     ))
@@ -333,9 +370,27 @@ where
     let mut successful_terminal = FreshAgentTerminalSelection::Completed;
     let mut failure = match stream {
         NativeStreamOutcome::Eos => None,
-        NativeStreamOutcome::PausedHitl => {
-            successful_terminal = FreshAgentTerminalSelection::PausedHitl;
-            None
+        NativeStreamOutcome::Paused => {
+            let pause = match pauses.finish() {
+                Ok(pause) => pause,
+                Err(error) => {
+                    return Box::pin(run.close_no_ack(error.code(), false)).await;
+                }
+            };
+            let occurred_at_unix_millis = clock.now_unix_millis();
+            if occurred_at_unix_millis <= 0 {
+                return Box::pin(run.close_no_ack("agent_lifecycle.invalid_clock", false)).await;
+            }
+            successful_terminal = pause.selection;
+            match Box::pin(run.publish_result_event(pause.event, occurred_at_unix_millis)).await {
+                Ok(AgentProgressPublishOutcome::Acknowledged { .. }) => None,
+                Ok(AgentProgressPublishOutcome::Rejected { .. }) => {
+                    Some(RuntimeFailureKind::Cancelled)
+                }
+                Err(error) => {
+                    return Box::pin(run.close_no_ack(error.code(), error.retryable())).await;
+                }
+            }
         }
         NativeStreamOutcome::Failure(failure) => Some(failure),
         NativeStreamOutcome::RecoveryRequired { code, retryable } => {
@@ -408,7 +463,7 @@ where
                 .await;
             }
         };
-        match Box::pin(publish_batch(&mut run, batch, clock.as_ref())).await {
+        match Box::pin(publish_batch(&mut run, batch, &mut pauses, clock.as_ref())).await {
             BatchPublication::Acknowledged => {}
             BatchPublication::Rejected => {
                 failure = Some(RuntimeFailureKind::Cancelled);
@@ -433,7 +488,7 @@ where
 
 enum NativeStreamOutcome {
     Eos,
-    PausedHitl,
+    Paused,
     Failure(RuntimeFailureKind),
     RecoveryRequired { code: &'static str, retryable: bool },
     FatalLease(ClaimLeaseError),
@@ -443,6 +498,7 @@ async fn drive_native_stream<C, K>(
     run: &mut CursorBoundAuthorizedAgentRun<C>,
     native: &mut NativeAgentRun,
     projector: &mut AgentEventProjector,
+    pauses: &mut AgentPauseAccumulator,
     probe: &mut ClaimLeaseStateProbe,
     clock: &K,
 ) -> NativeStreamOutcome
@@ -475,7 +531,7 @@ where
                             return NativeStreamOutcome::Failure(failure);
                         }
                         return if projector.is_paused() {
-                            NativeStreamOutcome::PausedHitl
+                            NativeStreamOutcome::Paused
                         } else {
                             NativeStreamOutcome::Eos
                         };
@@ -505,7 +561,7 @@ where
                         continue;
                     }
                 };
-                match Box::pin(publish_batch(run, batch, clock)).await {
+                match Box::pin(publish_batch(run, batch, pauses, clock)).await {
                     BatchPublication::Acknowledged => {
                         if let Err(error) = probe.ensure_running() {
                             match error {
@@ -543,6 +599,7 @@ enum BatchPublication {
 async fn publish_batch<C, K>(
     run: &mut CursorBoundAuthorizedAgentRun<C>,
     batch: ProjectedAgentEventBatch,
+    pauses: &mut AgentPauseAccumulator,
     clock: &K,
 ) -> BatchPublication
 where
@@ -567,16 +624,29 @@ where
                 retryable: false,
             };
         }
-        let is_result = matches!(
-            event.r#type.as_str(),
-            "full_message" | "agent_hitl_interrupt" | "mcp_authorization_required"
-        );
-        let result = if is_result {
-            run.publish_result_event(event, occurred_at_unix_millis)
-                .await
-        } else {
-            run.publish_progress(event, occurred_at_unix_millis).await
+        let is_pause = match pauses.observe(&event) {
+            Ok(is_pause) => is_pause,
+            Err(error) => {
+                return BatchPublication::RecoveryRequired {
+                    code: error.code(),
+                    retryable: false,
+                };
+            }
         };
+        let publication: Pin<
+            Box<
+                dyn Future<Output = Result<AgentProgressPublishOutcome, AgentProgressPublishError>>
+                    + Send
+                    + '_,
+            >,
+        > = if is_pause {
+            Box::pin(run.publish_pause_progress(event, occurred_at_unix_millis))
+        } else if event.r#type == "full_message" {
+            Box::pin(run.publish_result_event(event, occurred_at_unix_millis))
+        } else {
+            Box::pin(run.publish_progress(event, occurred_at_unix_millis))
+        };
+        let result = publication.await;
         match result {
             Ok(AgentProgressPublishOutcome::Acknowledged { .. }) => {}
             Ok(AgentProgressPublishOutcome::Rejected { .. }) => {
@@ -591,6 +661,199 @@ where
         }
     }
     BatchPublication::Acknowledged
+}
+
+const MAX_PENDING_PAUSE_CARDS: usize = 16;
+
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AgentPauseAggregationError {
+    InvalidState,
+    ResourceExhausted,
+    MixedGuardrails,
+    InvalidOutput,
+}
+
+impl AgentPauseAggregationError {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::InvalidState => "agent_pause.invalid_state",
+            Self::ResourceExhausted => "agent_pause.resource_exhausted",
+            Self::MixedGuardrails => "agent_pause.mixed_guardrails_unsupported",
+            Self::InvalidOutput => "agent_pause.invalid_output",
+        }
+    }
+}
+
+pub(super) struct AggregatedAgentPause {
+    pub(super) event: NodeEventV1,
+    pub(super) selection: FreshAgentTerminalSelection,
+}
+
+/// Collects already-sanitized pause cards after their complete hierarchy has
+/// been projected. Each card is published as ordinary progress immediately;
+/// this owner creates the sole aggregate result event only at ADK EOS.
+#[derive(Default)]
+pub(super) struct AgentPauseAccumulator {
+    hitl_event: Option<NodeEventV1>,
+    hitl_interrupts: Vec<Value>,
+    authorization_event: Option<NodeEventV1>,
+    authorization_requests: Vec<Value>,
+}
+
+impl AgentPauseAccumulator {
+    pub(super) fn observe(
+        &mut self,
+        event: &NodeEventV1,
+    ) -> Result<bool, AgentPauseAggregationError> {
+        match event.r#type.as_str() {
+            "agent_hitl_interrupt" => {
+                self.observe_hitl(event)?;
+                Ok(true)
+            }
+            "mcp_authorization_required" => {
+                self.observe_authorization(event)?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn observe_hitl(&mut self, event: &NodeEventV1) -> Result<(), AgentPauseAggregationError> {
+        let metadata = pause_metadata(event)?;
+        let interrupts = metadata
+            .get("hitl_interrupts")
+            .and_then(Value::as_array)
+            .filter(|interrupts| !interrupts.is_empty())
+            .ok_or(AgentPauseAggregationError::InvalidState)?;
+        for interrupt in interrupts {
+            let identity = interrupt
+                .get("interrupt_id")
+                .and_then(Value::as_str)
+                .filter(|identity| !identity.is_empty())
+                .ok_or(AgentPauseAggregationError::InvalidState)?;
+            if self.hitl_interrupts.iter().any(|pending| {
+                pending.get("interrupt_id").and_then(Value::as_str) == Some(identity)
+            }) {
+                return Err(AgentPauseAggregationError::InvalidState);
+            }
+            self.ensure_capacity()?;
+            self.hitl_interrupts.push(interrupt.clone());
+        }
+        if self.hitl_event.is_none() {
+            self.hitl_event = Some(event.clone());
+        }
+        Ok(())
+    }
+
+    fn observe_authorization(
+        &mut self,
+        event: &NodeEventV1,
+    ) -> Result<(), AgentPauseAggregationError> {
+        let mut request = pause_metadata(event)?;
+        if request.remove("authorization_requests").is_some() {
+            return Err(AgentPauseAggregationError::InvalidState);
+        }
+        let identity =
+            authorization_identity(&request).ok_or(AgentPauseAggregationError::InvalidState)?;
+        if self.authorization_requests.iter().any(|pending| {
+            pending
+                .as_object()
+                .and_then(authorization_identity)
+                .is_some_and(|pending| pending == identity)
+        }) {
+            return Err(AgentPauseAggregationError::InvalidState);
+        }
+        self.ensure_capacity()?;
+        self.authorization_requests.push(Value::Object(request));
+        self.authorization_event = Some(event.clone());
+        Ok(())
+    }
+
+    fn ensure_capacity(&self) -> Result<(), AgentPauseAggregationError> {
+        if self.hitl_interrupts.len() + self.authorization_requests.len() >= MAX_PENDING_PAUSE_CARDS
+        {
+            Err(AgentPauseAggregationError::ResourceExhausted)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn finish(&mut self) -> Result<AggregatedAgentPause, AgentPauseAggregationError> {
+        match (
+            self.hitl_interrupts.is_empty(),
+            self.authorization_requests.is_empty(),
+        ) {
+            (true, true) => Err(AgentPauseAggregationError::InvalidState),
+            (false, false) => Err(AgentPauseAggregationError::MixedGuardrails),
+            (false, true) => self.finish_hitl(),
+            (true, false) => self.finish_authorization(),
+        }
+    }
+
+    fn finish_hitl(&mut self) -> Result<AggregatedAgentPause, AgentPauseAggregationError> {
+        let mut event = self
+            .hitl_event
+            .take()
+            .ok_or(AgentPauseAggregationError::InvalidState)?;
+        let primary = self
+            .hitl_interrupts
+            .first()
+            .cloned()
+            .ok_or(AgentPauseAggregationError::InvalidState)?;
+        let mut metadata = pause_metadata(&event)?;
+        metadata.insert("hitl_interrupt".to_owned(), primary);
+        metadata.insert(
+            "hitl_interrupts".to_owned(),
+            Value::Array(std::mem::take(&mut self.hitl_interrupts)),
+        );
+        bind_pause_metadata(&mut event, metadata)?;
+        Ok(AggregatedAgentPause {
+            event,
+            selection: FreshAgentTerminalSelection::PausedHitl,
+        })
+    }
+
+    fn finish_authorization(&mut self) -> Result<AggregatedAgentPause, AgentPauseAggregationError> {
+        let mut event = self
+            .authorization_event
+            .take()
+            .ok_or(AgentPauseAggregationError::InvalidState)?;
+        let mut metadata = pause_metadata(&event)?;
+        metadata.insert(
+            "authorization_requests".to_owned(),
+            Value::Array(std::mem::take(&mut self.authorization_requests)),
+        );
+        bind_pause_metadata(&mut event, metadata)?;
+        Ok(AggregatedAgentPause {
+            event,
+            selection: FreshAgentTerminalSelection::PausedMcpAuth,
+        })
+    }
+}
+
+fn pause_metadata(event: &NodeEventV1) -> Result<Map<String, Value>, AgentPauseAggregationError> {
+    serde_json::from_slice::<Value>(&event.response_metadata)
+        .ok()
+        .and_then(|metadata| metadata.as_object().cloned())
+        .ok_or(AgentPauseAggregationError::InvalidState)
+}
+
+fn authorization_identity(metadata: &Map<String, Value>) -> Option<&str> {
+    ["interrupt_id", "tool_run_id", "tool_call_id"]
+        .into_iter()
+        .find_map(|key| metadata.get(key).and_then(Value::as_str))
+        .filter(|identity| !identity.is_empty())
+}
+
+fn bind_pause_metadata(
+    event: &mut NodeEventV1,
+    metadata: Map<String, Value>,
+) -> Result<(), AgentPauseAggregationError> {
+    event.response_metadata = serde_json::to_vec(&Value::Object(metadata))
+        .map_err(|_| AgentPauseAggregationError::InvalidOutput)?;
+    encode_current_node_event_json(event)
+        .map(|_| ())
+        .map_err(|_| AgentPauseAggregationError::InvalidOutput)
 }
 
 async fn publish_assembled_batch<C, S, K>(

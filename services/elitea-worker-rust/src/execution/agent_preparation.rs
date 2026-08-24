@@ -935,6 +935,16 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
             .await
     }
 
+    pub(crate) async fn publish_pause_progress(
+        &mut self,
+        event: crate::protocol::elitea::runtime::v1::NodeEventV1,
+        occurred_at_unix_millis: i64,
+    ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
+        self.publisher
+            .publish_pause_progress(&self.verified, event, occurred_at_unix_millis)
+            .await
+    }
+
     pub(crate) async fn resume_pending_progress(
         &mut self,
     ) -> Result<AgentProgressPublishOutcome, AgentProgressPublishError> {
