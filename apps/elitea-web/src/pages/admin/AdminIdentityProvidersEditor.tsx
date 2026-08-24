@@ -31,30 +31,32 @@
  * should clear "Use this provider for logins" instead, which keeps the secret —
  * the confirmation says so.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useState } from "react";
 
-import Alert from '@mui/material/Alert';
-import Box from '@mui/material/Box';
-import Button from '@mui/material/Button';
-import Dialog from '@mui/material/Dialog';
-import DialogActions from '@mui/material/DialogActions';
-import DialogContent from '@mui/material/DialogContent';
-import DialogTitle from '@mui/material/DialogTitle';
-import LinearProgress from '@mui/material/LinearProgress';
-import Typography from '@mui/material/Typography';
+import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
+import Divider from "@mui/material/Divider";
+import LinearProgress from "@mui/material/LinearProgress";
+import Typography from "@mui/material/Typography";
 
-import { t } from '@/shared/i18n';
+import { t } from "@/shared/i18n";
 
-import { AdminIdentityProviderDialog } from './AdminIdentityProviderDialog';
-import { ProviderTable } from './AdminIdentityProviderTable';
-import { configFailureReason } from './api/adminConfigurationApi';
+import { AdminIdentityProviderDialog } from "./AdminIdentityProviderDialog";
+import { AdminScimGroupBindingsEditor } from "./AdminScimGroupBindingsEditor";
+import { ProviderTable } from "./AdminIdentityProviderTable";
+import { configFailureReason } from "./api/adminConfigurationApi";
 import {
   useAdminIdentityProviders,
   useDeleteAdminIdentityProvider,
   useSaveAdminIdentityProvider,
   type AdminIdentityProvider,
   type AdminIdentityProviderDraft,
-} from './api/adminIdentityProvidersApi';
+} from "./api/adminIdentityProvidersApi";
 
 /**
  * The load and action alerts.
@@ -78,7 +80,10 @@ function ProviderAlerts({
       {loadError != null ? (
         <Alert severity="warning" data-testid="admin-identity-providers-error">
           {configFailureReason(loadError) ??
-            t('pages.admin.identityProviders.error.load', 'Failed to load the identity providers.')}
+            t(
+              "pages.admin.identityProviders.error.load",
+              "Failed to load the identity providers.",
+            )}
         </Alert>
       ) : null}
 
@@ -88,10 +93,10 @@ function ProviderAlerts({
           onClose={onDismissAction}
           data-testid="admin-identity-providers-action-error"
         >
-          {actionError === 'delete'
+          {actionError === "delete"
             ? t(
-                'pages.admin.identityProviders.error.delete',
-                'Failed to remove that identity provider.',
+                "pages.admin.identityProviders.error.delete",
+                "Failed to remove that identity provider.",
               )
             : actionError}
         </Alert>
@@ -110,8 +115,8 @@ function ProviderAlerts({
  */
 function deleteWarning(name: string): string {
   return t(
-    'pages.admin.identityProviders.delete.body',
-    'This removes “{{name}}” and deletes its stored secret, which cannot be recovered. To stop using it while keeping the secret, edit it and clear “Use this provider for logins” instead.',
+    "pages.admin.identityProviders.delete.body",
+    "This removes “{{name}}” and deletes its stored secret, which cannot be recovered. To stop using it while keeping the secret, edit it and clear “Use this provider for logins” instead.",
     { name },
   );
 }
@@ -122,8 +127,12 @@ export function AdminIdentityProvidersEditor() {
   const deleteMutation = useDeleteAdminIdentityProvider();
 
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<AdminIdentityProvider | undefined>(undefined);
-  const [pendingDelete, setPendingDelete] = useState<AdminIdentityProvider | undefined>(undefined);
+  const [editing, setEditing] = useState<AdminIdentityProvider | undefined>(
+    undefined,
+  );
+  const [pendingDelete, setPendingDelete] = useState<
+    AdminIdentityProvider | undefined
+  >(undefined);
   const [saveError, setSaveError] = useState<string | undefined>(undefined);
   const [actionError, setActionError] = useState<string | undefined>(undefined);
 
@@ -160,7 +169,7 @@ export function AdminIdentityProvidersEditor() {
       // refused — and on this screen that input includes a secret they would
       // have to find again.
       onError: (error: unknown) => {
-        setSaveError(configFailureReason(error) ?? 'save');
+        setSaveError(configFailureReason(error) ?? "save");
       },
     });
   };
@@ -173,18 +182,18 @@ export function AdminIdentityProvidersEditor() {
         setPendingDelete(undefined);
       },
       onError: (error: unknown) => {
-        setActionError(configFailureReason(error) ?? 'delete');
+        setActionError(configFailureReason(error) ?? "delete");
         setPendingDelete(undefined);
       },
     });
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       <Typography variant="bodySmall" color="text.secondary">
         {t(
-          'pages.admin.identityProviders.description',
-          'The identity providers this deployment federates logins through. Each secret is sealed in the platform vault and is never returned by any endpoint. One provider of each protocol can be live at a time.',
+          "pages.admin.identityProviders.description",
+          "The identity providers this deployment federates logins through. Each secret is sealed in the platform vault and is never returned by any endpoint. One provider of each protocol can be live at a time.",
         )}
       </Typography>
 
@@ -193,10 +202,13 @@ export function AdminIdentityProvidersEditor() {
           introducing the first one on a deployment that federated none needs a
           restart, because which browser-auth plane owns /forward-auth is fixed
           at boot. */}
-      <Alert severity="info" data-testid="admin-identity-providers-restart-note">
+      <Alert
+        severity="info"
+        data-testid="admin-identity-providers-restart-note"
+      >
         {t(
-          'pages.admin.identityProviders.restartNote',
-          'Changes to a provider take effect on the next login. Adding the first provider to a deployment that used no single sign-on needs a service restart before its login routes are served.',
+          "pages.admin.identityProviders.restartNote",
+          "Changes to a provider take effect on the next login. Adding the first provider to a deployment that used no single sign-on needs a service restart before its login routes are served.",
         )}
       </Alert>
 
@@ -215,29 +227,42 @@ export function AdminIdentityProvidersEditor() {
           size="small"
           variant="contained"
           onClick={openCreate}
-          sx={{ textTransform: 'none' }}
+          sx={{ textTransform: "none" }}
           data-testid="admin-identity-providers-add"
         >
-          {t('pages.admin.identityProviders.add', 'Add identity provider')}
+          {t("pages.admin.identityProviders.add", "Add identity provider")}
         </Button>
       </Box>
 
-      {!listQuery.isLoading && providers.length === 0 && listQuery.error == null ? (
+      {!listQuery.isLoading &&
+      providers.length === 0 &&
+      listQuery.error == null ? (
         <Typography
           variant="bodyMedium"
           color="text.secondary"
           data-testid="admin-identity-providers-empty"
         >
           {t(
-            'pages.admin.identityProviders.empty',
-            'No identity provider is authored. This deployment federates logins only if its environment configures one.',
+            "pages.admin.identityProviders.empty",
+            "No identity provider is authored. This deployment federates logins only if its environment configures one.",
           )}
         </Typography>
       ) : null}
 
       {providers.length > 0 ? (
-        <ProviderTable providers={providers} onEdit={openEdit} onRemove={setPendingDelete} />
+        <ProviderTable
+          providers={providers}
+          onEdit={openEdit}
+          onRemove={setPendingDelete}
+        />
       ) : null}
+
+      {/* SCIM group provisioning renders in the SAME section, under a divider,
+          because it is the other half of one story: a provider federates the
+          login, and SCIM pushes the directory. A section of its own would put
+          two halves of the same configuration on two screens. */}
+      <Divider sx={{ mt: "0.5rem" }} />
+      <AdminScimGroupBindingsEditor />
 
       <AdminIdentityProviderDialog
         open={dialogOpen}
@@ -245,8 +270,11 @@ export function AdminIdentityProvidersEditor() {
         existingKeys={existingKeys}
         isSaving={saveMutation.isPending}
         serverError={
-          saveError === 'save'
-            ? t('pages.admin.identityProviders.error.save', 'Failed to save that identity provider.')
+          saveError === "save"
+            ? t(
+                "pages.admin.identityProviders.error.save",
+                "Failed to save that identity provider.",
+              )
             : saveError
         }
         onClose={() => {
@@ -266,11 +294,14 @@ export function AdminIdentityProvidersEditor() {
         data-testid="admin-identity-provider-delete-dialog"
       >
         <DialogTitle>
-          {t('pages.admin.identityProviders.delete.title', 'Remove identity provider')}
+          {t(
+            "pages.admin.identityProviders.delete.title",
+            "Remove identity provider",
+          )}
         </DialogTitle>
         <DialogContent>
           <Typography variant="bodyMedium">
-            {deleteWarning(pendingDelete?.display_name ?? '')}
+            {deleteWarning(pendingDelete?.display_name ?? "")}
           </Typography>
         </DialogContent>
         <DialogActions>
@@ -279,19 +310,19 @@ export function AdminIdentityProvidersEditor() {
               setPendingDelete(undefined);
             }}
             disabled={deleteMutation.isPending}
-            sx={{ textTransform: 'none' }}
+            sx={{ textTransform: "none" }}
           >
-            {t('pages.admin.identityProviders.delete.cancel', 'Cancel')}
+            {t("pages.admin.identityProviders.delete.cancel", "Cancel")}
           </Button>
           <Button
             color="error"
             variant="contained"
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
-            sx={{ textTransform: 'none' }}
+            sx={{ textTransform: "none" }}
             data-testid="admin-identity-provider-delete-confirm"
           >
-            {t('pages.admin.identityProviders.delete.confirm', 'Remove')}
+            {t("pages.admin.identityProviders.delete.confirm", "Remove")}
           </Button>
         </DialogActions>
       </Dialog>

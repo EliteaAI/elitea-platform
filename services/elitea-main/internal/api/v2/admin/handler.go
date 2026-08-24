@@ -26,6 +26,10 @@ type Handler struct {
 	// either is.
 	identityProviders     IdentityProviderStore
 	identityProviderVault IdentityProviderSecretStore
+	// The authored SCIM group bindings (scim_group_bindings.go). Nil unless
+	// WithSCIMGroupBindings is applied, and those routes answer 503 while it
+	// is — never an empty list, which would read as "no group is bound".
+	scimGroupBindings SCIMGroupBindingStore
 }
 
 // Option configures a Handler at construction time.

@@ -907,6 +907,10 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
 				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
+				// The same store the SCIM tree writes through. One store, so
+				// the screen and a group push can never disagree about which
+				// project a binding names.
+				admin.WithSCIMGroupBindings(scimdirectory.NewStore(cfg.Pool)),
 			)
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
 			// The admin panel's surface. Every route below is gated on the same
@@ -973,6 +977,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// client creating and deactivating accounts is doing what that page
 			// does, so no new permission string arrives here and the grant gate
 			// in router_permission_grant_gate_test.go stays untripped.
+			// `/Groups` is served too, and the gate does not change with it. An
+			// identity provider presents ONE credential for both resources, so
+			// a second permission on the group half would stop every SCIM
+			// client already configured against this deployment. What a group
+			// push can do is bounded by the BINDING an administrator authored
+			// under `/admin/scim_group_bindings/administration` (below, on the
+			// project-membership permission), not by a second gate here: a push
+			// cannot choose a project, cannot choose a role, and cannot create
+			// or delete either.
 			r.With(requireAdminUsers).Mount(scimapi.MountPath,
 				scimapi.NewHandler(scimdirectory.NewStore(cfg.Pool)).Routes())
 
@@ -1031,6 +1044,38 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Get("/user_project_permissions/administration", adminHandler.UserProjectPermissions)
 				r.With(central(admin.UserProjectPermissionsEditPermission)).
 					Put("/user_project_permissions/administration", adminHandler.UserProjectPermissionsSave)
+				// The SCIM group bindings (shared migration 0098): which
+				// identity provider group grants which role on which project.
+				//
+				// Gated on the SAME pair as the editor above, and deliberately
+				// so. Authoring a binding is authorising a directory to put
+				// people into a project with a role, which is exactly what
+				// `configuration.roles.user_project_permissions` governs. No new
+				// permission string arrives, so the grant gate in
+				// router_permission_grant_gate_test.go stays untripped.
+				//
+				// The mode segment is static `administration`: a binding is a
+				// deployment fact with no project-scoped view, so another mode
+				// 404s rather than being answered under a scope that does not
+				// apply.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingList)
+				// The roles a project REALLY has, for the binding editor's role
+				// control. `/admin/roles/{mode}/{projectID}` answers a hardcoded
+				// admin/editor/viewer for a project with no role rows, which
+				// would make this control offer a role the save then refuses.
+				//
+				// A static segment ahead of `{id}`: chi matches the literal
+				// first, so this cannot shadow the binding routes below.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/scim_group_bindings/administration/project_roles/{projectID}",
+						adminHandler.SCIMGroupBindingProjectRoles)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Post("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingCreate)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Put("/scim_group_bindings/administration/{id}", adminHandler.SCIMGroupBindingSave)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Delete("/scim_group_bindings/administration/{id}", adminHandler.SCIMGroupBindingDelete)
 				// The admin Roles page. Before it, only the GET existed —
 				// ungated, ignoring {scope}, and listing only already-granted
 				// permissions. See internal/api/v2/admin/roles.go.
