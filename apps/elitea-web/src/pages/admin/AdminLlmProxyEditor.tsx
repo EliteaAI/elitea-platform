@@ -18,7 +18,7 @@
  *   | Observability / health | **Status** | the gateway's `GET /governance/status` |
  *   | Model Catalog + Pricing Overrides | **Models** | `gateway.gateway_models` + `llm_usage_events` |
  *   | Usage | **Usage** | `gateway.llm_usage_events` |
- *   | Providers & keys | **Providers** | the public project's shared `ai_credentials` |
+ *   | Providers & keys | **Providers & models** | the public project's shared rows |
  *   | Alerting | **Alerts** | `gateway.governance_config` soft-alert row |
  *
  * ## What is deliberately not here, and why
@@ -357,7 +357,10 @@ export function AdminLlmProxyEditor() {
         data-testid="llm-proxy-tabs"
       >
         <Tab value="status" label={t('pages.admin.llmProxy.tab.status', 'Status')} />
-        <Tab value="providers" label={t('pages.admin.llmProxy.tab.providers', 'Providers')} />
+        <Tab
+          value="providers"
+          label={t('pages.admin.llmProxy.tab.providers', 'Providers & models')}
+        />
         <Tab value="models" label={t('pages.admin.llmProxy.tab.models', 'Models & pricing')} />
         <Tab value="usage" label={t('pages.admin.llmProxy.tab.usage', 'Usage')} />
         <Tab value="alerts" label={t('pages.admin.llmProxy.tab.alerts', 'Budget alerts')} />

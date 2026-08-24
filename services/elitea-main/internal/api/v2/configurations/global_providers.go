@@ -391,6 +391,27 @@ const maxGlobalProviderBodyBytes = maxConfigurationRequestBytes
 func (h *Handler) rewriteGlobalProviderBody(
 	w http.ResponseWriter, r *http.Request, requireType bool,
 ) (*http.Request, bool) {
+	body, ok := decodeGlobalBody(w, r)
+	if !ok {
+		return nil, false
+	}
+	if !h.admitGlobalProviderType(w, body, requireType) {
+		return nil, false
+	}
+	if !admitGlobalShared(w, body) {
+		return nil, false
+	}
+	return encodeGlobalBody(w, r, body)
+}
+
+// decodeGlobalBody buffers and decodes the request body under the same bound
+// the delegated handlers apply.
+//
+// Shared by both platform surfaces, because the bound is the part that must not
+// differ: a rewrite with a looser bound would make this router the one place an
+// operator can push a body the rest of the service refuses, and one with no
+// bound would buffer without limit.
+func decodeGlobalBody(w http.ResponseWriter, r *http.Request) (map[string]any, bool) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, maxGlobalProviderBodyBytes+1))
 	if err != nil {
 		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
@@ -409,31 +430,40 @@ func (h *Handler) rewriteGlobalProviderBody(
 	if body == nil {
 		body = map[string]any{}
 	}
+	return body, true
+}
 
-	if !h.admitGlobalProviderType(w, body, requireType) {
-		return nil, false
-	}
-
-	// A caller that explicitly asked NOT to share is refused rather than
-	// silently overridden. The two differ for the operator: an override reports
-	// success for the opposite of what they asked, and the row they get back
-	// says `shared: true` with no explanation of where their value went.
+// admitGlobalShared forces `shared: true`, refusing an explicit false.
+//
+// A caller that explicitly asked NOT to share is refused rather than silently
+// overridden. The two differ for the operator: an override reports success for
+// the opposite of what they asked, and the row they get back says
+// `shared: true` with no explanation of where their value went.
+func admitGlobalShared(w http.ResponseWriter, body map[string]any) bool {
 	if requested, present := body["shared"]; present {
 		if shared, isBool := requested.(bool); !isBool || !shared {
 			apierr.WriteStatus(w, http.StatusBadRequest,
-				"a platform provider is always shared: a credential that is not shared is invisible to "+
+				"a platform configuration is always shared: one that is not shared is invisible to "+
 					"every project, including the one that holds it")
-			return nil, false
+			return false
 		}
 	}
 	body["shared"] = true
+	return true
+}
 
+// encodeGlobalBody re-encodes the rewritten body onto a cloned request.
+//
+// The Content-Length is reset with it: leaving the caller's would make the
+// delegated handler's bounded decoder read a truncated object.
+func encodeGlobalBody(
+	w http.ResponseWriter, r *http.Request, body map[string]any,
+) (*http.Request, bool) {
 	rewritten, err := json.Marshal(body)
 	if err != nil {
 		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return nil, false
 	}
-
 	request := r.Clone(r.Context())
 	request.Body = io.NopCloser(bytes.NewReader(rewritten))
 	request.ContentLength = int64(len(rewritten))

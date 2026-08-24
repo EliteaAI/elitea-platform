@@ -1453,6 +1453,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						// why it can be a Mount at all, unlike the project-scoped
 						// Routes() that needs five different strings.
 						r.Mount("/providers", configurationsHandler.GlobalProviderRoutes())
+						// PLATFORM-WIDE models — the other half. A credential
+						// authenticates; a model is what a caller addresses.
+						// Both are the public project's shared rows, and the
+						// gateway resolves a public model against public
+						// credentials ONLY, so the two surfaces are mounted
+						// together and global_models.go enforces that pairing.
+						r.Mount("/platform_models", configurationsHandler.GlobalModelRoutes())
 					})
 				})
 			})

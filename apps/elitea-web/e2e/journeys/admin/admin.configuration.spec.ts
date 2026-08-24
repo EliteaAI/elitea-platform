@@ -391,7 +391,7 @@ adminTest('J34k: the LLM Proxy usage report is authorised and answers', async ({
 adminTest('J34l: platform providers are authored from the admin panel', async ({ page }) => {
   await openConfiguration(page);
   await page.getByRole('button', { name: /LLM Proxy/ }).click();
-  await page.getByRole('tab', { name: 'Providers' }).click();
+  await page.getByRole('tab', { name: 'Providers & models' }).click();
 
   // A PLATFORM provider is the public project's `shared = true` credential — the
   // scope the gateway has resolved since issue #316 and that nothing could
@@ -423,6 +423,15 @@ adminTest('J34l: platform providers are authored from the admin panel', async ({
   await expect(page.getByTestId('llm-provider-api_key')).toHaveValue('');
   await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(dialog).toHaveCount(0);
+
+  // The MODELS half of the same tab. A model names a credential, so the two are
+  // one screen: the commonest mistake is a model naming a provider that is not
+  // there, and two screens would put the cause and the effect a click apart.
+  await expect(
+    page.getByTestId('platform-models-table').or(page.getByTestId('platform-models-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('platform-models-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('platform-models-add')).toBeVisible();
 
   await checkA11y(page);
 });
