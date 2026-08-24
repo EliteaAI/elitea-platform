@@ -14,6 +14,7 @@ pub(crate) mod rally;
 pub(crate) mod report_portal;
 pub(crate) mod salesforce;
 pub(crate) mod service_now;
+pub(crate) mod sharepoint;
 pub(crate) mod slack;
 pub(crate) mod sonar;
 pub(crate) mod sql;

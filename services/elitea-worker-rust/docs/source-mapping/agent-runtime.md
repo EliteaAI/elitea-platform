@@ -432,7 +432,8 @@ an open generic-MCP gate.
 
 The remaining MCP/on-demand-auth gates are independent partial sibling resume,
 mixed-guardrail terminal aggregation,
-runtime-discovered configured families, SharePoint, remaining OpenAPI capabilities, platform
+post-token model-loop challenges, remaining SharePoint content/app-only tools,
+remaining OpenAPI capabilities, platform
 OAuth/DCR and production activation. Materializer-known root, pipeline-LLM and
 parallel nested calls, including a pipeline Agent owner, are covered.
 
@@ -452,7 +453,20 @@ materializer-known direct `LlmAgent`/saved-agent hierarchy and that hierarchy
 inside a pipeline Agent node, plus Main's bounded exact complete-set admission.
 Older `Main plural/partial activation` wording now means independent partial
 resume only. It does not claim mixed-guardrail terminal aggregation,
-runtime-discovered configured families, SharePoint or the remaining OpenAPI capabilities.
+post-token model-loop challenges, remaining SharePoint content/app-only tools
+or the remaining OpenAPI capabilities.
+
+SharePoint checkpoint update: the explicitly selected delegated Graph read core
+is now a concrete configured family in
+`src/toolkits/families/sharepoint/{config,client,tools}.rs`. It materializes
+eight schema-complete read tools, preserves composite/discovery/site token-key
+precedence, and joins the same exact-resource authorization catalog used by
+root, nested and pipeline `LlmAgent` owners. Direct Toolkit nodes also convert
+a real Graph 401 into the common native graph interrupt. Empty/all selection,
+ACS/app-only auth, document and attachment parsing, artifact operations, effects
+and a post-token 401 adapter for an already-running model loop remain closed.
+This paragraph supersedes older broad table cells that call all SharePoint
+materialization unported.
 
 ## Known gates
 

@@ -125,7 +125,9 @@ Maintained Rust runtime ownership registry:
   compatibility-named `mcp_auth` card for both node kinds; remote MCP can rebuild
   with an exact-server claim-fetched token, while Skip nulls declared data state
   and stops at `END`. The configured OpenAPI family applies the same flow to an
-  exact frozen API base URL; SharePoint remains unported.
+  exact frozen API base URL. The delegated SharePoint read core applies it to
+  the exact frozen site URL and also turns a direct-node Graph 401 into the same
+  typed interrupt.
   Printer uses a compiler-owned native `interrupt_after` checkpoint,
   publishes one bounded ordinary chat result, and resumes through the generated
   reset node on the next ordinary user message. Router evaluates bounded
@@ -182,6 +184,15 @@ Maintained Rust runtime ownership registry:
   tools for native same-call pause/resume. Remote specifications, legacy auth
   objects, rich OAuth discovery/DCR, runtime 401 re-authorization, non-JSON
   bodies and artifact/binary routing remain closed;
+- `src/toolkits/families/sharepoint/{config,client,tools}.rs`: delegated Azure
+  token resolution and eight explicitly selected Microsoft Graph reads for
+  lists, columns, metadata-only recursive file discovery and raw bounded
+  OneNote XHTML. The client keeps all requests and provider pagination on the
+  exact Graph v1.0 origin, preserves SharePoint site/library path resolution,
+  and exposes schema-complete guarded tools for native same-call authorization.
+  Empty selection, ACS/app-only auth, file parsing/download, OneNote attachment
+  interpretation, writes, rich discovery/DCR/refresh metadata and production
+  egress remain closed;
 - `src/transport/model_facade.rs`: provider-neutral model ownership over
   `model_gateway.rs` and `anthropic_gateway.rs`, including frozen
   `model_project_id` authority;

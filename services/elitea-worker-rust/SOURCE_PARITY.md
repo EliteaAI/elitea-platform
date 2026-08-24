@@ -88,15 +88,17 @@ no new protobuf field was required. A pipeline Agent node now carries the same e
 parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
 remains public, partial sets fail before materialization, Skip closes each
 original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
-atomically. SharePoint remains unported; the bounded inline OpenAPI dynamic
-family now uses this exact-resource flow, with its remaining OAuth/content
-capabilities listed in the toolset ledger.
+atomically. The bounded inline OpenAPI dynamic family and the explicitly
+selected eight-read delegated SharePoint Graph core now use this exact-resource
+flow; their remaining OAuth/content capabilities are listed in the toolset
+ledger.
 
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic
 open gate. The remaining authorization gates are independent partial sibling
 resume, mixed-guardrail aggregation,
-platform OAuth/DCR, runtime-discovered configured families, SharePoint,
+platform OAuth/DCR, runtime-discovered post-token model-loop challenges,
+remaining SharePoint content/app-only operations,
 remaining OpenAPI capabilities and production activation.
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
@@ -149,10 +151,12 @@ Toolkits such as SharePoint. Rust now represents that signal in
 `src/toolkits/delegated_auth.rs`, preserves it through configured-tool policy,
 and handles direct `toolkit`/`mcp` graph pause plus Skip using the common
 checkpoint path. Remote MCP additionally performs an exact-server token
-rebuild. Bounded inline OpenAPI adds the same exact-base-URL rebuild while
-SharePoint remains unported. Complete nested model-owned sets use the existing
+rebuild. Bounded inline OpenAPI adds the same exact-base-URL rebuild, and the
+delegated SharePoint subset rebuilds eight exact Graph reads against its frozen
+site URL. Complete nested model-owned sets use the existing
 public authorization ID/action contract; any broader “MCP OAuth gated” wording
-above refers to independent partial resume, platform discovery/DCR, SharePoint
+above refers to independent partial resume, platform discovery/DCR,
+post-token model-loop challenges, remaining SharePoint content/app-only tools
 and the remaining OpenAPI capabilities rather than the implemented root,
 pipeline-LLM, nested and direct-node paths.
 

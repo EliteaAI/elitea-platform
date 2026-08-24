@@ -14,8 +14,8 @@ use adk_rust::Toolset;
 use super::DelegatedAuthorizationCatalog;
 use super::families::{
     azure, azure_search, elastic, gcp, gitlab_org, google_places, keycloak, kubernetes, openapi,
-    postman, rally, report_portal, salesforce, service_now, slack, sonar, sql, yagmail, zephyr,
-    zephyr_squad,
+    postman, rally, report_portal, salesforce, service_now, sharepoint, slack, sonar, sql, yagmail,
+    zephyr, zephyr_squad,
 };
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::{AdmittedToolSnapshot, FrozenToolKind, FrozenToolReference};
@@ -120,6 +120,17 @@ fn materialize(
             .map_err(|error| openapi_materialization_error(error.code()))?;
         let materialized = openapi::tools::build_openapi_toolset(name, config, policy)
             .map_err(|error| openapi_toolset_materialization_error(error.code()))?;
+        return Ok((
+            Arc::new(materialized.toolset),
+            materialized.delegated_authorization,
+        ));
+    }
+    if reference.tool_type() == "sharepoint" {
+        let config =
+            sharepoint::config::SharePointToolkitConfig::parse(name, settings, delegated_tokens)
+                .map_err(|error| sharepoint_materialization_error(error.code()))?;
+        let materialized = sharepoint::tools::build_sharepoint_toolset(name, config, policy)
+            .map_err(|error| sharepoint_toolset_materialization_error(error.code()))?;
         return Ok((
             Arc::new(materialized.toolset),
             materialized.delegated_authorization,
@@ -323,5 +334,36 @@ const fn openapi_toolset_materialization_error(
         | openapi::tools::OpenApiToolsetErrorCode::InvalidDefinition => invalid_configuration(),
         openapi::tools::OpenApiToolsetErrorCode::ResourceExhausted => resource_exhausted(),
         openapi::tools::OpenApiToolsetErrorCode::UnsupportedCapability => unsupported_toolkit(),
+    }
+}
+
+const fn sharepoint_materialization_error(
+    code: sharepoint::config::SharePointConfigErrorCode,
+) -> ToolsetMaterializationError {
+    match code {
+        sharepoint::config::SharePointConfigErrorCode::InvalidConfiguration => {
+            invalid_configuration()
+        }
+        sharepoint::config::SharePointConfigErrorCode::ResourceExhausted => resource_exhausted(),
+        sharepoint::config::SharePointConfigErrorCode::UnsupportedCapability => {
+            unsupported_toolkit()
+        }
+    }
+}
+
+const fn sharepoint_toolset_materialization_error(
+    code: sharepoint::tools::SharePointToolsetErrorCode,
+) -> ToolsetMaterializationError {
+    match code {
+        sharepoint::tools::SharePointToolsetErrorCode::InvalidConfiguration
+        | sharepoint::tools::SharePointToolsetErrorCode::Client
+        | sharepoint::tools::SharePointToolsetErrorCode::InvalidDefinition => {
+            invalid_configuration()
+        }
+        sharepoint::tools::SharePointToolsetErrorCode::ResourceExhausted => resource_exhausted(),
+        sharepoint::tools::SharePointToolsetErrorCode::UnsupportedCapability
+        | sharepoint::tools::SharePointToolsetErrorCode::UnsupportedSelection => {
+            unsupported_toolkit()
+        }
     }
 }

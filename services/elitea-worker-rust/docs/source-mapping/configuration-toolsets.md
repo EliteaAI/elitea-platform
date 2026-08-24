@@ -160,7 +160,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `sql` | `configurations/sql.py::SqlConfiguration` | `tools/sql::SQLToolkit` | 2 | No | `toolkits/families/sql/` | Capability-disabled complete family: backend-specific PostgreSQL/MySQL execution plus bounded default-schema discovery; exact-interrupt HITL, effect reconciliation, TLS authority and driver preallocation controls remain gates |
 | `google_places` | `configurations/google_places.py::GooglePlacesConfiguration` | `tools/google_places::GooglePlacesToolkit` | 2 | No | `toolkits/families/google_places/{config,client,tools}.rs` | Capability-disabled complete read family: supported Places API (New) projection for `places` and `find_near`; attribution/persisted-result policy, authorized materialization and live provider proof remain gates |
 | `salesforce` | `configurations/salesforce.py::SalesforceConfiguration` | `tools/salesforce::SalesforceToolkit` | 6 | No | `toolkits/families/salesforce/{config,client,tools}.rs` | Capability-disabled complete family: six bounded CRM tools, including create/update and generic GET/POST/PATCH/DELETE; authorized materialization, exact-interrupt HITL and cancellation-safe effect reconciliation remain gates |
-| `sharepoint` | `SharepointConfiguration` | `SharepointToolkit` | 28 | Yes | corresponding family paths | Planned; the shared direct-node delegated-auth signal/checkpoint seam exists, but this 28-tool family, app-only/delegated token resolution and content limits are not ported |
+| `sharepoint` | `configurations/sharepoint.py::SharepointConfiguration` | `tools/sharepoint::SharepointToolkit` | 28 | Yes | `toolkits/families/sharepoint/{config,client,tools}.rs` | Partial capability-disabled delegated read family: 8 explicitly selected Graph operations cover lists, columns, metadata-only recursive file discovery and bounded raw OneNote XHTML with proactive missing-token guards and direct-node reactive 401 interrupts. Empty/all selection, ACS/app-only auth, remaining content/artifact/index/effect tools, rich OAuth discovery/DCR/refresh metadata, model-loop reactive 401 confirmation, approved egress and live-provider proof remain gates |
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
 | `report_portal` | `configurations/report_portal.py::ReportPortalConfiguration` | `tools/report_portal::ReportPortalToolkit` | 9 | Yes | `toolkits/families/report_portal/{config,client,tools}.rs` | Capability-disabled complete read family: nine bounded project/report reads, including explicit UTF-8 HTML and base64 PDF export projections; authorized materialization, egress policy and live provider proof remain gates |
 | `testio` | `TestIOConfiguration` | `TestIOToolkit` | 15 | Yes | corresponding family paths | Deferred as an incoherent source contract: the check and official API require `Authorization: Token`, while runtime tools send `Bearer`; exploratory-test retrieval cannot receive its implementation-required product ID; and the two SDK write payloads do not map to the current provider create/confirmation operations without inventing product behavior |
@@ -209,6 +209,35 @@ multipart/form/binary bodies, binary or artifact results and production network
 admission remain explicit gaps. `src/toolkits/openapi_tests.rs` owns parser,
 selection, dynamic schema, RFC query construction, auth precedence, guarded-tool,
 exact-token rematerialization, block-policy and redacted-failure proof.
+
+The SharePoint slice is intentionally smaller than the current 28-tool SDK
+catalog. `elitea_sdk/configurations/sharepoint.py` and the token/site-path logic
+in `elitea_sdk/tools/sharepoint/__init__.py` map to
+`toolkits/families/sharepoint/config.rs`; `api_wrapper.py` maps the selected
+names, descriptions and input schemas to `tools.rs`; and delegated reads in
+`graph_wrapper.py` plus `file_filters.py` map to the fixed Graph v1.0 client in
+`client.rs`. The admitted operations are `read_list`, `get_lists`,
+`get_list_columns`, `get_files_list`, `onenote_get_notebooks`,
+`onenote_get_sections`, `onenote_get_pages` and
+`onenote_get_page_content`. File discovery returns metadata only and preserves
+site-prefix, document-library, recursive traversal, extension-filter and
+provider-next-link behavior without downloading content.
+
+This subset rejects an empty selection because the SDK interprets empty as the
+complete catalog; silently returning only eight tools would change saved-agent
+behavior. `rest_wrapper.py` and `authorization_helper.py` remain the separate
+ACS/app-only authority gap. `read_document`, sharing-link parsing, OneNote
+image/attachment interpretation, artifact upload and all effects remain closed
+until the artifact boundary and effect receipts exist. A real Graph 401 is
+converted to the common delegated-auth signal and direct Toolkit nodes can
+checkpoint it; a model-owned loop still requires a runtime-discovered
+confirmation adapter when a previously accepted token expires. Proactive
+missing-token model calls already use the native original-call confirmation.
+`src/toolkits/sharepoint_tests.rs` owns configuration/token precedence,
+guarded schema, fixed-origin/sensitive-header, pagination, library-path,
+metadata-only traversal, reactive-401 and materializer-catalog proof. This
+mapping was rechecked against SDK commit
+`c181fc0fb56e9db017cb301841644680684b4b54` on 2026-08-24.
 
 `testio` is deliberately deferred rather than copied as a nominally complete
 family. Its connection check and Test IO's current customer API authenticate
