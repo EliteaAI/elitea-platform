@@ -1460,10 +1460,15 @@ WHERE conversation.uuid = $2::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+  AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
   AND EXISTS (
       SELECT 1
       FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      WHERE request.value ->> 'tool_run_id' = $5::text
+      WHERE COALESCE(
+          NULLIF(request.value ->> 'interrupt_id', ''),
+          NULLIF(request.value ->> 'tool_run_id', ''),
+          request.value ->> 'tool_call_id'
+      ) = $5::text
   )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
@@ -1750,10 +1755,15 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = $7::text
       AND response.meta ->> 'thread_id' = $8::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+      AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
       AND EXISTS (
           SELECT 1
           FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-          WHERE request.value ->> 'tool_run_id' = $9::text
+          WHERE COALESCE(
+              NULLIF(request.value ->> 'interrupt_id', ''),
+              NULLIF(request.value ->> 'tool_run_id', ''),
+              request.value ->> 'tool_call_id'
+          ) = $9::text
       )
       AND $10::text IN ('authorize', 'skip')
       AND (

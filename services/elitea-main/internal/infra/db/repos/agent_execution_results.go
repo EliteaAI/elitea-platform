@@ -355,6 +355,7 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 	var content string
 	var metadata struct {
 		ThreadID              string          `json:"thread_id"`
+		InterruptID           string          `json:"interrupt_id"`
 		ToolRunID             string          `json:"tool_run_id"`
 		AuthorizationRequests json.RawMessage `json:"authorization_requests"`
 		InvokedSkills         json.RawMessage `json:"invoked_skills"`
@@ -370,7 +371,7 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 	}
 	seen := make(map[string]struct{}, len(requests))
 	for _, request := range requests {
-		requestID, _ := request["tool_run_id"].(string)
+		requestID := currentAgentAuthorizationIdentity(request)
 		serverURL, _ := request["server_url"].(string)
 		if !validCurrentAgentAuthorizationText(requestID, 512) ||
 			!validCurrentAgentAuthorizationText(serverURL, 4096) {
@@ -387,8 +388,12 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 			}
 		}
 	}
-	lastID, _ := requests[len(requests)-1]["tool_run_id"].(string)
-	if metadata.ToolRunID != lastID {
+	lastID := currentAgentAuthorizationIdentity(requests[len(requests)-1])
+	terminalID := metadata.InterruptID
+	if terminalID == "" {
+		terminalID = metadata.ToolRunID
+	}
+	if terminalID != lastID {
 		return currentAgentAuthorizationPause{}, outputapp.ErrAgentExecutionResultMismatch
 	}
 	invokedSkills, err := mergeCurrentAgentInvokedSkills(nil, metadata.InvokedSkills)
@@ -400,6 +405,15 @@ func decodeCurrentAgentAuthorizationPause(contentJSON, responseMetadata json.Raw
 		Requests:      append(json.RawMessage(nil), metadata.AuthorizationRequests...),
 		InvokedSkills: invokedSkills,
 	}, nil
+}
+
+func currentAgentAuthorizationIdentity(request map[string]any) string {
+	for _, key := range []string{"interrupt_id", "tool_run_id", "tool_call_id"} {
+		if value, _ := request[key].(string); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func validCurrentAgentAuthorizationText(value string, limit int) bool {

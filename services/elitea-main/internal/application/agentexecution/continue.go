@@ -82,6 +82,7 @@ type CurrentContinuationTarget struct {
 	ThreadID            string
 	ExecutionGeneration string
 	InterruptID         string
+	ToolCallID          string
 	AvailableActions    []string
 	HITLInterrupts      []CurrentHITLInterrupt
 }
@@ -92,10 +93,11 @@ type CurrentHITLInterrupt struct {
 }
 
 type CurrentHITLDecision struct {
-	InterruptID string `json:"interrupt_id"`
-	ToolCallID  string `json:"tool_call_id,omitempty"`
-	Action      string `json:"action"`
-	Value       string `json:"value,omitempty"`
+	InterruptID   string `json:"interrupt_id"`
+	ToolCallID    string `json:"tool_call_id,omitempty"`
+	GuardrailType string `json:"guardrail_type,omitempty"`
+	Action        string `json:"action"`
+	Value         string `json:"value,omitempty"`
 }
 
 func (target CurrentContinuationTarget) Validate() error {
@@ -135,7 +137,9 @@ func (target CurrentContinuationTarget) Validate() error {
 		return nil
 	}
 	if target.InterruptID == "" || len(target.InterruptID) > 512 ||
-		strings.ContainsRune(target.InterruptID, '\x00') || len(target.AvailableActions) == 0 ||
+		strings.ContainsRune(target.InterruptID, '\x00') ||
+		(target.ToolCallID != "" && (len(target.ToolCallID) > 512 || strings.ContainsRune(target.ToolCallID, '\x00'))) ||
+		len(target.AvailableActions) == 0 ||
 		len(target.AvailableActions) > 8 || len(target.HITLInterrupts) != 0 {
 		return ErrUnsupportedCurrentAgentStart
 	}
@@ -222,7 +226,7 @@ func (request CurrentContinuationRequest) normalizedHITLDecisions() ([]CurrentHI
 }
 
 func validCurrentHITLDecision(decision CurrentHITLDecision, requireIdentity bool) bool {
-	if !currentRootHITLAction(decision.Action) || len(decision.Value) > maxCurrentHITLValueBytes ||
+	if decision.GuardrailType != "" || !currentRootHITLAction(decision.Action) || len(decision.Value) > maxCurrentHITLValueBytes ||
 		strings.ContainsRune(decision.Value, '\x00') ||
 		((decision.Action == "edit" || decision.Action == "block_with_comment") && decision.Value == "") ||
 		(decision.Action != "edit" && decision.Action != "block_with_comment" && decision.Value != "") {
@@ -234,6 +238,15 @@ func validCurrentHITLDecision(decision CurrentHITLDecision, requireIdentity bool
 	return decision.InterruptID != "" && len(decision.InterruptID) <= 512 &&
 		!strings.ContainsRune(decision.InterruptID, '\x00') &&
 		(decision.ToolCallID == "" || (len(decision.ToolCallID) <= 512 && !strings.ContainsRune(decision.ToolCallID, '\x00')))
+}
+
+func validCurrentAuthorizationDecision(decision CurrentHITLDecision) bool {
+	return decision.GuardrailType == "mcp_auth" &&
+		currentAuthorizationAction(decision.Action) && decision.Value == "" &&
+		decision.InterruptID != "" && len(decision.InterruptID) <= 512 &&
+		!strings.ContainsRune(decision.InterruptID, '\x00') &&
+		(decision.ToolCallID == "" ||
+			(len(decision.ToolCallID) <= 512 && !strings.ContainsRune(decision.ToolCallID, '\x00')))
 }
 
 func decisionsMatchCurrentHITLInterrupts(
@@ -306,10 +319,13 @@ func (turn CurrentContinueTurn) Validate() error {
 	if kind == CurrentContinuationHITL && !validCurrentHITLDecisionsJSON(turn.HITLDecisions) {
 		return ErrInvalidCurrentAgentStart
 	}
-	if kind == CurrentContinuationAuthorization &&
-		(len(turn.HITLDecisions) != 0 || !currentAuthorizationAction(turn.Action) ||
-			turn.InterruptID == "" || len(turn.InterruptID) > 512 || strings.ContainsRune(turn.InterruptID, '\x00')) {
-		return ErrInvalidCurrentAgentStart
+	if kind == CurrentContinuationAuthorization {
+		var decisions []CurrentHITLDecision
+		if json.Unmarshal(turn.HITLDecisions, &decisions) != nil || len(decisions) != 1 ||
+			!validCurrentAuthorizationDecision(decisions[0]) ||
+			decisions[0].InterruptID != turn.InterruptID || decisions[0].Action != turn.Action {
+			return ErrInvalidCurrentAgentStart
+		}
 	}
 	switch turn.Kind {
 	case CurrentRegenerationApplication:
@@ -513,15 +529,21 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	input.ExecutionGeneration = stringPointer(target.ExecutionGeneration)
 	input.ShouldContinue = true
 	if request.normalizedKind() == CurrentContinuationAuthorization {
+		decision := CurrentHITLDecision{
+			InterruptID: target.InterruptID, ToolCallID: target.ToolCallID,
+			GuardrailType: "mcp_auth", Action: request.Action,
+		}
+		encodedDecisions, err := json.Marshal([]CurrentHITLDecision{decision})
+		if err != nil {
+			return nil, nil, "", ErrInvalidCurrentAgentStart
+		}
 		turn.InterruptID = target.InterruptID
 		turn.Action = request.Action
-		input.HitlResume = false
-		input.HitlAction = nil
-		input.HitlValue = nil
-		// The authoritative wire contract represents collection-valued fields as
-		// JSON arrays even when they are empty. Clearing the field to nil makes a
-		// valid authorization continuation fail admission before dispatch.
-		input.HitlDecisions = []byte(`[]`)
+		turn.HITLDecisions = bytes.Clone(encodedDecisions)
+		input.HitlResume = true
+		input.HitlAction = stringPointer(request.Action)
+		input.HitlValue = stringPointer("")
+		input.HitlDecisions = encodedDecisions
 		input.McpTokens = bytes.Clone(request.MCPTokens)
 		input.IgnoredMcpServers = bytes.Clone(request.IgnoredMCPServers)
 		input.UserDeclinedMcpServers = bytes.Clone(request.DeclinedMCPServers)

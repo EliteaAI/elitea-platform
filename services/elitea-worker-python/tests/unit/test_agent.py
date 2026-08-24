@@ -1074,6 +1074,59 @@ def test_sdk_adapter_resumes_one_exact_hitl_without_deleting_checkpoint(
     ]
 
 
+@pytest.mark.parametrize("application", [True, False])
+@pytest.mark.parametrize("action", ["authorize", "skip"])
+def test_sdk_adapter_forwards_normalized_delegated_authorization_decision(
+    application: bool,
+    action: str,
+) -> None:
+    client = _Client()
+    adapter = _adapter(client)
+    memory = _CheckpointMemory(
+        [("paused-task", "__interrupt__", {"type": "hitl"})]
+    )
+    adapter._memory = memory  # type: ignore[attr-defined]
+    payload = _request(application=application).payload
+    decision = {
+        "interrupt_id": "mcp_auth_sharepoint_1",
+        "tool_call_id": "call-sharepoint-search-1",
+        "guardrail_type": "mcp_auth",
+        "action": action,
+        "value": "",
+    }
+    object.__setattr__(payload, "should_continue", True)
+    object.__setattr__(payload, "hitl_resume", True)
+    object.__setattr__(payload, "hitl_action", action)
+    object.__setattr__(payload, "hitl_value", "")
+    object.__setattr__(payload, "hitl_decisions", [decision])
+    if action == "authorize":
+        object.__setattr__(
+            payload,
+            "mcp_tokens",
+            {"https://sharepoint.example.test": {"access_token": "runtime-secret"}},
+        )
+    else:
+        object.__setattr__(
+            payload,
+            "user_declined_mcp_servers",
+            [{"server_url": "https://sharepoint.example.test"}],
+        )
+
+    if application:
+        adapter.execute_application(payload)
+        invoke_input, invoke_config = client.application_executor.calls[0]
+    else:
+        adapter.execute_adhoc(payload)
+        invoke_input, invoke_config = client.adhoc_executor.calls[0]
+
+    assert memory.deleted_threads == []
+    assert invoke_config["configurable"]["thread_id"] == "thread-1"
+    assert invoke_input["hitl_resume"] is True
+    assert invoke_input["hitl_action"] == action
+    assert invoke_input["hitl_value"] == ""
+    assert invoke_input["hitl_decisions"] == [decision]
+
+
 def test_sdk_adapter_rejects_hitl_without_exact_interrupt_identity() -> None:
     payload = _request().payload
     object.__setattr__(payload, "should_continue", True)

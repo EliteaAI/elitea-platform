@@ -891,10 +891,15 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+  AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
   AND EXISTS (
       SELECT 1
       FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      WHERE request.value ->> 'tool_run_id' = sqlc.arg(authorization_request_id)::text
+      WHERE COALESCE(
+          NULLIF(request.value ->> 'interrupt_id', ''),
+          NULLIF(request.value ->> 'tool_run_id', ''),
+          request.value ->> 'tool_call_id'
+      ) = sqlc.arg(authorization_request_id)::text
   )
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> '';
@@ -929,10 +934,15 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
       AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+      AND jsonb_array_length(response.meta -> 'authorization_requests') = 1
       AND EXISTS (
           SELECT 1
           FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-          WHERE request.value ->> 'tool_run_id' = sqlc.arg(authorization_request_id)::text
+          WHERE COALESCE(
+              NULLIF(request.value ->> 'interrupt_id', ''),
+              NULLIF(request.value ->> 'tool_run_id', ''),
+              request.value ->> 'tool_call_id'
+          ) = sqlc.arg(authorization_request_id)::text
       )
       AND sqlc.arg(authorization_action)::text IN ('authorize', 'skip')
       AND (

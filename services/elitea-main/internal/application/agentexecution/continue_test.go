@@ -290,6 +290,7 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 			UserInput:  "list SharePoint sites", ThreadID: "thread-current-1",
 			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
 			InterruptID:         "tool-run-sharepoint-1",
+			ToolCallID:          "call-sharepoint-search-1",
 			AvailableActions:    []string{"authorize", "skip"},
 		},
 		target: CurrentApplicationTarget{
@@ -341,12 +342,19 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 		t.Fatalf("admission=%+v turn=%+v", admission, turn)
 	}
 	input := admission.Input
-	if !input.ShouldContinue || input.HitlResume || input.HitlAction != nil ||
-		input.HitlValue != nil || !jsonEqual(input.HitlDecisions, json.RawMessage(`[]`)) ||
+	if !input.ShouldContinue || !input.HitlResume || input.GetHitlAction() != "authorize" ||
+		input.HitlValue == nil || input.GetHitlValue() != "" ||
 		!jsonEqual(input.McpTokens, tokens) ||
 		!jsonEqual(input.IgnoredMcpServers, ignored) ||
 		!jsonEqual(input.UserDeclinedMcpServers, declined) {
 		t.Fatalf("input=%+v", input)
+	}
+	var decisions []CurrentHITLDecision
+	if json.Unmarshal(input.HitlDecisions, &decisions) != nil || len(decisions) != 1 ||
+		decisions[0].InterruptID != request.AuthorizationID ||
+		decisions[0].ToolCallID != "call-sharepoint-search-1" ||
+		decisions[0].GuardrailType != "mcp_auth" || decisions[0].Action != "authorize" {
+		t.Fatalf("normalized authorization decisions=%s", input.HitlDecisions)
 	}
 	if err := validateAuthoritativeInput(input); err != nil {
 		t.Fatalf("authorization continuation must pass authoritative admission validation: %v", err)

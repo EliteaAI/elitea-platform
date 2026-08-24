@@ -1298,7 +1298,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 	}
 }
 
-func TestPostgresCurrentAuthorizationContinuationConsumesExactRequestAtomically(t *testing.T) {
+func TestPostgresCurrentAuthorizationContinuationConsumesExactSingleRequestAtomically(t *testing.T) {
 	pool := newPostgresIntegrationPool(t)
 	applyPostgresIntegrationMigrations(t, pool)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -1326,10 +1326,12 @@ SET is_streaming = FALSE,
     meta = meta || jsonb_build_object(
         'thread_id', 'thread-authorization-1',
         'execution_generation', $2::text,
-        'authorization_requests', jsonb_build_array(
-            jsonb_build_object(
-                'tool_run_id', 'tool-run-sharepoint-1',
-                'server_url', 'https://sharepoint.example.test',
+	        'authorization_requests', jsonb_build_array(
+	            jsonb_build_object(
+	                'interrupt_id', 'mcp_auth_sharepoint-1',
+	                'tool_run_id', 'legacy-tool-run-sharepoint-1',
+	                'tool_call_id', 'call-sharepoint-search-1',
+	                'server_url', 'https://sharepoint.example.test',
                 'toolkit_name', 'SharePoint'
             ),
             jsonb_build_object(
@@ -1345,7 +1347,17 @@ WHERE uuid = $1`, responseID, questionID); err != nil {
 
 	resolve := sqlcgen.ResolveCurrentAuthorizationContinuationParams{
 		ActorUserID: 11, ProjectID: 1, ConversationUuid: conversationID,
-		ResponseMessageID: responseID, AuthorizationRequestID: "tool-run-sharepoint-1",
+		ResponseMessageID: responseID, AuthorizationRequestID: "mcp_auth_sharepoint-1",
+	}
+	if _, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("ambiguous sibling authorization resolve error=%v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET meta = jsonb_set(meta, '{authorization_requests}',
+    jsonb_build_array((meta -> 'authorization_requests') -> 0))
+WHERE uuid = $1`, responseID); err != nil {
+		t.Fatal(err)
 	}
 	resolved, err := queries.ResolveCurrentAuthorizationContinuation(t.Context(), resolve)
 	if err != nil {
@@ -1373,7 +1385,7 @@ WHERE uuid = $1`, responseID, questionID); err != nil {
 		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
 		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
 		ResponseMessageID: responseID, ExecutionGeneration: questionID,
-		ThreadID: "thread-authorization-1", AuthorizationRequestID: "tool-run-sharepoint-1",
+		ThreadID: "thread-authorization-1", AuthorizationRequestID: "mcp_auth_sharepoint-1",
 		AuthorizationAction: "authorize", ExecutionID: "execution-authorization-resumed",
 	}
 	if _, err := queries.ResumeCurrentAgentAuthorization(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
@@ -1415,7 +1427,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 		t.Fatal(err)
 	}
 	if !isStreaming || taskID != "execution-authorization-resumed" || hasPending ||
-		len(resolvedIDs) != 1 || resolvedIDs[0] != "tool-run-sharepoint-1" {
+		len(resolvedIDs) != 1 || resolvedIDs[0] != "mcp_auth_sharepoint-1" {
 		t.Fatalf("streaming=%v task=%q pending=%v resolved=%v",
 			isStreaming, taskID, hasPending, resolvedIDs)
 	}

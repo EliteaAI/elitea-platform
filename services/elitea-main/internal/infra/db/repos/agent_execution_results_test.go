@@ -219,7 +219,9 @@ func TestDecodeCurrentAgentHITLPauseRejectsIncompleteNestedIdentity(t *testing.T
 func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t *testing.T) {
 	requests := []map[string]any{
 		{
-			"tool_run_id":  "tool-run-sharepoint-1",
+			"interrupt_id": "mcp_auth_sharepoint_1",
+			"tool_run_id":  "legacy-tool-run-sharepoint-1",
+			"tool_call_id": "call-sharepoint-search-1",
 			"server_url":   "https://sharepoint.example.test",
 			"tool_name":    "list_sites",
 			"toolkit_name": "SharePoint",
@@ -235,7 +237,8 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 	}
 	metadata, err := json.Marshal(map[string]any{
 		"thread_id":              "thread-parent-1",
-		"tool_run_id":            "tool-run-sharepoint-1",
+		"interrupt_id":           "mcp_auth_sharepoint_1",
+		"tool_run_id":            "legacy-tool-run-sharepoint-1",
 		"authorization_requests": requests,
 		"invoked_skills": []map[string]any{{
 			"skill_id": 41, "name": "SharePoint operations", "icon_meta": nil,
@@ -254,7 +257,8 @@ func TestDecodeCurrentAgentAuthorizationPausePreservesExactInvocationHierarchy(t
 	}
 	var persisted []map[string]any
 	if err := json.Unmarshal(pause.Requests, &persisted); err != nil || len(persisted) != 1 ||
-		persisted[0]["tool_run_id"] != "tool-run-sharepoint-1" {
+		persisted[0]["interrupt_id"] != "mcp_auth_sharepoint_1" ||
+		persisted[0]["tool_call_id"] != "call-sharepoint-search-1" {
 		t.Fatalf("persisted=%#v error=%v", persisted, err)
 	}
 	if string(pause.InvokedSkills) != `[{"skill_id":41,"name":"SharePoint operations","icon_meta":null}]` {

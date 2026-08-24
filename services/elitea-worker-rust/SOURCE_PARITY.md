@@ -73,10 +73,15 @@ call is introduced. Direct saved-agent descendants now use that same durable
 confirmation as an ordinary `mcp_auth` guardrail: parallel cards retain exact
 interrupt/call/hierarchy identity, Authorize rebuilds every named leaf with only
 its exact-server token, and Skip returns `mcp_auth_decision` under each original
-call ID with zero dispatch. The current Main authorization continuation still
-needs to normalize its exact decision set into the already-versioned
-`hitl_decisions` JSON field before this parallel path can be activated; no new
-protobuf field is required. A pipeline Agent node now carries the same exact
+call ID with zero dispatch. Main now normalizes its exact single-card
+authorization continuation into the already-versioned `hitl_decisions` JSON
+field, preserving `interrupt_id`, the original `tool_call_id` and
+`guardrail_type=mcp_auth`; the standalone Python worker accepts and forwards the
+same shared command to the current SDK. Main rejects a persisted multi-card
+authorization pause on this scalar route instead of deleting unresolved
+siblings. A bounded plural/mixed Main continuation and terminal-card aggregate
+remain required before the parallel path can be activated; no new protobuf
+field is required. A pipeline Agent node now carries the same exact
 parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
 remains public, partial sets fail before materialization, Skip closes each
 original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
@@ -84,8 +89,8 @@ atomically. Concrete SharePoint/OpenAPI families remain gaps.
 
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic
-open gate. The remaining authorization gates are Main decision-list
-normalization, platform OAuth/DCR, runtime-discovered configured families,
+open gate. The remaining authorization gates are Main plural/mixed decision-set
+activation, terminal-card aggregation, platform OAuth/DCR, runtime-discovered configured families,
 concrete SharePoint/OpenAPI clients and production activation.
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |

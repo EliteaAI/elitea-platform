@@ -83,9 +83,11 @@ Maintained Rust runtime ownership registry:
   Delegated authorization uses the same decision tree: the persisted native
   confirmation classifies the guardrail, exact server authority is consumed as
   one bounded set, and parallel Authorize/Skip leaves resume without replanning.
-  Skip preserves the original call ID and dispatches no real tool. Current Main
-  still needs to normalize its separate authorization continuation into the
-  existing versioned decision-list field before activation.
+  Skip preserves the original call ID and dispatches no real tool. Main's exact
+  single-card authorization continuation now produces that existing versioned
+  decision-list shape and the standalone Python worker forwards it unchanged;
+  plural/mixed Main admission and terminal-card aggregation remain before
+  parallel activation.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only

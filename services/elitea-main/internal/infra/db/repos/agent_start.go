@@ -340,16 +340,27 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 					return fmt.Errorf("resolve current agent authorization continuation: %w", queryErr)
 				}
 				var authorizationRequests []struct {
-					ToolRunID string `json:"tool_run_id"`
+					InterruptID string `json:"interrupt_id"`
+					ToolRunID   string `json:"tool_run_id"`
+					ToolCallID  string `json:"tool_call_id"`
 				}
 				if json.Unmarshal([]byte(row.AuthorizationRequestsJson), &authorizationRequests) != nil ||
-					len(authorizationRequests) == 0 || len(authorizationRequests) > 16 {
+					len(authorizationRequests) != 1 {
 					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
 				}
 				matched := 0
+				matchedToolCallID := ""
 				for _, authorizationRequest := range authorizationRequests {
-					if authorizationRequest.ToolRunID == request.AuthorizationID {
+					requestID := authorizationRequest.InterruptID
+					if requestID == "" {
+						requestID = authorizationRequest.ToolRunID
+					}
+					if requestID == "" {
+						requestID = authorizationRequest.ToolCallID
+					}
+					if requestID == request.AuthorizationID {
 						matched++
+						matchedToolCallID = authorizationRequest.ToolCallID
 					}
 				}
 				if matched != 1 {
@@ -364,6 +375,7 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 					ThreadID:            row.ThreadID,
 					ExecutionGeneration: row.ExecutionGeneration,
 					InterruptID:         request.AuthorizationID,
+					ToolCallID:          matchedToolCallID,
 					AvailableActions:    []string{"authorize", "skip"},
 				}
 				if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
