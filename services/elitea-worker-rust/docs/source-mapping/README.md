@@ -86,8 +86,9 @@ Maintained Rust runtime ownership registry:
   Skip preserves the original call ID and dispatches no real tool. Main's exact
   single-card authorization continuation now produces that existing versioned
   decision-list shape and the standalone Python worker forwards it unchanged;
-  plural/mixed Main admission and terminal-card aggregation remain before
-  parallel activation.
+  Main also admits and atomically consumes a bounded exact complete decision
+  set. Independent partial-sibling resume and mixed-guardrail terminal
+  aggregation remain closed.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
@@ -123,7 +124,8 @@ Maintained Rust runtime ownership registry:
   outputs. A family-neutral delegated-auth signal preserves the SDK's
   compatibility-named `mcp_auth` card for both node kinds; remote MCP can rebuild
   with an exact-server claim-fetched token, while Skip nulls declared data state
-  and stops at `END`. Concrete SharePoint/OpenAPI materializers remain unported.
+  and stops at `END`. The configured OpenAPI family applies the same flow to an
+  exact frozen API base URL; SharePoint remains unported.
   Printer uses a compiler-owned native `interrupt_after` checkpoint,
   publishes one bounded ordinary chat result, and resumes through the generated
   reset node on the next ordinary user message. Router evaluates bounded
@@ -159,8 +161,8 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. Pipeline-Agent nested
-  delegated authorization, prebuilt/static MCP, remote effects, child variables, nested static Printer
+  fallback, normalized-label and common-Runner proof. Prebuilt/static MCP,
+  remote effects, child variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain
   separate gates. Saved-pipeline child events and configured/sensitive HITL
@@ -168,7 +170,18 @@ Maintained Rust runtime ownership registry:
   the original call ID and executes no blocked provider tool;
 - `src/toolkits/{snapshot,materialize,delegated_auth,mcp,invocation,policy}.rs`: frozen configured,
   MCP and application references, native family toolsets and generic bounded
-  call policy/tracing;
+  call policy/tracing. Configured materialization receives the same
+  claim-scoped exact-resource delegated-token map as MCP and returns a merged
+  authorization catalog to root, pipeline and recursively saved agents;
+- `src/toolkits/families/openapi/{config,spec,client,tools}.rs`: bounded dynamic
+  OpenAPI 3.x operation materialization from an inline JSON/YAML document,
+  exact selected-operation names/descriptions/schemas, fixed-origin request
+  construction, per-parameter `style`/`explode`/`allowReserved` RFC 3986 query
+  serialization over a raw HTTP URI, API-key, invocation-scoped expiring
+  client-credentials tokens and delegated OAuth modes, and schema-complete guarded
+  tools for native same-call pause/resume. Remote specifications, legacy auth
+  objects, rich OAuth discovery/DCR, runtime 401 re-authorization, non-JSON
+  bodies and artifact/binary routing remain closed;
 - `src/transport/model_facade.rs`: provider-neutral model ownership over
   `model_gateway.rs` and `anthropic_gateway.rs`, including frozen
   `model_project_id` authority;

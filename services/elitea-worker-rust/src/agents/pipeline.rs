@@ -47,7 +47,8 @@ use crate::toolkits::{
     AdkHttpMcpConnector, AdmittedToolSnapshot, DelegatedAuthorizationCatalog,
     DelegatedAuthorizationRequirement, FrozenToolKind, FrozenToolSnapshot, McpConnector,
     SensitiveToolPolicy, ToolAdmissionDecision, ToolAdmissionPolicy,
-    materialize_configured_toolsets, materialize_mcp_toolsets_with_tokens_and_authorization,
+    materialize_configured_toolsets_with_tokens_and_authorization,
+    materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
     ModelAdapterKind, ModelFacade, ModelInvocation, ModelReasoningEffort,
@@ -398,10 +399,14 @@ impl PipelineNativeAgentAssembler {
         tracing::Span::current().record("stage", "toolsets");
         let aliases = profile.definition().runtime_toolkit_aliases();
         let selected_snapshot = toolsets.retain_toolkit_names(&aliases);
-        let mut materialized =
-            materialize_configured_toolsets(&selected_snapshot, &self.tool_policy)
-                .map_err(|_| unsupported_pipeline_runtime())?;
-        let (mut mcp, delegated_authorization) =
+        let (mut materialized, mut delegated_authorization) =
+            materialize_configured_toolsets_with_tokens_and_authorization(
+                &selected_snapshot,
+                &self.tool_policy,
+                mcp_tokens,
+            )
+            .map_err(|_| unsupported_pipeline_runtime())?;
+        let (mut mcp, mcp_delegated_authorization) =
             materialize_mcp_toolsets_with_tokens_and_authorization(
                 &selected_snapshot,
                 self.mcp_connector.as_ref(),
@@ -410,6 +415,9 @@ impl PipelineNativeAgentAssembler {
             )
             .await
             .map_err(|_| unsupported_pipeline_runtime())?;
+        delegated_authorization
+            .merge(mcp_delegated_authorization)
+            .map_err(|()| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
         let toolsets = toolsets_by_alias(materialized)?;
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;
@@ -615,9 +623,14 @@ impl PipelineNativeAgentAssembler {
     ) -> Result<PipelineNodeRuntimes, NativeAgentAssemblyError> {
         let aliases = profile.definition().runtime_toolkit_aliases();
         let selected = snapshot.retain_toolkit_names(&aliases);
-        let mut materialized = materialize_configured_toolsets(&selected, &self.tool_policy)
+        let (mut materialized, mut delegated_authorization) =
+            materialize_configured_toolsets_with_tokens_and_authorization(
+                &selected,
+                &self.tool_policy,
+                mcp_tokens,
+            )
             .map_err(|_| unsupported_pipeline_runtime())?;
-        let (mut mcp, delegated_authorization) =
+        let (mut mcp, mcp_delegated_authorization) =
             materialize_mcp_toolsets_with_tokens_and_authorization(
                 &selected,
                 self.mcp_connector.as_ref(),
@@ -626,6 +639,9 @@ impl PipelineNativeAgentAssembler {
             )
             .await
             .map_err(|_| unsupported_pipeline_runtime())?;
+        delegated_authorization
+            .merge(mcp_delegated_authorization)
+            .map_err(|()| unsupported_pipeline_runtime())?;
         materialized.append(&mut mcp);
         let toolsets = toolsets_by_alias(materialized)?;
         let direct_tool_resolver = build_direct_tool_resolver(profile, &toolsets).await?;

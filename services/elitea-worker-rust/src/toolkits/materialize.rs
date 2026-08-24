@@ -11,9 +11,10 @@ use std::sync::Arc;
 
 use adk_rust::Toolset;
 
+use super::DelegatedAuthorizationCatalog;
 use super::families::{
-    azure, azure_search, elastic, gcp, gitlab_org, google_places, keycloak, kubernetes, postman,
-    rally, report_portal, salesforce, service_now, slack, sonar, sql, yagmail, zephyr,
+    azure, azure_search, elastic, gcp, gitlab_org, google_places, keycloak, kubernetes, openapi,
+    postman, rally, report_portal, salesforce, service_now, slack, sonar, sql, yagmail, zephyr,
     zephyr_squad,
 };
 use super::policy::ToolAdmissionPolicy;
@@ -67,24 +68,34 @@ impl fmt::Display for ToolsetMaterializationError {
 
 impl std::error::Error for ToolsetMaterializationError {}
 
-pub(crate) fn materialize_configured_toolsets(
+pub(crate) fn materialize_configured_toolsets_with_tokens_and_authorization(
     snapshot: &AdmittedToolSnapshot<'_>,
     policy: &Arc<ToolAdmissionPolicy>,
-) -> Result<Vec<Arc<dyn Toolset>>, ToolsetMaterializationError> {
+    delegated_tokens: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(Vec<Arc<dyn Toolset>>, DelegatedAuthorizationCatalog), ToolsetMaterializationError> {
     if snapshot.len() > MAX_AGENT_TOOLSETS {
         return Err(resource_exhausted());
     }
-    snapshot
+    let mut toolsets = Vec::new();
+    let mut delegated_authorization = DelegatedAuthorizationCatalog::default();
+    for reference in snapshot
         .iter()
         .filter(|reference| reference.kind() == FrozenToolKind::Configured)
-        .map(|reference| materialize(reference, policy))
-        .collect()
+    {
+        let (toolset, authorization) = materialize(reference, policy, delegated_tokens)?;
+        delegated_authorization
+            .merge(authorization)
+            .map_err(|()| invalid_configuration())?;
+        toolsets.push(toolset);
+    }
+    Ok((toolsets, delegated_authorization))
 }
 
 fn materialize(
     reference: &FrozenToolReference<'_>,
     policy: &Arc<ToolAdmissionPolicy>,
-) -> Result<Arc<dyn Toolset>, ToolsetMaterializationError> {
+    delegated_tokens: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(Arc<dyn Toolset>, DelegatedAuthorizationCatalog), ToolsetMaterializationError> {
     if reference.kind() != FrozenToolKind::Configured {
         return Err(unsupported_toolkit());
     }
@@ -101,9 +112,21 @@ fn materialize(
             | "keycloak"
             | "k8s"
     ) {
-        return materialize_a_to_k(reference.tool_type(), name, settings, policy);
+        let toolset = materialize_a_to_k(reference.tool_type(), name, settings, policy)?;
+        return Ok((toolset, DelegatedAuthorizationCatalog::default()));
     }
-    materialize_p_to_z(reference.tool_type(), name, settings, policy)
+    if reference.tool_type() == "openapi" {
+        let config = openapi::config::OpenApiToolkitConfig::parse(name, settings, delegated_tokens)
+            .map_err(|error| openapi_materialization_error(error.code()))?;
+        let materialized = openapi::tools::build_openapi_toolset(name, config, policy)
+            .map_err(|error| openapi_toolset_materialization_error(error.code()))?;
+        return Ok((
+            Arc::new(materialized.toolset),
+            materialized.delegated_authorization,
+        ));
+    }
+    let toolset = materialize_p_to_z(reference.tool_type(), name, settings, policy)?;
+    Ok((toolset, DelegatedAuthorizationCatalog::default()))
 }
 
 fn materialize_a_to_k(
@@ -278,5 +301,27 @@ const fn unsupported_toolkit() -> ToolsetMaterializationError {
 const fn resource_exhausted() -> ToolsetMaterializationError {
     ToolsetMaterializationError {
         code: ToolsetMaterializationErrorCode::ResourceExhausted,
+    }
+}
+
+const fn openapi_materialization_error(
+    code: openapi::config::OpenApiConfigErrorCode,
+) -> ToolsetMaterializationError {
+    match code {
+        openapi::config::OpenApiConfigErrorCode::InvalidConfiguration => invalid_configuration(),
+        openapi::config::OpenApiConfigErrorCode::ResourceExhausted => resource_exhausted(),
+        openapi::config::OpenApiConfigErrorCode::UnsupportedCapability => unsupported_toolkit(),
+    }
+}
+
+const fn openapi_toolset_materialization_error(
+    code: openapi::tools::OpenApiToolsetErrorCode,
+) -> ToolsetMaterializationError {
+    match code {
+        openapi::tools::OpenApiToolsetErrorCode::InvalidConfiguration
+        | openapi::tools::OpenApiToolsetErrorCode::Client
+        | openapi::tools::OpenApiToolsetErrorCode::InvalidDefinition => invalid_configuration(),
+        openapi::tools::OpenApiToolsetErrorCode::ResourceExhausted => resource_exhausted(),
+        openapi::tools::OpenApiToolsetErrorCode::UnsupportedCapability => unsupported_toolkit(),
     }
 }

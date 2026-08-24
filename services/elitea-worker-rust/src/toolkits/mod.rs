@@ -23,7 +23,8 @@ pub(crate) use delegated_auth::{
     encode_delegated_authorization_requirement,
 };
 pub(crate) use materialize::{
-    ToolsetMaterializationError, ToolsetMaterializationErrorCode, materialize_configured_toolsets,
+    ToolsetMaterializationError, ToolsetMaterializationErrorCode,
+    materialize_configured_toolsets_with_tokens_and_authorization,
 };
 pub(crate) use mcp::{
     AdkHttpMcpConnector, McpConnector, McpMaterializationError, McpMaterializationErrorCode,
@@ -61,6 +62,8 @@ mod keycloak_tests;
 mod kubernetes_tests;
 #[cfg(test)]
 mod mcp_tests;
+#[cfg(test)]
+mod openapi_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]

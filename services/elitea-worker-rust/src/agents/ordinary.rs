@@ -33,7 +33,8 @@ use crate::state::SessionLimits;
 use crate::toolkits::{
     AdkHttpMcpConnector, AdmittedToolSnapshot, FrozenToolKind, McpConnector,
     McpMaterializationError, McpMaterializationErrorCode, ToolAdmissionPolicy,
-    ToolsetMaterializationError, ToolsetMaterializationErrorCode, materialize_configured_toolsets,
+    ToolsetMaterializationError, ToolsetMaterializationErrorCode,
+    materialize_configured_toolsets_with_tokens_and_authorization,
     materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
@@ -362,8 +363,9 @@ async fn materialize_direct_toolsets(
     ),
     NativeAgentAssemblyError,
 > {
-    let mut toolsets =
-        materialize_configured_toolsets(snapshot, policy).map_err(tool_materialization_error)?;
+    let (mut toolsets, mut delegated_authorization) =
+        materialize_configured_toolsets_with_tokens_and_authorization(snapshot, policy, mcp_tokens)
+            .map_err(tool_materialization_error)?;
     let mut sensitive = sensitive_tools_for_kind(
         snapshot,
         FrozenToolKind::Configured,
@@ -371,12 +373,15 @@ async fn materialize_direct_toolsets(
         policy.as_ref(),
     )
     .await?;
-    let (mut mcp_toolsets, delegated_authorization) =
+    let (mut mcp_toolsets, mcp_delegated_authorization) =
         materialize_mcp_toolsets_with_tokens_and_authorization(
             snapshot, connector, policy, mcp_tokens,
         )
         .await
         .map_err(|error| mcp_materialization_error(&error))?;
+    delegated_authorization
+        .merge(mcp_delegated_authorization)
+        .map_err(|()| invalid_tool_authorization_catalog())?;
     sensitive.merge(
         sensitive_tools_for_kind(
             snapshot,
@@ -388,6 +393,13 @@ async fn materialize_direct_toolsets(
     )?;
     toolsets.append(&mut mcp_toolsets);
     Ok((toolsets, sensitive, delegated_authorization))
+}
+
+fn invalid_tool_authorization_catalog() -> NativeAgentAssemblyError {
+    NativeAgentAssemblyError::new(
+        NativeAgentAssemblyErrorCode::InvalidConfiguration,
+        "the configured delegated authorization catalog is invalid",
+    )
 }
 
 const fn model_reasoning_effort(effort: ReasoningEffort) -> ModelReasoningEffort {

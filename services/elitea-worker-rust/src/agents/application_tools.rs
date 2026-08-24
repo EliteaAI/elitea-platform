@@ -42,7 +42,7 @@ use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::toolkits::{
     AdmittedToolSnapshot, DelegatedAuthorizationCatalog, FrozenToolKind, FrozenToolSnapshot,
     FrozenToolSnapshotErrorCode, McpConnector, McpMaterializationErrorCode, ToolAdmissionPolicy,
-    ToolsetMaterializationErrorCode, materialize_configured_toolsets,
+    ToolsetMaterializationErrorCode, materialize_configured_toolsets_with_tokens_and_authorization,
     materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
@@ -1176,8 +1176,13 @@ impl ApplicationAssemblyState<'_> {
         ),
         NativeAgentAssemblyError,
     > {
-        let mut toolsets =
-            materialize_configured_toolsets(frozen, &self.policy).map_err(toolset_error)?;
+        let (mut toolsets, mut delegated_authorization) =
+            materialize_configured_toolsets_with_tokens_and_authorization(
+                frozen,
+                &self.policy,
+                self.mcp_tokens,
+            )
+            .map_err(toolset_error)?;
         let mut sensitive_tools = sensitive_tools_for_kind(
             frozen,
             FrozenToolKind::Configured,
@@ -1185,7 +1190,7 @@ impl ApplicationAssemblyState<'_> {
             self.policy.as_ref(),
         )
         .await?;
-        let (mut mcp_toolsets, delegated_authorization) =
+        let (mut mcp_toolsets, mcp_delegated_authorization) =
             materialize_mcp_toolsets_with_tokens_and_authorization(
                 frozen,
                 self.mcp_connector.as_ref(),
@@ -1194,6 +1199,9 @@ impl ApplicationAssemblyState<'_> {
             )
             .await
             .map_err(|error| mcp_toolset_error(&error))?;
+        delegated_authorization
+            .merge(mcp_delegated_authorization)
+            .map_err(|()| invalid_configuration())?;
         sensitive_tools.merge(
             sensitive_tools_for_kind(
                 frozen,

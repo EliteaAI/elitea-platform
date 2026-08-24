@@ -62,6 +62,13 @@ impl DelegatedAuthorizationCatalog {
     pub(crate) fn is_empty(&self) -> bool {
         self.requirements.is_empty()
     }
+
+    pub(crate) fn merge(&mut self, other: Self) -> Result<(), ()> {
+        for (tool_name, requirement) in other.requirements {
+            self.insert(&tool_name, requirement)?;
+        }
+        Ok(())
+    }
 }
 
 /// Sanitized OAuth requirement retained long enough to create a native graph
