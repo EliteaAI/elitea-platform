@@ -2455,7 +2455,7 @@
   "pages.admin.llmProviders.status.live": "In use",
   "pages.admin.llmProviders.status.unresolved": "Not resolving",
   "pages.admin.llmProviders.unsealed": "Some platform providers store their key directly in the configuration row rather than in the vault. Re-save each one to seal it: {{names}}",
-  "pages.admin.llmProxy.tab.providers": "Providers",
+  "pages.admin.llmProxy.tab.providers": "Providers & models",
   "pages.admin.llmProviders.scopeMismatch": "The LLM gateway reads platform-shared credentials from project {{gateway}}, but this panel publishes into project {{here}}. Nothing published here will resolve until the two match.",
   "pages.admin.llmProviders.scopeOff": "The LLM gateway is not reading platform-shared credentials at all, so nothing published here reaches any project. Set ELITEA_AI_PROJECT_ID on the gateway to {{id}}.",
   "pages.admin.platformModels.add": "Add a platform model",
@@ -2493,5 +2493,7 @@
   "pages.admin.platformModels.status.live": "In use",
   "pages.admin.platformModels.status.unresolved": "Not resolving",
   "pages.admin.platformModels.title": "Platform models",
-  "pages.admin.platformModels.unresolved": "These models name a provider this platform does not publish. The gateway still offers them and guesses the provider from the model name: {{names}}"
+  "pages.admin.platformModels.unresolved": "These models name a provider this platform does not publish. The gateway still offers them and guesses the provider from the model name: {{names}}",
+  "pages.admin.platformModels.cancel": "Cancel",
+  "pages.admin.platformModels.confirmDelete": "Deleting “{{name}}” withdraws it from every project at once. Calls addressing it then fail with model_not_found."
 }

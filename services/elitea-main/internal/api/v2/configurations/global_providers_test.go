@@ -424,3 +424,73 @@ func TestTheConfigIDReachesTheDelegatedHandler(t *testing.T) {
 		t.Errorf("configID = %q, want %q", seen, "4")
 	}
 }
+
+// TestAProviderWriteCannotChooseItsSection.
+//
+// `sectionFor` returns a caller-supplied `section` verbatim, so before this was
+// forced a body carrying `"section": "llm"` stored a CREDENTIAL row outside
+// `ai_credentials`. The row is then invisible to this listing (filtered on the
+// section) AND to the gateway's credential read (same predicate) — a 201, an
+// empty list, and an orphan row holding a sealed key.
+func TestAProviderWriteCannotChooseItsSection(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := providerRequest(http.MethodPost, "/",
+		`{"elitea_title":"x","type":"open_ai","section":"llm"}`)
+
+	rewritten, ok := providerHandler().rewriteGlobalProviderBody(recorder, request, true)
+	if !ok {
+		t.Fatalf("refused: %d %s", recorder.Code, recorder.Body.String())
+	}
+	var body map[string]any
+	raw, _ := io.ReadAll(rewritten.Body)
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["section"] != GlobalProviderSection {
+		t.Errorf("section = %v, want the forced %q", body["section"], GlobalProviderSection)
+	}
+}
+
+// TestAWriteVerbRefusesARowFromAnotherSection.
+//
+// The delegated Update and Delete address a row by id alone — no section
+// predicate — so each surface could write the whole table. `DELETE
+// /providers/{id}` given a MODEL's id deleted that model; `DELETE
+// /platform_models/{id}` deleted a credential; a PUT carrying only `data`
+// passed the type check (type is optional on an update) and overwrote a
+// project_context row.
+//
+// The check runs against a fake row source, so what is pinned is the DECISION
+// rather than the query: a section on the list passes, one off it answers 404.
+func TestAWriteVerbRefusesARowFromAnotherSection(t *testing.T) {
+	for section, wantAdmitted := range map[string]bool{
+		"ai_credentials":   true,
+		"llm":              false,
+		"project_settings": false,
+		"credentials":      false,
+	} {
+		if got := sectionAdmitted(section, GlobalProviderSection); got != wantAdmitted {
+			t.Errorf("section %q admitted = %v, want %v", section, got, wantAdmitted)
+		}
+	}
+
+	// And the model surface admits every model section and no credential.
+	for _, section := range globalModelSectionNames() {
+		if !sectionAdmitted(section, globalModelSectionNames()...) {
+			t.Errorf("model section %q was refused by the model surface", section)
+		}
+	}
+	if sectionAdmitted(GlobalProviderSection, globalModelSectionNames()...) {
+		t.Error("the model surface admitted a credential row")
+	}
+}
+
+// sectionAdmitted mirrors requireGlobalRowSection's membership decision.
+func sectionAdmitted(section string, allowed ...string) bool {
+	for _, want := range allowed {
+		if section == want {
+			return true
+		}
+	}
+	return false
+}

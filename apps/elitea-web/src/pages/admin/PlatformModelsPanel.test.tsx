@@ -197,3 +197,53 @@ describe('PlatformModelsPanel', () => {
     );
   });
 });
+
+
+describe('PlatformModelsPanel — deletion', () => {
+  // Withdrawing a model from every project at once is not something a single
+  // click on a table row should do, and the providers table beside this one
+  // already confirms.
+  it('confirms before withdrawing a model from every project', async () => {
+    useModels([GPT4O]);
+    const deletes: string[] = [];
+    server.use(
+      http.delete('*/admin/gateway/platform_models/:id', ({ params }) => {
+        deletes.push(String(params.id));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderAdminRoute(<PlatformModelsPanel />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    const confirm = await screen.findByTestId('platform-models-confirm-delete');
+    expect(confirm).toHaveTextContent('every project at once');
+    // Nothing has been deleted yet.
+    expect(deletes).toEqual([]);
+
+    await userEvent.click(screen.getByTestId('platform-models-confirm-delete-button'));
+    await waitFor(() => {
+      expect(deletes).toEqual(['11']);
+    });
+  });
+
+  it('cancels without deleting', async () => {
+    useModels([GPT4O]);
+    const deletes: string[] = [];
+    server.use(
+      http.delete('*/admin/gateway/platform_models/:id', ({ params }) => {
+        deletes.push(String(params.id));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    renderAdminRoute(<PlatformModelsPanel />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('platform-models-confirm-delete')).toBeNull();
+    });
+    expect(deletes).toEqual([]);
+  });
+});

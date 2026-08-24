@@ -93,6 +93,13 @@ import (
 // maintenanceCacheTTL bounds how stale the switch may be. See the file doc.
 const maintenanceCacheTTL = 10 * time.Second
 
+// maintenanceLoadTimeout bounds one refresh.
+//
+// The read is a point query on a handful of rows; anything approaching this
+// budget means the database is in trouble, and the right answer then is to keep
+// the last known state rather than to hold a request open waiting for it.
+const maintenanceLoadTimeout = 3 * time.Second
+
 // MaintenanceAdminPermission is the permission that gets through a maintenance
 // window. It is `runtime.plugins` — the name pylon's own maintenance.py declares
 // on this surface, and the one the Configuration section requires in order to
@@ -175,23 +182,52 @@ func (g *maintenanceGate) clock() time.Time {
 // there the zero state — not in maintenance — is the permissive default the
 // file doc chooses.
 func (g *maintenanceGate) resolve(ctx context.Context) platformconfig.Maintenance {
+	// THE QUERY DOES NOT RUN UNDER THE LOCK, and that is the whole shape of this
+	// function.
+	//
+	// Holding g.mu across the read would serialise EVERY request the API serves
+	// behind one mutex for the duration of the refresh. At the normal ~1ms every
+	// ten seconds that is invisible; against a saturated pool or a slow query it
+	// turns a degraded database into a stalled API — at exactly the moment an
+	// operator is trying to reach the admin panel to open a window. So the lock
+	// is taken twice, briefly, and the read happens between.
+	//
+	// The TTL is re-armed BEFORE the read, still under the first lock, so
+	// concurrent callers that arrive during a refresh serve the previous value
+	// instead of piling a second query on top of a database that is already
+	// struggling. At most one refresh is ever in flight.
 	g.mu.Lock()
-	defer g.mu.Unlock()
-
 	now := g.clock()
 	if now.Before(g.expiresAt) {
-		return g.state
+		state := g.state
+		g.mu.Unlock()
+		return state
 	}
 	g.expiresAt = now.Add(maintenanceCacheTTL)
+	previous := g.state
+	g.mu.Unlock()
 
-	state, err := g.load(ctx)
+	// Its OWN deadline, not the caller's. On the request context a client that
+	// disconnects mid-refresh cancels the read, and the TTL is already re-armed
+	// — so one abandoned request could hold the state stale for a whole window.
+	loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), maintenanceLoadTimeout)
+	defer cancel()
+
+	state, err := g.load(loadCtx)
 	if err != nil {
+		// A failed refresh keeps the PREVIOUS value rather than falling back to
+		// "off": a running maintenance window must not end because one query
+		// timed out. The TTL stays armed, so the failure costs one query per
+		// window rather than one per request.
 		slog.WarnContext(ctx, "maintenance state unreadable; keeping the last known value",
-			"error", err, "enabled", g.state.Enabled)
-		return g.state
+			"error", err, "enabled", previous.Enabled)
+		return previous
 	}
+
+	g.mu.Lock()
 	g.state = state
-	return g.state
+	g.mu.Unlock()
+	return state
 }
 
 func (g *maintenanceGate) middleware(next http.Handler) http.Handler {

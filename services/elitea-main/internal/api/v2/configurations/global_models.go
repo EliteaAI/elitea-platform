@@ -179,7 +179,7 @@ func (h *Handler) ListGlobalModels(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]GlobalModel, 0)
 	for rows.Next() {
-		item, scanErr := scanGlobalModel(rows.Scan, credentials)
+		item, scanErr := scanGlobalModel(rows.Scan, credentials, credErr == nil)
 		if scanErr != nil {
 			writeConfigurationRowFailure(ctx, w, schema, scanErr)
 			return
@@ -239,7 +239,17 @@ func (h *Handler) globalCredentialTitles(ctx context.Context, schema string) ([]
 }
 
 // scanGlobalModel turns one row into its report.
-func scanGlobalModel(scan func(...any) error, credentials []string) (GlobalModel, error) {
+//
+// `verified` is false when the credential list could not be read. Every link
+// then reports as RESOLVING rather than as broken: an unread list makes
+// `containsString` false for every model at once, and the panel would raise
+// "these models name a provider this platform does not publish" naming every
+// model on the platform — a failure of the check rendered as a finding about
+// the data, which is the exact conflation the per-section errors exist to
+// prevent. The listing already carries `credential_error` to say what happened.
+func scanGlobalModel(
+	scan func(...any) error, credentials []string, verified bool,
+) (GlobalModel, error) {
 	var item GlobalModel
 	var data []byte
 	var createdAt, updatedAt time.Time
@@ -259,7 +269,7 @@ func scanGlobalModel(scan func(...any) error, credentials []string) (GlobalModel
 	// A row that names NO credential resolves by prefix and is not broken, so
 	// it reports true: `credential_resolves` answers "is this link usable",
 	// and an absent link is not an unusable one.
-	item.CredentialResolves = item.CredentialName == "" ||
+	item.CredentialResolves = !verified || item.CredentialName == "" ||
 		containsString(credentials, item.CredentialName)
 	item.CreatedAt = createdAt.Format(time.RFC3339)
 	item.UpdatedAt = updatedAt.Format(time.RFC3339)
@@ -314,6 +324,9 @@ func (h *Handler) UpdateGlobalModel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireGlobalRowSection(w, request, globalModelSectionNames()...) {
+		return
+	}
 	rewritten, ok := h.rewriteGlobalModelBody(w, request, false)
 	if !ok {
 		return
@@ -327,7 +340,23 @@ func (h *Handler) DeleteGlobalModel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Scoped to the MODEL sections — see requireGlobalRowSection. Without it
+	// this route deleted any row in the public project by id, a credential
+	// included.
+	if !h.requireGlobalRowSection(w, request, globalModelSectionNames()...) {
+		return
+	}
 	h.Delete(w, request)
+}
+
+// globalModelSectionNames are the sections a platform model can live in.
+func globalModelSectionNames() []string {
+	sections := make([]string, 0, len(globalModelSections))
+	for _, section := range globalModelSections {
+		sections = append(sections, section)
+	}
+	sort.Strings(sections)
+	return sections
 }
 
 // rewriteGlobalModelBody forces `shared`, derives `section` and validates the

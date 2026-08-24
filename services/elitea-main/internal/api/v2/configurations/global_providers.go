@@ -68,11 +68,15 @@ package configurations
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
@@ -111,7 +115,8 @@ func (h *Handler) pinPublicProject(w http.ResponseWriter, r *http.Request) (*htt
 	if h.publicProjectID <= 0 {
 		apierr.WriteStatus(w, http.StatusServiceUnavailable,
 			"this deployment names no public project, so a platform-wide provider has nowhere to be "+
-				"published. Set AI_PROJECT_ID to the shared project's id.")
+				"published. Set ELITEA_AI_PROJECT_ID to the shared project's id — the same variable "+
+				"the LLM gateway reads, so setting it once arms both.")
 		return nil, false
 	}
 	if h.pool == nil {
@@ -352,6 +357,9 @@ func (h *Handler) UpdateGlobalProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireGlobalRowSection(w, request, GlobalProviderSection) {
+		return
+	}
 	rewritten, ok := h.rewriteGlobalProviderBody(w, request, false)
 	if !ok {
 		return
@@ -367,6 +375,9 @@ func (h *Handler) UpdateGlobalProvider(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteGlobalProvider(w http.ResponseWriter, r *http.Request) {
 	request, ok := h.pinPublicProject(w, r)
 	if !ok {
+		return
+	}
+	if !h.requireGlobalRowSection(w, request, GlobalProviderSection) {
 		return
 	}
 	h.Delete(w, request)
@@ -401,6 +412,15 @@ func (h *Handler) rewriteGlobalProviderBody(
 	if !admitGlobalShared(w, body) {
 		return nil, false
 	}
+	// SECTION IS FORCED, never accepted — the same rule the model surface
+	// applies, and it was missing here.
+	//
+	// `sectionFor` returns a caller-supplied `section` verbatim, so a body
+	// carrying `"section": "llm"` stored a CREDENTIAL row outside
+	// `ai_credentials`. That row is then invisible to this listing (filtered on
+	// the section) AND to the gateway's credential read (same predicate), so the
+	// operator got a 201, an empty list, and an orphan row holding a sealed key.
+	body["section"] = GlobalProviderSection
 	return encodeGlobalBody(w, r, body)
 }
 
@@ -551,4 +571,58 @@ func (h *Handler) admitGlobalProviderType(
 		return false
 	}
 	return true
+}
+
+// requireGlobalRowSection refuses a {configID} that does not name a row of this
+// surface's own section.
+//
+// WITHOUT IT EACH SURFACE WRITES THE WHOLE TABLE. The delegated Update and
+// Delete address a row by id alone — `DELETE FROM p_1.configuration WHERE
+// id = $1`, with no section predicate — so `DELETE /providers/{id}` given a
+// MODEL's id deleted that model, `DELETE /platform_models/{id}` deleted a
+// credential, and a PUT carrying only `data` (type is optional on an update, so
+// the type check passes) overwrote a project_context or service_prompt row.
+// Every one of those is a row in the public project, which every tenant reads.
+//
+// The listing was already scoped by its own `WHERE section = …`; these two verbs
+// were not, and the file header's claim that this router "cannot read the public
+// project's models, toolkit credentials or project context" was true of the read
+// and false of the writes.
+//
+// A row in another section answers 404, not 403: which rows the public project
+// holds outside this surface is not something this surface should disclose, and
+// "not found here" is the accurate statement either way.
+func (h *Handler) requireGlobalRowSection(
+	w http.ResponseWriter, r *http.Request, allowed ...string,
+) bool {
+	configID := chi.URLParam(r, "configID")
+	if configID == "" {
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+		return false
+	}
+	schema := fmt.Sprintf("p_%d", h.publicProjectID)
+
+	var section string
+	err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
+		`SELECT section FROM %q.configuration WHERE %s = $1`,
+		schema, configurationIDColumn(configID)), configID).Scan(&section)
+	if err != nil {
+		// A missing row and an unreadable one both answer 404 rather than 500.
+		// The delegated handlers answer 404 for a missing row anyway, so a 500
+		// here would only distinguish "the check failed" from "the row is not
+		// yours" — and the safe reading of a failed check is to refuse.
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.ErrorContext(r.Context(), "global configuration section check failed",
+				"schema", schema, "configuration_id", configID, "err", err)
+		}
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+		return false
+	}
+	for _, want := range allowed {
+		if section == want {
+			return true
+		}
+	}
+	apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+	return false
 }

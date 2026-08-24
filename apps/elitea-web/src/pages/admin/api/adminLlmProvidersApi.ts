@@ -78,8 +78,13 @@ export const LLM_PROVIDER_TYPES = [
 
 export type LlmProviderType = (typeof LLM_PROVIDER_TYPES)[number];
 
-/** One secret field's status. The value itself is never sent. */
-export interface LlmProviderSecret {
+/**
+ * One secret field's status. The value itself is never sent.
+ *
+ * Not exported: it is only ever reached through `LlmProvider.secrets`, and an
+ * export with no importer is what the dead-code gate is for.
+ */
+interface LlmProviderSecret {
   readonly field: string;
   readonly set: boolean;
   /**

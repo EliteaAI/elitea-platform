@@ -48,8 +48,13 @@
  */
 import { useGetPlatformSettings } from '@/shared/api/generated/admin/admin';
 
-/** The banner's visual register. The server folds anything else onto `info`. */
-export type BannerTone = 'info' | 'warning';
+/**
+ * The banner's visual register. The server folds anything else onto `info`.
+ *
+ * Not exported: `PlatformBanner` reaches it through the interface below, and an
+ * export with no importer is what the dead-code gate is for.
+ */
+type BannerTone = 'info' | 'warning';
 
 export interface PlatformBanner {
   /**

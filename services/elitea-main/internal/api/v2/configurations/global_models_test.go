@@ -173,7 +173,7 @@ func TestACredentialLinkIsReadInBothSpellings(t *testing.T) {
 // seed relies on it, and reporting it as unresolved would be a permanent false
 // alarm on a working deployment.
 func TestAModelNamingNoCredentialResolves(t *testing.T) {
-	item, err := scanGlobalModel(modelRowScan(`{"name":"gpt-4o"}`), []string{"platform-openai"})
+	item, err := scanGlobalModel(modelRowScan(`{"name":"gpt-4o"}`), []string{"platform-openai"}, true)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestAModelNamingNoCredentialResolves(t *testing.T) {
 // visible to an operator.
 func TestAModelNamingAMissingCredentialIsReportedUnresolved(t *testing.T) {
 	row := `{"name":"gpt-4o","ai_credentials":{"elitea_title":"deleted-openai"}}`
-	item, err := scanGlobalModel(modelRowScan(row), []string{"platform-openai"})
+	item, err := scanGlobalModel(modelRowScan(row), []string{"platform-openai"}, true)
 	if err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestAModelNamingAMissingCredentialIsReportedUnresolved(t *testing.T) {
 // TestACorruptModelDataColumnDoesNotBreakTheListing — one bad row must not make
 // the platform's model screen unreachable.
 func TestACorruptModelDataColumnDoesNotBreakTheListing(t *testing.T) {
-	item, err := scanGlobalModel(modelRowScan(`not json`), nil)
+	item, err := scanGlobalModel(modelRowScan(`not json`), nil, true)
 	if err != nil {
 		t.Fatalf("scan refused a corrupt data column: %v", err)
 	}
@@ -289,5 +289,34 @@ func TestTheRefusalNamesTheAdmittedModelTypes(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "llm_model") {
 		t.Errorf("the refusal does not name what IS admitted: %s", recorder.Body.String())
+	}
+}
+
+// TestAnUnverifiedCredentialListDoesNotMarkEveryModelBroken.
+//
+// When the credential read fails the list is nil, so `containsString` is false
+// for every linked model at once. Reported as-is, the panel raises "these models
+// name a provider this platform does not publish" naming EVERY model on the
+// platform — a failure of the check rendered as a finding about the data, which
+// is the conflation the per-section errors exist to prevent. The listing already
+// carries `credential_error` to say what actually happened.
+func TestAnUnverifiedCredentialListDoesNotMarkEveryModelBroken(t *testing.T) {
+	row := `{"name":"gpt-4o","ai_credentials":{"elitea_title":"platform-openai"}}`
+
+	unverified, err := scanGlobalModel(modelRowScan(row), nil, false)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !unverified.CredentialResolves {
+		t.Error("a model was reported as unresolved because the credential list could not be read")
+	}
+
+	// The check still bites when the list WAS read.
+	verified, err := scanGlobalModel(modelRowScan(row), nil, true)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if verified.CredentialResolves {
+		t.Error("a model naming a credential absent from a READ list was reported as resolving")
 	}
 }
