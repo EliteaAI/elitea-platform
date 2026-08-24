@@ -229,12 +229,33 @@ func TestTheBoundAccountGuardReadsOnlyThisHandlersNamespace(t *testing.T) {
 	if index < 0 {
 		t.Fatalf("the email fallback did not run: %v", tx.statements)
 	}
-	if !strings.Contains(tx.statements[index], "bound.provider_ref LIKE 'oidc:%'") {
+	// The guard must still BE there, and must still be scoped rather than blind.
+	//
+	// It is asserted as a PARAMETERISED match, not as a literal namespace. The
+	// literal is what let the SAML path through: this test read
+	// `LIKE 'oidc:%'`, SAML wrote `saml:`, and the guard silently stopped
+	// applying to it while this assertion went on passing. The namespaces it
+	// covers are now a Go value, and WHICH accounts it refuses is proved
+	// against a real database in provisioning_postgres_integration_test.go —
+	// where a scripted transaction cannot reach, because PostgreSQL does the
+	// matching.
+	if !strings.Contains(tx.statements[index], "bound.provider_ref LIKE ANY") {
+		t.Fatalf("the bound-account guard is missing from the email fallback: %s", tx.statements[index])
+	}
+	if strings.Contains(tx.statements[index], "'%'") {
 		t.Fatalf(
 			"the bound-account guard is namespace-blind, so a legacy bare ref locks the "+
 				"account out: %s",
 			tx.statements[index],
 		)
+	}
+	// And the namespaces it is given are the ones this service writes. A
+	// protocol added without extending this list is a protocol the guard does
+	// not cover.
+	patterns := federatedRefPatterns()
+	if len(patterns) != 2 ||
+		patterns[0] != OIDCProviderRefPrefix+"%" || patterns[1] != SAMLProviderRefPrefix+"%" {
+		t.Fatalf("the guard covers %v, want one pattern per federated namespace", patterns)
 	}
 }
 

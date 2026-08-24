@@ -122,6 +122,10 @@ func (b userBody) toUser(activeDefault bool) scimdirectory.User {
 		UserName:    b.resolveUserName(),
 		DisplayName: b.resolveDisplayName(),
 		Active:      active,
+		// Carried through so the store can tell an explicit flag from a
+		// default. Create uses it to leave an operator's manual suspension
+		// alone on a re-sync; see scimdirectory.Create.
+		ActiveStated: b.Active != nil,
 	}
 }
 
@@ -260,7 +264,8 @@ func (h *Handler) ReplaceUser(w http.ResponseWriter, r *http.Request) {
 	}
 	// A PUT with no `active` means active, for the same reason: a replace is
 	// the whole resource, and an omitted flag on a person the provider is
-	// actively managing means they are there.
+	// actively managing means they are there. Replace has no adoption branch,
+	// so it writes `suspended` unconditionally and needs no ActiveStated.
 	user, err := h.directory.Replace(r.Context(), id, body.toUser(true))
 	if err != nil {
 		h.writeStoreFailure(w, err, "replace user")

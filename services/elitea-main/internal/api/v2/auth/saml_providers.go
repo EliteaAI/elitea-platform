@@ -66,7 +66,10 @@ func (h *SAMLHandler) runtime(ctx context.Context) (*samlRuntime, error) {
 	provider, err := h.providers.Enabled(ctx, identityproviders.KindSAML)
 	switch {
 	case err == nil:
-	case errors.Is(err, identityproviders.ErrNotFound):
+	case errors.Is(err, identityproviders.ErrNotFound),
+		identityproviders.IsSchemaMissing(err):
+		// A table that does not exist holds no rows. This deployment federates
+		// no SAML logins, which is what the routes then say.
 		return nil, errNoSAMLProvider
 	default:
 		// An unreadable table is NOT "no provider". Reporting it as the second
@@ -235,6 +238,8 @@ func HasEnabledSAMLProvider(ctx context.Context, providers IdentityProviderSourc
 	case errors.Is(err, identityproviders.ErrNotFound):
 		return false, nil
 	default:
+		// See HasEnabledOIDCProvider: a missing table reaches the caller as an
+		// error so the composition root can name it in a log line.
 		return false, err
 	}
 }

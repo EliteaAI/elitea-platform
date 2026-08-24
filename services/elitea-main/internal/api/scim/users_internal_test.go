@@ -188,6 +188,21 @@ func TestACreateWithNoActiveFlagIsActive(t *testing.T) {
 	require.Equal(t, BasePath+"/Users/43", recorder.Header().Get("Location"))
 }
 
+// The handler must carry the DISTINCTION down, not just the value. Without
+// ActiveStated the store cannot tell an omitted flag from an explicit one.
+func TestTheHandlerReportsWhetherActiveWasStated(t *testing.T) {
+	directory := newRecordingDirectory()
+	serve(t, directory, http.MethodPost, "/Users", `{"userName":"bob@corp.com"}`)
+	require.Len(t, directory.created, 1)
+	require.False(t, directory.created[0].ActiveStated,
+		"an omitted active must not read as a statement about the person")
+
+	directory = newRecordingDirectory()
+	serve(t, directory, http.MethodPost, "/Users", `{"userName":"bob@corp.com","active":true}`)
+	require.True(t, directory.created[0].ActiveStated)
+	require.True(t, directory.created[0].Active)
+}
+
 // Entra ID sends a `userName` that is a UPN and the routable address as the
 // primary email. A create with no userName at all must still resolve one.
 func TestAPrimaryEmailStandsInForAMissingUserName(t *testing.T) {

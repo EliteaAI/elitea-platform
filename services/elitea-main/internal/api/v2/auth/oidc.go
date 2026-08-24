@@ -474,7 +474,7 @@ func (h *OIDCHandler) provisionUser(
 	emailVerified *bool,
 	requireVerifiedEmail bool,
 ) (string, error) {
-	providerRef := "oidc:" + sub
+	providerRef := OIDCProviderRefPrefix + sub
 
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -570,18 +570,50 @@ func reuseLinkedAccount(
 	return userID, true, nil
 }
 
+// FederatedRefPrefixes are the `auth_core__user_provider.provider_ref`
+// namespaces THIS service writes, and the closed set joinAccountByEmail refuses
+// to adopt across.
+//
+// Every federated login path MUST build its ref from one of these, and every
+// new protocol MUST be added here in the same change. The guard is derived from
+// this list rather than restating a literal, because a literal is what made the
+// SAML path adoptable: the guard read `LIKE 'oidc:%'`, SAML wrote `saml:`, and
+// the guard silently stopped applying to it.
+//
+// The set is CLOSED, and deliberately does not match "any ref containing a
+// colon". Pylon writes two shapes this service must keep adoptable:
+//
+//   - a BARE ref, the raw OIDC subject with no prefix at all
+//     (legacy/plugins/auth_init/rpc/processor.py:55). A namespace-blind guard
+//     refuses every pylon-created account with 409 on its first Go login.
+//   - `cirro:invite:token:<token>`, written when an operator invites somebody
+//     (legacy/plugins/admin/api/v2/user_invite.py:83). That is an invite
+//     receipt, not a federated identity, and an invited person must be able to
+//     sign in for the first time.
+const (
+	OIDCProviderRefPrefix = "oidc:"
+	SAMLProviderRefPrefix = "saml:"
+)
+
+// federatedRefPatterns is FederatedRefPrefixes as SQL LIKE patterns.
+func federatedRefPatterns() []string {
+	return []string{OIDCProviderRefPrefix + "%", SAMLProviderRefPrefix + "%"}
+}
+
 // joinAccountByEmail handles a subject that has never signed in here. It is the
 // only path on which the email claim decides anything, so it is the narrow one.
 //
-// An account that another OIDC subject ALREADY holds is never adopted. An
-// account with no OIDC link is adopted. This is how a person keeps one account
-// across a first single-sign-on. The deployment can also demand a verified
-// address for that step.
+// An account that another FEDERATED subject already holds is never adopted, in
+// either protocol and across the two. An account held only by a pylon bare ref
+// or an invite receipt is adopted. This is how a person keeps one account across
+// a first single-sign-on. The deployment can also demand a verified address for
+// that step.
 //
-// The guard reads only refs in this handler's own `oidc:` namespace. Pylon
-// wrote a BARE ref for the same provider, and pylon-created databases hold no
-// prefixed ref (legacy/plugins/auth_init/rpc/processor.py:55). A namespace-blind
-// guard refuses every such account with 409 on its first Go login.
+// CROSS-PROTOCOL ADOPTION IS REFUSED, not permitted. A deployment may run one
+// OIDC and one SAML provider at once, and they may be different identity
+// providers; letting an assertion from one adopt an account the other owns makes
+// either one able to take over the other's accounts by asserting an address.
+// The operator resolves it, which is what the 409 says.
 func joinAccountByEmail(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -602,10 +634,10 @@ func joinAccountByEmail(
 		   AND NOT EXISTS (
 		       SELECT 1 FROM auth_core__user_provider AS bound
 		       WHERE bound.user_id = auth_core__user.id
-		         AND bound.provider_ref LIKE 'oidc:%'
+		         AND bound.provider_ref LIKE ANY ($3)
 		   )
 		 RETURNING id`,
-		email, name,
+		email, name, federatedRefPatterns(),
 	).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The address matched a row the conflict clause refused. Read which of

@@ -17,6 +17,7 @@ package identityproviders
 // one that was checked.
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
@@ -232,11 +233,11 @@ func validateSAML(document SAMLDocument) (SAMLDocument, error) {
 	// then cannot read.
 	document.SPCertificate = strings.TrimSpace(document.SPCertificate)
 	if document.SPCertificate != "" {
-		certificate, err := normalizeCertificates("sp_certificate", []string{document.SPCertificate}, true)
+		certificate, err := normalizeOneCertificate("sp_certificate", document.SPCertificate)
 		if err != nil {
 			return SAMLDocument{}, err
 		}
-		document.SPCertificate = certificate[0]
+		document.SPCertificate = certificate
 	}
 	if document.SignAuthnRequests && document.SPCertificate == "" {
 		return SAMLDocument{}, invalid("sp_certificate",
@@ -283,17 +284,26 @@ func normalizeCertificates(field string, raw []string, required bool) ([]string,
 		if entry == "" {
 			continue
 		}
-		parsed, err := parseCertificate(entry)
+		// One entry may hold SEVERAL certificates. Copying two
+		// `<X509Certificate>` values out of an identity provider's metadata
+		// produces two PEM blocks with no blank line between them, and the web
+		// form splits entries on a blank line — so a rollover pair arrives here
+		// as one string. Reading only the first was a silent drop: the second
+		// anchor vanished, and the deployment kept working until the identity
+		// provider rotated onto the key that had been discarded.
+		parsed, err := parseCertificates(entry)
 		if err != nil {
 			return nil, invalid(field, err.Error())
 		}
-		if err := checkCertificateStrength(field, parsed); err != nil {
-			return nil, err
+		for _, certificate := range parsed {
+			if err := checkCertificateStrength(field, certificate); err != nil {
+				return nil, err
+			}
+			certificates = append(certificates, string(pem.EncodeToMemory(&pem.Block{
+				Type:  "CERTIFICATE",
+				Bytes: certificate.Raw,
+			})))
 		}
-		certificates = append(certificates, string(pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: parsed.Raw,
-		})))
 	}
 	if required && len(certificates) == 0 {
 		return nil, invalid(field, "at least one signing certificate is required")
@@ -301,12 +311,51 @@ func normalizeCertificates(field string, raw []string, required bool) ([]string,
 	return certificates, nil
 }
 
-func parseCertificate(entry string) (*x509.Certificate, error) {
-	if block, _ := pem.Decode([]byte(entry)); block != nil {
+// normalizeOneCertificate is normalizeCertificates for a field that may hold
+// exactly one certificate.
+//
+// It refuses a second rather than keeping the first. The service provider
+// certificate is published in metadata and must be the one that matches the
+// sealed private key; silently keeping whichever came first would publish a
+// certificate the key cannot sign for, and the identity provider would reject
+// every signed request with an error naming none of this.
+func normalizeOneCertificate(field, raw string) (string, error) {
+	certificates, err := normalizeCertificates(field, []string{raw}, true)
+	if err != nil {
+		return "", err
+	}
+	if len(certificates) != 1 {
+		return "", invalid(field, "give exactly one certificate: this field names the one that matches the sealed key")
+	}
+	return certificates[0], nil
+}
+
+func parseCertificates(entry string) ([]*x509.Certificate, error) {
+	rest := []byte(entry)
+	var certificates []*x509.Certificate
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			break
+		}
 		if block.Type != "CERTIFICATE" {
 			return nil, fmt.Errorf("expected a CERTIFICATE block, found %q", block.Type)
 		}
-		return x509.ParseCertificate(block.Bytes)
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("a certificate could not be parsed: %w", err)
+		}
+		certificates = append(certificates, certificate)
+	}
+	if len(certificates) > 0 {
+		// Trailing bytes that are not another PEM block are REFUSED, not
+		// ignored. They are most often a truncated paste, and ignoring them is
+		// the same silent drop this function was rewritten to remove.
+		if len(bytes.TrimSpace(rest)) > 0 {
+			return nil, fmt.Errorf("the value carries trailing data that is not a certificate")
+		}
+		return certificates, nil
 	}
 	// A bare base64 body, as SAML metadata carries it. Re-armour and parse
 	// through the same path so there is one decoder, not two.
@@ -315,7 +364,11 @@ func parseCertificate(entry string) (*x509.Certificate, error) {
 	if block == nil {
 		return nil, fmt.Errorf("the value is neither PEM nor base64 certificate data")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("a certificate could not be parsed: %w", err)
+	}
+	return []*x509.Certificate{certificate}, nil
 }
 
 // checkCertificateStrength refuses a key too small to be a trust anchor.

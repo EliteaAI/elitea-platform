@@ -285,11 +285,27 @@ func (h *Handler) IdentityProviderSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	secretRef, sealed := h.sealIdentityProviderSecret(w, r, key, body.Secret, existing.SecretRef)
-	if !sealed {
-		return
+	// SEAL BEFORE THE ROW, CLEAR AFTER IT. The two directions are not
+	// symmetrical, and treating them as one step is how a failed row write took
+	// a working provider down.
+	//
+	// Sealing is ADDITIVE: the vault name is derived from the key, so a seal
+	// that is followed by a failed row write leaves the row pointing at a value
+	// the operator did in fact just supply. Nothing is lost.
+	//
+	// Clearing is DESTRUCTIVE. Deleting the vault entry first and then failing
+	// to write the row leaves the stored row naming an entry that no longer
+	// exists, and every login answers 503 until somebody saves again. So the
+	// row is written first, and the delete happens after it commits — the same
+	// order IdentityProviderDelete uses, and for the same reason.
+	clearing := body.Secret != nil && strings.TrimSpace(*body.Secret) == ""
+	if !clearing {
+		secretRef, sealed := h.sealIdentityProviderSecret(w, r, key, body.Secret, existing.SecretRef)
+		if !sealed {
+			return
+		}
+		validated.SecretRef = secretRef
 	}
-	validated.SecretRef = secretRef
 
 	stored, err := h.identityProviders.Upsert(r.Context(), validated)
 	if err != nil {
@@ -301,6 +317,22 @@ func (h *Handler) IdentityProviderSave(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable,
 			map[string]any{"error": "the identity provider definition could not be written"})
 		return
+	}
+
+	// The row no longer names the secret, so removing it is now safe. A failure
+	// here leaves an entry nothing reads, which is inert — so it is reported in
+	// the response rather than turned into an error that would invite a retry
+	// of a save that already succeeded.
+	if clearing && existing.SecretRef != "" {
+		if err := h.identityProviderVault.DeleteAdminHiddenSecret(r.Context(), existing.SecretRef); err != nil {
+			view := identityProviderToView(stored)
+			writeJSON(w, http.StatusOK, map[string]any{
+				"provider": view,
+				"warning": "the provider was saved without a secret; the previously stored value could " +
+					"not be deleted and remains in the platform vault",
+			})
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, identityProviderToView(stored))
 }
@@ -317,8 +349,12 @@ func identityProviderWillHoldSecret(secret *string, current string) bool {
 	return strings.TrimSpace(*secret) != ""
 }
 
-// sealIdentityProviderSecret applies the write's tri-state secret and returns
-// the reference the row should carry.
+// sealIdentityProviderSecret applies the NON-DESTRUCTIVE half of the write's
+// tri-state secret and returns the reference the row should carry.
+//
+// The clear direction is deliberately not here: it is destructive, and the
+// caller performs it after the row is written. See the ordering note in
+// IdentityProviderSave.
 //
 // It reports failure through the boolean rather than an error so the caller
 // stays a straight line; every failing branch has already answered.
@@ -329,18 +365,10 @@ func (h *Handler) sealIdentityProviderSecret(
 	secret *string,
 	current string,
 ) (string, bool) {
-	if secret == nil {
+	if secret == nil || strings.TrimSpace(*secret) == "" {
 		return current, true
 	}
 	name := identityProviderSecretName(key)
-	if strings.TrimSpace(*secret) == "" {
-		if err := h.identityProviderVault.DeleteAdminHiddenSecret(r.Context(), name); err != nil {
-			writeJSON(w, http.StatusServiceUnavailable,
-				map[string]any{"error": "the platform secret vault is unavailable"})
-			return "", false
-		}
-		return "", true
-	}
 	if err := h.identityProviderVault.StoreAdminHiddenSecret(r.Context(), name, *secret); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable,
 			map[string]any{"error": "the platform secret vault is unavailable"})

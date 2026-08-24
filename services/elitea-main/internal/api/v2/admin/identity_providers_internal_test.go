@@ -50,6 +50,7 @@ type recordingProviderStore struct {
 	upserted  []identityproviders.Provider
 	deleted   []string
 	lookupErr error
+	upsertErr error
 }
 
 func newRecordingProviderStore() *recordingProviderStore {
@@ -79,6 +80,9 @@ func (s *recordingProviderStore) Upsert(
 	_ context.Context,
 	provider identityproviders.Provider,
 ) (identityproviders.Provider, error) {
+	if s.upsertErr != nil {
+		return identityproviders.Provider{}, s.upsertErr
+	}
 	stored, err := identityproviders.Validate(provider)
 	if err != nil {
 		return identityproviders.Provider{}, err
@@ -304,6 +308,57 @@ func TestSigningWithoutASealedKeyIsRefusedBeforeTheVaultIsTouched(t *testing.T) 
 
 	require.Equal(t, http.StatusBadRequest, recorder.Code)
 	require.Empty(t, vault.deleted, "the refusal must not have already cleared the sealed key")
+}
+
+// Clearing a secret must not destroy the vault entry until the row that names
+// it is written. Deleting first and then failing the write left the stored row
+// pointing at an entry that no longer existed, and every login answered 503
+// until somebody saved again.
+func TestClearingASecretDoesNotTouchTheVaultUntilTheRowIsWritten(t *testing.T) {
+	store := newRecordingProviderStore()
+	store.rows["corporate"] = identityproviders.Provider{
+		Key: "corporate", Kind: identityproviders.KindOIDC, DisplayName: "Corporate SSO",
+		Enabled: true, Revision: 4, SecretRef: "identity_provider__corporate_ab12__secret",
+		OIDC: &identityproviders.OIDCDocument{
+			Issuer: "https://idp.example.com", ClientID: "elitea",
+			RedirectURI: "https://elitea.example.com/forward-auth/auth_oidc/callback",
+		},
+	}
+	store.upsertErr = errors.New("connection reset by peer")
+	vault := newRecordingVault()
+	recorder := httptest.NewRecorder()
+
+	handlerWithStore(store, vault).IdentityProviderSave(recorder, providerRequest(
+		http.MethodPut, "corporate", strings.Replace(validOIDCBody, `"kind": "oidc",`,
+			`"kind": "oidc", "secret": "",`, 1)))
+
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Empty(t, vault.deleted,
+		"the sealed secret was destroyed before the row that stopped naming it was written")
+}
+
+// And when the row DOES get written, the stale entry is removed.
+func TestClearingASecretRemovesTheVaultEntryAfterTheRowIsWritten(t *testing.T) {
+	store := newRecordingProviderStore()
+	store.rows["corporate"] = identityproviders.Provider{
+		Key: "corporate", Kind: identityproviders.KindOIDC, DisplayName: "Corporate SSO",
+		Enabled: true, Revision: 4, SecretRef: "identity_provider__corporate_ab12__secret",
+		OIDC: &identityproviders.OIDCDocument{
+			Issuer: "https://idp.example.com", ClientID: "elitea",
+			RedirectURI: "https://elitea.example.com/forward-auth/auth_oidc/callback",
+		},
+	}
+	vault := newRecordingVault()
+	recorder := httptest.NewRecorder()
+
+	handlerWithStore(store, vault).IdentityProviderSave(recorder, providerRequest(
+		http.MethodPut, "corporate", strings.Replace(validOIDCBody, `"kind": "oidc",`,
+			`"kind": "oidc", "secret": "",`, 1)))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Len(t, store.upserted, 1)
+	require.Empty(t, store.upserted[0].SecretRef, "the stored row must stop naming the secret")
+	require.Equal(t, []string{"identity_provider__corporate_ab12__secret"}, vault.deleted)
 }
 
 /* ── the plaintext secret never comes back out ──────────────────────────── */

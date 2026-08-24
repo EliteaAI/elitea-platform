@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -206,6 +207,28 @@ func (s *Store) Delete(ctx context.Context, key string) (string, error) {
 		return "", err
 	}
 	return reference, nil
+}
+
+// IsSchemaMissing reports that the provider table itself is absent.
+//
+// It exists for ONE caller: the composition root, which reads the table at boot
+// to decide whether to mount the browser-auth routes. A deployment whose
+// migrations have not been applied yet — a pod that starts before the migration
+// job finishes, or a rollback that leaves the binary ahead of the schema — must
+// not be turned into a total outage by a federation feature it may not even use.
+//
+// It is deliberately NOT used on the request path. There, an unreadable table
+// stays fatal: refusing one login is right, and falling back to a provider the
+// operator replaced is not.
+func IsSchemaMissing(err error) bool {
+	var pgError *pgconn.PgError
+	if !errors.As(err, &pgError) {
+		return false
+	}
+	// 42P01 undefined_table, 3F000 invalid_schema_name. Both are what an
+	// unapplied migration looks like; neither is what a broken database looks
+	// like.
+	return pgError.Code == "42P01" || pgError.Code == "3F000"
 }
 
 // rowScanner covers both pgx.Row and pgx.Rows, so one scan function serves the

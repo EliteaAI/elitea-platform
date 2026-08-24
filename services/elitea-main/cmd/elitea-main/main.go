@@ -393,15 +393,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	// replacing or disabling a provider needs no restart — only introducing the
 	// first one on a deployment that had none does.
 	identityProviderStore := identityproviders.NewStore(pool)
-	storedSAMLProvider, err := v2auth.HasEnabledSAMLProvider(ctx, identityProviderStore)
-	if err != nil {
-		return fmt.Errorf("read the enabled identity provider: %w", err)
+	var storedSAMLProvider, storedOIDCProvider bool
+	storedSAMLProvider, err = v2auth.HasEnabledSAMLProvider(ctx, identityProviderStore)
+	if err == nil {
+		storedOIDCProvider, err = v2auth.HasEnabledOIDCProvider(ctx, identityProviderStore)
 	}
-	storedOIDCProvider, err := v2auth.HasEnabledOIDCProvider(ctx, identityProviderStore)
-	if err != nil {
-		// NOT swallowed. A deployment that cannot read its provider table must
-		// not start silently unfederated, with every login answering "single
-		// sign-on is not available" and no statement of why.
+	switch {
+	case err == nil:
+	case identityproviders.IsSchemaMissing(err):
+		// The migration has not been applied to this database yet. Warn and
+		// continue WITHOUT the browser-auth plane, which is what this
+		// deployment did before the table existed at all.
+		//
+		// Failing the boot here would turn a schema-ordering hiccup — a pod
+		// that starts before the migration job finishes — into a total outage,
+		// and it would do so on deployments that use form authentication and
+		// never federate a login.
+		logger.Warn("identity provider table is absent; starting without single sign-on",
+			"err", err)
+	default:
+		// Any OTHER read failure IS fatal. A deployment that can reach its
+		// database and still cannot read this table must not start silently
+		// unfederated, with every login answering "single sign-on is not
+		// available" and no statement of why.
 		return fmt.Errorf("read the enabled identity provider: %w", err)
 	}
 	var oidcSAMLHandler *v2auth.SAMLHandler

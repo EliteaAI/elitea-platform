@@ -122,9 +122,13 @@ func (h *OIDCHandler) runtime(ctx context.Context) (*oidcRuntime, error) {
 		switch {
 		case err == nil:
 			return h.runtimeFor(ctx, provider)
-		case errors.Is(err, identityproviders.ErrNotFound):
-			// Fall through to the environment. This is the ONLY error that
-			// falls through; see the header.
+		case errors.Is(err, identityproviders.ErrNotFound),
+			identityproviders.IsSchemaMissing(err):
+			// Fall through to the environment. These are the ONLY two errors
+			// that fall through, and they mean the same thing: this deployment
+			// has authored no provider. A table that does not exist holds no
+			// rows, and a deployment configured through the environment must
+			// keep federating logins while its migrations catch up.
 		default:
 			return nil, fmt.Errorf("read the enabled identity provider: %w", err)
 		}
@@ -262,6 +266,10 @@ func HasEnabledOIDCProvider(ctx context.Context, providers IdentityProviderSourc
 	case errors.Is(err, identityproviders.ErrNotFound):
 		return false, nil
 	default:
+		// A missing table reaches the caller as an error, not as `false`. The
+		// composition root distinguishes it (identityproviders.IsSchemaMissing)
+		// and logs it, because starting without single sign-on is worth saying
+		// out loud even when it is the right thing to do.
 		return false, err
 	}
 }

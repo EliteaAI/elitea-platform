@@ -35,6 +35,23 @@
 -- pushes people, not project members, and the accounts it creates exist before
 -- any project selects them.
 --
+-- NO FOREIGN KEY, and this is the same rule 0094 and 0095 state. It is not a
+-- preference: the shared corpus MUST be applicable on its own. `migrate.
+-- ApplyShared` runs this set against a database that may hold nothing else —
+-- every `dbtest` template and several integration harnesses do exactly that —
+-- and `auth_core__user` is created by a DIFFERENT corpus
+-- (internal/infra/db/migrations/001_initial.sql) or by pylon's own migrations.
+-- A `REFERENCES auth_core__user(id)` here made 0096 fail with a 42P01 on every
+-- such database, which took six unrelated artifact suites down with it.
+--
+-- WHAT THE FOREIGN KEY WOULD HAVE BOUGHT was `ON DELETE CASCADE`. Without it, an
+-- operator who hard-deletes an account from the admin Users page leaves a row
+-- here whose `user_id` names nothing. Such a row is INERT for every read: each
+-- one joins from `auth_core__user` outwards, so a row with no account is never
+-- returned. The one thing it could still do is hold an `external_id` the
+-- identity provider later re-uses, so `upsertSCIMFacts` clears a stale claim
+-- whose account is gone before it inserts. See internal/scimdirectory.
+--
 -- IDEMPOTENT throughout. No BEGIN/COMMIT: the ledgered runner executes each
 -- file inside one transaction with its ledger row (migrate/runner.go apply).
 
@@ -42,10 +59,9 @@ CREATE SCHEMA IF NOT EXISTS elitea_auth;
 
 CREATE TABLE IF NOT EXISTS elitea_auth.scim_users (
     -- user_id is the primary key: one SCIM record per account, and the account
-    -- is the thing that already exists. ON DELETE CASCADE keeps this table from
-    -- outliving the row it describes.
-    user_id     integer     PRIMARY KEY
-                REFERENCES auth_core__user(id) ON DELETE CASCADE,
+    -- is the thing that already exists. It is NOT a foreign key; see the header
+    -- for why, and for what replaces the cascade.
+    user_id     integer     PRIMARY KEY,
     -- external_id is the identity provider's own identifier for the person. It
     -- is optional: a client MAY omit it, and RFC 7643 says a service provider
     -- must not require one.

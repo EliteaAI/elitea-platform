@@ -54,9 +54,13 @@ package auth
 // The same one the OIDC path produces: `resolveProvisionedUser` resolves the
 // account from the provider subject, and `makeSessionToken` mints the
 // `elitea_session` cookie. The subject is namespaced `saml:` so a NameID can
-// never collide with an OIDC subject — the two are different identity spaces
-// and a shared namespace would let one provider's subject adopt the other's
-// account.
+// never collide with an OIDC subject in the link table — the two are different
+// identity spaces.
+//
+// The prefix alone does NOT stop an adoption, and reading it that way is what
+// made this path unsafe on review. `joinAccountByEmail` also runs, and it
+// decides by the email claim; its guard is what refuses an account another
+// federated subject already holds. See FederatedRefPrefixes in oidc.go.
 
 import (
 	"context"
@@ -510,7 +514,7 @@ func (h *SAMLHandler) provisionUser(ctx context.Context, nameID, email, name str
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	userID, err := resolveProvisionedUser(ctx, tx, "saml:"+nameID, email, name, nil, false)
+	userID, err := resolveProvisionedUser(ctx, tx, SAMLProviderRefPrefix+nameID, email, name, nil, false)
 	if err != nil {
 		return "", err
 	}

@@ -189,6 +189,50 @@ func TestABareBase64CertificateIsAccepted(t *testing.T) {
 	}
 }
 
+// Copying two `<X509Certificate>` values out of identity provider metadata
+// produces two PEM blocks with no blank line between them, and the web form
+// splits entries on a blank line — so a rollover pair arrives as ONE entry.
+// Keeping only the first was a silent drop: the deployment worked until the
+// identity provider rotated onto the discarded key, and nothing local said why.
+func TestSeveralPEMBlocksInOneEntryAreAllKept(t *testing.T) {
+	first := rsaCertificatePEM(t, 2048)
+	second := rsaCertificatePEM(t, 2048)
+
+	provider := validSAML(t)
+	provider.SAML.IDPCertificates = []string{first + second}
+
+	stored, err := Validate(provider)
+	if err != nil {
+		t.Fatalf("two adjacent PEM blocks were refused: %v", err)
+	}
+	if len(stored.SAML.IDPCertificates) != 2 {
+		t.Fatalf("stored %d trust anchors, want 2: a dropped anchor fails at the next key rollover",
+			len(stored.SAML.IDPCertificates))
+	}
+}
+
+// Trailing bytes that are not another certificate are refused, not ignored.
+// They are most often a truncated paste.
+func TestTrailingDataAfterACertificateIsRefused(t *testing.T) {
+	provider := validSAML(t)
+	provider.SAML.IDPCertificates = []string{rsaCertificatePEM(t, 2048) + "-----BEGIN CERTIF"}
+
+	_, err := Validate(provider)
+	requireFieldRefusal(t, err, "idp_certificates")
+}
+
+// The service provider certificate must be the ONE that matches the sealed key.
+// Keeping whichever came first would publish a certificate the key cannot sign
+// for, and every signed request would be rejected at the identity provider.
+func TestASecondServiceProviderCertificateIsRefused(t *testing.T) {
+	provider := validSAML(t)
+	provider.SAML.SignAuthnRequests = true
+	provider.SAML.SPCertificate = rsaCertificatePEM(t, 2048) + rsaCertificatePEM(t, 2048)
+
+	_, err := Validate(provider)
+	requireFieldRefusal(t, err, "sp_certificate")
+}
+
 // A 1024-bit RSA signing key is forgeable. Accepting it would make every
 // assertion this deployment trusts forgeable with it.
 func TestAWeakSigningKeyIsRefused(t *testing.T) {

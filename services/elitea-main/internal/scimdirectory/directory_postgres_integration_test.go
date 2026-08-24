@@ -63,6 +63,44 @@ func TestTheAddressIsFoldedOnTheWayIn(t *testing.T) {
 	require.Equal(t, first.ID, found[0].ID)
 }
 
+// A full re-sync replays profiles as creates with no `active` attribute. Writing
+// the default over the stored value reactivated any account an operator had
+// suspended by hand — silently, behind a 201 that looked like a success.
+func TestACreateWithNoActiveFlagDoesNotUndoAManualSuspension(t *testing.T) {
+	pool := newDirectoryPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	created, err := store.Create(ctx, User{UserName: "alice@corp.com", Active: true, ActiveStated: true})
+	require.NoError(t, err)
+	require.NoError(t, store.Deactivate(ctx, created.ID))
+
+	// The re-sync: same address, no statement about `active`.
+	resynced, err := store.Create(ctx, User{UserName: "alice@corp.com", DisplayName: "Alice", Active: true})
+	require.NoError(t, err)
+	require.Equal(t, created.ID, resynced.ID)
+	require.False(t, resynced.Active,
+		"a create that said nothing about active reactivated a suspended account")
+	// The rest of the profile still lands.
+	require.Equal(t, "Alice", resynced.DisplayName)
+}
+
+// An EXPLICIT `"active": true` still reactivates. The directory is the authority
+// once it is connected, and a client that states the flag has made a statement.
+func TestAnExplicitActiveTrueStillReactivates(t *testing.T) {
+	pool := newDirectoryPool(t)
+	store := NewStore(pool)
+	ctx := context.Background()
+
+	created, err := store.Create(ctx, User{UserName: "alice@corp.com", Active: true, ActiveStated: true})
+	require.NoError(t, err)
+	require.NoError(t, store.Deactivate(ctx, created.ID))
+
+	restored, err := store.Create(ctx, User{UserName: "alice@corp.com", Active: true, ActiveStated: true})
+	require.NoError(t, err)
+	require.True(t, restored.Active)
+}
+
 // Two accounts claiming one external id would make a client's lookup ambiguous:
 // it would update whichever the database returned first.
 func TestTwoAccountsCannotShareAnExternalID(t *testing.T) {

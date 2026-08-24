@@ -59,9 +59,17 @@ type User struct {
 	// DisplayName is the SCIM `displayName`, stored as `auth_core__user.name`.
 	DisplayName string
 	// Active is the inverse of `suspended`.
-	Active    bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Active bool
+	// ActiveStated reports whether the CLIENT said anything about `active`.
+	//
+	// It exists because an omitted flag and an explicit `true` mean different
+	// things on the adoption branch of Create. A full re-sync from an identity
+	// provider re-sends a profile as a create with no `active` attribute, and
+	// treating that as "make this person active" silently undid a suspension an
+	// operator had applied by hand.
+	ActiveStated bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Store reads and writes the directory.
@@ -168,15 +176,28 @@ func (s *Store) Create(ctx context.Context, user User) (User, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// ON THE ADOPTION BRANCH, `suspended` MOVES ONLY IF THE CLIENT SAID SO.
+	//
+	// A create for an address that already exists is a re-sync, not a new
+	// joiner: the identity provider lost its local id mapping, or a connector
+	// was re-installed, and it is replaying profiles it has already sent. Those
+	// replays routinely omit `active`. Writing the default over the stored value
+	// reactivated any account an operator had suspended by hand — silently, and
+	// with a 201 that looked like an ordinary success.
+	//
+	// An EXPLICIT `"active": true` still reactivates. The directory is the
+	// authority once it is connected, and a client that states the flag has made
+	// a statement about the person.
 	var id int
 	err = tx.QueryRow(ctx,
 		`INSERT INTO auth_core__user (email, name, suspended)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT (email) DO UPDATE
 		     SET name = COALESCE(NULLIF(EXCLUDED.name, ''), auth_core__user.name),
-		         suspended = EXCLUDED.suspended
+		         suspended = CASE WHEN $4 THEN EXCLUDED.suspended
+		                          ELSE auth_core__user.suspended END
 		 RETURNING id`,
-		userName, user.DisplayName, !user.Active).Scan(&id)
+		userName, user.DisplayName, !user.Active, user.ActiveStated).Scan(&id)
 	if err != nil {
 		return User{}, err
 	}
@@ -268,12 +289,40 @@ func (s *Store) touch(ctx context.Context, id int) error {
 }
 
 func upsertSCIMFacts(ctx context.Context, tx pgx.Tx, id int, externalID string) error {
+	externalID = strings.TrimSpace(externalID)
+
+	// Clear a STALE CLAIM on this external id before inserting.
+	//
+	// `scim_users.user_id` is not a foreign key — shared migration 0096 explains
+	// why it cannot be — so an operator who hard-deletes an account from the
+	// admin Users page leaves a row behind. Such a row is invisible to every
+	// read, because they all join from `auth_core__user` outwards. The one thing
+	// it can still do is hold an external id, and the unique index would then
+	// refuse the identity provider's next push of the same person with a
+	// conflict nobody can explain or clear from any screen.
+	//
+	// Only a row whose account is GONE is removed. A live account holding this
+	// external id is a real collision and must still be refused.
+	if externalID != "" {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM elitea_auth.scim_users AS stale
+			  WHERE stale.external_id = $1
+			    AND stale.user_id <> $2
+			    AND NOT EXISTS (
+			        SELECT 1 FROM auth_core__user AS account WHERE account.id = stale.user_id
+			    )`,
+			externalID, id,
+		); err != nil {
+			return err
+		}
+	}
+
 	_, err := tx.Exec(ctx,
 		`INSERT INTO elitea_auth.scim_users (user_id, external_id)
 		 VALUES ($1, $2)
 		 ON CONFLICT (user_id) DO UPDATE
 		     SET external_id = EXCLUDED.external_id, updated_at = now()`,
-		id, strings.TrimSpace(externalID))
+		id, externalID)
 	if isUniqueViolation(err) {
 		return ErrConflict
 	}
