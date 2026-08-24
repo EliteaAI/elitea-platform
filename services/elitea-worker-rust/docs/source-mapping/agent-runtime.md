@@ -411,10 +411,25 @@ gap until the call boundary can expose typed transport metadata.
 | SDK `runtime/exceptions.py::{BudgetExceededError,budget_exceeded_from}` | Project/member budget exhaustion is terminal and not recoverable tool content | `src/agents/budget.rs`, `src/compat/current_agent_result.rs` | ADK/Tokio cancellation; Elitea classification/message | Sibling cancellation and no-normal-success tests | Planned |
 | Centry `module.py::TaskNode(kill_on_stop=True)` and Python worker `execution/delivery.py::_ClaimLeaseMonitor` | Durable Stop remains distinct from worker drain; renewal continues after Stop and a later fatal lease loss remains authoritative | `src/agents/runtime.rs::NativeAgentRun`, `src/execution/agent_lease.rs::ClaimLeaseStateProbe`, `src/execution/native_agent_lifecycle.rs` | Elitea read-only lease probe plus an invocation-exclusive ADK `Runner`; ADK's session-wide interrupt APIs are never exposed | `src/agents/runtime_tests.rs::stop_is_scoped_to_one_same_session_native_invocation`, `src/execution/agent_lease_tests.rs::a_fatal_failure_after_cancellation_becomes_authoritative`, `src/execution/output_delivery_tests.rs::durable_stop_interrupts_only_the_owned_run_then_settles_cancelled`; broader tool-effect fencing remains planned | Implemented inside the capability-disabled ordinary-text lifecycle. One native run can be cooperatively stopped without cancelling a same-session sibling; the lifecycle continues renewal, drains the stopped Runner to EOS, and a later fatal lease transition still suppresses output. Worker supervisor drain never calls business Stop. Exact ADK-Rust 2.0.0 has no public per-run cancellation handle, so each authorized invocation owns one non-shared Runner and only the durable lease state can call its private interruption boundary |
 
-The broad sensitive-HITL row's remaining MCP/on-demand-auth wording is limited
-to parallel/nested exact authorization identity, runtime-discovered configured
-families, platform OAuth/DCR and production activation. Materializer-known root
-and pipeline-LLM calls are covered by the preceding delegated-auth row.
+### Checkpoint-bound delegated authorization mapping
+
+| Current Python behavior | Rust ownership | Preserved behavior and proof |
+| --- | --- | --- |
+| SDK `runtime/middleware/sensitive_tool_guard.py`, `runtime/tools/function.py::{_build_mcp_auth_interrupt,invoke}` | `src/agents/{direct_hitl,session,events}.rs`, `src/toolkits/delegated_auth.rs` | Treat `mcp_auth` as an ordinary native confirmation tagged with sanitized auth configuration. The deterministic interrupt and original tool-call IDs are resolved against the persisted session event; Authorize and Skip are rejected for a sensitive card, while approve/reject are rejected for an auth card. |
+| SDK `runtime/tools/llm.py` materialization and `parallel_mcp_auth` aggregation | `src/agents/{ordinary,application_tools,direct_hitl,session}.rs`, `src/toolkits/mcp.rs` | Retain an auth catalog on every owning root or nested `LlmAgent`, use native `require_tool_confirmation`, and resolve a bounded complete decision set. Exact-server token and declined-server authority must equal the servers named by the persisted decisions; unused or contradictory authority fails closed. |
+| SDK `runtime/tools/application.py` deferred child interrupts and exact child resume | `src/agents/{application_tools,events,session}.rs` | Persist child confirmations in the root ADK session, retain `{name,call_id,sibling_ordinal}` hierarchy metadata, rebuild the same frozen child tree and consume replay plans by container invocation plus call ID. Parallel Authorize executes each original call once; Skip returns `mcp_auth_decision` under each original call ID and dispatches no real tool. |
+| SDK `runtime/langchain/langraph_agent.py` auth decision extraction/checkpoint hydration; legacy Core `rpc/chat_all.py` parallel child ownership | `src/agents/{runtime,direct_hitl,session}.rs`; later Main continuation normalization | Rust accepts the exact normalized set through the existing versioned `hitl_decisions` JSON field with `guardrail_type=mcp_auth` and `action=authorize|skip`. Current Main still produces its separate single-card authorization shape, so production activation needs a mapping there; the Rust slice does not add a protobuf field or another interrupt table. |
+
+The remaining MCP/on-demand-auth gates are Main decision-list normalization,
+nested authorization owned by a pipeline Agent node, runtime-discovered
+configured families, concrete SharePoint/OpenAPI materializers, platform
+OAuth/DCR and production activation. Materializer-known root, pipeline-LLM and
+parallel nested direct-agent calls are covered.
+
+This checkpoint supersedes older broad-row phrases that list all
+"parallel/nested authorization" as closed: the implemented scope is parallel
+and recursive direct `LlmAgent`/saved-agent hierarchy. It does not claim the
+pipeline-Agent variant or production Main activation.
 
 ## Known gates
 

@@ -479,6 +479,7 @@ impl PipelineNativeAgentAssembler {
                 Arc::clone(&runtime.model_facade),
                 Arc::clone(&self.tool_policy),
                 Arc::clone(&self.mcp_connector),
+                runtime.mcp_tokens,
             ),
             Some(&direct_aliases),
         )

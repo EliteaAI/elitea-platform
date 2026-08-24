@@ -67,7 +67,7 @@ impl OrdinaryNoToolProfile {
     pub(crate) fn validate_direct_hitl_resume(
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::validate_with_mode(request, CommonProfileMode::Continuation)
+        Self::validate_with_mode(request, CommonProfileMode::DirectGuardrailContinuation)
     }
 
     /// Validate a direct `LlmAgent` shell while Main supplies only one
@@ -322,6 +322,7 @@ struct CommonProfile {
 enum CommonProfileMode {
     Fresh,
     Continuation,
+    DirectGuardrailContinuation,
     McpAuthorization,
 }
 
@@ -345,11 +346,14 @@ fn validate_common_profile(
         &payload.context_settings,
         payload.conversation_id.as_deref(),
     )?;
-    let mcp_authorization = mode == CommonProfileMode::McpAuthorization;
+    let allows_mcp_authority = matches!(
+        mode,
+        CommonProfileMode::DirectGuardrailContinuation | CommonProfileMode::McpAuthorization
+    );
     if !payload.internal_tools.is_empty()
-        || (!mcp_authorization && !payload.mcp_tokens.is_empty())
-        || (!mcp_authorization && !payload.ignored_mcp_servers.is_empty())
-        || (!mcp_authorization && !payload.user_declined_mcp_servers.is_empty())
+        || (!allows_mcp_authority && !payload.mcp_tokens.is_empty())
+        || (!allows_mcp_authority && !payload.ignored_mcp_servers.is_empty())
+        || (!allows_mcp_authority && !payload.user_declined_mcp_servers.is_empty())
         || payload.checkpoint_id.is_some()
         || payload.is_regenerate
         || payload.supports_vision
@@ -377,7 +381,7 @@ fn validate_common_profile(
         || !payload.hitl_decisions.is_empty();
     if (mode == CommonProfileMode::Fresh && has_direct_hitl_fields)
         || (mode != CommonProfileMode::Fresh && !has_direct_hitl_fields)
-        || (mcp_authorization
+        || (mode == CommonProfileMode::McpAuthorization
             && (payload.hitl_resume
                 || payload.hitl_action.is_some()
                 || payload.hitl_value.is_some()

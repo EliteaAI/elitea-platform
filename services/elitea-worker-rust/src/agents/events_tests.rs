@@ -91,7 +91,7 @@ fn nested_application_catalog() -> ApplicationToolPresentationCatalog {
             "agent".to_owned(),
             "child-model".to_owned(),
             ApplicationToolPresentationCatalog::default(),
-            super::sensitive_tools::SensitiveToolCatalog::default(),
+            super::events::ApplicationToolGuardCatalogs::default(),
         )
         .expect("child presentation");
     let mut applications = ApplicationToolPresentationCatalog::default();
@@ -102,7 +102,7 @@ fn nested_application_catalog() -> ApplicationToolPresentationCatalog {
             "agent".to_owned(),
             "orchestrator-model".to_owned(),
             children,
-            super::sensitive_tools::SensitiveToolCatalog::default(),
+            super::events::ApplicationToolGuardCatalogs::default(),
         )
         .expect("root presentation");
     applications

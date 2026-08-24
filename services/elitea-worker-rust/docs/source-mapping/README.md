@@ -80,6 +80,12 @@ Maintained Rust runtime ownership registry:
   through the original call IDs and rejoins the root model. Identical child and
   leaf call IDs under concurrent parents stay scoped by their owning invocation;
   missing siblings, broken parent links and a fourth agent tier fail closed.
+  Delegated authorization uses the same decision tree: the persisted native
+  confirmation classifies the guardrail, exact server authority is consumed as
+  one bounded set, and parallel Authorize/Skip leaves resume without replanning.
+  Skip preserves the original call ID and dispatches no real tool. Current Main
+  still needs to normalize its separate authorization continuation into the
+  existing versioned decision-list field before activation.
   Approved effects and deployment registration remain closed. `native_runtime.rs` selects exactly one direct
   or pipeline assembler before either can redeem authority and keeps both
   completion owners behind the same lifecycle. The pipeline profile separately admits only
@@ -88,14 +94,16 @@ Maintained Rust runtime ownership registry:
   graph assembler;
 - `src/agents/application_tools.rs`: exact saved child application/version to a
   native child `LlmAgent` behind an ADK-compatible tool, bounded recursive
-  assembly, model-visible delegation schema, nested sensitive-policy binding,
+  assembly, model-visible delegation schema, nested sensitive-policy and
+  delegated-authorization binding,
   typed descendant-event forwarding and the runtime-name-to-frozen-presentation
   join used by browser projection. The adapter exists because stock ADK
   `AgentTool` buffers child events and cannot expose an exact nested hierarchy.
   Recursive direct-agent confirmation resume uses the root `SessionService`
   transcript and an invocation-scoped replay tree rather than another child
-  session or interrupt table. Saved-pipeline Agent-node descendant streaming
-  and checkpoint hierarchy are instead owned by `graph/application.rs`,
+  session or interrupt table. The same tree retains nested auth catalogs and
+  routes exact Authorize/Skip decisions at each leaf. Saved-pipeline Agent-node
+  descendant streaming and checkpoint hierarchy are instead owned by `graph/application.rs`,
   `graph/node_events.rs` and the common event projector;
 - `src/agents/context_management.rs`: disabled-first seam for SDK context
   settings and future ADK-native compaction through the durable session
@@ -144,7 +152,7 @@ Maintained Rust runtime ownership registry:
   invocation-local channel, strips provider request payloads, stamps the owning
   pipeline node for the UI and leaves graph state/checkpoints business-only.
   `src/agents/graph/routing_tests.rs` owns their current/legacy YAML, exact
-  fallback, normalized-label and common-Runner proof. Parallel/nested exact
+  fallback, normalized-label and common-Runner proof. Pipeline-Agent nested
   delegated authorization, prebuilt/static MCP, remote effects, child variables, nested static Printer
   interrupts, incremental pipeline tool-progress chunks, approved-effect
   receipts, arbitrary static interrupts and production activation remain

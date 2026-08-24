@@ -181,7 +181,7 @@ fn application_event_agent(
     ))
 }
 
-fn delegated_authorization_agent(
+pub(crate) fn delegated_authorization_agent(
     agent: Arc<dyn Agent>,
     authorization: DelegatedAuthorizationCatalog,
 ) -> Arc<dyn Agent> {
@@ -1355,21 +1355,17 @@ async fn prepare_direct_resume(
         delegated_authorization,
         application_runtime,
     } = runtime;
-    let (resolved, delegated_resume) = match start {
-        DirectResumeStart::Sensitive(decisions) => (
-            decisions
-                .resolve(stored)
-                .map_err(|error| direct_hitl_error(&error))?,
-            false,
-        ),
-        DirectResumeStart::DelegatedAuthorization(continuation) => (
+    let resolved = match start {
+        DirectResumeStart::Sensitive(decisions) => decisions
+            .resolve(stored)
+            .map_err(|error| direct_hitl_error(&error))?,
+        DirectResumeStart::DelegatedAuthorization(continuation) => {
             ResolvedDirectHitlStart::Direct(Box::new(
                 continuation
                     .resolve(stored)
                     .map_err(|error| direct_hitl_error(&error))?,
-            )),
-            true,
-        ),
+            ))
+        }
     };
     let ApplicationRuntimeProjection {
         presentations: application_tools,
@@ -1378,7 +1374,7 @@ async fn prepare_direct_resume(
     } = application_runtime;
     let (model, run_input, toolsets, parallel_applications) = match resolved {
         ResolvedDirectHitlStart::Direct(decision) => {
-            let replay = if delegated_resume {
+            let replay = if decision.is_delegated_authorization() {
                 (*decision)
                     .into_delegated_authorization_replay(&delegated_authorization)
                     .map_err(|error| direct_hitl_error(&error))?
@@ -1392,9 +1388,6 @@ async fn prepare_direct_resume(
             (replay_model, run_input, toolsets, false)
         }
         ResolvedDirectHitlStart::Nested(decisions) => {
-            if delegated_resume {
-                return Err(invalid_configuration());
-            }
             let coordinator = resume.as_ref().ok_or_else(invalid_configuration)?;
             let prepared = prepare_nested_application_resume(
                 &stored.events().all(),

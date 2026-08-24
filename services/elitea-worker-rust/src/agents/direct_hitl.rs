@@ -114,6 +114,15 @@ enum DirectHitlAction {
     Approve,
     Reject,
     BlockWithComment,
+    Authorize,
+    Skip,
+}
+
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum DirectGuardrailType {
+    SensitiveTool,
+    McpAuth,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +131,8 @@ struct RawDirectHitlDecision {
     interrupt_id: String,
     #[serde(default)]
     tool_call_id: String,
+    #[serde(default)]
+    guardrail_type: Option<DirectGuardrailType>,
     action: DirectHitlAction,
     #[serde(default)]
     value: String,
@@ -134,6 +145,7 @@ struct RawDirectHitlDecision {
 pub(crate) struct DirectHitlDecision {
     interrupt_id: String,
     tool_call_id: Option<String>,
+    guardrail_type: Option<DirectGuardrailType>,
     action: DirectHitlAction,
     comment: Option<String>,
 }
@@ -145,6 +157,13 @@ pub(crate) struct DirectHitlDecision {
 /// subset of a parallel pause.
 pub(crate) struct DirectHitlDecisionSet {
     decisions: Vec<DirectHitlDecision>,
+    authorization: DelegatedAuthorizationAuthority,
+}
+
+#[derive(Default)]
+struct DelegatedAuthorizationAuthority {
+    authorized_servers: BTreeSet<String>,
+    declined_servers: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -330,6 +349,7 @@ impl DirectHitlDecisionSet {
     pub(crate) fn single(decision: DirectHitlDecision) -> Self {
         Self {
             decisions: vec![decision],
+            authorization: DelegatedAuthorizationAuthority::default(),
         }
     }
 
@@ -339,6 +359,7 @@ impl DirectHitlDecisionSet {
             || payload.auto_approve_sensitive_actions
             || payload.hitl_decisions.is_empty()
             || payload.hitl_decisions.len() > MAX_DIRECT_HITL_DECISIONS
+            || !payload.ignored_mcp_servers.is_empty()
         {
             return Err(DirectHitlError::new(
                 DirectHitlErrorCode::UnsupportedCapability,
@@ -369,11 +390,23 @@ impl DirectHitlDecisionSet {
                 return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
             }
         }
-        Ok(Self { decisions })
+        let authorization = DelegatedAuthorizationAuthority::from_payload(payload)?;
+        Ok(Self {
+            decisions,
+            authorization,
+        })
     }
 
     pub(crate) fn into_single(mut self) -> Result<DirectHitlDecision, DirectHitlError> {
-        if self.decisions.len() != 1 {
+        if self.decisions.len() != 1
+            || !self.authorization.is_empty()
+            || self.decisions.first().is_some_and(|decision| {
+                matches!(
+                    decision.action,
+                    DirectHitlAction::Authorize | DirectHitlAction::Skip
+                )
+            })
+        {
             return Err(DirectHitlError::new(
                 DirectHitlErrorCode::UnsupportedCapability,
             ));
@@ -394,6 +427,7 @@ impl DirectHitlDecisionSet {
             let nested = application_route(&events[index])?.is_some();
             resolved.push(decision.resolve_at(&events, index, nested)?);
         }
+        self.authorization.validate_resolved(&resolved)?;
         let nested_count = resolved
             .iter()
             .filter(|decision| decision.application_route.is_some())
@@ -416,6 +450,64 @@ impl DirectHitlDecisionSet {
             ));
         }
         Ok(ResolvedDirectHitlStart::Nested(resolved))
+    }
+}
+
+impl DelegatedAuthorizationAuthority {
+    fn is_empty(&self) -> bool {
+        self.authorized_servers.is_empty() && self.declined_servers.is_empty()
+    }
+
+    fn from_payload(payload: &AgentExecutionPayload) -> Result<Self, DirectHitlError> {
+        let authorized_servers = payload
+            .mcp_tokens
+            .keys()
+            .map(|server| {
+                valid_server_url(server)
+                    .then(|| server.to_owned())
+                    .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        let declined_servers = payload
+            .user_declined_mcp_servers
+            .iter()
+            .map(|value| {
+                declined_server_url(value)
+                    .filter(|server| valid_server_url(server))
+                    .map(ToOwned::to_owned)
+                    .ok_or_else(|| DirectHitlError::new(DirectHitlErrorCode::InvalidInput))
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if !authorized_servers.is_disjoint(&declined_servers) {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::InvalidInput));
+        }
+        Ok(Self {
+            authorized_servers,
+            declined_servers,
+        })
+    }
+
+    fn validate_resolved(
+        self,
+        decisions: &[ResolvedDirectHitlDecision],
+    ) -> Result<(), DirectHitlError> {
+        let mut authorized = BTreeSet::new();
+        let mut declined = BTreeSet::new();
+        for decision in decisions {
+            let Some(requirement) = decision.delegated_authorization.as_ref() else {
+                continue;
+            };
+            let target = if decision.decision == ToolConfirmationDecision::Approve {
+                &mut authorized
+            } else {
+                &mut declined
+            };
+            target.insert(requirement.server_url().to_owned());
+        }
+        if authorized != self.authorized_servers || declined != self.declined_servers {
+            return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+        }
+        Ok(())
     }
 }
 
@@ -445,6 +537,7 @@ impl DirectHitlDecision {
         Ok(Self {
             interrupt_id: raw.interrupt_id,
             tool_call_id: (!raw.tool_call_id.is_empty()).then_some(raw.tool_call_id),
+            guardrail_type: raw.guardrail_type,
             action: raw.action,
             comment,
         })
@@ -518,12 +611,9 @@ impl DirectHitlDecision {
         if matching_calls != 1 {
             return Err(DirectHitlError::new(DirectHitlErrorCode::CorruptSession));
         }
-        let decision = match self.action {
-            DirectHitlAction::Approve => ToolConfirmationDecision::Approve,
-            DirectHitlAction::Reject | DirectHitlAction::BlockWithComment => {
-                ToolConfirmationDecision::Deny
-            }
-        };
+        let (decision, delegated_authorization) =
+            resolved_guardrail_decision(confirmation_event, self.guardrail_type, self.action)?;
+        let is_delegated_authorization = delegated_authorization.is_some();
         let user_content = replay_user_content(&interrupt_id, decision);
         let persisted = if nested {
             validate_unadvanced_nested_confirmation(
@@ -534,6 +624,15 @@ impl DirectHitlDecision {
                 mode: ReplayResumeMode::ExecuteCall,
                 result: None,
             }
+        } else if is_delegated_authorization {
+            persisted_replay_state_with_confirmation(
+                &events[confirmation_index + 1..],
+                &user_content,
+                call_id,
+                &request.tool_name,
+                &request.args,
+                (decision == ToolConfirmationDecision::Deny).then_some(decision),
+            )?
         } else {
             persisted_replay_state(
                 &events[confirmation_index + 1..],
@@ -562,9 +661,41 @@ impl DirectHitlDecision {
             resume_mode: persisted.mode,
             persisted_result: persisted.result,
             application_route,
-            delegated_authorization: None,
+            delegated_authorization,
         })
     }
+}
+
+fn resolved_guardrail_decision(
+    confirmation: &Event,
+    submitted_guardrail: Option<DirectGuardrailType>,
+    action: DirectHitlAction,
+) -> Result<
+    (
+        ToolConfirmationDecision,
+        Option<DelegatedAuthorizationRequirement>,
+    ),
+    DirectHitlError,
+> {
+    let authorization = confirmation
+        .provider_metadata
+        .get(DELEGATED_AUTHORIZATION_METADATA_KEY)
+        .and_then(|value| decode_delegated_authorization_requirement(value));
+    let is_authorization = authorization.is_some();
+    if submitted_guardrail
+        .is_some_and(|guardrail| (guardrail == DirectGuardrailType::McpAuth) != is_authorization)
+    {
+        return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision));
+    }
+    let decision = match (is_authorization, action) {
+        (false, DirectHitlAction::Approve) | (true, DirectHitlAction::Authorize) => {
+            ToolConfirmationDecision::Approve
+        }
+        (false, DirectHitlAction::Reject | DirectHitlAction::BlockWithComment)
+        | (true, DirectHitlAction::Skip) => ToolConfirmationDecision::Deny,
+        _ => return Err(DirectHitlError::new(DirectHitlErrorCode::StaleDecision)),
+    };
+    Ok((decision, authorization))
 }
 
 impl DirectHitlAction {
@@ -573,6 +704,8 @@ impl DirectHitlAction {
             Self::Approve => "approve",
             Self::Reject => "reject",
             Self::BlockWithComment => "block_with_comment",
+            Self::Authorize => "authorize",
+            Self::Skip => "skip",
         }
     }
 }
@@ -709,6 +842,10 @@ struct PersistedReplayState {
 impl ResolvedDirectHitlDecision {
     pub(crate) fn tool_name(&self) -> &str {
         &self.tool_name
+    }
+
+    pub(crate) const fn is_delegated_authorization(&self) -> bool {
+        self.delegated_authorization.is_some()
     }
 
     /// Narrow one resolved decision to the safe direct replay boundary.

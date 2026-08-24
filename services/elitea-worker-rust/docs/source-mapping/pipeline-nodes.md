@@ -204,9 +204,13 @@ materializer-known remote-MCP challenge now marks the original selected LLM
 tool for native confirmation. Its existing replay envelope carries the exact
 call through Authorize rematerialization or supplies `mcp_auth_decision` on
 Skip. Authorization approval does not pre-approve a separate sensitive action.
-Parallel/nested authorization still requires Main's exact authorization
-identity/action on the Rust wire; configured families whose challenge appears
-only during execution require their own materializer adapter.
+Parallel nested authorization inside direct saved agents now binds every card
+to the persisted interrupt, provider call and application hierarchy, and the
+worker resumes a complete Authorize/Skip set without replanning. Main still
+needs to normalize its current separate authorization continuation into the
+existing Rust decision-list field before activation. Nested authorization
+inside a pipeline Agent node and configured families whose challenge appears
+only during execution require their own adapters.
 
 ## Native direct Toolkit/MCP-node boundary
 

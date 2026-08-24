@@ -210,6 +210,7 @@ impl OrdinaryNativeAgentAssembler {
                 self.model_facade.clone(),
                 self.tool_policy.clone(),
                 self.mcp_connector.clone(),
+                mcp_tokens,
             ),
         )
         .await?

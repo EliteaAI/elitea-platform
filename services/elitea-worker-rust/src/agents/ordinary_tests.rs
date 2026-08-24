@@ -1629,6 +1629,212 @@ async fn parallel_nested_sensitive_calls_persist_distinct_hierarchical_interrupt
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn parallel_nested_authorization_resumes_exact_children_for_authorize_and_skip() {
+    run_parallel_nested_authorization_resume(true).await;
+    run_parallel_nested_authorization_resume(false).await;
+}
+
+#[allow(clippy::too_many_lines)] // Initial parallel pause and exact resume are one proof.
+async fn run_parallel_nested_authorization_resume(authorize: bool) {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    attach_nested_agent(&mut request);
+    let (runtime_context, context_calls) = runtime_context_with_sensitive_child();
+    let (model_gateway, captured) = test_model_gateway_client(
+        vec![
+            TestModelGatewayOutcome::Response(parallel_nested_agent_call_response()),
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(mcp_tool_call_response()),
+            TestModelGatewayOutcome::Response(text_response("resolved child")),
+            TestModelGatewayOutcome::Response(text_response("resolved child")),
+            TestModelGatewayOutcome::Response(text_response("root resumed answer")),
+        ],
+        test_model_gateway_config(),
+    )
+    .expect("parallel nested authorization model gateway");
+    let tool_calls = Arc::new(AtomicUsize::new(0));
+    let connector = Arc::new(AgentDelegatedAuthorizationMcpConnector {
+        calls: AtomicUsize::new(0),
+        tool_calls: Arc::clone(&tool_calls),
+    });
+    let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
+    let assembler = OrdinaryNativeAgentAssembler::new(
+        platform_client(runtime_context),
+        Arc::new(ModelFacade::from_gateway(model_gateway)),
+        empty_tool_policy(),
+    )
+    .with_mcp_connector(connector.clone())
+    .with_sessions(sessions);
+
+    let mut invocation = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+        .expect("parallel nested authorization assembly");
+    invocation
+        .project_start(chrono::Utc::now())
+        .expect("parallel nested authorization start");
+    let (mut native, mut projector, _) = invocation.start().expect("authorization native start");
+    let mut cards = Vec::new();
+    while let Some(event) = native
+        .next_event()
+        .await
+        .expect("nested authorization event")
+    {
+        for projected in projector
+            .project(&event)
+            .expect("nested authorization projection")
+        {
+            let value: serde_json::Value = serde_json::from_slice(
+                &encode_current_node_event_json(&projected)
+                    .expect("nested authorization browser event"),
+            )
+            .expect("nested authorization browser JSON");
+            if value["type"] == "mcp_authorization_required" {
+                cards.push(value);
+            }
+        }
+    }
+    assert!(projector.is_paused());
+    assert_eq!(cards.len(), 2);
+    let paths = cards
+        .iter()
+        .map(|event| event["response_metadata"]["parent_agent_path"].clone())
+        .collect::<HashSet<_>>();
+    assert_eq!(
+        paths,
+        HashSet::from([
+            serde_json::json!([{
+                "name": "release-risk-agent",
+                "call_id": "call_olivia",
+                "sibling_ordinal": 1,
+            }]),
+            serde_json::json!([{
+                "name": "release-risk-agent",
+                "call_id": "call_sasha",
+                "sibling_ordinal": 2,
+            }]),
+        ])
+    );
+    let mut interrupt_ids = cards
+        .iter()
+        .map(|event| {
+            event["response_metadata"]["interrupt_id"]
+                .as_str()
+                .expect("authorization interrupt identity")
+                .to_owned()
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    assert_eq!(interrupt_ids.len(), 2);
+    interrupt_ids.sort_unstable();
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let action = if authorize { "authorize" } else { "skip" };
+    let mut partial = ordinary_request(AgentExecutionKind::Application);
+    partial.binding.request_content_digest = if authorize { [19; 32] } else { [20; 32] };
+    attach_nested_agent(&mut partial);
+    partial.payload.should_continue = true;
+    partial.payload.hitl_resume = true;
+    partial.payload.hitl_action = Some(action.to_owned());
+    partial.payload.hitl_value = Some(String::new());
+    partial.payload.hitl_decisions = vec![serde_json::json!({
+        "interrupt_id": interrupt_ids[0],
+        "tool_call_id": "call_mcp",
+        "guardrail_type": "mcp_auth",
+        "action": action,
+        "value": "",
+    })];
+    if authorize {
+        partial.payload.mcp_tokens.insert(
+            "https://mcp.example.invalid/v1/mcp".to_owned(),
+            serde_json::json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        partial
+            .payload
+            .user_declined_mcp_servers
+            .push(serde_json::json!({
+                "server_url": "https://mcp.example.invalid/v1/mcp"
+            }));
+    }
+    let Err(error) = assembler
+        .assemble(AuthorizedNativeAssembly::new(
+            &partial,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        ))
+        .await
+    else {
+        panic!("partial parallel authorization set must fail closed");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+    assert_eq!(tool_calls.load(Ordering::Acquire), 0);
+
+    let mut resume = ordinary_request(AgentExecutionKind::Application);
+    resume.binding.request_content_digest = if authorize { [21; 32] } else { [22; 32] };
+    attach_nested_agent(&mut resume);
+    resume.payload.should_continue = true;
+    resume.payload.hitl_resume = true;
+    resume.payload.hitl_action = None;
+    resume.payload.hitl_value = None;
+    resume.payload.hitl_decisions = interrupt_ids
+        .iter()
+        .map(|interrupt_id| {
+            serde_json::json!({
+                "interrupt_id": interrupt_id,
+                "tool_call_id": "call_mcp",
+                "guardrail_type": "mcp_auth",
+                "action": action,
+                "value": "",
+            })
+        })
+        .collect();
+    if authorize {
+        resume.payload.mcp_tokens.insert(
+            "https://mcp.example.invalid/v1/mcp".to_owned(),
+            serde_json::json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        resume
+            .payload
+            .user_declined_mcp_servers
+            .push(serde_json::json!({
+                "server_url": "https://mcp.example.invalid/v1/mcp"
+            }));
+    }
+    let output = drain_nested_resume(&assembler, resume).await;
+    assert_eq!(output, "root resumed answer");
+    assert_eq!(
+        tool_calls.load(Ordering::Acquire),
+        usize::from(authorize) * 2
+    );
+    assert_eq!(connector.calls.load(Ordering::Acquire), 3);
+    assert_eq!(context_calls.load(Ordering::Acquire), 6);
+    let captured = captured.lock().expect("captured model requests");
+    assert_eq!(captured.len(), 6, "resume must not replan child calls");
+    if !authorize {
+        assert_eq!(
+            captured
+                .iter()
+                .filter(|request| request
+                    .body
+                    .windows("mcp_auth_decision".len())
+                    .any(|window| { window == b"mcp_auth_decision" }))
+                .count(),
+            2,
+            "each skipped child must receive a structured result under its original call"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn recursive_saved_agent_confirmation_persists_the_exact_two_tier_path() {
     let mut request = ordinary_request(AgentExecutionKind::Application);
     attach_nested_agent(&mut request);

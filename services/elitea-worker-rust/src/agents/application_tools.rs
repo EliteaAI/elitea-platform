@@ -25,24 +25,25 @@ use adk_rust::{
     ToolExecutionStrategy, Toolset,
 };
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument as _;
 
 use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
 use super::direct_hitl::{ResolvedDirectHitlDecision, sensitive_call_identity};
 use super::events::{
-    APPLICATION_BRANCH_ROOT, ApplicationToolPresentationCatalog,
+    APPLICATION_BRANCH_ROOT, ApplicationToolGuardCatalogs, ApplicationToolPresentationCatalog,
     DESCENDANT_CONTAINER_INVOCATION_KEY, DESCENDANT_PARENT_CALL_KEY,
 };
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
-use super::session::BoundOrdinaryAgentModel;
+use super::session::{BoundOrdinaryAgentModel, delegated_authorization_agent};
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
 use crate::toolkits::{
-    AdmittedToolSnapshot, FrozenToolKind, FrozenToolSnapshot, FrozenToolSnapshotErrorCode,
-    McpConnector, McpMaterializationErrorCode, ToolAdmissionPolicy,
-    ToolsetMaterializationErrorCode, materialize_configured_toolsets, materialize_mcp_toolsets,
+    AdmittedToolSnapshot, DelegatedAuthorizationCatalog, FrozenToolKind, FrozenToolSnapshot,
+    FrozenToolSnapshotErrorCode, McpConnector, McpMaterializationErrorCode, ToolAdmissionPolicy,
+    ToolsetMaterializationErrorCode, materialize_configured_toolsets,
+    materialize_mcp_toolsets_with_tokens_and_authorization,
 };
 use crate::transport::model_facade::{
     ModelAdapterKind, ModelFacade, ModelFacadeError, ModelInvocation, ModelReasoningEffort,
@@ -438,10 +439,15 @@ fn insert_resume_decision(
             return Err(invalid_configuration());
         }
         if index + 1 == chain_length {
-            let sensitive_tools = current_catalog
-                .nested_sensitive_tools(&hop.tool_name)
-                .ok_or_else(invalid_configuration)?;
-            if sensitive_tools.policy_for(decision.tool_name()).is_none()
+            let leaf_is_admitted = if decision.is_delegated_authorization() {
+                true
+            } else {
+                current_catalog
+                    .nested_sensitive_tools(&hop.tool_name)
+                    .and_then(|tools| tools.policy_for(decision.tool_name()))
+                    .is_some()
+            };
+            if !leaf_is_admitted
                 || builder.decision.replace(decision).is_some()
                 || !builder.children.is_empty()
             {
@@ -780,25 +786,28 @@ fn without_application_replay_marker(mut request: LlmRequest, marker: &Content) 
     request
 }
 
-pub(crate) struct ApplicationToolDependencies {
+pub(crate) struct ApplicationToolDependencies<'a> {
     pub(crate) model_facade: Arc<ModelFacade>,
     pub(crate) policy: Arc<ToolAdmissionPolicy>,
     pub(crate) mcp_connector: Arc<dyn McpConnector>,
+    mcp_tokens: &'a Map<String, Value>,
     event_sender: Option<ApplicationEventSender>,
     resume: Option<ApplicationResumeCoordinator>,
 }
 
-impl ApplicationToolDependencies {
+impl<'a> ApplicationToolDependencies<'a> {
     #[must_use]
     pub(crate) fn new(
         model_facade: Arc<ModelFacade>,
         policy: Arc<ToolAdmissionPolicy>,
         mcp_connector: Arc<dyn McpConnector>,
+        mcp_tokens: &'a Map<String, Value>,
     ) -> Self {
         Self {
             model_facade,
             policy,
             mcp_connector,
+            mcp_tokens,
             event_sender: None,
             resume: None,
         }
@@ -812,6 +821,7 @@ pub(crate) struct MaterializedApplicationTool {
     model_name: String,
     child_tools: ApplicationToolPresentationCatalog,
     sensitive_tools: SensitiveToolCatalog,
+    delegated_authorization: DelegatedAuthorizationCatalog,
     pub(crate) tool: Arc<dyn Tool>,
 }
 
@@ -820,6 +830,7 @@ struct BuiltApplication {
     model_name: String,
     child_tools: ApplicationToolPresentationCatalog,
     sensitive_tools: SensitiveToolCatalog,
+    delegated_authorization: DelegatedAuthorizationCatalog,
 }
 
 /// One root toolset plus its frozen browser-presentation join.
@@ -845,7 +856,7 @@ pub(crate) async fn materialize_application_toolset(
     runtime_context: &ClaimBoundRuntimeContextAuthority,
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
-    dependencies: ApplicationToolDependencies,
+    dependencies: ApplicationToolDependencies<'_>,
 ) -> Result<Option<MaterializedApplicationToolset>, NativeAgentAssemblyError> {
     let Some(runtime) = materialize_application_runtime(
         snapshot,
@@ -884,7 +895,7 @@ pub(crate) async fn materialize_application_runtime(
     runtime_context: &ClaimBoundRuntimeContextAuthority,
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
-    mut dependencies: ApplicationToolDependencies,
+    mut dependencies: ApplicationToolDependencies<'_>,
     selected_aliases: Option<&BTreeSet<String>>,
 ) -> Result<Option<MaterializedApplicationRuntime>, NativeAgentAssemblyError> {
     let (event_sender, event_receiver) = mpsc::channel(APPLICATION_EVENT_CHANNEL_CAPACITY);
@@ -913,7 +924,10 @@ pub(crate) async fn materialize_application_runtime(
                 entry.agent_type.clone(),
                 entry.model_name.clone(),
                 entry.child_tools.clone(),
-                entry.sensitive_tools.clone(),
+                ApplicationToolGuardCatalogs::new(
+                    entry.sensitive_tools.clone(),
+                    entry.delegated_authorization.clone(),
+                ),
             )
             .map_err(|_| invalid_configuration())?;
     }
@@ -934,7 +948,7 @@ pub(crate) async fn materialize_application_tools(
     runtime_context: &ClaimBoundRuntimeContextAuthority,
     elitea_context: Arc<ClaimScopedEliteaContext>,
     fallback_profile: &OrdinaryNoToolProfile,
-    dependencies: ApplicationToolDependencies,
+    dependencies: ApplicationToolDependencies<'_>,
     selected_aliases: Option<&BTreeSet<String>>,
 ) -> Result<Vec<MaterializedApplicationTool>, NativeAgentAssemblyError> {
     let references = application_references(snapshot, selected_aliases)?;
@@ -949,6 +963,7 @@ pub(crate) async fn materialize_application_tools(
         fallback_profile,
         policy: dependencies.policy,
         mcp_connector: dependencies.mcp_connector,
+        mcp_tokens: dependencies.mcp_tokens,
         applications: HashMap::new(),
         resolving: HashSet::new(),
         hops: 0,
@@ -967,6 +982,7 @@ pub(crate) async fn materialize_application_tools(
             model_name: application.model_name.clone(),
             child_tools: application.child_tools.clone(),
             sensitive_tools: application.sensitive_tools.clone(),
+            delegated_authorization: application.delegated_authorization.clone(),
             tool: Arc::new(ApplicationAgentTool::new(
                 application,
                 identity,
@@ -986,6 +1002,7 @@ struct ApplicationAssemblyState<'a> {
     fallback_profile: &'a OrdinaryNoToolProfile,
     policy: Arc<ToolAdmissionPolicy>,
     mcp_connector: Arc<dyn McpConnector>,
+    mcp_tokens: &'a Map<String, Value>,
     applications: HashMap<ApplicationIdentity, Arc<BuiltApplication>>,
     resolving: HashSet<ApplicationIdentity>,
     hops: usize,
@@ -1071,7 +1088,7 @@ impl ApplicationAssemblyState<'_> {
             .map_err(snapshot_error)?
             .apply_policy(self.policy.as_ref());
         let capabilities = configured_capabilities(&frozen);
-        let (mut toolsets, sensitive_tools) =
+        let (mut toolsets, sensitive_tools, delegated_authorization) =
             self.materialize_non_application_toolsets(&frozen).await?;
         let has_non_application_tools = !toolsets.is_empty();
         let nested_references = application_references(&frozen, None)?;
@@ -1079,7 +1096,8 @@ impl ApplicationAssemblyState<'_> {
             && frozen
                 .iter()
                 .all(|reference| reference.kind() == FrozenToolKind::Application)
-            && sensitive_tools.is_empty();
+            && sensitive_tools.is_empty()
+            && delegated_authorization.is_empty();
         let mut child_tools = ApplicationToolPresentationCatalog::default();
         if !nested_references.is_empty() {
             let mut nested_tools: Vec<Arc<dyn Tool>> = Vec::with_capacity(nested_references.len());
@@ -1101,7 +1119,10 @@ impl ApplicationAssemblyState<'_> {
                         agent_type,
                         application.model_name.clone(),
                         application.child_tools.clone(),
-                        application.sensitive_tools.clone(),
+                        ApplicationToolGuardCatalogs::new(
+                            application.sensitive_tools.clone(),
+                            application.delegated_authorization.clone(),
+                        ),
                     )
                     .map_err(|_| invalid_configuration())?;
                 nested_tools.push(tool);
@@ -1132,6 +1153,7 @@ impl ApplicationAssemblyState<'_> {
             elitea_context: self.elitea_context.clone(),
             sub_agents: Vec::new(),
             sensitive_tool_names,
+            delegated_authorization: delegated_authorization.clone(),
             parallel_applications,
         });
         Ok(Arc::new(BuiltApplication {
@@ -1139,13 +1161,21 @@ impl ApplicationAssemblyState<'_> {
             model_name,
             child_tools,
             sensitive_tools,
+            delegated_authorization,
         }))
     }
 
     async fn materialize_non_application_toolsets(
         &self,
         frozen: &AdmittedToolSnapshot<'_>,
-    ) -> Result<(Vec<Arc<dyn Toolset>>, SensitiveToolCatalog), NativeAgentAssemblyError> {
+    ) -> Result<
+        (
+            Vec<Arc<dyn Toolset>>,
+            SensitiveToolCatalog,
+            DelegatedAuthorizationCatalog,
+        ),
+        NativeAgentAssemblyError,
+    > {
         let mut toolsets =
             materialize_configured_toolsets(frozen, &self.policy).map_err(toolset_error)?;
         let mut sensitive_tools = sensitive_tools_for_kind(
@@ -1155,10 +1185,15 @@ impl ApplicationAssemblyState<'_> {
             self.policy.as_ref(),
         )
         .await?;
-        let mut mcp_toolsets =
-            materialize_mcp_toolsets(frozen, self.mcp_connector.as_ref(), &self.policy)
-                .await
-                .map_err(|error| mcp_toolset_error(&error))?;
+        let (mut mcp_toolsets, delegated_authorization) =
+            materialize_mcp_toolsets_with_tokens_and_authorization(
+                frozen,
+                self.mcp_connector.as_ref(),
+                &self.policy,
+                self.mcp_tokens,
+            )
+            .await
+            .map_err(|error| mcp_toolset_error(&error))?;
         sensitive_tools.merge(
             sensitive_tools_for_kind(
                 frozen,
@@ -1169,7 +1204,7 @@ impl ApplicationAssemblyState<'_> {
             .await?,
         )?;
         toolsets.append(&mut mcp_toolsets);
-        Ok((toolsets, sensitive_tools))
+        Ok((toolsets, sensitive_tools, delegated_authorization))
     }
 }
 
@@ -1290,6 +1325,7 @@ struct LazyNestedAgent {
     elitea_context: Arc<ClaimScopedEliteaContext>,
     sub_agents: Vec<Arc<dyn Agent>>,
     sensitive_tool_names: Vec<String>,
+    delegated_authorization: DelegatedAuthorizationCatalog,
     parallel_applications: bool,
 }
 
@@ -1367,13 +1403,20 @@ impl LazyNestedAgent {
         for tool_name in &self.sensitive_tool_names {
             builder = builder.require_tool_confirmation(tool_name);
         }
+        for tool_name in self.delegated_authorization.tool_names() {
+            builder = builder.require_tool_confirmation(tool_name);
+        }
         if self.parallel_applications {
             builder = builder.tool_execution_strategy(ToolExecutionStrategy::Parallel);
         }
-        builder
+        let agent = builder
             .build()
             .map(|agent| Arc::new(agent) as Arc<dyn Agent>)
-            .map_err(|_| agent_configuration_error())
+            .map_err(|_| agent_configuration_error())?;
+        Ok(delegated_authorization_agent(
+            agent,
+            self.delegated_authorization.clone(),
+        ))
     }
 
     fn prepare_resume(
@@ -1383,9 +1426,12 @@ impl LazyNestedAgent {
     ) -> adk_rust::Result<PreparedChildApplicationResume> {
         match action {
             ChildApplicationResumeAction::Direct(decision) => {
-                let replay = (*decision)
-                    .into_direct_replay(sensitive_tools)
-                    .map_err(direct_hitl_execution_error)?;
+                let replay = if decision.is_delegated_authorization() {
+                    (*decision).into_delegated_authorization_replay(&self.delegated_authorization)
+                } else {
+                    (*decision).into_direct_replay(sensitive_tools)
+                }
+                .map_err(direct_hitl_execution_error)?;
                 let prepared = replay.bind(self.bind_model()?);
                 let (model, run_input, toolsets) = prepared.into_parts(self.toolsets.clone());
                 let (user_content, run_config) = run_input.into_parts();

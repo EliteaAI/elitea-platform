@@ -275,7 +275,25 @@ struct ApplicationToolPresentation {
     agent_type: String,
     model_name: String,
     child_tools: ApplicationToolPresentationCatalog,
+    guards: ApplicationToolGuardCatalogs,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ApplicationToolGuardCatalogs {
     sensitive_tools: SensitiveToolCatalog,
+    delegated_authorization: DelegatedAuthorizationCatalog,
+}
+
+impl ApplicationToolGuardCatalogs {
+    pub(crate) const fn new(
+        sensitive_tools: SensitiveToolCatalog,
+        delegated_authorization: DelegatedAuthorizationCatalog,
+    ) -> Self {
+        Self {
+            sensitive_tools,
+            delegated_authorization,
+        }
+    }
 }
 
 impl ApplicationToolPresentation {
@@ -301,7 +319,7 @@ impl ApplicationToolPresentationCatalog {
             agent_type,
             "nested-model".to_owned(),
             Self::default(),
-            SensitiveToolCatalog::default(),
+            ApplicationToolGuardCatalogs::default(),
         )
     }
 
@@ -312,7 +330,7 @@ impl ApplicationToolPresentationCatalog {
         agent_type: String,
         model_name: String,
         child_tools: Self,
-        sensitive_tools: SensitiveToolCatalog,
+        guards: ApplicationToolGuardCatalogs,
     ) -> Result<(), AgentEventProjectionError> {
         if !valid_tool_identity(&tool_name)
             || display_name.is_empty()
@@ -331,7 +349,7 @@ impl ApplicationToolPresentationCatalog {
                         agent_type,
                         model_name,
                         child_tools,
-                        sensitive_tools,
+                        guards,
                     },
                 )
                 .is_some()
@@ -357,13 +375,13 @@ impl ApplicationToolPresentationCatalog {
 
     pub(crate) fn nested_sensitive_tools(&self, tool_name: &str) -> Option<&SensitiveToolCatalog> {
         self.get(tool_name)
-            .map(|presentation| &presentation.sensitive_tools)
+            .map(|presentation| &presentation.guards.sensitive_tools)
     }
 
     #[must_use]
     pub(crate) fn has_sensitive_descendant(&self) -> bool {
         self.by_tool_name.values().any(|presentation| {
-            !presentation.sensitive_tools.is_empty()
+            !presentation.guards.sensitive_tools.is_empty()
                 || presentation.child_tools.has_sensitive_descendant()
         })
     }
@@ -836,9 +854,10 @@ impl AgentEventProjector {
                 application.model_name.clone(),
                 checkpoint_thread_id.clone(),
             )?;
-            let mut projector = Self::with_tool_catalogs(
+            let mut projector = Self::with_runtime_catalogs(
                 nested_context,
-                application.sensitive_tools.clone(),
+                application.guards.sensitive_tools.clone(),
+                application.guards.delegated_authorization.clone(),
                 application.child_tools.clone(),
             )?;
             let _start = projector.start(event.timestamp)?;

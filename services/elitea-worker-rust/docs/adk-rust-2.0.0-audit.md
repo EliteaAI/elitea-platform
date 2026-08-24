@@ -419,9 +419,16 @@ re-emits the original function call without a new provider planning request.
 Skip installs the same-call no-dispatch adapter and returns the SDK-compatible
 `mcp_auth_decision`. An authorization approval carries no ADK confirmation
 decision, so a distinct sensitive-action policy can still pause the replayed
-call. This covers one latest materializer-known root or graph call; the current
-Go-to-Rust input still lacks the exact authorization request ID/action required
-for safe parallel and nested delegated-auth continuation.
+call. Direct saved-agent descendants now use the same persisted confirmation at
+every admitted hierarchy tier. A complete exact decision set can resume
+parallel Authorize and Skip leaves; Authorize requires the matching
+claim-fetched server token, while Skip installs a same-call structured result
+and dispatches no real tool. The current Go continuation producer still emits
+authorization as a separate single-card shape. Production activation therefore
+requires a small Main normalization into the existing versioned
+`hitl_decisions` JSON field; it does not require another interrupt table or a
+protobuf expansion. Nested authorization owned by a pipeline Agent node remains
+a separate graph slice.
 
 Physical-table accounting is therefore seven native runtime tables today: two
 for graph checkpoint ownership and five for normalized ADK session ownership.

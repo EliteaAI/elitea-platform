@@ -69,9 +69,15 @@ token and replays without replanning, while Skip supplies the SDK-compatible
 `mcp_auth_decision` result under that same call ID without dispatch. An
 authorization approval deliberately does not approve a separate sensitive-tool
 guard. No synthetic model turn, interrupt table, or extra model-facing control
-call is introduced. Parallel/nested authorization still needs the omitted exact
-public authorization ID/action contract, and SharePoint/OpenAPI remain concrete
-family gaps.
+call is introduced. Direct saved-agent descendants now use that same durable
+confirmation as an ordinary `mcp_auth` guardrail: parallel cards retain exact
+interrupt/call/hierarchy identity, Authorize rebuilds every named leaf with only
+its exact-server token, and Skip returns `mcp_auth_decision` under each original
+call ID with zero dispatch. The current Main authorization continuation still
+needs to normalize its exact decision set into the already-versioned
+`hitl_decisions` JSON field before this parallel path can be activated; no new
+protobuf field is required. Pipeline-Agent nested authorization and concrete
+SharePoint/OpenAPI families remain gaps.
 
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |

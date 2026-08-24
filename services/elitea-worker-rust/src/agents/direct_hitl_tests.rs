@@ -4,11 +4,17 @@ use serde_json::{Value, json};
 use super::assembly_tests::ordinary_request;
 use super::direct_hitl::{
     DirectHitlDecision, DirectHitlDecisionSet, DirectHitlError, DirectHitlErrorCode,
-    ResolvedDirectHitlDecision, sensitive_call_identity,
+    ResolvedDirectHitlDecision, ResolvedDirectHitlStart, sensitive_call_identity,
 };
 use super::request::AgentExecutionKind;
 use super::sensitive_tools::SensitiveToolCatalog;
-use crate::toolkits::ToolAdmissionPolicy;
+use crate::toolkits::{
+    DELEGATED_AUTHORIZATION_METADATA_KEY, DelegatedAuthorizationCatalog,
+    DelegatedAuthorizationRequirement, ToolAdmissionPolicy,
+    encode_delegated_authorization_requirement,
+};
+
+const AUTH_SERVER: &str = "https://mcp.example.invalid/v1/mcp";
 
 fn pending_events(arguments: Value) -> Vec<Event> {
     let mut call = Event::with_id("call-event", "invocation-1");
@@ -34,6 +40,28 @@ fn pending_events(arguments: Value) -> Vec<Event> {
     vec![call, confirmation]
 }
 
+fn pending_authorization_events(arguments: Value) -> Vec<Event> {
+    let mut events = pending_events(arguments);
+    let requirement = authorization_requirement();
+    events[1].provider_metadata.insert(
+        DELEGATED_AUTHORIZATION_METADATA_KEY.to_owned(),
+        encode_delegated_authorization_requirement(&requirement)
+            .expect("authorization requirement metadata"),
+    );
+    events
+}
+
+fn authorization_requirement() -> DelegatedAuthorizationRequirement {
+    DelegatedAuthorizationRequirement::new(
+        "Remote MCP".to_owned(),
+        "mcp".to_owned(),
+        AUTH_SERVER.to_owned(),
+        Some("https://mcp.example.invalid/.well-known/oauth-protected-resource".to_owned()),
+        Some("Bearer".to_owned()),
+    )
+    .expect("authorization requirement")
+}
+
 fn direct_payload(
     action: &str,
     value: &str,
@@ -51,6 +79,25 @@ fn direct_payload(
         "value": value,
     })];
     request.payload
+}
+
+fn authorization_payload(
+    action: &str,
+    interrupt_id: &str,
+) -> super::request::AgentExecutionPayload {
+    let mut payload = direct_payload(action, "", interrupt_id);
+    payload.hitl_decisions[0]["guardrail_type"] = json!("mcp_auth");
+    if action == "authorize" {
+        payload.mcp_tokens.insert(
+            AUTH_SERVER.to_owned(),
+            json!({"access_token": "runtime-secret"}),
+        );
+    } else {
+        payload
+            .user_declined_mcp_servers
+            .push(json!({"server_url": AUTH_SERVER}));
+    }
+    payload
 }
 
 fn session(events: Vec<Event>) -> FixtureSession {
@@ -181,6 +228,61 @@ fn direct_decision_resolves_only_the_exact_latest_persisted_call() {
         resolved.fingerprint(),
         adk_rust::tool_call_fingerprint("double", &arguments)
     );
+}
+
+#[test]
+fn delegated_authorization_decision_is_bound_to_interrupt_action_and_server_authority() {
+    let arguments = json!({});
+    let events = pending_authorization_events(arguments.clone());
+    let (interrupt_id, _) = sensitive_call_identity("invocation-1", "call-1", "double", &arguments)
+        .expect("authorization identity");
+
+    for (action, expected) in [
+        ("authorize", ToolConfirmationDecision::Approve),
+        ("skip", ToolConfirmationDecision::Deny),
+    ] {
+        let resolved =
+            DirectHitlDecisionSet::from_payload(&authorization_payload(action, &interrupt_id))
+                .expect("authorization decision admission")
+                .resolve(&session(events.clone()))
+                .expect("checkpoint-bound authorization decision");
+        let ResolvedDirectHitlStart::Direct(decision) = resolved else {
+            panic!("root authorization must resolve as one direct decision");
+        };
+        assert!(decision.is_delegated_authorization());
+        assert_eq!(decision.decision(), expected);
+
+        let mut materialized = DelegatedAuthorizationCatalog::default();
+        if action == "skip" {
+            materialized
+                .insert("double", authorization_requirement())
+                .expect("materialized authorization catalog");
+        }
+        decision
+            .into_delegated_authorization_replay(&materialized)
+            .expect("authorization replay");
+    }
+
+    let mut missing_token = authorization_payload("authorize", &interrupt_id);
+    missing_token.mcp_tokens.clear();
+    let Err(error) = DirectHitlDecisionSet::from_payload(&missing_token)
+        .expect("bounded authorization decision")
+        .resolve(&session(events.clone()))
+    else {
+        panic!("authorization without exact server authority was admitted");
+    };
+    assert_eq!(error.code(), DirectHitlErrorCode::StaleDecision);
+
+    let mut sensitive_action = authorization_payload("authorize", &interrupt_id);
+    sensitive_action.hitl_action = Some("approve".to_owned());
+    sensitive_action.hitl_decisions[0]["action"] = json!("approve");
+    let Err(error) = DirectHitlDecisionSet::from_payload(&sensitive_action)
+        .expect("bounded mismatched guardrail decision")
+        .resolve(&session(events))
+    else {
+        panic!("sensitive action was admitted for authorization guardrail");
+    };
+    assert_eq!(error.code(), DirectHitlErrorCode::StaleDecision);
 }
 
 #[test]

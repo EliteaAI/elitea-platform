@@ -455,3 +455,12 @@ tool and function-call identity. Prompts, credentials, tool payloads,
 checkpoint state and provider response bodies are never log fields. Low-level
 adapters return typed errors with stable code and retryability; the lifecycle
 owner records the error and its trusted source once.
+
+Delegated-authorization checkpoint update: parallel and recursive direct
+saved-agent calls now use the same native confirmation/session lineage as
+sensitive calls. The browser-visible hierarchy stays call-bound, an exact
+Authorize/Skip set is validated against persisted interrupts and exact-server
+authority, and Skip produces a structured same-call result without dispatch.
+Older table cells that broadly say parallel/nested authorization remains closed
+refer now to Main decision-list activation and the separate pipeline-Agent
+nested variant, not this implemented direct-agent scope.
