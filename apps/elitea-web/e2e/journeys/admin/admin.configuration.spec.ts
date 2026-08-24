@@ -387,3 +387,42 @@ adminTest('J34k: the LLM Proxy usage report is authorised and answers', async ({
 
   await checkA11y(page);
 });
+
+adminTest('J34l: platform providers are authored from the admin panel', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Providers' }).click();
+
+  // A PLATFORM provider is the public project's `shared = true` credential — the
+  // scope the gateway has resolved since issue #316 and that nothing could
+  // author from here. Wait on a POSITIVE terminal state: either the table or the
+  // explained empty state proves the read completed, where asserting only the
+  // absence of the error test-id would pass while the request was in flight.
+  await expect(
+    page.getByTestId('llm-providers-table').or(page.getByTestId('llm-providers-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('llm-providers-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-providers-add')).toBeVisible();
+
+  // NO CREDENTIAL IS PUBLISHED HERE. These journeys share one deployment in
+  // serial, and a platform provider resolves for every project on it — so a
+  // credential this test created would join the model resolution of every later
+  // journey, and a bogus one would make them fail in ways that point nowhere
+  // near this file. The write path's guards are covered where they can be
+  // covered in isolation: internal/api/v2/configurations/global_providers_test.go
+  // for the type allowlist, the forced `shared`, the body bound and the
+  // redaction, and LlmProxyProvidersPanel.test.tsx for the untouched-secret
+  // contract.
+  await page.getByTestId('llm-providers-add').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // The dialog offers a provider SELECT rather than a free-text type: the
+  // server refuses anything outside the gateway's set, and a text field would
+  // make that refusal the operator's first feedback.
+  await expect(page.getByTestId('llm-provider-type')).toBeVisible();
+  await expect(page.getByTestId('llm-provider-api_key')).toHaveValue('');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await checkA11y(page);
+});

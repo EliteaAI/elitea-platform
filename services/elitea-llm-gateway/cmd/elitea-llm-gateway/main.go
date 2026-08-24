@@ -307,7 +307,8 @@ func main() {
 	}
 
 	// The operator's answer to "is the rule I saved actually in force?".
-	mux.HandleFunc("/governance/status", makeGovernanceStatusHandler(policyStore, policyLimiter))
+	mux.HandleFunc("/governance/status",
+		makeGovernanceStatusHandler(policyStore, policyLimiter, cfg.PublicProjectIDString()))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert

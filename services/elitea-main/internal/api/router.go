@@ -789,6 +789,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		return apimw.RequireResolvedPermissions(
 			coreResolver, platformauth.PermissionModeDefault, permission)
 	}
+	// The configurations handler, built ONCE and mounted twice: on
+	// /api/v2/configurations for the project-scoped compatibility surface, and
+	// on /api/v2/admin/gateway/providers for the platform-wide provider surface
+	// (internal/api/v2/configurations/global_providers.go).
+	//
+	// One construction, so the vault sealer, the provider admission and the
+	// public project id cannot differ between the two. A second NewHandler is
+	// how one surface acquires a vault the other lacks and starts storing
+	// api_keys in plaintext rows every tenant can read.
+	//
+	// `WithPublicProjectID` had NO caller before this, and its own doc comment
+	// said so: the list response's `shared` block — the one that shows a project
+	// which platform credentials it may use — was empty in every default
+	// install, because the option was applied only inside a feature-flagged
+	// branch. It resolves from the same helper the Project middleware uses, so
+	// the two cannot disagree about which schema holds the shared rows.
+	configurationsHandler := v2configs.NewHandler(
+		cfg.Pool,
+		v2configs.WithPermissionResolver(coreResolver),
+		v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
+		v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+		v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
+		v2configs.WithPublicProjectID(apimw.PublicProjectID()),
+	)
 	artifactHandler := cfg.ArtifactHandler
 	if artifactHandler == nil {
 		artifactHandler, _ = newArtifactHandler(cfg)
@@ -1416,6 +1440,19 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						r.Mount("/", budgetAlertHandler.Routes())
 						governanceHandler.Register(r)
 						llmProxyHandler.Register(r)
+						// PLATFORM-WIDE provider credentials — the public
+						// project's shared `ai_credentials` rows, which the LLM
+						// gateway already resolves for every project (issue
+						// #316). See global_providers.go for why this is the
+						// same rows and the same handlers rather than a second
+						// credential model.
+						//
+						// It inherits this group's `configuration.governance`
+						// gate from the enclosing Group, which is correct for a
+						// surface whose four verbs take one permission — and is
+						// why it can be a Mount at all, unlike the project-scoped
+						// Routes() that needs five different strings.
+						r.Mount("/providers", configurationsHandler.GlobalProviderRoutes())
 					})
 				})
 			})
@@ -1469,6 +1506,10 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// authenticated caller do to any project, and for the permission
 			// each route now takes.
 			//
+			// `configurationsHandler` is built at the top of this function and
+			// mounted twice — see its declaration for why one construction is
+			// load-bearing rather than tidy.
+			//
 			// The gates live inside the package, not on this mount, for the two
 			// reasons /secrets gives: the routes need five different strings, and
 			// a mount carries one middleware. `coreResolver` is used rather than
@@ -1476,13 +1517,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// through cfg.ProjectPermissionResolver, exactly as the sibling
 			// groups below do; production leaves that field unset and both names
 			// are the same object.
-			r.Mount("/configurations", v2configs.NewHandler(
-				cfg.Pool,
-				v2configs.WithPermissionResolver(coreResolver),
-				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
-				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
-				v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
-			).Routes())
+			r.Mount("/configurations", configurationsHandler.Routes())
 
 			// === Secrets ===
 			// Mounted under "/secrets" — the pylon PLUGIN name — while the

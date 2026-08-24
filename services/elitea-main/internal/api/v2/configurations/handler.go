@@ -95,9 +95,19 @@ func WithConnectionChecker(checker ConnectionChecker) Option {
 // caller's own schema: that answer looks like a public credential list and is
 // the caller's own rows.
 //
-// The value is ELITEA_AI_PROJECT_ID. Today the composition root parses it only
-// inside the ELITEA_CONFIGURATIONS_ENABLED branch. So this option has no caller
-// yet, and the block stays empty in a default install.
+// The value is ELITEA_AI_PROJECT_ID. This used to say "the composition root
+// parses it only inside the ELITEA_CONFIGURATIONS_ENABLED branch. So this option
+// has no caller yet, and the block stays empty in a default install" — which was
+// true, and meant a shipped deployment showed no project the platform
+// credentials it was entitled to use.
+//
+// router.go now applies it on the always-on path, from
+// `apimw.PublicProjectID()`, which is the same resolution the Project middleware
+// uses. That helper also learned to read ELITEA_AI_PROJECT_ID: this service read
+// `AI_PROJECT_ID` while the gateway read `ELITEA_AI_PROJECT_ID`, so a deployment
+// that set the documented variable — as deploy/docker-compose.standalone-full.yml
+// does for BOTH services, with a CI gate asserting the two agree — was handing
+// this service a variable it did not read.
 func WithPublicProjectID(projectID int) Option {
 	return func(handler *Handler) {
 		if projectID > 0 {

@@ -18,6 +18,7 @@
  *   | Observability / health | **Status** | the gateway's `GET /governance/status` |
  *   | Model Catalog + Pricing Overrides | **Models** | `gateway.gateway_models` + `llm_usage_events` |
  *   | Usage | **Usage** | `gateway.llm_usage_events` |
+ *   | Providers & keys | **Providers** | the public project's shared `ai_credentials` |
  *   | Alerting | **Alerts** | `gateway.governance_config` soft-alert row |
  *
  * ## What is deliberately not here, and why
@@ -35,11 +36,16 @@
  *     screen is worth drawing. A "logs" tab over the ledger would show a list of
  *     successful requests and no failures at all, which is the opposite of what
  *     an operator opens a log for.
+ *   - **Providers.** STALE CLAIM, corrected. This said provider credentials
+ *     are per-project rows "not global gateway config, so they do not belong on
+ *     a platform screen". The premise was half right and the conclusion was
+ *     wrong: the gateway has resolved a PLATFORM scope since issue #316 — the
+ *     public project's `shared = true` rows, usable by every project — and the
+ *     only thing missing was a surface to author them. The Providers tab is
+ *     that surface; a project's own credentials stay where they are, and both
+ *     still resolve.
  *   - **Virtual keys.** Bifrost's virtual-key slot carries the Elitea project
  *     id. There is no key to mint, rotate or revoke.
- *   - **Providers and keys.** Provider credentials are per-project
- *     `ai_credentials` rows sealed in the Fernet vault, authored per project —
- *     not global gateway config, so they do not belong on a platform screen.
  *   - **Retries, timeouts, fallback chains, key weights, proxy, semantic cache.**
  *     Not configurable anywhere: the gateway leaves them at Bifrost's defaults
  *     and its `Account` implementation cannot vary them per project. Exposing
@@ -70,6 +76,7 @@ import { t } from '@/shared/i18n';
 import { LlmProxyAlertsPanel } from './LlmProxyAlertsPanel';
 import { ModelCatalogueTable, UnpricedModelsAlert, UsageWindowSelect } from './LlmProxyModelsPanel';
 import { LlmProxyPriceDialog } from './LlmProxyPriceDialog';
+import { LlmProxyProvidersPanel } from './LlmProxyProvidersPanel';
 import { LlmProxyStatusPanel } from './LlmProxyStatusPanel';
 import { LlmProxyUsagePanel } from './LlmProxyUsagePanel';
 import { configFailureReason } from './api/adminConfigurationApi';
@@ -83,7 +90,7 @@ import {
   type UsageWindow,
 } from './api/adminLlmProxyApi';
 
-type TabId = 'status' | 'models' | 'usage' | 'alerts';
+type TabId = 'status' | 'providers' | 'models' | 'usage' | 'alerts';
 
 /** What the price dialog is currently open on, if anything. */
 interface PriceEditorState {
@@ -350,12 +357,14 @@ export function AdminLlmProxyEditor() {
         data-testid="llm-proxy-tabs"
       >
         <Tab value="status" label={t('pages.admin.llmProxy.tab.status', 'Status')} />
+        <Tab value="providers" label={t('pages.admin.llmProxy.tab.providers', 'Providers')} />
         <Tab value="models" label={t('pages.admin.llmProxy.tab.models', 'Models & pricing')} />
         <Tab value="usage" label={t('pages.admin.llmProxy.tab.usage', 'Usage')} />
         <Tab value="alerts" label={t('pages.admin.llmProxy.tab.alerts', 'Budget alerts')} />
       </Tabs>
 
       {tab === 'status' ? <LlmProxyStatusPanel /> : null}
+      {tab === 'providers' ? <LlmProxyProvidersPanel /> : null}
       {tab === 'models' ? <ModelsTab /> : null}
       {tab === 'usage' ? <LlmProxyUsagePanel /> : null}
       {tab === 'alerts' ? <LlmProxyAlertsPanel /> : null}

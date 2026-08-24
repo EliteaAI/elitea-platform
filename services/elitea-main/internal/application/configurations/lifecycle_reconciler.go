@@ -423,6 +423,11 @@ func currentConfigurationLifecycleKind(
 // so marking it usable would say something untrue about it.
 // TestCurrentProviderCredentialTypeCoversGatewayProviderTable reads the gateway
 // source and fails when the two tables drift apart.
+//
+// EXPORTED through CurrentProviderCredentialType because the admin global
+// provider surface needs the same set: a platform credential of a type no
+// runtime can dispatch to is a control with no effect, and a third copy of this
+// list is a third place for it to drift from the gateway's.
 func currentProviderCredentialType(typeName string) bool {
 	switch typeName {
 	case "open_ai", "azure_open_ai", "open_ai_azure", "ai_dial", "anthropic",
@@ -552,3 +557,15 @@ func validCurrentConfigurationLifecycleEffectsIntent(
 }
 
 var _ CurrentConfigurationLifecycleReconciler = (*CurrentConfigurationLifecycleEffectsReconciler)(nil)
+
+// CurrentProviderCredentialType reports whether a configuration type names an
+// LLM provider credential the gateway can dispatch to.
+//
+// The one authority, shared by the two callers that need it: this package's
+// lifecycle reconciler, which decides `status_ok`, and the admin global
+// provider surface, which refuses to publish a platform credential of any other
+// type. TestCurrentProviderCredentialTypeCoversGatewayProviderTable reads the
+// gateway's own table and fails when the two drift apart.
+func CurrentProviderCredentialType(typeName string) bool {
+	return currentProviderCredentialType(typeName)
+}
