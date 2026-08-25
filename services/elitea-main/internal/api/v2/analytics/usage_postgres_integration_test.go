@@ -740,3 +740,25 @@ func TestHealthDailyTrendBucketsByUTCDay(t *testing.T) {
 	wantNumber(t, first, "errors", "0")
 	wantNumber(t, second, "errors", "1")
 }
+
+// Both remaining caps must be VISIBLE, for the reason the users list's is: each
+// sits beside an uncapped figure the client compares it against, so a silent
+// cut produces two numbers on one screen that disagree with nothing saying why.
+func TestTheRemainingCapsAreReported(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	plantRequest(t, pool, usageProjectID, 7, usageNow.Add(-time.Hour), "gpt-4o", "openai", 1, 1)
+	plantFailure(t, pool, usageProjectID, 7, usageNow.Add(-time.Hour), "gpt-4o", "openai", 500, "upstream_error", 5, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+
+	// Present and false, not absent: an absent flag reads as false and cannot be
+	// told apart from a server that does not send one.
+	if truncated, ok := body["models_truncated"].(bool); !ok || truncated {
+		t.Fatalf("models_truncated = %#v, want false for a one-model project", body["models_truncated"])
+	}
+	health := healthBlock(t, body)
+	if truncated, ok := health["error_codes_truncated"].(bool); !ok || truncated {
+		t.Fatalf("error_codes_truncated = %#v, want false for a one-code project", health["error_codes_truncated"])
+	}
+}

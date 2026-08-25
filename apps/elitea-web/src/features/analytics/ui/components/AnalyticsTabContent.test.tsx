@@ -25,6 +25,7 @@ const DATA: ProjectAnalytics = {
   top_ai_users: [],
   daily_activity: [],
   models: [],
+  models_truncated: false,
 };
 
 function renderScreen(ui: ReactElement): RenderResult {

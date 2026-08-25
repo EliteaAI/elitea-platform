@@ -20,6 +20,7 @@ const BASE_DATA: ProjectAnalytics = {
   top_ai_users: [],
   daily_activity: [],
   models: [],
+  models_truncated: false,
 };
 
 const ALICE = {
@@ -128,5 +129,38 @@ describe('AnalyticsOverview', () => {
       daily_activity: [{ date: '2026-07-20', llm_calls: 10, total_tokens: 500, active_users: 3 }],
     };
     expect(() => renderWithTheme(<AnalyticsOverview data={data} />)).not.toThrow();
+  });
+});
+
+describe('AnalyticsOverview model shares', () => {
+  const MODELS = [
+    { model: 'a', provider: 'p', prompt_tokens: 0, completion_tokens: 0, run_count: 60 },
+    { model: 'b', provider: 'p', prompt_tokens: 0, completion_tokens: 0, run_count: 40 },
+  ];
+
+  it('normalises shares over the returned models when the list is complete', () => {
+    const data: ProjectAnalytics = { ...BASE_DATA, models: MODELS, models_truncated: false };
+    const { getByText } = renderWithTheme(<AnalyticsOverview data={data} />);
+    expect(getByText('60.0%')).toBeInTheDocument();
+    expect(getByText('40.0%')).toBeInTheDocument();
+  });
+
+  /**
+   * A cut list summed as if it were whole makes every share a percentage of the
+   * busiest N. Here the two rows are 100 of a real 1000 calls: normalised over
+   * themselves they would read 60%/40% and add to 100%, while the LLM CALLS
+   * tile beside them says 1000.
+   */
+  it('normalises over the real request count when the server says it cut the list', () => {
+    const data: ProjectAnalytics = {
+      ...BASE_DATA,
+      kpis: { ...BASE_DATA.kpis, llm_calls: 1000 },
+      models: MODELS,
+      models_truncated: true,
+    };
+    const { getByText, queryByText } = renderWithTheme(<AnalyticsOverview data={data} />);
+    expect(getByText('6.0%')).toBeInTheDocument();
+    expect(getByText('4.0%')).toBeInTheDocument();
+    expect(queryByText('60.0%')).not.toBeInTheDocument();
   });
 });

@@ -41,6 +41,7 @@ function usageResponse(overrides: Partial<Record<string, unknown>> = {}): Record
     top_ai_users: [],
     daily_activity: [],
     models: [],
+    models_truncated: false,
     ...overrides,
   };
 }

@@ -62,6 +62,11 @@ export const AnalyticsHealth = zod
         "errors \/ requests, as a percentage to one decimal. 0 for a window with no traffic — nothing failed — rather than absent or NaN.\n",
       ),
     by_error_code: zod.array(AnalyticsErrorCodeCount),
+    error_codes_truncated: zod
+      .boolean()
+      .describe(
+        "True when `by_error_code` was cut. It sits beside an UNCAPPED `errors` total, so a silent cut leaves an operator reconciling the two with failures belonging to no listed classification.\n",
+      ),
     by_model: zod.array(AnalyticsModelHealth),
     daily: zod.array(AnalyticsDailyHealth),
   })

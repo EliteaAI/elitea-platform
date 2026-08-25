@@ -135,6 +135,7 @@ export const getGetProjectAnalyticsResponseMock = (
     completion_tokens: faker.number.int(),
     run_count: faker.number.int(),
   })),
+  models_truncated: faker.datatype.boolean(),
   health: faker.helpers.arrayElement([
     {
       requests: faker.number.int(),
@@ -147,6 +148,7 @@ export const getGetProjectAnalyticsResponseMock = (
         error_code: faker.string.alpha({ length: { min: 10, max: 20 } }),
         requests: faker.number.int(),
       })),
+      error_codes_truncated: faker.datatype.boolean(),
       by_model: Array.from(
         { length: faker.number.int({ min: 1, max: 10 }) },
         (_, i) => i + 1,

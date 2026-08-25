@@ -219,7 +219,7 @@ FROM gateway.llm_request_logs` + requestLogWindow
 		return analytics.UsageSummary{}, fmt.Errorf("analytics: usage totals: %w", err)
 	}
 
-	if summary.ByModel, err = modelUsage(ctx, tx, id, params); err != nil {
+	if summary.ByModel, summary.ModelsTruncated, err = modelUsage(ctx, tx, id, params); err != nil {
 		return analytics.UsageSummary{}, err
 	}
 	if summary.DailyActivity, err = dailyActivity(ctx, tx, id, params); err != nil {
@@ -306,7 +306,13 @@ type analyticsQuerier interface {
 // into a nameless row would put a blank bar on the chart that no operator can
 // act on. They are still in the totals, which is where "we served N requests"
 // belongs.
-func modelUsage(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ModelUsage, error) {
+//
+// The cap is REPORTED. The client sums this array to normalise its share
+// column, so a silent cut makes every share a percentage of the busiest N
+// rather than of the project — shares adding to 100% over a subset, beside a
+// `llm_calls` tile carrying the true total, with nothing on screen explaining
+// the disagreement.
+func modelUsage(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ModelUsage, bool, error) {
 	const query = `
 SELECT model,
        provider,
@@ -319,9 +325,9 @@ GROUP BY model, provider
 ORDER BY count(*) DESC, model ASC
 LIMIT $4`
 
-	rows, err := q.Query(ctx, query, id, params.From, params.To, modelRowsLimit)
+	rows, err := q.Query(ctx, query, id, params.From, params.To, modelRowsLimit+1)
 	if err != nil {
-		return nil, fmt.Errorf("analytics: model usage: %w", err)
+		return nil, false, fmt.Errorf("analytics: model usage: %w", err)
 	}
 	defer rows.Close()
 
@@ -329,11 +335,17 @@ LIMIT $4`
 	for rows.Next() {
 		var m analytics.ModelUsage
 		if err := rows.Scan(&m.Model, &m.Provider, &m.PromptTokens, &m.CompletionTokens, &m.RunCount); err != nil {
-			return nil, fmt.Errorf("analytics: model usage scan: %w", err)
+			return nil, false, fmt.Errorf("analytics: model usage scan: %w", err)
 		}
 		models = append(models, m)
 	}
-	return models, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(models) > modelRowsLimit {
+		return models[:modelRowsLimit], true, nil
+	}
+	return models, false, nil
 }
 
 // dailyActivity is one point per UTC day that had traffic.
@@ -476,7 +488,11 @@ SELECT u.id, coalesce(u.email, ''), coalesce(u.name, '')
 FROM public.auth_core__user AS u
 WHERE u.id = ANY($1)`
 
-	if !checkRelations(ctx, q, "public.auth_core__user") {
+	present, err := checkRelations(ctx, q, "public.auth_core__user")
+	if err != nil {
+		return nil, err
+	}
+	if !present {
 		return map[string]userIdentity{}, nil
 	}
 
@@ -556,7 +572,11 @@ SELECT (SELECT count(*)::bigint FROM project_members),
 	// resulting error would abort the shared transaction rather than being
 	// contained. The missingRelation check after it is the belt to this braces
 	// — the two statements are not atomic.
-	if !checkRelations(ctx, q, "public.auth_core__user_role", "public.auth_core__project_role") {
+	present, err := checkRelations(ctx, q, "public.auth_core__user_role", "public.auth_core__project_role")
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if !present {
 		return 0, 0, false, nil
 	}
 
@@ -572,14 +592,26 @@ SELECT (SELECT count(*)::bigint FROM project_members),
 // checkRelations reports whether every named relation exists, in one round
 // trip. `to_regclass` returns NULL rather than raising for a missing name,
 // which is what makes this askable at all.
-func checkRelations(ctx context.Context, q analyticsQuerier, names ...string) bool {
+//
+// IT RETURNS THE ERROR. Swallowing it and answering `false` made a transient
+// database failure — an expired deadline, a reset connection — indistinguishable
+// from a table that genuinely is not there, and the callers turn "not there"
+// into a feature this deployment does not have. The Users tab would then answer
+// 200 with every email blank, rendering "User 41" for each row with nothing
+// anywhere reporting a fault and nothing prompting a retry.
+//
+// That is this endpoint's own defect inverted. It answers 501 rather than 500
+// for an absent producer so that a permanent gap is not read as a fault; the
+// same distinction has to hold in the other direction, or a fault is read as a
+// permanent gap.
+func checkRelations(ctx context.Context, q analyticsQuerier, names ...string) (bool, error) {
 	var present bool
 	if err := q.QueryRow(ctx,
 		`SELECT bool_and(to_regclass(name) IS NOT NULL) FROM unnest($1::text[]) AS name`,
 		names).Scan(&present); err != nil {
-		return false
+		return false, fmt.Errorf("analytics: relation probe %v: %w", names, err)
 	}
-	return present
+	return present, nil
 }
 
 /* ── health ────────────────────────────────────────────────────────────── */
@@ -621,7 +653,7 @@ FROM gateway.llm_request_logs` + requestLogWindow
 	health.ErrorRate = ratePercent(health.Errors, health.Requests)
 
 	var err error
-	if health.ByErrorCode, err = healthByErrorCode(ctx, q, id, params); err != nil {
+	if health.ByErrorCode, health.ErrorCodesTruncated, err = healthByErrorCode(ctx, q, id, params); err != nil {
 		return nil, err
 	}
 	if health.ByModel, err = healthByModel(ctx, q, id, params); err != nil {
@@ -655,7 +687,14 @@ func ratePercent(part, whole int64) float64 {
 // rather than dropped: it means the gateway returned a 4xx/5xx without
 // classifying it, which is itself worth seeing, and dropping those rows would
 // make the breakdown's total disagree with the headline error count.
-func healthByErrorCode(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ErrorCodeCount, error) {
+//
+// The cap is REPORTED, for the reason the users list reports its own: the
+// breakdown sits beside an uncapped `errors` headline, and an operator
+// reconciling the two against a silently cut list finds failures belonging to
+// no listed classification with nothing saying why. One row over the cap is
+// requested so "there is more" is a fact rather than a guess from
+// `len(rows) == limit`.
+func healthByErrorCode(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ErrorCodeCount, bool, error) {
 	const query = `
 SELECT CASE WHEN error_code = '' THEN 'unclassified' ELSE error_code END,
        count(*)::bigint
@@ -665,9 +704,9 @@ GROUP BY 1
 ORDER BY count(*) DESC, 1 ASC
 LIMIT $4`
 
-	rows, err := q.Query(ctx, query, id, params.From, params.To, errorCodeRowsLimit)
+	rows, err := q.Query(ctx, query, id, params.From, params.To, errorCodeRowsLimit+1)
 	if err != nil {
-		return nil, fmt.Errorf("analytics: health by error code: %w", err)
+		return nil, false, fmt.Errorf("analytics: health by error code: %w", err)
 	}
 	defer rows.Close()
 
@@ -675,11 +714,17 @@ LIMIT $4`
 	for rows.Next() {
 		var code analytics.ErrorCodeCount
 		if err := rows.Scan(&code.ErrorCode, &code.Requests); err != nil {
-			return nil, fmt.Errorf("analytics: health by error code scan: %w", err)
+			return nil, false, fmt.Errorf("analytics: health by error code scan: %w", err)
 		}
 		codes = append(codes, code)
 	}
-	return codes, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	if len(codes) > errorCodeRowsLimit {
+		return codes[:errorCodeRowsLimit], true, nil
+	}
+	return codes, false, nil
 }
 
 // healthByModel is reliability and latency per (provider, model, streaming).

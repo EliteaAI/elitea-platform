@@ -15,6 +15,12 @@ type UsageSummary struct {
 	TotalRuns   int64        `json:"total_runs"`
 	ByModel     []ModelUsage `json:"by_model,omitempty"`
 
+	// ModelsTruncated is true when ByModel was cut to the busiest N pairs. The
+	// client normalises its share column by summing that array, so a silent cut
+	// turns every share into a percentage of the subset rather than of the
+	// project — beside a llm_calls figure carrying the real total.
+	ModelsTruncated bool `json:"models_truncated"`
+
 	// ActiveUsers is how many distinct callers made an LLM call in the window.
 	//
 	// CALLERS, not members. It counts every identity the gateway resolved under
@@ -80,6 +86,10 @@ type Health struct {
 	// the offending fragment of the request back, and a request is user-authored
 	// free text.
 	ByErrorCode []ErrorCodeCount `json:"by_error_code"`
+	// ErrorCodesTruncated is true when ByErrorCode was cut. It sits beside an
+	// uncapped Errors total, so a silent cut leaves an operator reconciling the
+	// two with failures that belong to no listed classification.
+	ErrorCodesTruncated bool `json:"error_codes_truncated"`
 
 	// ByModel is per (provider, model, streaming). Empty for a window whose
 	// requests never resolved a model.

@@ -37,6 +37,9 @@ import { API_BASE, DEFAULT_PROJECT_ID } from '../../fixtures/api';
 const USAGE_RE = /\/api\/v2\/elitea_core\/analytics\/prompt_lib\/\d+(\?|$)/;
 const USAGE_GLOB = '**/api/v2/elitea_core/analytics/prompt_lib/*';
 
+/** `GET /elitea_core/analytics_users/prompt_lib/{projectID}` — the Users tab fetch. */
+const USERS_RE = /\/api\/v2\/elitea_core\/analytics_users\/prompt_lib\/\d+(\?|$)/;
+
 /**
  * A verbatim copy of `src/features/analytics/lib/format.ts`'s `fmtNum`.
  * Copied, not imported: `e2e/` is compiled by Playwright without the app's
@@ -471,7 +474,28 @@ test('J24d: the Users tab renders the rows the backend returned, not a stub tabl
   // Agents and Tools still have none, and J24a above pins their refusal. What
   // is left here is the tab that now ANSWERS, and the claim is the same shape
   // as J24's: the count the UI reports is the count the endpoint returned.
-  const path = `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`;
+  // THE ORACLE MUST ASK THE SAME QUESTION THE SCREEN DID. Sent bare, this
+  // request carries no date_from/date_to, so the server falls back to its
+  // 7-day default (defaultDateRangeDays) while the tab it is being compared
+  // against is showing the "Last 24h" preset. Both counts are 0 on a stack with
+  // no gateway traffic, so the mismatch is invisible today and would surface as
+  // a failure that is not a defect the first time the seed plants a request-log
+  // row aged between one and seven days.
+  //
+  // The window comes off the app's OWN request rather than being restated here,
+  // for the same reason: a literal would be a second copy of the preset's
+  // definition, free to drift from it.
+  //
+  // The waiter is armed BEFORE the click, because the Users request only fires
+  // when the tab is opened — awaiting it first would deadlock.
+  const uiRequest = page.waitForRequest((r) => USERS_RE.test(r.url()), { timeout: 20_000 });
+  await page.getByRole('tab', { name: 'Users', exact: true }).click();
+  const uiParams = new URL((await uiRequest).url()).searchParams;
+
+  const path =
+    `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}` +
+    `?date_from=${encodeURIComponent(uiParams.get('date_from') ?? '')}` +
+    `&date_to=${encodeURIComponent(uiParams.get('date_to') ?? '')}`;
   const resp = await page.request.get(path);
   expect(resp.status(), `${path} has a data source and must answer`).toBe(200);
   const { items, truncated } = (await resp.json()) as {
@@ -482,8 +506,6 @@ test('J24d: the Users tab renders the rows the backend returned, not a stub tabl
   // paginates and searches client-side over `items`, so a cut list without this
   // flag would be presented as the whole membership.
   expect(typeof truncated, 'the users list must state whether it was cut').toBe('boolean');
-
-  await page.getByRole('tab', { name: 'Users', exact: true }).click();
 
   // A table, not the error branch.
   await expect(page.getByText('User Activity', { exact: true })).toBeVisible();

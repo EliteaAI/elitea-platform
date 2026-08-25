@@ -24,6 +24,7 @@ const HEALTH: AnalyticsHealthData = {
     { error_code: 'upstream_error', requests: 8 },
     { error_code: 'budget_exceeded', requests: 4 },
   ],
+  error_codes_truncated: false,
   by_model: [
     {
       provider: 'openai',
@@ -68,6 +69,7 @@ describe('AnalyticsHealth', () => {
       errors: 0,
       error_rate: 0,
       by_error_code: [],
+      error_codes_truncated: false,
       by_model: [],
       daily: [],
     };

@@ -179,6 +179,10 @@ func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
 		"top_ai_users":   nonNil(summary.TopUsers),
 		"daily_activity": nonNil(summary.DailyActivity),
 		"models":         nonNil(summary.ByModel),
+		// Stated rather than implied, like the users list's `truncated`. The
+		// client sums `models` to normalise its share column, so a cut it
+		// cannot see turns every share into a percentage of the busiest N.
+		"models_truncated": summary.ModelsTruncated,
 	}
 	// The Health tab renders from this same response — AnalyticsContainer
 	// fetches /analytics for tab 0 and tab 4 alike — so the block travels with

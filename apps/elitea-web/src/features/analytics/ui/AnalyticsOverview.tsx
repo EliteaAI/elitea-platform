@@ -149,7 +149,22 @@ function AnalyticsOverviewImpl({ data, onUserClick, totalCost }: AnalyticsOvervi
   const dailyActivity = data.daily_activity;
   const topAiUsers = data.top_ai_users;
 
-  const totalModelCalls = useMemo(() => data.models.reduce((sum, model) => sum + model.run_count, 0), [data.models]);
+  // The share denominator, and the reason it is not always this sum.
+  //
+  // `models` is CAPPED server-side. Summing a cut array normalises every share
+  // against the busiest N rather than against the project, so the column adds to
+  // 100% over a subset while the LLM CALLS tile beside it reports the real
+  // total — two numbers on one screen that disagree with nothing explaining why.
+  //
+  // When the server says it cut the list, the denominator becomes the KPI's own
+  // request count instead. That figure counts requests this table cannot show —
+  // ones that never resolved a model — so the shares no longer sum to 100%, and
+  // that is the honest shape: the remainder is traffic the table is not
+  // describing.
+  const totalModelCalls = useMemo(() => {
+    if (data.models_truncated) return data.kpis.llm_calls ?? 0;
+    return data.models.reduce((sum, model) => sum + model.run_count, 0);
+  }, [data.models, data.models_truncated, data.kpis.llm_calls]);
 
   return (
     <Box sx={kpiRowWrapSx}>

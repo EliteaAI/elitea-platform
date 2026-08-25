@@ -54,6 +54,11 @@ export const ProjectAnalytics = zod
       .describe("The leaderboard, most calls first, capped at 10 rows."),
     daily_activity: zod.array(AnalyticsDailyPoint),
     models: zod.array(ModelUsage),
+    models_truncated: zod
+      .boolean()
+      .describe(
+        "True when `models` was cut to the busiest N (provider, model) pairs. Stated rather than implied because the client SUMS that array to normalise its share column: a cut it cannot see makes every share a percentage of the subset rather than of the project, adding to 100% over part of the traffic, beside a kpis.llm_calls figure carrying the real total.\n",
+      ),
     health: AnalyticsHealth.optional(),
   })
   .describe(

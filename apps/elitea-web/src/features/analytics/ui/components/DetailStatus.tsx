@@ -56,10 +56,16 @@ const emptyTextSx = (theme: Theme) => ({ color: theme.vars.palette.text.metrics 
  */
 const unavailableSx: SxProps<Theme> = {
   position: 'absolute',
+  // `inset` alone, and no `top`/`left: auto` beside it. Those two used to be
+  // here and were load-bearing only by accident: MUI merges the combineSx array
+  // into one object, `top`/`left` keep centeredSx's key positions, and the box
+  // filled its parent purely because `inset` happened to serialise after them.
+  // Reordering this object — something a formatter or a refactor could do —
+  // would have made `auto` win, shrunk the box back to its content, and
+  // reintroduced the overflow that failed axe's scrollable-region-focusable on
+  // both engines. `inset: 0` overrides all four offsets on its own.
   inset: 0,
   transform: 'none',
-  top: 'auto',
-  left: 'auto',
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',

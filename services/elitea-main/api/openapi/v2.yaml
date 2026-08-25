@@ -2052,7 +2052,7 @@ components:
 
     AnalyticsHealth:
       type: object
-      required: [requests, errors, error_rate, by_error_code, by_model, daily]
+      required: [requests, errors, error_rate, by_error_code, error_codes_truncated, by_model, daily]
       properties:
         requests:
           type: integer
@@ -2075,6 +2075,12 @@ components:
         by_error_code:
           type: array
           items: { $ref: '#/components/schemas/AnalyticsErrorCodeCount' }
+        error_codes_truncated:
+          type: boolean
+          description: >
+            True when `by_error_code` was cut. It sits beside an UNCAPPED
+            `errors` total, so a silent cut leaves an operator reconciling the
+            two with failures belonging to no listed classification.
         by_model:
           type: array
           items: { $ref: '#/components/schemas/AnalyticsModelHealth' }
@@ -2167,7 +2173,7 @@ components:
 
     ProjectAnalytics:
       type: object
-      required: [kpis, top_ai_users, daily_activity, models]
+      required: [kpis, top_ai_users, daily_activity, models, models_truncated]
       properties:
         kpis: { $ref: '#/components/schemas/AnalyticsKpis' }
         top_ai_users:
@@ -2180,6 +2186,15 @@ components:
         models:
           type: array
           items: { $ref: '#/components/schemas/ModelUsage' }
+        models_truncated:
+          type: boolean
+          description: >
+            True when `models` was cut to the busiest N (provider, model) pairs.
+            Stated rather than implied because the client SUMS that array to
+            normalise its share column: a cut it cannot see makes every share a
+            percentage of the subset rather than of the project, adding to 100%
+            over part of the traffic, beside a kpis.llm_calls figure carrying the
+            real total.
         health:
           $ref: '#/components/schemas/AnalyticsHealth'
       description: >
