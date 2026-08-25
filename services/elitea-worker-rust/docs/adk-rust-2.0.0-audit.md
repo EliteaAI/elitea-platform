@@ -97,10 +97,8 @@ executor is sequential despite that field. Do not rely blindly on
 `WorkflowSchema::build_graph`: the schema contains agent declarations, but that
 builder registers action nodes only.
 
-Avoid pausing for confirmation inside a parallel frontier until all sibling
-effects are replay-safe. The executor can drain sibling futures before it sees
-an interrupt yet return before applying their state, making resume re-execution
-possible.
+Do not enable effectful parallel branches until all sibling effects are
+replay-safe. A stopped future does not prove that a remote effect did not occur.
 
 ADK-Rust 2.0.0 does not yet make its deferred fan-in durable. The executor's
 `pending_deferred` tracker and timeout start instants are process memory, while
@@ -128,18 +126,24 @@ separate primitive for fixed subagents and does not implement this graph node.
 Stock action `WaitAll` is not the final projection implementation either: it
 accepts all currently present `branch:*` keys without checking an immutable
 expected set and iterates hash-map state rather than declared branch order. The
-Elitea node validates the exact branch set, bounds concurrency to 32 and branch
-count to 64, drains admitted siblings after a failure, and projects no more than
-1 MiB per branch or 8 MiB joined JSON.
+The proposed V1 validates the exact branch set. It limits active branches to eight
+and the branch count to sixteen.
 
-The V1 contract reserves pausing branch plans as invalid. The branch compiler
-seam validates before execution and its rejection is tested, while the full
-production compiler remains a gate. An inner ADK interrupt can be checkpointed
-before the outer worker durably publishes the corresponding current interrupt,
-so HITL, sensitive-tool confirmation and MCP authorization need an Elitea
-interrupt ledger before they can safely execute in this node. External effect
-idempotency and fencing remain required for the smaller
-effect-to-child-checkpoint crash window.
+It drains admitted siblings after failure. It projects no more than 512 KiB per
+branch or 8 MiB of joined JSON.
+
+The disconnected prototype rejects pausing branches. The proposed V1 redesign
+replaces that restriction for owned Agent branches.
+
+Each child graph saves its standard interrupt checkpoint first. The parent then
+aggregates paused branches through one standard outer graph interrupt.
+
+A crash before the outer checkpoint causes the parent to reopen each child. It
+then recreates the same aggregate pause without a separate interrupt table.
+
+External effect idempotency and fencing remain required for the smaller
+effect-to-child-checkpoint crash window. See
+`parallel-pipeline-node-design.md` for the complete activation contract.
 
 ## PostgreSQL checkpointer implementation
 

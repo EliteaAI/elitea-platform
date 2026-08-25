@@ -154,6 +154,17 @@ platform OAuth/DCR, runtime-discovered post-token model-loop challenges,
 remaining SharePoint content/app-only operations,
 remaining OpenAPI capabilities and production activation.
 
+Explicit pipeline parallel-node design checkpoint: the existing
+`graph/{yaml,parallel}.rs` code remains a disconnected prototype. The proposed
+V1 in `docs/parallel-pipeline-node-design.md` runs two to sixteen owned Agent
+nodes with at most eight active branches. Each branch uses the existing saved
+Application runtime and one claim-fenced child graph checkpoint. Paused branches
+aggregate through the standard outer graph interrupt and require one complete
+decision set. The design adds no interrupt table, does not use
+`PARKED_CHILDREN`, and keeps model-selected Application fan-out separate. UI,
+compiler, PostgreSQL crash, reclaim, tool-call, sensitive-tool, authorization,
+and live chat proofs remain activation gates.
+
 | Source evidence | Observable responsibility | Rust target | Proof | Status |
 | --- | --- | --- | --- | --- |
 | Python worker `config.py::{RuntimeDeployConfig,RuntimeLimits,load_deploy_config,read_regular_file,validate_private_directory}`, `security.py::{RuntimeTrustMaterial,ExactEd25519PublicKeyResolver,_load_redis_password,load_ed25519_keyring}` and `serve.py::{serve_from_config,_serve_deployment_inner}` | Admit one credential-free deployment document, own exact trust and per-generation Redis credentials, construct private-plane clients plus `agentstate`, then compose one application/ad-hoc delivery runtime | `src/{lib,main,config,security,bootstrap}.rs`, `src/transport/redis_connector.rs`, `src/execution/production.rs` | Strict config/origin/URL/related-limit and file/symlink/permission unit corpus; exact/duplicate/malformed keyring, Redis profile/error taxonomy, explicit/missing/malformed policy snapshot, CLI and production-build error corpus; live mTLS/Redis/PostgreSQL/process proof remains | Partial capability-disabled executable composition: TLS 1.3 identity, exact-CA roots, command keys and zeroizing secrets feed concrete control/output/content/runtime-context/model channels, a bounded shared PostgreSQL pool and reconnectable Redis generation which reloads credentials and requires two successful pings. `serve` preserves the shared Python-compatible deployment document and separately requires one bounded regular-file snapshot containing the current runtime `toolkit_security` dictionary; missing or misspelled policy fields fail closed while an explicit empty dictionary is valid. The multi-thread runtime installs SIGINT/SIGTERM ownership before dependency composition, emits data-free lifecycle/error fields, stops intake, and applies one process-wide shutdown timeout across Redis and native-agent drain. Capability registration, container/orchestrator projection of the runtime dictionary, atomic policy refresh and live cross-process proof remain gates |

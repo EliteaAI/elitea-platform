@@ -49,6 +49,8 @@ Detailed ledgers:
 - `agent-runtime.md` maps language-neutral worker delivery and agent execution.
 - `pipeline-nodes.md` maps every current Python pipeline node/edge branch and
   the capability-closed future explicit pipeline `parallel` node core.
+- `../parallel-pipeline-node-design.md` defines the proposed Agent-only V1
+  parallel node, durability, nested interrupts, UI metadata, and test gates.
 - `configuration-toolsets.md` maps saved configuration and toolkit families.
 - `indexing.md` maps indexing behavior and its later Rust capability.
 
@@ -133,9 +135,10 @@ Maintained Rust runtime ownership registry:
   lineage, coordinated with graph checkpoints where applicable;
 - `src/agents/graph/{agent,application,compiler,resume,hitl,llm,direct_tool,printer,router,decision,state_modifier,parallel,yaml}.rs`:
   stored-pipeline event identity, complete-document active-node compilation,
-  latest-event/checkpoint decision binding, bounded YAML contracts and a
-  capability-closed explicit pipeline parallel-node core that is not yet bound
-  by the compiler. Direct Toolkit and remote MCP reads use
+  latest-event/checkpoint decision binding and bounded YAML contracts. The
+  explicit pipeline parallel-node files are a disconnected prototype that the
+  proposed Agent-only V1 must replace before compiler binding. Direct Toolkit
+  and remote MCP reads use
   native `ToolContext`; sensitive reads pause before dispatch, approval returns
   the ordinary result, and denial records the same-call blocked result plus the
   SDK-formatted terminal chat message before `goto END` without nulling typed

@@ -70,7 +70,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 | Node type `custom` | UI editing placeholder rejected at execution with supported-type guidance | `src/agents/graph/compiler.rs` rejection | None | Preserve rejection; it is not an executable Rust node |
 | `transition`, standalone `decision` and router condition selection | Unconditional or runtime successor selection, including `END` | `src/agents/graph/{compiler,router,decision}.rs` | ADK edges and atomic `goto` | State-modifier transitions, HITL action routes, standalone active Router/Decision nodes and `END` are implemented and validated before graph construction. Historical embedded `decision`/`condition` edge blocks remain a deprecated compatibility gate. |
 | `interrupt_before`, `interrupt_after`, printer successor analysis | Pause/resume at the current node or successor without false crash classification | `src/agents/graph/{compiler,agent,printer,resume}.rs`, `src/agents/events.rs` | ADK static interrupts/checkpoints | Compiler-owned Printer `interrupt_after` is implemented with exact private checkpoint identity and ordinary-chat continuation. User-authored arbitrary static interrupts remain explicitly rejected until each public projection and resume contract is defined. |
-| `type: parallel` (absent in Python) | Bounded concurrent branch graphs, wait for all, declared-order result, fail after admitted siblings drain, crash-safe completed-branch reuse | `src/agents/graph/yaml.rs`, `src/agents/graph/parallel.rs`, `src/state/postgres_checkpointer/parallel_children.rs` | Custom ADK `Node`; separately checkpointed child `CompiledGraph` per branch | Core implemented. Full compiler plan construction remains. V1 rejects pausing branches and `wait: one`/`many` |
+| `type: parallel` (absent in Python) | Run frozen Agent nodes concurrently, wait for all, retain declared result order, aggregate nested pauses, and reuse durable child outcomes after process loss | `docs/parallel-pipeline-node-design.md`, then `src/agents/graph/{compiler,parallel}.rs` and `src/state/postgres_checkpointer/parallel_children.rs` | Custom ADK `Node`; one separately checkpointed child `CompiledGraph` per owned Agent branch | Proposed redesign. The disconnected core remains capability-disabled. V1 owns two to sixteen Agent branches, limits concurrency to eight, uses standard checkpoints, and requires one exact complete interrupt decision set. It adds no interrupt table and does not use `PARKED_CHILDREN`. Other branch types and `wait: one`/`many` remain closed. |
 
 ## ADK action reuse boundary
 
@@ -301,10 +301,12 @@ remains an activation gate.
   transition: summarize
 ```
 
-The future UI card can expose exactly these fields. Bounds are 2-64 branches,
-maximum concurrency 1-32 and exactly one output channel. Branch IDs are stable
-and unique. Results are arrays in declared order, each carrying `branch_id`,
-`node` and `result`.
+The future UI card can expose exactly these fields. Proposed V1 bounds are two
+to sixteen branches and at most eight active branches.
+
+V1 declares exactly one output channel. Branch identifiers are stable and
+unique. Results are arrays in declared order with `branch_id`, `node`, and
+`result`.
 
 ADK action `WaitAll` is not invoked directly because it treats every current
 `branch:*` state key as complete and iterates hash-map order. `WaitAny` and
@@ -314,10 +316,16 @@ child identity and deterministic projection.
 
 Each branch is compiled as a small child graph and receives an opaque,
 claim-fenced descendant checkpoint thread bound to its bounded canonical
-projected-input digest. Its terminal checkpoint is saved before the branch
+business-input digest. Resume controls do not change that digest.
+
+Its terminal checkpoint is saved before the branch
 returns. A restart with the same input loads finished branches without running
 their nodes again; changed input creates a new child lineage, and only
 unfinished or failed same-input branches execute. A later loop visit differs by
-the checkpointed parent step. Pausing branches stay compile-rejected until the
-current-interrupt decision and outer publication are covered by one durable
-state machine.
+the checkpointed parent step.
+
+The redesign treats an inner interrupt as a paused branch. The standard outer
+graph interrupt aggregates all paused branches in declared order.
+
+Resume requires one exact complete decision set. Standard child and parent
+checkpoints recreate a lost aggregate pause without a separate interrupt table.
