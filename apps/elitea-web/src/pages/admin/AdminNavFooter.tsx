@@ -20,6 +20,7 @@ import { t } from '@/shared/i18n';
 
 import { focusRing } from './AdminNavChrome';
 import { adminUiUserName } from './adminUiConfig';
+import ThemeModeToggle from '@/shared/ui/ThemeModeToggle';
 
 export interface AdminNavFooterProps {
   readonly collapsed: boolean;
@@ -42,6 +43,17 @@ export function AdminNavFooter({ collapsed }: AdminNavFooterProps): ReactNode {
 
   return (
     <Box sx={{ padding: '0.5rem 0.75rem 1rem' }}>
+      {/*
+        * The theme toggle lives here, not in the header. At ~7rem it took most
+        * of the 13.75rem rail's header row and squeezed "Elitea Admin" down to
+        * "El…". The footer is the rail's other chrome slot and has the width.
+        * Hidden while collapsed, like every other label in this nav.
+        */}
+      {!collapsed && (
+        <Box sx={{ display: 'flex', justifyContent: 'center', paddingBottom: '0.5rem' }}>
+          <ThemeModeToggle />
+        </Box>
+      )}
       <Box
         component="button"
         type="button"

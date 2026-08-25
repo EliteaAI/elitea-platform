@@ -5,7 +5,7 @@
  * Extracted from `UsersPageContent.tsx` to keep that file under 400 lines.
  */
 import Box from '@mui/material/Box';
-import IconButton from '@mui/material/IconButton';
+import Button from '@mui/material/Button';
 import InputAdornment from '@mui/material/InputAdornment';
 import SearchIcon from '@mui/icons-material/Search';
 import TextField from '@mui/material/TextField';
@@ -33,16 +33,10 @@ export function UsersPageHeader({
 }) {
   const theme = useTheme();
   const searchIconSize = 18;
-  const inviteFontSize = '0.875rem';
 
   const searchInputStyles: React.CSSProperties = {
     backgroundColor: theme.vars.palette.background.paper,
     borderRadius: 'var(--el-shape-radiusSm, 4px)',
-  };
-
-  const inviteButtonStyles: React.CSSProperties = {
-    backgroundColor: theme.vars.palette.primary.main,
-    color: theme.vars.palette.primary.contrastText,
   };
 
   return (
@@ -82,19 +76,19 @@ export function UsersPageHeader({
         )}
         {permissions.canCreate && (
           <Box sx={usersPageStyles.actionButton}>
-            <IconButton
-              color="primary"
+            {/*
+              * A Button, not an IconButton. `IconButton` is a fixed-size CIRCLE
+              * sized for a glyph; this control has a WORD in it, so the label
+              * overflowed the circle and rendered as a cyan disc with "nvit"
+              * spilling past the right edge of the viewport.
+              */}
+            <Button
+              variant="contained"
               onClick={() => onSetInviteOpen(true)}
               title={t('shared.ui.settings.users.inviteTooltip', 'Invite users')}
-              sx={inviteButtonStyles}
             >
-              <Typography
-                variant="bodyMedium"
-                sx={{ fontWeight: 600, fontSize: inviteFontSize, lineHeight: 1 }}
-              >
-                {t('shared.ui.settings.users.invite', 'Invite')}
-              </Typography>
-            </IconButton>
+              {t('shared.ui.settings.users.invite', 'Invite')}
+            </Button>
           </Box>
         )}
       </Box>

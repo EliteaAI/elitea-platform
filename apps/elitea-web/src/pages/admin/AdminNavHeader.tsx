@@ -12,7 +12,6 @@ import Typography from '@mui/material/Typography';
 import type { Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
-import ThemeModeToggle from '@/shared/ui/ThemeModeToggle';
 import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
 
 import { focusRing } from './AdminNavChrome';
@@ -33,7 +32,11 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
         borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
         display: 'flex',
         alignItems: 'center',
-        justifyContent: collapsed ? 'center' : 'space-between',
+        // No `space-between` any more: the theme toggle that used to sit on
+        // the right moved to the footer (see `AdminNavFooter`). It is ~7rem
+        // wide in a 13.75rem rail, which left the product name about 2rem and
+        // rendered "Elitea Admin" as "El…".
+        justifyContent: collapsed ? 'center' : 'flex-start',
         gap: '0.5rem',
       })}
     >
@@ -72,8 +75,8 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
         >
           {/*
             * The MARK, not the wordmark. `LogoIcon` is `0 0 99 20`; forcing it
-            * into a 1.75rem square rendered as a clipped "El…" in the admin
-            * header — the same defect the main app's `SidebarHeader` had.
+            * into a 1.75rem square rendered as an illegible smudge here — the
+            * same defect the main app's `SidebarHeader` had.
             */}
           <LogoMarkIcon style={{ width: '1.75rem', height: '1.75rem' }} />
         </Box>
@@ -99,7 +102,6 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
           </Typography>
         )}
       </Box>
-      {!collapsed && <ThemeModeToggle />}
     </Box>
   );
 }
