@@ -1,6 +1,7 @@
 /**
- * The publish surface as ONE component: the two toolbar controls and the dialog
- * behind them, over one state machine.
+ * The publish surface as ONE component: the two toolbar controls, the dialog
+ * behind them, the unpublish confirmation, and the error seam for the actions
+ * that happen with no dialog open.
  *
  * The editor page used to hold all three pieces — the hook, the buttons' props
  * and the modal — and thread them together itself. That put a three-part
@@ -15,6 +16,13 @@
  * documents for `routes/`.
  */
 import type { ReactNode } from 'react';
+import { useState } from 'react';
+
+import Alert from '@mui/material/Alert';
+import Snackbar from '@mui/material/Snackbar';
+
+import { t } from '@/shared/i18n';
+import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 import { publishTargetOf } from '../lib/publishTarget';
 import { useSkillPublishing } from '../model/useSkillPublishing';
@@ -48,6 +56,8 @@ export function SkillPublishControls({
     permissions,
     onPublished,
   );
+  const [confirmingUnpublish, setConfirmingUnpublish] = useState(false);
+
   return (
     <>
       <SkillPublishButtons
@@ -56,9 +66,70 @@ export function SkillPublishControls({
         canUnpublish={state.canUnpublish}
         isUnpublishing={state.isUnpublishing}
         onPublish={state.open}
-        onUnpublish={() => void state.unpublish()}
+        onUnpublish={() => setConfirmingUnpublish(true)}
       />
       <PublishSkillModal state={state} />
+      {/*
+       * Unpublish confirms first, like every other destructive control in this
+       * app. It is not a soft delete: the catalog copy is DELETED, and the twin
+       * skill goes with it when that was its last published version, so a
+       * mis-click on a button sitting next to Export and Delete costs the
+       * catalog entry and its identity. Republishing makes a new one.
+       */}
+      <DeleteEntityModal
+        open={confirmingUnpublish}
+        {...(skill ? { name: skill.name } : {})}
+        confirming={state.isUnpublishing}
+        onClose={() => setConfirmingUnpublish(false)}
+        onConfirm={() => {
+          setConfirmingUnpublish(false);
+          void state.unpublish();
+        }}
+        copy={{
+          title: t('skills.unpublish.title', 'Unpublish skill'),
+          textContent: t('skills.unpublish.text', 'Remove the public catalog copy of '),
+          confirmText: t('skills.unpublish.confirm', 'Unpublish'),
+        }}
+        content={{
+          extra: (
+            <Alert
+              severity="warning"
+              sx={{ mt: 2 }}
+            >
+              {t(
+                'skills.unpublish.warning',
+                'The published copy is deleted, not hidden. Publishing again creates a new catalog entry.',
+              )}
+            </Alert>
+          ),
+        }}
+      />
+      {/*
+       * The error seam for unpublish.
+       *
+       * `state.error` is rendered inside the publish dialog, and unpublish runs
+       * with that dialog CLOSED — so a refusal (403 from the permission gate,
+       * 409 when the catalog copy is already gone) used to be written to state
+       * nothing displayed: the button re-enabled, the version stayed published,
+       * and the user saw exactly what a success looks like. This app has no
+       * global toast host, so it uses the local-Snackbar pattern
+       * `processes/chat/ui/ChatConversationSidebar.tsx` established.
+       */}
+      <Snackbar
+        open={state.error !== undefined && !state.isOpen}
+        autoHideDuration={6000}
+        onClose={state.dismissError}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Alert
+          severity="error"
+          variant="filled"
+          data-testid="skill-unpublish-error"
+          onClose={state.dismissError}
+        >
+          {state.error}
+        </Alert>
+      </Snackbar>
     </>
   );
 }

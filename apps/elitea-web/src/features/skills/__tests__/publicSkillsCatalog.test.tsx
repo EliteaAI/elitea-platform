@@ -11,11 +11,14 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { server } from '@/test/setup';
 
 import { PublicSkillsCatalog, publishedVersionIdOf } from '../ui/PublicSkillsCatalog';
+import { PERMISSIONS } from '@/shared/lib/permissions';
 import { attachRequestOf, reportOutcome } from '../ui/AttachPublicSkillDialog';
 import { renderWithProviders } from './testUtils';
 
 const BASE = '/api/v2';
 const PROJECT = '2';
+/** Attaching forks the skill into the project, so the catalog needs this. */
+const FORK = new Set([PERMISSIONS.applications.fork]);
 
 let catalogRequests: string[] = [];
 let attachBodies: unknown[] = [];
@@ -114,7 +117,7 @@ describe('reportOutcome', () => {
 describe('PublicSkillsCatalog', () => {
   it('lists the catalog and narrows it by the selected category', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<PublicSkillsCatalog projectId={PROJECT} />);
+    renderWithProviders(<PublicSkillsCatalog projectId={PROJECT} permissions={FORK} />);
 
     expect(await screen.findByText('PR Reviewer')).toBeInTheDocument();
 
@@ -128,7 +131,7 @@ describe('PublicSkillsCatalog', () => {
 
   it('attaches a published skill to the chosen agent version', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<PublicSkillsCatalog projectId={PROJECT} />);
+    renderWithProviders(<PublicSkillsCatalog projectId={PROJECT} permissions={FORK} />);
 
     await user.click(await screen.findByText('PR Reviewer'));
     await user.click(await screen.findByLabelText('Agent'));

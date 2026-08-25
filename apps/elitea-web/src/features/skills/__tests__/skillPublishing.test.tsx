@@ -251,6 +251,67 @@ describe('useSkillPublishing', () => {
     expect(result.current.canPublish).toBe(true);
   });
 
+  it('discards a FAIL verdict when the input it judged is edited', async () => {
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/publish_skill_validate/prompt_lib/:projectId/:skillId/:versionId`,
+        () =>
+          HttpResponse.json(
+            {
+              status: 'FAIL',
+              critical_issues: [{ field: 'version', issue: 'version name already exists' }],
+              warnings: [],
+              recommendations: [],
+              summary: 'Not ready.',
+              ai_validation_available: false,
+            },
+            { status: 422 },
+          ),
+      ),
+    );
+    const { result } = renderHookWithProviders(() =>
+      useSkillPublishing(PROJECT, draftTarget, publishPermissions),
+    );
+
+    act(() => result.current.open());
+    act(() => result.current.setVersionName('v1.0-taken'));
+    await act(async () => {
+      await result.current.validate();
+    });
+    expect(result.current.report?.status).toBe('FAIL');
+
+    // Fixing the very thing the gate complained about must put the dialog back
+    // in a state that can re-run it; a stale FAIL keeps Publish disabled with
+    // no Continue button left, which is a dead end.
+    act(() => result.current.setVersionName('v1.0-fresh'));
+    expect(result.current.report).toBeUndefined();
+    expect(result.current.step).toBe('preparation');
+  });
+
+  it('surfaces an unpublish refusal, which happens with no dialog open', async () => {
+    server.use(
+      http.post(`${BASE}/elitea_core/unpublish_skill/prompt_lib/:projectId/:skillId/:versionId`, () =>
+        HttpResponse.json({ error: 'not_published', msg: 'This skill version is not published.' }, { status: 409 }),
+      ),
+    );
+    const { result } = renderHookWithProviders(() =>
+      useSkillPublishing(
+        PROJECT,
+        { ...draftTarget, versionStatus: 'published' },
+        publishPermissions,
+      ),
+    );
+
+    await act(async () => {
+      await result.current.unpublish();
+    });
+
+    expect(result.current.isOpen).toBe(false);
+    expect(result.current.error).toBe('This skill version is not published.');
+    act(() => result.current.dismissError());
+    expect(result.current.error).toBeUndefined();
+  });
+
   it('unpublishes the version in view', async () => {
     const { result } = renderHookWithProviders(() =>
       useSkillPublishing(

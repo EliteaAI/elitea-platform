@@ -31,6 +31,7 @@ import LinearProgress from '@mui/material/LinearProgress';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
+import { PERMISSIONS } from '@/shared/lib/permissions';
 import { CategoryFilter } from '@/shared/ui/CategoryFilter';
 
 import { AttachPublicSkillDialog } from './AttachPublicSkillDialog';
@@ -52,9 +53,11 @@ export function publishedVersionIdOf(skill: PublicSkillSummary | undefined): num
 
 function SkillCard({
   skill,
+  canAttach,
   onUse,
 }: {
   readonly skill: PublicSkillSummary;
+  readonly canAttach: boolean;
   readonly onUse: () => void;
 }): ReactNode {
   return (
@@ -63,6 +66,7 @@ function SkillCard({
       sx={{ width: 300 }}
     >
       <CardActionArea
+        disabled={!canAttach}
         onClick={onUse}
         sx={{ p: 2, alignItems: 'flex-start', textAlign: 'left' }}
       >
@@ -88,7 +92,68 @@ function SkillCard({
   );
 }
 
-export function PublicSkillsCatalog({ projectId }: { readonly projectId: string | undefined }): ReactNode {
+/**
+ * The catalog's four non-card states, split out to keep the page component
+ * inside the §3.5 complexity budget.
+ */
+function CatalogStatus({
+  isPending,
+  isError,
+  isEmpty,
+  canAttach,
+}: {
+  readonly isPending: boolean;
+  readonly isError: boolean;
+  readonly isEmpty: boolean;
+  readonly canAttach: boolean;
+}): ReactNode {
+  if (isPending) return <LinearProgress />;
+  if (isError) {
+    return (
+      <Alert severity="warning">
+        {t('skills.public.error', 'Failed to load the public skill catalog.')}
+      </Alert>
+    );
+  }
+  if (isEmpty) {
+    return (
+      <Typography
+        variant="bodyMedium"
+        color="text.secondary"
+      >
+        {t('skills.public.empty', 'No skills have been published to the catalog yet.')}
+      </Typography>
+    );
+  }
+  if (!canAttach) {
+    return (
+      <Alert severity="info">
+        {t(
+          'skills.public.noFork',
+          'You can browse the catalog, but adding a skill to an agent needs the fork permission in this project.',
+        )}
+      </Alert>
+    );
+  }
+  return null;
+}
+
+export interface PublicSkillsCatalogProps {
+  readonly projectId: string | undefined;
+  /**
+   * The caller's permissions, for the one ACTION this surface offers.
+   *
+   * Attaching forks the published skill into the project, so the route sits
+   * behind `models.applications.fork.post` (`internal/api/router.go`). Without
+   * it the catalog still reads — browsing is not gated — but the cards stop
+   * offering an attach that can only end in a 403 after the user has picked an
+   * agent and a version. Passed in rather than read here for the layering
+   * reason `SkillPublishControls` documents.
+   */
+  readonly permissions: ReadonlySet<string>;
+}
+
+export function PublicSkillsCatalog({ projectId, permissions }: PublicSkillsCatalogProps): ReactNode {
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<string>();
   const [selected, setSelected] = useState<PublicSkillSummary>();
@@ -104,6 +169,7 @@ export function PublicSkillsCatalog({ projectId }: { readonly projectId: string 
     [categories.data],
   );
   const rows = catalog.data?.rows ?? [];
+  const canAttach = permissions.has(PERMISSIONS.applications.fork);
 
   return (
     <Box data-testid="public-skills-catalog">
@@ -118,25 +184,18 @@ export function PublicSkillsCatalog({ projectId }: { readonly projectId: string 
         // only way back to "everything" without a second control.
         onSelectCategory={(name) => setCategory((current) => (current === name ? undefined : name))}
       >
-        {catalog.isPending && <LinearProgress />}
-        {catalog.isError && (
-          <Alert severity="warning">
-            {t('skills.public.error', 'Failed to load the public skill catalog.')}
-          </Alert>
-        )}
-        {!catalog.isPending && !catalog.isError && rows.length === 0 && (
-          <Typography
-            variant="bodyMedium"
-            color="text.secondary"
-          >
-            {t('skills.public.empty', 'No skills have been published to the catalog yet.')}
-          </Typography>
-        )}
+        <CatalogStatus
+          isPending={catalog.isPending}
+          isError={catalog.isError}
+          isEmpty={rows.length === 0}
+          canAttach={canAttach}
+        />
         <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 2, mt: 1 }}>
           {rows.map((skill) => (
             <SkillCard
               key={skill.id}
               skill={skill}
+              canAttach={canAttach}
               onUse={() => setSelected(skill)}
             />
           ))}

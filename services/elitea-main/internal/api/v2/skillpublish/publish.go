@@ -113,7 +113,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		} else {
-			result := h.validate(ctx, schema, row, body.VersionName, body.Category)
+			result := h.validate(ctx, schema, row, body.VersionName, body.Category, activeCategories)
 			if result.Status == "FAIL" {
 				writeJSON(w, http.StatusBadRequest, map[string]any{
 					"error":             "validation_token_invalid",

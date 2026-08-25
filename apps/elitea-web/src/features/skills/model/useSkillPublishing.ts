@@ -44,7 +44,7 @@ import type { SkillCategory, SkillValidationReport } from './publishTypes';
 import { skillQueryKeys } from './useSkills';
 
 /** Where the publish dialog is in its three steps. */
-export type PublishStep = 'preparation' | 'validation' | 'publishing';
+type PublishStep = 'preparation' | 'validation' | 'publishing';
 
 const skillPublishQueryKeys = {
   categories: (projectId: string) => ['skills', projectId, 'categories'] as const,
@@ -66,7 +66,7 @@ export function useSkillCategories(projectId: string | undefined) {
  * the moment an operator first switches it on and has not yet added an
  * exemption, which is the one moment they are watching it.
  */
-export function useSkillPublishPolicy(projectId: string | undefined): {
+function useSkillPublishPolicy(projectId: string | undefined): {
   readonly blocked: boolean;
   readonly isAdminPublish: boolean;
 } {
@@ -132,6 +132,8 @@ export interface SkillPublishingState {
   readonly close: () => void;
   readonly setVersionName: (value: string) => void;
   readonly setCategory: (value: string) => void;
+  /** Clears a refusal that was surfaced outside the dialog (unpublish). */
+  readonly dismissError: () => void;
   readonly validate: () => Promise<void>;
   readonly publish: () => Promise<void>;
   readonly unpublish: () => Promise<void>;
@@ -151,8 +153,8 @@ export function useSkillPublishing(
 
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState<PublishStep>('preparation');
-  const [versionName, setVersionName] = useState('');
-  const [category, setCategory] = useState('');
+  const [versionName, setVersionNameState] = useState('');
+  const [category, setCategoryState] = useState('');
   const [report, setReport] = useState<SkillValidationReport>();
   const [token, setToken] = useState<string>();
   const [error, setError] = useState<string>();
@@ -207,10 +209,49 @@ export function useSkillPublishing(
       : undefined;
   }, [versionName, target.versionNames]);
 
+  /**
+   * Editing either input DISCARDS the gate's verdict.
+   *
+   * Without this a FAIL is a dead end: the dialog swaps Continue for a Publish
+   * button that `report.status === 'FAIL'` keeps disabled forever, so a user who
+   * fixes the very thing the gate complained about — a colliding version name —
+   * has no control left that re-runs it, and has to cancel and start over. The
+   * verdict is about THIS name and THIS category, so it stops being an answer
+   * the moment either changes.
+   *
+   * The token goes with it. It is the server's receipt for content it approved,
+   * and publishing on a receipt that no longer describes the request is exactly
+   * what the server re-validates against.
+   */
+  const discardVerdict = useCallback((): void => {
+    setReport(undefined);
+    setToken(undefined);
+    setError(undefined);
+    setStep('preparation');
+  }, []);
+
+  const setVersionName = useCallback(
+    (value: string): void => {
+      setVersionNameState(value);
+      discardVerdict();
+    },
+    [discardVerdict],
+  );
+
+  const setCategory = useCallback(
+    (value: string): void => {
+      setCategoryState(value);
+      discardVerdict();
+    },
+    [discardVerdict],
+  );
+
+  const dismissError = useCallback((): void => setError(undefined), []);
+
   const reset = useCallback((): void => {
     setStep('preparation');
-    setVersionName('');
-    setCategory('');
+    setVersionNameState('');
+    setCategoryState('');
     setReport(undefined);
     setToken(undefined);
     setError(undefined);
@@ -284,6 +325,7 @@ export function useSkillPublishing(
     close,
     setVersionName,
     setCategory,
+    dismissError,
     validate,
     publish,
     unpublish,

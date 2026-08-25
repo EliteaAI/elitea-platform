@@ -15,7 +15,7 @@
  * attach that attached nothing.
  */
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
@@ -188,6 +188,19 @@ export function AttachPublicSkillDialog({
   const [agentId, setAgentId] = useState('');
   const [agentVersionId, setAgentVersionId] = useState('');
   const [message, setMessage] = useState<string>();
+
+  /**
+   * The catalog keeps ONE of these mounted and toggles `open`, so without this
+   * every field survives a close: the next skill opened would show the previous
+   * one's error message, with the previous agent and version still selected and
+   * Attach already enabled — one click from attaching this skill to a version
+   * nobody chose for it.
+   */
+  useEffect(() => {
+    setAgentId('');
+    setAgentVersionId('');
+    setMessage(undefined);
+  }, [open, skill?.id]);
 
   const attach = useAttachPublicSkill(projectId);
   const targets = useAttachTargets(projectId, open, agentId);

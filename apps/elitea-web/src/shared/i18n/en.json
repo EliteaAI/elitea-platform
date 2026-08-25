@@ -2644,5 +2644,10 @@
   "skills.publish.warnings": "Warnings",
   "skills.toolbar.publish": "Publish",
   "skills.toolbar.publishBlocked": "Skill publishing is blocked on this deployment for this project. An administrator can change that on Features, under Skill Publishing.",
-  "skills.toolbar.unpublish": "Unpublish"
+  "skills.toolbar.unpublish": "Unpublish",
+  "skills.public.noFork": "You can browse the catalog, but adding a skill to an agent needs the fork permission in this project.",
+  "skills.unpublish.confirm": "Unpublish",
+  "skills.unpublish.text": "Remove the public catalog copy of ",
+  "skills.unpublish.title": "Unpublish skill",
+  "skills.unpublish.warning": "The published copy is deleted, not hidden. Publishing again creates a new catalog entry."
 }

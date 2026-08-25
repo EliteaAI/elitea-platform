@@ -133,7 +133,11 @@ function PublishActions({ state }: { readonly state: SkillPublishingState }): Re
       ) : (
         <BaseBtn
           variant="contained"
-          disabled={failed || state.isPublishing}
+          // `nameReady` too, not just the verdict: the field stays editable
+          // after validation, so a name the client has ALREADY judged invalid
+          // (or colliding) would otherwise be posted and refused by the server
+          // with a 400 this side had already computed.
+          disabled={failed || !nameReady || state.isPublishing}
           onClick={() => void state.publish()}
         >
           {t('skills.publish.confirm', 'Publish')}

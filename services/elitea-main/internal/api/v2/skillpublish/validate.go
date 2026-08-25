@@ -222,8 +222,13 @@ func (h *Handler) versionNameTaken(ctx context.Context, schema string, skillID i
 }
 
 // validate runs the gate and mints a token when it passes.
-func (h *Handler) validate(ctx context.Context, schema string, row skillVersionRow, versionName, category string) validationResult {
-	result := runDeterministicChecks(row, versionName, category, h.activeCategories(ctx),
+// It takes the active category list rather than reading it, so one request
+// cannot judge the same `category` against two separately-loaded lists: the
+// publish path already resolved it before deciding the category was valid, and
+// an administrator saving Skill Categories between the two reads would
+// otherwise make the gate refuse a category the same request had just accepted.
+func (h *Handler) validate(ctx context.Context, schema string, row skillVersionRow, versionName, category string, activeCategories []string) validationResult {
+	result := runDeterministicChecks(row, versionName, category, activeCategories,
 		h.versionNameTaken(ctx, schema, row.SkillID, versionName))
 	if result.Status != "FAIL" {
 		result.ValidationToken = h.issueValidationToken(
@@ -272,7 +277,7 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.validate(ctx, schema, row, body.VersionName, body.Category)
+	result := h.validate(ctx, schema, row, body.VersionName, body.Category, h.activeCategories(ctx))
 	status := http.StatusOK
 	if result.Status == "FAIL" {
 		status = http.StatusUnprocessableEntity

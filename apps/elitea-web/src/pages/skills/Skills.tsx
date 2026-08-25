@@ -25,7 +25,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { EntityListRail, RAIL_CONTENT_WIDTH, useEntityRailVisible, useRailTagSelection } from '@/shared/ui/EntityRail';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
-import { useSidebarCollapsedStore } from '@/widgets/sidebar';
+import { usePermissionSet, useSidebarCollapsedStore } from '@/widgets/sidebar';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 
@@ -90,6 +90,7 @@ export function Skills(): ReactNode {
   const navRailCollapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const railVisible = useEntityRailVisible(navRailCollapsed);
   const { selectedTags } = useRailTagSelection();
+  const permissions = usePermissionSet(projectId);
   const visibleSkills = useMemo(() => filterSkillsByTags(skills.data?.items ?? [], selectedTags), [skills.data, selectedTags]);
 
   const handleExport = async (skill: SkillRecord): Promise<void> => {
@@ -146,7 +147,12 @@ export function Skills(): ReactNode {
             label={t('skills.page.tabPublic', 'Public')}
           />
         </Tabs>
-        {activeTab === 'public' && <PublicSkillsCatalog projectId={projectId} />}
+        {activeTab === 'public' && (
+          <PublicSkillsCatalog
+            projectId={projectId}
+            permissions={permissions}
+          />
+        )}
         {activeTab === 'all' && !railVisible && searchBar}
         {actionError && <Typography role="alert">{actionError}</Typography>}
         {activeTab === 'all' && (
