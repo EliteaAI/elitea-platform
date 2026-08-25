@@ -584,6 +584,7 @@ impl PipelineToolDecision {
         })
     }
 
+    #[allow(clippy::too_many_lines)] // One linear validation chain binds one persisted interrupt.
     async fn resolve(
         self,
         session: &dyn Session,

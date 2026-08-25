@@ -213,10 +213,10 @@ pub(crate) fn clarifying_question_agent(
     agent: Arc<dyn Agent>,
     internal_tools: InternalToolCatalog,
 ) -> Arc<dyn Agent> {
-    if !internal_tools.ask_user_enabled() {
-        agent
-    } else {
+    if internal_tools.ask_user_enabled() {
         Arc::new(ClarifyingQuestionEventAgent { inner: agent })
+    } else {
+        agent
     }
 }
 

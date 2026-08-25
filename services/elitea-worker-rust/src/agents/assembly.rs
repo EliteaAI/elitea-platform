@@ -363,9 +363,10 @@ fn validate_common_profile(
         mode,
         CommonProfileMode::DirectGuardrailContinuation | CommonProfileMode::McpAuthorization
     );
-    if (!allows_mcp_authority && !payload.mcp_tokens.is_empty())
-        || (!allows_mcp_authority && !payload.ignored_mcp_servers.is_empty())
-        || (!allows_mcp_authority && !payload.user_declined_mcp_servers.is_empty())
+    if (!allows_mcp_authority
+        && (!payload.mcp_tokens.is_empty()
+            || !payload.ignored_mcp_servers.is_empty()
+            || !payload.user_declined_mcp_servers.is_empty()))
         || payload.checkpoint_id.is_some()
         || payload.is_regenerate
         || payload.supports_vision

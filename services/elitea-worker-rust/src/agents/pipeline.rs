@@ -166,6 +166,7 @@ impl PipelineExecutionProfile {
 
     /// Bind node selections to the exact frozen toolkit aliases before any
     /// credential or client is constructed.
+    #[allow(clippy::too_many_lines)] // Security admission stays visibly ordered before redemption.
     pub(crate) fn validate_tool_snapshot(
         &mut self,
         snapshot: &FrozenToolSnapshot<'_>,
@@ -369,6 +370,7 @@ impl PipelineNativeAgentAssembler {
         self
     }
 
+    #[allow(clippy::too_many_lines)] // Keep node authority handoff in one auditable sequence.
     async fn bind_node_runtimes(
         &self,
         profile: &PipelineExecutionProfile,

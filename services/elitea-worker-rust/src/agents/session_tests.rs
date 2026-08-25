@@ -648,6 +648,7 @@ async fn sensitive_direct_tool_pauses_before_execution_and_projects_masked_call_
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Keep the end-to-end correlated tool-result proof together.
 async fn ask_user_pauses_and_resumes_as_the_original_correlated_tool_result() {
     let mut request = ordinary_request(AgentExecutionKind::Adhoc);
     request.payload.internal_tools = vec![ASK_USER_TOOL_NAME.to_owned()];

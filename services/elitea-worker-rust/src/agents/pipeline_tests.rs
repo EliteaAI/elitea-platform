@@ -2578,6 +2578,7 @@ async fn llm_node_block_actions_replay_same_call_as_structured_tool_result() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // Full pause-to-same-call replay is one behavioral proof.
 async fn llm_node_ask_user_resumes_the_checkpointed_call_with_the_answer_result() {
     let sessions: Arc<dyn SessionService> = Arc::new(InMemorySessionService::new());
     let checkpointer = Arc::new(MemoryCheckpointer::new());
