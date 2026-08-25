@@ -302,3 +302,134 @@ def test_the_shared_tier_refuses_a_malformed_entry_id(entry_id: str) -> None:
             await store.add(entry_id, reason_code="X")
 
     asyncio.run(run())
+
+
+# ── backfill: adoption must also become durable ─────────────────────────────
+
+
+def test_adopting_from_shared_writes_the_entries_into_the_local_record(
+    tmp_path,
+) -> None:
+    """The gap this closes: adoption alone lived only in the process.
+
+    The assertion that matters is the LAST one — after the backfill, a shared
+    tier that has gone away no longer costs the decision. Asserting only that
+    the file grew would pass even if the rows were unreadable.
+    """
+
+    async def run() -> None:
+        client = FakeRedisQuarantineClient()
+        await _shared(client).add("group-1", reason_code="AUTHORIZATION_FAILED")
+        path = tmp_path / "quarantine.v1"
+
+        composite = CompositeQuarantineStore(
+            shared=_shared(client), local=FileQuarantineStore(path)
+        )
+        assert await composite.load() == frozenset({"group-1"})
+        assert composite.backfilled == 1
+        assert composite.backfill_refused == 0
+
+        # The row is marked as adopted, not as a refusal this replica made.
+        assert path.read_text(encoding="utf-8").strip() == "group-1\tADOPTED_FROM_SHARED"
+
+        # THE POINT: Redis is gone now, and the decision still holds.
+        offline = CompositeQuarantineStore(
+            shared=_shared(FakeRedisQuarantineClient(fail=True)),
+            local=FileQuarantineStore(path),
+        )
+        assert await offline.load() == frozenset({"group-1"})
+        assert offline.shared_failed is True
+
+    asyncio.run(run())
+
+
+def test_backfill_does_not_duplicate_rows_across_repeated_loads(tmp_path) -> None:
+    """A worker restarts often; the file must not grow by the whole shared set
+    every time."""
+
+    async def run() -> None:
+        client = FakeRedisQuarantineClient()
+        await _shared(client).add("group-1", reason_code="X")
+        path = tmp_path / "quarantine.v1"
+
+        first = CompositeQuarantineStore(
+            shared=_shared(client), local=FileQuarantineStore(path)
+        )
+        await first.load()
+        second = CompositeQuarantineStore(
+            shared=_shared(client), local=FileQuarantineStore(path)
+        )
+        await second.load()
+
+        assert second.backfilled == 0, "the second load re-copied an existing row"
+        assert len(path.read_text(encoding="utf-8").splitlines()) == 1
+
+    asyncio.run(run())
+
+
+def test_a_locally_refused_row_keeps_its_own_reason(tmp_path) -> None:
+    """Backfill must not overwrite the reason on an entry this replica refused."""
+
+    async def run() -> None:
+        client = FakeRedisQuarantineClient()
+        path = tmp_path / "quarantine.v1"
+        local = FileQuarantineStore(path)
+        await local.add("mine", reason_code="AUTHORIZATION_FAILED")
+        await _shared(client).add("mine", reason_code="AUTHORIZATION_FAILED")
+
+        composite = CompositeQuarantineStore(
+            shared=_shared(client), local=FileQuarantineStore(path)
+        )
+        await composite.load()
+
+        assert composite.backfilled == 0
+        assert path.read_text(encoding="utf-8").strip() == "mine\tAUTHORIZATION_FAILED"
+
+    asyncio.run(run())
+
+
+def test_backfill_is_skipped_when_the_local_record_could_not_be_read(
+    tmp_path,
+) -> None:
+    """Appending against an unknown file duplicates rows, so it does not."""
+
+    async def run() -> None:
+        class UnreadableLocal(FileQuarantineStore):
+            async def load(self) -> frozenset[str]:
+                raise RuntimeError("disk is gone")
+
+        client = FakeRedisQuarantineClient()
+        await _shared(client).add("group-1", reason_code="X")
+        path = tmp_path / "quarantine.v1"
+
+        composite = CompositeQuarantineStore(
+            shared=_shared(client), local=UnreadableLocal(path)
+        )
+        assert await composite.load() == frozenset({"group-1"})
+        assert composite.local_failed is True
+        assert composite.backfilled == 0
+        assert not path.exists()
+
+    asyncio.run(run())
+
+
+def test_a_full_local_record_reports_an_incomplete_backfill(tmp_path) -> None:
+    """Past the local cap the group's decision is honoured now and lost at the
+    next restart — which has to be said, not silently accepted."""
+
+    async def run() -> None:
+        client = FakeRedisQuarantineClient()
+        for index in range(4):
+            await _shared(client).add(f"group-{index}", reason_code="X")
+
+        composite = CompositeQuarantineStore(
+            shared=_shared(client),
+            local=FileQuarantineStore(tmp_path / "quarantine.v1", cap=2),
+        )
+        adopted = await composite.load()
+
+        assert len(adopted) == 4, "every shared entry is still honoured in memory"
+        assert composite.backfilled == 2
+        assert composite.backfill_refused == 2
+
+    asyncio.run(run())

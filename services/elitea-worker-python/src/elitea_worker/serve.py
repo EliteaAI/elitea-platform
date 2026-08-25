@@ -44,7 +44,12 @@ from elitea_worker.execution.delivery import (
     IndexClientContextFactory,
     IndexIngestDeliveryProcessor,
 )
-from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput, WorkerError
+from elitea_worker.execution.errors import (
+    DependencyUnavailable,
+    InvalidInput,
+    ResourceExhausted,
+    WorkerError,
+)
 from elitea_worker.execution.quarantine import (
     CompositeQuarantineStore,
     FileQuarantineStore,
@@ -438,6 +443,21 @@ class WorkerServeLoop:
                 DependencyUnavailable(
                     "The local quarantine record is unreadable; the decision "
                     "may not survive a restart."
+                ),
+            )
+        # Reported rather than done quietly: this worker has just written rows
+        # for refusals it never made, which is a change an operator reading the
+        # file should be able to correlate with something.
+        if getattr(self._quarantine_store, "backfilled", 0):
+            self._event_sink("quarantine_backfilled", None)
+        # The local cap refused to copy part of the group's decision, so those
+        # entries are honoured now and forgotten at the next restart.
+        if getattr(self._quarantine_store, "backfill_refused", 0):
+            self._event_sink(
+                "quarantine_backfill_incomplete",
+                ResourceExhausted(
+                    "The local quarantine record is full; part of the shared "
+                    "decision will not survive a restart."
                 ),
             )
 

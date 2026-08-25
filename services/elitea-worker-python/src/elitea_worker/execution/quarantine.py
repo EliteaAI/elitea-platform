@@ -36,6 +36,9 @@ from elitea_worker.execution.errors import (
 _MAX_ENTRY_ID_BYTES = 128
 _MAX_RECORDED_ENTRIES = 4096
 _FIELD_SEPARATOR = "\t"
+#: Written instead of a refusal code for a row this replica adopted from
+#: the shared record rather than refused itself.
+_ADOPTED_REASON = "ADOPTED_FROM_SHARED"
 
 
 class FileQuarantineStore:
@@ -160,6 +163,10 @@ class CompositeQuarantineStore:
         self._local = local
         self.shared_failed = False
         self.local_failed = False
+        #: Set by `load`: rows copied from the shared tier into the local one,
+        #: and rows the local cap refused to copy.
+        self.backfilled = 0
+        self.backfill_refused = 0
 
     @property
     def cap(self) -> int:
@@ -179,24 +186,70 @@ class CompositeQuarantineStore:
         )
 
     async def load(self) -> frozenset[str]:
-        recorded: set[str] = set()
+        shared_entries: set[str] = set()
+        local_entries: set[str] = set()
         self.shared_failed = False
         self.local_failed = False
+        self.backfilled = 0
+        self.backfill_refused = 0
         try:
-            recorded.update(await self._shared.load())  # type: ignore[attr-defined]
+            shared_entries.update(await self._shared.load())  # type: ignore[attr-defined]
         except asyncio.CancelledError:
             raise
         except Exception:
             self.shared_failed = True
         try:
-            recorded.update(await self._local.load())
+            local_entries.update(await self._local.load())
         except asyncio.CancelledError:
             raise
         except Exception:
             self.local_failed = True
         if self.shared_failed and self.local_failed:
             raise DependencyUnavailable("No quarantine record could be read.")
-        return frozenset(recorded)
+        await self._backfill_local(shared_entries - local_entries)
+        return frozenset(shared_entries | local_entries)
+
+    async def _backfill_local(self, shared_only: frozenset[str] | set[str]) -> None:
+        """Copy the group's decisions into this replica's own record.
+
+        WHY. Adoption alone is not durable: an entry learned from the shared tier
+        lived only in this process, so the next Redis outage took it back and the
+        replica re-ran a command the GROUP had already given up on. Writing it
+        locally makes the two guarantees independent — shared gives reach, local
+        gives survival — which is the whole reason there are two tiers.
+
+        WHAT IT MEANS FOR THE FILE. The local record stops being "refusals this
+        replica made" and becomes "decisions this replica honours". That is a
+        real change in meaning, so the rows say so: they are written with
+        `ADOPTED_FROM_SHARED` rather than a refusal code this replica never
+        produced. The reason column exists to be read by a person, and inventing
+        an AUTHORIZATION_FAILED here would tell them this worker hit a fence it
+        never saw. The original reason is not available to copy — the ACL grants
+        `hkeys`, not `hgetall`, so `load` returns ids only.
+
+        SKIPPED when the local read failed: `_recorded` would then be empty or
+        stale, and appending against it duplicates rows for entries already in
+        the file. Skipped silently when there is nothing to copy.
+        """
+        if self.local_failed or not shared_only:
+            return
+        for entry_id in sorted(shared_only):
+            try:
+                stored = await self._local.add(
+                    entry_id,
+                    reason_code=_ADOPTED_REASON,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # One failed row must not abandon the rest, and must not fail the
+                # load: the entry is still quarantined in memory for this process.
+                self.local_failed = True
+                return
+            if stored:
+                self.backfilled += 1
+            else:
+                self.backfill_refused += 1
 
     async def add(self, entry_id: str, *, reason_code: str) -> bool:
         shared_stored = False
