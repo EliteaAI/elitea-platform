@@ -10,6 +10,7 @@ use super::request::{
 use crate::protocol::{
     ProtocolError as AgentProtocolError, elitea::runtime::v1::AgentExecutionInputV1,
 };
+use crate::toolkits::{ToolAdmissionPolicy, ToolAdmissionPolicyErrorCode};
 
 pub const AGENT_INPUT_SCHEMA_REVISION: &str = "elitea.runtime.agent-execution-input.v1";
 const MAX_AGENT_INPUT_BYTES: usize = 1024 * 1024;
@@ -135,6 +136,7 @@ pub fn request_from(
         "the agent parallel terminal errors must be a list",
     )?;
     let next_input_suggestion = next_input_suggestion_policy(&message.next_input_suggestion)?;
+    let toolkit_guardrails = toolkit_guardrails_policy(&message.toolkit_guardrails)?;
 
     let steps_limit = match message.steps_limit {
         Some(value) if value > 0 => Some(value.cast_unsigned()),
@@ -204,6 +206,7 @@ pub fn request_from(
             exception_handling_enabled: message.exception_handling_enabled,
             debug_mode: message.debug_mode,
             next_input_suggestion,
+            toolkit_guardrails,
         },
     })
 }
@@ -364,6 +367,31 @@ fn bounded_integer(
 
 const fn next_input_suggestion_error() -> AgentProtocolError {
     AgentProtocolError::InvalidInput("the agent next input suggestion policy is invalid")
+}
+
+fn toolkit_guardrails_policy(raw: &[u8]) -> Result<Option<Map<String, Value>>, AgentProtocolError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let value = parse_json_value(raw)?;
+    let Value::Object(policy) = value else {
+        if value.is_null() {
+            return Ok(None);
+        }
+        return Err(toolkit_guardrails_error());
+    };
+    let runtime = Map::from_iter([("toolkit_security".to_owned(), Value::Object(policy.clone()))]);
+    ToolAdmissionPolicy::from_runtime_config(&runtime).map_err(|error| match error.code() {
+        ToolAdmissionPolicyErrorCode::InvalidConfiguration => toolkit_guardrails_error(),
+        ToolAdmissionPolicyErrorCode::ResourceExhausted => AgentProtocolError::ResourceExhausted(
+            "the agent toolkit guardrails exceed the approved limit",
+        ),
+    })?;
+    Ok(Some(policy))
+}
+
+const fn toolkit_guardrails_error() -> AgentProtocolError {
+    AgentProtocolError::InvalidInput("the agent toolkit guardrails are invalid")
 }
 
 /// A second, allocation-bounded structural pass catches duplicate object

@@ -20,7 +20,9 @@ use super::runtime::{
     NativeAgentAssembler, NativeAgentAssemblyError, NativeAgentAssemblyErrorCode,
     RedeemedOrdinaryNativeAssembly,
 };
-use super::sensitive_tools::{SensitiveToolCatalog, sensitive_tools_for_kind};
+use super::sensitive_tools::{
+    SensitiveToolCatalog, policy_for_guardrails, sensitive_tools_for_kind,
+};
 use super::session::{
     ApplicationRuntimeProjection, NativeSessionBackend, NativeToolExecutionMode,
     OrdinaryAgentCompletion, OrdinaryRuntimeBindings,
@@ -104,6 +106,7 @@ impl OrdinaryNativeAgentAssembler {
     async fn assemble_redeemed(
         &self,
         redeemed: RedeemedOrdinaryNativeAssembly<'_>,
+        tool_policy: Arc<ToolAdmissionPolicy>,
     ) -> Result<
         AssembledNativeAgentInvocation<OrdinaryAgentCompletion<BoundModelFacade>>,
         NativeAgentAssemblyError,
@@ -128,6 +131,7 @@ impl OrdinaryNativeAgentAssembler {
                 &runtime_context,
                 context.clone(),
                 &profile,
+                &tool_policy,
             )
             .await?;
         let model = self.bind_model(&profile, context.as_ref())?;
@@ -183,6 +187,7 @@ impl OrdinaryNativeAgentAssembler {
         runtime_context: &ClaimBoundRuntimeContextAuthority,
         context: Arc<ClaimScopedEliteaContext>,
         profile: &OrdinaryNoToolProfile,
+        tool_policy: &Arc<ToolAdmissionPolicy>,
     ) -> Result<(OrdinaryRuntimeBindings, NativeToolExecutionMode), NativeAgentAssemblyError> {
         let tool_reference_count = tool_snapshot.iter().count();
         let nested_application_count = tool_snapshot
@@ -196,7 +201,7 @@ impl OrdinaryNativeAgentAssembler {
         let (mut toolsets, sensitive_tools, delegated_authorization) = materialize_direct_toolsets(
             tool_snapshot,
             self.mcp_connector.as_ref(),
-            &self.tool_policy,
+            tool_policy,
             mcp_tokens,
         )
         .await?;
@@ -211,7 +216,7 @@ impl OrdinaryNativeAgentAssembler {
             profile,
             ApplicationToolDependencies::new(
                 self.model_facade.clone(),
-                self.tool_policy.clone(),
+                Arc::clone(tool_policy),
                 self.mcp_connector.clone(),
                 mcp_tokens,
             ),
@@ -289,7 +294,11 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
             // Admission also constructs the command-bound projection/session
             // plan, so deterministic local failures happen before PAT issuance.
             tracing::Span::current().record("stage", "admission");
-            let admitted = assembly.admit_llm_agent(self.tool_policy.as_ref())?;
+            let tool_policy = policy_for_guardrails(
+                assembly.request().payload.toolkit_guardrails.as_ref(),
+                &self.tool_policy,
+            )?;
+            let admitted = assembly.admit_llm_agent(tool_policy.as_ref())?;
             if admitted.is_resume() && !self.sessions.supports_resume() {
                 return Err(unsupported_session_resume());
             }
@@ -298,7 +307,7 @@ impl NativeAgentAssembler for OrdinaryNativeAgentAssembler {
                 .redeem_runtime_context(self.platform.as_ref())
                 .await
                 .map_err(NativeAgentAssemblyError::from)?;
-            self.assemble_redeemed(redeemed).await
+            self.assemble_redeemed(redeemed, tool_policy).await
         }
         .instrument(span.clone())
         .await;

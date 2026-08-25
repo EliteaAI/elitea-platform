@@ -1,0 +1,9 @@
+{
+  "toolkit_security": {
+    "sensitive_tools": {
+      "*": [
+        "delete_file"
+      ]
+    }
+  }
+}

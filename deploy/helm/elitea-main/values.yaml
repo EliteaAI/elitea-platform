@@ -777,11 +777,8 @@ runtime:
 # completes — or the release aborts — before any Deployment pods roll; see
 # templates/migrate-job.yaml for the full ordering-guarantee explanation.
 #
-# Native ADK session/checkpoint tables have an independent `agentstate`
-# history. The existing Job intentionally does not receive that database
-# credential. Production activation must add a separately credentialed
-# `/elitea-migrate -agentstate` hook using `AGENTSTATE_DATABASE_URL`, and extend
-# the existing agentstate cleanup/retention owner to the native lineages.
+# Native ADK session and checkpoint tables use an independent `agentstate`
+# history. Configure agentStateMigrations below for that database.
 migrations:
   enabled: true
   # Empty means the namespace default ServiceAccount. The chart's own
@@ -805,6 +802,24 @@ migrations:
     # image. Only set these to pin the migration step to a different tag.
     repository: ""
     tag: ""
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+# Apply the native ADK table history to the existing agentstate database.
+# Keep this credential separate from the Main business database credential.
+agentStateMigrations:
+  enabled: false
+  serviceAccountName: ""
+  databaseSecret:
+    name: ""
+    key: AGENTSTATE_DATABASE_URL
   backoffLimit: 3
   activeDeadlineSeconds: 600
   resources:

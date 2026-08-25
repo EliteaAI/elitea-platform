@@ -33,6 +33,7 @@ use http::{HeaderName, HeaderValue, Method, Request, Version};
 use http_body_util::Full;
 use tokio::time::timeout;
 use tonic::body::Body;
+use tracing::Instrument as _;
 use zeroize::Zeroizing;
 
 use super::model_gateway::{
@@ -186,54 +187,91 @@ impl Llm for EliteaAnthropicModel {
         request: LlmRequest,
         stream: bool,
     ) -> Result<LlmResponseStream, AdkError> {
-        if self
+        let turn = self
             .calls
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.invocation.max_model_turns).then_some(current + 1)
             })
-            .is_err()
-        {
-            return Err(anthropic_error(
-                ErrorCategory::InvalidInput,
-                "turn_limit",
-                "the claim-scoped native Anthropic invocation exceeded its approved turn limit",
-            ));
+            .map(|current| current + 1)
+            .map_err(|_| {
+                anthropic_error(
+                    ErrorCategory::InvalidInput,
+                    "turn_limit",
+                    "the claim-scoped native Anthropic invocation exceeded its approved turn limit",
+                )
+            })?;
+        let span = tracing::info_span!(
+            "agent.model.request",
+            model_adapter = "anthropic",
+            model_name = %self.invocation.model_name,
+            billing_project_id = self.billing_project_id,
+            turn,
+            tool_count = request.tools.len(),
+            streaming = stream,
+            outcome = tracing::field::Empty,
+            error_code = tracing::field::Empty,
+            retryable = tracing::field::Empty,
+        );
+        let result: Result<LlmResponseStream, AdkError> = async {
+            tracing::info!(event = "agent_model_request_started");
+            let allowed_tools = request.tools.keys().cloned().collect();
+            let body = build_anthropic_body(&request, stream, &self.invocation, &self.config)?;
+            let request =
+                build_anthropic_request(body, self.billing_project_id, self.token.as_str())?;
+            let response = timeout(
+                self.config.response_header_timeout,
+                self.transport.post(request),
+            )
+            .await
+            .map_err(|_| {
+                anthropic_error(
+                    ErrorCategory::Timeout,
+                    "response_header_timeout",
+                    "the native Anthropic response header timed out",
+                )
+            })?
+            .map_err(|_| {
+                anthropic_error(
+                    ErrorCategory::Unavailable,
+                    "transport",
+                    "the native Anthropic transport is unavailable",
+                )
+            })?;
+            validate_response_head(&response)?;
+            Ok(anthropic_response_stream(
+                response,
+                &self.invocation.model_name,
+                AnthropicStreamLimits {
+                    idle_timeout: self.config.stream_idle_timeout,
+                    max_event_bytes: self.config.max_sse_event_bytes,
+                    max_stream_bytes: self.config.max_stream_bytes,
+                    max_events: self.config.max_sse_events,
+                },
+                allowed_tools,
+                self.completion.clone(),
+            ))
         }
-        let allowed_tools = request.tools.keys().cloned().collect();
-        let body = build_anthropic_body(&request, stream, &self.invocation, &self.config)?;
-        let request = build_anthropic_request(body, self.billing_project_id, self.token.as_str())?;
-        let response = timeout(
-            self.config.response_header_timeout,
-            self.transport.post(request),
-        )
-        .await
-        .map_err(|_| {
-            anthropic_error(
-                ErrorCategory::Timeout,
-                "response_header_timeout",
-                "the native Anthropic response header timed out",
-            )
-        })?
-        .map_err(|_| {
-            anthropic_error(
-                ErrorCategory::Unavailable,
-                "transport",
-                "the native Anthropic transport is unavailable",
-            )
-        })?;
-        validate_response_head(&response)?;
-        Ok(anthropic_response_stream(
-            response,
-            &self.invocation.model_name,
-            AnthropicStreamLimits {
-                idle_timeout: self.config.stream_idle_timeout,
-                max_event_bytes: self.config.max_sse_event_bytes,
-                max_stream_bytes: self.config.max_stream_bytes,
-                max_events: self.config.max_sse_events,
-            },
-            allowed_tools,
-            self.completion.clone(),
-        ))
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "stream_opened");
+                span.in_scope(|| tracing::info!(event = "agent_model_stream_opened"));
+            }
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error_code", error.code);
+                span.record("retryable", error.is_retryable());
+                span.in_scope(|| {
+                    tracing::warn!(
+                        event = "agent_model_request_failed",
+                        error_code = error.code,
+                        retryable = error.is_retryable(),
+                    );
+                });
+            }
+        }
+        result
     }
 }
 
@@ -255,10 +293,12 @@ fn build_anthropic_body(
         messages,
         Model::Custom(invocation.model_name.clone()),
     );
-    params.system = Some(SystemPrompt::from_blocks(vec![
-        TextBlock::new(&invocation.system_instruction)
-            .with_cache_control(CacheControlEphemeral::new()),
-    ]));
+    if !invocation.system_instruction.is_empty() {
+        params.system = Some(SystemPrompt::from_blocks(vec![
+            TextBlock::new(&invocation.system_instruction)
+                .with_cache_control(CacheControlEphemeral::new()),
+        ]));
+    }
     params.temperature = generation.temperature;
     params.thinking = generation.thinking;
     params.output_config = generation.output_config;

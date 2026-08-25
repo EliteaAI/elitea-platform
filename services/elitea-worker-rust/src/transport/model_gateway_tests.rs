@@ -196,6 +196,42 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn empty_system_instruction_is_omitted_from_openai_messages() {
+    let (client, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(
+            test_model_gateway_response(Body::new(Full::new(Bytes::from(ordinary_sse())))),
+        )],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let mut invocation = test_model_gateway_invocation();
+    invocation.system_instruction.clear();
+    let bound = client
+        .bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
+        )
+        .expect("bound model without a system instruction");
+
+    drain(
+        bound
+            .generate_for_test(test_model_gateway_request("explain this"))
+            .await
+            .expect("model response stream"),
+    )
+    .await
+    .expect("valid SSE");
+
+    let captured = captured.lock().expect("captured requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("model request JSON");
+    assert_eq!(body["messages"].as_array().map(Vec::len), Some(1));
+    assert_eq!(body["messages"][0]["role"], "user");
+    assert_eq!(body["messages"][0]["content"], "explain this");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn tool_declarations_calls_and_results_round_trip_across_model_turns() {
     let tool_sse = concat!(
         "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"double\",\"arguments\":\"{\\\"value\\\":\"}}]},\"finish_reason\":null}]}\n\n",

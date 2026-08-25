@@ -10,6 +10,7 @@ use chrono::{DateTime, SecondsFormat, TimeZone as _, Utc};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
+use tracing::Instrument as _;
 use zeroize::Zeroizing;
 
 use super::StateWriterLease;
@@ -975,33 +976,82 @@ WHERE checkpoint.tenant_id = $1
 #[async_trait]
 impl Checkpointer for PostgresCheckpointer {
     async fn save(&self, checkpoint: &Checkpoint) -> Result<String, GraphError> {
-        self.save_checkpoint(checkpoint).await.map_err(Into::into)
+        let span = checkpoint_operation_span("save");
+        let result = self
+            .save_checkpoint(checkpoint)
+            .instrument(span.clone())
+            .await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
     }
 
     async fn load(&self, thread_id: &str) -> Result<Option<Checkpoint>, GraphError> {
         self.scope.require_thread(thread_id)?;
-        self.load_checkpoint(None).await.map_err(Into::into)
+        let span = checkpoint_operation_span("load");
+        let result = self.load_checkpoint(None).instrument(span.clone()).await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
     }
 
     async fn load_by_id(&self, checkpoint_id: &str) -> Result<Option<Checkpoint>, GraphError> {
-        self.load_checkpoint(Some(checkpoint_id))
-            .await
-            .map_err(Into::into)
+        let span = checkpoint_operation_span("load_by_id");
+        let result = self
+            .load_checkpoint(Some(checkpoint_id))
+            .instrument(span.clone())
+            .await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
     }
 
     async fn list(&self, thread_id: &str) -> Result<Vec<Checkpoint>, GraphError> {
         self.scope.require_thread(thread_id)?;
-        self.list_checkpoints().await.map_err(Into::into)
+        let span = checkpoint_operation_span("list");
+        let result = self.list_checkpoints().instrument(span.clone()).await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
     }
 
     async fn delete(&self, thread_id: &str) -> Result<(), GraphError> {
         self.scope.require_thread(thread_id)?;
-        self.delete_checkpoints().await.map_err(Into::into)
+        let span = checkpoint_operation_span("delete");
+        let result = self.delete_checkpoints().instrument(span.clone()).await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
     }
 
     async fn prune(&self, thread_id: &str, policy: &RetentionPolicy) -> Result<usize, GraphError> {
         self.scope.require_thread(thread_id)?;
-        self.prune_checkpoints(policy).await.map_err(Into::into)
+        let span = checkpoint_operation_span("prune");
+        let result = self
+            .prune_checkpoints(policy)
+            .instrument(span.clone())
+            .await;
+        record_checkpoint_result(&span, &result);
+        result.map_err(Into::into)
+    }
+}
+
+fn checkpoint_operation_span(operation: &'static str) -> tracing::Span {
+    tracing::info_span!(
+        "agent.checkpoint.persist",
+        backend = "postgres",
+        operation,
+        outcome = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        retryable = tracing::field::Empty,
+    )
+}
+
+fn record_checkpoint_result<T>(span: &tracing::Span, result: &Result<T, PostgresCheckpointError>) {
+    match result {
+        Ok(_) => {
+            span.record("outcome", "succeeded");
+        }
+        Err(error) => {
+            span.record("outcome", "failed");
+            span.record("error_code", error.code());
+            span.record("retryable", error.retryable());
+        }
     }
 }
 

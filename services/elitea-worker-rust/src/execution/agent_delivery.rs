@@ -356,12 +356,31 @@ where
     ) -> Result<AgentDeliveryRoute, AgentDeliveryError> {
         let verified =
             parse_and_verify_agent_command(delivery.signed_envelope(), Some(authenticator))?;
+        self.route_verified(delivery, verified, now_unix_millis)
+            .await
+    }
+
+    /// Claim and route a command authenticated by the whole-delivery owner.
+    /// Keeping this entrypoint crate-private lets that owner establish the
+    /// remote-parent execution span before the first control-plane call while
+    /// preserving the public verify-and-route contract above.
+    pub(crate) async fn route_verified(
+        &self,
+        delivery: RedisCommandDelivery,
+        verified: VerifiedAgentCommand,
+        now_unix_millis: i64,
+    ) -> Result<AgentDeliveryRoute, AgentDeliveryError> {
+        tracing::info!(event = "agent_claim_started");
         let decision = self
             .control
             .claim_agent_delivery(&verified, now_unix_millis)
             .await?;
         match decision {
             AgentClaimDecision::Accepted(claim) => {
+                tracing::info!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "accepted",
+                );
                 Ok(AgentDeliveryRoute::Fresh(Box::new(FreshAgentDelivery {
                     delivery,
                     verified,
@@ -371,17 +390,35 @@ where
             }
             AgentClaimDecision::ActiveLeaseNoAck(recovery)
             | AgentClaimDecision::RecoverRunningNoAck(recovery)
-            | AgentClaimDecision::RecoverAmbiguousInvocationNoAck(recovery) => Ok(
-                AgentDeliveryRoute::OutputRecovery(Box::new(OutputRecoveryAgentDelivery {
-                    _delivery: delivery,
-                    verified,
-                    recovery,
-                })),
-            ),
-            AgentClaimDecision::RetryLaterNoAck(_) => Ok(AgentDeliveryRoute::RetryLaterNoAck),
+            | AgentClaimDecision::RecoverAmbiguousInvocationNoAck(recovery) => {
+                tracing::warn!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "output_recovery",
+                    retryable = true,
+                );
+                Ok(AgentDeliveryRoute::OutputRecovery(Box::new(
+                    OutputRecoveryAgentDelivery {
+                        _delivery: delivery,
+                        verified,
+                        recovery,
+                    },
+                )))
+            }
+            AgentClaimDecision::RetryLaterNoAck(_) => {
+                tracing::warn!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "retry_later",
+                    retryable = true,
+                );
+                Ok(AgentDeliveryRoute::RetryLaterNoAck)
+            }
             AgentClaimDecision::SettledAck(authority)
             | AgentClaimDecision::ObsoleteAck(authority)
             | AgentClaimDecision::RetiredAck(authority) => {
+                tracing::info!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "terminal_redelivery",
+                );
                 let kind = authority.kind();
                 self.retirer
                     .retire_agent_command(delivery, &verified, authority.into())
@@ -393,6 +430,10 @@ where
                 }))
             }
             AgentClaimDecision::RecoverTerminalAck(recovery) => {
+                tracing::info!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "terminal_recovery",
+                );
                 let receipt = self
                     .control
                     .prepare_recovered_agent_settlement(recovery)
@@ -407,6 +448,10 @@ where
                 Ok(AgentDeliveryRoute::Completed(completion))
             }
             AgentClaimDecision::RecoverSettlement(receipt) => {
+                tracing::info!(
+                    event = "agent_claim_completed",
+                    claim_disposition = "settlement_recovery",
+                );
                 let completion = recovered_settlement_completion(&receipt);
                 self.retirer
                     .retire_agent_command(delivery, &verified, receipt.into())

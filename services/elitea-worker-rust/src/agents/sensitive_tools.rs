@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use adk_rust::tool::SimpleToolContext;
 use adk_rust::{ReadonlyContext, Toolset};
+use serde_json::{Map, Value};
 
 use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 use crate::toolkits::{
@@ -21,6 +22,34 @@ use crate::toolkits::{
 
 const TOOL_ENUMERATION_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CONFIRMED_TOOLS: usize = 1_024;
+
+/// Select one immutable guardrail generation for exactly one admitted run.
+///
+/// Commands produced before protocol field 38 retain the startup fallback.
+/// An explicit object is authoritative even when empty, so a policy change can
+/// take effect on the next run without mutating process-global state.
+pub(crate) fn policy_for_guardrails(
+    guardrails: Option<&Map<String, Value>>,
+    fallback: &Arc<ToolAdmissionPolicy>,
+) -> Result<Arc<ToolAdmissionPolicy>, NativeAgentAssemblyError> {
+    let Some(guardrails) = guardrails else {
+        return Ok(Arc::clone(fallback));
+    };
+    let runtime = Map::from_iter([(
+        "toolkit_security".to_owned(),
+        Value::Object(guardrails.clone()),
+    )]);
+    ToolAdmissionPolicy::from_runtime_config(&runtime)
+        .map(Arc::new)
+        .map_err(|error| match error.code() {
+            crate::toolkits::ToolAdmissionPolicyErrorCode::InvalidConfiguration => {
+                invalid_configuration()
+            }
+            crate::toolkits::ToolAdmissionPolicyErrorCode::ResourceExhausted => {
+                resource_exhausted()
+            }
+        })
+}
 
 /// Sensitive concrete tools attached to one direct `LlmAgent` invocation.
 ///
@@ -171,4 +200,64 @@ const fn dependency_unavailable() -> NativeAgentAssemblyError {
         NativeAgentAssemblyErrorCode::DependencyUnavailable,
         "the sensitive-tool catalog could not be enumerated",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use serde_json::{Map, Value, json};
+
+    use super::policy_for_guardrails;
+    use crate::toolkits::ToolAdmissionPolicy;
+
+    fn policy(security: Value) -> Arc<ToolAdmissionPolicy> {
+        let runtime = Map::from_iter([("toolkit_security".to_owned(), security)]);
+        Arc::new(ToolAdmissionPolicy::from_runtime_config(&runtime).expect("valid toolkit policy"))
+    }
+
+    #[test]
+    fn absent_guardrails_reuse_fallback_but_explicit_empty_clears_it() {
+        let fallback = policy(json!({"sensitive_tools": {"*": ["delete_file"]}}));
+
+        let absent = policy_for_guardrails(None, &fallback).expect("absent policy");
+        assert!(Arc::ptr_eq(&absent, &fallback));
+        assert!(
+            absent
+                .sensitive_tool("artifact", "files", "delete_file")
+                .is_some()
+        );
+
+        let empty = Map::new();
+        let resolved = policy_for_guardrails(Some(&empty), &fallback).expect("empty policy");
+        assert!(!Arc::ptr_eq(&resolved, &fallback));
+        assert!(
+            resolved
+                .sensitive_tool("artifact", "files", "delete_file")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn command_guardrails_override_fallback_with_one_immutable_generation() {
+        let fallback = policy(json!({}));
+        let guardrails = json!({
+            "blocked_toolkits": ["sharepoint"],
+            "sensitive_tools": {"openapi": ["create_item"]}
+        })
+        .as_object()
+        .expect("guardrails object")
+        .clone();
+
+        let resolved = policy_for_guardrails(Some(&guardrails), &fallback).expect("command policy");
+        assert_ne!(
+            resolved.toolkit_decision("sharepoint"),
+            crate::toolkits::ToolAdmissionDecision::Allowed
+        );
+        assert!(
+            resolved
+                .sensitive_tool("openapi", "customer_api", "create_item")
+                .is_some()
+        );
+    }
 }

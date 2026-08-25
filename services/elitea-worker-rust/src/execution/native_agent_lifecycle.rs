@@ -159,8 +159,12 @@ where
     RC: RedisRetirementClient + 'static,
     K: UnixMillisClock,
 {
+    tracing::info!(event = "agent_native_lifecycle_started");
     let run = match run.bind_progress_publisher(connector, max_output_sessions) {
-        Ok(run) => run,
+        Ok(run) => {
+            tracing::info!(event = "agent_progress_publisher_bound");
+            run
+        }
         Err(failure) => {
             let (run, _connector, error) = failure.into_parts();
             return Box::pin(run.close_no_ack(error.code(), error.retryable())).await;
@@ -185,8 +189,12 @@ where
         }
     }
 
+    tracing::info!(event = "agent_native_assembly_started");
     let mut native_assembly = match Box::pin(run.assemble_native(native_factory.as_ref())).await {
-        AgentNativeAssemblyOutcome::Assembled(native_assembly) => *native_assembly,
+        AgentNativeAssemblyOutcome::Assembled(native_assembly) => {
+            tracing::info!(event = "agent_native_assembly_completed");
+            *native_assembly
+        }
         AgentNativeAssemblyOutcome::Failed { run, error } => {
             let run = *run;
             let failure = assembly_failure(&error);
@@ -225,6 +233,7 @@ where
         }
     };
 
+    tracing::info!(event = "agent_start_event_projection_started");
     let start_time = match sampled_time(clock.as_ref()) {
         Ok((_, time)) => time,
         Err(code) => return native_assembly.into_run().close_no_ack(code, false).await,
@@ -249,6 +258,7 @@ where
             .await;
         }
     };
+    tracing::info!(event = "agent_start_event_publication_started");
     match Box::pin(publish_assembled_batch(
         &mut native_assembly,
         start_batch,
@@ -256,7 +266,9 @@ where
     ))
     .await
     {
-        BatchPublication::Acknowledged => {}
+        BatchPublication::Acknowledged => {
+            tracing::info!(event = "agent_start_event_published");
+        }
         BatchPublication::Rejected => {
             let run = native_assembly.into_run();
             return Box::pin(finalize(
@@ -305,8 +317,12 @@ where
         }
     }
 
+    tracing::info!(event = "agent_runner_start_started");
     let started = match native_assembly.start() {
-        Ok(started) => started,
+        Ok(started) => {
+            tracing::info!(event = "agent_runner_started");
+            started
+        }
         Err(failure) => {
             let (run, error) = (*failure).into_parts();
             tracing::warn!(
@@ -358,6 +374,7 @@ where
 
     let mut probe = run.lease_state_probe();
     let mut pauses = AgentPauseAccumulator::default();
+    tracing::info!(event = "agent_event_stream_started");
     let stream = Box::pin(drive_native_stream(
         &mut run,
         &mut native,
@@ -367,6 +384,10 @@ where
         clock.as_ref(),
     ))
     .await;
+    tracing::info!(
+        event = "agent_event_stream_completed",
+        stream_disposition = stream_disposition(&stream),
+    );
     let mut successful_terminal = FreshAgentTerminalSelection::Completed;
     let mut failure = match stream {
         NativeStreamOutcome::Eos => None,
@@ -402,6 +423,7 @@ where
     };
 
     if failure.is_none() && matches!(successful_terminal, FreshAgentTerminalSelection::Completed) {
+        tracing::info!(event = "agent_completion_selection_started");
         let (next_run, completion_result) =
             Box::pin(run.select_native_completion(completion_selector)).await;
         run = next_run;
@@ -439,6 +461,7 @@ where
                 return Box::pin(run.close_no_ack(error.code().as_str(), error.retryable())).await;
             }
         };
+        tracing::info!(event = "agent_completion_selected");
         let finish_time = match sampled_time(clock.as_ref()) {
             Ok((_, time)) => time,
             Err(code) => return run.close_no_ack(code, false).await,
@@ -492,6 +515,16 @@ enum NativeStreamOutcome {
     Failure(RuntimeFailureKind),
     RecoveryRequired { code: &'static str, retryable: bool },
     FatalLease(ClaimLeaseError),
+}
+
+const fn stream_disposition(outcome: &NativeStreamOutcome) -> &'static str {
+    match outcome {
+        NativeStreamOutcome::Eos => "eos",
+        NativeStreamOutcome::Paused => "paused",
+        NativeStreamOutcome::Failure(_) => "failed",
+        NativeStreamOutcome::RecoveryRequired { .. } => "recovery_required",
+        NativeStreamOutcome::FatalLease(_) => "lease_failed",
+    }
 }
 
 async fn drive_native_stream<C, K>(
@@ -924,6 +957,7 @@ where
     RC: RedisRetirementClient + 'static,
     K: UnixMillisClock,
 {
+    tracing::info!(event = "agent_terminal_publication_started");
     let (run, lease_result) = run.check_lease_now().await;
     match lease_result {
         Ok(()) => {}
@@ -944,14 +978,16 @@ where
         failure = Some(RuntimeFailureKind::DeadlineExceeded);
     }
     let selection = failure.map_or(successful_terminal, FreshAgentTerminalSelection::Failure);
-    Box::pin(run.finish_terminal(
+    let completion = Box::pin(run.finish_terminal(
         selection,
         occurred_at_unix_millis,
         control,
         retirer,
         terminal_recovery,
     ))
-    .await
+    .await;
+    tracing::info!(event = "agent_terminal_publication_completed");
+    completion
 }
 
 async fn finish_lease_boundary<C, R, RC, K>(

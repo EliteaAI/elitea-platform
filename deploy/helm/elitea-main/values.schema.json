@@ -288,6 +288,7 @@
       }
     },
     "migrations": { "type": "object", "additionalProperties": true },
+    "agentStateMigrations": { "type": "object", "additionalProperties": true },
     "probes": { "type": "object", "additionalProperties": true },
     "autoscaling": { "type": "object", "additionalProperties": true },
     "podDisruptionBudget": {

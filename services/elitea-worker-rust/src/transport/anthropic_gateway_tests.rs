@@ -211,6 +211,41 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn empty_system_instruction_is_omitted_from_anthropic_request() {
+    let response =
+        test_model_gateway_response(Body::new(Full::new(Bytes::from(native_sse(MODEL)))));
+    let (client, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(response)],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let mut invocation = invocation(MODEL, None);
+    invocation.system_instruction.clear();
+    let bound = client
+        .bind_anthropic_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
+        )
+        .expect("bound model without a system instruction");
+
+    drain(
+        bound
+            .generate_for_test(request(MODEL, Some(0.7)))
+            .await
+            .expect("native response stream"),
+    )
+    .await
+    .expect("valid native SSE");
+
+    let captured = captured.lock().expect("captured requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("native request JSON");
+    assert!(body.get("system").is_none());
+    assert_eq!(body["messages"][0]["role"], "user");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn native_tools_calls_and_results_round_trip_across_model_turns() {
     let (client, captured) = test_model_gateway_client(
         vec![

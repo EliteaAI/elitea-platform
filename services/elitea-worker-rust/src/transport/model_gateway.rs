@@ -28,6 +28,7 @@ use tokio::time::timeout;
 use tonic::body::Body;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tower::ServiceExt as _;
+use tracing::Instrument as _;
 use zeroize::Zeroizing;
 
 use super::runtime_context::ClaimScopedEliteaContext;
@@ -382,51 +383,87 @@ impl Llm for EliteaOpenAiCompatibleModel {
         request: LlmRequest,
         stream: bool,
     ) -> Result<LlmResponseStream, AdkError> {
-        if self
+        let turn = self
             .calls
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.invocation.max_model_turns).then_some(current + 1)
             })
-            .is_err()
-        {
-            return Err(model_error(
-                ErrorCategory::InvalidInput,
-                "model_gateway.turn_limit",
-                "the claim-scoped model invocation exceeded its approved turn limit",
-            ));
+            .map(|current| current + 1)
+            .map_err(|_| {
+                model_error(
+                    ErrorCategory::InvalidInput,
+                    "model_gateway.turn_limit",
+                    "the claim-scoped model invocation exceeded its approved turn limit",
+                )
+            })?;
+        let span = tracing::info_span!(
+            "agent.model.request",
+            model_adapter = "openai_compatible",
+            model_name = %self.invocation.model_name,
+            billing_project_id = self.billing_project_id,
+            turn,
+            tool_count = request.tools.len(),
+            streaming = stream,
+            outcome = tracing::field::Empty,
+            error_code = tracing::field::Empty,
+            retryable = tracing::field::Empty,
+        );
+        let result: Result<LlmResponseStream, AdkError> = async {
+            tracing::info!(event = "agent_model_request_started");
+            let allowed_tools = request.tools.keys().cloned().collect();
+            let body = build_request_body(&request, stream, &self.invocation, &self.config)?;
+            let request = build_http_request(body, self.billing_project_id, self.token.as_str())?;
+            let response = timeout(
+                self.config.response_header_timeout,
+                self.transport.post(request),
+            )
+            .await
+            .map_err(|_| {
+                model_error(
+                    ErrorCategory::Timeout,
+                    "model_gateway.response_header_timeout",
+                    "the model gateway response header timed out",
+                )
+            })?
+            .map_err(|_| {
+                model_error(
+                    ErrorCategory::Unavailable,
+                    "model_gateway.transport",
+                    "the model gateway transport is unavailable",
+                )
+            })?;
+            validate_response_head(&response)?;
+            Ok(model_response_stream(
+                response,
+                self.config.stream_idle_timeout,
+                self.config.max_sse_event_bytes,
+                self.config.max_stream_bytes,
+                self.config.max_sse_events,
+                allowed_tools,
+                self.completion.clone(),
+            ))
         }
-        let allowed_tools = request.tools.keys().cloned().collect();
-        let body = build_request_body(&request, stream, &self.invocation, &self.config)?;
-        let request = build_http_request(body, self.billing_project_id, self.token.as_str())?;
-        let response = timeout(
-            self.config.response_header_timeout,
-            self.transport.post(request),
-        )
-        .await
-        .map_err(|_| {
-            model_error(
-                ErrorCategory::Timeout,
-                "model_gateway.response_header_timeout",
-                "the model gateway response header timed out",
-            )
-        })?
-        .map_err(|_| {
-            model_error(
-                ErrorCategory::Unavailable,
-                "model_gateway.transport",
-                "the model gateway transport is unavailable",
-            )
-        })?;
-        validate_response_head(&response)?;
-        Ok(model_response_stream(
-            response,
-            self.config.stream_idle_timeout,
-            self.config.max_sse_event_bytes,
-            self.config.max_stream_bytes,
-            self.config.max_sse_events,
-            allowed_tools,
-            self.completion.clone(),
-        ))
+        .instrument(span.clone())
+        .await;
+        match &result {
+            Ok(_) => {
+                span.record("outcome", "stream_opened");
+                span.in_scope(|| tracing::info!(event = "agent_model_stream_opened"));
+            }
+            Err(error) => {
+                span.record("outcome", "failed");
+                span.record("error_code", error.code);
+                span.record("retryable", error.is_retryable());
+                span.in_scope(|| {
+                    tracing::warn!(
+                        event = "agent_model_request_failed",
+                        error_code = error.code,
+                        retryable = error.is_retryable(),
+                    );
+                });
+            }
+        }
+        result
     }
 }
 
@@ -434,7 +471,6 @@ pub(super) fn validate_invocation(
     invocation: &ModelGatewayInvocation,
 ) -> Result<(), ModelGatewayError> {
     if !bounded_header_text(&invocation.model_name, MAX_MODEL_NAME_BYTES)
-        || invocation.system_instruction.is_empty()
         || invocation.system_instruction.len() > MAX_INSTRUCTION_BYTES
         || invocation.system_instruction.contains('\0')
         || invocation.max_tokens == 0
@@ -466,11 +502,14 @@ fn build_request_body(
         "model".to_owned(),
         serde_json::Value::String(invocation.model_name.clone()),
     );
-    let mut messages = Vec::with_capacity(contents.len() + 1);
-    messages.push(serde_json::json!({
-        "role": instruction_role(&invocation.model_name),
-        "content": invocation.system_instruction,
-    }));
+    let mut messages =
+        Vec::with_capacity(contents.len() + usize::from(!invocation.system_instruction.is_empty()));
+    if !invocation.system_instruction.is_empty() {
+        messages.push(serde_json::json!({
+            "role": instruction_role(&invocation.model_name),
+            "content": invocation.system_instruction,
+        }));
+    }
     for (index, content) in contents.iter().enumerate() {
         append_openai_messages(content, index + 1 == contents.len(), &mut messages)?;
     }

@@ -1,7 +1,7 @@
 # Rust worker source parity
 
-- Status: reconstruction foundation plus agent protocol and ordered output-session slices
-- Last verified: 2026-08-21
+- Status: capability-disabled production agent runtime with isolated end-to-end proof
+- Last verified: 2026-08-25
 - Production capability registration: disabled
 
 The previous Rust worker implementation was never committed and no recoverable
@@ -108,6 +108,43 @@ atomically. The bounded inline OpenAPI dynamic family and the explicitly
 selected eight-read delegated SharePoint Graph core now use this exact-resource
 flow; their remaining OAuth/content capabilities are listed in the toolset
 ledger.
+
+Current observability checkpoint: the worker emits redacted structured logs and
+standard OTLP traces across command verification, Redis delivery, claim,
+preparation, native ADK execution, model requests, session/checkpoint writes,
+output, settlement and retirement. A valid W3C `traceparent` continues the
+upstream trace. `ELITEA_RUST_LOG` and `ELITEA_RUST_TRACE` remain crate-scoped,
+so dependency HTTP, SQL and provider payloads cannot be enabled accidentally.
+The panic hook omits panic payloads and full paths, but retains a sanitized
+source filename and line for diagnosis. OTLP batching uses the Tokio runtime;
+this prevents the exporter-thread reactor panic that previously aborted the
+release process. Isolated execution `bc39746696860d52761e5a2470e83c47`
+streamed nine events, persisted its reply, exported lifecycle/model/session
+spans with `service.name=elitea-worker-rust`, and left `restart_count=0`.
+The same stack also projected a UI-created OpenAI credential and model through
+Main and Bifrost. Execution `c9b27286118d3e3f999297d97f4f94bd`
+selected `gpt-4o-mini`, did not call the mock server, reached the allowlisted
+OpenAI endpoint, received an unauthorized provider response, published the
+durable browser event `execution.failed`, retired the delivery, and kept the
+worker at `restart_count=0`. Credentialed proofs then used the current local
+Elitea proxy as an OpenAI-compatible provider. The stronger execution
+`868af70730dc53444aeb27b7343f0f51` selected
+`eu.anthropic.claude-sonnet-4-6` with `openai_compatible=true`, streamed a
+unique provider marker, persisted the assistant reply, retired the delivery,
+and left the worker and gateway at `restart_count=0`.
+The proof uses the existing `open_ai` credential type. A credential whose
+`api_base` names OpenAI stays on Bifrost's native OpenAI provider; a linked
+`open_ai` credential with another base routes through the per-key compatible
+provider. The resolver reads only the non-secret `api_base`, while the account
+still resolves the key per request. The gateway removes one trailing `/v1`
+before handing the compatible key to Bifrost because Bifrost adds that segment
+itself. Both `/llm` and `/llm/v1` configuration forms therefore reach the same
+operations. The standalone smoke reader uses the SSE `event:` name for durable
+failures instead of waiting for a `data.type` field that failure frames do not
+carry.
+Prompts, arguments, results, URLs, credentials, tokens and provider bodies are
+never trace or log fields. Backend retention, sampling, metrics and Kubernetes
+activation remain deployment gates.
 
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic

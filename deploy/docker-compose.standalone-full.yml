@@ -317,6 +317,21 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  elitea-agentstate-migrate:
+    image: ghcr.io/eliteaai/elitea-main:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
+      target: e2e
+    entrypoint: ["/elitea-migrate"]
+    command: ["-agentstate"]
+    environment:
+      AGENTSTATE_DATABASE_URL: "postgres://elitea:elitea@postgres:5432/agentstate?sslmode=disable"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    restart: "no"
+
   rustfs:
     image: docker.io/rustfs/rustfs:latest
     environment:

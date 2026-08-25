@@ -1,0 +1,39 @@
+# Apply this overlay to test the Rust agent runtime without activating indexing.
+#
+# docker compose \
+#   -f deploy/docker-compose.standalone-full.yml \
+#   -f deploy/docker-compose.standalone-rust-agent.yml config
+services:
+  elitea-main:
+    environment:
+      ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED: "false"
+      ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM: ""
+      ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP: ""
+      ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES: ""
+
+  elitea-worker:
+    image: ghcr.io/eliteaai/elitea-worker-rust:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-worker-rust/Containerfile
+    command:
+      - serve
+      - --config
+      - /run/elitea/runtime.json
+      - --toolkit-security-config
+      - /run/elitea/toolkit-security.json
+    environment:
+      ELITEA_DISABLE_SYSTEM_CA: !reset null
+      REQUESTS_CA_BUNDLE: !reset null
+      SSL_CERT_FILE: !reset null
+      ELITEA_SENSITIVE_TOOLS: !reset null
+      ELITEA_RUST_LOG: "info"
+      ELITEA_RUST_TRACE: "info"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+    volumes:
+      - ./runtime/worker-toolkit-security.json:/run/elitea/toolkit-security.json:ro
+    depends_on:
+      elitea-agentstate-migrate:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started

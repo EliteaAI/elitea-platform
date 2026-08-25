@@ -68,6 +68,7 @@ fn request(kind: AgentExecutionKind, tools: Vec<Value>) -> AgentExecutionRequest
             exception_handling_enabled: None,
             debug_mode: None,
             next_input_suggestion: NextInputSuggestionPolicy::default(),
+            toolkit_guardrails: None,
         },
     }
 }

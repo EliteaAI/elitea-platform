@@ -21,6 +21,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
+use tracing::Instrument as _;
 use zeroize::Zeroizing;
 
 use super::StateWriterLease;
@@ -943,13 +944,17 @@ WHERE tenant_id = $1
 #[async_trait]
 impl SessionService for PostgresSessionService {
     async fn create(&self, req: CreateRequest) -> adk_rust::Result<Box<dyn Session>> {
-        self.create_session(req)
-            .await
-            .map_err(PostgresSessionError::into_adk)
+        let span = session_operation_span("create");
+        let result = self.create_session(req).instrument(span.clone()).await;
+        record_session_result(&span, &result);
+        result.map_err(PostgresSessionError::into_adk)
     }
 
     async fn get(&self, req: GetRequest) -> adk_rust::Result<Box<dyn Session>> {
-        self.get_session(req).await.map_err(|error| match error {
+        let span = session_operation_span("get");
+        let result = self.get_session(req).instrument(span.clone()).await;
+        record_session_result(&span, &result);
+        result.map_err(|error| match error {
             PostgresSessionError::InvalidScope => AdkError::new(
                 ErrorComponent::Session,
                 ErrorCategory::NotFound,
@@ -1048,15 +1053,20 @@ WHERE tenant_id = $1
             adk_rust::UserId::try_from(self.authority.user_id.as_str())?,
             adk_rust::SessionId::try_from(self.authority.session_id.as_str())?,
         );
-        self.append(&identity, event)
-            .await
-            .map_err(PostgresSessionError::into_adk)
+        let span = session_operation_span("append_event");
+        let result = self.append(&identity, event).instrument(span.clone()).await;
+        record_session_result(&span, &result);
+        result.map_err(PostgresSessionError::into_adk)
     }
 
     async fn append_event_for_identity(&self, req: AppendEventRequest) -> adk_rust::Result<()> {
-        self.append(&req.identity, req.event)
-            .await
-            .map_err(PostgresSessionError::into_adk)
+        let span = session_operation_span("append_event");
+        let result = self
+            .append(&req.identity, req.event)
+            .instrument(span.clone())
+            .await;
+        record_session_result(&span, &result);
+        result.map_err(PostgresSessionError::into_adk)
     }
 
     async fn health_check(&self) -> adk_rust::Result<()> {
@@ -1072,6 +1082,33 @@ WHERE tenant_id = $1
         self.commit_current(transaction)
             .await
             .map_err(PostgresSessionError::into_adk)
+    }
+}
+
+fn session_operation_span(operation: &'static str) -> tracing::Span {
+    tracing::info_span!(
+        "agent.session.persist",
+        backend = "postgres",
+        operation,
+        outcome = tracing::field::Empty,
+        error_code = tracing::field::Empty,
+        retryable = tracing::field::Empty,
+    )
+}
+
+fn record_session_result<T>(span: &tracing::Span, result: &Result<T, PostgresSessionError>) {
+    match result {
+        Ok(_) => {
+            span.record("outcome", "succeeded");
+        }
+        Err(error) => {
+            span.record("outcome", "failed");
+            span.record("error_code", error.code());
+            span.record(
+                "retryable",
+                matches!(error, PostgresSessionError::StorageUnavailable { .. }),
+            );
+        }
     }
 }
 

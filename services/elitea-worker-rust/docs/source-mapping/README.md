@@ -267,18 +267,43 @@ Maintained Rust runtime ownership registry:
   is no missing-policy/default-policy branch. The multi-thread process owner
   installs SIGINT/SIGTERM before composition, emits data-free lifecycle/error
   fields and applies one global drain deadline. Capability registration,
-  container/orchestrator snapshot projection, atomic policy refresh and live
-  process proof remain closed;
-- `src/diagnostics.rs`, `src/execution/{agent_delivery_processor,agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle,redis_delivery}.rs`:
-  crate-scoped subscriber plus authenticated lifecycle/assembly/tool
-  correlation. The concrete agent delivery processor now keeps one raw Redis
-  PEL owner alive through claim, output preflight, preparation, supervised
-  native execution and retirement for both application and ad-hoc commands.
+  container/orchestrator snapshot projection and atomic policy refresh remain
+  closed. An isolated Main, Redis, PostgreSQL, model facade and Rust-worker
+  application/ad-hoc process proof now passes;
+- `src/diagnostics.rs`, model adapters, state adapters and
+  `src/execution/{agent_delivery_processor,agent_preparation,agent_coordinator,agent_invocation,invocation_supervisor,native_agent_lifecycle,output_delivery,redis_delivery}.rs`:
+  crate-scoped structured logs, standard OTLP export and authenticated
+  lifecycle/assembly/tool correlation. Valid W3C `traceparent` values continue
+  the upstream trace. Delivery, claim, preparation, ADK execution, model,
+  session, checkpoint, output, settlement and retirement spans use allowlisted
+  identity, phase, outcome and stable error-code fields only. The concrete
+  agent delivery processor keeps one raw Redis PEL owner alive through claim,
+  output preflight, preparation, supervised native execution and retirement
+  for both application and ad-hoc commands.
   `agent_invocation.rs` keeps authorization inputs boxed until its async frame
   is allocated, preserving the default thread-stack bound as runtime variants
   grow.
   Normal bootstrap must drain its Redis processing futures before closing the
-  coordinator. Export/retention policy and process bootstrap remain
+  coordinator. The redacted panic hook retains only a sanitized source filename
+  and line. Tokio-backed OTLP batching avoids exporter-thread reactor panics.
+  The standalone proof also projects UI-shaped model configuration through
+  Main and Bifrost. A selected `gpt-4o-mini` call reached the allowlisted OpenAI
+  endpoint and returned unauthorized because the available shell value is not
+  a valid provider key. Rust published `execution.failed`, retired the delivery
+  and stayed at zero restarts. A credentialed OpenAI-compatible follow-up used
+  the current local Elitea proxy. Execution
+  `868af70730dc53444aeb27b7343f0f51` selected
+  `eu.anthropic.claude-sonnet-4-6` with `openai_compatible=true`, streamed the
+  unique provider marker, persisted the reply, retired the delivery, and left
+  the worker and gateway at zero restarts. Gateway
+  `internal/llmproxy/models.go` preserves the existing `open_ai` custom-base
+  contract by selecting the per-key compatible provider for non-OpenAI
+  origins; official OpenAI bases keep the native provider. Gateway
+  `internal/account/account.go` normalizes one trailing `/v1` because Bifrost
+  adds `/v1` itself, so user configuration can use either `/llm` or `/llm/v1`.
+  `deploy/scripts/chat-smoke.py` treats the durable SSE `event:` name as
+  terminal when a failure payload has no `data.type`.
+  Backend retention, sampling, metrics and Kubernetes activation remain
   deployment-owned.
 
 Workspace-relative Python paths are included because the Python sources live in

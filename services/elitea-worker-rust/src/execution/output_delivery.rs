@@ -853,6 +853,10 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
                 "the durably acknowledged result must remain the last progress event",
             ));
         }
+        tracing::info!(
+            event = "agent_progress_publication_started",
+            node_event_type = %event.r#type,
+        );
         let progress = self
             .cursor
             .bind_progress(verified, event, occurred_at_unix_millis)
@@ -863,7 +867,32 @@ impl<C: AgentProgressConnector> FreshAgentProgressPublisher<C> {
             rejection: None,
             result,
         });
-        self.drive_retained_progress().await
+        let publication = self.drive_retained_progress().await;
+        match &publication {
+            Ok(AgentProgressPublishOutcome::Acknowledged { sequence }) => {
+                tracing::info!(
+                    event = "agent_progress_publication_completed",
+                    publication_disposition = "acknowledged",
+                    sequence,
+                );
+            }
+            Ok(AgentProgressPublishOutcome::Rejected { sequence }) => {
+                tracing::warn!(
+                    event = "agent_progress_publication_completed",
+                    publication_disposition = "rejected",
+                    sequence,
+                    retryable = false,
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    event = "agent_progress_publication_failed",
+                    error_code = error.code(),
+                    retryable = error.retryable(),
+                );
+            }
+        }
+        publication
     }
 
     /// Resume only the exact frame retained after retryable uncertainty.
@@ -1804,10 +1833,12 @@ where
             let frame = output_authority
                 .bind_failure_terminal(&verified, failure, occurred_at_unix_millis)
                 .map_err(AgentFailureTerminalError::InvalidDurableState)?;
+            tracing::info!(event = "agent_terminal_spool_persistence_started");
             let (spool, reopener) = output
                 .persist_terminal(&frame)
                 .await
                 .map_err(AgentFailureTerminalError::Output)?;
+            tracing::info!(event = "agent_terminal_output_started");
             let (acknowledged, frame) = replay_terminal_with_replacement(
                 replay,
                 &verified,
@@ -1818,20 +1849,28 @@ where
             )
             .await
             .map_err(failure_replay_error)?;
+            tracing::info!(
+                event = "agent_terminal_output_acknowledged",
+                sequence = frame.sequence,
+            );
             let failure = restored_terminal_failure_kind(&frame).ok_or(
                 AgentFailureTerminalError::InvalidDurableState(ProtocolError::InvalidInput(
                     "the delivered failure terminal is malformed",
                 )),
             )?;
+            tracing::info!(event = "agent_settlement_started");
             let receipt = control
                 .prepare_agent_settlement(acknowledged)
                 .await
                 .map_err(AgentFailureTerminalError::Settlement)?;
+            tracing::info!(event = "agent_settlement_prepared");
             let settlement_receipt_id = receipt.receipt_id().to_owned();
+            tracing::info!(event = "agent_redis_retirement_started");
             retirer
                 .retire_agent_command(delivery, &verified, receipt.into())
                 .await
                 .map_err(AgentFailureTerminalError::Redis)?;
+            tracing::info!(event = "agent_redis_retirement_completed");
             Ok(AgentFailureTerminalCompletion {
                 execution_kind,
                 sequence: frame.sequence,
@@ -1881,6 +1920,7 @@ where
             ClaimLeaseMonitor::start_recovery(Arc::clone(&control), claim, clock, lease_config);
 
         let result = async {
+            tracing::info!(event = "agent_terminal_recovery_output_started");
             let (acknowledged, frame) = replay_terminal_with_replacement(
                 replay,
                 &verified,
@@ -1891,16 +1931,24 @@ where
             )
             .await
             .map_err(recovery_replay_error)?;
+            tracing::info!(
+                event = "agent_terminal_recovery_output_acknowledged",
+                sequence = frame.sequence,
+            );
 
+            tracing::info!(event = "agent_settlement_started");
             let receipt = control
                 .prepare_agent_settlement(acknowledged)
                 .await
                 .map_err(AgentTerminalRecoveryError::Settlement)?;
+            tracing::info!(event = "agent_settlement_prepared");
             let settlement_receipt_id = receipt.receipt_id().to_owned();
+            tracing::info!(event = "agent_redis_retirement_started");
             retirer
                 .retire_agent_command(delivery, &verified, receipt.into())
                 .await
                 .map_err(AgentTerminalRecoveryError::Redis)?;
+            tracing::info!(event = "agent_redis_retirement_completed");
             Ok(AcceptedTerminalRecoveryCompletion {
                 execution_kind,
                 sequence: frame.sequence,
@@ -2122,7 +2170,12 @@ impl AgentOutputPreflight {
             policy: Arc::clone(&self.policy),
             binding,
         };
+        tracing::info!(event = "agent_output_spool_open_started");
         let mut prepared = factory.reopen().await?;
+        tracing::info!(
+            event = "agent_output_spool_open_completed",
+            pending_frame_count = prepared.pending_frame_count(),
+        );
 
         let Some(frame) = prepared.pending_replay_frame() else {
             return Ok(AgentOutputPreflightOutcome::Empty(Box::new(

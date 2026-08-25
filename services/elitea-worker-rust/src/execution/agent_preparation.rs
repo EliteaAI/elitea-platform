@@ -976,6 +976,7 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
         } = self;
         let execution_kind = request.kind;
         let result = async {
+            tracing::info!(event = "agent_terminal_output_started");
             let terminal = publisher
                 .finish_terminal(
                     &verified,
@@ -986,15 +987,20 @@ impl<C: AgentProgressConnector> CursorBoundAuthorizedAgentRun<C> {
                 .await
                 .map_err(|error| (error.code(), error.retryable()))?;
             let sequence = terminal.frame.sequence;
+            tracing::info!(event = "agent_terminal_output_acknowledged", sequence);
+            tracing::info!(event = "agent_settlement_started");
             let receipt = control
                 .prepare_agent_settlement(terminal.acknowledged)
                 .await
                 .map_err(|error| ("agent_lifecycle.settlement_failed", error.retryable()))?;
+            tracing::info!(event = "agent_settlement_prepared");
             let settlement_receipt_id = receipt.receipt_id().to_owned();
+            tracing::info!(event = "agent_redis_retirement_started");
             retirer
                 .retire_agent_command(delivery, &verified, receipt.into())
                 .await
                 .map_err(|error| (error.code(), error.retryable()))?;
+            tracing::info!(event = "agent_redis_retirement_completed");
             Ok::<_, (&'static str, bool)>((sequence, settlement_receipt_id))
         }
         .await;
@@ -1370,10 +1376,19 @@ where
                 Err(error) => return preparation_error(AgentPreparationError::Admission(error)),
             };
             tracing::Span::current().record("stage", "begin_execution");
+            tracing::info!(event = "agent_preparation_begin_started");
             let preparing = match control.begin_agent_execution(claim).await {
-                Ok(BeginAgentExecution::Preparing(preparing)) => preparing,
+                Ok(BeginAgentExecution::Preparing(preparing)) => {
+                    tracing::info!(event = "agent_preparation_begin_accepted");
+                    preparing
+                }
                 Ok(BeginAgentExecution::AlreadyStarted(_)) => {
                     tracing::Span::current().record("outcome", "recovery_required_noack");
+                    tracing::warn!(
+                        event = "agent_preparation_recovery_required",
+                        result_code = "agent_preparation.already_started",
+                        retryable = true,
+                    );
                     return Ok(AgentPreparationOutcome::RecoveryRequiredNoAck);
                 }
                 Err(error) => return preparation_error(AgentPreparationError::BeginControl(error)),
@@ -1387,8 +1402,12 @@ where
                 config.lease,
             );
             tracing::Span::current().record("stage", "lease_activation");
+            tracing::info!(event = "agent_preparation_lease_activation_started");
             let execution = match lease.activate().await {
-                ClaimLeaseActivation::Active(execution) => execution,
+                ClaimLeaseActivation::Active(execution) => {
+                    tracing::info!(event = "agent_preparation_lease_active");
+                    execution
+                }
                 ClaimLeaseActivation::Inactive { execution, error }
                     if is_terminal_lease(&error) =>
                 {
@@ -1460,13 +1479,22 @@ impl ActiveAgentPreparation {
             Err(error) => return preparation_error(error),
         }
         tracing::Span::current().record("stage", "input_materialization");
+        tracing::info!(event = "agent_preparation_input_started");
         let materialized = match self
             .lease
             .run_pre_invocation(input.materialize(&self.execution))
             .await
         {
-            Ok(Ok(materialized)) => materialized,
+            Ok(Ok(materialized)) => {
+                tracing::info!(event = "agent_preparation_input_materialized");
+                materialized
+            }
             Ok(Err(error)) => {
+                tracing::warn!(
+                    event = "agent_preparation_input_failed",
+                    error_code = error.code(),
+                    retryable = error.retryable(),
+                );
                 return self
                     .terminal_after_final_lease(PreInvocationTerminalCause::InputContent(error))
                     .await;
@@ -1501,6 +1529,7 @@ impl ActiveAgentPreparation {
             Err(error) => return preparation_error(error),
         }
         tracing::Span::current().record("outcome", "prepared");
+        tracing::info!(event = "agent_preparation_completed");
         Ok(AgentPreparationOutcome::Prepared(Box::new(
             PreparedAgentInvocation {
                 delivery: self.delivery,

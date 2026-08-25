@@ -9,7 +9,8 @@ use tokio::time::timeout;
 use tonic::{Request, Response, Status};
 
 use super::agent_lease::{
-    ClaimLeaseError, ClaimLeaseErrorCode, ClaimLeaseMonitor, ClaimLeaseMonitorConfig,
+    ClaimLeaseActivation, ClaimLeaseError, ClaimLeaseErrorCode, ClaimLeaseMonitor,
+    ClaimLeaseMonitorConfig,
 };
 use crate::protocol::control::{
     AgentControlClient, test_lease_starting_execution, test_terminal_claim_recovery,
@@ -468,6 +469,36 @@ async fn durable_stop_cancels_only_a_pre_invocation_future() {
     .expect_err("durable stop");
     assert_eq!(error.code(), ClaimLeaseErrorCode::Cancelled);
     assert!(!active.load(Ordering::SeqCst));
+    monitor.close().await.expect("close");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn activation_revision_does_not_starve_pre_invocation_work() {
+    let state = Arc::new(FakeState::default());
+    let mut monitor = ClaimLeaseMonitor::start(
+        client(Arc::clone(&state)),
+        test_lease_starting_execution(NOW + 60_000),
+        Arc::new(|| NOW),
+        config(Duration::from_secs(10)),
+    );
+    let ClaimLeaseActivation::Active(execution) = monitor.activate().await else {
+        panic!("lease activation must succeed");
+    };
+
+    let value = timeout(
+        Duration::from_secs(1),
+        monitor.run_pre_invocation(async { "materialized" }),
+    )
+    .await
+    .expect("pre-invocation operation must not be starved")
+    .expect("lease remains active");
+
+    assert_eq!(value, "materialized");
+    assert_eq!(
+        state.renew_requests.lock().expect("renew requests").len(),
+        1
+    );
+    drop(execution);
     monitor.close().await.expect("close");
 }
 

@@ -86,6 +86,10 @@ pub struct AgentExecutionPayload {
     pub exception_handling_enabled: Option<bool>,
     pub debug_mode: Option<bool>,
     pub next_input_suggestion: NextInputSuggestionPolicy,
+    /// Admission-resolved platform guardrails. `None` preserves the startup
+    /// fallback for commands produced before field 38 existed; `Some({})`
+    /// explicitly clears that fallback for this invocation.
+    pub toolkit_guardrails: Option<Map<String, Value>>,
 }
 
 #[derive(Eq, PartialEq)]

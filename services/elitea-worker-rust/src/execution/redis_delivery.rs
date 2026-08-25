@@ -494,13 +494,19 @@ where
             workers: HashSet::with_capacity(self.config.intake.max_concurrency()),
             heartbeat: None,
         };
-        for _ in 0..self.config.intake.max_concurrency() {
+        for worker_index in 0..self.config.intake.max_concurrency() {
             let task = tasks.spawn(delivery_worker(
                 Arc::clone(&receiver),
                 Arc::clone(&self.processor),
+                worker_index,
             ));
             registry.workers.insert(task.id());
         }
+        tracing::info!(
+            event = "redis_delivery_workers_spawned",
+            worker_count = registry.workers.len(),
+            queue_capacity = self.config.intake.queue_capacity(),
+        );
         let heartbeat = tasks.spawn(heartbeat_worker(
             Arc::clone(&self.intake),
             heartbeat_stopped,
@@ -540,6 +546,13 @@ where
                 batch = self.intake.next_batch() => {
                     match batch {
                         Ok(deliveries) => {
+                            if !deliveries.is_empty() {
+                                tracing::info!(
+                                    event = "redis_delivery_batch_received",
+                                    delivery_count = deliveries.len(),
+                                    owned_delivery_count = self.intake.owned_count(),
+                                );
+                            }
                             if !enqueue_batch(deliveries, sender, stop).await {
                                 return None;
                             }
@@ -623,15 +636,26 @@ impl RedisDeliveryTaskRegistry {
 async fn delivery_worker<P>(
     receiver: Arc<AsyncMutex<mpsc::Receiver<OwnedRedisDelivery>>>,
     processor: Arc<P>,
+    worker_index: usize,
 ) -> RedisDeliveryTaskExit
 where
     P: RedisDeliveryProcessor,
 {
+    tracing::info!(event = "redis_delivery_worker_started", worker_index);
     loop {
         let delivery = receiver.lock().await.recv().await;
         let Some(delivery) = delivery else {
+            tracing::info!(event = "redis_delivery_worker_stopped", worker_index);
             return RedisDeliveryTaskExit::Worker(Ok(()));
         };
+        let redis_stream = delivery.stream().to_owned();
+        let redis_entry_id = delivery.entry_id().to_owned();
+        tracing::info!(
+            event = "redis_delivery_worker_received",
+            worker_index,
+            redis_stream,
+            redis_entry_id,
+        );
         let processor = Arc::clone(&processor);
         if let Err(error) = delivery
             .process(|delivery| async move { processor.process(delivery).await })
@@ -639,6 +663,12 @@ where
         {
             return RedisDeliveryTaskExit::Worker(Err(error));
         }
+        tracing::info!(
+            event = "redis_delivery_worker_completed",
+            worker_index,
+            redis_stream,
+            redis_entry_id,
+        );
     }
 }
 
@@ -681,6 +711,8 @@ async fn enqueue_batch(
     stop: &mut watch::Receiver<bool>,
 ) -> bool {
     for delivery in deliveries {
+        let redis_stream = delivery.stream().to_owned();
+        let redis_entry_id = delivery.entry_id().to_owned();
         tokio::select! {
             biased;
             () = wait_for_stop(stop) => return false,
@@ -688,6 +720,12 @@ async fn enqueue_batch(
                 if result.is_err() {
                     return false;
                 }
+                tracing::info!(
+                    event = "redis_delivery_enqueued",
+                    redis_stream,
+                    redis_entry_id,
+                    queue_remaining_capacity = sender.capacity(),
+                );
             }
         }
     }

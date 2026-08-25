@@ -628,6 +628,40 @@ else
   fail "a default install renders an authentication material init container, and it has no authentication configuration to read"
 fi
 
+# The native ADK history uses a separate, pre-existing agentstate database.
+# Keep its credential out of the Main Deployment and business migration Job.
+if [ -z "$(yq eval-all 'select(.kind == "Job") | select(.metadata.name | test("agentstate-migrate$")) | .metadata.name' "$WORK/default.yaml")" ]; then
+  pass "a default install renders no agentstate migration Job"
+else
+  fail "a default install renders an agentstate migration Job without an agentstate credential"
+fi
+
+cat >"$WORK/agentstate-migration.yaml" <<'YAML'
+agentStateMigrations:
+  enabled: true
+  databaseSecret:
+    name: elitea-agentstate-database
+    key: connection-url
+YAML
+helm template test-release "$CHART" \
+  -f "$WORK/agentstate-migration.yaml" >"$WORK/agentstate-migration-render.yaml"
+agentstate_job='select(.kind == "Job") | select(.metadata.name | test("agentstate-migrate$"))'
+if [ "$(yq eval-all "$agentstate_job | .spec.template.spec.containers[0].args[0]" "$WORK/agentstate-migration-render.yaml")" = "-agentstate" ]; then
+  pass "the agentstate migration Job selects the independent native history"
+else
+  fail "the agentstate migration Job does not run /elitea-migrate -agentstate"
+fi
+if [ "$(yq eval-all "$agentstate_job | .spec.template.spec.containers[0].env[] | select(.name == \"AGENTSTATE_DATABASE_URL\") | .valueFrom.secretKeyRef.name" "$WORK/agentstate-migration-render.yaml")" = "elitea-agentstate-database" ]; then
+  pass "the agentstate migration Job reads its separate database Secret"
+else
+  fail "the agentstate migration Job does not read the configured database Secret"
+fi
+if [ -z "$(yq eval-all 'select(.kind == "Deployment") | .spec.template.spec.containers[0].env[]? | select(.name == "AGENTSTATE_DATABASE_URL") | .name' "$WORK/agentstate-migration-render.yaml")" ]; then
+  pass "the Main Deployment does not receive the agentstate database credential"
+else
+  fail "the Main Deployment receives the agentstate database credential"
+fi
+
 # The operator-supplied volume stays supported, and it renders NO init
 # container: those files are already real and owner-owned.
 cat >"$WORK/auth-csi-material.yaml" <<'YAML'
@@ -738,6 +772,10 @@ refuses "two dispatch planes sharing a stream with different consumer groups" \
 refuses "a runtime name set through the env map" \
   "ELITEA_RUNTIME_COMMAND_STREAM" \
   --set-string env.ELITEA_RUNTIME_COMMAND_STREAM=x
+
+refuses "agentstate migration without a database Secret" \
+  "agentStateMigrations.databaseSecret.name" \
+  --set agentStateMigrations.enabled=true
 
 # --- The authentication material, issue #444 --------------------------------
 refuses "production authentication with no material source" \

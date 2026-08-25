@@ -109,6 +109,7 @@ pub(super) fn ordinary_request(kind: AgentExecutionKind) -> AgentExecutionReques
             exception_handling_enabled: None,
             debug_mode: None,
             next_input_suggestion: NextInputSuggestionPolicy::default(),
+            toolkit_guardrails: None,
         },
     }
 }
@@ -159,6 +160,13 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
     assert_eq!(adhoc.max_tokens(), 2048);
     assert_eq!(adhoc.reasoning_effort(), None);
     assert_eq!(adhoc.temperature(), Some(0.7));
+
+    let mut no_system_instruction = ordinary_request(AgentExecutionKind::Adhoc);
+    no_system_instruction
+        .payload
+        .application
+        .insert("instructions".to_owned(), json!(""));
+    assert!(OrdinaryNoToolProfile::validate(&no_system_instruction).is_ok());
 
     let mut multiline = ordinary_request(AgentExecutionKind::Application);
     multiline

@@ -541,6 +541,10 @@ impl ClaimLeaseMonitor {
                 biased;
                 changed = self.state.changed() => {
                     changed.map_err(|_| ClaimLeaseError::closed())?;
+                    // `changed` does not mark the observed revision as seen.
+                    // Without this acknowledgement, the biased branch stays
+                    // ready forever and starves the protected operation.
+                    drop(self.state.borrow_and_update());
                     self.ensure_running()?;
                 }
                 output = &mut operation => {

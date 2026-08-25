@@ -592,6 +592,27 @@ async fn runtime_worker_count_is_a_structural_processing_bound() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_hands_an_enqueued_delivery_to_a_worker_while_intake_waits() {
+    let connection = Arc::new(FakeConnection::new(1));
+    connection.push_read(Ok(vec![delivery("1-0")]));
+    let connector = Arc::new(FakeConnector::new([connection]));
+    let handle = Arc::new(RedisStreamsHandle::new(connector));
+    let processor = Arc::new(TestProcessor::new());
+    let runtime = RedisDeliveryRuntime::new(handle, Arc::clone(&processor), runtime_config(1, 1));
+    let (stop, stopped) = watch::channel(false);
+    let task = tokio::spawn(runtime.run(stopped));
+
+    tokio::time::timeout(Duration::from_secs(1), processor.wait_started(1))
+        .await
+        .expect("an enqueued delivery reaches a worker");
+    stop.send(true).expect("request runtime stop");
+    processor.release(1);
+    task.await
+        .expect("runtime task")
+        .expect("runtime after queue handoff");
+}
+
 #[tokio::test(start_paused = true)]
 async fn runtime_reconnects_only_after_the_stop_aware_dependency_delay() {
     let first = Arc::new(FakeConnection::new(1));

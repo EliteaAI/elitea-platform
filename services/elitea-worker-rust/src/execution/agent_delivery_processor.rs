@@ -35,7 +35,10 @@ use super::output_delivery::{
 };
 use super::redis_delivery::RedisDeliveryProcessor as RedisDeliveryProcessorContract;
 use crate::agents::runtime::NativeAgentAssembler;
-use crate::protocol::command::SignedCommandAuthenticator;
+use crate::diagnostics::attach_command_trace_parent;
+use crate::protocol::command::{
+    SignedCommandAuthenticator, VerifiedAgentCommand, parse_and_verify_agent_command,
+};
 use crate::protocol::control::{AgentControlClient, AgentOutputRecoveryKind};
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{
@@ -115,16 +118,15 @@ where
     async fn process_owned(
         &self,
         delivery: RedisCommandDelivery,
+        verified: VerifiedAgentCommand,
     ) -> Result<AgentDeliveryProcessOutcome, AgentDeliveryProcessError> {
+        tracing::info!(event = "agent_delivery_routing_started");
         let route = self
             .router
-            .route(
-                delivery,
-                self.authenticator.as_ref(),
-                self.clock.now_unix_millis(),
-            )
+            .route_verified(delivery, verified, self.clock.now_unix_millis())
             .await
             .map_err(AgentDeliveryProcessError::Delivery)?;
+        tracing::info!(event = "agent_delivery_routed", route = ?route.kind());
         match route {
             AgentDeliveryRoute::Fresh(fresh) => Box::pin(self.process_fresh(*fresh)).await,
             AgentDeliveryRoute::OutputRecovery(recovery) => {
@@ -147,12 +149,17 @@ where
         &self,
         fresh: super::agent_delivery::FreshAgentDelivery,
     ) -> Result<AgentDeliveryProcessOutcome, AgentDeliveryProcessError> {
-        match self
+        tracing::info!(event = "agent_output_preflight_started");
+        let outcome = self
             .output
             .prepare(fresh)
             .await
-            .map_err(AgentDeliveryProcessError::OutputPreflight)?
-        {
+            .map_err(AgentDeliveryProcessError::OutputPreflight)?;
+        tracing::info!(
+            event = "agent_output_preflight_completed",
+            preflight_disposition = ?outcome.kind(),
+        );
+        match outcome {
             AgentOutputPreflightOutcome::Empty(empty) => {
                 Box::pin(self.prepare_and_submit(*empty)).await
             }
@@ -197,8 +204,12 @@ where
         .map_err(AgentDeliveryProcessError::Preparation)?;
         match outcome {
             AgentPreparationOutcome::Prepared(prepared) => {
+                tracing::info!(event = "agent_invocation_submission_started");
                 let waiter = match self.coordinator.submit(*prepared) {
-                    Ok(waiter) => waiter,
+                    Ok(waiter) => {
+                        tracing::info!(event = "agent_invocation_submitted");
+                        waiter
+                    }
                     Err(rejected) => {
                         let code = rejected.error().code();
                         let lease_error = rejected
@@ -215,10 +226,12 @@ where
                         return Ok(AgentDeliveryProcessOutcome::retained(code, true));
                     }
                 };
+                tracing::info!(event = "agent_invocation_completion_wait_started");
                 let completion = waiter
                     .wait()
                     .await
                     .map_err(AgentDeliveryProcessError::Supervision)?;
+                tracing::info!(event = "agent_invocation_completion_received");
                 Self::finish_invocation(completion)
             }
             AgentPreparationOutcome::RetryLaterNoAck => Ok(AgentDeliveryProcessOutcome::retained(
@@ -300,18 +313,74 @@ where
     I: AgentInputMaterializer + 'static,
 {
     async fn process(&self, delivery: RedisCommandDelivery) {
-        let span = tracing::info_span!(
-            "agent.delivery",
+        let verification = tracing::info_span!(
+            "agent.delivery.verify",
             redis_stream = %delivery.stream(),
             redis_entry_id = %delivery.entry_id(),
+            outcome = tracing::field::Empty,
+            error_code = tracing::field::Empty,
+            retryable = tracing::field::Empty,
+        );
+        let verified = match verification.in_scope(|| {
+            tracing::info!(event = "agent_delivery_verification_started");
+            parse_and_verify_agent_command(
+                delivery.signed_envelope(),
+                Some(self.authenticator.as_ref()),
+            )
+        }) {
+            Ok(verified) => {
+                verification.record("outcome", "verified");
+                verification.in_scope(|| {
+                    tracing::info!(event = "agent_delivery_verified");
+                });
+                verified
+            }
+            Err(error) => {
+                let error = AgentDeliveryProcessError::Delivery(error.into());
+                verification.record("outcome", "failed_no_ack");
+                verification.record("error_code", error.code());
+                verification.record("retryable", error.retryable());
+                verification.in_scope(|| {
+                    tracing::warn!(
+                        event = "agent_delivery_verification_failed",
+                        error_code = error.code(),
+                        retryable = error.retryable(),
+                    );
+                });
+                return;
+            }
+        };
+        let command = verified.command();
+        let span = tracing::info_span!(
+            parent: None,
+            "agent.delivery",
+            execution_kind = ?verified.kind(),
+            execution_id = %command.execution_id,
+            root_execution_id = %command.root_execution_id,
+            generation = command.generation,
+            command_id = %command.command_id,
+            tenant_id = %command.tenant_id,
+            resource_project_id = %command.resource_project_id,
+            projection_project_id = %command.projection_project_id,
+            capability_id = %command.capability_id,
+            parent_execution_id = %command.parent_execution_id,
+            parent_call_id = %command.parent_call_id,
+            redis_stream = %delivery.stream(),
+            redis_entry_id = %delivery.entry_id(),
+            trace_context_present = !command.traceparent.is_empty(),
+            remote_parent = tracing::field::Empty,
             outcome = tracing::field::Empty,
             result_code = tracing::field::Empty,
             error_code = tracing::field::Empty,
             retryable = tracing::field::Empty,
         );
+        let remote_parent =
+            attach_command_trace_parent(&span, &command.traceparent, &command.tracestate);
+        span.record("remote_parent", remote_parent);
         Box::pin(
             async move {
-                match Box::pin(self.process_owned(delivery)).await {
+                tracing::info!(event = "agent_delivery_started");
+                match Box::pin(self.process_owned(delivery, verified)).await {
                     Ok(outcome) => outcome.record(),
                     Err(error) => {
                         tracing::Span::current().record("outcome", "failed_no_ack");
@@ -400,11 +469,17 @@ impl AgentDeliveryProcessOutcome {
                 tracing::Span::current().record("outcome", "completed");
                 tracing::Span::current().record("result_code", code);
                 tracing::Span::current().record("retryable", false);
+                tracing::info!(event = "agent_delivery_completed", result_code = code);
             }
             Self::RetainedNoAck { code, retryable } => {
                 tracing::Span::current().record("outcome", "retained_no_ack");
                 tracing::Span::current().record("result_code", code);
                 tracing::Span::current().record("retryable", retryable);
+                tracing::warn!(
+                    event = "agent_delivery_retained_no_ack",
+                    result_code = code,
+                    retryable,
+                );
             }
         }
     }

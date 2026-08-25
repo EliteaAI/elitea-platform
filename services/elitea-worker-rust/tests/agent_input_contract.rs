@@ -98,6 +98,7 @@ fn python_generated_application_fixture_maps_all_current_fields() {
             timeout_seconds: 16,
         }
     );
+    assert!(payload.toolkit_guardrails.is_none());
     let UserInput::ContentBlocks(blocks) = &payload.user_input else {
         panic!("fixture user input must remain content blocks");
     };
@@ -273,6 +274,32 @@ fn empty_next_input_policy_defaults_and_unknown_fields_are_rejected() {
         message,
         AgentExecutionKind::Application,
         "next input suggestion",
+    );
+}
+
+#[test]
+fn per_run_toolkit_guardrails_distinguish_absent_empty_and_invalid() {
+    let mut message = application_message();
+    message.toolkit_guardrails.clear();
+    let request = request_from(message, AgentExecutionKind::Application, binding())
+        .expect("an absent policy preserves the deployment fallback");
+    assert!(request.payload.toolkit_guardrails.is_none());
+
+    let mut message = application_message();
+    message.toolkit_guardrails = br"{}".to_vec();
+    let request = request_from(message, AgentExecutionKind::Application, binding())
+        .expect("an explicit empty policy is authoritative");
+    assert_eq!(
+        request.payload.toolkit_guardrails,
+        Some(serde_json::Map::new())
+    );
+
+    let mut message = application_message();
+    message.toolkit_guardrails = br#"{"future_policy":true}"#.to_vec();
+    assert_invalid(
+        message,
+        AgentExecutionKind::Application,
+        "toolkit guardrails",
     );
 }
 

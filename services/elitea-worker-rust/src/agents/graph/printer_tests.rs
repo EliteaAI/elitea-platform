@@ -458,5 +458,6 @@ fn printer_resume_payload(input: &str) -> AgentExecutionPayload {
         exception_handling_enabled: None,
         debug_mode: None,
         next_input_suggestion: NextInputSuggestionPolicy::default(),
+        toolkit_guardrails: None,
     }
 }

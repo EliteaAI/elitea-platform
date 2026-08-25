@@ -47,7 +47,7 @@ conversation state or block the direct-agent runtime checkpoint.
 | Python worker `transport/input_content.py::{ClaimBoundInputRequestBuilder,ScopedInputContentClient.fetch_materialized}`, Main `infra/storage/content_server.go::ContentServer` | Redeem one post-claim input over HTTPS/HTTP2 using the exact claim/fence headers and escaped route; bind the derivative body to its admitted source version, length and SHA-256 | `src/protocol/control.rs::{LeaseMonitoredAgentExecution,ClaimBoundInputAuthority}`, `src/transport/input_content.rs::{MaterializedInput,InputContentClient}` | None; borrowed materialized bytes feed `src/agents/protocol.rs` before ADK assembly | `src/transport/input_content_tests.rs`: exact route/header vector, pre-network source ceiling, source and response digest/length/version mutations, HTTP/status/cache/media/duplicate-header failures, exact configured body limit, timeout and transport classification | Partial: the one-attempt adapter is implemented with a 1 MiB protocol ceiling and a configurable deployment ceiling (current Python/Main production is commonly 256 KiB). Public redemption requires the opaque state minted only after `BeginExecution` and the mandatory supervised Renew -> Observe poll; raw claim/fence construction and injected transports are test-only. The production constructor requires a private CA plus worker client identity and builds its own tonic endpoint from the validated HTTPS origin; hostname verification is derived from that origin and channel-origin substitution is impossible. Rust additionally requires HTTP/2 and `Content-Length`, rejects trailers and noncanonical base64, keeps accepted bytes in a non-clone/non-debug zeroize-on-drop wrapper, zeroizes partially collected rejected bodies, and exposes stable error codes/retry classification while retaining transport error sources. Intentional error improvement: Python treats every non-401/403 non-2xx response as retryable dependency failure; Rust follows Main's concrete meanings and classifies 400/404/413/422 as nonretryable invalid/resource failures while retaining 5xx as retryable. Real Main-to-Rust mTLS/HTTP2 component proof and full delivery-coordinator wiring remain gates |
 | Python worker `serve.py::_serve_deployment_inner`, `agents/client_context.py::{RuntimeExecutionClaim,EliteaClientContext,ClaimBoundEliteaClientContextFactory}`, `agents/sdk_adapter.py::EliteaSdkAgentAdapter.from_context` and `transport/runtime_context.py::ClaimBoundEliteaTokenClient`; Main `infra/storage/{content_server.go::PostEliteaClientToken,index_runtime_context.go::EliteaClientTokenService.Resolve,postgres_index_runtime_context.go::AuthorizeRuntimeContext}`, `transport/runtimegrpc/control/server.go::Server.AuthorizeInvocation`, `application/execution/claims.go::ClaimService.AuthorizeInvocation` and `infra/db/repos/claims.go::ClaimsRepository.AuthorizeInvocation` | Redeem the execution actor PAT from the exact live claim/fence/resource project over a dedicated non-caching mTLS HTTP/2 request; never cache, persist or log the credential | `src/protocol/control.rs::ClaimBoundRuntimeContextAuthority`, `src/agents/runtime.rs::{AuthorizedNativeAssembly,AdmittedOrdinaryNativeAssembly,RedeemedOrdinaryNativeAssembly}`, `src/transport/runtime_context.rs::{RuntimeContextClient,ClaimScopedEliteaContext}` | None; the later model/tool clients may borrow the zeroized context only after assembly admission | `src/transport/runtime_context_tests.rs`: exact escaped route/empty POST/header vector, HTTPS origin normalization, HTTP2, redirect/401/503 classification, cache metadata, content-length/body ceilings and mismatch, duplicate/extra JSON fields, schema/project/control-character mutations, timeout/transport typing and redaction; `src/agents/assembly_tests.rs::credential_redemption_is_unreachable_until_the_profile_is_admitted` | Implemented as a capability-disabled post-`AUTHORIZED_NOW` Rust authority boundary. Only the authenticated `AUTHORIZED_NOW` branch duplicates the 32-byte fence into a zeroize-on-drop, non-clone/non-debug grant; ALREADY/rejected/unknown paths cannot mint it. The grant stays inseparable from the request/output/lease/submission/Redis owner, is consumed by the first assembly attempt, and becomes redeemable exactly once only after strict profile admission. Main's redemption endpoint validates the live claim/fence/project but does not currently enforce invocation state, so the safer ordering is worker-local rather than misrepresented as a server predicate. The transport builds its own credential-redemption-origin-bound mTLS channel, requires HTTP/2 and no-cache metadata, bounds the exact JSON body to 32 KiB and the PAT to Main's 16 KiB producer limit, and returns a non-clone/non-debug zeroized context. It deliberately does not derive the later SDK/model destination from that content-service origin; provider assembly must bind a separately validated platform origin. Intentional improvement over Python: PAT issuance moves from pre-authorization input resolution to the cancellation-safe post-authorization assembly phase, so credentials do not exist before the final invocation fence. Wrong or duplicate response headers, trailers, interrupted bodies and exact PAT boundary mutations remain explicit transport-hardening test gaps alongside real Main TLS proof and provider/tool consumption |
 | Main `agentexecution/{start.go::currentApplicationInput,adhoc.go::currentAdhocInput,continue.go::ContinueCurrentAgent,tools.go::resolveCurrentAgentModel}` and `internal/db/queries/agent_chat.sql::{ResolveCurrentApplicationTurn,ResolveCurrentAdhocTurn,ResumeCurrentAgentHITL}`; Python worker `agents/sdk_adapter.py::{execute_application,execute_adhoc,_invoke_initial_agent}`; legacy Centry `methods/{indexer_agent,indexer_predict_agent}.py`; pinned SDK `runtime/clients/client.py::{application,predict_agent,get_llm}` | Preserve direct saved-agent/ad-hoc selection, frozen model controls, text history and configured/nested/MCP tool participation; admit one exact read-only sensitive-tool continuation and fail closed for other continuation, skill, attachment and context surfaces | `src/agents/{native_runtime,assembly,ordinary,session,application_tools,context_management,sensitive_tools,direct_hitl}.rs`, `src/toolkits/{snapshot,materialize,mcp}.rs`, `src/agents/runtime.rs` | Direct ADK `LlmAgent`/Runner with native `Toolset` and `AgentTool`; Elitea owns claim, policy, frozen identity, event projection and durable continuation | Assembly/session/provider tests plus strict native-router, ordinary application/ad-hoc, configured-tool, MCP, nested-child and exact sensitive-MCP pause/resume E2E loops | Partial capability-disabled runtime. Both entrypoints use one direct `LlmAgent`, exact frozen model project, bounded text history and native toolsets; saved direct children resolve once per assembly and run as `AgentTool`, and saved fixed-origin HTTP MCP toolsets use ADK's client. Sensitive tool calls pause through native confirmation. A second claimed request can restore one read-only call by exact `interrupt_id` without provider replanning; invocation-local storage and effectful calls fail before execution. Frozen applications now enter one strict native router which delegates direct agents or graph-owned pipelines without changing the surrounding authorized lifecycle. Internal/lazy tools, variables/templates, rich content, skills, attachments, MCP OAuth continuation, replay-window restart recovery, effect receipts and active context management remain closed; production handler/bootstrap registration remains empty |
-| Production-pinned SDK `runtime/clients/client.py::EliteAClient.get_llm`, `tests/runtime/test_5113_anthropic_prompt_caching.py`, and LangChain request normalization; Main public model proxy `/llm/v1/{chat/completions,messages}` | Route `openai_compatible=true` through the existing OpenAI-compatible contract and native Anthropic through `/messages`, using the frozen model's project authority | `src/transport/model_facade.rs::{ModelFacade,BoundModelFacade}`, `src/transport/model_gateway.rs::{ModelGatewayClient,EliteaOpenAiCompatibleModel}`, `src/transport/anthropic_gateway.rs::EliteaAnthropicModel`, `src/agents/ordinary.rs` | ADK provider-neutral `Llm`/request/response types plus `AnthropicSchemaAdapter`; Elitea wraps origin/TLS, actor token, model-project identity, bounded stream and completion proof | Exact compatible/native wire and stream corpora; root/child E2E asserts model projects 17/23 independently of the execution actor project | Foundation capability-disabled. The facade selects explicit OpenAI-compatible or Anthropic adapters over one origin-bound mTLS pool. Rust deliberately fixes the SDK's use of execution project by sending frozen `model_project_id` as `OpenAI-Organization`, allowing admitted shared/project-bound models without weakening actor-token authorization. Native citations, active context management, bounded pre-stream retry and real platform TLS remain gates |
+| Production-pinned SDK `runtime/clients/client.py::EliteAClient.get_llm`, `tests/runtime/test_5113_anthropic_prompt_caching.py`, and LangChain request normalization; Main public model proxy `/llm/v1/{chat/completions,messages}` | Route `openai_compatible=true` through the existing OpenAI-compatible contract and native Anthropic through `/messages`, using the frozen model's project authority | `src/transport/model_facade.rs::{ModelFacade,BoundModelFacade}`, `src/transport/model_gateway.rs::{ModelGatewayClient,EliteaOpenAiCompatibleModel}`, `src/transport/anthropic_gateway.rs::EliteaAnthropicModel`, `src/agents/ordinary.rs`; gateway `internal/{llmproxy/models.go,account/account.go,account/credential_selector.go}` | ADK provider-neutral `Llm`/request/response types plus `AnthropicSchemaAdapter`; Elitea wraps origin/TLS, actor token, model-project identity, bounded stream and completion proof | Exact compatible/native wire and stream corpora; root/child E2E asserts model projects 17/23 independently of the execution actor project; isolated Sonnet-through-compatible real-provider proof | Foundation capability-disabled with one real OpenAI-compatible proof. The facade selects explicit OpenAI-compatible or Anthropic adapters over one origin-bound mTLS pool. Rust sends frozen `model_project_id` as `OpenAI-Organization`, allowing admitted shared/project-bound models without weakening actor-token authorization. Execution `868af70730dc53444aeb27b7343f0f51` streamed and persisted `eu.anthropic.claude-sonnet-4-6` through the OpenAI-compatible adapter, Main, Bifrost and a local compatible proxy. A normal `open_ai` credential with a custom base maps to Bifrost's per-key compatible provider; an official OpenAI base stays native. The gateway accepts `/llm` or `/llm/v1` by removing the version suffix before Bifrost adds it once. Native OpenAI, native Anthropic, tool-call provider proofs, native citations, active context management and bounded pre-stream retry remain gates |
 | Python worker `transport/redis_commands.py::RedisCommandConsumer`, `transport/redis_asyncio.py::RedisAsyncioControlClient`, `serve.py::WorkerServeLoop`, and Main `transport/redisdispatch/{producer,stream_capacity}.go` | Consume one existing group with bounded `XREADGROUP`, fairly reclaim and heartbeat queued/active PEL entries, preserve exact signed bytes, stop intake then drain without business cancellation, and permit only atomic owner-bound `XACK + XDEL + delivery-index HDEL` after durable terminal authority | `src/transport/redis_commands.rs::{RedisCommandDelivery,RedisCommandRetirer,RedisRetirementClient}`, `src/transport/redis_streams.rs::{RedisStreamsClient,RedisStreamsConfig,RedisTlsMaterial,RedisReclaimPage}`, `src/transport/redis_generation.rs::RedisStreamsHandle`, `src/execution/{redis_delivery,agent_delivery_processor}.rs` | None; Redis delivery remains outside ADK execution/session state | Transport/generation tests cover canonical URL/limits, binary/duplicate/response-count corpus, Redis 7 deleted-ID reclaim shape, retirement tuple, cancellation ownership, replacement races and secret redaction; runtime tests prove fair scheduling, queue-plus-active and worker bounds, duplicate suppression, processing-lifetime heartbeat through drain, cancellation containment, delayed replacement and drain timeout; whole-agent processor tests cover both entrypoints through retirement and stopped admission; `tests/redis_command_retirement_contract.rs` covers exact-envelope and authority substitution | Implemented restricted transport, capability-disabled structured runtime and concrete application/ad-hoc processor with redis-rs 1.4.1 over worker-owned TCP/Rustls streams. Separate blocking-intake/control connections, RESP2, exact private CA plus client identity, TLS 1.3 only, bounded queues/concurrency, one command attempt and no hidden reconnect policy remain enforced. Retryable failure invalidates only the exact generation; the runtime explicitly establishes one replacement after a bounded stop-aware delay. It reserves queue-plus-active capacity before Redis, alternates bounded new reads with monotonic reclaim, retains non-cloneable PEL ownership through processing, and keeps heartbeats active after Stop until existing workers drain. The processor awaits the complete route/preflight/prepare/supervise/retire lifecycle, so a PEL entry remains owned until it is retired or deliberately returned for recovery. Runtime cancellation or drain timeout aborts its owned task set and leaves uncertain entries pending; accepted native work remains process-supervised, so the later bootstrap must enforce one process-wide shutdown budget and close the coordinator after delivery drain. It exposes no group creation, `XADD`, general ACK/delete, arbitrary Lua or key/value API. Production TLS-material/config loading, process signals, input-free running/ambiguous output recovery, real TLS/ACL Redis 7 and hostile-server pre-allocation RESP proof remain gates; see `source-mapping/redis-command-delivery.md` |
 | Python worker `execution/delivery.py::{_claim_receipt,_accepted_agent_claim,_validated_claim_entries,_validate_receipt_identity,_validate_active_fence}` and Main `runtimegrpc/control/server.go::{ClaimCommand,verifyResolvedManifest}` | Seal one fresh, exact command/fence/manifest authority only after authenticated claim | `src/protocol/control.rs::{AgentControlClient::claim_agent,AcceptedAgentClaim}` | None | `tests/agent_control_contract.rs`: deterministic Python vector plus identity/fence/digest/role/count/expiry mutation matrix | Implemented for fresh `ACCEPTED` agent claims. Raw response parsers are private, and no recovery disposition can be coerced into `AcceptedAgentClaim` |
 | Python worker `execution/delivery.py::{_validate_obsolete_receipt,_validate_retired_receipt,_validate_recover_running_receipt,_terminal_ack_recovery,_prepared_settlement_recovery}` and Main `claims.go::ClaimDecision.validate` | Interpret all ten claim dispositions without leaking inputs into recovery, distinguish ACK/no-ACK authority, and never re-enter the SDK after ambiguous invocation | `src/protocol/control.rs::{AgentControlClient::claim_agent_delivery,AgentClaimDecision,AgentOutputRecovery,RecoverTerminalAck,RecoveredSettlement,TerminalCommandAck}` | None | Python-generated vector for every disposition; input/authority leakage, retirement, proposal digest and exact settlement replay mutation cases | Implemented closed recovery admission. Only `Accepted` contains business input; active/running/ambiguous states expose output recovery plus a unique lease handle, while terminal proposal/receipt types permit only settlement replay or Redis retirement. `SETTLED_ACK` remains consumer-supported but no current Main repository producer branch was found |
@@ -267,23 +267,27 @@ response bodies, prompts, MCP tokens, fence tokens, claim credentials and
 materialized input never enter the public message or structured fields.
 
 Tracing begins at orchestration boundaries rather than inside every protocol
-helper. Fresh preparation emits one `agent.prepare` span with allowlisted
-execution identity, kind, generation, current stage, outcome and stable error
-code. Execution identifiers are correlation fields, not metric labels; metrics
-use only bounded kind/outcome/code values. Low-level control, lease and input
-components return context-rich typed errors and do not independently log the
-same failure. The process entrypoint installs a static panic hook before doing
-any work, so arbitrary provider/tool panic payloads and source locations do not
-reach stderr. It also installs a crate-scoped `tracing-subscriber` before doing
-any work. `ELITEA_RUST_LOG` accepts only one level (`off` through `trace`) and
-cannot enable dependency-owned HTTP/model/SQL/SMTP fields. Native lifecycle
-spans carry authenticated execution correlation; assembly records only model
-dialect/project and bounded tool/application counts; every policy-wrapped tool
-and nested `AgentTool` records invocation/function-call identity, outcome and a
-stable error code. Prompts, arguments, results, URLs, credentials and provider
-bodies are never fields. The deployed service still needs its OTLP/metrics
-exporter and retention/cardinality policy, but the local worker checkpoint can
-already produce structured phase and duration logs.
+helper. The worker emits redacted structured logs and standard OTLP spans for
+command verification, Redis delivery, claim, preparation, native ADK execution,
+model requests, session/checkpoint writes, output, settlement and retirement.
+Fresh preparation emits `agent.prepare`; later phases include
+`agent.delivery.verify`, `agent.delivery`, `agent.native_lifecycle`,
+`agent.model.request`, `agent.session.persist` and graph-checkpoint spans.
+
+Valid W3C `traceparent` metadata continues the upstream trace.
+`ELITEA_RUST_LOG` and `ELITEA_RUST_TRACE` accept one level from `off` through
+`trace` and remain crate-scoped. They cannot enable dependency-owned HTTP,
+model, SQL or SMTP fields. Execution identifiers are correlation fields, not
+metric labels. Metrics may use only bounded kind, outcome and error-code values.
+Prompts, arguments, results, URLs, credentials, tokens and provider bodies are
+never fields.
+
+The process installs a redacted panic hook before runtime composition. It hides
+the panic payload and full source path, but retains a sanitized filename and
+line for diagnosis. OTLP batching uses the Tokio runtime. This avoids the
+exporter-thread reactor panic that aborted the release process when the async
+HTTP exporter flushed on a non-Tokio thread. Backend retention, sampling,
+metrics and Kubernetes activation remain deployment-owned.
 
 ### Agent input field projection
 
@@ -363,35 +367,54 @@ hierarchy table is introduced.
 | SDK `runtime/clients/client.py::{_inject_summarization,_inject_context_editing}`, `runtime/middleware/summarization.py::SummarizationMiddleware`, Python worker `AgentExecutionPayload.context_settings`, Main `start.go`/`adhoc.go` and `conversation.meta.context_analytics.last_summarization` projections | Token-triggered summary plus optional old-tool-output editing, while retaining continuation and analytics | `src/agents/context_management.rs`, `src/agents/session.rs`, `src/state/postgres_session.rs`, graph-only `src/state/postgres_checkpointer.rs`; future browser analytics adapter | ADK `EventsCompactionConfig`, `IntraCompactionConfig`, `BaseEventsSummarizer`/`LlmEventSummarizer` and Runner context-compaction strategy are candidate primitives; Elitea owns frozen policy/model authority, safe boundaries, durable selection and projection | Disabled-master-switch admission now passes; active/malformed settings fail before PAT. Required future corpus covers tool call/result pairs, threshold/overlap, restart/resume, nested isolation, HITL, skills and analytics | Foundation seam, deliberately inactive. The protobuf/Python worker support the field, but current Main application and ad-hoc builders hard-code `context_settings={}`; only summary analytics are presently read from conversation metadata. Main must project a frozen policy and summary-model authority before activation. Conversation compaction must persist through the custom PostgreSQL `SessionService`; graph executions additionally coordinate frontier state through the custom `Checkpointer` |
 | SDK `runtime/tools/skill_tools.py::{LoadSkillTool,loaded_skill_names_from_messages,render_skill_registry_index}` | Progressive disclosure, exact attached-name authorization, history-backed loaded state | `src/agents/skills.rs` | ADK dynamic tool binding/history | Load/dedup/compaction/reload/nested-isolation tests | Planned; current focused Python proof is missing |
 
-### First running-platform checkpoint
+### First running-platform checkpoint result
 
-The next meaningful checkpoint is a real local Main + Rust-worker execution,
-not more provider-family inventory and not indexing. It begins when these
-runtime gates are closed:
+The isolated Main, Redis, PostgreSQL, model facade and Rust worker completed a
+real ad-hoc chat on 2026-08-25. Execution
+`bc39746696860d52761e5a2470e83c47` streamed nine node events, echoed the prompt
+through the mock model and persisted the reply. The worker retired the Redis
+delivery and remained running with `restart_count=0` after OTLP flush.
 
-1. Main can dispatch the capability-disabled direct application/ad-hoc path to
-   the Rust worker and redeem the exact model actor; the missing nested-version
-   route may remain gated if the first smoke does not attach a child.
-2. One read-only configured toolkit executes through the same `LlmAgent` loop,
-   with tool call/result browser events durably ACKed.
-3. One saved child agent executes through the typed native-child adapter, either after Main adds
-   the claim-bound exact-version route or by sending the complete frozen child
-   definition in the secure input.
-4. Structured logs correlate `agent.prepare`, `agent.native_lifecycle`,
-   `agent.assemble`, generic tool calls and nested-agent calls by authenticated
-   execution/generation plus ADK invocation/function-call identity, without any
-   prompt, argument, result, credential or provider-body field.
-5. Before an effectful or sensitive tool is exercised, MCP/auth and direct-tool
-   HITL must resume by durable `interrupt_id`. Direct pending-call events are
-   restored through the claim-fenced PostgreSQL `SessionService`; graph HITL
-   additionally restores its `Checkpointer` frontier. Both use the existing
-   `agentstate` schema and one execution authority, not separate databases.
+The collector received `service.name=elitea-worker-rust` and correlated spans
+for command verification, delivery, preparation, native lifecycle, one model
+request and five session writes. This ad-hoc execution did not use a graph, so
+it correctly emitted no graph-checkpoint write span. The proof also found and
+fixed a release-aborting OTLP exporter panic by using Tokio-backed batching.
 
-The local exercise must capture the browser stream, Rust structured logs, Main
-claim/output/settlement logs and the applicable PostgreSQL session events plus
-graph checkpoint interrupt state for the same execution. OTLP export, load
-proof and live external providers can follow this checkpoint; indexing/RAG
-remains last.
+The same deployment exercised the UI model-configuration path through Main and
+Bifrost. The model catalog uses `configuration.data.name`, not the
+configuration title, as the runtime model identifier. After the isolated
+gateway allowlist admitted `api.openai.com:443`, execution
+`c9b27286118d3e3f999297d97f4f94bd` selected `gpt-4o-mini`, did not call the
+mock server, reached OpenAI, and received `model_gateway.unauthorized`. The
+available shell value is therefore not a usable OpenAI API key. Rust published
+the durable `execution.failed` terminal, retired the delivery and stayed at
+`restart_count=0`. The repository smoke reader now recognizes that terminal by
+its SSE `event:` name; runtime failures do not carry the node-event
+`data.type`.
+
+A credentialed follow-up then exercised the Rust `ModelFacade` through the
+current local Elitea OpenAI-compatible proxy. The host-facing provider base was
+`http://localhost:80/llm/v1`; the isolated gateway used Docker's stable host
+alias for the container hop. Execution `868af70730dc53444aeb27b7343f0f51`
+selected `eu.anthropic.claude-sonnet-4-6` with
+`openai_compatible=true`, streamed a unique response marker, persisted the
+assistant reply and retired normally. Both worker and gateway stayed at
+`restart_count=0`.
+
+The proof used the existing `open_ai` credential type, not a new user-facing
+provider. The gateway keeps official `api.openai.com` bases on Bifrost's native
+OpenAI provider. It maps a linked `open_ai` credential with another `api_base`
+to Bifrost's per-key compatible provider, while reading no key material in the
+model resolver. Bifrost appends `/v1/chat/completions`, so gateway account
+normalization removes exactly one trailing `/v1`; both `/llm` and `/llm/v1`
+stored values are operational.
+
+The next platform proofs cover one read-only configured toolkit, one frozen
+saved child, one real graph pause/resume with PostgreSQL checkpoint inspection,
+and the native OpenAI/Anthropic plus tool-calling model matrix. Approved
+effects, Kubernetes activation and load tests remain later gates. Indexing and
+RAG remain last.
 
 ## MCP, HITL, budgets, and cancellation
 
