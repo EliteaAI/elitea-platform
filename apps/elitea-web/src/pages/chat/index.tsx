@@ -44,6 +44,7 @@ import type { Participant } from '@/entities/participant';
 import { ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
 import type { ChatBoxProps } from '@/widgets/chat-box';
 import { ChatBox } from '@/widgets/chat-box';
+import { ContextBudget } from '@/widgets/context-budget';
 
 import { useChatPageData } from './useChatPageData';
 
@@ -208,6 +209,21 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
           : {})}
         {...(activeParticipant ? { activeParticipant: activeParticipant as Record<string, unknown> } : {})}
         onSelectParticipant={handleChangeParticipant}
+        /*
+         * The context-budget panel. `ParticipantsWrapper` has always accepted
+         * this slot (and gates the `conversationId` it hands over on the
+         * conversation being neither new nor playback); nothing supplied it, so
+         * the foot of the rail was empty. `features/` may not import
+         * `widgets/`, which is why the slot is filled HERE — the page is the
+         * lowest layer allowed to name the widget. `projectId` comes from
+         * `useChatPageData`, which already resolves it for `ChatBox`.
+         */
+        renderContextBudget={({ conversationId: budgetConversationId }) => (
+          <ContextBudget
+            conversationId={activeConversation?.isNew || activeConversation?.isPlayback ? undefined : budgetConversationId}
+            projectId={projectId}
+          />
+        )}
       />
     </Box>
   );

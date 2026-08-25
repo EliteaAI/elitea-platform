@@ -279,7 +279,7 @@ export const ParticipantsWrapper = memo(
             resolveToolkitIcon={resolveToolkitIcon}
             isMcpVisible={isMcpVisible}
             renderContextBudget={contextSlot}
-            {...(activeConversation?.id !== undefined ? { conversationId: activeConversation.id } : {})}
+            {...(derived._conversationId !== undefined ? { conversationId: derived._conversationId } : {})}
             maxVisibleUsers={maxVisibleUsers}
             isSmallWindow={isSmallWindow}
             selectedManager={selectedManager}
@@ -301,6 +301,11 @@ function useParticipantsDerived(
     participants: useMemo(() => activeConversation?.participants ?? [], [activeConversation]),
     isPlayback: useMemo(() => !!activeConversation?.isPlayback, [activeConversation]),
     isActive: useMemo(() => !activeConversation?.isNew && !activeConversation?.isPlayback, [activeConversation]),
+    // The id the context-budget slot is allowed to query with. A draft
+    // (`isNew`) or replayed (`isPlayback`) conversation has no server-side
+    // state, so it must NOT be handed down as a real conversation — passing
+    // `activeConversation.id` straight through bypasses this and makes the
+    // budget query for something that cannot answer.
     _conversationId: useMemo(
       () => {
         const isActive = !activeConversation?.isNew && !activeConversation?.isPlayback;

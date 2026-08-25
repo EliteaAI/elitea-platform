@@ -135,8 +135,8 @@ export default defineConfig(({ mode }): UserConfig => {
  *                   the brand pack 404s and the app silently falls back to the
  *                   compiled-in default (channel A) — it would look almost
  *                   right, which is worse than looking broken.
- *  - `/config.js`   `index.html` asks for `./config.js`, which at the dev
- *                   server's root resolves to `/config.js`. The stack serves
+ *  - `config.js`    at ANY depth — `index.html` asks for it RELATIVE, so a
+ *                   deep link resolves it against that path. The stack serves
  *                   the same file at `/app/config.js`, hence the rewrite. It
  *                   carries `vite_server_url`, `vite_public_project_id` and
  *                   the socket settings; with it missing the app boots with an
@@ -159,7 +159,14 @@ function devServerProxy(): NonNullable<UserConfig['server']> {
       '/forward-auth': forward,
       '/auth': forward,
       '/socket.io': { ...forward, ws: true },
-      '/config.js': { ...forward, rewrite: () => '/app/config.js' },
+      // A REGEX, matching `config.js` at ANY depth. `index.html` loads it as
+      // `./config.js`, so the browser resolves it against the current path:
+      // `/settings/personalization` asks for `/settings/config.js`, not
+      // `/config.js`. In production nginx absorbs that with a depth-tolerant
+      // alias (contract C8); a literal `/config.js` key here works on the root
+      // route and then hands every deep link a 404 that surfaces as the
+      // "System env missing: VITE_SERVER_URL …" page.
+      '^/.*/?config\\.js$': { ...forward, rewrite: () => '/app/config.js' },
     },
   };
 }
