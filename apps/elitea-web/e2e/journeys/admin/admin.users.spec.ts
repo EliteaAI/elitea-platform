@@ -170,6 +170,18 @@ adminTest('J28: suspending a user is written to the database and survives a relo
 });
 
 adminTest('J34: the activity drawer reads the audit trail scoped to one user', async ({ page }) => {
+  // The clicked row's id, resolved INDEPENDENTLY of the drawer. Reading it back
+  // out of the drawer's own request instead would be circular: a drawer wired
+  // to `users[0]` would query for the wrong person AND head itself with that
+  // same wrong person, and every assertion below would agree with itself.
+  const listing = await page.request.get(
+    `${BASE_URL}/api/v2/admin/auth_users/administration?limit=100&offset=0&search=${SEEDED_MEMBER}`,
+  );
+  expect(listing.status(), 'the listing must answer before the drawer can be checked').toBe(200);
+  const listed = (await listing.json()) as { rows?: { id: number; email: string }[] };
+  const expectedId = listed.rows?.find((entry) => entry.email === SEEDED_MEMBER)?.id;
+  expect(expectedId, `${SEEDED_MEMBER} must be a seeded row`).toBeGreaterThan(0);
+
   await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
   const row = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
   await expect(row).toHaveCount(1, { timeout: 20_000 });
@@ -188,11 +200,13 @@ adminTest('J34: the activity drawer reads the audit trail scoped to one user', a
   const traceResponse = await traceListing;
   expect(traceResponse.status(), 'the audit read must be authorised server-side').toBe(200);
 
-  // The id is not hardcoded: the seed assigns it. Asserting that the QUERY's
-  // `user_id` is the one the drawer's own heading names is what rules out a
-  // drawer pinned to the first row, or to nothing.
+  // Against the id the LISTING gave, not against the drawer's own heading —
+  // that is what rules out a drawer pinned to the first row, or to nothing.
+  // Compared as a parsed parameter, never as a substring of the URL: `user_id=1`
+  // is a substring of `user_id=12`, so `toContain` would accept a query pinned
+  // to a different account whose id merely starts with these digits.
   const userId = new URL(traceResponse.url()).searchParams.get('user_id');
-  expect(userId, 'every audit query must be scoped to a user').toMatch(/^\d+$/);
+  expect(userId, 'the listing must be scoped to the clicked user').toBe(String(expectedId));
   await expect(page.getByText(`(ID: ${userId})`)).toBeVisible({ timeout: 15_000 });
 
   // The heatmap is drawn over the same window as the table beneath it, so it
@@ -204,7 +218,7 @@ adminTest('J34: the activity drawer reads the audit trail scoped to one user', a
   await page.getByRole('button', { name: 'Refresh' }).click();
   const heatmapResponse = await heatmap;
   expect(heatmapResponse.status()).toBe(200);
-  expect(heatmapResponse.url()).toContain(`user_id=${userId}`);
+  expect(new URL(heatmapResponse.url()).searchParams.get('user_id')).toBe(userId);
 
   // Spans is the strictly per-user view: with `user_id` pinned, a TRACE is any
   // trace containing one of this user's spans, so it can carry somebody else's.
@@ -214,7 +228,7 @@ adminTest('J34: the activity drawer reads the audit trail scoped to one user', a
   await page.getByRole('tab', { name: 'Spans' }).click();
   const spanResponse = await spanListing;
   expect(spanResponse.status()).toBe(200);
-  expect(spanResponse.url()).toContain(`user_id=${userId}`);
+  expect(new URL(spanResponse.url()).searchParams.get('user_id')).toBe(userId);
 });
 
 /*

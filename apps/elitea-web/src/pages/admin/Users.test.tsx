@@ -312,6 +312,15 @@ describe('Admin › Users', () => {
     // role/suspend/delete control for them and neither does this port.
     expect(screen.queryByRole('button', { name: 'Delete user' })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Admin Role' })).not.toBeInTheDocument();
+
+    // Activity survives, and it is the whole reason the actions column is
+    // pushed unconditionally: the column used to exist only `if (onToggleSuspended
+    // || onDelete)`, and on this tab both are `undefined` — so restoring that
+    // guard would delete this tab's only control with every other assertion
+    // here still passing. One button per row of the (unfiltered) fixture.
+    expect(screen.getAllByRole('button', { name: 'User activity' })).toHaveLength(
+      USERS_BODY.rows.length,
+    );
   });
 
   it('asks the server for the search term rather than filtering the loaded page', async () => {
