@@ -15,7 +15,7 @@
  *  4. The two writes are absent entirely when the permission is absent, and
  *     absent means "not rendered", not "rendered and ignored".
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -146,6 +146,9 @@ beforeEach(() => {
 afterEach(() => {
   resetGeneratedClient();
   delete window.admin_ui_config;
+  // The export tests stub URL.createObjectURL and anchor clicks; leaking those
+  // into a later file would make its downloads silently no-op.
+  vi.restoreAllMocks();
 });
 
 describe('Admin › Projects', () => {
@@ -273,11 +276,66 @@ describe('Admin › Projects', () => {
     expect(writes()).toHaveLength(0);
   });
 
-  it('renders export disabled with its own, different reason', async () => {
+  /**
+   * The export used to be a disabled button; asserting only that it is now
+   * ENABLED would pass against a control that downloads an empty file. These
+   * two assert the file's actual bytes and that a refusal is surfaced — the
+   * "renders but sends nothing" class this file exists to fence.
+   */
+  it('exports every row the current filter selects, as CSV', async () => {
+    const user = userEvent.setup();
+    let exported: Blob | undefined;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+      exported = blob as Blob;
+      return 'blob:mock-url';
+    });
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
     renderAdminRoute(<AdminProjects />);
     await screen.findByText('atlas');
 
-    expect(screen.getByRole('button', { name: 'Export to Excel' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+
+    // The UTF-8 BOM is what makes Excel decode the file as UTF-8, so it is
+    // asserted on the BYTES: `Blob.text()` strips a leading BOM per spec, and
+    // an assertion on the decoded string would pass without it.
+    const bytes = new Uint8Array(await exported!.arrayBuffer());
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+
+    const lines = (await exported!.text()).split('\r\n');
+    expect(lines[0]).toBe('Name,ID,Owner,Admins,Status');
+    // The joined admin list carries a comma, so the cell has to be quoted.
+    expect(lines[1]).toBe('atlas,41,Ada Owner,"Bo Admin, Cy Admin",Active');
+    // Status is the server's derived field — the same reading the chip makes.
+    expect(lines[2]).toBe('borealis,42,Bea Owner,,Suspended');
+    expect(lines[3]).toBe('cirrus,43,,,Failed');
+
+    // The export walks the LIST endpoint, filtered by the active tab.
+    const exportRead = recorded.filter((entry) => entry.url.includes('/admin/projects/')).at(-1)!;
+    expect(exportRead.url).toContain('project_type=team');
+    // 100, not a bigger number: the admin handler ignores a `limit` above 100
+    // and silently serves 20, which the walk would read as the last page.
+    expect(exportRead.url).toContain('limit=100');
+  });
+
+  it('reports a refused export instead of downloading an empty file', async () => {
+    const user = userEvent.setup();
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    server.use(
+      http.get('*/admin/projects/administration', () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(clickSpy).not.toHaveBeenCalled();
   });
 
   describe('without the project-write permission', () => {
