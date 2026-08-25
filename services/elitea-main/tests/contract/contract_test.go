@@ -15,6 +15,7 @@ var (
 	goBaseURL     string
 	legacyBaseURL string
 	authToken     string
+	requireParity string
 	projectID     string
 	client        *http.Client
 )
@@ -41,6 +42,7 @@ func TestMain(m *testing.M) {
 	goBaseURL = envOr("CONTRACT_GO_URL", "http://localhost:8080")
 	legacyBaseURL = envOr("CONTRACT_LEGACY_URL", "http://localhost:8000")
 	authToken = os.Getenv("CONTRACT_AUTH_TOKEN")
+	requireParity = os.Getenv("CONTRACT_REQUIRE_PARITY")
 	projectID = envOr("CONTRACT_PROJECT_ID", "test-project")
 	client = &http.Client{Timeout: 10 * time.Second}
 
@@ -50,14 +52,57 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// parityDecision is what an empty CONTRACT_AUTH_TOKEN means to the caller.
+type parityDecision int
+
+const (
+	parityRun  parityDecision = iota // credentials present: diff the two stacks
+	paritySkip                       // no credentials, and none were promised
+	parityFail                       // no credentials, but the job said it would supply them
+)
+
+// decideParityGate separates "these fixtures are not applicable here" from
+// "these fixtures were supposed to run and cannot".
+//
+// Both used to be a skip, and that is issue #309's Gate 1: ci-contract.yml's
+// weekly job set CONTRACT_AUTH_TOKEN from a secret that is empty, every fixture
+// printed SKIP, and the job concluded success. Four consecutive Monday runs
+// reported a passing legacy-parity gate that had compared nothing. A gate whose
+// only failure mode is silence is not a gate.
+//
+// So a job that intends to run the parity fixtures declares it by setting
+// CONTRACT_REQUIRE_PARITY, and an absent token then FAILS instead of skipping.
+// Every other caller — PRs, `task test`, a developer's laptop — leaves the
+// variable unset and keeps the old, correct skip: those runs never promised
+// credentials, so their silence is honest.
+func decideParityGate(authToken, requireFlag string) parityDecision {
+	if authToken != "" {
+		return parityRun
+	}
+	switch strings.ToLower(strings.TrimSpace(requireFlag)) {
+	case "", "0", "false", "no":
+		return paritySkip
+	default:
+		return parityFail
+	}
+}
+
 // requireLegacyParityCredentials skips the calling test when
 // CONTRACT_AUTH_TOKEN is unset — the default everywhere except
-// ci-contract.yml's weekly schedule/workflow_dispatch job, which sets the
-// real secret. See TestMain's doc comment for why this is now a per-test
-// skip rather than a whole-process early exit.
+// ci-contract.yml's dispatch job, which sets the real secret AND sets
+// CONTRACT_REQUIRE_PARITY so that a missing secret is a failure there. See
+// TestMain's doc comment for why this is a per-test skip rather than a
+// whole-process early exit, and decideParityGate for why it is not always one.
 func requireLegacyParityCredentials(t *testing.T) {
 	t.Helper()
-	if authToken == "" {
+	switch decideParityGate(authToken, requireParity) {
+	case parityRun:
+		return
+	case parityFail:
+		t.Fatalf("CONTRACT_REQUIRE_PARITY is set but CONTRACT_AUTH_TOKEN is empty: " +
+			"this job declared it would run the legacy-parity fixtures and cannot. " +
+			"Supply the staging credentials or stop claiming this gate ran.")
+	default:
 		t.Skip("set CONTRACT_AUTH_TOKEN to run the legacy-parity contract tests")
 	}
 }

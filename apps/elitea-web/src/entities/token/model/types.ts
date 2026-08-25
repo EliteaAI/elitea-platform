@@ -33,4 +33,16 @@ export interface PersonalAccessToken {
   readonly token: string;
   /** ISO 8601 date-time, or `null` for "never expires". */
   readonly expires: string | null;
+  /**
+   * The project this key bills, or `null` when the key is UNBOUND
+   * (`spec-llm-project-scope` §4: `GET /api/v2/auth/token/` and
+   * `GET /api/v2/auth/token/{uuid}` return `project_id`, JSON `null` when
+   * there is no binding).
+   *
+   * Declared OPTIONAL, not required: a token record read from a backend that
+   * predates the binding carries no such field at all, and an unbound token
+   * carries `null`. Both mean the same thing to every consumer — "this key
+   * bills nothing in particular" — so treat `undefined` and `null` alike.
+   */
+  readonly project_id?: number | null;
 }

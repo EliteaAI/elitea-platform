@@ -11,6 +11,48 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 platform_dir="$(cd "$script_dir/../.." && pwd -P)"
 centry_input="${2:-${CENTRY_DIR:-$platform_dir/../centry}}"
 
+# ── Edge middleware references (#368, guarding the fix from #338) ─────────────
+#
+# Traefik does not fail a stack whose router names a middleware no loaded file
+# defines. It logs the error, drops the router, and keeps serving. Here the
+# dropped routers are the ones that select Go, and base.yml holds a
+# PathPrefix("/") catch-all to pylon at priority 1. The caller then gets HTTP 200
+# from pylon on a path the configuration says goes to elitea-main, and the
+# header-stripping middleware the dropped router carried never runs either.
+#
+# This is the same command `task deploy:check-edge` runs and the same command
+# the No Binaries workflow runs. Calling the test is the reuse: a second copy of
+# the resolution logic written in bash or jq would drift from the Go one, and
+# the day they disagree is the day nobody trusts either.
+#
+# -count=1 is required, not tidiness. The test reads YAML from deploy/, outside
+# that Go module, so the test cache does not notice an edit to the edge files
+# and can serve a stale pass.
+#
+# It runs HERE, before the private-repository inputs are checked, for two
+# reasons. The edge file belongs to this repository, so its validity does not
+# depend on centry. And a check placed after those inputs is unreachable for
+# anybody who does not have them — a gate that never runs, which is the defect
+# this guard exists to remove.
+#
+# It fails closed when go is absent. A skip would report success on an
+# unvalidated edge.
+validate_edge() {
+  if ! command -v go >/dev/null 2>&1; then
+    echo "go is not on PATH, so the Traefik edge cannot be validated." >&2
+    echo "Install Go, or run 'task deploy:check-edge' from a machine that has it." >&2
+    exit 2
+  fi
+  if ! go test -C "$platform_dir/services/elitea-main" -count=1 ./tests/deployedge/...; then
+    echo "" >&2
+    echo "The Traefik edge configuration is invalid. Deployment is refused." >&2
+    echo "Traefik would NOT fail on this: it drops the router and keeps serving," >&2
+    echo "so the traffic falls through to pylon and the header strip stops running." >&2
+    exit 2
+  fi
+}
+validate_edge
+
 if [[ ! -d "$centry_input" ]]; then
   echo "Centry repository does not exist: $centry_input" >&2
   exit 2
@@ -112,6 +154,8 @@ validate_model() {
     --arg route "$ELITEA_INDEX_ROUTE_FILE" \
     --arg runtime "$runtime_root/runtime/indexer-runtime-v2.json" \
     --arg checkpoint "$runtime_root/runtime/agent-checkpoint-connection" \
+    --arg main_database_config "$runtime_root/runtime/pylon-main-shared.yml" \
+    --arg auth_database_config "$runtime_root/runtime/pylon-auth-core.yml" \
     --arg interface "$script_dir/runtime-interface-litellm.yml" \
     --arg engine "$script_dir/runtime-engine-litellm.yml" \
     '
@@ -133,6 +177,13 @@ validate_model() {
         == .services["elitea-main"].environment.ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP
       and .services["elitea-main"].environment.ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL
         == "https://elitea-gateway"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_ADMISSION_MAX_CONNS == "3"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_CONTROL_MAX_CONNS == "2"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_OUTPUT_MAX_CONNS == "2"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_REPLAY_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_TERMINAL_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_RUNTIME_DB_CONTENT_MAX_CONNS == "1"
+      and .services["elitea-main"].environment.ELITEA_DATABASE_MAX_CONNS == "4"
       and (.services["elitea-main"].networks | has("runtime_gateway"))
       and any(.services.auth_gateway.volumes[];
         .source == $route and .target == "/etc/traefik/dynamic/index.yml")
@@ -144,6 +195,10 @@ validate_model() {
         == "{\"*\":[\"delete_file\"]}"
       and any(.services.pylon_main.volumes[];
         .source == $interface and .target == "/data/configs/runtime_interface_litellm.yml")
+      and any(.services.pylon_main.volumes[];
+        .source == $main_database_config and .target == "/data/configs/shared.yml")
+      and any(.services.pylon_auth.volumes[];
+        .source == $auth_database_config and .target == "/data/configs/auth_core.yml")
       and any(.services.pylon_indexer.volumes[];
         .source == $engine and .target == "/data/configs/runtime_engine_litellm.yml")
       and (.services["elitea-litellm"].build.context | endswith("/hybrid_auth"))

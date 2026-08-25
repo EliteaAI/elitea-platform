@@ -59,7 +59,7 @@ func (h *Handler) requireOwnedMultipartGrant(w http.ResponseWriter, r *http.Requ
 		return repos.TransferGrantRow{}, false
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get transfer grant: "+err.Error())
+		h.writeInternal(w, r, "get transfer grant", err)
 		return repos.TransferGrantRow{}, false
 	}
 	if grant.ProjectID != projectID {
@@ -83,12 +83,12 @@ func (h *Handler) requireOwnedMultipartGrant(w http.ResponseWriter, r *http.Requ
 func (h *Handler) multipartObjectRef(w http.ResponseWriter, r *http.Request, projectID int64, grant repos.TransferGrantRow) (storage.ObjectRef, repos.BucketRow, bool) {
 	bucketRow, err := h.repo.GetBucketByID(r.Context(), grant.BucketID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get grant bucket: "+err.Error())
+		h.writeInternal(w, r, "get grant bucket", err)
 		return storage.ObjectRef{}, repos.BucketRow{}, false
 	}
 	ref, err := storage.NewObjectRef(strconv.FormatInt(projectID, 10), bucketRow.Name, grant.Key)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "build object ref: "+err.Error())
+		h.writeInternal(w, r, "build object ref", err)
 		return storage.ObjectRef{}, repos.BucketRow{}, false
 	}
 	return ref, bucketRow, true
@@ -140,7 +140,7 @@ func (h *Handler) PresignUploadPart(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := h.store.PresignPart(r.Context(), ref, storage.UploadID(*grant.UploadID), int32(partNumber), ttl)
 	if err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "presign upload part", err)
 		return
 	}
 
@@ -222,7 +222,7 @@ func (h *Handler) CompleteMultipartUpload(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusConflict, "AlreadyExists", "grant has already been committed or aborted")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "Internal", "mark transfer grant consumed: "+err.Error())
+		h.writeInternal(w, r, "mark transfer grant consumed", err)
 		return
 	}
 
@@ -232,7 +232,7 @@ func (h *Handler) CompleteMultipartUpload(w http.ResponseWriter, r *http.Request
 	}
 
 	if _, err := h.store.CompleteMultipart(r.Context(), ref, storage.UploadID(*grant.UploadID), parts); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "complete multipart upload", err)
 		return
 	}
 
@@ -281,7 +281,7 @@ func (h *Handler) AbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "AlreadyExists", "grant has already been committed or aborted")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "Internal", "mark transfer grant consumed: "+err.Error())
+		h.writeInternal(w, r, "mark transfer grant consumed", err)
 		return
 	}
 
@@ -297,7 +297,7 @@ func (h *Handler) AbortMultipartUpload(w http.ResponseWriter, r *http.Request) {
 	// rule (S3/GCS; Azure documented gap) eventually reclaims an orphaned
 	// backend-side session regardless.
 	if err := h.store.AbortMultipart(r.Context(), ref, storage.UploadID(*grant.UploadID)); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "abort multipart upload", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

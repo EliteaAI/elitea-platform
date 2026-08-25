@@ -75,6 +75,33 @@ class SdkBudgetExceeded(Exception):
     """Data-free marker for an exact SDK budget policy rejection."""
 
 
+@contextmanager
+def _sdk_budget_boundary() -> Any:
+    """Turn the SDK's typed budget rejection into the worker's marker.
+
+    A budget rejection is a POLICY outcome, not a fault. The SDK raises
+    ``BudgetExceededError`` for it and states why it must never be swallowed:
+    there is no recovery from an exhausted budget, so continuing would feed a
+    policy rejection back into the model as if it were data.
+
+    Every SDK entry point this adapter owns needs the boundary, not only the
+    indexing one. Agent execution had no boundary, so an exhausted budget
+    reached the delivery catch-all as an unclassified exception and was
+    reported as ``InternalFailure`` — a retryable internal fault, for a
+    condition that no retry can clear.
+
+    The marker carries no message. The SDK's text names the budget and can
+    quote the proxy; the worker's public diagnostics stay data-free.
+    """
+
+    try:
+        yield
+    except Exception as error:
+        if _is_sdk_budget_exceeded(error):
+            raise SdkBudgetExceeded() from None
+        raise
+
+
 @dataclass(frozen=True, slots=True)
 class SdkConfigurationBinding:
     configuration_type: str
@@ -282,7 +309,7 @@ class EliteaSdkIndexingAdapter:
         )
         # Business-compatibility boundary: exactly the public SDK operation used
         # by the current indexer worker, exactly once per kernel invocation.
-        try:
+        with _sdk_budget_boundary():
             return self._client.test_toolkit_tool(
                 toolkit_config=invocation_toolkit_config,
                 tool_name="index_data",
@@ -292,10 +319,6 @@ class EliteaSdkIndexingAdapter:
                 llm_config=deepcopy(llm_config),
                 mcp_tokens=mcp_tokens,
             )
-        except Exception as error:
-            if _is_sdk_budget_exceeded(error):
-                raise SdkBudgetExceeded() from None
-            raise
 
 
 class EliteaSdkAgentAdapter:
@@ -354,7 +377,8 @@ class EliteaSdkAgentAdapter:
 
     def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        with self._execution_memory() as memory:
+        _apply_toolkit_guardrails(payload)
+        with self._execution_memory() as memory, _sdk_budget_boundary():
             application = payload.application
             version_details = deepcopy(application.get("version_details") or {})
             llm_kwargs = _llm_kwargs(payload.llm)
@@ -384,7 +408,8 @@ class EliteaSdkAgentAdapter:
 
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
-        with self._execution_memory() as memory:
+        _apply_toolkit_guardrails(payload)
+        with self._execution_memory() as memory, _sdk_budget_boundary():
             llm_kwargs = _llm_kwargs(payload.llm)
             llm = self._client.get_llm(
                 model_name=llm_kwargs.get("model"),
@@ -489,6 +514,60 @@ class EliteaSdkAgentAdapter:
             project_id=self._project_id,
         ) as memory:
             yield memory
+
+
+def _apply_toolkit_guardrails(payload: AgentExecutionPayload) -> None:
+    """Configure the SDK's guardrail state from the policy this run carries.
+
+    ## Why this is per run and not per container
+
+    ``elitea_sdk.runtime.toolkits.security`` keeps its blocklist and its
+    sensitive-tool policy in module-level globals, and until now the only thing
+    that ever populated them was ``ELITEA_SENSITIVE_TOOLS`` and its siblings,
+    read lazily from the environment on first use. That means a policy change
+    needs a redeploy, and every tenant sharing a worker pool shares one answer.
+    The admin Configuration page writes this policy per platform and expects it
+    to take effect on the next call, so the resolved policy travels with the
+    command and is applied here, immediately before the agent is built.
+
+    ``configure_blocklist`` and ``configure_sensitive_tools`` are public SDK
+    functions that had no non-test caller. This is that caller.
+
+    ## Absent means "leave the environment alone"
+
+    A command with no policy — an older platform, or a replayed command — must
+    not clear a blocklist the environment configured. Both SDK functions set an
+    ``_initialized`` flag as a side effect, so calling them with empty arguments
+    would permanently suppress the environment fallback for the life of the
+    process. ``None`` therefore returns without touching anything, and only an
+    explicit policy object configures.
+
+    ## Failure is not swallowed
+
+    An exception here means the SDK's guardrail API is not the shape this worker
+    was written against. Continuing would run the agent with whatever policy the
+    globals last held — which, on a shared worker, is the previous run's. That is
+    worse than refusing the command.
+    """
+
+    policy = payload.toolkit_guardrails
+    if policy is None:
+        return
+
+    security = importlib.import_module("elitea_sdk.runtime.toolkits.security")
+    security.configure_blocklist(
+        blocked_toolkits=list(policy.get("blocked_toolkits") or []),
+        blocked_tools=dict(policy.get("blocked_tools") or {}),
+    )
+    security.configure_sensitive_tools(
+        sensitive_tools=dict(policy.get("sensitive_tools") or {}),
+        # Empty string, not None: the SDK treats a falsy value as "use my
+        # default", and the platform already substituted its own defaults when
+        # the operator left the field blank. Passing the resolved value through
+        # keeps one source of truth for the dialog copy.
+        company_name=policy.get("sensitive_action_company_name") or None,
+        message_template=policy.get("sensitive_action_message_template") or None,
+    )
 
 
 def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:

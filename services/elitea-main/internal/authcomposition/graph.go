@@ -47,6 +47,7 @@ type FormGraph struct {
 	patIssuer        *authsvc.LocalIssuer
 	projectPATIssuer *authsvc.ProjectSystemIssuer
 	patValidator     *authsvc.LocalValidator
+	patSigningKey    []byte
 	proxyResolver    *browserapi.TrustedProxyResolver
 	redis            *redis.Client
 	closeOnce        sync.Once
@@ -210,6 +211,10 @@ func newFormGraph(
 		browserapi.MainConfig{
 			CredentialHeaders:  credentialHeaders(config.Credentials.Headers),
 			AccessDeniedTarget: config.Redirects.MainAccessDenied,
+			// The edge resolves this handler's relative Location against the
+			// address it called, which is this service's internal one. The
+			// configuration already names the origin browsers use.
+			PublicOrigin: config.PublicOrigin,
 		},
 	)
 	if err != nil {
@@ -242,8 +247,12 @@ func newFormGraph(
 		patIssuer:        patIssuer,
 		projectPATIssuer: projectPATIssuer,
 		patValidator:     patValidator,
-		proxyResolver:    proxyResolver,
-		redis:            redisClient,
+		// Copy the key: materialize destroys the snapshot when this function
+		// returns. The graph must sign a new personal access token with the
+		// SAME key patValidator reads it back with. See SignPAT.
+		patSigningKey: append([]byte(nil), material.patSigningKey...),
+		proxyResolver: proxyResolver,
+		redis:         redisClient,
 	}
 	committed = true
 	return graph, nil
@@ -318,6 +327,24 @@ func (graph *FormGraph) ValidateToken(ctx context.Context, token string) (auth.U
 		return auth.User{}, ErrInvalidGraph
 	}
 	return graph.patValidator.ValidateToken(ctx, token)
+}
+
+// SignPAT signs the bearer of a personal access token that this service has
+// just persisted.
+//
+// The /api/v2/auth/token route must sign with this key.
+//
+// DEFECT this method fixes: that route signed with APPLICATION_SECRET_KEY,
+// while this graph's validator reads a PAT back with the bytes of
+// credentials.pat_signing_key_file. The two values are unrelated. Every token
+// the product issued on a form-auth deployment failed the signature check on
+// first use. The plaintext is shown one time only. The user therefore kept a
+// permanently dead credential.
+func (graph *FormGraph) SignPAT(tokenUUID *string, expiresAt *time.Time) (string, error) {
+	if graph == nil || len(graph.patSigningKey) == 0 {
+		return "", ErrInvalidGraph
+	}
+	return authsvc.SignBaselinePAT(graph.patSigningKey, tokenUUID, expiresAt)
 }
 
 // IssueToken recreates the current-baseline bearer representation for the

@@ -75,6 +75,27 @@ describe('computeDefaultConfigValues', () => {
     expect(result).toEqual({ defaultValues: { name: 'from-index-config' }, hasDefaults: true });
   });
 
+  /**
+   * #311, the reload half. `startIndexExecution` (`../../api/indexesApi.ts`)
+   * now sends a cleared field as an explicit `null` rather than letting
+   * `JSON.stringify` drop the key, so a reopened index's saved
+   * `index_configuration` carries `null` for a field the user cleared, not
+   * a missing key. This proves the reload side of that fix: `null` must
+   * survive AS `null`, not fall back to `property.default` — the exact
+   * defect #311 reports, resurfacing here if this ever regressed to
+   * treating `null` the way it treats a genuinely absent key.
+   */
+  it('keeps a persisted null from indexConfigValues rather than falling back to property.default', () => {
+    const result = computeDefaultConfigValues({
+      properties: { output_format: { default: 'json' } },
+      toolInputVariables: {},
+      reset: false,
+      useIndexConfigValues: true,
+      indexConfigValues: { output_format: null },
+    });
+    expect(result).toEqual({ defaultValues: { output_format: null }, hasDefaults: true });
+  });
+
   it('resolves an anyOf array-typed default when no direct default exists', () => {
     const result = computeDefaultConfigValues({
       properties: { whitelist: { anyOf: [{ type: 'array', default: ['*'] }, { type: 'null' }] } },

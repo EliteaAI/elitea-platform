@@ -79,6 +79,45 @@ const (
 	// hard_limit_usd"). A positive LLM_BUDGET_NATS_DEGRADED_CAP_USD overrides it
 	// with an absolute USD cap.
 	DefaultNATSDegradedCapPct = 10
+
+	// DefaultRealtimeBudgetRecheck is how often a LIVE realtime session re-asks
+	// the budget gate (LLM_REALTIME_BUDGET_RECHECK_SEC). It MUST equal
+	// llmproxy.DefaultRealtimeBudgetRecheck; TestRealtimeConstantsInSync holds
+	// the pair together, as TestStreamGraceConstantsInSync does for the grace.
+	//
+	// Why a periodic re-check is the MANDATORY mechanism, and why 15 s: an HTTP
+	// request is gated once because it ends. A realtime session does not end —
+	// the tenant holds the socket open — and the only turn-start signal bifrost
+	// reports (response.create, and the SERVER-side
+	// input_audio_buffer.committed) is one the only known caller never sends, so
+	// a re-check armed on turn start ALONE would never fire at all. 15 s bounds
+	// the spend that can follow an exhausted budget to about one interval, which
+	// is a small number of turns; it costs one budget read per session per
+	// interval, i.e. about 9 reads a second at the shipped session ceiling.
+	DefaultRealtimeBudgetRecheck = 15 * time.Second
+
+	// DefaultGovernanceRefresh is how often the gateway re-reads the authored
+	// governance definitions from gateway.governance_config. It mirrors
+	// policy.DefaultRefreshInterval; TestGovernanceRefreshDefaultInSync holds
+	// the two together.
+	//
+	// It bounds how long an operator waits between saving a definition and the
+	// gateway enforcing it, for the case where the warm-reload event did not
+	// arrive. It is a POLL and not the only path: elitea-main publishes a
+	// reload event on every write, and this is the floor under that guarantee.
+	DefaultGovernanceRefresh = 30 * time.Second
+
+	// DefaultRealtimeMaxSessions bounds concurrent realtime sessions on one
+	// replica (LLM_REALTIME_MAX_SESSIONS). It MUST equal
+	// llmproxy.DefaultRealtimeMaxSessions.
+	//
+	// The resource is not CPU: each session pins four goroutines, two open
+	// sockets and their read buffers for as long as the tenant keeps talking,
+	// and NO server timeout can reap it — a hijacked connection has its
+	// deadlines cleared, so ReadHeaderTimeout and IdleTimeout stop applying the
+	// moment the upgrade completes. 128 is half the stream-drain pool, because a
+	// session lives for minutes where a drain lives for seconds.
+	DefaultRealtimeMaxSessions = 128
 )
 
 // Config holds the resolved gateway configuration.
@@ -205,6 +244,53 @@ type Config struct {
 	LoopBreakerThreshold int
 	LoopBreakerWindow    time.Duration
 	LoopBreakerOpenFor   time.Duration
+
+	// PublicProjectID is the platform's shared ("public") project id
+	// (ELITEA_AI_PROJECT_ID — the same variable elitea-main reads). The gateway
+	// reads that project's `shared = true` configuration rows IN ADDITION to the
+	// caller's own rows, so a platform-published model and its credential
+	// resolve for every project (issue #316).
+	//
+	// 0 means UNSET, and unset disables the second scope completely: the gateway
+	// then reads p_{caller} only, exactly as it did before. This default is
+	// deliberate — an id naming a schema that does not exist would make every
+	// credential read fail, so an operator opts in.
+	//
+	// This is operator configuration, NOT request data. It must never come from
+	// a header: the value selects a second schema to read, so a request-supplied
+	// value would let a caller name any project and read its rows. See
+	// DECISIONS.md ("Shared/public project scope").
+	PublicProjectID int
+
+	// RealtimeBudgetRecheck is how often a live realtime session re-asks the
+	// budget gate (LLM_REALTIME_BUDGET_RECHECK_SEC). See
+	// DefaultRealtimeBudgetRecheck for why the periodic re-check is mandatory
+	// and not an optimisation.
+	RealtimeBudgetRecheck time.Duration
+
+	// GovernanceRefresh is the poll interval for the authored governance
+	// definitions (LLM_GOVERNANCE_REFRESH_SEC). 0 or negative selects
+	// DefaultGovernanceRefresh.
+	GovernanceRefresh time.Duration
+
+	// RealtimeMaxSessions bounds concurrent realtime sessions on this replica
+	// (LLM_REALTIME_MAX_SESSIONS). The per-project cap is derived from it.
+	RealtimeMaxSessions int
+
+	// RealtimeAllowedOrigins lists the browser origins that may open
+	// /llm/v1/realtime (comma-separated in LLM_REALTIME_ALLOWED_ORIGINS, e.g.
+	// "https://dev.elitea.ai"). Entries are matched with path.Match against the
+	// Origin header host, or against "scheme://host" when the entry carries a
+	// scheme.
+	//
+	// EMPTY IS THE SECURE DEFAULT, and it is not "no policy": a WebSocket
+	// handshake is not subject to CORS, so a browser page can open one
+	// cross-site with the ambient credentials of the user. With this empty the
+	// gateway admits only a handshake whose Origin matches its OWN host, or one
+	// that carries no Origin at all — which is every non-browser client,
+	// including the pylon-indexer relay this route exists for. A browser origin
+	// must be named here on purpose.
+	RealtimeAllowedOrigins []string
 }
 
 // FromEnv builds a Config from environment variables, applying the §9.5
@@ -241,7 +327,24 @@ func FromEnv() Config {
 		LoopBreakerThreshold:    signedIntOr("LLM_LOOP_BREAKER_THRESHOLD", 0),
 		LoopBreakerWindow:       plainMillisOr("LLM_LOOP_BREAKER_WINDOW_MS", 0),
 		LoopBreakerOpenFor:      secondsOr("LLM_LOOP_BREAKER_OPEN_SEC", 0),
+		PublicProjectID:         intOr("ELITEA_AI_PROJECT_ID", 0),
+
+		RealtimeBudgetRecheck:  secondsOr("LLM_REALTIME_BUDGET_RECHECK_SEC", DefaultRealtimeBudgetRecheck),
+		GovernanceRefresh:      secondsOr("LLM_GOVERNANCE_REFRESH_SEC", DefaultGovernanceRefresh),
+		RealtimeMaxSessions:    intOr("LLM_REALTIME_MAX_SESSIONS", DefaultRealtimeMaxSessions),
+		RealtimeAllowedOrigins: csvOr("LLM_REALTIME_ALLOWED_ORIGINS"),
 	}
+}
+
+// PublicProjectIDString returns the configured public project id as the string
+// the schema-name builders take, or "" when the scope is unset. intOr already
+// rejects a non-numeric or non-positive value, so the result is always either
+// "" or a positive decimal integer.
+func (c Config) PublicProjectIDString() string {
+	if c.PublicProjectID <= 0 {
+		return ""
+	}
+	return strconv.Itoa(c.PublicProjectID)
 }
 
 // millisOr reads an integer number of milliseconds from key and clamps it to

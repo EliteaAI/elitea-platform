@@ -86,6 +86,7 @@ function AgentHubLink({ collapsed, active }: AgentHubLinkProps): ReactNode {
       <Box
         component={Link}
         to="/agents-hub"
+        aria-current={active ? 'page' : undefined}
         data-testid="sidebar-agent-hub-button"
         sx={(theme: Theme) => ({
           width: collapsed ? '2rem' : '100%',
@@ -144,6 +145,13 @@ function FooterLink({ to, icon, label, collapsed, active }: FooterLinkProps): Re
       <Box
         component={Link}
         to={to}
+        // `active` drives the styling below, but TanStack's <Link> only sets
+        // aria-current on an EXACT path match. "Settings" points at
+        // /settings/model-configuration and is active for every /settings/*
+        // route, so assistive technology was told nothing was current while
+        // the sidebar showed it selected. The main nav items above already
+        // carry aria-current="page"; these three did not.
+        aria-current={active ? 'page' : undefined}
         sx={(theme: Theme) => ({
           width: collapsed ? '2rem' : '100%',
           height: '2rem',

@@ -408,3 +408,191 @@ func TestDeleteBucket_NotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestCreateBucket_AppliesProjectRetentionDefaultWhenOmitted covers the
+// defect that CreateBucket read only RetentionMaxDays from the project
+// storage policy. It ignored RetentionDefaultDays, the field
+// migrations/shared/0057_artifact_storage.sql:42-44 defines as "what a
+// bucket gets when the caller omits a value". A POST without
+// retention_days therefore stored retention_days = NULL and
+// expires_at = NULL. Objects written into that bucket also got a NULL
+// expires_at. ListExpiredArtifactObjects only selects a row whose
+// expires_at is set and past. The operator's mandated retention
+// therefore swept nothing.
+func TestCreateBucket_AppliesProjectRetentionDefaultWhenOmitted(t *testing.T) {
+	repo := newFakeRepo()
+	defaultDays := int32(30)
+	maxDays := int32(90)
+	repo.setPolicy(repos.ProjectStoragePolicy{
+		ProjectID: 1, RetentionDefaultDays: &defaultDays, RetentionMaxDays: &maxDays,
+	})
+	h := artifacts.NewHandler(repo, newFakeStore())
+	r := newTestRouter(h)
+
+	body := bytes.NewBufferString(`{"name":"scratch"}`)
+	req := httptest.NewRequest(http.MethodPost, "/buckets/1", body)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var b artifacts.Bucket
+	decodeJSON(t, rr.Body, &b)
+	if b.RetentionDays == nil || *b.RetentionDays != 30 {
+		t.Errorf("expected the policy default of 30 days, got %v", b.RetentionDays)
+	}
+	if b.ExpiresAt == nil {
+		t.Error("expected expires_at to be set, because a bucket with a retention must expire")
+	}
+}
+
+// TestCreateBucket_ClampsRetentionDefaultToPolicyCeiling covers the second
+// half of the same defect. An operator default above the operator ceiling
+// is a configuration error, not a caller error. The handler must clamp the
+// default to RetentionMaxDays. It must not write a bucket retention above
+// the project's own ceiling, and it must not answer 403 to a caller who
+// asked for nothing.
+func TestCreateBucket_ClampsRetentionDefaultToPolicyCeiling(t *testing.T) {
+	repo := newFakeRepo()
+	defaultDays := int32(365)
+	maxDays := int32(90)
+	repo.setPolicy(repos.ProjectStoragePolicy{
+		ProjectID: 1, RetentionDefaultDays: &defaultDays, RetentionMaxDays: &maxDays,
+	})
+	h := artifacts.NewHandler(repo, newFakeStore())
+	r := newTestRouter(h)
+
+	body := bytes.NewBufferString(`{"name":"scratch"}`)
+	req := httptest.NewRequest(http.MethodPost, "/buckets/1", body)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var b artifacts.Bucket
+	decodeJSON(t, rr.Body, &b)
+	if b.RetentionDays == nil || *b.RetentionDays != 90 {
+		t.Errorf("expected the ceiling of 90 days, got %v", b.RetentionDays)
+	}
+}
+
+// TestCreateBucket_NoPolicyLeavesRetentionUnset locks the default install.
+// A project with no storage policy row has no default, so the bucket keeps
+// a nil retention and a nil expiry.
+func TestCreateBucket_NoPolicyLeavesRetentionUnset(t *testing.T) {
+	h := artifacts.NewHandler(newFakeRepo(), newFakeStore())
+	r := newTestRouter(h)
+
+	body := bytes.NewBufferString(`{"name":"scratch"}`)
+	req := httptest.NewRequest(http.MethodPost, "/buckets/1", body)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var b artifacts.Bucket
+	decodeJSON(t, rr.Body, &b)
+	if b.RetentionDays != nil {
+		t.Errorf("expected no retention without a policy row, got %v", *b.RetentionDays)
+	}
+	if b.ExpiresAt != nil {
+		t.Errorf("expected no expiry without a policy row, got %v", *b.ExpiresAt)
+	}
+}
+
+// seedBucketWithObjects creates a bucket, its physical objects, and one
+// metadata row per object. DeleteBucket's tests need all three, because
+// the defect they cover is the drift between the physical bytes and the
+// metadata rows.
+func seedBucketWithObjects(t *testing.T, repo *fakeRepo, store *fakeStore, name string, keys ...string) repos.BucketRow {
+	t.Helper()
+	row, err := repo.CreateBucket(t.Context(), repos.NewBucketInput{
+		ProjectID: 1, Name: name, DisplayName: name, BucketType: "local",
+	})
+	if err != nil {
+		t.Fatalf("seed CreateBucket: %v", err)
+	}
+	for _, key := range keys {
+		store.seed("1", name, key, 10)
+		if _, err := repo.UpsertObject(t.Context(), repos.NewObjectInput{
+			BucketID: row.ID, Key: key, ByteLength: 10, MediaType: "image/png",
+		}); err != nil {
+			t.Fatalf("seed UpsertObject(%s): %v", key, err)
+		}
+	}
+	return row
+}
+
+// TestDeleteBucket_PartialDeleteFailureCleansMetadataOfDestroyedObjects
+// covers the defect in deleteAllObjects. On a partial DeleteBatch failure
+// the function returned at once and discarded result.Deleted. It
+// therefore never removed the metadata rows of the objects whose bytes
+// it had already destroyed. DeleteBucket then answered 500 and skipped
+// SoftDeleteBucket, which left the bucket active. Every aggregate joins buckets on
+// deleted_at IS NULL, so the still-active bucket kept reporting the
+// destroyed bytes, and the project quota stayed inflated forever. A retry
+// could not repair it, because ObjectStore.List no longer returns a
+// destroyed key.
+func TestDeleteBucket_PartialDeleteFailureCleansMetadataOfDestroyedObjects(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStore()
+	row := seedBucketWithObjects(t, repo, store, "reports", "ok.png", "stuck.png")
+	store.failKeys = map[string]bool{"stuck.png": true}
+
+	h := artifacts.NewHandler(repo, store)
+	r := newTestRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/buckets/1/reports", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500 from the refused delete, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	if store.objectCount() != 1 {
+		t.Errorf("expected only stuck.png to remain physically, got %d objects", store.objectCount())
+	}
+	keys := repo.objectKeys(row.ID)
+	if len(keys) != 1 || keys[0] != "stuck.png" {
+		t.Fatalf("expected only stuck.png to keep a metadata row, got %v", keys)
+	}
+
+	// The bucket stays active, so an operator can retry. Its reported size
+	// must count the surviving object only.
+	if _, err := repo.GetBucket(t.Context(), 1, "reports"); err != nil {
+		t.Fatalf("expected the bucket to stay active after a partial failure, got %v", err)
+	}
+	size, err := repo.SumBucketBytes(t.Context(), row.ID)
+	if err != nil {
+		t.Fatalf("SumBucketBytes: %v", err)
+	}
+	if size != 10 {
+		t.Errorf("expected the bucket to report the surviving 10 bytes, got %d", size)
+	}
+}
+
+// TestDeleteBucket_RemovesObjectMetadataOnSuccess is the success half of
+// the same defect: a complete purge must leave no metadata row behind.
+func TestDeleteBucket_RemovesObjectMetadataOnSuccess(t *testing.T) {
+	repo := newFakeRepo()
+	store := newFakeStore()
+	row := seedBucketWithObjects(t, repo, store, "reports", "a.png", "sub/b.png")
+
+	h := artifacts.NewHandler(repo, store)
+	r := newTestRouter(h)
+
+	req := httptest.NewRequest(http.MethodDelete, "/buckets/1/reports", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if keys := repo.objectKeys(row.ID); len(keys) != 0 {
+		t.Errorf("expected no metadata rows after a full purge, got %v", keys)
+	}
+}

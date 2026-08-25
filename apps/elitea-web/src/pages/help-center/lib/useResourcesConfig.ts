@@ -33,13 +33,21 @@
  * ## What is still empty, and honestly so
  *
  * `plugins` — the per-plugin version list in `ResourceVersionInfo`'s tooltip.
- * Its source is `GET /admin/system_info/prompt_lib`, which in this service
- * returns a HARDCODED map naming `elitea_core` and `auth` at version "2.0.0"
- * with status "active". Those are Pylon plugin names, this service does not load
- * plugins, and the versions are invented. Rendering them would be worse than
- * rendering nothing, so this hook returns an empty list and the tooltip stays
- * closed. Fixing `system_info` to report something true is out of this unit's
- * scope and is reported separately.
+ * Its source is `GET /admin/system_info/prompt_lib`. In pylon that route reports
+ * the versions of six named plugins, collected from the pylons that announced
+ * themselves on the Arbiter bus in the last 60 seconds. This service loads no
+ * plugins and has no such bus, so issue #219 made the route answer 501 with that
+ * reason instead of the hardcoded `elitea_core`/`auth` map it used to invent.
+ *
+ * This hook therefore does NOT call it. A request whose only possible answer is
+ * a refusal buys nothing and puts a 501 in the network log of every Help Center
+ * visit. It returns an empty list, and `ResourceVersionInfo` keeps the tooltip
+ * closed. The "Version: X (date)" label beside the icon is unaffected: it comes
+ * from the administrator-owned resources section read below, which is real.
+ *
+ * Parity item API-178 asks this client to call `system_info`. Wire it up when the
+ * service has a build version to report — see the `systemInfoUnavailable` comment
+ * in `services/elitea-main/internal/api/v2/admin/handler.go` for what that needs.
  */
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';

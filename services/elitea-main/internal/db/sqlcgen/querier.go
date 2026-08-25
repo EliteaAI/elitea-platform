@@ -29,6 +29,30 @@ type Querier interface {
 	// statement; reconciliation happens outside the database transaction.
 	ClaimConfigurationLifecycleEvents(ctx context.Context, arg ClaimConfigurationLifecycleEventsParams) ([]ClaimConfigurationLifecycleEventsRow, error)
 	ClaimExactIndexMetaInitialization(ctx context.Context, arg ClaimExactIndexMetaInitializationParams) (ClaimExactIndexMetaInitializationRow, error)
+	// Claims a bounded batch of expired, unconsumed grants for the retention
+	// sweeper, and returns what it needs to reclaim the bytes.
+	//
+	// WHY THIS EXISTS. CreateArtifactTransferGrant hands out a presigned PUT and
+	// writes only this row. The elitea_storage.objects row appears at commit and
+	// nowhere else. A caller who uploads to the signed URL and never commits
+	// therefore leaves bytes with no metadata row: SumArtifactProjectBytes cannot
+	// count them against max_total_bytes, and ListExpiredArtifactObjects cannot
+	// see them, because both read only the objects table. Nothing time-driven
+	// reclaimed them.
+	//
+	// WHY IT CLAIMS INSTEAD OF SELECTING. Setting consumed_at in the same
+	// statement that selects the row is what makes the sweep safe against a
+	// commit in flight. MarkArtifactTransferGrantConsumed already carries
+	// `AND consumed_at IS NULL`, so a commit that races a claimed grant loses the
+	// mark and answers 409. A plain SELECT followed by a delete has the opposite
+	// outcome. The commit writes a metadata row. The sweeper then deletes the
+	// bytes underneath it. The project is charged for an object that no longer
+	// exists, and no later sweep can heal that.
+	//
+	// FOR UPDATE SKIP LOCKED lets two replicas sweep at the same time without
+	// either waiting on the other. The row itself is kept, not deleted, so a late
+	// commit still sees the 409 rather than a 404.
+	ClaimExpiredArtifactTransferGrants(ctx context.Context, arg ClaimExpiredArtifactTransferGrantsParams) ([]ClaimExpiredArtifactTransferGrantsRow, error)
 	ClaimPendingIndexMetaInitializations(ctx context.Context, arg ClaimPendingIndexMetaInitializationsParams) ([]ClaimPendingIndexMetaInitializationsRow, error)
 	ClaimScheduledJobCursor(ctx context.Context, arg ClaimScheduledJobCursorParams) (int64, error)
 	ClaimScheduledOccurrence(ctx context.Context, arg ClaimScheduledOccurrenceParams) (int64, error)
@@ -51,12 +75,22 @@ type Querier interface {
 	CreateArtifactTransferGrant(ctx context.Context, arg CreateArtifactTransferGrantParams) (CreateArtifactTransferGrantRow, error)
 	CreateAuthUserByEmailIfMissing(ctx context.Context, arg CreateAuthUserByEmailIfMissingParams) (AuthCoreUser, error)
 	CreatePATForActiveUser(ctx context.Context, arg CreatePATForActiveUserParams) (CreatePATForActiveUserRow, error)
+	// A binding is written once, in the same transaction as the token INSERT, and
+	// after the membership check. There is no update query on purpose: a binding is
+	// a fact about a key, not a setting that changes under a running integration
+	// (spec-llm-project-scope §4).
+	CreateTokenProjectBinding(ctx context.Context, arg CreateTokenProjectBindingParams) error
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)
 	DeleteAttachmentChunks(ctx context.Context, arg DeleteAttachmentChunksParams) (int64, error)
 	DeleteCurrentConfiguration(ctx context.Context, arg DeleteCurrentConfigurationParams) (int32, error)
 	DeleteCurrentNotification(ctx context.Context, arg DeleteCurrentNotificationParams) (int64, error)
+	// The exact inverse of the statement above, and only that row. The four
+	// identity predicates repeat the ones the upsert conflicts on, so a
+	// user-created configuration that happens to carry the same title is never
+	// removed by a rollback of the system row.
+	DeleteCurrentProjectPgvectorConfiguration(ctx context.Context, arg DeleteCurrentProjectPgvectorConfigurationParams) (int64, error)
 	DeletePATByID(ctx context.Context, id int32) (int64, error)
 	// Reclaims chunk rows for a chunked upload that was abandoned before its
 	// final chunk arrived (browser tab closed, connection lost) — the only
@@ -65,6 +99,17 @@ type Querier interface {
 	// Legacy's equivalent is utils/file_utils.py's cleanup_stale_chunks, a
 	// 12-hour local-disk TTL swept by the elitea_core_cleanup_stale_chunks RPC.
 	DeleteStaleAttachmentChunks(ctx context.Context, receivedAt pgtype.Timestamptz) (int64, error)
+	// The list and get responses read the binding back through the LEFT JOIN
+	// above, so no point-read query exists. A separate read would be a second round
+	// trip for a value the same row already carries.
+	// Token deletion deletes the binding explicitly, in the same transaction, and
+	// does NOT rely on ON DELETE CASCADE (spec-llm-project-scope §3.1). Migration
+	// 0071 guards its foreign key with to_regclass, because elitea-migrate can run
+	// before pylon creates auth_core. When the guard skips, the migration is still
+	// ledgered as applied and no later run adds the constraint, so that database
+	// has no cascade for its whole life. The constraint stays as the second of two
+	// independent guarantees; this query is the first.
+	DeleteTokenProjectBinding(ctx context.Context, tokenID int32) error
 	EnsureRuntimeAdmissionPolicy(ctx context.Context, arg EnsureRuntimeAdmissionPolicyParams) error
 	FinalizeCurrentAgentAuthorizationPause(ctx context.Context, arg FinalizeCurrentAgentAuthorizationPauseParams) (int64, error)
 	FinalizeCurrentAgentFullMessage(ctx context.Context, arg FinalizeCurrentAgentFullMessageParams) (int64, error)
@@ -80,6 +125,20 @@ type Querier interface {
 	FindCurrentEmbeddingConfigurations(ctx context.Context, arg FindCurrentEmbeddingConfigurationsParams) ([]FindCurrentEmbeddingConfigurationsRow, error)
 	GetActivePATForUser(ctx context.Context, userID int32) (GetActivePATForUserRow, error)
 	GetActivePATPrincipalByID(ctx context.Context, tokenID int32) (GetActivePATPrincipalByIDRow, error)
+	// This is the single query the credential validator runs for every request.
+	// The token binding rides along on the row the validator already reads, so a
+	// bound token costs no additional round trip on the request path
+	// (spec-llm-project-scope §3.2). Do not split it into a second lookup.
+	//
+	// bound_project_active carries the lifecycle state of the bound project on the
+	// same row, for the same reason. Suspension is a reversible boolean on
+	// centry.project and revokes no binding, so a bound token kept spending a
+	// suspended project's budget and credentials. The middleware re-checks the
+	// state here instead (spec-llm-project-scope §7 invariant 3).
+	//
+	// BOTH joins must stay LEFT joins. Most personal access tokens carry no
+	// binding, and an inner join on centry.project would drop every one of those
+	// rows. That breaks authentication for the majority of callers.
 	GetActivePATPrincipalByUUID(ctx context.Context, uuid string) (GetActivePATPrincipalByUUIDRow, error)
 	GetActiveProjectSystemPAT(ctx context.Context, projectID int32) (GetActiveProjectSystemPATRow, error)
 	GetActiveUserPrincipalByID(ctx context.Context, userID int32) (GetActiveUserPrincipalByIDRow, error)
@@ -237,6 +296,9 @@ type Querier interface {
 	ListCurrentUserProjects(ctx context.Context, arg ListCurrentUserProjectsParams) ([]ListCurrentUserProjectsRow, error)
 	ListExpectedIndexIngestEntries(ctx context.Context, arg ListExpectedIndexIngestEntriesParams) ([]ListExpectedIndexIngestEntriesRow, error)
 	ListExpiredArtifactObjects(ctx context.Context, arg ListExpiredArtifactObjectsParams) ([]EliteaStorageObject, error)
+	// The LEFT JOIN onto elitea_identity.token_project_binding is what lets a user
+	// see which project a key bills (ADR-0018, spec-llm-project-scope §4). It is a
+	// LEFT JOIN because an unbound token is the default and must still be listed.
 	ListOwnedPATs(ctx context.Context, userID int32) ([]ListOwnedPATsRow, error)
 	ListPendingAgentExecutionIDs(ctx context.Context, arg ListPendingAgentExecutionIDsParams) ([]string, error)
 	LoadIndexMetaInitializationWork(ctx context.Context, arg LoadIndexMetaInitializationWorkParams) (LoadIndexMetaInitializationWorkRow, error)

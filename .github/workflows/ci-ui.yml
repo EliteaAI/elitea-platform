@@ -10,6 +10,10 @@ on:
       - main
     paths:
       - "apps/elitea-ui/**"
+      # This workflow's own file. The pull_request arm above names it and this
+      # arm did not, so a push that edited only the gate could not start the
+      # gate it edited (#518).
+      - ".github/workflows/ci-ui.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

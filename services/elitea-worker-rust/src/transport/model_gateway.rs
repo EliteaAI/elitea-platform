@@ -50,7 +50,10 @@ const MAX_TOOL_CALL_ID_BYTES: usize = 512;
 const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1_024;
 const MAX_TOOL_DECLARATIONS: usize = 1_024;
 const MAX_TIMEOUT: Duration = Duration::from_mins(5);
-const OPENAI_ORGANIZATION: HeaderName = HeaderName::from_static("openai-organization");
+// Main treats this as the project that owns the invocation and pays for it.
+// It is deliberately NOT the frozen model owner: Bifrost resolves a shared
+// public model inside the caller project's signed scope.
+const PROJECT_SELECTOR: HeaderName = HeaderName::from_static("x-project-id");
 
 /// Immutable deployment policy for the shared platform model channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -252,15 +255,21 @@ impl ModelGatewayClient {
     }
 
     /// Consume one ephemeral claim credential into one single-use ADK model.
+    ///
+    /// `model_owner_project_id` proves the frozen selection names an admitted
+    /// project, but it never becomes the `/llm` billing selector. Main binds
+    /// that selector to the claim's resource project; the Bifrost gateway then
+    /// resolves either that project's model or a shared public fallback.
     pub(crate) fn bind_ordinary(
         &self,
         context: &ClaimScopedEliteaContext,
-        model_project_id: u32,
+        model_owner_project_id: u32,
         invocation: ModelGatewayInvocation,
     ) -> Result<BoundModelGateway, ModelGatewayError> {
         validate_invocation(&invocation)?;
         let token = context.model_facade_token();
-        if model_project_id == 0 || token.is_empty() {
+        let billing_project_id = context.resource_project_id();
+        if model_owner_project_id == 0 || billing_project_id == 0 || token.is_empty() {
             return Err(ModelGatewayError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(CompletionState::default()));
@@ -268,7 +277,7 @@ impl ModelGatewayClient {
             transport: self.transport.clone(),
             config: self.config.clone(),
             invocation,
-            project_id: u64::from(model_project_id),
+            billing_project_id,
             token,
             completion: completion.clone(),
             calls: AtomicU32::new(0),
@@ -356,7 +365,7 @@ struct EliteaOpenAiCompatibleModel {
     transport: Arc<dyn ModelGatewayTransport>,
     config: ModelGatewayConfig,
     invocation: ModelGatewayInvocation,
-    project_id: u64,
+    billing_project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<CompletionState>>,
     calls: AtomicU32,
@@ -388,7 +397,7 @@ impl Llm for EliteaOpenAiCompatibleModel {
         }
         let allowed_tools = request.tools.keys().cloned().collect();
         let body = build_request_body(&request, stream, &self.invocation, &self.config)?;
-        let request = build_http_request(body, self.project_id, self.token.as_str())?;
+        let request = build_http_request(body, self.billing_project_id, self.token.as_str())?;
         let response = timeout(
             self.config.response_header_timeout,
             self.transport.post(request),
@@ -805,7 +814,7 @@ fn invalid_llm_request() -> AdkError {
 
 fn build_http_request(
     body: Bytes,
-    project_id: u64,
+    billing_project_id: u64,
     token: &str,
 ) -> Result<Request<Body>, AdkError> {
     let body_length = body.len();
@@ -823,8 +832,9 @@ fn build_http_request(
         HeaderValue::from_str(&body_length.to_string()).map_err(|_| invalid_llm_request())?,
     );
     headers.insert(
-        OPENAI_ORGANIZATION,
-        HeaderValue::from_str(&project_id.to_string()).map_err(|_| invalid_llm_request())?,
+        PROJECT_SELECTOR,
+        HeaderValue::from_str(&billing_project_id.to_string())
+            .map_err(|_| invalid_llm_request())?,
     );
     let mut bearer = Zeroizing::new(String::with_capacity(7 + token.len()));
     bearer.push_str("Bearer ");

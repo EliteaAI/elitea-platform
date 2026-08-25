@@ -675,6 +675,16 @@
       "notes": "Audit Trail on its default Today preset: heatmap + traces table. WIRED and deliberately NOT snapshotted — see the EXEMPT entry in scripts/check-visual-coverage.mjs. Every visible value is a function of the wall clock at seed time.",
       "surface": "admin",
       "baseline": "e2e/snapshots/visual/admin.visual.spec.ts-snapshots/admin-audit-visual-linux.png"
+    },
+    {
+      "file": null,
+      "route": "/admin/app/governance",
+      "targetComponent": "src/pages/admin/GatewayGovernance.tsx",
+      "theme": "dark",
+      "wiringStatus": "wired",
+      "notes": "The LLM governance definition list (#218): the propagation Alert, the search bar and the DataGrid. The stack seeds ONE row — the #322 platform soft-alert config — and this page shows it with its actions withheld, because the budget-alerts surface owns it and this page's editor has no field for its keys. That withheld state is part of what the baseline pins.",
+      "surface": "admin",
+      "baseline": null
     }
   ],
   "gaps": [],

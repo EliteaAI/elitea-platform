@@ -2,8 +2,6 @@ package repos
 
 import (
 	"context"
-	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,8 +10,7 @@ import (
 )
 
 func TestCurrentModelsRepositoryPostgresParity(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	prepareCurrentConfigurationsProjectTwo(t, pool)
 	seedCurrentModelConfigurations(t, pool)
 
@@ -75,9 +72,26 @@ INSERT INTO p_2.configuration (
 )`); err != nil {
 		t.Fatalf("seed malformed LLM configuration: %v", err)
 	}
-	_, err = repository.List(ctx, 2, configurationapp.CurrentModelSectionLLM, false)
-	if !errors.Is(err, errInvalidCurrentModelConfiguration) || strings.Contains(err.Error(), "private-secret") {
-		t.Fatalf("malformed PostgreSQL value error=%v", err)
+	// The malformed row is SKIPPED, and the catalogue keeps every good row.
+	//
+	// THE DEFECT this pins: List aborted on the first row it could not map.
+	// One wrongly typed `data` field therefore made
+	// GET /api/v2/configurations/models/{projectID} answer 500 for the whole
+	// project. The compatibility write path stores `data` with no
+	// registry-schema check. The model picker was empty for every member until someone
+	// repaired the row.
+	afterMalformed, err := repository.List(ctx, 2, configurationapp.CurrentModelSectionLLM, false)
+	if err != nil {
+		t.Fatalf("one malformed row removed the whole catalogue: %v", err)
+	}
+	if len(afterMalformed) != len(projectItems) {
+		t.Fatalf("candidates after the malformed row=%#v, want the same %d as before",
+			afterMalformed, len(projectItems))
+	}
+	for _, item := range afterMalformed {
+		if item.Name == "malformed" {
+			t.Fatalf("the malformed row reached the catalogue: %#v", afterMalformed)
+		}
 	}
 }
 

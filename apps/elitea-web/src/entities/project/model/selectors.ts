@@ -18,8 +18,14 @@ export function isPublicProject(projectId: number | string, publicProjectId: num
   return String(projectId) === String(publicProjectId);
 }
 
+/**
+ * `suspended` is the only suspension signal the server sends. The spec also
+ * declared a `status` enum, but internal/api/v2/projects/handler.go never
+ * emits it, so the old `project.status === 'suspended'` arm compared
+ * `undefined` and could never be true.
+ */
 export function isSuspendedProject(project: Project): boolean {
-  return project.status === 'suspended' || project.suspended;
+  return project.suspended;
 }
 
 /** Alphabetical name sort, case-insensitive. */

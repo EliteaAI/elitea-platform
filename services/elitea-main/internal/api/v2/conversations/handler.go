@@ -578,6 +578,38 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, msg)
 }
 
+// defaultEntityProjectID fills entity_meta.project_id from the request path
+// when the caller left it out. It changes nothing for a model participant,
+// which carries no project id at all.
+//
+// The early return for `llm` and `dummy` matches what legacy STORES. legacy
+// writes the project id into every request entry (participants.py:63-65), but
+// pydantic then validates entity_meta against a per-type model.
+// ParticipantEntityLlm keeps `model_name` only, and ParticipantEntityDummy
+// keeps nothing (models/pd/participant.py:21-30). The extra key never reaches
+// the INSERT.
+//
+// One difference remains. legacy validates a `user` entity against
+// ParticipantEntityUser, which keeps `id` only, so the stored document holds
+// no project id. This helper adds one. The identity key for a user is `id`
+// alone, so the extra key splits no participant row.
+func defaultEntityProjectID(body map[string]any, projectID string) {
+	entityName, _ := body["entity_name"].(string)
+	if entityName == "llm" || entityName == "dummy" {
+		return
+	}
+	entityMeta, ok := body["entity_meta"].(map[string]any)
+	if !ok {
+		return
+	}
+	if existing, present := entityMeta["project_id"]; present && existing != nil {
+		return
+	}
+	if numeric, err := strconv.Atoi(projectID); err == nil {
+		entityMeta["project_id"] = numeric
+	}
+}
+
 func (h *Handler) AddParticipant(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
@@ -590,6 +622,12 @@ func (h *Handler) AddParticipant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, body := range bodyList {
+		// The project id defaults to the one in the path, as legacy does
+		// (`entity_meta['project_id'] = entity_meta.get('project_id', project_id)`).
+		// The repository keys a participant's identity on id AND project_id.
+		// The same agent posted once with and once without project_id would
+		// otherwise become two participants in one conversation.
+		defaultEntityProjectID(body, projectID)
 		if err := h.repo.AddParticipant(r.Context(), projectID, conversationID, body); err != nil {
 			apierr.Write(w, err)
 			return

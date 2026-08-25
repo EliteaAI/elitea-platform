@@ -1,0 +1,50 @@
+{
+  "//": [
+    "THE GATEWAY'S DECLARED RELATIONSHIP TO elitea-sdk.",
+    "",
+    "WHY THIS FILE EXISTS. The /llm surface has exactly one first-class client:",
+    "elitea-sdk. Its budget reader, its two base paths and its LangChain dialects",
+    "decide what a correct gateway answer looks like. Until this file existed the",
+    "gateway declared no relationship to the SDK at all, so an SDK bump could not",
+    "fail any gateway gate. The compatibility defect that shipped survived for",
+    "that reason: the gateway put the refusal SCOPE in error.type, the SDK reads",
+    "the scope from error.code, budget_exceeded_from returned None, and a policy",
+    "refusal reached the model as message content. Every Go test agreed, because",
+    "every Go test restated the same wrong literal.",
+    "",
+    "THIS FILE IS NOT A SECOND COPY OF THE PIN. The revision itself is owned by",
+    "services/elitea-worker-python/elitea-sdk.lock.json, which the worker image",
+    "and .github/workflows/ci-python.yml already build from. What the gateway",
+    "owns is the statement below: the revision against which the gateway's",
+    "compatibility gates were LAST RUN AND SEEN TO PASS.",
+    "",
+    "HOW IT FAILS. internal/sdkpin/pin_test.go reads both files and compares",
+    "them. Move the SDK in the lock file and the gateway test job turns red,",
+    "with no gateway source change at all. That is the gate this file adds.",
+    "",
+    "THAT CLAIM DEPENDS ON A PATH FILTER, so do not delete it. A lock-file-only",
+    "bump touches no file under services/elitea-llm-gateway/, so ci-gateway.yml",
+    "names services/elitea-worker-python/elitea-sdk.lock.json in BOTH its",
+    "pull_request and push arms. Without that line the job never starts on the",
+    "one change this gate exists to catch, and the sentence above is false.",
+    "",
+    "WHEN THE SDK MOVES:",
+    "  1. Update services/elitea-worker-python/elitea-sdk.lock.json as usual.",
+    "  2. Run tier 1:  ELITEA_SDK_SOURCE_ROOT=<new checkout>",
+    "                  python -m pytest scripts/contract/test_sdk_budget_contract.py",
+    "  3. Run tier 2:  services/elitea-llm-gateway/scripts/sdk-conformance/run.sh",
+    "  4. ONLY when both pass, copy the new revision and patch revisions here.",
+    "     Copying them first turns a real incompatibility into a green build.",
+    "",
+    "verified_on is a date for the reader. Nothing keys on it."
+  ],
+  "lock_file": "services/elitea-worker-python/elitea-sdk.lock.json",
+  "verified_against": {
+    "revision": "b5113a129329b85d23c2d5c2bf55f18e307414ec",
+    "patch_revisions": [
+      "5c9409779ac0a55f8bf74f6ef438977089187a14",
+      "07ddc5cd67a0c747f83ca0e26421cde71bd97d9d"
+    ],
+    "verified_on": "2026-08-23"
+  }
+}

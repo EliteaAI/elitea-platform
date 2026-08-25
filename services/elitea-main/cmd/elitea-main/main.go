@@ -17,6 +17,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/libs/go/observability"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	agentexecutionapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/agentexecution"
@@ -32,6 +33,7 @@ import (
 	projectinfoapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	promptcontextreadsapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
@@ -41,6 +43,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/authcomposition"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/identityproviders"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
 	infradb "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
@@ -122,6 +125,67 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		return err
 	}
 
+	// The project vault's master key (#412).
+	//
+	// This runs BEFORE the database pool and before every handler, because the
+	// fault it catches is silent everywhere else. The secrets handler holds the
+	// one key source the vault has (#411/#399), and it used to ignore a
+	// malformed value: it kept no key, then minted and wrote UNWRAPPED vaults
+	// while the operator believed the keys were wrapped. Provisioning
+	// succeeded, every later read succeeded, and nothing logged.
+	//
+	// So the check belongs here and not in the constructor. Two of the four
+	// NewHandler callers build a handler PER REQUEST, so a constructor error
+	// would arrive after provisioning had already written vaults, and one of
+	// the others builds it inside the chi route tree, which cannot report an
+	// error at all.
+	//
+	// The key bytes are discarded on purpose. Every handler reads the variable
+	// again, so passing them on would create a SECOND key source, and one key
+	// source is the rule #411/#399 established. This call decides one thing
+	// only: whether the process may continue.
+	masterKey, err := v2secrets.MasterKeyFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
+	if masterKey == nil {
+		// The ABSENT case stays supported: no compose file and no chart in
+		// deploy/ except the staging one supplies a key, and the E2E stack
+		// seeds unwrapped key rows on purpose. It is a real local shape, so it
+		// must not stop the service — but it must not be quiet either, because
+		// the operator cannot tell it apart from a key that failed to arrive.
+		logger.Warn("no project vault master key: every project vault key is stored UNWRAPPED, "+
+			"so anyone who can read the database can open every project secret",
+			"variable", v2secrets.MasterKeyEnvVar)
+	}
+
+	// APPLICATION_SECRET_KEY signs personal access tokens. internal/api/router.go
+	// passes it to v2auth.WithTokenSigningKey, and tokens.go answers 503
+	// `{"error":"token service is not configured"}` to every /api/v2/auth/token
+	// route while it is empty.
+	//
+	// Nothing else reported that. The service started. The Settings > Personal
+	// Tokens screen rendered "No tokens yet — create your first API token".
+	// Pressing Generate answered "The system did not create the token. Try
+	// again." — advice that can never succeed. The whole OpenAI-compatible /llm
+	// path goes with it, because a caller there authenticates with a personal
+	// token. Observed on a live deployment.
+	//
+	// It stays a warning rather than a hard stop, for the reason the vault key
+	// above gives: a deployment that never issues personal tokens is a real
+	// shape and must still start. It must not be silent, though.
+	//
+	// One exception: a deployment with ELITEA_AUTH_CONFIG_FILE signs and
+	// validates a personal access token with credentials.pat_signing_key_file
+	// instead. See patSigner below. The warning below can therefore be noise on
+	// that shape, and the route still works there.
+	if os.Getenv("APPLICATION_SECRET_KEY") == "" && os.Getenv("ELITEA_AUTH_CONFIG_FILE") == "" {
+		logger.Warn("no application secret key: personal access tokens are DISABLED, "+
+			"every /api/v2/auth/token route answers 503, and the OpenAI-compatible "+
+			"/llm path has no credential a caller can present",
+			"variable", "APPLICATION_SECRET_KEY")
+	}
+
 	// Observability (issue #250): exports elitea-main's own request spans to
 	// the same OTLP collector internal/api/v2/tracing proxies UI/worker
 	// traces to, so the ingest pipeline is self-verifying — every request
@@ -141,9 +205,9 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	// Database
 	dbDSN := envOr("DATABASE_URL", "postgres://localhost:5432/elitea?sslmode=disable")
-	pool, err := pgxpool.New(ctx, dbDSN)
+	pool, err := openDatabasePool(ctx, dbDSN, os.LookupEnv)
 	if err != nil {
-		return fmt.Errorf("create database pool: %w", err)
+		return err
 	}
 	defer pool.Close()
 
@@ -309,36 +373,105 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 
 	// Wire OIDC browser-session authentication when OIDC_ISSUER_URL is set.
 	// SessionHandler and OIDCHandler are independent of the FormGraph path and
-	// can coexist with it (both populate RouterConfig.Auth).
+	// can coexist with it (both populate RouterConfig.Auth) — but only because
+	// internal/api/production_router.go now resolves the /forward-auth prefix to
+	// ONE owner. Composing both used to panic chi at startup; see the comment
+	// there before assuming any second browser-auth plane can simply be added.
 	var oidcSessionHandler *v2auth.SessionHandler
 	var oidcOIDCHandler *v2auth.OIDCHandler
 	oidcCfg, err := v2auth.OIDCConfigFromEnv()
 	if err != nil {
 		return fmt.Errorf("load OIDC configuration: %w", err)
 	}
-	if oidcCfg != nil {
+	// A deployment can now federate through an AUTHORED provider instead of the
+	// environment (`elitea_auth.identity_providers`, shared migration 0095), so
+	// the environment is no longer the only thing that can turn OIDC on.
+	//
+	// Whether the routes are MOUNTED stays a boot decision, and it has to:
+	// internal/api/production_router.go allows exactly one browser-auth plane to
+	// own /forward-auth, so which plane owns it cannot change under a running
+	// process. What the mounted routes DO is resolved per request, so editing,
+	// replacing or disabling a provider needs no restart — only introducing the
+	// first one on a deployment that had none does.
+	identityProviderStore := identityproviders.NewStore(pool)
+	var storedSAMLProvider, storedOIDCProvider bool
+	storedSAMLProvider, err = v2auth.HasEnabledSAMLProvider(ctx, identityProviderStore)
+	if err == nil {
+		storedOIDCProvider, err = v2auth.HasEnabledOIDCProvider(ctx, identityProviderStore)
+	}
+	switch {
+	case err == nil:
+	case identityproviders.IsSchemaMissing(err):
+		// The migration has not been applied to this database yet. Warn and
+		// continue WITHOUT the browser-auth plane, which is what this
+		// deployment did before the table existed at all.
+		//
+		// Failing the boot here would turn a schema-ordering hiccup — a pod
+		// that starts before the migration job finishes — into a total outage,
+		// and it would do so on deployments that use form authentication and
+		// never federate a login.
+		logger.Warn("identity provider table is absent; starting without single sign-on",
+			"err", err)
+	default:
+		// Any OTHER read failure IS fatal. A deployment that can reach its
+		// database and still cannot read this table must not start silently
+		// unfederated, with every login answering "single sign-on is not
+		// available" and no statement of why.
+		return fmt.Errorf("read the enabled identity provider: %w", err)
+	}
+	var oidcSAMLHandler *v2auth.SAMLHandler
+	if oidcCfg != nil || storedOIDCProvider || storedSAMLProvider {
 		appSecretKey := os.Getenv("APPLICATION_SECRET_KEY")
 		if appSecretKey == "" {
-			return errors.New("APPLICATION_SECRET_KEY is required when OIDC_ISSUER_URL is set")
+			return errors.New("APPLICATION_SECRET_KEY is required when single sign-on is configured")
 		}
 		oidcSessionHandler = v2auth.NewSessionHandler(pool, appSecretKey)
 		oidcOIDCHandler, err = v2auth.NewOIDCHandler(ctx, oidcCfg, pool, appSecretKey)
 		if err != nil {
 			return fmt.Errorf("initialize OIDC handler: %w", err)
 		}
-		logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
+		vault := v2secrets.NewHandler(pool)
+		oidcOIDCHandler = oidcOIDCHandler.WithProviderStore(identityProviderStore, vault)
+		switch {
+		case storedOIDCProvider:
+			logger.Info("OIDC authentication enabled from an authored identity provider")
+		case oidcCfg != nil:
+			logger.Info("OIDC authentication enabled", "issuer", oidcCfg.IssuerURL)
+		}
+
+		// The SAML handler is built whenever the browser plane is mounted at
+		// all, not only when a SAML provider exists today. Its routes resolve
+		// their provider per request and answer 503 while none is enabled, so
+		// authoring the first SAML provider on a deployment that already
+		// federates OIDC needs no restart. The reverse — a deployment with NO
+		// browser plane at boot — still does, because which plane owns
+		// /forward-auth is fixed there (internal/api/production_router.go).
+		oidcSAMLHandler = v2auth.NewSAMLHandler(
+			pool, appSecretKey, identityProviderStore, vault,
+			os.Getenv("COOKIE_SECURE") != "false",
+		)
+		if storedSAMLProvider {
+			logger.Info("SAML authentication enabled from an authored identity provider")
+		}
 	}
 
 	// Wire currentProjectList with OIDC-only auth when formGraph is absent.
 	// formGraph (ELITEA_AUTH_CONFIG_FILE) wires it above with full validators;
 	// OIDC-only deployments (E2E stack) only have session-cookie auth.
+	//
+	// authsvc.NewPrincipalValidator(pool) is built here rather than reusing the
+	// `principalValidator` variable because that variable is nil in exactly
+	// this branch: it is only assigned inside the `authEnabled` block, which is
+	// also the only place formGraph is set. See oidcSessionAuthConfig for why
+	// nil is not survivable (#314).
 	if currentProjectList == nil && oidcSessionHandler != nil {
 		var oidcProjectListErr error
 		currentProjectList, oidcProjectListErr = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcProjectListErr != nil {
@@ -364,18 +497,59 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if repositoryErr != nil {
 			return fmt.Errorf("compose OIDC-only notification events repository: %w", repositoryErr)
 		}
+		// Same principal-validator reasoning as the project-list branch above:
+		// the session cookie is the only credential here, and without a
+		// validator a deactivated user's unexpired cookie opens the stream
+		// (#314).
 		var oidcNotificationEventsErr error
 		currentNotificationEvents, oidcNotificationEventsErr = notificationsapi.NewCurrentNotificationEventsRoute(
 			notificationEventsRepository,
-			apimw.AuthConfig{
-				SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
-			},
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if oidcNotificationEventsErr != nil {
 			return fmt.Errorf("compose OIDC-only notification events route: %w", oidcNotificationEventsErr)
 		}
 		logger.Info("notification events route enabled (OIDC-only auth)")
+	}
+
+	// Same shape, same reason, for the notification LIST route (#413). The SSE
+	// branch above moved the stream, and left the list behind. The notification
+	// screen reads GET /api/v2/notifications/notifications/prompt_lib/
+	// {projectID}, and internal/api/production_router.go registers that path
+	// only when CurrentNotifications is non-nil. So the path answered 404 on
+	// every OIDC-only deployment, the E2E stack included, and the client turned
+	// the 404 into "No notifications yet".
+	//
+	// Setting ELITEA_AUTH_CONFIG_FILE on the E2E stack does not fix this. The
+	// AuthConfig the `authEnabled` block builds leaves SessionSecret empty, so
+	// apimw.Auth refuses a browser session cookie. That change turns the 404
+	// into a 401 and the screen stays broken.
+	if currentNotifications == nil && oidcSessionHandler != nil {
+		notificationRepository, repositoryErr := dbrepos.NewCurrentNotificationRepository(pool)
+		if repositoryErr != nil {
+			return fmt.Errorf("compose OIDC-only notification repository: %w", repositoryErr)
+		}
+		// Same principal-validator reasoning as the two branches above: the
+		// session cookie is the only credential here, and without a validator a
+		// deactivated user's unexpired cookie reads and deletes notifications
+		// (#314).
+		var oidcNotificationsErr error
+		currentNotifications, oidcNotificationsErr = notificationsapi.NewCurrentNotificationAPIRoute(
+			notificationRepository,
+			oidcSessionAuthConfig(
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
+			legacyrbac.NewPostgresResolver(pool),
+		)
+		if oidcNotificationsErr != nil {
+			return fmt.Errorf("compose OIDC-only notification API route: %w", oidcNotificationsErr)
+		}
+		logger.Info("notification API route enabled (OIDC-only auth)")
 	}
 
 	currentProjectInfoSettings, err := currentProjectInfoConfigFromEnv(os.LookupEnv)
@@ -483,26 +657,21 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load current Configurations settings: %w", err)
 	}
-	currentPromptContextReadsSettings, err :=
-		currentPromptContextReadsConfigFromEnv(os.LookupEnv)
-	if err != nil {
-		return fmt.Errorf("load current prompt-context read settings: %w", err)
-	}
-	if currentPromptContextReadsSettings.Enabled && !currentConfigurationsConfig.Enabled {
-		return errors.New("ELITEA_PROMPT_CONTEXT_READS_ENABLED requires ELITEA_CONFIGURATIONS_ENABLED=true")
-	}
 	if currentConfigurationsConfig.Enabled && (formGraph == nil || principalValidator == nil || forwardedIdentityVerifier == nil) {
 		return errors.New("ELITEA_CONFIGURATIONS_ENABLED requires production authentication")
 	}
 	var currentConfigurationsRoot *runtimecomposition.CurrentConfigurationsRuntime
+	// The project vector-store collaborator the project-create route provisions
+	// with (#371). It is composed from the Configurations runtime, so it exists
+	// only where that runtime does; without it a created project cannot index.
+	var projectVectorStore *runtimecomposition.ProjectVectorStore
 	var currentConfigurationRead http.Handler
 	var currentConfigurationAvailable http.Handler
 	var currentConfigurationTypes http.Handler
 	var currentConfigurationMutation http.Handler
 	var currentModelCatalog http.Handler
 	var currentModelDefault http.Handler
-	var currentLLMFacade http.Handler
-	var currentLLMRoot *runtimecomposition.CurrentLLMRuntime
+	var configProviderAdmission configurationapi.ProviderAdmission
 	var currentPromptContextReads *promptcontextreadsapi.CurrentRoutes
 	if currentConfigurationsConfig.Enabled {
 		currentConfigurationsRoot, err = runtimecomposition.NewCurrentConfigurationsRuntime(
@@ -514,10 +683,37 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			return fmt.Errorf("compose current Configurations services: %w", err)
 		}
 		defer currentConfigurationsRoot.Destroy()
+		// The vault material goes through the secrets handler, which holds the
+		// one master key a deployment sets (SECRETS_MASTER_KEY). That handler
+		// is also the one vault creator, through the project_secrets
+		// provisioning step, so the creator and the material writer now share a
+		// key source (#399). The Configurations runtime's own vault writer is
+		// deliberately NOT used here: it keys off ELITEA_VAULT_MASTER_KEY_FILE,
+		// which no file under deploy/ sets, so it could not open the vault the
+		// handler had just created.
+		projectVectorStore, err = currentConfigurationsRoot.NewProjectVectorStore(
+			pool,
+			v2secrets.NewHandler(pool),
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("compose project vector-store provisioning: %w", err)
+		}
 		currentAuth := apimw.AuthConfig{
 			Validator:                 formGraph,
 			PrincipalValidator:        principalValidator,
 			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			// The browser's only credential (#292), same reasoning as the
+			// agent-start route above. These are the configuration reads the
+			// UI makes on every chat page — the model catalogue among them —
+			// and without a session they answered 401 to the product's own
+			// model picker, which then rendered empty. A user could not choose
+			// a model, so the turn was rejected for not naming one: a chat that
+			// cannot run, with every configuration row present and correct.
+			//
+			// Reads only widen to a session; each route still resolves
+			// permissions through currentPermissions below.
+			SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
 		}
 		currentPermissions := legacyrbac.NewPostgresResolver(pool)
 		currentConfigurationAvailable, err = configurationapi.NewCurrentAvailableRoute(
@@ -561,78 +757,91 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("compose current Configurations model-default route: %w", err)
 		}
-		if currentConfigurationsConfig.LiteLLMBaseURL != "" {
-			currentLLMRoot, err = runtimecomposition.NewCurrentLLMRuntime(
-				pool,
-				currentConfigurationsRoot,
-				runtimecomposition.CurrentLLMConfig{
-					BaseURL:       currentConfigurationsConfig.LiteLLMBaseURL,
-					MasterKeyFile: currentConfigurationsConfig.LiteLLMMasterKeyFile,
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("compose current LiteLLM facade: %w", err)
-			}
-			defer currentLLMRoot.Close()
-			currentLLMFacade = apimw.Auth(currentAuth)(currentLLMRoot.Handler())
+		// The status_ok decision for the compatibility write routes (#457).
+		//
+		// Those routes are the write path every deployed stack serves: the
+		// reviewed mutation route below needs
+		// ELITEA_CONFIGURATIONS_MUTATION_ENABLED, and no deployment file sets
+		// it. Their INSERT never named status_ok, so a saved credential kept
+		// the column default of false, and the gateway admits only
+		// status_ok = true. The decision composes here rather than with the
+		// lifecycle because it needs no runtime plane and no mutation flag:
+		// it reads the vault and the expander this Configurations runtime
+		// already owns.
+		providerAdmission, admissionErr := runtimecomposition.NewCurrentProviderAdmission(
+			currentConfigurationsRoot,
+			currentConfigurationsConfig.AllowProjectOwnLLMs,
+		)
+		if admissionErr != nil {
+			return fmt.Errorf("compose current Configurations provider admission: %w", admissionErr)
 		}
-		if currentPromptContextReadsSettings.Enabled {
-			chatConfigReader, readerErr :=
-				promptcontextreadsapi.NewCurrentChatConfigVaultReader(
-					currentConfigurationsRoot.VaultLoader(),
-				)
-			if readerErr != nil {
-				return fmt.Errorf("compose current chat configuration reader: %w", readerErr)
-			}
-			projectContextReader, readerErr :=
-				promptcontextreadsapi.NewCurrentProjectContextRepository(pool)
-			if readerErr != nil {
-				return fmt.Errorf("compose current project-context reader: %w", readerErr)
-			}
-			currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
-				chatConfigReader,
-				projectContextReader,
-				currentAuth,
-				currentPermissions,
-			)
-			if err != nil {
-				return fmt.Errorf("compose current prompt-context read routes: %w", err)
-			}
-			logger.Info("current prompt-context read routes enabled")
+		// Assigned only when non-nil, for the reason spelled out at
+		// configConnectionChecker below: boxing a nil pointer into the
+		// interface would make the handler's nil test false and call a method
+		// on a nil receiver instead of leaving the column alone.
+		if providerAdmission != nil {
+			configProviderAdmission = providerAdmission
 		}
+		// No /llm data plane is composed here. This block used to build the
+		// LiteLLM facade (an authenticated reverse proxy plus an administration
+		// client holding the proxy's master key) whenever ELITEA_LITELLM_BASE_URL
+		// was set. The Bifrost gateway replaced it: it resolves each project's
+		// provider credentials and model definitions from
+		// p_{projectID}.configuration itself, so Main has nothing to proxy on
+		// its behalf beyond the mTLS gateway proxy composed on LLM_GATEWAY_URL
+		// below, which is the sole /llm backend.
+		// ELITEA_PROMPT_CONTEXT_READS_ENABLED used to gate a second composition
+		// of promptcontextreadsapi.NewCurrentRoutes here, on the same reader
+		// pair. It is deleted with its branch (#367).
+		//
+		// The branch was unreachable and redundant at the same time. It needed
+		// this flag AND ELITEA_CONFIGURATIONS_ENABLED AND production auth, and
+		// no deployment sets the flag — while the ungated composition below
+		// builds the identical pair whenever FormGraph or an OIDC session
+		// handler exists, which every deployment that could have satisfied the
+		// flag also has. So the flag could only ever pre-empt a block that was
+		// going to run anyway, and its absence changed nothing.
+		//
+		// Deleting it is not a behaviour change: with the flag unset, control
+		// already reached the block below. What it removes is a second, subtly
+		// different composition of the same routes — this one passed
+		// currentAuth/currentPermissions, the one below passes
+		// chatConfigAuthConfig(...) and a fresh legacyrbac resolver — that no
+		// test and no deployment ever exercised.
 		logger.Info("current Configurations services enabled", "public_project_id", currentConfigurationsConfig.PublicProjectID)
 	}
 
 	// The chat-config read has to be composable WITHOUT the Configurations
 	// chain (#194). Its only registration used to sit inside the deleted
 	// `ChatService` gate on the prototype eliteacore handler, and the current
-	// implementation above is reachable only under
-	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which itself requires
-	// ELITEA_CONFIGURATIONS_ENABLED + ELITEA_AI_PROJECT_ID +
-	// ELITEA_LITELLM_*. None of those is set in any deployment, so
-	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` has
-	// answered 404 everywhere for as long as the gate has existed — while
+	// implementation was then reachable only under
+	// ELITEA_PROMPT_CONTEXT_READS_ENABLED, which no deployment set. So
+	// `GET /api/v2/elitea_core/chat_config/prompt_lib/{projectID}` answered 404
+	// everywhere for as long as that gate existed — while
 	// `features/artifacts`' chatConfigApi has been querying it on every
 	// artifacts page load and silently falling back to a 150 MB default.
 	//
-	// Turning the chain on was rejected as the fix for the same reason #131
-	// rejected it: the flag gates composition, but the router every
-	// environment actually runs is the compatibility router, and enabling the
-	// chain would additionally light up ~10 unrelated Configurations/LLM
-	// routes that are deliberately dark. The reader itself needs nothing from
-	// that chain — only a *pgxpool.Pool and the optional vault master key —
-	// so it is composed here instead, exactly like the OIDC-only project-list
-	// and notification-event routes above.
+	// This block is now the ONLY composition of the pair. #367 deleted the
+	// flagged one above, which needed a flag nothing set to pre-empt a block
+	// that runs regardless.
+	//
+	// The reader needs nothing from the Configurations chain — only a
+	// *pgxpool.Pool and the optional vault master key — so it is composed here,
+	// exactly like the OIDC-only project-list and notification-event routes
+	// above, and it stays composed here whether or not that chain is on.
+	//
+	// The claim this comment used to make, that ELITEA_CONFIGURATIONS_ENABLED
+	// "is set in no deployment", was stale:
+	// deploy/docker-compose.standalone-full.yml sets it. The claim mattered,
+	// because it was the reason given for composing here rather than in the
+	// chain; the reason above does not depend on it and holds either way.
 	//
 	// CurrentRoutes is an atomic pair, so the project-context read is
 	// constructed alongside it. Which PATHS become reachable is decided at the
-	// router: the compatibility router (the one every deployment gets) mounts
-	// only the chat_config path, because that is #194's half and the
-	// project-context path is already served there by the prototype eliteacore
-	// handler. The production router — which NewRouter never reaches while any
-	// prototype field is set, i.e. in no deployment today — mounts both, so
-	// composing here does make the current project-context implementation
-	// reachable THERE where the flag chain previously left it dark.
+	// router: mountReviewedProductionRoutes registers the chat_config path
+	// only, because that is #194's half and the project-context path is already
+	// served by the prototype eliteacore handler — see production_router.go's
+	// comment on why registering both would change that path's default.
 	if currentPromptContextReads == nil && (formGraph != nil || oidcSessionHandler != nil) {
 		// Reuse the Configurations runtime's loader when it exists, so a
 		// deployment that DOES set ELITEA_VAULT_MASTER_KEY_FILE keeps reading
@@ -660,18 +869,21 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if readerErr != nil {
 			return fmt.Errorf("compose ungated project-context reader: %w", readerErr)
 		}
-		chatConfigAuth := apimw.AuthConfig{SessionSecret: os.Getenv("APPLICATION_SECRET_KEY")}
-		if formGraph != nil {
-			chatConfigAuth = apimw.AuthConfig{
-				Validator:                 formGraph,
-				PrincipalValidator:        principalValidator,
-				ForwardedIdentityVerifier: forwardedIdentityVerifier,
-			}
-		}
+		// authsvc.NewPrincipalValidator(pool) is built here rather than reusing
+		// the `principalValidator` variable because that variable is nil in
+		// exactly the branch that needs it: it is only assigned inside the
+		// `authEnabled` block, which is also the only place formGraph is set.
+		// See chatConfigAuthConfig for why nil is not survivable (#301).
 		currentPromptContextReads, err = promptcontextreadsapi.NewCurrentRoutes(
 			chatConfigReader,
 			projectContextReader,
-			chatConfigAuth,
+			chatConfigAuthConfig(
+				formGraph,
+				principalValidator,
+				forwardedIdentityVerifier,
+				authsvc.NewPrincipalValidator(pool),
+				os.Getenv("APPLICATION_SECRET_KEY"),
+			),
 			legacyrbac.NewPostgresResolver(pool),
 		)
 		if err != nil {
@@ -701,17 +913,25 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var currentIndexScheduleUpdate http.Handler
 	var currentIndexScheduleDelete http.Handler
 	if runtimeConfig.Enabled {
-		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, runtimecomposition.PhaseOneDatabasePoolLimits())
+		databasePoolLimits, limitsErr := runtimecomposition.DatabasePoolLimitsFromEnv(os.LookupEnv)
+		if limitsErr != nil {
+			return fmt.Errorf("load runtime database pool limits: %w", limitsErr)
+		}
+		runtimePools, openErr := openRuntimeDatabasePools(ctx, dbDSN, databasePoolLimits)
 		if openErr != nil {
 			return openErr
 		}
 		defer runtimePools.Close()
 		var configurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 		if currentConfigurationsConfig.MutationEnabled {
+			// No LLM runtime here: the lifecycle is database-side. It once
+			// pushed every credential and model into the LiteLLM proxy, which
+			// meant configuration mutation could not run without that proxy.
+			// The Bifrost gateway pulls the same configuration rows, so the
+			// lifecycle now only resolves references and writes status_ok.
 			configurationLifecycleReconciler, err = runtimecomposition.NewCurrentConfigurationLifecycleReconciler(
 				runtimePools.Control,
 				currentConfigurationsRoot,
-				currentLLMRoot,
 				currentConfigurationsConfig.AllowProjectOwnLLMs,
 			)
 			if err != nil {
@@ -726,7 +946,6 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			TerminalEffectsPool:              runtimePools.TerminalEffects,
 			ContentPool:                      runtimePools.Content,
 			CurrentConfigurations:            currentConfigurationsRoot,
-			CurrentEmbeddingRuntime:          currentLLMRoot,
 			ConfigurationLifecycleReconciler: configurationLifecycleReconciler,
 			ActorTokenIssuer:                 formGraph,
 			ProjectTokenValidator:            formGraph,
@@ -769,18 +988,38 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			publicRoutes.ExecutionEvents,
 			principalValidator,
 			forwardedIdentityVerifier,
+			// The browser's only credential for the events stream: an
+			// EventSource sends a cookie and nothing else (#93). Same secret
+			// the rest of the router uses, so a session is accepted here on
+			// exactly the terms it is accepted everywhere else.
+			os.Getenv("APPLICATION_SECRET_KEY"),
 		)
 		if err != nil {
 			return fmt.Errorf("compose production runtime HTTP routes: %w", err)
 		}
+		// The browser's credential for the runtime routes the WEB APP calls
+		// directly (#93 Surface A): the index list, an index run and its
+		// cancel, and the chat stop button. Each was composed for forwarded
+		// identity alone, so every one of them answered `401 missing
+		// authorization header` to the product's own UI while working for the
+		// worker — the same shape as #291 on the chat start route, and the
+		// reason Surface A's REST path could not be exercised from a browser
+		// at all.
+		//
+		// Additive: the peer verifier and principal validator are unchanged,
+		// so the worker and the forward-auth edge authenticate exactly as
+		// before, and each route still resolves permissions through the RBAC
+		// resolver it is given.
+		browserRuntimeAuth := apimw.AuthConfig{
+			Validator:                 formGraph,
+			PrincipalValidator:        principalValidator,
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			SessionSecret:             os.Getenv("APPLICATION_SECRET_KEY"),
+		}
 		if publicRoutes.IndexStart != nil {
 			currentIndexStart, err = indexingapi.NewCurrentIndexStartRoute(
 				publicRoutes.IndexStart,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -794,6 +1033,23 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 					Validator:                 formGraph,
 					PrincipalValidator:        principalValidator,
 					ForwardedIdentityVerifier: forwardedIdentityVerifier,
+					// The browser's only credential (#291). This handler serves
+					// START, REGENERATE and CONTINUE (production_router.go),
+					// i.e. every write path a chat conversation has, and the UI
+					// authenticates with a session cookie and nothing else — no
+					// bearer, no forwarded identity. Without this the product's
+					// own chat cannot start a turn while every server-side hop
+					// can, the same shape #93 found on the events stream, which
+					// this is the other half of: the UI could read a stream it
+					// was not allowed to open.
+					//
+					// It does not widen what a caller may DO. The route still
+					// resolves permissions through legacyrbac below, so
+					// membership and `models.chat.messages.create` are checked
+					// exactly as before; this only lets a session prove who it
+					// is. A deployment reached solely through a forward-auth
+					// edge is unaffected — it simply never presents a cookie.
+					SessionSecret: os.Getenv("APPLICATION_SECRET_KEY"),
 				},
 				legacyrbac.NewPostgresResolver(pool),
 			)
@@ -804,11 +1060,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.AgentCancel != nil {
 			currentAgentCancel, err = agentexecutionapi.NewCurrentAgentCancelRoute(
 				publicRoutes.AgentCancel,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -818,11 +1070,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.IndexCancel != nil {
 			currentIndexCancel, err = indexingapi.NewCurrentIndexCancelRoute(
 				publicRoutes.IndexCancel,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -832,11 +1080,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		if publicRoutes.IndexMeta != nil {
 			currentIndexMeta, err = indexingapi.NewCurrentIndexMetaRoute(
 				publicRoutes.IndexMeta,
-				apimw.AuthConfig{
-					Validator:                 formGraph,
-					PrincipalValidator:        principalValidator,
-					ForwardedIdentityVerifier: forwardedIdentityVerifier,
-				},
+				browserRuntimeAuth,
 				legacyrbac.NewPostgresResolver(pool),
 			)
 			if err != nil {
@@ -847,11 +1091,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			currentIndexMetaDelete, err =
 				indexingapi.NewCurrentIndexMetaDeleteRoute(
 					publicRoutes.IndexMetaDelete,
-					apimw.AuthConfig{
-						Validator:                 formGraph,
-						PrincipalValidator:        principalValidator,
-						ForwardedIdentityVerifier: forwardedIdentityVerifier,
-					},
+					browserRuntimeAuth,
 					legacyrbac.NewPostgresResolver(pool),
 				)
 			if err != nil {
@@ -922,26 +1162,85 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		slog.Info("llm gateway proxy enabled", "target", gwURL)
 	}
 
+	// #319: /configurations/check_connection(s) needs a real, minimal round
+	// trip to the provider, which the gateway performs (it owns the SSRF-safe
+	// egress allowlist for a tenant-authored api_base — issue #13). Reuse the
+	// same gateway connection settings as the /llm proxy above so an operator
+	// configures the gateway hop once, not twice.
+	var configConnectionChecker configurationapi.ConnectionChecker
+	if checker, checkerErr := configurationapi.NewGatewayConnectionCheckerFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+		os.Getenv("GATEWAY_IDENTITY_SECRET"),
+	); checkerErr != nil {
+		return fmt.Errorf("compose configurations check-connection client: %w", checkerErr)
+	} else if checker != nil {
+		// Assigned only when non-nil: boxing a nil *GatewayConnectionChecker
+		// into the ConnectionChecker interface would make
+		// `h.connectionChecker == nil` false (a non-nil interface holding a
+		// nil pointer) and CheckConnection would call a method on a nil
+		// receiver instead of reporting "not available".
+		configConnectionChecker = checker
+		slog.Info("configurations check-connection client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
+	// The admin LLM Proxy section reads the gateway's own enforcement status.
+	// Same four settings again, for the third and last consumer of the hop, so
+	// an operator configures the gateway once. No identity secret: the gateway
+	// verifies no HMAC on that route.
+	var gatewayStatus gateway.StatusReader
+	if statusClient, statusErr := gateway.NewGatewayStatusClientFromConfig(
+		os.Getenv("LLM_GATEWAY_URL"),
+		os.Getenv("LLM_GATEWAY_CLIENT_CERT"),
+		os.Getenv("LLM_GATEWAY_CLIENT_KEY"),
+		os.Getenv("LLM_GATEWAY_CA_FILE"),
+	); statusErr != nil {
+		return fmt.Errorf("compose gateway status client: %w", statusErr)
+	} else if statusClient != nil {
+		// Assigned only when non-nil, for the reason spelled out above
+		// configConnectionChecker: a nil pointer boxed into this interface is
+		// not nil, and the handler's "not configured" branch would never run.
+		gatewayStatus = statusClient
+		slog.Info("gateway status client enabled", "target", os.Getenv("LLM_GATEWAY_URL"))
+	}
+
 	// BF0.9c/d: the gateway proxy needs the same production-auth wiring as
 	// every other auth-protected route above, gated on formGraph != nil —
 	// assigning a nil *FormGraph directly to an interface field would produce
 	// a non-nil interface holding a nil pointer, defeating the "not
 	// configured" nil-checks in the auth middleware (#86).
-	var gatewayAuthValidator apimw.TokenValidator
-	var gatewayPrincipalValidator apimw.PrincipalValidator
-	var gatewayForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
-	var gatewaySessionSecret string
-	if formGraph != nil {
-		gatewayAuthValidator = formGraph
-		gatewayPrincipalValidator = principalValidator
-		gatewayForwardedIdentityVerifier = forwardedIdentityVerifier
-		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
-	} else if oidcSessionHandler != nil {
-		// OIDC-only deployments (no ELITEA_AUTH_CONFIG_FILE) still need the session
-		// secret in the auth middleware so OIDC session cookies are accepted on
-		// /api/v2 routes. formGraph uses the same APPLICATION_SECRET_KEY.
-		gatewaySessionSecret = os.Getenv("APPLICATION_SECRET_KEY")
+	//
+	// The same four fields also carry the WHOLE /api/v2 group, because
+	// internal/api/router.go installs one apimw.AuthConfig built from them with
+	// r.Use on the group that wraps r.Route("/api/v2", ...).
+	//
+	// authsvc.NewPrincipalValidator(pool) is built here rather than reusing the
+	// `principalValidator` variable because that variable is nil in exactly the
+	// OIDC-only branch: it is only assigned inside the `authEnabled` block,
+	// which is also the only place formGraph is set. Without it a deactivated
+	// user's unexpired session cookie reached every route in the group (#370).
+	// See apiGroupAuthConfig.
+	//
+	// sessionTokens is the personal-access-token validator for the same branch.
+	// APPLICATION_SECRET_KEY signs the tokens the /api/v2/auth/token route
+	// issues, so the validator must read them back with that exact key.
+	// The variable stays a nil interface when the key is absent: a boxed nil
+	// pointer would read as "configured" downstream (#86).
+	var sessionTokens apimw.TokenValidator
+	if secretKey := os.Getenv("APPLICATION_SECRET_KEY"); secretKey != "" && pool != nil {
+		sessionTokens = authsvc.NewLocalValidator(pool, secretKey)
 	}
+	apiGroupAuth := apiGroupAuthConfig(
+		formGraph,
+		principalValidator,
+		forwardedIdentityVerifier,
+		authsvc.NewPrincipalValidator(pool),
+		sessionTokens,
+		os.Getenv("APPLICATION_SECRET_KEY"),
+		oidcSessionHandler != nil,
+	)
 
 	var adminUICfg *adminui.Config
 	if dir := os.Getenv("ADMIN_UI_STATIC_DIR"); dir != "" {
@@ -950,6 +1249,20 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			ViteServerURL: "/api/v2",
 			BasePath:      "/admin/app",
 			SecretKey:     os.Getenv("APPLICATION_SECRET_KEY"),
+			// The admin SPA needs the operator's REAL administration-mode
+			// permissions. Without a resolver the handler injects an empty
+			// list, which hides every control. It must never inject a fixed
+			// admin list. The console then shows a rank-and-file user
+			// controls that the server refuses with 403 on each click.
+			Resolver: legacyrbac.NewPostgresResolver(pool),
+			// The runtime deployment authenticates the browser at
+			// /forward-auth/login, which sets `elitea_browser_auth` and projects
+			// the principal as X-Auth-*. Without this verifier the handler has
+			// no way to read that identity, injects an empty permission list,
+			// and the SPA renders a sidebar with no items — see adminui's
+			// ServeSPA. A nil verifier (no form graph) still degrades closed.
+			ForwardedIdentityVerifier: forwardedIdentityVerifier,
+			Emails:                    adminUIEmails{pool: pool},
 		}
 	}
 
@@ -971,20 +1284,67 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		logger.Info("project SSE stream enabled (redis transport)")
 	}
 
+	// The toolkit TYPE catalogue (GET /elitea_core/toolkits/prompt_lib/
+	// {projectID}) serves each tool's argument schema from the digest-pinned SDK
+	// snapshot. It is loaded unconditionally and here, in the composition root,
+	// because internal/api must not import internal/runtimecomposition. A
+	// snapshot that will not load is an embedded-asset defect, so it stops
+	// startup rather than degrading the endpoint to schema-less tool lists.
+	toolkitArgumentSchemas, err := runtimecomposition.LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		return fmt.Errorf("load pinned current toolkit schema snapshot: %w", err)
+	}
+	// The same endpoint serves the "$defs" its settings properties reference.
+	// That block is the join of the toolkit snapshot above (which settings
+	// field references a configuration) with the SDK configuration catalogue
+	// (which section that configuration belongs to), so both pinned files load
+	// here and stop startup the same way if either is unreadable.
+	sdkConfigurations, err := runtimecomposition.LoadPinnedCurrentSDKConfigurationCatalog()
+	if err != nil {
+		return fmt.Errorf("load pinned current SDK configuration catalog: %w", err)
+	}
+	toolkitSettingsDefinitions, err := runtimecomposition.NewCurrentToolkitSettingsDefinitionCatalog(
+		toolkitArgumentSchemas,
+		sdkConfigurations,
+	)
+	if err != nil {
+		return fmt.Errorf("compose current toolkit settings definitions: %w", err)
+	}
+
+	// patSigner signs the personal access tokens /api/v2/auth/token returns.
+	//
+	// The form graph validates a personal access token with the bytes of
+	// credentials.pat_signing_key_file. APPLICATION_SECRET_KEY is a different
+	// value, so a token signed with it failed the signature check on first use
+	// and the user kept a dead credential. The graph now signs it.
+	//
+	// The variable stays a nil interface when there is no graph: the OIDC-only
+	// shape signs and validates with APPLICATION_SECRET_KEY, and boxing a nil
+	// *FormGraph would read as "configured" downstream (#86).
+	var patSigner v2auth.TokenSigner
+	if formGraph != nil {
+		patSigner = formGraph
+	}
+
 	r := api.NewRouter(api.RouterConfig{
-		AdminUI: adminUICfg,
-		Pool:    pool,
+		AdminUI:                    adminUICfg,
+		Pool:                       pool,
+		ToolkitArgumentSchemas:     toolkitArgumentSchemas,
+		ToolkitSettingsDefinitions: toolkitSettingsDefinitions,
+		ToolkitRegistry:            toolkitArgumentSchemas,
 		HealthDeps: health.Deps{
 			DB:    &poolChecker{pool: pool},
 			Redis: authReadiness,
 		},
-		AuthValidator:      gatewayAuthValidator,
-		PrincipalValidator: gatewayPrincipalValidator,
-		SessionSecret:      gatewaySessionSecret,
+		AuthValidator:      apiGroupAuth.Validator,
+		PrincipalValidator: apiGroupAuth.PrincipalValidator,
+		SessionSecret:      apiGroupAuth.SessionSecret,
+		PATSigner:          patSigner,
 		Auth: api.AuthDeps{
-			ForwardedIdentityVerifier: gatewayForwardedIdentityVerifier,
+			ForwardedIdentityVerifier: apiGroupAuth.ForwardedIdentityVerifier,
 			SessionHandler:            oidcSessionHandler,
 			OIDCHandler:               oidcOIDCHandler,
+			SAMLHandler:               oidcSAMLHandler,
 		},
 		ProductionAuth:                productionAuth,
 		ProductionRuntime:             productionRuntime,
@@ -1011,10 +1371,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentNotificationEvents:     currentNotificationEvents,
 		CurrentModelCatalog:           currentModelCatalog,
 		CurrentModelDefault:           currentModelDefault,
-		CurrentLLMFacade:              currentLLMFacade,
 		GatewayProxy:                  gatewayProxy,
 		GatewayProjectResolver:        gatewayProjectResolver,
+		ConfigConnectionChecker:       configConnectionChecker,
+		GatewayStatus:                 gatewayStatus,
+		ConfigProviderAdmission:       configProviderAdmission,
 		ObjectStore:                   objectStore,
+		ProjectVectorStore:            projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
 		// route, and creating an agent from the UI 404s (#115).

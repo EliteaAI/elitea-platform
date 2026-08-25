@@ -4,6 +4,7 @@ import type { RawToolkitTypeSchema } from '../../../lib/helpers/toolkitSchema.he
 import { resolveExcludedFields } from './ToolkitForm.helpers';
 import { useToolkitFormConfiguration } from './ToolkitForm.configuration.hooks';
 import { useToolkitFormCore } from './ToolkitForm.core.hooks';
+import { useCredentialLikeFieldSlot } from './useCredentialLikeFieldSlot';
 import type { ResolvedToolkitFormProps, ToolkitConfigurationState } from './ToolkitForm.types';
 
 /**
@@ -63,6 +64,7 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
   } = props;
   const { view, setView, onManualViewChange, isValidSchema, effectiveToolSchema, hasErrors, mergedToolErrors, editField, setToolErrors, showValidation, configurationErrors, setConfigurationErrors, configurationName, setConfigurationName, configuration, setConfiguration, toolType, ToolComponent } = core;
   const { isCreatingConfiguration, isTestingConnection, onCreateConfiguration, onTestConnection, onRevertCredentials, shouldShowDisabledConfigFields, onCredentialReload, isLoading } = config;
+  const renderCredentialLikeField = useCredentialLikeFieldSlot(projectId, slots?.renderCredentialPicker);
 
   // A PLAIN object literal, not `useMemo`'d: the baseline itself never
   // memoized this bag either (`ToolkitForm.jsx:502-535` builds it fresh
@@ -113,7 +115,19 @@ export function useToolkitFormState(props: ResolvedToolkitFormProps): ToolkitFor
     // `SharepointOAuthStatus` (with a real, caller-supplied `McpAuthModal`)
     // instead of the nothing it rendered while this bag had neither.
     projectId,
-    slots,
+    /*
+     * #308 — `slots.renderCredentialLikeField` had NO supplier anywhere, and
+     * `ToolBaseProperty.dispatch.tsx`'s `renderCredentialLike` returns `null`
+     * without one, so every model/credential field rendered as blank space.
+     * The default is merged UNDER the caller's `slots` so a page that supplies
+     * its own renderer still wins.
+     *
+     * A page that only needs the credential picker must supply
+     * `slots.renderCredentialPicker`, NOT this slot: the default above already
+     * reads that narrower slot and keeps the three model pickers. Replacing
+     * this slot wholesale drops them.
+     */
+    slots: { renderCredentialLikeField, ...slots },
   };
 
   return {

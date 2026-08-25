@@ -118,6 +118,32 @@ describe('IndexesContainer', () => {
     expect(screen.queryByText('my-index')).not.toBeInTheDocument();
   });
 
+  /*
+   * The silent-403 regression (issue 93). A caller without
+   * `models.applications.index_meta.details` gets a 403 from the list route
+   * while the Indexes tab still renders — tab visibility comes from the
+   * toolkit type schema, not from permissions — so the refusal has to become
+   * VISIBLE here or it presents as a hung fetch.
+   *
+   * The client is configured with a re-auth flow that never settles, which is
+   * the shape the popup takes when it is opened from a background request.
+   * That is what makes this discriminate: while a 403 escalated into re-auth,
+   * the query stayed pending and the rail rendered its skeleton rows
+   * indefinitely (measured on a live stack: eight of them still on screen
+   * after nine seconds). It must settle and show the rail's own placeholder.
+   */
+  it('settles into a visible state instead of indefinite skeletons when the list is refused with 403', async () => {
+    configureGeneratedClient({ baseUrl: BASE, reauthenticate: () => new Promise<void>(() => undefined) });
+    server.use(
+      http.get(`${BASE}/elitea_core/index_meta/prompt_lib/proj-1/tk-1`, () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+    renderContainer();
+    expect(await screen.findByText('Still no indexes created')).toBeInTheDocument();
+    expect(screen.queryAllByTestId('index-list-item-skeleton')).toHaveLength(0);
+  });
+
   it('auto-selects the first index with an "indexed" field once the list loads', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/index_meta/prompt_lib/proj-1/tk-1`, () =>

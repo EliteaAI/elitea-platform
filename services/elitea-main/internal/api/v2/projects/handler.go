@@ -10,14 +10,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 type Handler struct {
-	pool     *pgxpool.Pool
-	projects CurrentProjectLister
-	resolver auth.PermissionResolver
+	pool        *pgxpool.Pool
+	projects    CurrentProjectLister
+	resolver    auth.PermissionResolver
+	provisioner ProjectProvisioner
+}
+
+// ProjectProvisioner creates a project and its tenant. It is an interface at
+// the consumer so the create route can be tested without a database, and so
+// this package does not depend on the provisioner's concrete constructor.
+type ProjectProvisioner interface {
+	Provision(ctx context.Context, request projectprovisioning.Request) (projectprovisioning.Result, error)
+	Deprovision(ctx context.Context, projectID int64) (projectprovisioning.Result, error)
+}
+
+// WithProvisioner supplies the project-create pipeline. Without it the create
+// route answers 503 rather than 404, so a misconfigured deployment reports a
+// missing dependency instead of a missing endpoint.
+func WithProvisioner(provisioner ProjectProvisioner) Option {
+	return func(h *Handler) { h.provisioner = provisioner }
 }
 
 // Option configures a Handler at construction time.
@@ -70,6 +88,19 @@ func (h *Handler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/project/{mode}/{projectID}", h.GetProject)
 	r.Get("/groups/prompt_lib", h.GroupList)
+	// Project CREATE (#333). Gated CENTRALLY, not per project: there is no
+	// project in a create path, so RequireResolvedPermissions' extractor would
+	// reject the empty id and answer 403 for everyone. `administration` is the
+	// mode the reference resolves this permission in, and the handler refuses
+	// any other `{mode}` segment with a 404 to match its route table.
+	r.With(apimw.RequireCentralPermissions(
+		h.resolver, auth.PermissionModeAdministration, CreateProjectPermission,
+	)).Post("/project/{mode}", h.CreateProject)
+	// Project DELETE (#333), the symmetric half. Same central gate, same mode
+	// restriction. It drops the tenant schema with CASCADE.
+	r.With(apimw.RequireCentralPermissions(
+		h.resolver, auth.PermissionModeAdministration, DeleteProjectPermission,
+	)).Delete("/project/{mode}/{projectID}", h.DeleteProject)
 	// The three group WRITES, gated on the permissions their pylon originals
 	// declare — `projects.projects.groups.edit` for the set-replacement PUT
 	// (groups.py) and `projects.projects.group.create` / `.delete` for the
@@ -114,7 +145,7 @@ type Project struct {
 func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	publicProjectID, err := parseInt32(chi.URLParam(r, "projectID"))
 	if err != nil || publicProjectID <= 0 {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	h.getCurrentProjects(w, r, publicProjectID)
@@ -130,27 +161,27 @@ func (h *Handler) GetCurrentProjectList(w http.ResponseWriter, r *http.Request) 
 func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, publicProjectID int32) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	userID, ok := user.OwningUserID()
 	if !ok || userID > int64(^uint32(0)>>1) {
-		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+		apierr.WriteStatus(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	if h.projects == nil {
-		http.Error(w, `{"error":"service unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "service unavailable")
 		return
 	}
 
 	limit, err := optionalInt32(r, "limit")
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	offset, err := optionalInt32(r, "offset")
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -168,7 +199,7 @@ func (h *Handler) getCurrentProjects(w http.ResponseWriter, r *http.Request, pub
 		Limit:           limit,
 	})
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 
@@ -238,13 +269,13 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var g Group
 		if err := rows.Scan(&g.ID, &g.Name); err != nil {
-			http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+			apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		groups = append(groups, g)
 	}
 	if err := rows.Err(); err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if groups == nil {
@@ -261,7 +292,7 @@ func (h *Handler) GroupList(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	payload, err := json.Marshal(v)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	payload = append(payload, '\n')

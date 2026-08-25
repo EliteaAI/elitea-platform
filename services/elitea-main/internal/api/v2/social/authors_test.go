@@ -3,6 +3,7 @@ package social_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,7 +163,11 @@ func TestCurrentAuthorsRouteReturnsEmptyArrayAndHidesFailures(t *testing.T) {
 }
 
 func TestCurrentAuthorsRouteDeniesSuspendedPrincipalProjectAndInvalidScope(t *testing.T) {
-	privateFailure := errors.New("suspended project has private permission detail")
+	// A REFUSAL must carry auth.ErrPermissionDenied. The real resolver
+	// (legacyrbac.PostgresResolver) returns that sentinel for a suspended
+	// project. Any other error means an infrastructure failure and answers
+	// 500, so a plain error here would test the wrong branch.
+	privateFailure := fmt.Errorf("suspended project has private permission detail: %w", auth.ErrPermissionDenied)
 	for name, test := range map[string]struct {
 		target      string
 		principal   currentAuthorsPrincipalValidatorFunc

@@ -12,6 +12,7 @@ import { useCallback } from 'react';
 import { CreateCredential } from '@/pages/credentials/CreateCredential';
 import { integrationGuardBeforeLoad } from '@/routes/-guards/integrationGuard';
 import { useCredentialFormContext } from '@/routes/-lib/useCredentialFormContext';
+import { pickParams } from '@/routes/-search/params';
 import { RouteError, RoutePending } from '@/routes/-ui/RouteStatus';
 
 /**
@@ -33,6 +34,12 @@ function CreateConfigurationRoute() {
   const navigate = useNavigate();
   const context = useCredentialFormContext();
   const { credentialType } = useParams({ strict: false });
+  /**
+   * DEFECT: this route declared none of PARAM-037/039/041/043/045 and read
+   * none of them, so a deep link that names a section or a prefilled
+   * credential lost it. See `credentials/create-credential.tsx` for the twin.
+   */
+  const { prefill_id: prefillId, prefill_name: prefillName, section } = Route.useSearch();
   const leave = useCallback(() => {
     void navigate({ to: '/settings/model-configuration' });
   }, [navigate]);
@@ -52,6 +59,9 @@ function CreateConfigurationRoute() {
       <CreateCredential
         context={context}
         {...(credentialType !== undefined ? { credentialType } : {})}
+        {...(prefillId !== '' ? { prefillId } : {})}
+        {...(prefillName !== '' ? { prefillName } : {})}
+        {...(section !== '' ? { section } : {})}
         configurationMode
         onCreated={leave}
         onCancelled={leave}
@@ -63,6 +73,7 @@ function CreateConfigurationRoute() {
 }
 
 export const Route = createFileRoute('/_shell/settings/create-configuration')({
+  validateSearch: pickParams('forceCustom', 'from', 'prefill_id', 'prefill_name', 'section'),
   beforeLoad: integrationGuardBeforeLoad,
   pendingComponent: RoutePending,
   errorComponent: RouteError,

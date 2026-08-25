@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
+	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/centrysecrets"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,44 @@ var (
 	ErrCurrentVaultUnavailable     = errors.New("current secret vault is unavailable")
 )
 
+// errCurrentVaultAbsent reports that the project holds NEITHER vault row.
+//
+// It is a distinct answer from ErrCurrentVaultUnavailable, and it still
+// satisfies errors.Is for that sentinel, so an existing caller reads it
+// unchanged. Only this answer permits a create. A vault that exists and will
+// not open must never be replaced, because the replacement destroys every
+// secret in it.
+var errCurrentVaultAbsent = fmt.Errorf("%w: the project has no vault", ErrCurrentVaultUnavailable)
+
+// ProjectVaultCreator creates the empty vault of a project that has none.
+//
+// internal/api/v2/secrets.Handler is the ONE implementation (#399). It holds
+// the only master key a deployment sets, so it alone decides whether the stored
+// Fernet key is wrapped. This repository must not mint a second one.
+type ProjectVaultCreator interface {
+	EnsureProjectVault(ctx context.Context, projectID string) error
+}
+
+// CurrentSecretVaultOption configures one CurrentSecretVaultRepository.
+type CurrentSecretVaultOption func(*CurrentSecretVaultRepository)
+
+// WithProjectVaultCreator lets a seal create the vault it needs.
+//
+// WHY A WRITE PATH NEEDS THIS. A project can hold rows and no vault. The
+// bootstrap file migrations/001_initial.sql inserts centry.project id 1 and
+// creates p_1 directly, and it does not call the provisioner, so the default
+// project of a FRESH install has no vault. Without a creator, the first
+// credential save into that project answers 503 and the deployment can store no
+// provider key at all.
+//
+// Without this option the repository keeps the earlier behaviour and refuses
+// the write. It never falls back to a plaintext row.
+func WithProjectVaultCreator(creator ProjectVaultCreator) CurrentSecretVaultOption {
+	return func(r *CurrentSecretVaultRepository) {
+		r.creator = creator
+	}
+}
+
 // CurrentSecretVaultRepository atomically rewrites the existing
 // centry.secrets_key/secrets_data representation. It does not invent a second
 // secret store and never exposes enumeration through this application-facing
@@ -26,27 +65,42 @@ var (
 type CurrentSecretVaultRepository struct {
 	store     sharedStore
 	masterKey []byte
+	// creator makes the vault of a project that has none. nil refuses such a
+	// write. See WithProjectVaultCreator.
+	creator ProjectVaultCreator
 }
 
-func NewCurrentSecretVaultRepository(pool *pgxpool.Pool, masterKey []byte) (*CurrentSecretVaultRepository, error) {
+func NewCurrentSecretVaultRepository(
+	pool *pgxpool.Pool,
+	masterKey []byte,
+	opts ...CurrentSecretVaultOption,
+) (*CurrentSecretVaultRepository, error) {
 	store, err := newPostgresSharedStore(pool)
 	if err != nil {
 		return nil, err
 	}
-	return newCurrentSecretVaultRepository(store, masterKey)
+	return newCurrentSecretVaultRepository(store, masterKey, opts...)
 }
 
-func newCurrentSecretVaultRepository(store sharedStore, masterKey []byte) (*CurrentSecretVaultRepository, error) {
+func newCurrentSecretVaultRepository(
+	store sharedStore,
+	masterKey []byte,
+	opts ...CurrentSecretVaultOption,
+) (*CurrentSecretVaultRepository, error) {
 	if store == nil {
 		return nil, errors.New("current secret-vault database is required")
 	}
 	if len(masterKey) != 0 && !validEncodedCurrentFernetKey(masterKey) {
 		return nil, errors.New("current secret-vault master key is invalid")
 	}
-	return &CurrentSecretVaultRepository{
+	repository := &CurrentSecretVaultRepository{
 		store:     store,
 		masterKey: append([]byte(nil), masterKey...),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(repository)
+	}
+	return repository, nil
 }
 
 func (r *CurrentSecretVaultRepository) MutateProject(
@@ -63,6 +117,99 @@ func (r *CurrentSecretVaultRepository) MutateProject(
 func (r *CurrentSecretVaultRepository) MutateAdmin(ctx context.Context, mutations []centrysecrets.Mutation) error {
 	return r.mutate(ctx, "admin", mutations)
 }
+
+// SealProjectHiddenSecrets writes hidden secret values into one project vault
+// inside the transaction the caller owns.
+//
+// The compatibility configurations route needs the row write and the vault
+// write to commit together. A separate transaction can leave a stored
+// {{secret.NAME}} reference that names nothing, and the gateway then resolves
+// an unusable credential.
+//
+// The caller commits or rolls back. This method never commits.
+func (r *CurrentSecretVaultRepository) SealProjectHiddenSecrets(
+	ctx context.Context,
+	tx pgx.Tx,
+	projectID int64,
+	mutations []configurationapp.HiddenSecretMutation,
+) error {
+	if r == nil {
+		return ErrCurrentVaultUnavailable
+	}
+	if ctx == nil || tx == nil || projectID <= 0 {
+		return ErrInvalidCurrentVaultMutation
+	}
+	if len(mutations) == 0 || len(mutations) > maxCurrentVaultMutations {
+		return ErrInvalidCurrentVaultMutation
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	vaultMutations := make([]centrysecrets.Mutation, len(mutations))
+	for index, mutation := range mutations {
+		if mutation.Name == "" || mutation.Value == "" {
+			return ErrInvalidCurrentVaultMutation
+		}
+		vaultMutations[index] = centrysecrets.Mutation{
+			Collection: centrysecrets.HiddenSecrets,
+			Name:       mutation.Name,
+			Value:      mutation.Value,
+		}
+	}
+	executor := pgxExecutor{queryer: tx}
+	project := strconv.FormatInt(projectID, 10)
+	vault, err := lockCurrentSecretVault(ctx, executor, "project-"+project)
+	if errors.Is(err, errCurrentVaultAbsent) {
+		if createErr := r.createAbsentProjectVault(ctx, project); createErr != nil {
+			return createErr
+		}
+		vault, err = lockCurrentSecretVault(ctx, executor, "project-"+project)
+	}
+	if err != nil {
+		return err
+	}
+	defer vault.destroy()
+	return vault.mutate(ctx, executor, r.masterKey, vaultMutations)
+}
+
+// createAbsentProjectVault gives a project its empty vault, so that the seal
+// above can lock one.
+//
+// It runs on the pool, OUTSIDE the caller's transaction, and that is
+// deliberate. The caller's transaction holds locks in the tenant schema only,
+// and the two statement sets touch different tables, so the second connection
+// cannot deadlock against the first. The re-read after it uses a new READ
+// COMMITTED snapshot, so it sees the committed rows.
+//
+// An empty vault that a later rollback leaves behind is harmless. It carries no
+// secret, and the creator is idempotent.
+func (r *CurrentSecretVaultRepository) createAbsentProjectVault(ctx context.Context, project string) error {
+	if r == nil || r.creator == nil {
+		return errCurrentVaultAbsent
+	}
+	if err := r.creator.EnsureProjectVault(ctx, project); err != nil {
+		return fmt.Errorf("%w: create the project vault: %w", ErrCurrentVaultUnavailable, err)
+	}
+	return nil
+}
+
+// THIS TYPE CREATES NO VAULT, AND MUST NOT (#399). It used to carry
+// EnsureProjectVault and DeleteProjectVault, keyed off
+// ELITEA_VAULT_MASTER_KEY_FILE. No file under deploy/ sets that variable, while
+// five set SECRETS_MASTER_KEY, which is the key the secrets handler uses. Two
+// creators with two key sources compose without an error — both are
+// create-if-absent and idempotent — and leave a vault that one path cannot
+// decrypt. Nothing reports the fault until a later read fails.
+//
+// internal/api/v2/secrets.Handler is now the ONE creator, called by the
+// project_secrets provisioning step. Every writer that needs a vault must run
+// after that step and hold that step's key.
+//
+// createAbsentProjectVault above does not break that rule. It mints nothing. It
+// calls that same handler, through ProjectVaultCreator, for the one project the
+// provisioning step never ran for: the default project of a fresh install.
+// MutateProject and MutateAdmin below keep the earlier behaviour and create
+// nothing, because neither of them fails a user's write closed.
 
 func (r *CurrentSecretVaultRepository) mutate(ctx context.Context, vaultID string, mutations []centrysecrets.Mutation) error {
 	if r == nil || r.store == nil {
@@ -118,7 +265,7 @@ WHERE k.id = $1
 FOR UPDATE OF k, d`, vaultID).Scan(&vault.encryptedProjectKey, &vault.encryptedVault); err != nil {
 		vault.destroy()
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrCurrentVaultUnavailable
+			return nil, errCurrentVaultAbsent
 		}
 		return nil, fmt.Errorf("lock current secret vault: %w", ErrCurrentVaultUnavailable)
 	}

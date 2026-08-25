@@ -17,8 +17,7 @@ import (
 )
 
 func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -144,6 +143,10 @@ func TestPostgresCurrentApplicationTurnAllowsASecondMessageOnTheSameConversation
 		t,
 		"a0000000-0000-4000-8000-000000000031",
 	)
+	resolve.QuestionID = thirdQuestionID
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("overlapping turn resolution error=%v", err)
+	}
 	_, err = queries.InsertCurrentApplicationTurn(
 		t.Context(),
 		sqlcgen.InsertCurrentApplicationTurnParams{
@@ -187,11 +190,36 @@ LEFT JOIN chat_messages_text AS text
 			contents,
 		)
 	}
+
+	completePostgresCurrentApplicationTurn(
+		t,
+		tx,
+		secondResponse,
+		"second response",
+	)
+	markPostgresResponseAsSupersededOrphan(t, tx, firstResponse)
+	if _, err := queries.ResolveCurrentApplicationTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve with superseded orphan response: %v", err)
+	}
+	if _, err := queries.InsertCurrentApplicationTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentApplicationTurnParams{
+			ActorUserID: 11, TargetParticipantID: 21,
+			ApplicationVersionID: 41, ApplicationID: 31,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: thirdQuestionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID: thirdQuestionItemID, UserInput: "after orphan",
+			ResponseMessageID:   thirdResponseID,
+			ExecutionGeneration: "80000000-0000-4000-8000-000000000031",
+			ExecutionID:         "execution-agent-after-orphan",
+		},
+	); err != nil {
+		t.Fatalf("insert with superseded orphan response: %v", err)
+	}
 }
 
 func TestPostgresCurrentApplicationTurnAdmitsDefaultInternalMCPAndRejectsUnsupportedFeatures(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -353,8 +381,7 @@ WHERE uuid = '80000000-0000-4000-8000-000000000039'`,
 }
 
 func TestPostgresCurrentPipelineTurnAdmitsDirectAndAdhocEntryModes(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -447,8 +474,7 @@ WHERE id = 30`); err != nil {
 }
 
 func TestPostgresCurrentNestedApplicationTurnPreservesThreeTierContract(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -568,8 +594,7 @@ WHERE conversation_id = 2 AND participant_id = 30;`); err != nil {
 }
 
 func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -642,6 +667,10 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	if firstResponse == secondResponse {
 		t.Fatal("distinct ad-hoc turns reused one response message identity")
 	}
+	resolve.QuestionID = mustCurrentPGUUID(t, "80000000-0000-4000-8000-000000000032")
+	if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("overlapping ad-hoc resolution error=%v", err)
+	}
 	_, err = queries.InsertCurrentAdhocTurn(
 		t.Context(),
 		sqlcgen.InsertCurrentAdhocTurnParams{
@@ -659,11 +688,36 @@ func TestPostgresCurrentAdhocTurnPreservesToolsHistoryAndOverlapGate(t *testing.
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("overlapping ad-hoc turn error=%v", err)
 	}
+
+	completePostgresCurrentApplicationTurn(
+		t,
+		tx,
+		secondResponse,
+		"second ad-hoc response",
+	)
+	markPostgresResponseAsSupersededOrphan(t, tx, firstResponse)
+	if _, err := queries.ResolveCurrentAdhocTurn(t.Context(), resolve); err != nil {
+		t.Fatalf("resolve ad-hoc turn with superseded orphan response: %v", err)
+	}
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: resolve.QuestionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "90000000-0000-4000-8000-000000000032"),
+			UserInput:           "after orphan",
+			ResponseMessageID:   mustCurrentPGUUID(t, "a0000000-0000-4000-8000-000000000032"),
+			ExecutionGeneration: "80000000-0000-4000-8000-000000000032",
+			ExecutionID:         "execution-adhoc-after-orphan",
+		},
+	); err != nil {
+		t.Fatalf("insert ad-hoc turn with superseded orphan response: %v", err)
+	}
 }
 
 func TestPostgresCurrentAdhocTurnAdmitsSameProjectMCPToolkit(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -768,9 +822,80 @@ WHERE id = 25`); err != nil {
 	}
 }
 
+func TestPostgresCurrentAdhocTurnAdmitsApplicationWithMCPChild(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(t.Context(), `
+INSERT INTO elitea_tools (id, type, name, description, settings, author_id, meta)
+VALUES (
+    52, 'mcp', 'child-mcp', 'MCP child owned by the attached application',
+    '{"url":"https://mcp.example.invalid/events","selected_tools":["search_docs"]}'::jsonb,
+    11, '{"mcp":true}'::jsonb
+);
+INSERT INTO entity_tool_mapping (
+    tool_id, entity_id, entity_version_id, entity_type, selected_tools
+) VALUES (52, 31, 41, 'agent', '["search_docs"]'::jsonb);`); err != nil {
+		t.Fatal(err)
+	}
+
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000032")
+	questionID := mustCurrentPGUUID(t, "20000000-0000-4000-8000-000000000040")
+	resolved, err := queries.ResolveCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.ResolveCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 0, ProjectID: 1,
+			QuestionID: questionID, ConversationUuid: conversationID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve application with MCP child: %v", err)
+	}
+	var tools []map[string]any
+	if err := json.Unmarshal([]byte(resolved.ToolsJson), &tools); err != nil {
+		t.Fatalf("decode tools: %v", err)
+	}
+	var application map[string]any
+	for _, tool := range tools {
+		if tool["type"] == "application" {
+			application = tool
+			break
+		}
+	}
+	settings, validSettings := application["settings"].(map[string]any)
+	if len(tools) != 2 || application["toolkit_name"] != "leaf-agent" ||
+		!validSettings || settings["application_version_id"] != float64(41) {
+		t.Fatalf("application with MCP child tools=%s", resolved.ToolsJson)
+	}
+
+	if _, err := queries.InsertCurrentAdhocTurn(
+		t.Context(),
+		sqlcgen.InsertCurrentAdhocTurnParams{
+			ActorUserID: 11, TargetParticipantID: 23,
+			ConversationUuid: conversationID, ProjectID: 1,
+			QuestionID: questionID, QuestionMeta: []byte(`{}`),
+			QuestionItemID:      mustCurrentPGUUID(t, "30000000-0000-4000-8000-000000000040"),
+			UserInput:           "run the attached application without invoking its MCP child",
+			ResponseMessageID:   mustCurrentPGUUID(t, "40000000-0000-4000-8000-000000000040"),
+			ExecutionGeneration: "20000000-0000-4000-8000-000000000040",
+			ExecutionID:         "execution-adhoc-application-mcp-child",
+		},
+	); err != nil {
+		t.Fatalf("insert application with MCP child turn: %v", err)
+	}
+}
+
 func TestPostgresCurrentAdhocTurnRejectsUnsupportedApplicationParticipantBoundaries(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -851,8 +976,7 @@ WHERE id = 41`,
 }
 
 func TestPostgresCurrentRegenerationResolvesOwnershipAndAtomicallyReusesResponse(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1001,9 +1125,23 @@ FROM response_item`, responseID, content); err != nil {
 	}
 }
 
+func markPostgresResponseAsSupersededOrphan(
+	t *testing.T,
+	tx pgx.Tx,
+	responseID pgtype.UUID,
+) {
+	t.Helper()
+	if _, err := tx.Exec(t.Context(), `
+UPDATE chat_message_group
+SET is_streaming = TRUE,
+    created_at = created_at - INTERVAL '1 hour'
+WHERE uuid = $1`, responseID); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPostgresCurrentSequentialNestedHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1143,8 +1281,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 }
 
 func TestPostgresCurrentParallelHITLContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1300,8 +1437,7 @@ WHERE response.uuid = $1`, responseID).Scan(
 }
 
 func TestPostgresCurrentAuthorizationContinuationConsumesExactDecisionSetAtomically(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
 
 	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
@@ -1555,7 +1691,7 @@ CREATE TABLE p_1.entity_tool_mapping (
     entity_version_id INTEGER NOT NULL, entity_type VARCHAR NOT NULL,
     selected_tools JSONB
 );
--- skills / skill_versions are created by applyPostgresIntegrationMigrations,
+-- skills / skill_versions are created by newMigratedPostgresIntegrationPool,
 -- which every caller of this seed runs first (#249 put them there so the
 -- tenant migration history has something to alter). Re-creating them here
 -- would be a duplicate relation.
@@ -1564,57 +1700,11 @@ CREATE TABLE p_1.entity_skill_mapping (
     entity_type VARCHAR(50) NOT NULL, skill_id INTEGER NOT NULL REFERENCES p_1.skills(id),
     skill_version_id INTEGER REFERENCES p_1.skill_versions(id)
 );
-CREATE TABLE p_1.chat_conversations (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, name VARCHAR NOT NULL,
-    is_private BOOLEAN NOT NULL DEFAULT TRUE, author_id INTEGER NOT NULL,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb, source VARCHAR NOT NULL DEFAULT 'elitea',
-    instructions VARCHAR, created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP
-);
-CREATE TABLE p_1.chat_participants (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, entity_name VARCHAR NOT NULL,
-    entity_meta JSONB NOT NULL DEFAULT '{}'::jsonb, meta JSON NOT NULL DEFAULT '{}'::json
-);
-CREATE TABLE p_1.chat_participant_mapping (
-    id SERIAL PRIMARY KEY,
-    conversation_id INTEGER NOT NULL REFERENCES p_1.chat_conversations(id),
-    participant_id INTEGER NOT NULL REFERENCES p_1.chat_participants(id),
-    entity_settings JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP,
-    UNIQUE (participant_id, conversation_id)
-);
-CREATE TABLE p_1.chat_message_group (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE,
-    author_participant_id INTEGER NOT NULL REFERENCES p_1.chat_participants(id),
-    conversation_id INTEGER NOT NULL REFERENCES p_1.chat_conversations(id),
-    sent_to_id INTEGER REFERENCES p_1.chat_participants(id),
-    reply_to_id INTEGER REFERENCES p_1.chat_message_group(id),
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb, is_streaming BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP, task_id VARCHAR(64)
-);
-CREATE TABLE p_1.chat_message_items (
-    id SERIAL PRIMARY KEY, uuid UUID NOT NULL UNIQUE, item_type VARCHAR(50) NOT NULL,
-    order_index INTEGER NOT NULL, meta JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP,
-    message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id)
-);
-CREATE TABLE p_1.chat_messages_text (
-    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE,
-    content TEXT NOT NULL
-);
-CREATE TABLE p_1.chat_message_trace_step (
-    id BIGINT PRIMARY KEY,
-    message_group_id INTEGER NOT NULL REFERENCES p_1.chat_message_group(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL, run_id TEXT, parent_agent_name TEXT, parent_agent_call_id TEXT,
-    started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
-    is_error BOOLEAN NOT NULL DEFAULT FALSE,
-    has_visible_content BOOLEAN NOT NULL DEFAULT TRUE,
-    tool_name TEXT, tool_inputs JSONB, tool_output TEXT, finish_reason TEXT,
-    step_type TEXT, text TEXT, thinking TEXT, model_name TEXT, attrs JSONB
-);
-CREATE TABLE p_1.chat_messages_context (
-    context_data JSONB NOT NULL, context_type TEXT,
-    id INTEGER PRIMARY KEY REFERENCES p_1.chat_message_items(id) ON DELETE CASCADE
-);
+-- The eight chat tables are created by newMigratedPostgresIntegrationPool, for
+-- the same reason skills / skill_versions above are: tenant/0123 took ownership
+-- of them (#287) so a pylon-free deployment has them at all, and this seed's
+-- callers run that migration first. Re-creating them here would be a duplicate
+-- relation.
 INSERT INTO p_1.application_versions (
     id, application_id, name, status, author_id, uuid, llm_settings, instructions,
     conversation_starters, welcome_message, agent_type, meta, pipeline_settings

@@ -3,6 +3,7 @@ import { useCallback, useState } from 'react';
 
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { hasBackendCapability } from '@/shared/config';
 import { PERMISSIONS } from '@/shared/lib/permissions';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
@@ -56,6 +57,8 @@ export function GenerateAgentButton({
   const handleOpen = useCallback(() => setIsOpen(true), []);
   const handleClose = useCallback(() => setIsOpen(false), []);
 
+  // The draft endpoint is not mounted. See `shared/config/backendCapabilities`.
+  if (!hasBackendCapability('aiGeneration')) return null;
   if (!hasPermission) return null;
 
   return (

@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { useNavigate, useSearch } from '@tanstack/react-router';
 
+import { usePermissionList } from '@/shared/api/generated/auth/auth';
 import { useUserList, useRoleList } from '@/shared/api/generated/admin/admin';
 import type { UserRecord } from '@/shared/api/generated/model';
 import { unwrapList, unwrapListPage } from '@/shared/api/unwrap';
@@ -66,8 +67,12 @@ interface UseUsersPageDataResult {
   setSortDirection: (d: 'asc' | 'desc') => void;
   searchText: string;
   setSearchText: (s: string) => void;
-  userListQuery: { isFetching: boolean; refetch?: () => void };
-  roleListQuery: { isFetching: boolean; refetch?: () => void };
+  // `isError` is part of the shape on purpose. The returned literals used to
+  // narrow to `{isFetching, refetch}`. That narrowing made a failed member
+  // fetch unreachable from the page. The table rendered its "No users"
+  // placeholder, and no error was shown anywhere.
+  userListQuery: { isFetching: boolean; isError: boolean; refetch?: () => void };
+  roleListQuery: { isFetching: boolean; isError: boolean; refetch?: () => void };
 }
 
 /**
@@ -94,13 +99,13 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
     projectId,
     { limit: pageSize, offset: loadedPage * pageSize },
     { query: { enabled: !!projectId && canView } },
-  ) as { isFetching: boolean; refetch?: () => void; data?: unknown };
+  ) as { isFetching: boolean; isError: boolean; refetch?: () => void; data?: unknown };
 
   const roleListQuery = useRoleList(
     projectId,
     { limit: 1000, offset: 0 },
     { query: { enabled: !!projectId && canView } },
-  ) as { isFetching: boolean; refetch?: () => void; data?: unknown };
+  ) as { isFetching: boolean; isError: boolean; refetch?: () => void; data?: unknown };
 
   useEffect(() => {
     const resp = userListQuery.data;
@@ -193,8 +198,8 @@ function useUsersPageData(projectId: string, canView: boolean): UseUsersPageData
     setSortDirection,
     searchText,
     setSearchText,
-    userListQuery: { isFetching: userListQuery.isFetching, refetch: userListQuery.refetch },
-    roleListQuery: { isFetching: roleListQuery.isFetching, refetch: roleListQuery.refetch },
+    userListQuery: { isFetching: userListQuery.isFetching, isError: userListQuery.isError, refetch: userListQuery.refetch },
+    roleListQuery: { isFetching: roleListQuery.isFetching, isError: roleListQuery.isError, refetch: roleListQuery.refetch },
   };
 }
 
@@ -207,6 +212,13 @@ export interface UsersProps {
 export function Users({ projectId }: UsersProps) {
   // ── permissions (spec §9.3, old-app parity: `checkPermission(PERMISSIONS.users.*)`) ──
   const permissionSet = usePermissionSet(projectId || undefined);
+  // `usePermissionSet` answers an EMPTY set while the permission request is
+  // still in flight, so `canView === false` alone cannot tell "denied" from
+  // "not known yet". This reads the same query purely for its settled state,
+  // so the no-permission banner does not flash for everyone. React-query
+  // serves that query from one cache entry, so it costs no extra request.
+  const permissionQuery = usePermissionList(projectId || '', { query: { enabled: !!projectId } });
+  const permissionsResolved = !!projectId && (permissionQuery.isSuccess || permissionQuery.isError);
   const canView = permissionSet.has(PERMISSIONS.users.view);
   const canCreate = permissionSet.has(PERMISSIONS.users.create);
   const canEdit = permissionSet.has(PERMISSIONS.users.edit);
@@ -320,6 +332,12 @@ export function Users({ projectId }: UsersProps) {
   const { handleInviteConfirm, singleAction, batchAction, actions } = actionsResult;
 
   const isLoading = userListQuery.isFetching || roleListQuery.isFetching;
+  const isError = userListQuery.isError || roleListQuery.isError;
+
+  const handleRetry = useCallback(() => {
+    userListQuery.refetch?.();
+    roleListQuery.refetch?.();
+  }, [userListQuery, roleListQuery]);
 
   // ── toast auto-clear ─────────────────────────────────────────────────
   useEffect(() => {
@@ -360,6 +378,7 @@ export function Users({ projectId }: UsersProps) {
         onSetInviteOpen: setInviteOpen,
       }}
       permissions={{ canView, canCreate, canEdit, canDelete }}
+      status={{ isError, permissionsResolved, onRetry: handleRetry }}
       isLoading={isLoading}
     />
   );

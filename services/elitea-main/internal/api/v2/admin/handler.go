@@ -3,17 +3,33 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
-	"runtime"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
 
 type Handler struct {
-	pool     *pgxpool.Pool
-	resolver auth.PermissionResolver
+	pool        *pgxpool.Pool
+	resolver    auth.PermissionResolver
+	suggestions ToolkitRegistrySource
+	// The pre-built MCP server catalogue and the vault its client secrets are
+	// sealed into (mcp_prebuilt.go). Both nil unless WithPrebuiltMCPCatalogue
+	// is applied, and the catalogue routes answer 503 while either is.
+	prebuiltMCP      *mcpregistry.PrebuiltStore
+	prebuiltMCPVault PrebuiltSecretStore
+	// The typed identity provider definitions and the vault their secrets are
+	// sealed into (identity_providers.go). Both nil unless
+	// WithIdentityProviders is applied, and those routes answer 503 while
+	// either is.
+	identityProviders     IdentityProviderStore
+	identityProviderVault IdentityProviderSecretStore
+	// The authored SCIM group bindings (scim_group_bindings.go). Nil unless
+	// WithSCIMGroupBindings is applied, and those routes answer 503 while it
+	// is — never an empty list, which would read as "no group is bound".
+	scimGroupBindings SCIMGroupBindingStore
 }
 
 // Option configures a Handler at construction time.
@@ -32,6 +48,23 @@ func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(h *Handler) { h.resolver = resolver }
 }
 
+// WithToolkitRegistry supplies the toolkit registry behind
+// `GET /admin/plugin_config_suggestions/{mode}/{key}` — see config_suggestions.go.
+// Unassigned, the two toolkit sources report that this deployment cannot
+// enumerate them, rather than answering an empty list.
+func WithToolkitRegistry(source ToolkitRegistrySource) Option {
+	return func(h *Handler) {
+		// A nil interface is not stored, so an unwired composition root leaves
+		// the field nil rather than boxing one. A nil POINTER inside a non-nil
+		// interface still gets past this, which is why the handler also treats an
+		// empty registry as no registry — see toolkitRegistryTypes.
+		if source == nil {
+			return
+		}
+		h.suggestions = source
+	}
+}
+
 func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
 	handler := &Handler{pool: pool}
 	for _, option := range options {
@@ -40,17 +73,66 @@ func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
 	return handler
 }
 
+// systemInfoUnavailable is what `/admin/system_info/{mode}` and its ungated
+// `/admin/system_info/prompt_lib` sibling answer, and why.
+//
+// pylon's `system_info` reports the versions of six NAMED plugins —
+// elitea_core, admin, notifications, configurations, sdk_plugin and
+// indexer_worker — read out of `self.module.remote_runtimes`, the registry of
+// pylons that announced themselves on the Arbiter bus in the last 60 seconds
+// (legacy/plugins/admin/api/v2/system_info.py). It is a FLEET inventory: the
+// answer names other processes, not the process that serves the request.
+//
+// That is the same registry `RuntimeRemote` above reads, and `RuntimeRemote`
+// already answers 501 for the same reason. AGENTS.md names Pylon plugin loading
+// and Arbiter transport as things the target architecture does not preserve, so
+// this service loads no plugins and has no fleet to ask.
+//
+// Until this change the handler answered 200 with a HARDCODED map: `elitea_core`
+// and `auth`, both "active" at version "2.0.0", under a top-level `version`
+// "2.0.0" and a `build` "elitea-main-go". Every one of those values was invented.
+// `auth` is not even one of the six names pylon reports. The shape was wrong as
+// well: pylon returns `plugins` as an ARRAY of `{name, version}`, and both
+// clients index it as an array, so the fabricated map rendered as nothing. That
+// is luck, not safety — the next person to correct the shape would have made an
+// admin screen start to display invented version numbers, which an operator uses
+// to decide whether a fix is deployed (#219).
+//
+// # The three answers that were rejected
+//
+// An EMPTY list. `{"plugins": []}` reads as "this deployment runs no plugins",
+// which is a different statement from "this platform has no plugin concept". The
+// `Tasks` and `RuntimeRemote` comments in this file condemn exactly that
+// conflation.
+//
+// The RUNNING BINARY instead. Both clients render plain `name: version` rows, so
+// the shape would fit, but this service has no version to read. No `-ldflags -X`
+// exists in services/elitea-main/Containerfile, .github/workflows/ci-go.yml or
+// docker-bake.hcl; the Containerfile declares `ARG VERSION=dev` and never uses
+// it; and the build copies `services/elitea-main/` without a `.git` directory, so
+// `debug.ReadBuildInfo` reports `Main.Version` as "(devel)" and records no
+// `vcs.revision`. Reporting "(devel)" to an operator who asks which build is
+// deployed is the same failure in new clothes. Build-version plumbing is a
+// separate change, and this route can report a real version once it exists.
+//
+// REMOVING the field. A shipped screen renders it, so it cannot simply vanish.
+//
+// # What the clients do with a 501
+//
+// apps/elitea-ui reads `GET /admin/system_info/prompt_lib` and holds
+// `systemInfo?.plugins ?? []`, so the Help Center version tooltip stays closed —
+// the state it is in today. The "Version: X (date)" label beside it comes from
+// `/admin/plugin_config_values/prompt_lib/resources`, which is real and
+// administrator-owned, so the bar keeps its true content. apps/elitea-web does
+// not call this route at all; its `useResourcesConfig` returns an empty plugin
+// list on purpose. The legacy admin_ui Information card reads
+// `/admin/system_info/administration` the same defensive way and simply lists no
+// extra rows.
+const systemInfoUnavailable = "plugin version reporting reads the Pylon fleet's Arbiter runtime announcements, " +
+	"which have no equivalent in this service; see AGENTS.md architecture boundaries"
+
 func (h *Handler) SystemInfo(w http.ResponseWriter, _ *http.Request) {
-	info := map[string]any{
-		"version":    "2.0.0",
-		"build":      "elitea-main-go",
-		"go_version": runtime.Version(),
-		"plugins": map[string]any{
-			"elitea_core": map[string]any{"status": "active", "version": "2.0.0"},
-			"auth":        map[string]any{"status": "active", "version": "2.0.0"},
-		},
-	}
-	writeJSON(w, http.StatusOK, info)
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": systemInfoUnavailable})
 }
 
 // ResourcesConfig, PluginConfigValues and PluginConfigValuesSave are implemented
@@ -121,23 +203,7 @@ func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": pylonRuntimeUnavailable})
 }
 
-// PluginConfigSuggestions answered `[]` — a BARE ARRAY, where every client reads
-// `data.values` and `data.labels` (admin_ui's `SchemaField.jsx`). So the field
-// that asked for suggestions got `undefined`, not an empty list, on top of the
-// list being empty.
-//
-// The sources pylon serves are `toolkit_names` and `toolkit_tools` (read out of
-// the elitea_core plugin's in-process toolkit registry) and `projects`. The
-// first two have no source of truth in this service. Rather than answer an empty
-// list for a source this platform cannot enumerate, it says so — and the only
-// sections whose fields declare an `enum_source` are unavailable anyway, so no
-// rendered control depends on this today.
-func (h *Handler) PluginConfigSuggestions(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{
-		"error": "configuration value suggestions are sourced from the Pylon toolkit registry, " +
-			"which has no equivalent in this service",
-	})
-}
+// PluginConfigSuggestions is implemented in config_suggestions.go.
 
 // `ModerationStatuses` and `ModerationStatusSingle` used to sit here: two copies
 // of a `_ *http.Request` stub answering a fixed empty page, one mounted ungated

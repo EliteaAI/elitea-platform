@@ -52,7 +52,9 @@ const MAX_TOOL_ARGUMENT_BYTES: usize = 256 * 1_024;
 const ANTHROPIC_VERSION: HeaderName = HeaderName::from_static("anthropic-version");
 const ANTHROPIC_BETA: HeaderName = HeaderName::from_static("anthropic-beta");
 const X_API_KEY: HeaderName = HeaderName::from_static("x-api-key");
-const OPENAI_ORGANIZATION: HeaderName = HeaderName::from_static("openai-organization");
+// Billing/execution scope comes from the redeemed claim. The frozen model
+// owner may be the public project and must not be sent as this selector.
+const PROJECT_SELECTOR: HeaderName = HeaderName::from_static("x-project-id");
 
 impl ModelGatewayClient {
     /// Consume one claim credential into the native Anthropic dialect while
@@ -60,12 +62,13 @@ impl ModelGatewayClient {
     pub(crate) fn bind_anthropic_ordinary(
         &self,
         context: &ClaimScopedEliteaContext,
-        model_project_id: u32,
+        model_owner_project_id: u32,
         invocation: ModelGatewayInvocation,
     ) -> Result<BoundAnthropicGateway, ModelGatewayError> {
         validate_invocation(&invocation)?;
         let token = context.model_facade_token();
-        if model_project_id == 0 || token.is_empty() {
+        let billing_project_id = context.resource_project_id();
+        if model_owner_project_id == 0 || billing_project_id == 0 || token.is_empty() {
             return Err(ModelGatewayError::InvalidInvocation);
         }
         let completion = Arc::new(Mutex::new(AnthropicCompletionState::default()));
@@ -73,7 +76,7 @@ impl ModelGatewayClient {
             transport: self.transport.clone(),
             config: self.config.clone(),
             invocation,
-            project_id: u64::from(model_project_id),
+            billing_project_id,
             token,
             completion: completion.clone(),
             calls: AtomicU32::new(0),
@@ -161,7 +164,7 @@ struct EliteaAnthropicModel {
     transport: Arc<dyn super::model_gateway::ModelGatewayTransport>,
     config: super::model_gateway::ModelGatewayConfig,
     invocation: ModelGatewayInvocation,
-    project_id: u64,
+    billing_project_id: u64,
     token: Zeroizing<String>,
     completion: Arc<Mutex<AnthropicCompletionState>>,
     calls: AtomicU32,
@@ -198,7 +201,7 @@ impl Llm for EliteaAnthropicModel {
         }
         let allowed_tools = request.tools.keys().cloned().collect();
         let body = build_anthropic_body(&request, stream, &self.invocation, &self.config)?;
-        let request = build_anthropic_request(body, self.project_id, self.token.as_str())?;
+        let request = build_anthropic_request(body, self.billing_project_id, self.token.as_str())?;
         let response = timeout(
             self.config.response_header_timeout,
             self.transport.post(request),
@@ -434,7 +437,7 @@ fn adaptive_thinking_model(model_name: &str) -> bool {
 
 fn build_anthropic_request(
     body: Bytes,
-    project_id: u64,
+    billing_project_id: u64,
     token: &str,
 ) -> Result<Request<Body>, AdkError> {
     let body_length = body.len();
@@ -457,8 +460,9 @@ fn build_anthropic_request(
         HeaderValue::from_str(&body_length.to_string()).map_err(|_| invalid_anthropic_request())?,
     );
     headers.insert(
-        OPENAI_ORGANIZATION,
-        HeaderValue::from_str(&project_id.to_string()).map_err(|_| invalid_anthropic_request())?,
+        PROJECT_SELECTOR,
+        HeaderValue::from_str(&billing_project_id.to_string())
+            .map_err(|_| invalid_anthropic_request())?,
     );
     let mut bearer = Zeroizing::new(String::with_capacity(7 + token.len()));
     bearer.push_str("Bearer ");

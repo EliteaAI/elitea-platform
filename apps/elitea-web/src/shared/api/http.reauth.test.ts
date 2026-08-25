@@ -1,5 +1,6 @@
 /**
- * HTTP core — §5.4 behaviour 2 (real 401/403 + secondary redirect sniff),
+ * HTTP core — §5.4 behaviour 2 (a real 401 + secondary redirect sniff; a 403
+ * is deliberately NOT a re-auth signal),
  * behaviour 3 (single-flight re-auth) and byte-identical body replay.
  */
 import { describe, expect, it } from 'vitest';
@@ -49,7 +50,7 @@ function client(reauthenticate?: HttpConfig['reauthenticate']) {
   );
 }
 
-describe('behaviour 2 — real 401/403 is the PRIMARY re-auth signal', () => {
+describe('behaviour 2 — a real 401 is the PRIMARY re-auth signal', () => {
   it('a genuine 401 (auth.go:155 shape) triggers re-auth and the retry succeeds', async () => {
     const gate: SessionGate = { authed: false };
     const sink: CapturedRequest[] = [];
@@ -70,13 +71,37 @@ describe('behaviour 2 — real 401/403 is the PRIMARY re-auth signal', () => {
     expect(sink).toHaveLength(2); // original + retry
   });
 
-  it('a 403 takes the same path (§5.4: 401/403 → re-auth flow)', async () => {
+  /*
+   * A 403 does NOT take that path any more (issue 93). It is an authorization
+   * refusal about the RESOURCE, not about the session, so re-authenticating
+   * the same user can only replay into the same 403 — and while the flow is
+   * open the caller's promise is unsettled, which react-query renders as an
+   * indefinite loading state rather than as a refusal. Both halves are
+   * asserted: no re-auth is attempted, and the failure carries the status and
+   * the BODY that the `kind: 'auth'` branch used to discard.
+   */
+  it('a 403 does NOT trigger re-auth and surfaces as a kind:http failure with its body', async () => {
     const gate: SessionGate = { authed: false };
     server.use(probeAuthGated(gate, 403));
     const { state, reauthenticate } = fakeReauth(gate);
     const result = await client(reauthenticate).get(PROBE);
-    expect(result.ok).toBe(true);
-    expect(state.calls).toBe(1);
+    if (result.ok) throw new Error('expected failure');
+    expect(result.error).toMatchObject({ kind: 'http', status: 403 });
+    expect(state.calls).toBe(0);
+  });
+
+  it('a 403 settles rather than hanging while a re-auth flow is pending', async () => {
+    const gate: SessionGate = { authed: false };
+    server.use(probeAuthGated(gate, 403));
+    // A re-auth that never settles — the measured shape of the popup flow when
+    // it is opened from a background request. Before this change the request
+    // awaited it and never resolved.
+    const result = await Promise.race([
+      client(() => new Promise<void>(() => undefined)).get(PROBE),
+      new Promise<'hung'>((resolve) => setTimeout(() => resolve('hung'), 500)),
+    ]);
+    if (result === 'hung') throw new Error('the 403 never settled');
+    expect(result.ok).toBe(false);
   });
 
   it('returns a kind:auth failure when no re-auth flow is configured', async () => {

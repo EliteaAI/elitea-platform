@@ -18,39 +18,105 @@
 # fix here is complete, and vice versa.
 #
 # There is no pylon, no centry, no LiteLLM in this stack. LiteLLM is superseded
-# by the gateway: elitea-main only reads ELITEA_LITELLM_* under
-# ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here sets.
+# by the gateway, and elitea-main can no longer talk to it at all: the facade,
+# its administration client and the ELITEA_LITELLM_BASE_URL /
+# ELITEA_LITELLM_MASTER_KEY_FILE env surface are deleted. The gateway is the
+# sole /llm backend, and it pulls each project's credentials and models from
+# p_{projectID}.configuration itself. (The one surviving setting from that era
+# is the project-own-LLM policy, renamed to ELITEA_ALLOW_PROJECT_OWN_LLMS; it
+# only applies under ELITEA_CONFIGURATIONS_ENABLED=true, which nothing here
+# sets.)
 #
 # ── What works ───────────────────────────────────────────────────────────────
 #   Everything the E2E stack does, plus real chat completions through Bifrost at
 #   POST /api/v2/../llm/v1/chat/completions (OpenAI dialect) and /llm/v1/messages
 #   (Anthropic dialect), billed against a real provider key you seed.
 #
+# ── The runtime plane (issue #281) ───────────────────────────────────────────
+#   ELITEA_RUNTIME_ENABLED=true IS set below, so the agent-execution HTTP
+#   surface is live: POST /api/v2/elitea_core/messages/prompt_lib/{projectID}/
+#   {conversationID} admits a run and returns {events_url}, and
+#   GET /api/v2/executions/{projectID}/{executionID}/events streams it
+#   (internal/api/v2/agentexecution/route.go, mounted at
+#   internal/api/production_router.go:123-125).
+#
+#   Turning that flag on is not a one-liner. runtimecomposition/config.go takes
+#   the runtime env block all-or-nothing and refuses to boot on a partial one,
+#   and each piece drags in real provisioning:
+#     * TLS Redis. Agent dispatch is Redis Streams, not NATS: the outbox drains
+#       through internal/transport/redisdispatch/agent.go (XADD). The URL must
+#       be rediss:// with an ACL username and a file-backed password, so the
+#       plaintext `redis` service above cannot serve it — hence `runtime-redis`.
+#     * Three mTLS listeners, not one: control gRPC :9443, output gRPC :9444,
+#       content HTTPS :9445, each with its own cert/key/client-CA.
+#     * An Ed25519 command-signing keypair whose public half must appear in the
+#       verification keyring under ELITEA_RUNTIME_SIGNING_KEY_ID.
+#     * Production auth. cmd/elitea-main/main.go:686-688 refuses to boot the
+#       runtime without it, and it only exists in the ELITEA_AUTH_CONFIG_FILE
+#       branch — see deploy/runtime/auth.form.yml for why that means a Form
+#       provider nobody logs in through.
+#     * ELITEA_CONFIGURATIONS_ENABLED=true: agent dispatch composes through
+#       dependencies.CurrentConfigurations (runtimecomposition/composition.go:470),
+#       which is nil unless configurations are enabled, and it fails a layer
+#       deep rather than at a guard.
+#     * The shared migration head applied BEFORE elitea-main starts
+#       (composition.go CheckHead) — which is why db-init and elitea-migrate are
+#       now compose services rather than steps inside `seed`.
+#   All of it is provisioned by deploy/scripts/gen-runtime-certs.sh and installed
+#   per-consumer by the runtime-material init service.
+#
+# ── The agent worker (issue #282) ────────────────────────────────────────────
+#   elitea-worker is the NodeEvent producer — Go admits and projects executions
+#   but has no agent-token producer of its own. Two things it needs are not
+#   obvious:
+#     * platform_origin must be an https origin (config.py:187 rejects anything
+#       else) and elitea-main has no TLS listener for its /api/v2 + /llm surface,
+#       so `platform-edge` terminates TLS for it with a runtime-CA certificate.
+#     * the SDK verifies TLS through the OS trust store on import, which cannot
+#       contain a locally minted CA — hence ELITEA_DISABLE_SYSTEM_CA plus
+#       REQUESTS_CA_BUNDLE/SSL_CERT_FILE on the worker service.
+#   The worker has NO env-var configuration: one JSON file, deploy/runtime/
+#   worker-runtime.json, whose stream/group must match elitea-main's env below.
+#
+# ── The mock LLM (issue #283) ────────────────────────────────────────────────
+#   `seed-llm` now defaults to an OFFLINE mock when no provider key is present,
+#   so a model turn completes with no network and no billing. Two details are
+#   load-bearing:
+#     * the credential is seeded as type `vllm`, not `open_ai`. bifrost lifts
+#       its SSRF guard only for the self-hosted classes (account.go:235), so a
+#       private compose address must be one of them — an `open_ai` credential
+#       pointing at llm-mock is refused by the dialer whatever the allowlist
+#       says.
+#     * the wire model carries the provider prefix, `vllm/E2E-MOCK-MODEL`.
+#       bifrost resolves the provider from the model string alone, with an
+#       EMPTY default (ParseModelString), so a bare name reaches core with no
+#       provider and never gets as far as the credential.
+#   With OPENAI_API_KEY (or ANTHROPIC_API_KEY) set, seed-llm behaves exactly as
+#   before and the mock is not seeded — nothing can quietly answer a request the
+#   operator meant to bill to a provider.
+#
 # ── What still does NOT work, and why ────────────────────────────────────────
-#   AGENT execution (the chat box "Send" button) is a separate path from the
-#   /llm passthrough and is NOT enabled here. It needs all of:
-#     * services/elitea-worker-python running as the NodeEvent producer — Go has
-#       no native agent-token producer; it only projects and serves the events;
-#     * ELITEA_RUNTIME_ENABLED=true, which requires a full runtime PKI (TLS Redis
-#       + four gRPC server certs + a signing keyring — see centry-hybrid/
-#       prepare-runtime.sh, 215 lines) AND production auth via
-#       ELITEA_AUTH_CONFIG_FILE;
-#     * cfg.RuntimeRoutes to be assigned in cmd/elitea-main/main.go so that
-#       GET /api/v2/executions/{projectID}/{executionID}/events is actually
-#       mounted — today it is built, assigned to cfg.ProductionRuntime, and read
-#       only by the production router;
-#     * the web chat surface to subscribe to that SSE stream instead of emitting
-#       chat_predict into a noop socket.io client
-#       (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.ts:116).
-#   Do not add ELITEA_RUNTIME_* here piecemeal: runtimecomposition/config.go
-#   requires the whole set at once and refuses to start on a partial one.
+#     * Toolkit-bearing agents fail regardless: the SDK resolves toolkits via
+#       /api/v2/elitea_core/tools_list/{project_id}, which centry-hybrid routes
+#       to PYLON — Go's equivalent is a different path and answers 501 by
+#       design. Same for nested application references and the artifact toolkit.
+#       A plain adhoc turn touches none of them.
+#     * the web chat surface still emits chat_predict into a noop socket.io
+#       client (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.ts:116)
+#       instead of POSTing and subscribing to {events_url} — that port is #93.
 #
 # ── Ports ────────────────────────────────────────────────────────────────────
 #   8084  traefik (entry point)     STANDALONE_PORT
 #   8085  gateway, direct (debug)   STANDALONE_GATEWAY_PORT
 #   15433 postgres                  STANDALONE_PG_PORT
 #   16380 redis                     STANDALONE_REDIS_PORT
+#   8090  llm-mock journal          STANDALONE_MOCK_PORT — see the llm-mock comment
 #   9400  oidc-provider-mock        FIXED — see the oidc-mock comment
+#
+#   The runtime plane is NOT published to the host. runtime-redis:6380 and
+#   elitea-main:9443/9444/9445 are reachable only on the compose network, which
+#   is where the worker (#282) runs. Publishing them would expose three mTLS
+#   listeners and a command bus on the developer's LAN for no test benefit.
 #
 # NOTE: oidc-mock's published port must equal its container port, so it is
 # pinned at 9400 and CANNOT be remapped. This stack therefore cannot run at the
@@ -60,11 +126,16 @@
 #   deploy/scripts/standalone-stack.sh certs     # once — local mTLS material
 #   deploy/scripts/standalone-stack.sh up
 #   deploy/scripts/standalone-stack.sh seed
+#   deploy/scripts/standalone-stack.sh seed-runtime   # workload session row
 #   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm
+#   deploy/scripts/standalone-stack.sh check
 #   open http://localhost:8084/app/
 #
 # SKIP_MIGRATIONS is deliberately absent: no Go code reads it. Schema bootstrap
-# is the seed step (001_initial.sql → elitea-migrate → rows).
+# used to be part of the seed step; it now runs as the db-init and
+# elitea-migrate services below, because with the runtime enabled elitea-main
+# checks the shared migration head at boot and would crash-loop until `seed`
+# ran — an ordering that only works if the schema lands first.
 
 name: elitea-standalone
 
@@ -73,7 +144,19 @@ services:
   # ── Infrastructure ──────────────────────────────────────────────────────────
 
   postgres:
-    image: postgres:18
+    # pgvector, not plain postgres:18, and it is load-bearing for the index
+    # plane (#93 Surface A). The index-start request materializes its initial
+    # index_meta SYNCHRONOUSLY before it answers, and that write creates
+    # `langchain_pg_embedding (… embedding vector …)` in the target database
+    # (internal/infra/pgvector/index_meta_writer.go:649-667). Without the
+    # extension the DDL fails with `type "vector" does not exist` and the start
+    # route answers 500 — no dispatch, no task_id, nothing on the events
+    # stream. The legacy stack has always used a pgvector image for the same
+    # reason; this one had not needed it because the index plane was off.
+    #
+    # Same PostgreSQL major as before (pg18), so the existing standalone_pg_data
+    # volume is reused in place rather than re-initialized.
+    image: pgvector/pgvector:0.8.1-pg18
     shm_size: '2g'
     environment:
       POSTGRES_USER: elitea
@@ -107,6 +190,132 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # ── Runtime plane: material, TLS Redis, stream bootstrap (issue #281) ───────
+
+  # Installs deploy/certs/runtime/ into three per-consumer named volumes with
+  # the uid and mode each reader needs. See deploy/runtime/install-material.sh
+  # for why a bind mount cannot do this job: securefile demands exactly 0600 on
+  # private material, and under rootless podman a bind-mounted host file arrives
+  # owned by container uid 0 — unreadable by elitea-main's nonroot uid.
+  runtime-material:
+    image: docker.io/library/alpine:3.20
+    entrypoint: ["/bin/sh", "/opt/install-material.sh"]
+    volumes:
+      - ./runtime/install-material.sh:/opt/install-material.sh:ro
+      - ./certs/runtime:/src:ro
+      - standalone_runtime_main:/dst/main
+      - standalone_runtime_redis:/dst/redis
+      - standalone_runtime_worker:/dst/worker
+      - standalone_runtime_edge:/dst/edge
+    restart: "no"
+
+  # The runtime dispatch bus. Separate from the plaintext `redis` above because
+  # runtimecomposition/config.go accepts only rediss:// with an ACL username,
+  # and dials at MinVersion TLS 1.3. Config: deploy/runtime/redis.conf.
+  runtime-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "/etc/redis/redis.conf"]
+    volumes:
+      - ./runtime/redis.conf:/etc/redis/redis.conf:ro
+      - standalone_runtime_redis:/run/elitea-runtime:ro
+    depends_on:
+      runtime-material:
+        condition: service_completed_successfully
+    healthcheck:
+      # `redis-cli ping` cannot work here: cleartext is off (`port 0`) and the
+      # default user is disabled, so the probe must speak TLS and AUTH as a real
+      # ACL user. A PONG therefore proves the cert, the ACL file and the TLS
+      # listener are all good — which is exactly what dependents need to know.
+      test: ["CMD-SHELL", "redis-cli --tls --cacert /run/elitea-runtime/runtime-ca.crt -h runtime-redis -p 6380 --user bootstrap --pass \"$$(cat /run/elitea-runtime/redis-bootstrap-password)\" --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  # Creates the dispatch streams and their consumer groups from 0-0. The worker's
+  # ACL has no XGROUP on purpose, so this cannot be left to the consumer.
+  runtime-bootstrap:
+    image: redis:7-alpine
+    entrypoint: ["/bin/sh", "/opt/bootstrap-streams.sh"]
+    environment:
+      AGENT_STREAM: "commands.v1.agent.execute.agent.shared.1.0"
+      AGENT_GROUP: "elitea-agent-worker-v1"
+      CONFIGURATION_STREAM: "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0"
+      CONFIGURATION_GROUP: "elitea-configuration-worker-v1"
+    volumes:
+      - ./runtime/bootstrap-streams.sh:/opt/bootstrap-streams.sh:ro
+      - standalone_runtime_redis:/run/elitea-runtime:ro
+    depends_on:
+      runtime-redis:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Schema bootstrap ────────────────────────────────────────────────────────
+  # Previously both steps lived inside `standalone-stack.sh seed`, which runs
+  # AFTER the stack is up. With the runtime enabled elitea-main verifies the
+  # shared migration head during composition, so a fresh volume made it
+  # crash-loop until someone seeded it. Moving them here makes `up --wait`
+  # meaningful on a fresh machine.
+  db-init:
+    image: postgres:18
+    entrypoint: ["/bin/sh", "-c"]
+    # 001_initial.sql creates the centry + p_1 schema from scratch and is not
+    # idempotent, so it is skipped once its output exists. This mirrors what the
+    # E2E seeder does with `|| true`, but reports a real failure on a fresh DB
+    # instead of swallowing it.
+    command:
+      - |
+        set -eu
+        export PGPASSWORD=elitea
+        # The worker's langgraph checkpointer opens its own DATABASE and calls
+        # setup() to create its tables, so `agentstate` only has to exist. It is
+        # a separate database, not a schema, because that is the connection
+        # string shape the current indexer already uses (#282).
+        if ! psql -h postgres -U elitea -d postgres -tAc \
+             "SELECT 1 FROM pg_database WHERE datname = 'agentstate'" | grep -q 1; then
+          psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d postgres -c "CREATE DATABASE agentstate"
+        fi
+        # The vector type the index plane's DDL uses unqualified, so it has to
+        # live in a schema on the default search_path — `public`. Idempotent,
+        # and separate from 001_initial.sql because it must also be applied to
+        # a database that predates this line.
+        psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d elitea \
+             -c "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"
+        if psql -h postgres -U elitea -d elitea -tAc "SELECT to_regclass('centry.project')" | grep -q .; then
+          echo "centry schema already present; skipping 001_initial.sql"
+          exit 0
+        fi
+        psql -v ON_ERROR_STOP=1 -h postgres -U elitea -d elitea -f /sql/001_initial.sql
+    volumes:
+      - ../services/elitea-main/internal/infra/db/migrations/001_initial.sql:/sql/001_initial.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  elitea-migrate:
+    image: ghcr.io/eliteaai/elitea-main:standalone
+    build:
+      context: ..
+      dockerfile: services/elitea-main/Containerfile
+      target: e2e
+    entrypoint: ["/elitea-migrate"]
+    # -all-tenants, not bare: the shared history alone leaves every p_<id>
+    # schema at whatever 001_initial.sql created, and the tenant history is
+    # where the agent-execution chat tables live (#287). Without it an
+    # authenticated turn fails on `relation "chat_messages_text" does not
+    # exist` long before it reaches the worker.
+    #
+    # It enumerates projects from centry.project, so it is a no-op on a
+    # database that has none yet and picks them up on the next `up`.
+    command: ["-all-tenants"]
+    environment:
+      DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    restart: "no"
 
   rustfs:
     image: docker.io/rustfs/rustfs:latest
@@ -198,14 +407,78 @@ services:
       GATEWAY_TLS_CERT_FILE: /run/certs/gateway-server.crt
       GATEWAY_TLS_KEY_FILE: /run/certs/gateway-server.key
       GATEWAY_TLS_CA_FILE: /run/certs/ca.crt
-      # Deliberately UNSET: GATEWAY_EGRESS_ALLOWLIST.
-      # Empty means "public destinations only, any host" — bifrost's SSRF-safe
-      # dialer refuses private addresses. Setting it would ADD private-network
-      # reachability for the named hosts, which is the opposite of what a local
-      # test stack wants. Set it only to reach a provider on your LAN.
+      # Egress policy (issue #283). Empty means "public destinations only" —
+      # bifrost's SSRF-safe dialer refuses private addresses, which is what
+      # stops a tenant-authored api_base steering the gateway into the cluster.
+      # `llm-mock:8090` is named here because the mock is a compose-network
+      # (private) address and would otherwise be refused by policy, not by
+      # configuration — a connection error that reads like a broken service.
+      #
+      # Naming a host does TWO things (internal/config/config.go:174-192):
+      # every tenant-authored api_base must now match an entry, AND
+      # private-network dialing is enabled — but only for the self-hosted
+      # provider classes (account.go:235 sets AllowPrivateNetwork for
+      # schemas.VLLM and schemas.Ollama alone). That is why the mock is seeded
+      # as a `vllm` credential: an `open_ai` one pointing here would still be
+      # refused by the dialer, allowlist or not.
+      #
+      # Add your own entries to reach a provider on your LAN. Setting the
+      # variable to the EMPTY string restores the default deny (and breaks only
+      # the mock hop) — which is why the default uses `-` and not `:-`: the
+      # `:-` form treats empty and unset alike, so an operator disarming the
+      # allowlist would have silently got the mock allowlisted back, and a
+      # negative test written against it would pass while proving nothing.
+      GATEWAY_EGRESS_ALLOWLIST: "${GATEWAY_EGRESS_ALLOWLIST-llm-mock:8090}"
+
+      # Issue #458 — the platform's SHARED ("public") project.
+      #
+      # This MUST hold the same value as the elitea-main service below, which
+      # sets "1". It did not: the value was set on elitea-main only, so the
+      # gateway read the caller's project alone. The model picker offered every
+      # model that project 1 published with shared = true, and a request for one
+      # of them then found no credential and answered 404 model_not_found.
+      #
+      # This stack creates schema p_1 (see the database seed above), so "1"
+      # names a project that exists. An id that names a schema which does not
+      # exist makes every credential read fail, which is why the Helm chart
+      # leaves the same key empty and this file does not.
+      #
+      # deploy/helm/tests/render-llm-path.sh asserts the two services agree, and
+      # fails when one holds the value and the other does not.
+      #
+      # deploy/scripts/embedding-path-check.sh asserts the shared scope against a
+      # live stack (issue #470), so an empty value here fails a check rather than
+      # a production run. The index plane makes an empty value worse: the
+      # platform writes a durable admission record, dispatches the command, and
+      # the run then dies inside the worker.
+      ELITEA_AI_PROJECT_ID: "${ELITEA_AI_PROJECT_ID:-1}"
+
+      # Issue #467 — circular-routing guard #1 at request time. Names every
+      # origin that reaches this stack's /llm surface, so a credential whose
+      # api_base points back at the platform is refused with
+      # SELF_REFERENTIAL_CREDENTIAL instead of looping.
+      GATEWAY_SELF_LLM_ORIGINS: "${GATEWAY_SELF_LLM_ORIGINS-http://elitea-main:8080/llm/v1,http://localhost:8080/llm/v1}"
       GATEWAY_LOG_LEVEL: "${GATEWAY_LOG_LEVEL:-info}"
     volumes:
-      - ./certs:/run/certs:ro
+      # Three FILES, never the ./certs directory (#327). The gateway is the
+      # egress-facing service; ./certs is also the parent of ./certs/runtime,
+      # which holds the PAT signing key, the command signing key + keyring, the
+      # worker client key, the content/control/output server keys, the vault
+      # master key and all four Redis passwords — plus ca.key at the top level,
+      # which would let a compromised gateway mint its own elitea-main client
+      # certificate. None of that is gateway material.
+      #
+      # Nothing else reads the gateway's copy: elitea-main takes client.crt/key
+      # from its own mount, and the runtime consumers get per-consumer named
+      # volumes from `runtime-material`, so narrowing this affects no other
+      # service. These paths must stay in step with GATEWAY_TLS_*_FILE above.
+      #
+      # A missing host file makes podman create a DIRECTORY at these paths and
+      # the gateway then fails to load its keypair; run
+      # `deploy/scripts/standalone-stack.sh certs` first.
+      - ./certs/gateway-server.crt:/run/certs/gateway-server.crt:ro
+      - ./certs/gateway-server.key:/run/certs/gateway-server.key:ro
+      - ./certs/ca.crt:/run/certs/ca.crt:ro
     ports:
       # Direct access for debugging with curl --cert/--key. Traffic that must
       # carry a project identity has to go through elitea-main, which is what
@@ -214,9 +487,57 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Not required at boot — the gateway dials an upstream per request — but
+      # ordering it here means a `seed-llm` immediately after `up` cannot race a
+      # mock that has not bound its port yet.
+      llm-mock:
+        condition: service_healthy
     # No healthcheck: the final image is distroless (no shell, no wget/curl) and
     # declares HEALTHCHECK NONE. Dependents use service_started — safe because
     # elitea-main does not dial the gateway at boot; it only loads its certs.
+    restart: unless-stopped
+
+  # ── Mock LLM upstream (issue #283) ──────────────────────────────────────────
+  # Deterministic OpenAI-compatible server so E2E-MOCK-MODEL completes with no
+  # provider key and no outbound network. Standard-library Python, built from
+  # deploy/mock-llm; see that Containerfile for why nothing is pulled.
+  #
+  # It is seeded as a `vllm` credential (standalone-stack.sh seed-llm), not
+  # `open_ai`: bifrost only lifts its SSRF guard for the self-hosted provider
+  # classes, so a private-address upstream must be one of them. bifrost appends
+  # /v1/chat/completions to the credential's api_base, which is therefore
+  # http://llm-mock:8090 with no path.
+  llm-mock:
+    image: ghcr.io/eliteaai/elitea-mock-llm:standalone
+    build:
+      context: ./mock-llm
+      dockerfile: Containerfile
+    environment:
+      MOCK_LLM_PORT: "8090"
+      MOCK_LLM_MODEL: "E2E-MOCK-MODEL"
+      # 0 by default — a fast reply is what every other consumer wants. The
+      # chat streaming journey overrides it so "a partial answer was painted"
+      # is deterministic rather than a race (see e2e/streaming/).
+      MOCK_LLM_CHUNK_DELAY_MS: "${MOCK_LLM_CHUNK_DELAY_MS:-0}"
+    # Published for the REQUEST JOURNAL alone (issue #470). A test on the host
+    # reads GET /__journal to learn which model name the gateway put on the
+    # wire and which project's credential it used. Neither fact is visible in
+    # the response body, and a vector width identifies no model.
+    #
+    # Overridable, because two stacks on one machine would otherwise collide
+    # here. The completion path does not use this port: the gateway reaches the
+    # mock at `llm-mock:8090` on the compose network.
+    ports:
+      - "${STANDALONE_MOCK_PORT:-8090}:8090"
+    healthcheck:
+      # The image has no curl or wget — python is the only client available,
+      # and it is guaranteed present because it is the runtime.
+      test: ["CMD", "python3", "-c",
+             "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8090/healthz').read()"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
     restart: unless-stopped
 
   # ── Application services ────────────────────────────────────────────────────
@@ -278,13 +599,201 @@ services:
       # (libs/go/observability) and internal/api/v2/tracing's otlp proxy
       # target both point at the collector above.
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+
+      # ── Production auth (issue #281) ───────────────────────────────────────
+      # Mandatory companion of ELITEA_RUNTIME_ENABLED: main.go:686-688 refuses
+      # to boot the runtime without a PrincipalValidator and a
+      # ForwardedIdentityVerifier, and both are assigned only in this branch.
+      # The browser keeps logging in through oidc-mock — the general /api/v2
+      # router still carries SessionSecret when formGraph is present
+      # (main.go:933-944), so session cookies keep working. The runtime's own
+      # routes deliberately do NOT accept cookies
+      # (internal/api/production_runtime.go:31-37).
+      ELITEA_AUTH_CONFIG_FILE: /etc/elitea/auth.form.yml
+
+      # ── Current Configurations (issue #281) ────────────────────────────────
+      # Agent dispatch composes through dependencies.CurrentConfigurations, nil
+      # unless this is on.
+      #
+      # It also composes the admission decision that gives a saved provider
+      # credential its status_ok = true (#457). The gateway admits only
+      # status_ok = true, so with this flag off a credential written through
+      # the configuration route is stored and stays invisible to the gateway.
+      #
+      # ELITEA_CONFIGURATIONS_MUTATION_ENABLED stays off, and NOT for the
+      # reason recorded here before: that reason named the retired LiteLLM
+      # lifecycle facade, and the lifecycle takes no LLM transport now (#460).
+      # It stays off because it composes a SECOND write route with a different
+      # request contract, and that route wins the path — see
+      # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition. The
+      # compatibility route this stack serves already writes status_ok itself.
+      ELITEA_CONFIGURATIONS_ENABLED: "true"
+      # The project whose configurations are treated as PUBLIC and merged into
+      # every other project's option lookups.
+      #
+      # This was 99 — "an id no fixture creates, so the public set stays empty".
+      # That reasoning was wrong twice. The model catalog does not treat a
+      # missing public project as an empty set: it lists that project's
+      # configurations and propagates the failure, so every agent turn died in
+      # the version freezer with "list public model configurations: tenant:
+      # project does not exist" (#288). And the duplication it was avoiding
+      # cannot happen anyway — CurrentModelCatalogService.Get skips the public
+      # listing entirely when ProjectID == PublicProjectID.
+      #
+      # So it points at the seeded project. Unlike VITE_PUBLIC_PROJECT_ID below,
+      # which selects a UI view and must NOT be 1, this must name a project that
+      # exists.
+      # Issue #458: the elitea-llm-gateway service above MUST hold this same
+      # value, or the gateway serves a different model set from the one this
+      # service's model picker offers.
+      ELITEA_AI_PROJECT_ID: "${ELITEA_AI_PROJECT_ID:-1}"
+
+      # Issue #467 — circular-routing guard #1 at upsert time. The platform's
+      # own /llm origins. With this and DEPLOYMENT_URL both empty,
+      # internal/api/v2/configurations/selfref.go builds an empty list and the
+      # guard admits every credential, including one that points back here.
+      ELITEA_SELF_LLM_ORIGINS: "${ELITEA_SELF_LLM_ORIGINS-http://elitea-main:8080/llm/v1,http://localhost:8080/llm/v1}"
+
+      # ── Current project-info (issue #367) ──────────────────────────────────
+      # On, because the handler behind it is the only one that can answer the
+      # question the UI asks.
+      #
+      # With this off, GET .../project_info/prompt_lib/{id}/project-info falls
+      # through to the prototype handler, which returns {name, icon_meta:null}:
+      # it never counts teammates and it hardcodes the icon to null. The screen
+      # reads exactly the two fields it cannot supply — see
+      # apps/elitea-web/src/entities/project/api/projectContextApi.ts, which
+      # reads icon_meta and teammates_count — so the teammates count showed 0
+      # and no uploaded project icon ever rendered, at 200.
+      #
+      # It needs production authentication, which this stack has
+      # (ELITEA_AUTH_CONFIG_FILE above). The flag rejects a deployment that
+      # lacks it rather than starting with the route dark.
+      #
+      # The prototype handler still owns PUT on the same path: the current
+      # route registers GET only.
+      ELITEA_PROJECT_INFO_ENABLED: "true"
+      # ELITEA_VAULT_MASTER_KEY_FILE is deliberately NOT set, and the material is
+      # still minted so a deployment that wants key wrapping can point at it.
+      #
+      # It selects between two incompatible readings of centry.secrets_key.data
+      # (internal/infra/storage/postgres_secret_vault.go:108-112): unset means
+      # OpenUnwrapped, where the row IS the vault's Fernet key; set means
+      # OpenWrapped, where the row is that key encrypted under the master key.
+      # The E2E seeder writes plaintext keys, so setting this makes the stack
+      # unable to read the vault its own seeder produced — which surfaced as
+      # every agent turn failing in the model-defaults lookup, three layers from
+      # anything that mentions a vault (#288).
+
+      # ── Runtime plane (issue #281) ─────────────────────────────────────────
+      # All-or-nothing: runtimecomposition/config.go rejects a partial block,
+      # and rejects settings for a dispatch plane that is not explicitly
+      # enabled. Do not delete individual lines to "simplify" it.
+      ELITEA_RUNTIME_ENABLED: "true"
+
+      # Configuration-validation dispatch: the base plane, always required.
+      ELITEA_RUNTIME_COMMAND_STREAM: "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0"
+      ELITEA_RUNTIME_MAX_OUTSTANDING: "64"
+      ELITEA_RUNTIME_STREAM_MAX_ENTRIES: "1024"
+
+      # Agent-execution dispatch: the chat send path. The stream name must not
+      # collide with the base plane's stream or its `:delivery-index.v1`
+      # sibling — config.go:286-310 rejects overlap explicitly.
+      ELITEA_RUNTIME_AGENT_EXECUTION_DISPATCH_ENABLED: "true"
+      ELITEA_RUNTIME_AGENT_EXECUTION_COMMAND_STREAM: "commands.v1.agent.execute.agent.shared.1.0"
+      ELITEA_RUNTIME_AGENT_EXECUTION_CONSUMER_GROUP: "elitea-agent-worker-v1"
+      ELITEA_RUNTIME_AGENT_EXECUTION_STREAM_MAX_ENTRIES: "1024"
+      # Validated as an https origin, and used at request time for the
+      # next-input-suggestion policy call elitea-main makes back to itself
+      # (composition.go:483-492). elitea-main serves cleartext here, so that one
+      # call fails; it degrades a suggestion, not the send path. It becomes real
+      # when the stack terminates TLS in front of elitea-main.
+      ELITEA_RUNTIME_CURRENT_MAIN_BASE_URL: "https://elitea-main:8080"
+
+      # Index-ingest dispatch: the toolkit `index_data` path behind
+      # POST /api/v2/elitea_core/test_toolkit_tool/prompt_lib/{projectID}
+      # (#93 Surface A). Without the flag, main.go composes no
+      # CurrentIndexStart handler and the legacy hardcoded 503 stub in
+      # internal/api/v2/toolkits/handler.go is the only thing on that path.
+      #
+      # This used to be impossible here: validateRuntimeComposition required
+      # the LiteLLM facade, which this stack does not have. The embedding
+      # binding now resolves from the same p_{id}.configuration rows the
+      # Bifrost gateway reads, so the only remaining requirement is
+      # ELITEA_CONFIGURATIONS_ENABLED, set above.
+      ELITEA_RUNTIME_INDEX_INGEST_DISPATCH_ENABLED: "true"
+      # DELIBERATELY the same stream AND the same consumer group as the agent
+      # plane above. runtimecomposition/config.go:303-306 makes that an
+      # explicitly supported configuration (it only rejects sharing the stream
+      # with a DIFFERENT group), and the worker dispatches on the command's
+      # capability_id rather than on which stream it came from
+      # (elitea_worker/serve.py:545). So the one running worker consumes both
+      # capabilities and this needs no second worker container, no extra Redis
+      # ACL grant, no extra consumer group and no second workload_sessions row.
+      #
+      # A dedicated index stream is the alternative shape; it costs a second
+      # worker instance with its own runtime.json, ACL entries for the new
+      # stream and its `:delivery-index.v1` sibling, an XGROUP in
+      # runtime/bootstrap-streams.sh, and a second authorized workload session.
+      ELITEA_RUNTIME_INDEX_INGEST_COMMAND_STREAM: "commands.v1.agent.execute.agent.shared.1.0"
+      ELITEA_RUNTIME_INDEX_INGEST_CONSUMER_GROUP: "elitea-agent-worker-v1"
+      ELITEA_RUNTIME_INDEX_INGEST_STREAM_MAX_ENTRIES: "1024"
+
+      ELITEA_RUNTIME_REDIS_URL: "rediss://producer@runtime-redis:6380/0"
+      ELITEA_RUNTIME_REDIS_PASSWORD_FILE: /run/elitea-runtime/redis-producer-password
+      ELITEA_RUNTIME_REDIS_CA_FILE: /run/elitea-runtime/runtime-ca.crt
+      ELITEA_RUNTIME_REDIS_POOL_SIZE: "8"
+
+      # composition.go cross-checks this key id against the keyring entry and
+      # refuses to start on a mismatch, so it must equal the id baked into
+      # command-signing-keyring.json by gen-runtime-certs.sh.
+      ELITEA_RUNTIME_SIGNING_KEY_ID: "standalone-runtime-v1"
+      ELITEA_RUNTIME_SIGNING_KEY_FILE: /run/elitea-runtime/command-signing-key.pem
+      ELITEA_RUNTIME_VERIFICATION_KEYRING_FILE: /run/elitea-runtime/command-signing-keyring.json
+
+      # Three listeners, three certs. They must be distinct addresses; the
+      # worker dials them as elitea-main:9443/9444/9445, which is why the certs
+      # carry DNS:elitea-main.
+      ELITEA_RUNTIME_CONTROL_ADDRESS: ":9443"
+      ELITEA_RUNTIME_CONTROL_TLS_CERT_FILE: /run/elitea-runtime/control-server.crt
+      ELITEA_RUNTIME_CONTROL_TLS_KEY_FILE: /run/elitea-runtime/control-server.key
+      ELITEA_RUNTIME_CONTROL_TLS_CLIENT_CA_FILE: /run/elitea-runtime/runtime-ca.crt
+      ELITEA_RUNTIME_OUTPUT_ADDRESS: ":9444"
+      ELITEA_RUNTIME_OUTPUT_TLS_CERT_FILE: /run/elitea-runtime/output-server.crt
+      ELITEA_RUNTIME_OUTPUT_TLS_KEY_FILE: /run/elitea-runtime/output-server.key
+      ELITEA_RUNTIME_OUTPUT_TLS_CLIENT_CA_FILE: /run/elitea-runtime/runtime-ca.crt
+      ELITEA_RUNTIME_CONTENT_ADDRESS: ":9445"
+      ELITEA_RUNTIME_CONTENT_TLS_CERT_FILE: /run/elitea-runtime/content-server.crt
+      ELITEA_RUNTIME_CONTENT_TLS_KEY_FILE: /run/elitea-runtime/content-server.key
+      ELITEA_RUNTIME_CONTENT_TLS_CLIENT_CA_FILE: /run/elitea-runtime/runtime-ca.crt
     volumes:
-      - ./certs:/run/certs:ro
+      # Only the gateway-client keypair and its CA — three files, not the
+      # ./certs directory. Bind-mounting the parent handed elitea-main the whole
+      # of ./certs/runtime, which is exactly the material
+      # deploy/runtime/install-material.sh deliberately withholds from it (the
+      # worker client key, redis-worker-password, runtime-ca.key) plus ca.key.
+      # Same defect class as the gateway's mount above (#327); the named volume
+      # below stays the only source of runtime material.
+      - ./certs/client.crt:/run/certs/client.crt:ro
+      - ./certs/client.key:/run/certs/client.key:ro
+      - ./certs/ca.crt:/run/certs/ca.crt:ro
+      # Installed by runtime-material with per-file owner/mode; NOT a bind mount
+      # of deploy/certs/runtime, which securefile would reject.
+      - standalone_runtime_main:/run/elitea-runtime:ro
+      # The auth config itself carries no secrets — only paths — and is read as
+      # public material, so a plain read-only bind mount is correct here.
+      - ./runtime/auth.form.yml:/etc/elitea/auth.form.yml:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      elitea-migrate:
+        condition: service_completed_successfully
+      runtime-redis:
+        condition: service_healthy
+      runtime-bootstrap:
+        condition: service_completed_successfully
       oidc-mock:
         condition: service_healthy
       rustfs-bucket-init:
@@ -329,6 +838,101 @@ services:
       retries: 10
       start_period: 5s
 
+  # ── Agent execution worker (issue #282) ─────────────────────────────────────
+
+  # TLS front for the worker's platform_origin. See deploy/runtime/
+  # platform-edge.yml for why elitea-main cannot serve this itself and why this
+  # is not the browser-facing `traefik` service below.
+  platform-edge:
+    image: traefik:v3.4
+    command: ["--configfile=/etc/traefik/traefik.yml"]
+    volumes:
+      - ./runtime/platform-edge.yml:/etc/traefik/traefik.yml:ro
+      - ./runtime/platform-edge-dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - standalone_runtime_edge:/run/elitea-runtime:ro
+    networks:
+      default:
+        aliases:
+          # The certificate's only SAN, and the host in worker-runtime.json's
+          # platform_origin. The compose service name already resolves, but the
+          # alias is declared so renaming the service cannot silently break
+          # hostname verification.
+          - elitea-platform-edge
+    depends_on:
+      runtime-material:
+        condition: service_completed_successfully
+      elitea-main:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The NodeEvent producer. Go admits and projects executions but has no
+  # agent-token producer of its own, so without this service an admitted run
+  # streams nothing and ends in a terminal failure.
+  elitea-worker:
+    image: ghcr.io/eliteaai/elitea-worker-python:standalone
+    build:
+      # Repo root, not services/elitea-worker-python: the Containerfile copies
+      # libs/proto (:17) and testdata/proto/runtime/v1 (:79). It also git-clones
+      # elitea-sdk at a pinned revision behind a SHA-256 archive gate, so a local
+      # elitea-sdk checkout is irrelevant to the build and a hash mismatch is a
+      # build failure rather than a warning.
+      context: ..
+      dockerfile: services/elitea-worker-python/Containerfile
+    # The only supported command shape: one JSON config, no env-var settings.
+    # Capabilities are compiled in, not selected here — the Go side decides which
+    # it will accept (composition.go's capabilityVersions map).
+    command: ["serve", "--config", "/run/elitea/runtime.json"]
+    environment:
+      # TLS trust for platform_origin. The SDK routes verification through the
+      # OS trust store on import (elitea_sdk/_system_ca.py injects truststore),
+      # which cannot contain a CA minted on this machine minutes ago. Disabling
+      # that injection restores the standard mechanisms, and then the two
+      # variables below cover both HTTP stacks the SDK uses: `requests` for the
+      # /api/v2 calls (REQUESTS_CA_BUNDLE) and httpx/openai for the model call
+      # (SSL_CERT_FILE, honoured by ssl.create_default_context).
+      #
+      # A runtime-CA-only bundle is correct AND tighter than adding public
+      # roots: every destination the worker dials — control, output, content,
+      # platform_origin — is signed by that CA, and model traffic egresses
+      # through elitea-main's /llm proxy rather than directly to a provider.
+      ELITEA_DISABLE_SYSTEM_CA: "1"
+      REQUESTS_CA_BUNDLE: /run/elitea-runtime/runtime-ca.crt
+      SSL_CERT_FILE: /run/elitea-runtime/runtime-ca.crt
+      # The one environment variable the worker itself reads. Mirrors the
+      # hybrid's fail-safe snapshot: broader than the current
+      # `artifact.delete_file` rule so metadata drift cannot bypass approval.
+      ELITEA_SENSITIVE_TOOLS: '{"*":["delete_file"]}'
+    volumes:
+      - ./runtime/worker-runtime.json:/run/elitea/runtime.json:ro
+      - standalone_runtime_worker:/run/elitea-runtime:ro
+      # 0700 and owned by uid 10001 — the worker contract requires a private
+      # spool root. A fresh named volume starts 0755 owned by root, so it is
+      # prepared by the init service rather than assumed.
+      - standalone_worker_spool:/var/lib/elitea-worker/output-spool
+    depends_on:
+      runtime-material:
+        condition: service_completed_successfully
+      worker-spool-init:
+        condition: service_completed_successfully
+      runtime-redis:
+        condition: service_healthy
+      runtime-bootstrap:
+        condition: service_completed_successfully
+      elitea-main:
+        condition: service_healthy
+      platform-edge:
+        condition: service_started
+    restart: unless-stopped
+
+  worker-spool-init:
+    image: docker.io/library/alpine:3.20
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - chown 10001:10001 /spool && chmod 700 /spool
+    volumes:
+      - standalone_worker_spool:/spool
+    restart: "no"
+
   # ── Traefik: routes /app → elitea-web, /api → elitea-main ──────────────────
   traefik:
     image: traefik:v3.4
@@ -346,3 +950,12 @@ services:
 volumes:
   standalone_pg_data:
   standalone_rustfs_data:
+  # Runtime material, split per consumer so no service holds a key it does not
+  # use. Populated by runtime-material from deploy/certs/runtime.
+  standalone_runtime_main:
+  standalone_runtime_redis:
+  standalone_runtime_worker:
+  standalone_runtime_edge:
+  # The worker's output spool. Private (0700, uid 10001) — prepared by
+  # worker-spool-init because a fresh named volume starts 0755 root-owned.
+  standalone_worker_spool:

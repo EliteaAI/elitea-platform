@@ -84,6 +84,82 @@ func TestMainHandlerProjectsAcceptedPATAndBoundsDecisionTime(t *testing.T) {
 	})
 }
 
+// A ForwardAuth response is consumed by the EDGE, not by the browser, and an
+// edge resolves a relative Location against the address it called — this
+// service's internal one. Traefik handed browsers
+// http://elitea-main.elitea.svc.cluster.local:8080/forward-auth/login?... and
+// they answered ERR_NAME_NOT_RESOLVED, because that name exists only inside
+// the cluster.
+//
+// So both redirects this handler emits must be absolute against the origin a
+// browser actually reaches, whenever the deployment names one.
+func TestMainHandlerRedirectsAreAbsoluteAgainstThePublicOrigin(t *testing.T) {
+	handler := newMainTestHandlerWithOrigin(t,
+		coreCredentialFunc(func(context.Context, forwardapp.Source, forwardapp.CredentialInput) (forwardapp.CredentialResult, error) {
+			return forwardapp.CredentialResult{Resolution: forwardapp.CredentialRejected}, nil
+		}),
+		panicCoreSession(t),
+		nil,
+		"https://elitea.example.test",
+	)
+	request := mainRequest("/api/v2/private")
+	request.Header.Set("Authorization", "Bearer rejected")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	location := recorder.Header().Get("Location")
+	if recorder.Code != http.StatusFound || location != "https://elitea.example.test/app/access_denied" {
+		t.Fatalf("response = %d location=%q", recorder.Code, location)
+	}
+}
+
+func TestMainHandlerLoginRedirectIsAbsoluteAgainstThePublicOrigin(t *testing.T) {
+	// Same shape as TestMainHandlerRedirectsPrivateAnonymousRequestToFormLogin:
+	// an anonymous request to a private route produces the login decision.
+	handler := newMainTestHandlerWithOrigin(t, panicCoreCredential(t), panicCoreSession(t), nil,
+		"https://elitea.example.test")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, mainRequest("/api/v2/social/author"))
+
+	location, err := url.Parse(recorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("location parse error = %v", err)
+	}
+	if location.Scheme != "https" || location.Host != "elitea.example.test" {
+		t.Fatalf("location = %q, want an absolute URL on the public origin", location)
+	}
+	if location.Path != BasePath+LoginPath {
+		t.Fatalf("location path = %q, want %q", location.Path, BasePath+LoginPath)
+	}
+	// The caller must come back to where it was, not to the origin root.
+	if got := location.Query().Get("target_to"); got != "/api/v2/social/author" {
+		t.Fatalf("target_to = %q", got)
+	}
+}
+
+// An empty public origin keeps the previous relative form, for a caller that
+// reaches this handler directly rather than through an edge.
+func TestMainHandlerRedirectStaysRelativeWithoutAPublicOrigin(t *testing.T) {
+	handler := newMainTestHandler(t,
+		coreCredentialFunc(func(context.Context, forwardapp.Source, forwardapp.CredentialInput) (forwardapp.CredentialResult, error) {
+			return forwardapp.CredentialResult{Resolution: forwardapp.CredentialRejected}, nil
+		}),
+		panicCoreSession(t),
+		nil,
+	)
+	request := mainRequest("/api/v2/private")
+	request.Header.Set("Authorization", "Bearer rejected")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, request)
+
+	if got := recorder.Header().Get("Location"); got != "/app/access_denied" {
+		t.Fatalf("location = %q, want the relative target", got)
+	}
+}
+
 func TestMainHandlerRedirectsRejectedCredentialToAccessDenied(t *testing.T) {
 	handler := newMainTestHandler(t,
 		coreCredentialFunc(func(context.Context, forwardapp.Source, forwardapp.CredentialInput) (forwardapp.CredentialResult, error) {
@@ -307,6 +383,19 @@ func TestMainHandlerRedirectsPrivateAnonymousRequestToFormLogin(t *testing.T) {
 		recorder.Header().Get("X-Auth-Reference") != "" {
 		t.Fatalf("forged inbound identity escaped into response: %v", recorder.Header())
 	}
+}
+
+func newMainTestHandlerWithOrigin(
+	t *testing.T,
+	credentialAuthenticator forwardapp.CredentialAuthenticator,
+	sessionAuthorizer forwardapp.SessionAuthorizer,
+	rules []forwardapp.PublicRule,
+	publicOrigin string,
+) *MainHandler {
+	t.Helper()
+	handler := newMainTestHandler(t, credentialAuthenticator, sessionAuthorizer, rules)
+	handler.publicOrigin = strings.TrimSuffix(publicOrigin, "/")
+	return handler
 }
 
 func newMainTestHandler(

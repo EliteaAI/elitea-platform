@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -86,6 +88,152 @@ func TestPinnedCurrentToolkitSchemaSnapshotMatchesAdmittedSDKProjection(t *testi
 	}
 }
 
+// The snapshot carries the per-tool ARGUMENT schemas as well as the settings
+// annotations. They are a different resource: the annotations drive settings
+// expansion and toolkit naming inside this process, while the argument schemas
+// are what the toolkit type catalogue serves to the web client so it can render
+// a form for a tool. Until the sync script stopped projecting them away, the
+// create-index form had nothing to render and its Index button was permanently
+// disabled.
+func TestPinnedCurrentToolkitSchemaSnapshotCarriesRealToolArgumentSchemas(t *testing.T) {
+	snapshot, err := LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	argsSchemas, found, err := snapshot.ToolkitArgumentSchemas("artifact")
+	if err != nil || !found {
+		t.Fatalf("artifact argument schemas found=%t err=%v", found, err)
+	}
+	indexData, ok := argsSchemas["index_data"]
+	if !ok {
+		t.Fatalf("artifact exposes no index_data argument schema; tools=%v", sortedKeys(argsSchemas))
+	}
+	if indexData["type"] != "object" {
+		t.Errorf("index_data type=%#v, want %q", indexData["type"], "object")
+	}
+	required, ok := indexData["required"].([]any)
+	if !ok || len(required) != 1 || required[0] != "index_name" {
+		t.Errorf("index_data required=%#v, want [index_name]", indexData["required"])
+	}
+	properties, ok := indexData["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("index_data has no properties object: %#v", indexData)
+	}
+	// A placeholder {"type":"object"} has none of these. Each is a control the
+	// create-index form renders.
+	for _, argument := range []string{
+		"index_name", "clean_index", "folder", "include_extensions",
+		"skip_extensions", "progress_step", "chunking_config",
+	} {
+		if _, ok := properties[argument].(map[string]any); !ok {
+			t.Errorf("index_data.properties is missing %q: have %v", argument, sortedKeys(properties))
+		}
+	}
+	indexName, _ := properties["index_name"].(map[string]any)
+	if indexName["type"] != "string" || indexName["maxLength"] != json.Number("32") {
+		t.Errorf("index_name=%#v, want a string with maxLength 32", indexName)
+	}
+
+	// Detached copies: a caller that edits the served schema must not corrupt
+	// the process-wide snapshot for every later request.
+	properties["index_name"] = "caller-corruption"
+	again, _, err := snapshot.ToolkitArgumentSchemas("artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := again["index_data"]["properties"].(map[string]any)["index_name"].(map[string]any); !ok {
+		t.Error("the snapshot was mutated through a returned argument schema")
+	}
+}
+
+// mcp, mcp_config and openapi discover their tools at runtime from a remote
+// server or an OpenAPI specification, so the SDK declares no argument models for
+// them. That is a legitimate empty result, not a missing type and not an error;
+// treating it as either would break every screen that lists toolkit types.
+func TestPinnedCurrentToolkitSchemaSnapshotAllowsRuntimeDiscoveredToolkitsToHaveNoArgumentSchemas(t *testing.T) {
+	snapshot, err := LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, toolkitType := range []string{"mcp", "mcp_config", "openapi"} {
+		argsSchemas, found, err := snapshot.ToolkitArgumentSchemas(toolkitType)
+		if err != nil || !found {
+			t.Fatalf("%s argument schemas found=%t err=%v", toolkitType, found, err)
+		}
+		if argsSchemas == nil || len(argsSchemas) != 0 {
+			t.Errorf("%s argument schemas=%#v, want an empty non-nil map", toolkitType, argsSchemas)
+		}
+	}
+	if _, found, err := snapshot.ToolkitArgumentSchemas("not_a_built_in_toolkit"); found || err != nil {
+		t.Errorf("unknown type found=%t err=%v, want (false, nil)", found, err)
+	}
+	if _, _, err := snapshot.ToolkitArgumentSchemas("bad\nname"); !errors.Is(err, ErrCurrentToolkitSchemaSnapshotInvalid) {
+		t.Errorf("invalid type name error=%v", err)
+	}
+}
+
+// An argument schema is carried as a generic decoded JSON tree precisely so
+// that keywords this code knows nothing about survive. $defs/$ref is the case
+// that makes it load-bearing: narrowing the representation to the keywords we
+// recognise would drop $defs and leave every $ref pointing at nothing, which
+// fails at the client as an unrenderable form rather than as an error here.
+func TestCurrentToolkitSchemaSnapshotCarriesNestedSchemaReferencesVerbatim(t *testing.T) {
+	const document = `{
+		"schema_version":"elitea.current-toolkit-schema-snapshot.v1",
+		"sdk_revision":"sdk-revision",
+		"entries":[{
+			"type":"referencing",
+			"properties":{},
+			"args_schemas":{"index_data":{
+				"$defs":{"Chunk":{"properties":{"max_tokens":{"type":"integer","default":512}},"type":"object"}},
+				"properties":{"chunk":{"$ref":"#/$defs/Chunk"},"chunks":{"items":{"$ref":"#/$defs/Chunk"},"type":"array"}},
+				"required":["chunk"],
+				"type":"object"
+			}},
+			"naming":{"field":null,"max_length":0}
+		}]
+	}`
+	snapshot := loadCurrentToolkitSchemaSnapshotForTest(t, document)
+	argsSchemas, found, err := snapshot.ToolkitArgumentSchemas("referencing")
+	if err != nil || !found {
+		t.Fatalf("found=%t err=%v", found, err)
+	}
+
+	// Compare after a JSON round trip, because serving the schema over HTTP is
+	// exactly a JSON round trip: anything the Go representation cannot express
+	// shows up here as a difference.
+	var want any
+	if err := json.Unmarshal([]byte(`{
+		"$defs":{"Chunk":{"properties":{"max_tokens":{"type":"integer","default":512}},"type":"object"}},
+		"properties":{"chunk":{"$ref":"#/$defs/Chunk"},"chunks":{"items":{"$ref":"#/$defs/Chunk"},"type":"array"}},
+		"required":["chunk"],
+		"type":"object"
+	}`), &want); err != nil {
+		t.Fatal(err)
+	}
+	served, err := json.Marshal(argsSchemas["index_data"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got any
+	if err := json.Unmarshal(served, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round-tripped argument schema:\n got %s\nwant the input verbatim", served)
+	}
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func TestCurrentToolkitSchemaCatalogUsesBuiltInBeforeActorVisibleOverlay(t *testing.T) {
 	snapshot := loadCurrentToolkitSchemaSnapshotForTest(t, `{
 		"schema_version":"elitea.current-toolkit-schema-snapshot.v1",
@@ -93,6 +241,7 @@ func TestCurrentToolkitSchemaCatalogUsesBuiltInBeforeActorVisibleOverlay(t *test
 		"entries":[{
 			"type":"same_type",
 			"properties":{"credential":{"configuration_types":["built_in"]}},
+			"args_schemas":{},
 			"naming":{"field":null,"max_length":0}
 		}]
 	}`)
@@ -208,14 +357,22 @@ func TestCurrentToolkitSchemaSnapshotRejectsDriftedOrUnboundedDocuments(t *testi
 	}{
 		{name: "empty", data: ``},
 		{name: "wrong version", data: `{"schema_version":"v2","sdk_revision":"r","entries":[]}`},
-		{name: "unknown field", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null,"max_length":0}}],"extra":true}`},
-		{name: "trailing value", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null,"max_length":0}}]} {}`},
-		{name: "duplicate type", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null,"max_length":0}},{"type":"a","properties":{},"naming":{"field":null,"max_length":0}}]}`},
-		{name: "unsorted", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"b","properties":{},"naming":{"field":null,"max_length":0}},{"type":"a","properties":{},"naming":{"field":null,"max_length":0}}]}`},
-		{name: "missing naming", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{}}]}`},
-		{name: "missing max length", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null}}]}`},
-		{name: "name annotation mismatch", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{"url":{"toolkit_name":false}},"naming":{"field":"url","max_length":0}}]}`},
-		{name: "negative max length", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null,"max_length":-1}}]}`},
+		{name: "unknown field", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}}],"extra":true}`},
+		{name: "trailing value", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}}]} {}`},
+		{name: "duplicate type", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}},{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}}]}`},
+		{name: "unsorted", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"b","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}},{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":0}}]}`},
+		{name: "missing naming", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{}}]}`},
+		{name: "missing max length", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null}}]}`},
+		{name: "name annotation mismatch", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{"url":{"toolkit_name":false}},"args_schemas":{},"naming":{"field":"url","max_length":0}}]}`},
+		{name: "negative max length", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{},"naming":{"field":null,"max_length":-1}}]}`},
+		// args_schemas is mandatory, not optional-with-a-nil-default: a snapshot
+		// regenerated by a sync script that still projects the field away would
+		// otherwise load and quietly serve no argument schemas at all, which is
+		// exactly the defect this field exists to end.
+		{name: "missing args schemas", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"naming":{"field":null,"max_length":0}}]}`},
+		{name: "null args schemas", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":null,"naming":{"field":null,"max_length":0}}]}`},
+		{name: "non-object args schema", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{"tool":"not-a-schema"},"naming":{"field":null,"max_length":0}}]}`},
+		{name: "invalid tool name", data: `{"schema_version":"elitea.current-toolkit-schema-snapshot.v1","sdk_revision":"r","entries":[{"type":"a","properties":{},"args_schemas":{"bad\nname":{}},"naming":{"field":null,"max_length":0}}]}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -236,6 +393,7 @@ func TestCurrentBuiltInToolkitNameDeriverMatchesCurrentSanitizationAndFallback(t
 		"entries":[{
 			"type":"named",
 			"properties":{"url":{"toolkit_name":true,"max_toolkit_length":5}},
+			"args_schemas":{},
 			"naming":{"field":"url","max_length":5}
 		}]
 	}`)
@@ -315,6 +473,7 @@ func loadMinimalCurrentToolkitSchemaSnapshot(t *testing.T) *CurrentToolkitSchema
 		"entries":[{
 			"type":"built_in",
 			"properties":{"name":{"toolkit_name":true}},
+			"args_schemas":{},
 			"naming":{"field":"name","max_length":0}
 		}]
 	}`)
@@ -336,6 +495,7 @@ func TestCurrentToolkitSchemaSnapshotRetainsExactJSONNumbers(t *testing.T) {
 		"entries":[{
 			"type":"numeric",
 			"properties":{"field":{"custom_limit":9007199254740993}},
+			"args_schemas":{},
 			"naming":{"field":null,"max_length":0}
 		}]
 	}`)

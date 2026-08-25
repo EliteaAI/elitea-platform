@@ -1,20 +1,27 @@
 package adminui
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 )
 
 type Config struct {
@@ -22,6 +29,31 @@ type Config struct {
 	ViteServerURL string // e.g. "/api/v2"
 	BasePath      string // e.g. "/admin/app"
 	SecretKey     string // session cookie HMAC key
+
+	// Resolver reads the operator's REAL administration-mode permissions.
+	//
+	// A nil Resolver means "no permissions". It never means "all permissions".
+	// A mis-wired composition root must degrade closed.
+	Resolver auth.PermissionResolver
+
+	// ForwardedIdentityVerifier proves that the X-Auth-* headers on a request
+	// were written by the authenticating edge and not by the browser.
+	//
+	// It is what makes the forwarded-identity source below usable at all. A nil
+	// verifier yields no identity from headers — never a trusted one.
+	ForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
+
+	// Emails resolves the operator's address for the nav footer. Optional:
+	// without it the footer falls back to the generic word "Admin", which is
+	// what it already did for every load served through the forwarded-identity
+	// path (the headers carry an ID, never an address).
+	Emails EmailLookup
+}
+
+// EmailLookup reads one user's address. *pgxpool.Pool does not satisfy it
+// directly; the composition root adapts a pool, and a nil value is legal.
+type EmailLookup interface {
+	UserEmail(ctx context.Context, userID int64) (string, error)
 }
 
 type Handler struct {
@@ -50,7 +82,10 @@ type adminUIConfig struct {
 	UserName      string   `json:"user_name"`
 	UserEmail     string   `json:"user_email"`
 	Permissions   []string `json:"permissions"`
-	Roles         []string `json:"roles"`
+	// Roles is always empty. The resolver reports permissions only, and no
+	// bundle reads this field. It stays in the payload so an older admin
+	// bundle that reads `roles` gets an empty list, never "super_admin".
+	Roles []string `json:"roles"`
 }
 
 func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
@@ -61,36 +96,71 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 		Roles:         []string{},
 	}
 
-	// Try to extract user from session cookie
-	if cookie, err := r.Cookie("elitea_session"); err == nil && h.cfg.SecretKey != "" {
+	// Read the operator from the request, then resolve the permissions that
+	// operator really holds.
+	//
+	// TWO credential sources, in the order an authenticating edge makes them
+	// available. Reading only the second is what emptied the admin sidebar:
+	//
+	//  1. The identity the edge PROJECTED onto this request as X-Auth-*, proven
+	//     to have crossed the header-stripping ingress. The runtime deployment
+	//     logs a browser in at /forward-auth/login, which stores an opaque
+	//     server-side session under `elitea_browser_auth` — a different cookie,
+	//     with a different shape, from a different store. No `elitea_session`
+	//     cookie exists on that browser at all, so source 2 found nothing, the
+	//     handler injected `permissions: []`, and the SPA hid every nav item it
+	//     has: `adminNavItems.ts` shows an item only when the injected list
+	//     carries one of its permissions. The operator got a sidebar containing
+	//     nothing but their own avatar, and ten implemented pages reachable only
+	//     by typing a URL. `user_name` was empty for the same reason, which is
+	//     why the footer read the generic fallback "Admin" rather than an
+	//     address — one cause, both symptoms.
+	//
+	//  2. The `elitea_session` HMAC cookie minted by internal/api/v2/auth's OIDC
+	//     handler, for a deployment that authenticates through that path.
+	//
+	// Neither source is authorisation, and the order does not make one weaker:
+	// both end at the same resolver, which reloads the user and refuses a
+	// suspended one, and every admin route resolves the permissions again.
+	//
+	// DEFECT this replaces: the handler wrote a fixed list of 37 admin
+	// permissions, plus roles ["super_admin"], for EVERY caller whose cookie
+	// passed the HMAC and exp check. A rank-and-file user who opened
+	// /admin/app therefore saw the whole admin console. Every destructive
+	// control stayed visible and enabled. Each click ended in a
+	// server-side 403.
+	// A suspended user with an unexpired cookie saw the same, because
+	// verifySession never reads the database.
+	//
+	// The resolver closes both halves with one query: the administration mode
+	// reads only roles with mode='administration', and the resolver refuses a
+	// suspended user.
+	if principal, ok := apimw.ForwardedIdentity(r, h.cfg.ForwardedIdentityVerifier); ok {
+		// The headers carry an ID and never an address, so the display name
+		// comes from the database — after the resolver has confirmed the user is
+		// real and active, never before, so a spoofed ID cannot be used to probe
+		// for addresses.
+		if userID, permissions, resolved := h.resolveForwarded(r.Context(), principal); resolved {
+			cfg.UserID = userID
+			cfg.Permissions = permissions
+			if email := h.lookupEmail(r.Context(), userID); email != "" {
+				cfg.UserEmail = email
+				cfg.UserName = email
+			}
+		}
+	} else if cookie, err := r.Cookie("elitea_session"); err == nil && h.cfg.SecretKey != "" {
 		if claims := h.verifySession(cookie.Value); claims != nil {
-			cfg.UserID = claims["user_id"]
 			if email, ok := claims["email"].(string); ok {
 				cfg.UserEmail = email
 				cfg.UserName = email
 			}
-			cfg.Permissions = []string{
-				"admin.auth.users", "admin.auth.users.super_admin",
-				"configuration", "configuration.roles",
-				"configuration.roles.permissions.view", "configuration.roles.permissions.edit",
-				"configuration.roles.roles.view", "configuration.roles.roles.create",
-				"configuration.roles.roles.edit", "configuration.roles.roles.delete",
-				"configuration.users", "configuration.users.users.view",
-				"configuration.users.users.create", "configuration.users.users.edit",
-				"configuration.users.users.delete",
-				"projects", "projects.projects",
-				"projects.projects.projects.view", "projects.projects.projects.edit",
-				"configuration.secrets.secret.list", "configuration.secrets.secret.create",
-				"configuration.secrets.secret.edit", "configuration.secrets.secret.delete",
-				"configuration.litellm", "configuration.litellm.edit",
-				"configuration.advanced", "configuration.service_descriptors",
-				"runtime", "runtime.plugins",
-				"configuration.scheduling.schedules.view", "configuration.scheduling.schedules.edit",
-				"models.admin.audit_trail.view",
-				"admin.moderation", "admin.moderation.view",
-				"admin.moderation.create", "admin.moderation.edit",
+			// The minting code writes the claim as `uid`. The old code read
+			// `user_id`, so window.admin_ui_config.user_id was null on every
+			// page load. See internal/api/v2/auth/session.go makeSessionToken.
+			if userID, ok := sessionClaimUserID(claims); ok {
+				cfg.UserID = userID
+				cfg.Permissions = h.resolvePermissions(r.Context(), userID)
 			}
-			cfg.Roles = []string{"super_admin"}
 		}
 	}
 
@@ -124,9 +194,132 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	configScript := fmt.Sprintf(`<script>window.admin_ui_config = %s;</script>`, string(cfgJSON))
 	indexHTML = strings.Replace(indexHTML, "<!-- admin_ui_config -->", configScript, 1)
 
+	// This page is per-operator and must never be replayed to another one.
+	//
+	// It carries the signed-in operator's address and the exact list of
+	// administration-mode permissions they hold. Until the forwarded-identity
+	// source above existed, the runtime deployment received a byte-identical
+	// payload on every load — empty permissions, empty name — so a cache could
+	// not leak anything. It can now: with no directive and no validator, a
+	// shared proxy or the browser's own disk cache may store this response and
+	// serve it after a logout, or to the next person on the machine, who then
+	// gets a fully populated admin console belonging to someone else.
+	//
+	// no-store rather than private/no-cache: there is nothing here worth
+	// revalidating, and no-store is what every other identity-bearing response
+	// in this service sets (internal/api/v2/auth/session.go's writeSessionJSON
+	// and Logout, internal/api/middleware/internal_admin.go).
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, indexHTML)
+}
+
+// resolvePermissions returns the administration-mode permissions of one user.
+//
+// It returns an empty list on ANY error, a refusal included. The injected list
+// is a presentation hint for the admin SPA, so an empty list hides controls.
+// It never grants anything: every admin route resolves the permissions again.
+func (h *Handler) resolvePermissions(ctx context.Context, userID int64) []string {
+	if h.cfg.Resolver == nil {
+		return []string{}
+	}
+	resolution, err := h.cfg.Resolver.ResolvePermissions(
+		ctx,
+		auth.User{UserID: strconv.FormatInt(userID, 10)},
+		auth.PermissionModeAdministration,
+		"",
+	)
+	if err != nil {
+		slog.DebugContext(ctx, "admin ui: permission resolution refused or failed",
+			"user_id", userID, "error", err)
+		return []string{}
+	}
+	if resolution.Permissions == nil {
+		return []string{}
+	}
+	return resolution.Permissions
+}
+
+// resolveForwarded resolves the permissions of a principal an authenticating
+// edge projected onto the request.
+//
+// It hands the WHOLE principal to the resolver rather than a bare numeric ID:
+// a forwarded token principal carries a token ID that is not its owner's user
+// ID, and the resolver is the component that cross-checks the pair and reports
+// the owning user. Taking `X-Auth-ID` as a user ID would read a token's ID as a
+// user's on every token-authenticated load.
+//
+// `resolved` is false whenever the resolver refused — an absent, suspended or
+// unmatched principal — and the caller then injects nothing, not a partial
+// identity.
+func (h *Handler) resolveForwarded(ctx context.Context, principal auth.User) (int64, []string, bool) {
+	if h.cfg.Resolver == nil {
+		return 0, nil, false
+	}
+	resolution, err := h.cfg.Resolver.ResolvePermissions(
+		ctx, principal, auth.PermissionModeAdministration, "",
+	)
+	if err != nil {
+		// `is_token` is a BOOL derived from the principal, not the principal's
+		// own strings. Every field of `principal` is request-header material
+		// (X-Auth-Type / X-Auth-ID / X-Auth-User-ID), and copying header
+		// material verbatim into a log is how attacker-chosen content reaches
+		// the log sink — CodeQL go/clear-text-logging flags exactly that flow,
+		// and it is right to: the values reaching here are constrained to a
+		// two-element enum only because tryTraefikHeaders already rejected
+		// everything else, which is an invariant no reader of this line can
+		// see. The bool answers the question the line exists for — which
+		// resolution branch refused — and carries none of the input.
+		slog.DebugContext(ctx, "admin ui: forwarded permission resolution refused or failed",
+			"is_token", principal.TokenID != "", "error", err)
+		return 0, nil, false
+	}
+	if resolution.UserID <= 0 {
+		return 0, nil, false
+	}
+	permissions := resolution.Permissions
+	if permissions == nil {
+		permissions = []string{}
+	}
+	return resolution.UserID, permissions, true
+}
+
+// lookupEmail returns the operator's address, or "" when there is no lookup
+// configured or the read fails. An empty result is not an error path for the
+// page: the SPA falls back to the generic word "Admin" for the footer.
+func (h *Handler) lookupEmail(ctx context.Context, userID int64) string {
+	if h.cfg.Emails == nil {
+		return ""
+	}
+	email, err := h.cfg.Emails.UserEmail(ctx, userID)
+	if err != nil {
+		// Warn, not Debug. A lookup that was configured and then failed is a
+		// mis-wiring or an outage, and the only symptom on screen is a footer
+		// reading "Admin" — indistinguishable from a user who genuinely has no
+		// address on file. At Debug the operator's report produces nothing in
+		// the logs at any level production runs.
+		slog.WarnContext(ctx, "admin ui: user email lookup failed", "user_id", userID, "error", err)
+		return ""
+	}
+	return email
+}
+
+// sessionClaimUserID reads the `uid` claim of the session cookie. It accepts
+// the string and the number form, because encoding/json decodes a JSON number
+// as float64. It mirrors the reader in internal/api/v2/auth/session.go.
+func sessionClaimUserID(claims map[string]any) (int64, bool) {
+	switch value := claims["uid"].(type) {
+	case string:
+		id, err := strconv.ParseInt(value, 10, 64)
+		return id, err == nil && id > 0
+	case float64:
+		id := int64(value)
+		return id, value == float64(id) && id > 0
+	default:
+		return 0, false
+	}
 }
 
 func (h *Handler) verifySession(token string) map[string]any {

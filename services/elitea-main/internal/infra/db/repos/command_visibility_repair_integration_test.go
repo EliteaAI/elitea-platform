@@ -41,8 +41,7 @@ func TestPostgresRedisServiceBackedVisibilityRepair(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 
 	stream := fmt.Sprintf("elitea:test:visibility-repair:%d", time.Now().UnixNano())
 	indexKey := stream + visibilityDeliveryIndexSuffix

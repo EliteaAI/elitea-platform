@@ -122,6 +122,30 @@ describe('foldersList', () => {
     });
   });
 
+  /*
+   * DEFECT: the normaliser dropped the wire's `author_id`, so every row in the
+   * chat sidebar reached the UI with no owner. The row menu's author-only
+   * guard on Delete and Edit then compared `undefined` with `undefined` and
+   * denied nothing. The Go folders handler emits `author_id` as an integer on
+   * every conversation item (`conversationItem.AuthorID`, no `omitempty`).
+   */
+  it('carries the wire `author_id` through as a string `authorId`', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/folder/prompt_lib/7`, () =>
+        HttpResponse.json({
+          pinned: { conversations: [{ id: 'p1', author_id: 42 }] },
+          date_groups: [{ name: 'today', conversations: [{ id: 't1', author_id: 7 }] }],
+          folders: [{ id: 'f1', name: 'Folder', conversations: [{ id: 'c1', author_id: 7 }] }],
+          total_folders: 1,
+        }),
+      ),
+    );
+    const result = await foldersList({ projectId: 7 });
+    expect(result.pinned.conversations[0]?.authorId).toBe('42');
+    expect(result.dateGroups[0]?.conversations[0]?.authorId).toBe('7');
+    expect(result.folders[0]?.conversations[0]?.authorId).toBe('7');
+  });
+
   it('forces grouped=true even when a caller-supplied params object tries to override it', async () => {
     let capturedUrl: URL | undefined;
     server.use(

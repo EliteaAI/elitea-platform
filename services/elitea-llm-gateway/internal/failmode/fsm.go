@@ -136,6 +136,17 @@ type Snapshot struct {
 	// The governance layer calls ResolveFailMode(snap.NatsFailMode, baseline)
 	// before invoking Decide so the per-project policy is always honoured.
 	NatsFailMode FailMode
+	// SoftAlertsDisabled carries the platform-wide soft-alert switch an operator
+	// sets through PUT /admin/gateway/budget-alerts, read from the global
+	// gateway.governance_config row by the snapshot query (issue #322).
+	//
+	// The field is NEGATIVE on purpose. A Snapshot built without it — every unit
+	// test, every fake store, any future caller — must keep emitting alerts,
+	// because that is the behaviour of a deployment that has never touched the
+	// switch. A positive AlertsEnabled would make the zero value "alerts off",
+	// so forgetting to set it would silently stop the one signal that tells an
+	// operator a project is approaching its ceiling.
+	SoftAlertsDisabled bool
 }
 
 // Params is the resolved configuration the FSM decision needs (from config plus
@@ -182,6 +193,11 @@ type Decision struct {
 	// post-increment soft-alert detection (Fix round-3 #6) so the 80%-crossing
 	// triggers an alert on the healthy path, not only when Block402 fires.
 	SoftThresholdNear bool
+	// SoftAlertsDisabled forwards Snapshot.SoftAlertsDisabled so the handler's
+	// soft-alert path can honour the platform switch without a second read
+	// (issue #322). It is carried on every Decision, including the blocking
+	// ones, because the handler consults the POST-increment decision.
+	SoftAlertsDisabled bool
 }
 
 // natsHealthy is the sentinel the caller passes as authoritativeNano to signal
@@ -200,7 +216,19 @@ type Decision struct {
 //   - reqCostNano: the estimated cost of the request being admitted (used to
 //     test the per-replica NEAR cap and the degraded cap). 0 is acceptable for a
 //     pure admission check that does not pre-estimate cost.
+//
+// The platform soft-alert switch (issue #322) is copied from the snapshot onto
+// the returned Decision here rather than at each return site, so a new state
+// branch cannot forget to carry it.
 func Decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, snap Snapshot, reqCostNano int64, p Params) Decision {
+	decision := decide(natsUp, authoritativeNano, replicaDegradedNano, snap, reqCostNano, p)
+	decision.SoftAlertsDisabled = snap.SoftAlertsDisabled
+	return decision
+}
+
+// decide is the state table itself. It never sets SoftAlertsDisabled; Decide
+// does, once.
+func decide(natsUp bool, authoritativeNano int64, replicaDegradedNano int64, snap Snapshot, reqCostNano int64, p Params) Decision {
 	// ── NATS_HEALTHY: authoritative decision ────────────────────────────────
 	if natsUp {
 		if !snap.IsUnlimited && snap.HardLimitNano > 0 && authoritativeNano >= snap.HardLimitNano {

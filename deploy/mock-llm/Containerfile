@@ -1,0 +1,21 @@
+# Deterministic OpenAI-compatible mock upstream (issue #283).
+#
+# python:3.12-slim is already in this stack's build graph — services/
+# elitea-worker-python builds from python:3.12.10-slim — so this pulls no new
+# base image family. The server is standard library only: no pip install, and
+# therefore no network access at build or run time.
+FROM python:3.12.10-slim
+
+# Non-root, and a uid that collides with nothing else in the stack (elitea-main
+# is 65532, the worker 10001, redis 999).
+RUN useradd --system --uid 10101 --home-dir /nonexistent --shell /usr/sbin/nologin mock
+
+COPY server.py /opt/mock-llm/server.py
+
+USER 10101:10101
+EXPOSE 8090
+
+# Unbuffered so the startup line and any traceback reach compose logs
+# immediately rather than sitting in a pipe buffer while a test times out.
+ENV PYTHONUNBUFFERED=1
+ENTRYPOINT ["python3", "/opt/mock-llm/server.py"]

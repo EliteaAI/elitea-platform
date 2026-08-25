@@ -250,13 +250,27 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // @covers /admin/app/configuration
     name: 'admin-configuration',
     path: '/admin/app/configuration',
-    // The unavailable Alert — see this file's classification note below on why
-    // a refusal screen is a legitimate baseline and a scaffolding screen is
-    // not. NOT the "This deployment publishes no configuration sections." text:
-    // `activeSection` is `undefined` while `sections` is still `[]`, so that
-    // string is the LOADING state as well as the empty one.
+    // The Guardrails form's own Save control.
+    //
+    // This used to be `admin-configuration-unavailable`, the 501 refusal Alert,
+    // because the page's first section (`guardrails`, order 1) had no backend.
+    // It has one now, so the landing screen is a FORM and that testid no longer
+    // exists anywhere on it — which is why this landmark had to move rather
+    // than the baseline simply being regenerated.
+    //
+    // Save is the right replacement for the same reason the Alert was: it
+    // renders only once the section's values have loaded, so it cannot be
+    // mistaken for a loading state. NOT the "This deployment publishes no
+    // configuration sections." text: `activeSection` is `undefined` while
+    // `sections` is still `[]`, so that string is the LOADING state as well as
+    // the empty one.
     // Measured: loaded YES, stalled no.
-    landmark: (page) => page.getByTestId('admin-configuration-unavailable'),
+    //
+    // NOT the MCP catalogue editor, even though the MCP Servers section also
+    // became editable. The landing section is the first one the page can serve
+    // and `guardrails` is order 1, so Guardrails keeps the slot; the catalogue
+    // is one click away and journey J34e covers it.
+    landmark: (page) => page.getByRole('button', { name: 'Save' }),
     light: true,
   },
   {
@@ -270,6 +284,23 @@ const ADMIN_ROUTES: readonly AdminVisualRoute[] = [
     // renders the literal `Loading feature settings…`.
     // Measured: loaded YES, stalled no.
     landmark: (page) => page.getByRole('switch', { name: 'Enable MCP' }),
+  },
+  {
+    // @covers /admin/app/governance
+    name: 'admin-governance',
+    path: '/admin/app/governance',
+    // The seeded `budget_alert` row's name cell.
+    //
+    // NOT the DataGrid's no-rows label, which was the first choice and was
+    // wrong: this stack seeds one governance row (the #322 platform soft-alert
+    // config), so that label never renders and the landmark could not resolve.
+    // NOT the propagation Alert either — it states a property of the GATEWAY,
+    // not of the query, so it is present in the loading frame too and would
+    // pin a loading state as the reference (#159, #174).
+    //
+    // A cell of a seeded row is the one thing here that proves the list query
+    // RESOLVED. Measured: loaded YES, stalled no.
+    landmark: (page) => page.getByRole('gridcell', { name: 'global', exact: true }),
   },
   {
     // @covers /admin/app/service-descriptors
@@ -418,16 +449,16 @@ for (const route of ADMIN_ROUTES.filter((r) => r.light)) {
  *
  *  - `/admin/app/audit` (Audit Trail). EXEMPT in
  *    `scripts/check-visual-coverage.mjs`, which prints the reason on every run.
- *    Short version: the page opens on a `Today` preset computed from the
- *    BROWSER's clock while the seed anchors its four fixture rows on the
- *    DATABASE's `date_trunc('day', now())` (#214, partly fixed), and every
- *    other visible thing on the screen is a function of the wall clock at seed
- *    time — the `Time` column is second-resolution local time, the two
- *    `DateRangeField`s render today's date, and the heatmap's column geometry
- *    and per-cell alpha are computed from where the rows fall inside the
- *    range. A baseline taken against one stack cannot match a stack seeded at a
- *    different time of day, which is every other stack. Masking is not a way
- *    out: what would have to be masked is the whole content area.
+ *    Short version: every visible thing on the screen is a function of the wall
+ *    clock at seed time — the `Time` column is second-resolution local time,
+ *    the two `DateRangeField`s render today's date, and the heatmap's column
+ *    geometry and per-cell alpha are computed from where the rows fall inside
+ *    the range. A baseline taken against one stack cannot match a stack seeded
+ *    at a different time of day, which is every other stack. Masking is not a
+ *    way out: what would have to be masked is the whole content area.
+ *    WHICH day it is is no longer on that list: #214 pinned one timezone for
+ *    the browser and the seed, and journey 29 freezes its clock to the day the
+ *    fixture was written on. The MINUTE the seed ran is what still moves.
  *
  *  - The admin INDEX route (`/admin/app/`). It renders `AdminUsers` — the same
  *    component, deliberately, rather than redirecting (`router.tsx` explains

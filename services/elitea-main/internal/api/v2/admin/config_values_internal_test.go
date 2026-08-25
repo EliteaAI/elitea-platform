@@ -45,9 +45,9 @@ func TestRejectsCredentialFields(t *testing.T) {
 // the type check, or a well-typed secret would be accepted.
 func TestCredentialRefusalBeatsTypeAgreement(t *testing.T) {
 	section := fieldSpec(map[string]any{
-		"key": "litellm_master_key", "type": "string", "format": "password",
+		"key": "gateway_master_key", "type": "string", "format": "password",
 	})
-	if validateSectionValues(section, map[string]any{"litellm_master_key": "sk-live-1"}) == "" {
+	if validateSectionValues(section, map[string]any{"gateway_master_key": "sk-live-1"}) == "" {
 		t.Fatal("a correctly typed credential was accepted")
 	}
 }

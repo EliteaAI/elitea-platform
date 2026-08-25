@@ -348,30 +348,79 @@ const SSE_PATH_PREFIX = '/notifications/events/prompt_lib/';
 const SSE_URL = `${API_BASE}${SSE_PATH_PREFIX}${DEFAULT_PROJECT_ID}`;
 
 /**
+ * Tells J26.1's OWN stream apart from the sidebar's. Both open the same url.
+ *
+ * `events.go` reads only `cursor` and `Last-Event-ID`, so an unknown query
+ * parameter changes nothing the server does. The opening `notifications_ready`
+ * frame still arrives, because the route sends it whenever no cursor is
+ * supplied.
+ */
+const PROBE_QUERY = 'j26_probe=1';
+const PROBE_URL = `${SSE_URL}?${PROBE_QUERY}`;
+
+/** Every request to that url, with the probe marker or without it. */
+const SSE_ROUTE = new RegExp(`${SSE_PATH_PREFIX}${DEFAULT_PROJECT_ID}(\\?|$)`);
+
+/**
  * J26.1 — the platform contract: the stream is mounted, and a transport-level
  * drop is recovered by the browser with no application code involved.
  *
  * Driven through a real `EventSource` in the page rather than through the
- * sidebar's own subscription, because the sidebar subscribes with a DIFFERENT
- * project id and cannot connect at all today — that is J26.2 below, and it is
- * why this half is written against the URL a user WITH access resolves to. The
- * server, the auth cookie, the RBAC check and the reconnect are all real; only
- * the subscriber is the test's own.
+ * sidebar's own subscription. The sidebar's half is J26.2 below, which asserts
+ * the same stream from the app's side. The server, the auth cookie, the RBAC
+ * check and the reconnect are all real here; only the subscriber is the
+ * test's own.
+ *
+ * THE SIDEBAR'S STREAM IS REFUSED FOR THE LIFE OF THIS TEST, and that is what
+ * keeps this journey deterministic on webkit.
+ *
+ * `events.go` admits at most FOUR concurrent streams per principal
+ * (`newCurrentNotificationAdmission(64, 4)`), and answers the fifth with 429
+ * plus `Retry-After: 2`. An HTTP status fails an `EventSource` for good, so
+ * the probe reported `ready: false` with no reconnect left to make.
+ *
+ * The suite runs four parallel workers as ONE persona, and every worker's page
+ * mounts `NotificationButton`. The member principal therefore already sits at
+ * the cap. The probe was the fifth stream, and the page's own sidebar stream
+ * was the fourth.
+ *
+ * Measured on 2026-08-21 against the real stack: hold three member streams
+ * open, run this test alone, and it fails at `outcome.ready` every time. It
+ * flaked the same way on `main` before this change set (run 32283253507).
+ *
+ * Aborting the sidebar's stream costs the server nothing, because the request
+ * never leaves the browser. It leaves the probe as this page's ONLY stream,
+ * which is the same budget every other journey uses.
+ *
+ * The body then re-attempts the whole scenario until a deadline, for the
+ * refusal it cannot prevent — another worker can still hold the last slot.
  */
 test('J26.1: the notification SSE stream is mounted, and a dropped connection is re-opened automatically', async ({ page }) => {
   test.setTimeout(90_000);
 
-  const streamRequests: string[] = [];
+  // Only the PROBE's own requests are counted. Counting the sidebar's too
+  // would let its retries satisfy the reconnect assertion below on their own.
+  const probeRequests: string[] = [];
+  const probeStatuses: number[] = [];
   page.on('request', (request: Request) => {
-    if (request.url().includes(SSE_PATH_PREFIX)) streamRequests.push(request.url());
+    if (request.url().includes(PROBE_QUERY)) probeRequests.push(request.url());
+  });
+  // An `EventSource` shows its consumer no status. Record the wire status so a
+  // refusal names itself instead of arriving as a bare `false`.
+  page.on('response', (response) => {
+    if (response.url().includes(PROBE_QUERY)) probeStatuses.push(response.status());
   });
 
-  // Drop the FIRST attempt at the transport level. `route.abort()` is a
+  // Drop the FIRST probe attempt at the transport level. `route.abort()` is a
   // connection failure, not an HTTP status — precisely the case WHATWG says
   // EventSource must retry. A status would be terminal, and a test built on one
   // would assert the opposite of this journey while looking identical.
   let dropped = 0;
-  await page.route(`**${SSE_PATH_PREFIX}${DEFAULT_PROJECT_ID}`, async (route) => {
+  await page.route(SSE_ROUTE, async (route) => {
+    if (!route.request().url().includes(PROBE_QUERY)) {
+      await route.abort();
+      return;
+    }
     if (dropped === 0) {
       dropped += 1;
       await route.abort();
@@ -382,38 +431,67 @@ test('J26.1: the notification SSE stream is mounted, and a dropped connection is
 
   await page.goto(BASE_URL + '/app/chat');
 
-  const outcome = await page.evaluate(
-    async ({ url, budgetMs }) =>
-      new Promise<{ ready: boolean; errors: number; readyState: number }>((resolve) => {
-        const source = new EventSource(url, { withCredentials: true });
-        let errors = 0;
-        const finish = (ready: boolean): void => {
-          const readyState = source.readyState;
-          source.close();
-          resolve({ ready, errors, readyState });
-        };
-        source.addEventListener('error', () => {
-          errors += 1;
-          // CLOSED means the browser gave up (an HTTP status) — report it
-          // rather than sitting out the budget, so the failure names itself.
-          if (source.readyState === EventSource.CLOSED) finish(false);
-        });
-        // The opening handshake of services/elitea-main/internal/api/v2/
-        // notifications/events.go. Receiving it proves a real stream
-        // from elitea-main, not a 404 the client tolerates in silence.
-        source.addEventListener('notifications_ready', () => finish(true));
-        setTimeout(() => finish(false), budgetMs);
-      }),
-    { url: SSE_URL, budgetMs: 30_000 },
-  );
+  /**
+   * The scenario repeats until a deadline, and the re-attempt covers ONE
+   * thing: the admission gate.
+   *
+   * The gate answers a refused stream with 429 and `Retry-After: 2`. That
+   * refusal is not the condition under test, and the browser cannot recover
+   * from it — an HTTP status fails an `EventSource` for good. Each attempt
+   * proves the reconnect on its own, because the assertions below read the
+   * LAST attempt's counters only.
+   *
+   * A refusal resolves in under a second, so the deadline buys many attempts
+   * while another worker holds the last slot. A broken reconnect instead
+   * spends the whole per-attempt budget, so the deadline stops after two. The
+   * test fails in both of those cases, and it fails inside its own timeout.
+   */
+  const deadline = Date.now() + 40_000;
+  const budgetMs = 20_000;
+  let outcome = { ready: false, errors: 0, readyState: 0 };
+  for (;;) {
+    dropped = 0;
+    probeRequests.length = 0;
+    probeStatuses.length = 0;
+    outcome = await page.evaluate(
+      async ({ url, budget }) =>
+        new Promise<{ ready: boolean; errors: number; readyState: number }>((resolve) => {
+          const source = new EventSource(url, { withCredentials: true });
+          let errors = 0;
+          const finish = (ready: boolean): void => {
+            const readyState = source.readyState;
+            source.close();
+            resolve({ ready, errors, readyState });
+          };
+          source.addEventListener('error', () => {
+            errors += 1;
+            // CLOSED means the browser gave up (an HTTP status) — report it
+            // rather than sitting out the budget, so the failure names itself.
+            if (source.readyState === EventSource.CLOSED) finish(false);
+          });
+          // The opening handshake of services/elitea-main/internal/api/v2/
+          // notifications/events.go. Receiving it proves a real stream
+          // from elitea-main, not a 404 the client tolerates in silence.
+          source.addEventListener('notifications_ready', () => finish(true));
+          setTimeout(() => finish(false), budget);
+        }),
+      { url: PROBE_URL, budget: budgetMs },
+    );
+    if (outcome.ready || Date.now() >= deadline) break;
+    // The gate's own `Retry-After`, plus a margin for the slot to be released.
+    await page.waitForTimeout(3_000);
+  }
 
   expect(dropped).toBe(1);
   // The abort produced an error event, and the browser retried anyway: more
-  // than one request to the same URL is the only end-to-end evidence of the
-  // reconnect, since no application code runs for it.
+  // than one PROBE request is the only end-to-end evidence of the reconnect,
+  // since no application code runs for it.
   expect(outcome.errors).toBeGreaterThan(0);
-  expect(streamRequests.filter((url) => url.includes(SSE_PATH_PREFIX)).length).toBeGreaterThan(1);
-  expect(outcome.ready).toBe(true);
+  expect(probeRequests.length).toBeGreaterThan(1);
+  expect(
+    outcome.ready,
+    `probe stream statuses: ${probeStatuses.join(', ') || 'none'} (429 means the per-principal stream cap is full)`,
+  ).toBe(true);
 });
 
 /**

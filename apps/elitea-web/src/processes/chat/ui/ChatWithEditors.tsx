@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { useCallback } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -14,6 +15,7 @@ import { ChatConversationSidebar } from './ChatConversationSidebar';
 import { rejectToolkitWrite, toCreatedResult } from './ChatWithEditors.helpers';
 import { useChatWithEditors } from './ChatWithEditors.hooks';
 import { renderAgentEditorShell, renderPipelineEditorShell, renderToolkitEditorShell } from './EditorShell';
+import { useCreateChatReset } from './useCreateChatReset';
 
 /**
  * `ChatWithEditors` — the real composition root this whole unit exists to
@@ -77,6 +79,18 @@ export function ChatWithEditors(): ReactNode {
     handleShowPipelineEditor,
   } = useChatWithEditors();
 
+  // "+ Create -> Chat" writes `?create=1` and had no reader, so the click did
+  // nothing while the user was already on `/chat`. `resetToken` keys the chat
+  // subtree, so each click remounts it; see `useCreateChatReset` for the full
+  // disclosure. The editors close first, as the reference app did on the same
+  // trigger.
+  const closeEditors = useCallback(() => {
+    editAgent.onCloseAgentEditor();
+    editPipeline.onClosePipelineEditor();
+    editToolkit.onCloseToolkitEditor();
+  }, [editAgent, editPipeline, editToolkit]);
+  const resetToken = useCreateChatReset(closeEditors);
+
   return (
     <>
       {/*
@@ -91,6 +105,7 @@ export function ChatWithEditors(): ReactNode {
         <ChatConversationSidebar />
         <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
           <ChatPage
+            key={`chat-${String(resetToken)}`}
             editorCallbacks={{
               onShowAgentEditor: handleShowAgentEditor,
               onShowPipelineEditor: handleShowPipelineEditor,

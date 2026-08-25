@@ -90,6 +90,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { EditViewTabsEnum, IndexesToolsEnum, IndexStatuses } from '../../indexes/lib/constants/indexDetails.constants';
 import { generateMockMessageTemplate, generateWelcomeMessage } from '../../indexes/lib/helpers/indexChat.helpers';
+import { canStartToolkitRun } from '../../indexes/lib/helpers/indexExecution.helpers';
 import { useIndexHistory } from '../../indexes/lib/hooks/useIndexHistory.hooks';
 import { ToolkitChatModesEnum } from '../constants/toolkitChat.constants';
 import type { CreatedConversation } from '../helpers/toolkitConversation.helpers';
@@ -326,7 +327,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
   const run = useCallback(
     (tool: string = IndexesToolsEnum.indexData) => {
       const indexing = tool === IndexesToolsEnum.indexData;
-      const canProceed = ((indexing && !isCreateIndexMode) || isValidForm) && !isRunning;
+      const canProceed = canStartToolkitRun({ indexing, isCreateIndexMode, isValidForm, isRunning, isIndexing });
       const relevantInputVariables = resolveRunInputVariables(toolInputVariables, index, isCreateIndexMode, indexing);
 
       if (!canProceed) return;
@@ -340,7 +341,7 @@ export function useToolkitChat(params: UseToolkitChatParams): UseToolkitChatResu
 
       void executeRunTool({ relevantInputVariables, indexing, tool });
     },
-    [isCreateIndexMode, isValidForm, isRunning, toolInputVariables, index, traceNewIndex, executeRunTool],
+    [isCreateIndexMode, isValidForm, isRunning, isIndexing, toolInputVariables, index, traceNewIndex, executeRunTool],
   );
 
   const onCancelIndexing = useCallback(async () => {

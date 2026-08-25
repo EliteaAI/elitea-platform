@@ -27,18 +27,25 @@ const fileThresholdRules = [];
 async function main() {
   const shardFiles = await findCoverageFiles();
   if (shardFiles.length === 0) {
-    if (skipValidation) {
-      // --no-validate is the coverage-merge job's mode: it merges *fresh*
-      // shard artifacts and must never go green with nothing to merge (the
-      // bug that let this job report success while uploading an empty
-      // coverage/ directory — see issue #67). The outputDir fallback below
-      // is for coverage-validation's rerun (no --no-validate), which must
-      // stay reachable.
-      console.error('No coverage shard artifacts found; refusing to report success with nothing merged.');
-      process.exit(1);
-    }
-    console.log('No coverage shard artifacts found; skipping merged coverage generation.');
-    return;
+    // NEITHER mode may report success with nothing to measure.
+    //
+    // --no-validate is the coverage-merge job's mode: it merges *fresh* shard
+    // artifacts and must never go green with nothing merged (the bug that let
+    // this job report success while uploading an empty coverage/ directory —
+    // see issue #67).
+    //
+    // The default mode is the coverage-validation job, the ONE call in this
+    // repository that enforces the thresholds. It used to `return` here — exit
+    // 0 — so the validating call passed whenever it had no numbers to validate
+    // (issue #421, item 5). findCoverageFiles()'s outputDir fallback is what
+    // makes that job's normal shape reachable, so arriving here means even the
+    // downloaded artifact was absent.
+    console.error(
+      skipValidation
+        ? 'No coverage shard artifacts found; refusing to report success with nothing merged.'
+        : 'No coverage data found; refusing to report the thresholds as met with nothing to measure.',
+    );
+    process.exit(1);
   }
 
   const coverageMap = createCoverageMap({});
@@ -46,6 +53,8 @@ async function main() {
     const raw = JSON.parse(await fs.readFile(shardFile, 'utf8'));
     coverageMap.merge(raw);
   }
+
+  assertSomethingWasMeasured(coverageMap, shardFiles);
 
   printUncoveredInfo(coverageMap);
 
@@ -237,6 +246,44 @@ async function findCoverageFiles() {
   }
 
   return files;
+}
+
+// The floor on the CONTENTS, not on the file count (issue #483, item 3).
+//
+// The shard-count check above proves a file arrived. It does not prove the
+// file holds numbers. A `coverage-final.json` of `{}` satisfies it, and every
+// gate downstream then reads zeros as a pass:
+//
+//   • assertInstrumentationNotBroken() is gated on `totalStatements > 0`, so a
+//     total of 0 skips it;
+//   • istanbul's own `percent()` returns 100 when the total is 0, so every
+//     threshold in checkThreshold() is met by an empty summary.
+//
+// So the one call in this repository that enforces the coverage thresholds
+// reported them as met over no numbers at all. The counts are printed here,
+// because a reader must be able to see WHAT was measured, not only that
+// something was.
+function assertSomethingWasMeasured(coverageMap, shardFiles) {
+  const files = coverageMap.files();
+  const summary = getSummary(coverageMap.getCoverageSummary());
+  const totalStatements = summary.statements?.total ?? 0;
+
+  console.log(
+    `Merged ${shardFiles.length} shard file(s): ${files.length} source file(s), ${totalStatements} statement(s).`,
+  );
+
+  if (files.length === 0 || totalStatements === 0) {
+    console.error(
+      `MEASURED NOTHING: the merged coverage map holds ${files.length} file(s) and`
+        + ` ${totalStatements} statement(s), from ${shardFiles.length} shard file(s):`
+        + ` ${shardFiles.join(', ')}.`,
+    );
+    console.error(
+      'An empty coverage map meets every threshold, because a percentage over a'
+        + ' total of zero is 100. Refusing to report success with nothing measured.',
+    );
+    process.exit(1);
+  }
 }
 
 function assertInstrumentationNotBroken(coverageMap) {

@@ -96,8 +96,6 @@ export function ProjectIconDialog({
   selectedIcon,
   projectName,
 }: ProjectIconDialogProps) {
-  const _theme = useTheme();
-
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -229,7 +227,7 @@ function DefaultIconsSection({
       <Box sx={cx.iconGrid}>
         {!selectedIcon?.url && !selectedIcon?.name ? (
           <ProjectIconItem isSelected onClick={() => onSelectIcon(null)}>
-          <IconPlaceholder name={projectName} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+          <IconPlaceholder name={projectName} />
           </ProjectIconItem>
         ) : null}
         {!loadingDefault &&
@@ -239,7 +237,7 @@ function DefaultIconsSection({
               isSelected={selectedIcon?.name === icon.name}
               onClick={() => onSelectIcon(icon.name)}
             >
-              <IconPlaceholder name={icon.name} url={icon.url} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+              <IconPlaceholder name={icon.name} url={icon.url} />
             </ProjectIconItem>
           ))}
       </Box>
@@ -278,7 +276,7 @@ function UploadedIconsSection({
             onClick={() => onSelectIcon(icon.name)}
             onDelete={() => { void onDeleteIcon(icon.name); }}
           >
-            <IconPlaceholder name={icon.name} url={icon.url} fontSize={(_theme as Theme).typography.headingSmall.fontSize} />
+            <IconPlaceholder name={icon.name} url={icon.url} />
           </UserIconItem>
         ))}
         {!loadingIcons && uploadedIcons.length === 0 && (
@@ -315,13 +313,39 @@ function UploadIconButton({
   );
 }
 
-function IconPlaceholder({ name, url, fontSize }: { name: string; url?: string; fontSize: number }) {
-  if (url) {
+/**
+ * IconPlaceholder shows the icon image, or the first letter of its name.
+ *
+ * DEFECT: the url branch had no error handler. A url that answers 404
+ * therefore left a broken-image box on the screen. The letter fallback below
+ * never ran. The
+ * default-icon catalogue served five such urls, and an uploaded icon that is
+ * deleted or expired produces the same result. `failedUrl` records the url that
+ * failed and falls through to the letter. It keys on the url, so a later change
+ * to a good url shows the image again.
+ */
+function IconPlaceholder({ name, url }: { name: string; url?: string }) {
+  // The glyph size comes from the theme HERE, not from a prop.
+  //
+  // DEFECT: the three call sites read a `_theme` constant that lives in
+  // ProjectIconDialog, but they sat in separate function components. The
+  // identifier therefore resolved to nothing at run time. The file carries
+  // `@ts-nocheck`,
+  // so the compiler never reported it. The dialog threw
+  // "ReferenceError: _theme is not defined" and unmounted the whole page as
+  // soon as it had one icon to draw.
+  const theme = useTheme() as Theme;
+  const fontSize = theme.typography.headingSmall.fontSize;
+  const [failedUrl, setFailedUrl] = useState<string | undefined>(undefined);
+  const onError = useCallback(() => { setFailedUrl(url); }, [url]);
+
+  if (url && failedUrl !== url) {
     return (
       <Box
         component="img"
         src={url}
         alt={name}
+        onError={onError}
         sx={{ ...cx.iconImage }}
       />
     );

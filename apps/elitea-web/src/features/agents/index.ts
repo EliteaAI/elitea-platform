@@ -30,9 +30,21 @@
  * layer will need the same entry point for.
  */
 export { CreateAgentForm } from './ui/CreateAgentForm';
-export type { CreateAgentFormProps } from './ui/CreateAgentForm';
 
 export { VersionReplacementModal } from './ui/VersionReplacementModal';
+
+/**
+ * `pages/agents-hub`'s `AgentModal` shows the agent instructions in this
+ * dialog. Baseline: `AgentModal.jsx:263-269`. A page must enter the slice
+ * through this file (`.dependency-cruiser.cjs` `no-deep-slice-import`).
+ *
+ * `CreateAgentFormProps` gave up the slot. The §3.5 budget is 20 symbols,
+ * and the list was full. No file outside this slice imported that type; one
+ * doc comment in `pages/agents/CreateApplication.tsx` names it, and a doc
+ * comment is not an import. Restore it here if a real consumer appears, and
+ * retire another symbol for it.
+ */
+export { StyledShowContextModal } from './ui/StyledShowContextModal';
 
 /**
  * #134 — `AgentVersionControls` (the agent editor's version dropdown +
@@ -55,6 +67,33 @@ export { VersionReplacementModal } from './ui/VersionReplacementModal';
 export { AgentVersionControls } from './ui/AgentVersionControls';
 
 /**
+ * #307 — the agent editor's own delete and export affordances. Both were
+ * fully ported, fully tested and imported by NOTHING: the issue lists them
+ * among the "correctly-wired components with no mount point", and the page
+ * that is supposed to host them (`pages/agents/EditApplication.tsx`) could
+ * not reach them from outside this slice. The three slots they and their
+ * host needed came from repacking the four validation hooks into
+ * `applicationValidationHooks` (see that file) — no export was dropped.
+ */
+export { DeleteApplicationButton } from './ui/DeleteApplicationButton';
+export { ExportApplicationButton } from './ui/ExportApplicationButton';
+
+/**
+ * #307 — the agent editor's Tools panel, and the LAST free slot on this
+ * curated API (20/20). One symbol, deliberately: a page-level composition
+ * would have had to import FOUR (`ApplicationTools`, `ToolCard`,
+ * `useDisassociateToolkit`, and the `AgentToolAssociation` type its
+ * `renderToolCard`/hook contracts are written in) against a budget with one
+ * slot free. `AgentToolsPanel` composes all four INSIDE the slice — the
+ * same "compose behind one export" answer `AgentVersionControls` already
+ * gave for the version dropdown + Save-As-Version pair — and takes only
+ * page-owned values across the boundary (ids, the server's raw
+ * `version_details.tools[]`, the read-only flag, a refetch callback), none
+ * of which needs a type import.
+ */
+export { AgentToolsPanel } from './ui/AgentToolsPanel';
+
+/**
  * Sub-unit A1a's ("Application data layer + version-lifecycle hooks")
  * contribution — the application/version data layer + tool change-diffing +
  * validation + chat-version-switch hooks (see each file's own doc comment
@@ -74,12 +113,7 @@ export { useSaveVersion } from './model/useSaveVersion';
 export { useSaveNewVersion } from './model/useSaveNewVersion';
 export { useDeleteVersion } from './model/useDeleteVersion';
 export { useSaveChangedTools } from './model/useSaveChangedTools';
-export {
-  useValidateApplicationVersion,
-  useManualValidateApplicationVersion,
-  useToolsValidationInfo,
-  useToolValidationInfo,
-} from './model/useValidateApplicationVersion';
+export { applicationValidationHooks } from './model/applicationValidationHooks';
 export { useApplicationChatSwitchVersion } from './model/useApplicationChatSwitchVersion';
 export { useCreateConfiguration } from './model/useCreateConfiguration';
 

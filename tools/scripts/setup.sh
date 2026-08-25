@@ -17,8 +17,11 @@ go mod download
 go mod tidy
 cd "$REPO_ROOT"
 
-echo "==> Running go vet..."
-go vet ./services/elitea-main/...
+echo "==> Running go vet across the workspace..."
+# `go vet ./services/elitea-main/...` covered one module of nine (#427). The
+# script runs every workspace module, names every failed one, and names the
+# modules it does not cover.
+bash scripts/go/workspace-run.sh vet
 
 echo "==> Building elitea-main..."
 cd services/elitea-main

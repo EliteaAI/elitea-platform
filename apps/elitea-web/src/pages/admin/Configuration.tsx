@@ -25,21 +25,35 @@
  * carries an `unavailable_reason` or none, and the value endpoints answer 501
  * with that same string. This page renders what it is told; it does not decide.
  *
- *   - **Guardrails, MCP Servers, Observability, LiteLLM, Runtime, Admin Panel,
- *     Authentication** — Pylon plugin configuration. Unavailable, with the
- *     reason.
+ *   - **Observability, LiteLLM, Runtime, Admin Panel** — Pylon plugin
+ *     configuration. Unavailable, with the reason.
+ *   - **Guardrails** — live, and the first section that left the list above. Its
+ *     fields address `toolkit_security.*` like a plugin's, but the test was
+ *     never "the path looks like a plugin's": it is "does anything here read
+ *     the values". Four things now do.
+ *   - **MCP Servers** and **Authentication** — available through DEDICATED
+ *     surfaces, declared by the server as a `managed_surface`. Both KEEP their
+ *     `unavailable_reason`, and both keep it for the same reason: their data
+ *     includes a credential, and the plugin-config value endpoints store a
+ *     section's fields as plaintext rows readable by every holder of
+ *     `runtime.plugins`. So the value endpoints still refuse, and the editor is
+ *     somewhere those rows are not involved.
  *   - **Banner** — a product setting the legacy UI received through
  *     `window.elitea_ui_config`. Unavailable for the narrower reason that
  *     nothing in this platform reads it YET.
- *   - **LLM Governance** — authored through `/admin/gateway/governance`, not
- *     here, and withheld because the gateway does not read what that surface
- *     writes.
+ *   - **LLM Governance** — authored on its own page (`./GatewayGovernance.tsx`,
+ *     `/admin/app/governance`), not here. It is the ONE section whose reason
+ *     changed rather than whose status did: it was withheld because nothing
+ *     read `gateway.governance_config`, and #218 made the LLM gateway read and
+ *     enforce every enabled row. It stays unavailable HERE because a governance
+ *     corpus is a list of scoped rows and this page is a flat form over one
+ *     value document — the row editor is the only shape that can express it.
  *   - **Maintenance** and **Advanced** — a Pylon request hook and Pylon runtime
  *     introspection respectively. Both endpoints now answer 501 rather than
  *     200-with-empty.
  *   - **Service Descriptors** — a page of its own in this port, not yet done.
  *
- * ## Every section on this page is currently unavailable, and that is accurate
+ * ## What is left unavailable here is accurate
  *
  * #217 built this page with one live section, `resources`, and recorded that it
  * had put it here only because that is where the server's schema had it and
@@ -50,12 +64,13 @@
  * `mcp_exposure.*` and `publishing_guardrail.*` fields that used to sit inside
  * Guardrails.
  *
- * What is left is every section this platform cannot serve. The page therefore
- * renders only refusals — which is a true statement about this deployment and a
- * far more useful one than a form over values nothing reads. `pages/admin/
- * Features.tsx` is where a setting that DOES something is authored today; when
- * a Configuration section acquires a consumer, removing its
- * `unavailable_reason` is all that is needed here.
+ * What is left refusing is every section this platform cannot serve — a true
+ * statement about this deployment, and a far more useful one than a form over
+ * values nothing reads. A section leaves that group in one of two ways: it
+ * acquires a consumer and its `unavailable_reason` is removed (Guardrails), or
+ * its data needs a shape and a secret store this page cannot provide and it
+ * acquires a `managed_surface` (MCP Servers, Authentication). Neither is a
+ * change this file makes: both are declared by the server.
  *
  * The behaviour is shared with Features through `useAdminConfigSectionsPage`;
  * this file is layout and the page's identity.
@@ -80,6 +95,8 @@
  * and sections carrying a `required_permission` are checked again inside the
  * handler because that permission depends on the section.
  */
+import type { ComponentType } from 'react';
+
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -90,12 +107,44 @@ import ListItemText from '@mui/material/ListItemText';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import { AdminIdentityProvidersEditor } from './AdminIdentityProvidersEditor';
+import { AdminLlmProxyEditor } from './AdminLlmProxyEditor';
+import { AdminMcpServersEditor } from './AdminMcpServersEditor';
+import { IDENTITY_PROVIDERS_MANAGED_SURFACE } from './api/adminIdentityProvidersApi';
+import { LLM_PROXY_MANAGED_SURFACE } from './api/adminLlmProxyApi';
+import { MCP_SERVERS_MANAGED_SURFACE } from './api/adminMcpServersApi';
 import { ConfigurationSectionForm } from './ConfigurationSectionForm';
 import { useAdminConfigurationPage, type AdminConfigurationPageState } from './useAdminConfigurationPage';
 
-const { DrawerPage } = drawerPage;
+/**
+ * The sections this app can render a DEDICATED editor for, keyed by the
+ * server's `managed_surface`.
+ *
+ * One registry, in one place, keyed on the server's word rather than on a
+ * section id. That is the correction #217 made when it moved
+ * `service_descriptors`: the reference keeps section placement in two
+ * client-side lists that must stay each other's complement by hand, and the
+ * drift is invisible until a section renders on the wrong page or on both.
+ *
+ * A section whose `managed_surface` is NOT in this map falls through to its
+ * `unavailable_reason`, so a surface this build does not know how to render
+ * degrades to the honest explanation rather than to a blank pane.
+ */
+const MANAGED_SECTION_EDITORS: Readonly<Record<string, ComponentType>> = {
+  [MCP_SERVERS_MANAGED_SURFACE]: AdminMcpServersEditor,
+  [IDENTITY_PROVIDERS_MANAGED_SURFACE]: AdminIdentityProvidersEditor,
+  [LLM_PROXY_MANAGED_SURFACE]: AdminLlmProxyEditor,
+};
+
+/** The dedicated editor for a section, when this build has one. */
+function managedEditorFor(
+  section: { readonly managed_surface?: string } | undefined,
+): ComponentType | undefined {
+  const surface = section?.managed_surface;
+  return surface === undefined ? undefined : MANAGED_SECTION_EDITORS[surface];
+}
 
 function SectionBody({ state }: { readonly state: AdminConfigurationPageState }) {
   if (state.activeSection === undefined) {
@@ -104,6 +153,15 @@ function SectionBody({ state }: { readonly state: AdminConfigurationPageState })
         {t('pages.admin.configuration.empty', 'This deployment publishes no configuration sections.')}
       </Typography>
     );
+  }
+
+  // A managed section is rendered by its own editor, BEFORE the unavailability
+  // check. The section keeps its `unavailable_reason` — it is still true of the
+  // plugin-config value endpoints, which cannot serve this data — so a build
+  // that does not recognise the surface still explains itself.
+  const ManagedEditor = managedEditorFor(state.activeSection);
+  if (ManagedEditor !== undefined) {
+    return <ManagedEditor />;
   }
 
   if (state.unavailableReason !== undefined) {
@@ -132,15 +190,28 @@ function SectionBody({ state }: { readonly state: AdminConfigurationPageState })
     );
   }
 
+  return <SectionForm state={state} />;
+}
+
+/**
+ * The ordinary schema-driven form for an available section.
+ *
+ * Split out of `SectionBody` so that function stays a chain of early returns
+ * over the states a section can be in — unavailable, managed, failed, loading,
+ * ready — and the form itself is one thing. Both were over the complexity gate
+ * as one function, and the gate was right: the branching was the part that had
+ * grown, not the markup.
+ */
+function SectionForm({ state }: { readonly state: AdminConfigurationPageState }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-      {state.activeSection.description !== undefined && state.activeSection.description !== '' ? (
+      {state.activeSection?.description !== undefined && state.activeSection.description !== '' ? (
         <Typography variant="bodySmall" color="text.secondary">
           {state.activeSection.description}
         </Typography>
       ) : null}
       <ConfigurationSectionForm
-        fields={state.activeSection.fields ?? []}
+        fields={state.activeSection?.fields ?? []}
         values={state.values}
         disabled={state.isSaving}
         onChange={state.onFieldChange}
@@ -227,8 +298,13 @@ export function AdminConfiguration() {
                 // The sidebar says which sections this deployment can serve
                 // BEFORE the operator clicks one. Discovering it only on arrival
                 // makes the page feel broken rather than scoped.
+                // A section with a dedicated editor is NOT "not available
+                // here": it is available, through its own surface. Labelling it
+                // otherwise would send an operator away from the one page that
+                // can edit it.
                 secondary={
-                  section.unavailable_reason === undefined
+                  section.unavailable_reason === undefined ||
+                  managedEditorFor(section) !== undefined
                     ? undefined
                     : t('pages.admin.configuration.sectionUnavailable', 'Not available here')
                 }

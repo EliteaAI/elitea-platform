@@ -24,8 +24,12 @@ SDK_DISTRIBUTION_VERSION = "0.9.8"
 SDK_SOURCE_ARCHIVE_SHA256 = (
     "df398b4a378e7b88ea3b72511e31de13a17a02159c69fbada6f0b948a0ecf2d7"
 )
+SDK_SOURCE_PATCH_REVISIONS = (
+    "5c9409779ac0a55f8bf74f6ef438977089187a14",
+    "07ddc5cd67a0c747f83ca0e26421cde71bd97d9d",
+)
 SDK_PACKAGE_TREE_SHA256 = (
-    "61075c4b6f130773c31e12294589969de78eb9e46eafa798e32f75908917adb8"
+    "969b129405a279a95721ad7116c9c5cc82e1c7dd13df24207fbd5d9980488f72"
 )
 # The configuration catalog has its own compatibility revision. SDK 0.9.8
 # preserves the exact admitted catalog digest, so upgrading the runtime must

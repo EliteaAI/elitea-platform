@@ -32,15 +32,27 @@ export interface ToolCardBodyProps {
   readonly isAgentOrPipeline: boolean;
   readonly versionSelector?: ToolCardVersionSelectorProps | undefined;
   readonly disabled?: boolean | undefined;
+  /**
+   * Whether to offer the "Show variables" toggle at all — the caller's
+   * `tool.variables?.length` check AND its own "can an edit to them even be
+   * persisted?" answer, folded into one boolean because the caller owns both
+   * (and because computing them here costs `ToolCardBody` its last point of
+   * `complexity` budget headroom).
+   *
+   * False WITHHOLDS the toggle even for a tool that carries variables: nothing
+   * on this backend can store per-tool variables (#248 — see
+   * `ToolCardProps.variables` and `AgentToolRow`'s module doc comment). Hidden,
+   * not disabled, matching the legacy baseline's own omit-when-empty gate on
+   * this same toggle.
+   */
+  readonly showVariablesToggle: boolean;
   readonly showVariables: boolean;
   readonly onToggleVariables: () => void;
   readonly showActions: boolean;
   readonly onClickShowActions: () => void;
 }
 
-export function ToolCardBody({ tool, toolkitName, isAttachmentToolkit, isAgentOrPipeline, versionSelector, disabled, showVariables, onToggleVariables, showActions, onClickShowActions }: ToolCardBodyProps): ReactNode {
-  const hasVariables = (tool.variables?.length ?? 0) > 0;
-
+export function ToolCardBody({ tool, toolkitName, isAttachmentToolkit, isAgentOrPipeline, versionSelector, disabled, showVariablesToggle, showVariables, onToggleVariables, showActions, onClickShowActions }: ToolCardBodyProps): ReactNode {
   return (
     <Box sx={contentBoxSx(isAgentOrPipeline)}>
       <Box sx={titleRowSx}>
@@ -80,7 +92,7 @@ export function ToolCardBody({ tool, toolkitName, isAttachmentToolkit, isAgentOr
         />
       )}
 
-      {hasVariables && (
+      {showVariablesToggle && (
         <Box
           sx={variablesToggleSx}
           onClick={onToggleVariables}

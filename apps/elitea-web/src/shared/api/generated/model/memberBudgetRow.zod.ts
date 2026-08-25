@@ -49,9 +49,7 @@ export const MemberBudgetRow = zod
     name: zod.string(),
     email: zod.string(),
     roles: zod.array(zod.string()),
-    enforced: zod
-      .boolean()
-      .describe("See MemberBudget.enforced — always false today."),
+    enforced: zod.boolean().describe("See MemberBudget.enforced."),
   })
   .and(BudgetState);
 

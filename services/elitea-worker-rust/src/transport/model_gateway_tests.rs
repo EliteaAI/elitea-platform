@@ -98,9 +98,9 @@ fn assert_exact_captured_request(request: &CapturedModelRequest) {
     assert_eq!(
         request
             .headers
-            .get("openai-organization")
-            .expect("model project header"),
-        "23"
+            .get("x-project-id")
+            .expect("billing project header"),
+        "17"
     );
     assert_eq!(
         request

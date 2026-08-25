@@ -33,23 +33,26 @@ export default defineConfig({
           globals: true,
           setupFiles: ['./src/test/setup.ts'],
           include: ['src/**/*.{test,spec}.{ts,tsx}'],
-          exclude: ['src/**/*.browser.{test,spec}.{ts,tsx}'],
         },
       },
-      {
-        extends: true,
-        test: {
-          name: 'browser',
-          include: ['src/**/*.browser.{test,spec}.{ts,tsx}'],
-          browser: { enabled: true, provider: playwright(), instances: [{ browser: 'chromium' }] },
-        },
-      },
+      // [#424] The `browser` project that used to sit here is GONE. No CI job
+      // ever selected it: ci-web.yml runs `--project node` and
+      // `--project storybook` only. There are no `*.browser.test.*` files
+      // today, so the first one somebody wrote would have run nowhere, and the
+      // `node` project excluded that same pattern, so it would not have run
+      // there either. Both halves are removed together: a `*.browser.test.ts`
+      // added now is collected by the `node` project above and runs.
+      //
+      // Browser-mode coverage has not been lost. The `storybook` project below
+      // runs in a real Chromium through the same @vitest/browser-playwright
+      // factory. If a browser-mode unit-test project is wanted again, it
+      // arrives with the CI job that selects it.
       // [S1] Storybook project (§6.3/§6.4): activated now that `.storybook/`
       // (main.ts + preview.tsx + vitest.setup.ts) has landed. Runs every
       // `shared/ui/**/*.stories.tsx` as a Vitest test, executing each story's
       // `play` function and the a11y addon's check (parameters.a11y.test is
-      // 'error' in preview.tsx). Browser mode uses the same
-      // `@vitest/browser-playwright` factory as the `browser` project above
+      // 'error' in preview.tsx). Browser mode uses the
+      // `@vitest/browser-playwright` factory
       // (D2 addendum: the string form `provider: 'playwright'` is rejected).
       {
         extends: true,
@@ -106,20 +109,53 @@ export default defineConfig({
       exclude: [
         'src/**/*.stories.tsx',
         'src/**/*.d.ts',
-        'src/shared/api/generated/**', // generated: covered by contract tests, not line coverage
-        'src/shared/api/sse.ts', //       no consumer at ship (§5.6); REMOVE this line when one lands
+        // orval writes its hook and schema modules into the per-tag
+        // SUBDIRECTORIES of src/shared/api/generated/ (admin/, chat/, …).
+        // Those stay excluded. The contract tests cover generated code, not
+        // line coverage.
+        //
+        // The glob was `src/shared/api/generated/**`. That form also waived
+        // the one hand-written file in the tree: `generated/mutator.ts`, the
+        // `eliteaFetch` adapter that every generated hook calls. See its own
+        // header, and mutator.test.ts's "carries the ≥90% infra floor" note.
+        // ci-web.yml's gate-mutator-coverage job reads that floor out of the
+        // merged coverage report. The old glob made the job unable to see a
+        // number. The job took its "not in coverage — skipping" exit on every
+        // run it ever had (issue #421, item 2).
+        'src/shared/api/generated/*/**',
+        // `src/shared/api/sse.ts` used to be excluded here. It was removed
+        // (issue #309, Gate 3) and removing it excluded nothing further: the
+        // module became the DIRECTORY src/shared/api/sse/, so the glob had
+        // stopped matching any file at all — an exclusion that reads as a live
+        // waiver while covering nothing, which is worse than either state.
+        // scripts/check-ci-dormancy.mjs now fails on a zero-match exclusion.
         // Deliberately unwired (knip.json's ignoreFiles has the same entry,
         // same reason): its target library (@mui/x-treeview) is not a
         // dependency of this app (spec §2.2/P1, "the file tree is hand-
         // rolled") -- REMOVE this line if that ever changes and something
         // actually wires it into mui-overrides/index.ts.
         'src/shared/brand/mui-overrides/MuiTreeItem.ts',
-        // Wave-2 C4 chat-messages unit — 45 files, not wired into any app
-        // consumer yet; `all:true` would count its 0% as dead weight (same
-        // rationale as sse.ts above). REMOVE when a real consumer imports it.
+        // Wave-2 C4 chat-messages unit. The original reason for this line —
+        // "not wired into any app consumer yet" — IS NO LONGER TRUE, and had
+        // not been for some time before issue #309 found it: ten modules now
+        // import it, among them processes/chat/ui/ChatWithEditors.hooks.ts and
+        // widgets/chat-box/**, i.e. the live chat message layer.
+        //
+        // It stays excluded for now because the unit is 69 files with 8 test
+        // files, and measuring it would drop the merged run under the 80% gate
+        // on its first PR — but it stays excluded as a DECLARED debt, not as a
+        // comment: scripts/check-ci-dormancy.mjs requires this entry to be
+        // listed in coverage-exclusions.json with an owner, an issue and a
+        // review-by date, and fails the build once that date passes. The
+        // stale-comment version of this waiver survived precisely because
+        // nothing could tell it had gone stale.
         'src/features/chat-messages/**',
         'src/test/**',
-        'src/**/__mocks__/**',
+        // `src/**/__mocks__/**` used to sit here. It matched no file either —
+        // this app has no __mocks__ directory anywhere; test doubles live under
+        // src/test/msw. Found by scripts/check-ci-dormancy.mjs on its first
+        // run, not by issue #309, which is the point of having the rule rather
+        // than a list of known-bad entries.
         'src/app/main.tsx',
         'src/routeTree.gen.ts',
       ],

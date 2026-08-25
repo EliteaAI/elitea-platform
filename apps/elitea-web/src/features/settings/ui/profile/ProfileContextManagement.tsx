@@ -6,6 +6,7 @@ import { useCallback } from 'react';
 import Box from '@mui/material/Box';
 import FormControlLabel from '@mui/material/FormControlLabel';
 
+import { t } from '@/shared/i18n';
 import { AccordionConstants } from '@/shared/lib/constants';
 import { BaseSwitch } from '@/shared/ui/BaseSwitch';
 import { BasicAccordion } from '@/shared/ui/BasicAccordion';
@@ -63,7 +64,7 @@ export function ProfileContextManagement({
       }}
       items={[
         {
-          title: 'Default Context Management',
+          title: t('settings.profile.contextManagement.title', 'Default Context Management'),
           content: (
             <Box sx={styles.accordionContent}>
               <Box sx={styles.toggleSection}>
@@ -75,12 +76,12 @@ export function ProfileContextManagement({
                       onChange={handleContextEnabledChange}
                       slotProps={{
                         input: {
-                          'aria-label': 'Enable context management',
+                          'aria-label': t('settings.profile.contextManagement.enableAriaLabel', 'Enable context management'),
                         },
                       }}
                     />
                   }
-                  label="Enable context management for new conversations"
+                  label={t('settings.profile.contextManagement.enableLabel', 'Enable context management for new conversations')}
                   sx={styles.toggleLabel}
                 />
               </Box>
@@ -88,8 +89,8 @@ export function ProfileContextManagement({
               <Box sx={styles.fieldsRow}>
                 <Box sx={styles.field}>
                   <InfoLabelWithTooltip
-                    label="Max Context Tokens"
-                    tooltip="Maximum number of tokens to keep in conversation context"
+                    label={t('settings.profile.contextManagement.maxContextTokens', 'Max Context Tokens')}
+                    tooltip={t('settings.profile.contextManagement.maxContextTokensTooltip', 'Maximum number of tokens to keep in conversation context')}
                   />
                   <InputBase
                     type="text"
@@ -113,8 +114,8 @@ export function ProfileContextManagement({
 
                 <Box sx={styles.field}>
                   <InfoLabelWithTooltip
-                    label="Preserve Recent Messages"
-                    tooltip="Number of most recent messages to always keep in context"
+                    label={t('settings.profile.contextManagement.preserveRecentMessages', 'Preserve Recent Messages')}
+                    tooltip={t('settings.profile.contextManagement.preserveRecentMessagesTooltip', 'Number of most recent messages to always keep in context')}
                   />
                   <InputBase
                     type="text"

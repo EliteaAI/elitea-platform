@@ -3,10 +3,8 @@ import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import type { SxProps, Theme } from '@mui/material/styles';
-import Typography from '@mui/material/Typography';
 
 import type { ProjectAnalytics } from '@/shared/api/generated/model';
-import { t } from '@/shared/i18n';
 
 import { AnalyticsAgents } from '../AnalyticsAgents';
 import { AnalyticsGuide } from '../AnalyticsGuide';
@@ -14,6 +12,7 @@ import { AnalyticsHealth } from '../AnalyticsHealth';
 import { AnalyticsOverview } from '../AnalyticsOverview';
 import { AnalyticsTools } from '../AnalyticsTools';
 import { AnalyticsUsers } from '../AnalyticsUsers';
+import { AnalyticsLoadError } from './DetailStatus';
 
 /**
  * The six-tab body of `AnalyticsContainer`'s content area. Extracted purely
@@ -47,8 +46,6 @@ const centeredSx: SxProps<Theme> = {
   left: '50%',
   transform: 'translate(-50%, -50%)',
 };
-
-const errorTextSx = (theme: Theme) => ({ color: theme.vars.palette.text.metrics });
 
 type TabBodyProps = Omit<AnalyticsTabContentProps, 'needsOverview' | 'isFetching' | 'isError'>;
 
@@ -116,17 +113,12 @@ export function AnalyticsTabContent(props: AnalyticsTabContentProps): ReactNode 
     );
   }
 
+  // Only the OVERVIEW query's failure is visible here (`isError` comes from
+  // `AnalyticsContainer`'s usage-summary query). The Agents/Tools/Users tabs
+  // each own a separate query, so they render their own `AnalyticsLoadError`
+  // — see each tab's `isError` guard.
   if (needsOverview && isError) {
-    return (
-      <Box sx={centeredSx}>
-        <Typography
-          variant="bodyMedium"
-          sx={errorTextSx}
-        >
-          {t('analytics.overview.loadError', 'Failed to load analytics data.')}
-        </Typography>
-      </Box>
-    );
+    return <AnalyticsLoadError />;
   }
 
   return renderTabBody(props);

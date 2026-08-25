@@ -1,0 +1,70 @@
+# Tests that this repository accepts as skipped, and the reason for each.
+#
+# WHY THIS FILE EXISTS (#423)
+#
+# `go test ./...` prints `ok` for a package whose tests all called `t.Skip`.
+# Eighteen suites did that on every CI run. The job was green and the coverage
+# was zero, so nobody saw it. scripts/go/skip-ledger.py now records each skip
+# and scripts/go/skip-gate.py compares the record against this file. With
+# ELITEA_REQUIRE_DECLARED_SKIPS=1 — which .github/workflows/ci-go.yml sets — a
+# skip that this file does not explain FAILS the run.
+#
+# Format, one skip per line, TAB separated:
+#
+#   <package import path><TAB><test><TAB><reason>
+#
+# <test> may be `*` for the whole package, or end in `/*` to cover a test and
+# its subtests. The reason is not optional. A declaration with no reason is
+# the same silent skip with a longer paper trail.
+#
+# BEFORE YOU ADD A LINE HERE, TRY THE OTHER THREE ANSWERS FIRST:
+#
+#   1. Give CI the service the test wants. A container is cheap. The Redis
+#      service and the three isolated databases in ci-go.yml each revived a
+#      suite that had never run.
+#   2. Make the guard FAIL instead of skip when a "require" flag is on, as
+#      ELITEA_REQUIRE_LEGACY_RBAC_POSTGRES_TEST does.
+#   3. Delete the test if nobody intends to run it. A test that always skips
+#      is not coverage; it is the appearance of coverage.
+#
+# A line belongs here only when the test needs something CI genuinely cannot
+# give it: a bootstrapped Centry compose profile, a private cookie file, a
+# credentialed staging deployment, a pinned worker container, or a sibling
+# repository.
+
+# ── Another job runs these with the credentials they need ────────────────────
+
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/integration	*	The `integration` job in ci-go.yml runs this package with INTEGRATION_DATABASE_URL against its own pgvector service.
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/contract	*	ci-contract.yml runs the legacy-parity fixtures with CONTRACT_AUTH_TOKEN against staging. CONTRACT_REQUIRE_PARITY makes a missing token FAIL there, so the gap cannot hide.
+
+# ── The test needs a bootstrapped Centry compose profile ─────────────────────
+#
+# Each one drives the running hybrid runtime: real certificates, a real Redis
+# ACL, a private authenticated browser cookie, and a request file that names a
+# live toolkit. See services/elitea-main/tests/system/README.md. CI holds none
+# of that. The one file in this package that CI CAN run —
+# index_v2_preflight_binary_system_test.go — starts its own containers, and
+# ci-go.yml sets ELITEA_INDEX_V2_PREFLIGHT_SYSTEM_TEST=1 for it.
+
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/system	TestExistingComposeIndexReliability	Drives the already-running local Centry hybrid profile through its public HTTPS route, with an owner-only session cookie and a live toolkit Configuration ID.
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/system	TestExistingComposeIndexIssue5681ProductionScale	The bounded tests/reliability/index_5681/run.sh wrapper owns this gate. It needs a dedicated compose project, image digests, and credential canaries.
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/system	TestExistingComposeIndexIssue5681OwnerCleanup	Only the issue #5681 wrapper starts this, in a separate process, after the gate above exits.
+
+# ── The test needs the Python SDK, which is a separate repository ────────────
+
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/system	TestProductionRuntimeCrossProcessSystem	Imports elitea_sdk with grpc, h2, httpx, pydantic and redis in one Python runtime. The SDK lives in the sibling elitea-sdk repository, which CI does not check out.
+github.com/EliteaAI/elitea-platform/services/elitea-main/tests/system	TestIndexEmbeddingBindingMainWorkerCrossProcess	Same Python runtime as above. It runs the real delivery processor in a second process.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/pgvector	TestCurrentIndexMetaWriterRealPgvector/installed_SDK_owns_one_completed_run_entry	ELITEA_TEST_SDK_PYTHON must name a Python that holds the installed SDK. The rest of this test runs in CI.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos	TestPostgresPgvectorSameTargetSerializationAcrossInstalledSDKProcess	Calls the pinned SDK entrypoint inside the running centry-elitea-indexer-worker-1 container, and checks an exact image digest. CI runs no worker container.
+
+# ── The backend decides, and the test says which way it decided ──────────────
+#
+# These are capability skips, not environment skips. Each emulator answers
+# Capabilities() differently, and the suite states what it did NOT claim for
+# that backend. That is a report, not a gap.
+
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/s3/NonNativeMultipartBackendReturnsErrNotSupported	The S3 path reports NativeMultipart, so the not-supported case does not exist for it.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/azure/NonNativeMultipartBackendReturnsErrNotSupported	The Azure path reports NativeMultipart, so the not-supported case does not exist for it.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/PresignGetExpiresAfterTTL	The fake-gcs-server credential path reports no Presign capability.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/NativeMultipartRoundTripsMatchingDigest	The fake-gcs-server credential path reports no NativeMultipart capability.
+github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage/conformance	TestArtifactConformance/gcs/AbortMultipartLeavesNoListableObject	The fake-gcs-server credential path reports no NativeMultipart capability.

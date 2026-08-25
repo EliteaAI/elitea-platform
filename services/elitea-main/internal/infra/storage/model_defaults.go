@@ -36,15 +36,33 @@ func (r *CurrentModelDefaultsReader) Load(
 		return configurationapp.CurrentModelCatalogDefaults{}, err
 	}
 
+	// A project that has stored no secret has no vault, and a deployment where
+	// nobody has written an admin secret has no admin vault. That is the state
+	// of every fresh install. It means "no default has been chosen", which is
+	// exactly what an empty CurrentModelCatalogDefaults says.
+	//
+	// Refusing it instead made GET /api/v2/configurations/models/{projectID}
+	// answer 500 for EVERY section, so the model picker was empty on a
+	// deployment whose model rows were all present and readable. The catalogue
+	// is the models; the defaults only mark one of them.
 	projectVault, err := r.vaults.LoadProjectVault(ctx, int64(projectID))
-	if err != nil || projectVault == nil {
+	if err != nil && !errors.Is(err, ErrVaultAbsent) {
 		return configurationapp.CurrentModelCatalogDefaults{}, currentModelDefaultsFailure(ctx, err)
+	}
+	if errors.Is(err, ErrVaultAbsent) {
+		projectVault = nil
+	}
+	if err == nil && projectVault == nil {
+		return configurationapp.CurrentModelCatalogDefaults{}, currentModelDefaultsFailure(ctx, nil)
 	}
 
 	var defaults configurationapp.CurrentModelCatalogDefaults
 	bindings := currentModelDefaultBindings(section, &defaults)
-	needsPublicFallback := false
+	needsPublicFallback := projectVault == nil
 	for _, binding := range bindings {
+		if projectVault == nil {
+			continue
+		}
 		binding.sources.Project, err = readCurrentProjectModelDefault(ctx, projectVault, binding.prefix)
 		if err != nil {
 			return configurationapp.CurrentModelCatalogDefaults{}, currentModelDefaultsFailure(ctx, err)
@@ -60,8 +78,10 @@ func (r *CurrentModelDefaultsReader) Load(
 	// EngineBase.get_all_secrets reads admin regular secrets, then overlays the
 	// public project's hidden and regular collections. Load the same sources;
 	// hidden admin values are deliberately outside this compatibility path.
-	adminVault, err := r.vaults.LoadAdminVault(ctx)
-	if err != nil || adminVault == nil {
+	adminVault, err := r.loadFallbackVault(ctx, func() (SecretVault, error) {
+		return r.vaults.LoadAdminVault(ctx)
+	})
+	if err != nil {
 		return configurationapp.CurrentModelCatalogDefaults{}, currentModelDefaultsFailure(ctx, err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -69,10 +89,15 @@ func (r *CurrentModelDefaultsReader) Load(
 	}
 	publicVault := projectVault
 	if projectID != publicProjectID {
-		publicVault, err = r.vaults.LoadProjectVault(ctx, int64(publicProjectID))
-		if err != nil || publicVault == nil {
+		publicVault, err = r.loadFallbackVault(ctx, func() (SecretVault, error) {
+			return r.vaults.LoadProjectVault(ctx, int64(publicProjectID))
+		})
+		if err != nil {
 			return configurationapp.CurrentModelCatalogDefaults{}, currentModelDefaultsFailure(ctx, err)
 		}
+	}
+	if publicVault == nil {
+		publicVault = emptySecretVault{}
 	}
 
 	for _, binding := range bindings {
@@ -94,6 +119,70 @@ func (r *CurrentModelDefaultsReader) Load(
 	}
 	return defaults, nil
 }
+
+// loadFallbackVault loads one of the fallback vaults, reading absence as an
+// empty vault. A vault that exists and will not open is still a failure: its
+// values are there and unread, so answering "no default" would be a claim this
+// process cannot make.
+func (r *CurrentModelDefaultsReader) loadFallbackVault(
+	ctx context.Context,
+	load func() (SecretVault, error),
+) (SecretVault, error) {
+	vault, err := load()
+	if errors.Is(err, ErrVaultAbsent) {
+		return emptySecretVault{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if vault == nil {
+		return nil, ErrCurrentModelDefaultsUnavailable
+	}
+	return vault, nil
+}
+
+// emptySecretVault is the vault of a scope that holds no secrets. Every lookup
+// answers ErrSecretNotFound, which is what each caller already handles as "this
+// value was never set".
+type emptySecretVault struct{}
+
+func (emptySecretVault) Lookup(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (emptySecretVault) LookupRegular(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (emptySecretVault) LookupProjectID(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (emptySecretVault) LookupRegularProjectID(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (emptySecretVault) LookupRegularInteger(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+// The two Python-integer accessors are not part of SecretVault. They are here
+// so that a caller which type-asserts for them — the chat configuration read —
+// gets the same "never set" answer from an absent vault as from a vault that
+// does not carry the key.
+func (emptySecretVault) LookupPythonInteger(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+func (emptySecretVault) LookupRegularPythonInteger(string) (centrysecrets.Secret, error) {
+	return centrysecrets.Secret{}, centrysecrets.ErrSecretNotFound
+}
+
+// AbsentSecretVault is the vault of a scope that holds no secrets. It is the
+// value a caller substitutes when a load answered ErrVaultAbsent.
+func AbsentSecretVault() SecretVault { return emptySecretVault{} }
+
+var _ SecretVault = emptySecretVault{}
 
 type currentModelDefaultBinding struct {
 	prefix  string

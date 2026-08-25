@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
 // GET /elitea_core/toolkits/prompt_lib/{projectID} is the toolkit TYPE
@@ -42,9 +44,14 @@ func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
 	// un-gated branch so the response body is observable. The gated branch's
 	// registration is covered by the source-level test below.
 	t.Setenv("FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS", "false")
+	snapshot, err := runtimecomposition.LoadPinnedCurrentToolkitSchemaSnapshot()
+	if err != nil {
+		t.Fatalf("load pinned toolkit schema snapshot: %v", err)
+	}
 	router := NewRouter(RouterConfig{
-		SkillsRepo:    struct{ v2skills.Repository }{},
-		AuthValidator: testTokenValidator{user: authenticatedTestUser()},
+		SkillsRepo:             struct{ v2skills.Repository }{},
+		AuthValidator:          testTokenValidator{user: authenticatedTestUser()},
+		ToolkitArgumentSchemas: snapshot,
 	})
 
 	response := httptest.NewRecorder()
@@ -75,8 +82,61 @@ func TestToolkitsRouteServesTheTypeCatalogueNotTheInstanceList(t *testing.T) {
 	if !ok {
 		t.Fatalf("response has no \"github\" toolkit type: %s", response.Body.String())
 	}
-	if _, ok := github["properties"].(map[string]any); !ok {
-		t.Errorf("the \"github\" entry is not a JSON-Schema-shaped settings descriptor: %v", github)
+	properties, ok := github["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("the \"github\" entry is not a JSON-Schema-shaped settings descriptor: %v", github)
+	}
+
+	// The catalogue's payload is the per-tool ARGUMENT schemas the web client
+	// renders forms from, and they must arrive through the route, not merely
+	// exist in the snapshot. Until the SDK snapshot started carrying them, every
+	// one was the placeholder {"type":"object"} — which is why this asserts on
+	// real content. create_issue is a github tool at SDK revision b5113a1; its
+	// title argument is the one a form needs to draw a text field.
+	selectedTools, ok := properties["selected_tools"].(map[string]any)
+	if !ok {
+		t.Fatalf("the \"github\" entry declares no selected_tools property: %v", properties)
+	}
+	argsSchemas, ok := selectedTools["args_schemas"].(map[string]any)
+	if !ok {
+		t.Fatalf("github selected_tools carries no args_schemas: %v", selectedTools)
+	}
+	createIssue, ok := argsSchemas["create_issue"].(map[string]any)
+	if !ok {
+		t.Fatalf("github exposes no create_issue argument schema: %v", argsSchemas)
+	}
+	createIssueProperties, ok := createIssue["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("create_issue is still a placeholder with no properties: %v", createIssue)
+	}
+	if _, ok := createIssueProperties["title"].(map[string]any); !ok {
+		t.Errorf("create_issue takes no title argument: %v", createIssueProperties)
+	}
+}
+
+// The catalogue's argument schemas reach the handler only if the composition
+// root fills RouterConfig.ToolkitArgumentSchemas and router.go passes it on.
+// Neither step is nil-gated, so nothing 404s or errors when one is missing: the
+// endpoint keeps answering 200 with settings-only schemas and every tool form in
+// the web client silently renders empty — the exact defect this wiring fixes.
+// That is the invisible-wiring class of #115/#123/#126, so it gets a source-level
+// gate like they did.
+func TestToolkitArgumentSchemasAreWiredFromTheCompositionRoot(t *testing.T) {
+	t.Parallel()
+
+	if !regexp.MustCompile(`v2toolkits\.WithArgumentSchemas\(cfg\.ToolkitArgumentSchemas\)`).
+		MatchString(readRouterSource(t)) {
+		t.Error("router.go builds the toolkit handler without cfg.ToolkitArgumentSchemas, " +
+			"so GET /elitea_core/toolkits/prompt_lib/{projectID} serves no tool argument schemas")
+	}
+
+	main, err := os.ReadFile(filepath.Join("..", "..", "cmd", "elitea-main", "main.go"))
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !regexp.MustCompile(`ToolkitArgumentSchemas:\s*toolkitArgumentSchemas`).Match(main) {
+		t.Error("cmd/elitea-main/main.go never assigns RouterConfig.ToolkitArgumentSchemas, " +
+			"so the pinned SDK snapshot never reaches the toolkit type catalogue in production")
 	}
 }
 
@@ -87,26 +147,38 @@ func TestToolsRouteStillServesTheToolkitInstanceList(t *testing.T) {
 	t.Parallel()
 
 	source := readRouterSource(t)
-	if !regexp.MustCompile(`r\.Get\("/tools/prompt_lib/\{projectID\}", toolkitHandler\.List\)`).MatchString(source) {
+	if !regexp.MustCompile(`Get\("/tools/prompt_lib/\{projectID\}", toolkitHandler\.List\)`).MatchString(source) {
 		t.Error("no GET /tools/prompt_lib/{projectID} -> toolkitHandler.List registration remains in router.go")
 	}
 }
 
-// A source-level guard so BOTH feature-flag branches are covered — the gated
-// branch (the production default) cannot be exercised behaviourally without a
-// database, and the two blocks are copy-pasted, so a fix applied to one and not
-// the other is exactly the mistake to expect.
+// A source-level guard, because the gated branch (the production default)
+// cannot be exercised behaviourally without a database.
+//
+// It used to demand TWO registrations: the FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
+// block was written out once per branch, so a fix applied to one copy and not
+// the other was the mistake to expect — and this test was the only thing that
+// would have caught it. #313 removed the duplication rather than keeping the
+// two copies in step: one registration list now serves both settings of the
+// flag, which the middleware factory selects. So the count is one, and the
+// property the old test approximated ("no copy of this route is wired to the
+// instance list") is now structural.
+//
+// The count is still asserted, not just the handler name. A second registration
+// reappearing would mean the branches were split again, and this file is where
+// that has to be noticed.
 func TestEveryToolkitsRouteRegistrationNamesListTypeSchemas(t *testing.T) {
 	t.Parallel()
 
 	source := readRouterSource(t)
-	registrations := regexp.MustCompile(`r\.Get\("/toolkits/prompt_lib/\{projectID\}", toolkitHandler\.(\w+)\)`).
+	registrations := regexp.MustCompile(`Get\("/toolkits/prompt_lib/\{projectID\}", toolkitHandler\.(\w+)\)`).
 		FindAllStringSubmatch(source, -1)
 
-	// router.go registers the toolkit block twice: once behind
-	// RequireProjectAccess, once un-gated.
-	if len(registrations) != 2 {
-		t.Fatalf("found %d GET /toolkits/prompt_lib/{projectID} registrations in router.go, want 2", len(registrations))
+	if len(registrations) != 1 {
+		t.Fatalf("found %d GET /toolkits/prompt_lib/{projectID} registrations in router.go, want 1 — "+
+			"the feature-flag branches share one registration list since #313; if they were split "+
+			"again, every route in the block needs the copy-versus-copy check this test used to make",
+			len(registrations))
 	}
 	for _, registration := range registrations {
 		if registration[1] != "ListTypeSchemas" {

@@ -46,6 +46,7 @@ import type { RequestHandlerOptions } from "msw";
 
 import type {
   InternalMcpPatStatus,
+  McpRegisteredServer,
   ToolkitInstance,
   ToolkitInstanceListResponse,
   ToolkitTypeSchemas,
@@ -116,6 +117,31 @@ export const getCreateToolkitResponseMock = (
   author_id: faker.number.int(),
   ...overrideResponse,
 });
+
+export const getListRegisteredMcpServersResponseMock =
+  (): McpRegisteredServer[] =>
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      tools: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        inputSchema: {},
+      })),
+      project_id: faker.helpers.arrayElement([faker.number.int(), null]),
+      sio_sid: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        null,
+      ]),
+      timeout_tools_list: faker.number.int(),
+      timeout_tools_call: faker.number.int(),
+      group: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    }));
 
 export const getGetInternalMcpPatStatusResponseMock = (
   overrideResponse: Partial<Extract<InternalMcpPatStatus, object>> = {},
@@ -257,21 +283,25 @@ export const getCreateToolkitMockHandler = (
 
 export const getListRegisteredMcpServersMockHandler = (
   overrideResponse?:
-    | unknown
+    | McpRegisteredServer[]
     | ((
         info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<unknown> | unknown),
+      ) => Promise<McpRegisteredServer[]> | McpRegisteredServer[]),
   options?: RequestHandlerOptions,
 ) => {
   return http.get(
     "*/elitea_core/tools_list/default/:projectId",
     async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
       await delay(0);
-      if (typeof overrideResponse === "function") {
-        await overrideResponse(info);
-      }
 
-      return new HttpResponse(null, { status: 200 });
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListRegisteredMcpServersResponseMock(),
+        { status: 200 },
+      );
     },
     options,
   );

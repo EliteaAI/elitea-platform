@@ -94,6 +94,18 @@ func NewCurrentChatConfigVaultReader(
 	return &CurrentChatConfigVaultReader{vaults: vaults}, nil
 }
 
+// loadChatConfigVault reads an absent vault as an empty one. See the call site.
+func loadChatConfigVault(load func() (storage.SecretVault, error)) (storage.SecretVault, error) {
+	vault, err := load()
+	if errors.Is(err, storage.ErrVaultAbsent) {
+		return storage.AbsentSecretVault(), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return vault, nil
+}
+
 func (reader *CurrentChatConfigVaultReader) GetCurrentChatConfig(
 	ctx context.Context,
 	projectID int64,
@@ -105,11 +117,20 @@ func (reader *CurrentChatConfigVaultReader) GetCurrentChatConfig(
 		return CurrentChatConfig{}, err
 	}
 
-	adminSnapshot, err := reader.vaults.LoadAdminVault(ctx)
+	// An ABSENT vault is not a failure: it is a scope that has stored no
+	// secret, which is the state of a fresh deployment, and every one of the
+	// five values below already has a built-in default for exactly that case.
+	// Refusing it made the chat configuration read 503 on a clean install. A
+	// vault that exists and will not open stays a failure.
+	adminSnapshot, err := loadChatConfigVault(func() (storage.SecretVault, error) {
+		return reader.vaults.LoadAdminVault(ctx)
+	})
 	if err != nil {
 		return CurrentChatConfig{}, ErrCurrentChatConfigUnavailable
 	}
-	projectSnapshot, err := reader.vaults.LoadProjectVault(ctx, projectID)
+	projectSnapshot, err := loadChatConfigVault(func() (storage.SecretVault, error) {
+		return reader.vaults.LoadProjectVault(ctx, projectID)
+	})
 	if err != nil {
 		return CurrentChatConfig{}, ErrCurrentChatConfigUnavailable
 	}

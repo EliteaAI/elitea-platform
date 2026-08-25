@@ -48,6 +48,7 @@ func TestProductionRuntimeRoutesRejectIncompleteSecurityComposition(t *testing.T
 				test.executionEvents,
 				test.principal,
 				test.peer,
+				"",
 			)
 			if !errors.Is(err, ErrInvalidProductionRuntimeRoutes) {
 				t.Fatalf("error = %v, want %v", err, ErrInvalidProductionRuntimeRoutes)
@@ -85,7 +86,7 @@ func TestProductionRuntimeRoutesAcceptOnlyVerifiedForwardedPrincipal(t *testing.
 		}
 		return nil
 	})
-	routes, err := NewProductionRuntimeRoutes(handler, handler, principal, peer)
+	routes, err := NewProductionRuntimeRoutes(handler, handler, principal, peer, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +141,7 @@ func TestProductionRuntimeRoutesRejectPrincipalValidationFailure(t *testing.T) {
 			return auth.User{}, auth.ErrPrincipalInactive
 		}),
 		productionRuntimePeerVerifierFunc(func(*http.Request) error { return nil }),
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -175,6 +177,7 @@ func TestProductionRuntimeRoutesRejectDevelopmentFallback(t *testing.T) {
 			return user, nil
 		}),
 		productionRuntimePeerVerifierFunc(func(*http.Request) error { return nil }),
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +203,7 @@ func TestProductionRuntimeRoutesKeepIndexStartUnmountedWithoutCompleteDataPlane(
 			return user, nil
 		}),
 		productionRuntimePeerVerifierFunc(func(*http.Request) error { return nil }),
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)

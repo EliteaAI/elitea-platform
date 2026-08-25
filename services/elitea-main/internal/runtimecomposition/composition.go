@@ -31,6 +31,8 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/transport/workloadauth"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 const (
@@ -75,7 +77,6 @@ type Dependencies struct {
 	TerminalEffectsPool              *pgxpool.Pool
 	ContentPool                      *pgxpool.Pool
 	CurrentConfigurations            *CurrentConfigurationsRuntime
-	CurrentEmbeddingRuntime          indexingapp.CurrentEmbeddingRuntimeReader
 	ConfigurationLifecycleReconciler configurationapp.CurrentConfigurationLifecycleReconciler
 	ActorTokenIssuer                 storage.ActorTokenIssuer
 	ProjectTokenValidator            storage.ProjectTokenValidator
@@ -112,9 +113,12 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			"runtime index scheduling project-system token source is required",
 		)
 	}
-	if config.IndexIngestDispatchEnabled &&
-		(dependencies.CurrentConfigurations == nil || dependencies.CurrentEmbeddingRuntime == nil) {
-		return nil, errors.New("runtime index ingest current Configurations and embedding runtimes are required")
+	// Index ingest needs the Configurations runtime and nothing else on the LLM
+	// side: the embedding binding is resolved from those same configuration rows
+	// the Bifrost gateway reads. It used to also require an LLM facade, which
+	// gated the whole index plane on ELITEA_LITELLM_BASE_URL being set.
+	if config.IndexIngestDispatchEnabled && dependencies.CurrentConfigurations == nil {
+		return nil, errors.New("runtime index ingest current Configurations runtime is required")
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil && dependencies.CurrentConfigurations == nil {
 		return nil, errors.New("configuration lifecycle requires current Configurations runtime")
@@ -492,12 +496,17 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		if targetErr != nil {
 			return nil, fmt.Errorf("construct next-input-suggestion policy resolver: %w", targetErr)
 		}
+		agentGuardrails, targetErr := platformconfig.NewGuardrailPolicyAdapter(dependencies.AdmissionPool)
+		if targetErr != nil {
+			return nil, fmt.Errorf("construct current agent guardrail policy source: %w", targetErr)
+		}
 		agentStart, targetErr = agentexecutionapp.NewCurrentApplicationStartService(
 			agentTargets,
 			agentTargets,
 			agentTargets,
 			agentTargets,
 			nextInputSuggestionResolver,
+			agentGuardrails,
 			agentVersions,
 			agentAdmissions,
 		)
@@ -573,69 +582,81 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 			return nil, fmt.Errorf("compose execution replay retention janitor: %w", err)
 		}
 
-		indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
-			indexMetaTerminalEffect,
-			500*time.Millisecond,
-			2*indexMetaTerminalEffect.concurrency,
-			func(err error) {
-				dependencies.Logger.Error(
-					"current index metadata terminal reconciliation failed",
-					"err",
-					err,
-				)
-			},
-		)
-		if reconcileErr != nil {
-			return nil, fmt.Errorf(
-				"construct current index metadata terminal reconciler: %w",
-				reconcileErr,
-			)
-		}
-		publisherRoot, err = newPublisherSet(publisherRoot, indexMetaReconciler)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index metadata terminal reconciler: %w",
-				err,
-			)
-		}
-		indexManualStopCleanupReconciler, reconcileErr :=
-			newCurrentIndexManualStopCleanupReconciler(
-				indexManualStopCleanupEffect,
+		// The reconcilers below are index-ingest machinery, but they used to sit
+		// under the combined `IndexIngest || AgentExecution` condition above.
+		// indexMetaTerminalEffect and indexManualStopCleanupEffect are only
+		// constructed when index ingest is enabled, so a runtime with agent
+		// execution ON and index ingest OFF — the only shape available to a
+		// deployment without the LiteLLM facade, since validateRuntimeComposition
+		// requires it for index ingest — panicked here on a nil dereference
+		// (`2*indexMetaTerminalEffect.concurrency`) before serving a request.
+		// The node-event replay repository, wake bus and retention janitor above
+		// stay shared: agent execution needs all three.
+		if config.IndexIngestDispatchEnabled {
+			indexMetaReconciler, reconcileErr := newCurrentIndexMetaTerminalReconciler(
+				indexMetaTerminalEffect,
 				500*time.Millisecond,
-				4,
+				2*indexMetaTerminalEffect.concurrency,
 				func(err error) {
 					dependencies.Logger.Error(
-						"current index manual Stop cleanup reconciliation failed",
+						"current index metadata terminal reconciliation failed",
 						"err",
 						err,
 					)
 				},
 			)
-		if reconcileErr != nil {
-			return nil, fmt.Errorf(
-				"construct current index manual Stop cleanup reconciler: %w",
-				reconcileErr,
+			if reconcileErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index metadata terminal reconciler: %w",
+					reconcileErr,
+				)
+			}
+			publisherRoot, err = newPublisherSet(publisherRoot, indexMetaReconciler)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index metadata terminal reconciler: %w",
+					err,
+				)
+			}
+			indexManualStopCleanupReconciler, reconcileErr :=
+				newCurrentIndexManualStopCleanupReconciler(
+					indexManualStopCleanupEffect,
+					500*time.Millisecond,
+					4,
+					func(err error) {
+						dependencies.Logger.Error(
+							"current index manual Stop cleanup reconciliation failed",
+							"err",
+							err,
+						)
+					},
+				)
+			if reconcileErr != nil {
+				return nil, fmt.Errorf(
+					"construct current index manual Stop cleanup reconciler: %w",
+					reconcileErr,
+				)
+			}
+			publisherRoot, err = newPublisherSet(
+				publisherRoot,
+				indexManualStopCleanupReconciler,
 			)
-		}
-		publisherRoot, err = newPublisherSet(
-			publisherRoot,
-			indexManualStopCleanupReconciler,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index manual Stop cleanup reconciler: %w",
-				err,
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index manual Stop cleanup reconciler: %w",
+					err,
+				)
+			}
+			publisherRoot, err = newPublisherSet(
+				publisherRoot,
+				indexMetaTaskRestampReconciler,
 			)
-		}
-		publisherRoot, err = newPublisherSet(
-			publisherRoot,
-			indexMetaTaskRestampReconciler,
-		)
-		if err != nil {
-			return nil, fmt.Errorf(
-				"compose current index metadata task restamp reconciler: %w",
-				err,
-			)
+			if err != nil {
+				return nil, fmt.Errorf(
+					"compose current index metadata task restamp reconciler: %w",
+					err,
+				)
+			}
 		}
 	}
 	if dependencies.ConfigurationLifecycleReconciler != nil {
@@ -890,7 +911,6 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		currentIndex, err = newCurrentIndexRuntime(
 			dependencies.AdmissionPool,
 			dependencies.CurrentConfigurations,
-			dependencies.CurrentEmbeddingRuntime,
 			config,
 			indexDispatchPolicy,
 			currentIndexMetaWriter,
@@ -1055,8 +1075,15 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 				if attachmentChunksErr != nil {
 					return nil, fmt.Errorf("construct attachment chunks repository: %w", attachmentChunksErr)
 				}
+				// Reclaims the bytes behind an expired, never-committed
+				// transfer grant — see sweepExpiredGrants's own doc comment
+				// for why no other sweep can see them.
+				artifactGrants, artifactGrantsErr := repos.NewArtifactTransferGrantsRepository(dependencies.AdmissionPool)
+				if artifactGrantsErr != nil {
+					return nil, fmt.Errorf("construct artifact transfer grants repository: %w", artifactGrantsErr)
+				}
 				retentionSweep, retentionSweepErr := newArtifactRetentionSweep(
-					artifactObjects, artifactBuckets, artifactNotifications, dependencies.ObjectStore,
+					artifactObjects, artifactBuckets, artifactNotifications, artifactGrants, dependencies.ObjectStore,
 				)
 				if retentionSweepErr != nil {
 					return nil, fmt.Errorf("construct artifact retention sweep: %w", retentionSweepErr)

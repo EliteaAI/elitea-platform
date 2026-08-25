@@ -17,21 +17,6 @@ import { t } from '@/shared/i18n';
 import type { ProfileFormValues } from '@/features/settings/lib/profile/profileUtils';
 import { ProfileBasicAccordion } from './ProfileBasicAccordion';
 
-/** Personality options — copied from old-app `common/constants.js`. */
-const PERSONA_OPTIONS: Array<{ label: string; value: string; description: string }> = [
-  { label: 'Generic', value: 'generic', description: 'Balanced, professional assistant' },
-  { label: 'QA', value: 'qa', description: 'Precise, technical, testing-focused' },
-  { label: 'Nerdy', value: 'nerdy', description: 'Technical deep-dives, detailed explanations' },
-  { label: 'Quirky', value: 'quirky', description: 'Creative, playful, thinking outside the box' },
-  { label: 'Cynical', value: 'cynical', description: 'Skeptical, challenges assumptions' },
-  { label: 'None', value: 'none', description: 'No personality overlay applied' },
-  {
-    label: 'Bare',
-    value: 'bare',
-    description: 'No Elitea identity — only your instructions plus tool-required guidance',
-  },
-];
-
 export interface ProfilePersonalizationProps {
   onAutoSaveRequested?: () => void;
 }
@@ -39,8 +24,25 @@ export interface ProfilePersonalizationProps {
 export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonalizationProps) {
   const { values, setFieldValue } = useFormikContext<ProfileFormValues>();
 
+  /*
+   * Personality options — copied from old-app `common/constants.js`.
+   *
+   * The labels go through `t()` like every other user-visible string. The
+   * former module-level array also carried a `description` for each option
+   * that nothing ever rendered: the map below dropped it. Dead copy in
+   * English is what this list used to be, so it is gone rather than
+   * translated.
+   */
   const personaOptions = useMemo(
-    () => PERSONA_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+    () => [
+      { value: 'generic', label: t('settings.profile.persona.generic', 'Generic') },
+      { value: 'qa', label: t('settings.profile.persona.qa', 'QA') },
+      { value: 'nerdy', label: t('settings.profile.persona.nerdy', 'Nerdy') },
+      { value: 'quirky', label: t('settings.profile.persona.quirky', 'Quirky') },
+      { value: 'cynical', label: t('settings.profile.persona.cynical', 'Cynical') },
+      { value: 'none', label: t('settings.profile.persona.none', 'None') },
+      { value: 'bare', label: t('settings.profile.persona.bare', 'Bare') },
+    ],
     [],
   );
 
@@ -67,7 +69,10 @@ export function ProfilePersonalization({ onAutoSaveRequested }: ProfilePersonali
         content={
           <Box sx={styles.accordionContent}>
             <Box sx={styles.section}>
-              <InfoLabelWithTooltip label="Theme" tooltip="Choose between light and dark theme" />
+              <InfoLabelWithTooltip
+                label={t('settings.theme', 'Theme')}
+                tooltip={t('settings.themeTooltip', 'Choose between light and dark theme')}
+              />
               <Box sx={styles.themeToggleContainer}>
                 <ThemeModeToggle />
               </Box>

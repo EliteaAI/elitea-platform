@@ -3,6 +3,7 @@ package configurations
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -118,7 +119,7 @@ func (h *currentConfigurationReadHandler) list(w http.ResponseWriter, r *http.Re
 		SortOrder:       query.Get("sort_order"),
 	})
 	if err != nil {
-		writeCurrentConfigurationServiceError(w, err)
+		writeCurrentConfigurationServiceErrorContext(r.Context(), w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, newCurrentConfigurationListDTO(result))
@@ -134,7 +135,7 @@ func (h *currentConfigurationReadHandler) get(w http.ResponseWriter, r *http.Req
 
 	configuration, err := h.reader.Get(r.Context(), projectID, configurationID)
 	if err != nil {
-		writeCurrentConfigurationServiceError(w, err)
+		writeCurrentConfigurationServiceErrorContext(r.Context(), w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, newCurrentConfigurationDTO(configuration))
@@ -172,13 +173,20 @@ func currentConfigurationQueryInteger(value string) int {
 	return parsed
 }
 
-func writeCurrentConfigurationServiceError(w http.ResponseWriter, err error) {
+// The 500 branch LOGS. A configuration read that fails answers a generic
+// message by design — the caller must not learn why — but answering it while
+// also discarding the cause left `GET /configurations/configurations/{project}`
+// failing for every project with nothing anywhere to say what it objected to
+// (#293). The client-fault branches stay quiet: they are already fully
+// described by the status they return.
+func writeCurrentConfigurationServiceErrorContext(ctx context.Context, w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, configurationapp.ErrInvalidCurrentConfigurationRequest):
 		writeCurrentConfigurationError(w, http.StatusBadRequest, "invalid configuration request")
 	case errors.Is(err, configurationapp.ErrCurrentConfigurationNotFound):
 		writeCurrentConfigurationError(w, http.StatusNotFound, "Configuration not found")
 	default:
+		slog.ErrorContext(ctx, "current configuration read failed", "error", err)
 		writeCurrentConfigurationError(w, http.StatusInternalServerError, "internal server error")
 	}
 }

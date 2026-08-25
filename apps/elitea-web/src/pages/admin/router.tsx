@@ -13,9 +13,9 @@
  * adminui handler's `BasePath` — the handler serves this SPA at that prefix and
  * rewrites its asset URLs to match.
  *
- * All ten reachable pages exist: Users, Audit Trail, Roles, Projects, Secrets,
- * Schedules & Tasks, App Requests, Configuration, Service Descriptors and
- * Features. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
+ * All eleven reachable pages exist: Users, Audit Trail, Roles, Projects,
+ * Secrets, Schedules & Tasks, App Requests, Configuration, Service Descriptors,
+ * Features and LLM Governance. Issue #200 scopes ELEVEN; the eleventh is LiteLLM, which is not
  * ported because #201 replaces LiteLLM with Bifrost — porting an admin page for
  * a subsystem being removed would be building a control for something on its
  * way out. `adminNav.ts` therefore has no LiteLLM entry either, and its test
@@ -25,22 +25,72 @@
  * here would be type-checked against the MAIN app's generated route ids (the
  * `Register` interface `routeTree.gen.ts` declares is global), which this
  * hand-built tree is not part of. Rendering also spares the extra history entry.
+ *
+ * ── Code splitting (issue #493) ──────────────────────────────────────────────
+ * Every page below is loaded with `lazyRouteComponent`, so each one becomes its
+ * own chunk that the browser fetches on navigation. Before this, all eleven
+ * pages were static imports, the whole admin application was one 895 KiB gzip
+ * entry chunk, and the bundle-budget gate (spec §3.5, 300 KiB initial) failed.
+ * The main app gets the same result from `autoCodeSplitting` in the router vite
+ * plugin; that plugin reads `src/routes/**` and cannot see this hand-built tree,
+ * so the split is written out here.
+ *
+ * `AdminLayout` stays a STATIC import. It is the root route's component — the
+ * nav plus the `<Outlet/>` — so it is on screen for every route, and a lazy load
+ * of it would only delay the first paint. `AdminRoutePending` below is static
+ * for the same reason: it is what the shell shows while a page chunk is in
+ * flight, so a lazy fallback could not render.
  */
-import { createRootRoute, createRoute, createRouter, type AnyRouter } from '@tanstack/react-router';
+import {
+  createRootRoute,
+  createRoute,
+  createRouter,
+  lazyRouteComponent,
+  type AnyRouter,
+} from '@tanstack/react-router';
+
+import { t } from '@/shared/i18n';
 
 import { AdminLayout } from './AdminLayout';
-import { AdminAppRequests } from './AppRequests';
-import { AdminAuditTrail } from './AuditTrail';
-import { AdminConfiguration } from './Configuration';
-import { AdminFeatures } from './Features';
-import { AdminProjects } from './Projects';
-import { AdminRoles } from './Roles';
-import { AdminSchedulesTasks } from './SchedulesTasks';
-import { AdminSecrets } from './Secrets';
-import { AdminServiceDescriptors } from './ServiceDescriptors';
-import { AdminUsers } from './Users';
 
 const ADMIN_BASE_PATH = '/admin/app';
+
+/**
+ * The fallback the `<Outlet/>` shows while a page chunk loads. Same shape as
+ * the main app's `routes/-ui/RouteStatus.tsx` `RoutePending`: `<output>` carries
+ * an implicit `role="status"`, which is what `jsx-a11y/prefer-tag-over-role`
+ * asks for and what Testing Library resolves `getByRole('status')` against.
+ */
+function AdminRoutePending() {
+  return <output>{t('routes.pending', 'Loading…')}</output>;
+}
+
+/*
+ * One lazy component per page. The second argument names the export to take
+ * from the module — every admin page uses a named export, not a default one.
+ * `AdminUsers` is bound once and shared by the index and `/users` routes, so
+ * both resolve the same chunk and the second navigation is already loaded.
+ */
+const AdminUsers = lazyRouteComponent(() => import('./Users'), 'AdminUsers');
+const AdminAuditTrail = lazyRouteComponent(() => import('./AuditTrail'), 'AdminAuditTrail');
+const AdminRoles = lazyRouteComponent(() => import('./Roles'), 'AdminRoles');
+const AdminProjects = lazyRouteComponent(() => import('./Projects'), 'AdminProjects');
+const AdminSecrets = lazyRouteComponent(() => import('./Secrets'), 'AdminSecrets');
+const AdminConfiguration = lazyRouteComponent(() => import('./Configuration'), 'AdminConfiguration');
+const AdminFeatures = lazyRouteComponent(() => import('./Features'), 'AdminFeatures');
+const AdminSchedulesTasks = lazyRouteComponent(
+  () => import('./SchedulesTasks'),
+  'AdminSchedulesTasks',
+);
+const AdminAppRequests = lazyRouteComponent(() => import('./AppRequests'), 'AdminAppRequests');
+const AdminServiceDescriptors = lazyRouteComponent(
+  () => import('./ServiceDescriptors'),
+  'AdminServiceDescriptors',
+);
+const AdminGatewayGovernance = lazyRouteComponent(
+  () => import('./GatewayGovernance'),
+  'AdminGatewayGovernance',
+);
 
 /**
  * The root route renders `AdminLayout` — the nav plus an `<Outlet/>` — rather
@@ -123,6 +173,18 @@ const serviceDescriptorsRoute = createRoute({
   component: AdminServiceDescriptors,
 });
 
+/**
+ * Admin › LLM Governance (#218). The Configuration page's LLM Governance
+ * section has always pointed the operator at `/admin/gateway/governance` — an
+ * elitea-main REST route with no screen behind it in this SPA. This is that
+ * screen; the REST path is unchanged and is what the page calls.
+ */
+const governanceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/governance',
+  component: AdminGatewayGovernance,
+});
+
 const adminRouteTree = rootRoute.addChildren([
   indexRoute,
   usersRoute,
@@ -135,6 +197,7 @@ const adminRouteTree = rootRoute.addChildren([
   configurationRoute,
   serviceDescriptorsRoute,
   featuresRoute,
+  governanceRoute,
 ]);
 
 export function createAdminRouter(): AnyRouter {
@@ -142,5 +205,15 @@ export function createAdminRouter(): AnyRouter {
     routeTree: adminRouteTree,
     basepath: ADMIN_BASE_PATH,
     defaultPreload: 'intent',
+    /*
+     * Shown from the first frame a page chunk is missing, not after a delay:
+     * `defaultPendingMs` defaults to 1000 ms, which would leave the content
+     * area blank for a second on a cold load of any page (issue #493).
+     * `defaultPendingMinMs` is 0 so a warm, already-loaded chunk does not hold
+     * the fallback on screen for its own default of 500 ms.
+     */
+    defaultPendingComponent: AdminRoutePending,
+    defaultPendingMs: 0,
+    defaultPendingMinMs: 0,
   });
 }

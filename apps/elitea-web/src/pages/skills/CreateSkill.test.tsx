@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
@@ -11,8 +12,16 @@ import { renderSkillsRoute } from './__tests__/testRouter';
 
 const BASE = '/api/v2';
 
-beforeEach(() => configureGeneratedClient({ baseUrl: BASE }));
-afterEach(() => resetGeneratedClient());
+beforeEach(() => {
+  configureGeneratedClient({ baseUrl: BASE });
+  // The Generate button is hidden while the draft route is unmounted — see
+  // `shared/config/backendCapabilities`.
+  setBackendCapabilityForTests('aiGeneration', true);
+});
+afterEach(() => {
+  resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
+});
 
 describe('CreateSkill', () => {
   it('validates incomplete drafts before sending', async () => {

@@ -9,6 +9,33 @@ import (
 	"context"
 )
 
+const deleteCurrentProjectPgvectorConfiguration = `-- name: DeleteCurrentProjectPgvectorConfiguration :execrows
+
+DELETE FROM configuration
+WHERE project_id = $1::integer
+  AND elitea_title = $2::text
+  AND type = 'pgvector'
+  AND section = 'vectorstorage'
+  AND source = 'system'
+`
+
+type DeleteCurrentProjectPgvectorConfigurationParams struct {
+	ProjectID   int32  `db:"project_id" json:"project_id"`
+	EliteaTitle string `db:"elitea_title" json:"elitea_title"`
+}
+
+// The exact inverse of the statement above, and only that row. The four
+// identity predicates repeat the ones the upsert conflicts on, so a
+// user-created configuration that happens to carry the same title is never
+// removed by a rollback of the system row.
+func (q *Queries) DeleteCurrentProjectPgvectorConfiguration(ctx context.Context, arg DeleteCurrentProjectPgvectorConfigurationParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCurrentProjectPgvectorConfiguration, arg.ProjectID, arg.EliteaTitle)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const upsertCurrentProjectPgvectorConfiguration = `-- name: UpsertCurrentProjectPgvectorConfiguration :one
 
 INSERT INTO configuration (

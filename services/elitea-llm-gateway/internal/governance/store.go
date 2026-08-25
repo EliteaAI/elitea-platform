@@ -23,7 +23,6 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 )
 
-
 // natsClient is the minimal NATS surface the GovernanceStore needs. *nats.Client
 // satisfies it; tests inject a fake so no live NATS is required.
 type natsClient interface {
@@ -62,6 +61,38 @@ type GovernanceStore struct {
 	// and set Params.OutageExceededMax = true to force FORCED_CLOSED.
 	brkMu         sync.RWMutex
 	breakerOpenAt time.Time // zero means breaker is not open
+
+	// defaults supplies an AUTHORED fallback ceiling for a project that has no
+	// gateway.project_budget row (issue #218). nil means the old behaviour: no
+	// row is unlimited.
+	//
+	// It can only make the decision STRICTER. The branch it feeds is the one
+	// that used to return "unlimited, always allow", so a project gains a
+	// ceiling it did not have and never loses one it did — the fallback cannot
+	// override a real project_budget row, because that branch is only reached
+	// when there is none.
+	defaults BudgetDefaults
+}
+
+// BudgetDefaults supplies the authored global budget for a project with no
+// per-project row. *policy.Snapshot answers this through an adapter in the
+// composition root; the interface keeps internal/governance free of a
+// dependency on the definition plane.
+type BudgetDefaults interface {
+	// DefaultBudgetNano returns the ceiling in nano-USD, the soft-alert
+	// percentage, and the per-project fail-mode override. ok is false when no
+	// authored budget applies, which restores the unlimited behaviour.
+	DefaultBudgetNano(projectID int) (limitNano int64, softAlertPct int, failMode string, ok bool)
+}
+
+// SetBudgetDefaults arms the authored fallback ceiling. It is called once from
+// the composition root, before the gateway serves, so no request observes a
+// half-wired store.
+func (g *GovernanceStore) SetBudgetDefaults(d BudgetDefaults) {
+	if g == nil {
+		return
+	}
+	g.defaults = d
 }
 
 // NewGovernanceStore assembles a GovernanceStore from the four pre-built
@@ -109,6 +140,14 @@ func NewGovernanceStore(
 		gs.brkMu.Unlock()
 		gs.rec.HandleBreakerChange(from, to)
 	})
+	// Issue #515: the breaker edge is not the only way an outage row is cleared
+	// any more — the reconciler also sweeps on a timer, because a single failed
+	// counter operation marks a row outage-owned without ever opening the
+	// breaker, so no edge follows to clear it. Give that sweep the breaker
+	// state, so it attempts recovery only while the authoritative counter is
+	// reachable. A project that is genuinely in outage keeps its row, which is
+	// the point: the flag must never be cleared unconditionally.
+	rec.SetHealthCheck(func() bool { return nc.BreakerState() == gobreaker.StateClosed })
 	return gs
 }
 
@@ -157,8 +196,25 @@ func (g *GovernanceStore) CheckBudget(
 	snap, snapErr := g.store.ReadSnapshot(ctx, projectID, scope, scopeID, periodStartUnix)
 	if snapErr != nil {
 		if errors.Is(snapErr, failmode.ErrNoBudgetRow) {
-			// No budget config ⇒ unlimited; always allow (except FORCED_CLOSED).
+			// No per-project budget row. Before an authored fallback exists this
+			// is unlimited; with one, the operator's global ceiling applies.
+			//
+			// AccumulatedNano stays 0 and Found stays false, which is what the
+			// FSM already assumes for a budgeted project with no accumulator
+			// row: no spend recorded this period. The authoritative NATS
+			// counter, read above, is what actually gates the request on the
+			// healthy path.
 			snap = failmode.Snapshot{IsUnlimited: true}
+			if g.defaults != nil {
+				if limitNano, softPct, failMode, ok := g.defaults.DefaultBudgetNano(projectID); ok && limitNano > 0 {
+					snap = failmode.Snapshot{
+						IsUnlimited:   false,
+						HardLimitNano: limitNano,
+						SoftAlertPct:  softPct,
+						NatsFailMode:  failmode.FailMode(failMode),
+					}
+				}
+			}
 		} else {
 			// PG read failed and NATS is also down ⇒ Block503 (no data).
 			if !natsUp {
@@ -231,6 +287,46 @@ type deltaPayload struct {
 	PeriodStart  int64  `json:"period_start"`
 	PeriodEnd    int64  `json:"period_end"`
 	DeltaNanoUSD int64  `json:"delta_nano_usd"`
+	// Usage carries the request's reporting dimensions (issue #320). It is
+	// OMITTED, not zero-filled, when the caller has none to report: the
+	// consumer appends a usage-ledger row only when this object is present, so
+	// an absent object means "this delta is money only", never "this request
+	// used no tokens".
+	//
+	// It rides at most ONE of a request's deltas. A request that bills both the
+	// project and the member scope publishes two deltas, and only the project
+	// one carries Usage — the ledger row already names the member in its
+	// user_id column, and a second row would double every token and request
+	// count the per-model table reports.
+	Usage *usageDimsPayload `json:"usage,omitempty"`
+}
+
+// usageDimsPayload is the wire form of failmode.UsageDimensions. Its JSON keys
+// MUST match the scheduler consumer's UsageDimensions struct exactly
+// (services/elitea-scheduler/internal/budgetwriteback/types.go).
+type usageDimsPayload struct {
+	UserID           *int   `json:"user_id,omitempty"`
+	Provider         string `json:"provider,omitempty"`
+	Model            string `json:"model,omitempty"`
+	PromptTokens     int64  `json:"prompt_tokens"`
+	CompletionTokens int64  `json:"completion_tokens"`
+	OccurredAtUnix   int64  `json:"occurred_at"`
+}
+
+// usageDimsFor converts the internal dimensions to the wire form, preserving
+// nil so an absent object stays absent.
+func usageDimsFor(dims *failmode.UsageDimensions) *usageDimsPayload {
+	if dims == nil {
+		return nil
+	}
+	return &usageDimsPayload{
+		UserID:           dims.UserID,
+		Provider:         dims.Provider,
+		Model:            dims.Model,
+		PromptTokens:     dims.PromptTokens,
+		CompletionTokens: dims.CompletionTokens,
+		OccurredAtUnix:   dims.OccurredAtUnix,
+	}
 }
 
 // UpdateUsage records a billed increment onto the authoritative NATS counter and
@@ -243,12 +339,17 @@ type deltaPayload struct {
 //
 // periodEndUnix is the current period's end (Unix seconds) used only by the
 // delta payload; it is not required for counter enforcement.
+//
+// dims carries the request's reporting dimensions (issue #320) and may be nil.
+// It never affects the counter or the accumulator — only whether a row is
+// appended to the per-request usage ledger.
 func (g *GovernanceStore) UpdateUsage(
 	ctx context.Context,
 	projectID int,
 	scope, scopeID, eventID string,
 	costNano int64,
 	periodStartUnix, periodEndUnix int64,
+	dims *failmode.UsageDimensions,
 ) error {
 	subject := nats.BudgetSubject(scope, scopeID, periodStartUnix)
 
@@ -268,13 +369,19 @@ func (g *GovernanceStore) UpdateUsage(
 		// replica restarts before the breaker recovers. Run off the request path
 		// (bounded goroutine) so a slow Postgres write does not stall /llm.
 		outageDelta := failmode.OutageDelta{
-			ProjectID:    projectID,
-			OrgID:        nil,
-			Scope:        scope,
-			ScopeID:      scopeID,
+			ProjectID: projectID,
+			OrgID:     nil,
+			Scope:     scope,
+			ScopeID:   scopeID,
+			// The event id and the dimensions travel with the outage write so
+			// the usage ledger keeps its row for a request billed while NATS is
+			// down (issue #320). The id makes that row idempotent against a
+			// later redelivery of the same delta through the consumer.
+			EventID:      eventID,
 			PeriodStart:  periodStartUnix,
 			PeriodEnd:    periodEndUnix,
 			DeltaNanoUSD: costNano,
+			Usage:        dims,
 		}
 		// Fix #2: use the WaitGroup so Drain() can wait for in-flight persists
 		// to complete before pool.Close() on graceful shutdown.
@@ -303,6 +410,7 @@ func (g *GovernanceStore) UpdateUsage(
 		PeriodStart:  periodStartUnix,
 		PeriodEnd:    periodEndUnix,
 		DeltaNanoUSD: costNano,
+		Usage:        usageDimsFor(dims),
 	})
 	if err != nil {
 		// JSON marshal of a fixed struct should never fail.

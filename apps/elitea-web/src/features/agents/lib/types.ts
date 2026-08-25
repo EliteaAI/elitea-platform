@@ -62,7 +62,16 @@ interface AgentToolMeta {
 }
 
 export interface AgentToolAssociation {
+  /** `entity_tool_mapping.id` (or `application_tools.id`) — the ASSOCIATION row's own id, not the toolkit's. */
   readonly id?: string | number | undefined;
+  /**
+   * `elitea_tools.id` — the attached toolkit INSTANCE's id, present on every
+   * `entity_tool_mapping`-sourced row (`applications/handler.go`'s
+   * `fetchVersionDetails` selects `etm.tool_id` alongside `etm.id`). This is
+   * the id the attach/detach relation endpoint is keyed by; see
+   * `lib/toolRelation.ts`'s `resolveToolkitId`.
+   */
+  readonly tool_id?: string | number | undefined;
   readonly type?: string | undefined;
   readonly name?: string | undefined;
   readonly elitea_title?: string | undefined;

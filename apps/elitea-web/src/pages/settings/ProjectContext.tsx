@@ -25,7 +25,8 @@ import CircularProgress from '@mui/material/CircularProgress';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { BannerMessage } from '@/shared/ui/BannerMessage';
-import { drawerPage, projectContextFeature } from '@/features/settings';
+import { projectContextFeature } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 import { t } from '@/shared/i18n';
 import {
   updateProjectContext,
@@ -38,7 +39,6 @@ import { PERMISSIONS } from '@/shared/lib/permissions';
 import { usePermissionSet } from '@/widgets/sidebar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const { DrawerPage } = drawerPage;
 const { ProjectContextBody, ProjectContextToasts, projectContextStyles } = projectContextFeature;
 
 /* ── constants ─────────────────────────────────────────────────────────── */

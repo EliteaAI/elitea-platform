@@ -141,6 +141,20 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentApplication(
 				}
 				return fmt.Errorf("validate current application nesting: %w", validationErr)
 			}
+			versionDetails, queryErr = materializeCurrentApplicationVersionNestedSkills(
+				ctx,
+				nesting,
+				versionDetails,
+			)
+			if queryErr != nil {
+				if contextErr := ctx.Err(); contextErr != nil {
+					return contextErr
+				}
+				if errors.Is(queryErr, errInvalidCurrentApplicationNesting) {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return fmt.Errorf("materialize current nested skills: %w", queryErr)
+			}
 			target = agentexecutionapp.CurrentApplicationTarget{
 				ApplicationID:        int64(row.ApplicationID),
 				ApplicationVersionID: int64(row.ApplicationVersionID),

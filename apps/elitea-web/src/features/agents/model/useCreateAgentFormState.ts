@@ -35,6 +35,8 @@ export interface CreateAgentFormState {
   readonly onInstructionsChange: (value: string) => void;
   readonly onWelcomeMessageChange: (value: string) => void;
   readonly onStepLimitChange: (value: number | undefined) => void;
+  /** #307 — replaces the baseline's `setFieldValue('version_details.conversation_starters', ...)` inside `ConversationStarters.jsx` itself. */
+  readonly onConversationStartersChange: (next: readonly string[]) => void;
 }
 
 export function useCreateAgentFormState(values: AgentDraftValues, onFieldChange: AgentFieldChange): CreateAgentFormState {
@@ -111,6 +113,11 @@ export function useCreateAgentFormState(values: AgentDraftValues, onFieldChange:
     [onFieldChange],
   );
 
+  const onConversationStartersChange = useCallback(
+    (next: readonly string[]) => onFieldChange('version_details.conversation_starters', next),
+    [onFieldChange],
+  );
+
   return {
     name,
     description: values.description ?? '',
@@ -128,5 +135,6 @@ export function useCreateAgentFormState(values: AgentDraftValues, onFieldChange:
     onInstructionsChange,
     onWelcomeMessageChange,
     onStepLimitChange,
+    onConversationStartersChange,
   };
 }

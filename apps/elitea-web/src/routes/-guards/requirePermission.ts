@@ -28,12 +28,38 @@ import { redirect } from '@tanstack/react-router';
 
 import type { RouterContext } from '@/app/router-context';
 
+/**
+ * DEFECT this guard used to have. Nothing wrote `AuthUser.permissions`.
+ * `targetPermissions` was therefore `undefined` on every real evaluation.
+ * The guard always returned at the "not loaded yet" branch. All three gated
+ * routes stayed unguarded: `/chat`, `/chat/$conversationId` and `/artifacts`.
+ * A user without `models.chat.folders.get` opened `/chat` and saw an empty
+ * conversation rail.
+ *
+ * The spec §8.1 redirect to `/onboarding` never ran.
+ * `app/session-store.ts` populates the field now.
+ *
+ * The list is ALSO keyed by project. A permission list answers for one
+ * project only. A list read for project A must not judge project B. The
+ * guard defers while the two values disagree. This occurs during a project
+ * switch, before the new list arrives. The guard never redirects on a stale
+ * answer.
+ */
 export function requirePermission(requiredPermissions: readonly string[], fallbackTo: string) {
   return function requirePermissionBeforeLoad({ context }: { context: RouterContext }): void {
     const user = context.auth.getUser();
     const targetPermissions = user?.permissions;
     if (!targetPermissions) {
       // Permissions not loaded yet — do not block (parity note above).
+      return;
+    }
+    // `getSelectedProjectId()` answers `undefined` when a personal project
+    // exists but is not the active selection yet; the session store reads the
+    // permission list for the personal project in exactly that case, so the
+    // same fallback applies here.
+    const currentProjectId = context.auth.getSelectedProjectId() ?? user?.personal_project_id;
+    if (user?.permissionsProjectId !== currentProjectId) {
+      // The list belongs to another project — defer, do not judge.
       return;
     }
     const hasPermission = requiredPermissions.some((permission) => targetPermissions.includes(permission));

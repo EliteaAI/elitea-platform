@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 
-import { writePersistedProject } from '@/widgets/app-shell';
+import { writePersistedProject } from '@/shared/lib/selectedProjectPersistence';
 
 import { server } from '../test/setup';
 
@@ -28,6 +28,53 @@ function author(personalProjectId?: string) {
 }
 
 describe('createSessionStore', () => {
+  /*
+   * The Form plane mounts no /forward-auth/info at all
+   * (internal/api/production_router.go mounts one plane or the other), so on a
+   * Form deployment the probe 404s. Concluding "not logged in" from that alone
+   * sent a browser holding a perfectly good Form session cookie back to the
+   * login form on every load — and, with the boot redirect in App.tsx, into a
+   * loop. /social/author answers on both planes.
+   */
+  it('recovers the session from /social/author when /forward-auth/info is absent', async () => {
+    server.use(
+      http.get(INFO, () => new HttpResponse(null, { status: 404 })),
+      author('proj-9'),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toMatchObject({ id: 'u-42', personal_project_id: 'proj-9' });
+    expect(store.getState().probeStatus).toBe(404);
+  });
+
+  it('reports no user when the Form-plane fallback is itself unauthenticated', async () => {
+    server.use(
+      http.get(INFO, () => new HttpResponse(null, { status: 404 })),
+      http.get(AUTHOR, () => new HttpResponse(null, { status: 401 })),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toBeUndefined();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().probeStatus).toBe(404);
+  });
+
+  /*
+   * A 401 from /forward-auth/info is the OIDC plane saying "no session". It
+   * must NOT trigger the Form fallback, and it must keep its own status so the
+   * boot redirect picks the OIDC login path rather than the Form one.
+   */
+  it('does not treat an OIDC 401 as the Form plane', async () => {
+    server.use(http.get(INFO, () => new HttpResponse(null, { status: 401 })));
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user).toBeUndefined();
+    expect(store.getState().probeStatus).toBe(401);
+  });
+
   it('starts with no user and loaded=false before any probe', () => {
     const store = createSessionStore();
     expect(store.getState().user).toBeUndefined();
@@ -42,7 +89,7 @@ describe('createSessionStore', () => {
     const store = createSessionStore({ apiBaseUrl: API_BASE });
     await store.getState().fetchSession();
 
-    expect(store.getState().user).toEqual({ id: 'u-42', personal_project_id: 'proj-9' });
+    expect(store.getState().user).toMatchObject({ id: 'u-42', personal_project_id: 'proj-9' });
     expect(store.getState().loaded).toBe(true);
   });
 
@@ -216,5 +263,108 @@ describe('sessionAuthContext.getSelectedProjectId', () => {
   it("returns '' when there is no project context at all", () => {
     useSessionStore.setState({ user: { id: 'u-1' } });
     expect(sessionAuthContext.getSelectedProjectId()).toBe('');
+  });
+});
+
+const PERMISSIONS = `${API_BASE}/auth/permissions/prompt_lib/:projectId`;
+
+/**
+ * DEFECT: `AuthUser.permissions` had no writer at all. `routes/-guards/
+ * requirePermission.ts` reads it, finds `undefined`, and returns on its
+ * "not loaded yet" branch, so `requireChatPermission` and
+ * `requireArtifactsPermission` could never redirect. Evidence at the time:
+ * `grep -rn "permissions" src/app` matched only the type declaration in
+ * `router-context.ts`, and both `set({user: ...})` branches of `fetchSession`
+ * wrote `id` and `personal_project_id` only.
+ *
+ * `GET /auth/permissions/prompt_lib/{projectId}` returns EVERY known
+ * permission with an `enabled` flag, so the store must keep the enabled
+ * subset. A raw copy of `name` would grant access on a disabled permission.
+ */
+describe('createSessionStore permissions', () => {
+  afterEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  function permissions(...entries: readonly { readonly name: string; readonly enabled: boolean }[]) {
+    return http.get(PERMISSIONS, () => HttpResponse.json(entries));
+  }
+
+  it('stores the enabled permissions for the personal project', async () => {
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('proj-9'),
+      permissions(
+        { name: 'models.chat.folders.get', enabled: true },
+        { name: 'configuration.artifacts.artifacts.view', enabled: false },
+      ),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user?.permissions).toEqual(['models.chat.folders.get']);
+    expect(store.getState().user?.permissionsProjectId).toBe('proj-9');
+  });
+
+  it('reads the list for the SELECTED project, not the personal one', async () => {
+    writePersistedProject({ id: 'proj-77', name: 'Team' });
+    let askedFor: string | undefined;
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('proj-9'),
+      http.get(PERMISSIONS, ({ params }) => {
+        askedFor = String(params.projectId);
+        return HttpResponse.json([{ name: 'models.chat.folders.get', enabled: true }]);
+      }),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(askedFor).toBe('proj-77');
+    expect(store.getState().user?.permissionsProjectId).toBe('proj-77');
+  });
+
+  it('leaves permissions undefined when the list cannot be read', async () => {
+    // `undefined` is the "not resolved" answer every guard treats as
+    // "do not block". An empty array would mean "no permissions" and would
+    // redirect the user away from a page they may well be allowed to open.
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('proj-9'),
+      http.get(PERMISSIONS, () => new HttpResponse(null, { status: 500 })),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+
+    expect(store.getState().user?.permissions).toBeUndefined();
+    expect(store.getState().user?.id).toBe('u-42');
+  });
+
+  /*
+   * A permission list answers for ONE project. After a switch the old list
+   * must not judge the new project, so `refreshPermissions` re-reads it.
+   */
+  it('re-reads the list for the new project on refreshPermissions', async () => {
+    server.use(
+      http.get(INFO, () => HttpResponse.json({ authenticated: true, user_id: 'u-42' })),
+      author('proj-9'),
+      http.get(PERMISSIONS, ({ params }) =>
+        HttpResponse.json(
+          params.projectId === 'proj-77'
+            ? [{ name: 'configuration.artifacts.artifacts.view', enabled: true }]
+            : [{ name: 'models.chat.folders.get', enabled: true }],
+        ),
+      ),
+    );
+    const store = createSessionStore({ apiBaseUrl: API_BASE });
+    await store.getState().fetchSession();
+    expect(store.getState().user?.permissions).toEqual(['models.chat.folders.get']);
+
+    writePersistedProject({ id: 'proj-77', name: 'Team' });
+    await store.getState().refreshPermissions();
+
+    expect(store.getState().user?.permissions).toEqual(['configuration.artifacts.artifacts.view']);
+    expect(store.getState().user?.permissionsProjectId).toBe('proj-77');
   });
 });

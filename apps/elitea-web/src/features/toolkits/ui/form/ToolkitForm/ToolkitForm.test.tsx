@@ -1,4 +1,5 @@
 import { act, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -188,5 +189,111 @@ describe('ToolkitForm', () => {
 
     await waitFor(() => expect(getByRole('progressbar')).toBeInTheDocument());
     expect(queryByText('JSON')).not.toBeInTheDocument();
+  });
+
+  /*
+   * Issue 308 — the credential/model pickers rendered as blank space.
+   * `ToolBaseProperty.dispatch.tsx`'s `renderCredentialLike` opens with
+   * `if (!ctx.slots?.renderCredentialLikeField) return null`, and no file in
+   * the repository supplied that slot, so the field silently disappeared.
+   *
+   * These drive the REAL composition root and deliberately pass NO `slots`
+   * prop: if `ToolkitForm` stops supplying the default, they fail. Injecting
+   * the slot from the test — which the existing `ToolBaseProperty.test.tsx`
+   * cases do, correctly, for their own purpose — is exactly what let a
+   * fully-tested renderer ship with no production caller.
+   */
+  const ARTIFACT_SCHEMA = {
+    artifact: {
+      type: 'object',
+      properties: {
+        // Served verbatim by the Go type catalogue
+        // (internal/api/v2/toolkits/handler.go:162) and retyped to
+        // `embedding_model` by `toolkitSchema.helpers.ts` on the property
+        // NAME, which is why this is the one credential-like field a user
+        // can actually reach today.
+        embedding_model: { type: 'string' },
+      },
+    },
+  };
+
+  function mockEmbeddingModels(models: readonly Record<string, unknown>[]): void {
+    server.use(
+      http.get('/api/v2/configurations/models/:projectId', ({ request }) => {
+        const section = new URL(request.url).searchParams.get('section');
+        if (section !== 'embedding') return HttpResponse.json({ items: [], total: 0 });
+        return HttpResponse.json({ items: models, total: models.length });
+      }),
+    );
+  }
+
+  it('renders the embedding-model picker with real options from the composition root, supplying no slot', async () => {
+    mockToolkitFormEndpoints(ARTIFACT_SCHEMA);
+    mockEmbeddingModels([
+      { name: 'text-embedding-3-small', display_name: 'Embedding Small', project_id: 1 },
+      { name: 'text-embedding-3-large', project_id: 1 },
+    ]);
+    const editToolDetail: ToolkitFormEditDetail = { type: 'artifact', name: 'a', settings: {} };
+    const user = userEvent.setup();
+    const { getByTestId, findByRole } = renderWithRouterSocketAndProject(
+      <ToolkitForm {...baseProps({ editToolDetail, formValues: editToolDetail, formInitialValues: editToolDetail })} />,
+      'proj-1',
+    );
+
+    // `toBeVisible`, NOT `toBeInTheDocument`: an empty `<Box>` satisfies the
+    // latter (no layout box, still in the document), which is how a field
+    // that rendered `null` inside its wrapper went unnoticed here before.
+    await waitFor(() => getByTestId('model-select-embedding'));
+    expect(await findByRole('combobox')).toBeVisible();
+
+    // And it must offer the REAL rows the endpoint answered — a picker wired
+    // to nothing would open an empty menu and still be "visible".
+    await user.click(await findByRole('combobox'));
+    expect(await findByRole('option', { name: 'Embedding Small' })).toBeVisible();
+    expect(await findByRole('option', { name: 'text-embedding-3-large' })).toBeVisible();
+  });
+
+  it('captures a picked embedding model into the toolkit settings as the model NAME', async () => {
+    mockToolkitFormEndpoints(ARTIFACT_SCHEMA);
+    mockEmbeddingModels([{ name: 'text-embedding-3-small', display_name: 'Embedding Small', project_id: 1 }]);
+    const onChangeToolDetail = vi.fn();
+    const editToolDetail: ToolkitFormEditDetail = { type: 'artifact', name: 'a', settings: {} };
+    const user = userEvent.setup();
+    const { getByTestId, findByRole } = renderWithRouterSocketAndProject(
+      <ToolkitForm
+        {...baseProps({ editToolDetail, formValues: editToolDetail, formInitialValues: editToolDetail, onChangeToolDetail })}
+      />,
+      'proj-1',
+    );
+
+    await waitFor(() => getByTestId('model-select-embedding'));
+    await user.click(await findByRole('combobox'));
+    await user.click(await findByRole('option', { name: 'Embedding Small' }));
+
+    /*
+     * The NAME, never the synthesized `${project_id}_${name}` row id: the Go
+     * handler resolves the saved value with `data->>'name' = $1`
+     * (toolkits/handler.go:857-863), so persisting the id would make every
+     * saved toolkit fail that existence check.
+     */
+    /*
+     * `editField` calls `onChangeToolDetail` with an UPDATER, not a value
+     * (`ToolkitForm.core.hooks.ts:122`), so the payload only exists once the
+     * updater is applied. Asserting `toHaveBeenCalled()` alone would pass for
+     * any field change at all — including none from this picker.
+     */
+    await waitFor(() => expect(onChangeToolDetail).toHaveBeenCalled());
+    const [updater] = onChangeToolDetail.mock.calls.at(-1) as [
+      (previous: Record<string, unknown>) => Record<string, unknown>,
+    ];
+    const next = updater({ type: 'artifact', name: 'a', settings: {} });
+
+    /*
+     * The NAME, never the synthesized `${project_id}_${name}` row id: the Go
+     * handler resolves the saved value with `data->>'name' = $1`
+     * (toolkits/handler.go:857-863), so persisting the id would make every
+     * saved toolkit fail that existence check.
+     */
+    expect(next['settings']).toEqual(expect.objectContaining({ embedding_model: 'text-embedding-3-small' }));
   });
 });

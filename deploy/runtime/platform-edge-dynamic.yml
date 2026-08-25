@@ -1,0 +1,95 @@
+# Traefik DYNAMIC config for the worker's platform_origin.
+#
+# One route, no carve-outs: everything the SDK asks for is forwarded to
+# elitea-main as-is. That is deliberately unlike deploy/centry-hybrid, where the
+# equivalent edge splits worker traffic between Go and pylon —
+# `tools_list`, `application`/`version` and the artifact APIs are routed to
+# pylon there because Go does not serve them (Go's tools_list is a different
+# path and answers 501 by design). This stack has no pylon, so an agent that
+# needs any of those will fail inside the worker; a plain adhoc turn does not
+# touch them.
+#
+# The certificate is the runtime CA's `platform-edge`, whose only SAN is
+# DNS:elitea-platform-edge — the exact host in worker-runtime.json's
+# platform_origin. The worker's TLS trust for this hop is the runtime CA alone
+# (REQUESTS_CA_BUNDLE / SSL_CERT_FILE on the worker service), so a certificate
+# from any other issuer fails closed.
+tls:
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /run/elitea-runtime/platform-edge.crt
+        keyFile: /run/elitea-runtime/platform-edge.key
+
+http:
+  routers:
+    # The execution-events SSE stream (#289). It needs its own router because
+    # it is the one route here that accepts NO credential a client can present:
+    # internal/api/production_runtime.go composes it with PrincipalValidator +
+    # ForwardedIdentityVerifier only — no bearer, no session cookie — so the
+    # PAT that admitted the turn cannot read the turn's own stream. It is
+    # reachable exclusively through a forward-auth edge that authenticates the
+    # caller and projects verified identity headers, which is what the two
+    # middlewares below do and what deploy/centry-hybrid does for the same
+    # routes.
+    #
+    # Scoped to this exact path rather than applied to the catch-all: every
+    # other route through this edge authenticates the worker's bearer directly,
+    # and putting an authenticating edge in front of them would change how
+    # requests that already work are authorized.
+    platform-execution-events:
+      rule: PathRegexp(`^/api/v2/executions/[0-9]+/[^/]+/events$`)
+      priority: 100
+      entryPoints:
+        - platform
+      tls: {}
+      middlewares:
+        - strip-caller-auth-context
+        - runtime-forward-auth
+      service: elitea-main
+
+    platform:
+      rule: PathPrefix(`/`)
+      entryPoints:
+        - platform
+      tls: {}
+      service: elitea-main
+
+  middlewares:
+    # MUST run before the forward-auth call, and its absence would be an
+    # authentication bypass rather than an inconvenience: elitea-main trusts
+    # X-Auth-* from a trusted proxy, so a caller that could set them itself
+    # would choose its own identity. Traefik deletes a header whose
+    # customRequestHeaders value is empty.
+    strip-caller-auth-context:
+      headers:
+        customRequestHeaders:
+          X-Auth-Type: ""
+          X-Auth-ID: ""
+          X-Auth-User-ID: ""
+          X-Auth-Reference: ""
+          X-Auth-Avatar: ""
+          X-Auth-Avatar-State: ""
+
+    # The internal address, never a product route. It authenticates the
+    # request's own credential (bearer PAT or browser-auth session, via
+    # forwardauth.Kernel) and answers with the identity projection below;
+    # authResponseHeaders is what copies that projection onto the forwarded
+    # request, and anything not listed there does not reach elitea-main.
+    runtime-forward-auth:
+      forwardAuth:
+        address: "http://elitea-main:8080/internal/forward-auth/main"
+        authResponseHeaders:
+          - X-Auth-Type
+          - X-Auth-ID
+          - X-Auth-User-ID
+          - X-Auth-Reference
+
+  services:
+    elitea-main:
+      loadBalancer:
+        servers:
+          # Cleartext on the compose network. The edge terminates TLS for the
+          # worker; it does not re-originate it, and elitea-main cannot accept
+          # it on this port anyway.
+          - url: "http://elitea-main:8080"

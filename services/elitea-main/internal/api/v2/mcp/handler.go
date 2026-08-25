@@ -22,7 +22,8 @@
 //
 // REST (pylon `api/v2/`), under /api/v2/elitea_core:
 //
-//	tools_list              → GET  /tools_list/default/{projectID}
+//	tools_list              → GET  /tools_list/{projectID}
+//	                          GET  /tools_list/default/{projectID}
 //	tools_call              → POST /tools_call/default/{projectID}
 //	internal_mcp_pat_status → GET  /internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}
 //
@@ -32,11 +33,13 @@
 // failure this repo keeps rediscovering (issue 128) is a route that answers 200
 // while nothing behind it is wired:
 //
-//   - REAL. `initialize`, `tools/list` in all three scopes, and
-//     `internal_mcp_pat_status`. The tool listing is assembled from this
-//     project's own rows — agents whose version carries the `mcp` tag, and
-//     toolkits flagged `meta.mcp_options.available_by_mcp` — by catalog.go.
-//     Nothing about it is hardcoded or invented.
+//   - REAL. `initialize`, `tools/list` in all three scopes,
+//     `internal_mcp_pat_status`, and the REST `tools_list`. The MCP protocol
+//     listing is assembled from this project's own rows — agents whose version
+//     carries the `mcp` tag, and toolkits flagged
+//     `meta.mcp_options.available_by_mcp` — by catalog.go. The REST `tools_list`
+//     reads the durable MCP server store (registry.go, issue 335). Nothing
+//     about either is hardcoded or invented.
 //   - HONEST PROTOCOL ERROR. `tools/call`. Listing a tool and running it are
 //     different capabilities: running an agent needs the agent runtime, and
 //     running a toolkit tool needs the Python worker's toolkit dispatch.
@@ -44,11 +47,11 @@
 //     CallToolResult with `isError: true` naming exactly what is missing (see
 //     server.go). It never returns an empty successful result, which is what
 //     an agent host would read as "the tool ran and produced nothing".
-//   - HONEST 501. `tools_list` and `tools_call`, the two REST endpoints. Those
-//     do not list this platform's tools at all — see registry.go. There is
-//     nothing in this stack for them to read, and nothing a fabricated empty
-//     array would tell a caller except that no servers are connected, which
-//     would be a claim this service cannot make.
+//   - HONEST 501. `tools_call`, the one remaining REST refusal. It dispatches a
+//     tool invocation to the server that publishes the tool. This service does
+//     not store that server's credentials, and it runs no socket.io server to
+//     reach a client-hosted one. See registry.go for why a remote MCP toolkit
+//     loses nothing by this.
 //
 // # The `api` tool category is deliberately not ported
 //
@@ -110,6 +113,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
@@ -130,11 +134,36 @@ type Handler struct {
 	// source is the tool catalog. Swappable so the protocol handling can be
 	// tested without a database; production always gets postgresToolSource.
 	source toolSource
+	// registry is the durable store of MCP servers registered into a project.
+	// It is what `tools_list` reads (registry.go, issue 335).
+	registry *mcpregistry.Store
+	// personal resolves the caller's personal project, whose registered servers
+	// pylon unions into every listing.
+	personal PersonalProjectResolver
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	handler := &Handler{pool: pool}
+// PersonalProjectResolver reports a user's personal project id.
+//
+// Declared here as the narrow interface this package needs, rather than
+// importing the middleware package, so the dependency points one way. The
+// production implementation is `middleware.DBPersonalProjectResolver`, which
+// mirrors pylon's `projects_get_personal_project_id`.
+type PersonalProjectResolver interface {
+	PersonalProjectID(ctx context.Context, userID string) (int, error)
+}
+
+// NewHandler builds the MCP handler.
+//
+// personal is a required argument rather than an optional setter. A listing
+// built without it silently drops the caller's own registered servers, and this
+// repository has shipped that failure before: a builder method that no
+// composition root called (issue 128). An argument cannot be forgotten.
+func NewHandler(pool *pgxpool.Pool, personal PersonalProjectResolver) *Handler {
+	handler := &Handler{pool: pool, personal: personal}
 	handler.source = postgresToolSource{handler: handler}
+	if pool != nil {
+		handler.registry = mcpregistry.NewStore(pool)
+	}
 	return handler
 }
 

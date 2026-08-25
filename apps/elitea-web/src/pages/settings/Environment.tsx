@@ -14,14 +14,24 @@
  *    the same documented gap elsewhere in this settings area)
  *  - Edits are saved on blur (same as baseline) — no explicit save button
  *  - Creates a new configuration if none exists yet (same as baseline)
+ *
+ * The create-vs-update decision reads `currentConfig`, so anything that
+ * hides an EXISTING row makes every blur write a NEW one. Three doors were
+ * open into that, and all three are closed below:
+ *  - a failed list read left `currentConfig` null with no error on screen.
+ *  - this page writes `shared: true`, and the compat list handler returns
+ *    shared rows in a SEPARATE `shared.items` bucket this page never read.
+ *  - a blur with no edit still wrote, because the "unchanged" comparison
+ *    compares against a value that is `undefined` while the row is hidden.
  */
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import Box from '@mui/material/Box';
+import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
 import { isPublicProject as isPublicProjectSelector } from '@/entities/project';
-import type { AvailableConfigurationType, ConfigurationItem } from '@/shared/api/configurationsApi';
+import type { AvailableConfigurationType, ConfigurationItem, ConfigurationsListResponse } from '@/shared/api/configurationsApi';
 import { useCreateConfigurationMutation, useGetAvailableConfigurationsTypeQuery, useGetConfigurationsListQuery, useUpdateConfigurationMutation } from '@/shared/api/configurationsApi';
 import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { getConfig } from '@/shared/config';
@@ -102,6 +112,25 @@ function clearFieldError(
 }
 
 /**
+ * Every configuration row the list response carries, own AND shared.
+ *
+ * This page saves with `shared: true`. The compat list handler
+ * (`internal/api/v2/configurations/handler.go`) selects `items` with
+ * `WHERE shared = false`. It returns the shared rows in a separate
+ * `shared.items` bucket. Reading `items` alone therefore hid this page's own
+ * saved row on a perfectly successful 200. Every blur then took the CREATE
+ * branch and added another single-key row.
+ *
+ * `ConfigurationsListResponse` does not declare the `shared` bucket. A local
+ * narrowing here reads that bucket. Do not widen the shared API type from
+ * this page.
+ */
+function listedConfigurations(data: ConfigurationsListResponse | undefined): readonly ConfigurationItem[] {
+  const sharedItems = (data as { readonly shared?: { readonly items?: readonly ConfigurationItem[] } } | undefined)?.shared?.items ?? [];
+  return [...(data?.items ?? []), ...sharedItems];
+}
+
+/**
  * Normalise a schema property map into ordered field definitions. Filters
  * `ENVIRONMENT_FIELD_ORDER` down to keys the backend schema actually
  * declares (matches the old app's `ENVIRONMENT_FIELD_ORDER.filter(key =>
@@ -134,7 +163,7 @@ export const Environment = memo(function Environment() {
   const permissions = usePermissionSet(isPublic ? projectId : undefined);
   const canEdit = permissions.has(PERMISSIONS.configuration.update);
 
-  const { data, isLoading, isFetching } = useGetConfigurationsListQuery(
+  const { data, isLoading, isFetching, isError } = useGetConfigurationsListQuery(
     { projectId, section: ENVIRONMENT_SECTION, includeShared: false, pageSize: 100 },
     { enabled: !!projectId && isPublic },
   );
@@ -148,17 +177,29 @@ export const Environment = memo(function Environment() {
   const updateMutation = useUpdateConfigurationMutation(projectId);
 
   const isBusy = isLoading || isFetching || createMutation.isPending || updateMutation.isPending;
+  // A write is only safe once the read has SUCCEEDED. While it is loading or
+  // failed, `currentConfig` is null for a reason that says nothing about
+  // whether a row exists on the server.
+  const canSave = canEdit && !isLoading && !isError;
 
   const schemaFields = useMemo(() => buildFields(availableTypes), [availableTypes]);
 
-  // Current config from the server
+  // Current config from the server — from BOTH buckets, see `listedConfigurations`.
   const currentConfig = useMemo(() => {
-    const items: ConfigurationItem[] = data?.items ?? [];
-    return items.find((item) => item.section === ENVIRONMENT_SECTION) ?? null;
-  }, [data?.items]);
+    return listedConfigurations(data).find((item) => item.section === ENVIRONMENT_SECTION) ?? null;
+  }, [data]);
 
   // Draft values — single state object keyed by field key
   const [draftValues, setDraftValues] = useState<Record<string, string>>({});
+  /*
+   * Field keys the user actually typed in since the last successful save.
+   * `handleBlur` compares the parsed draft against `currentConfig?.data?.[key]`.
+   * That value is `undefined` whenever no row is loaded, so every value
+   * "differs". Merely tabbing THROUGH a field therefore issued a write. A ref, not state: a
+   * blur must read the value the matching change already set, in the same
+   * commit, and this never drives rendering.
+   */
+  const dirtyFieldsRef = useRef<Set<string>>(new Set());
   // Inline per-field error messages (validation failures + save/restore failures)
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
@@ -199,12 +240,15 @@ export const Environment = memo(function Environment() {
   }, []);
 
   const handleChange = useCallback((fieldKey: string, value: string) => {
+    dirtyFieldsRef.current.add(fieldKey);
     setDraftValues((prev) => ({ ...prev, [fieldKey]: value }));
   }, []);
 
   const handleBlur = useCallback(
     async (fieldKey: string) => {
-      if (!canEdit) return;
+      if (!canSave) return;
+      // Nothing was typed — a blur alone must never write.
+      if (!dirtyFieldsRef.current.has(fieldKey)) return;
 
       const field = schemaFields.find((f) => f.key === fieldKey);
       if (!field) return;
@@ -213,7 +257,10 @@ export const Environment = memo(function Environment() {
       const parsedValue = parseFieldValue(rawValue, field.type);
       const savedValue = currentConfig?.data?.[fieldKey];
 
-      if (parsedValue === savedValue) return;
+      if (parsedValue === savedValue) {
+        dirtyFieldsRef.current.delete(fieldKey);
+        return;
+      }
 
       const validationError = validateFieldValue(rawValue, field);
       if (validationError) {
@@ -225,6 +272,7 @@ export const Environment = memo(function Environment() {
           }),
         }));
         setDraftValues((prev) => ({ ...prev, [fieldKey]: toDisplayString(savedValue ?? field.defaultValue) }));
+        dirtyFieldsRef.current.delete(fieldKey);
         return;
       }
 
@@ -247,6 +295,7 @@ export const Environment = memo(function Environment() {
             data: { [fieldKey]: parsedValue },
           });
         }
+        dirtyFieldsRef.current.delete(fieldKey);
         clearFieldError(setFieldErrors, fieldKey);
       } catch (err) {
         setFieldErrors((prev) => ({
@@ -255,13 +304,13 @@ export const Environment = memo(function Environment() {
         }));
       }
     },
-    [canEdit, createMutation, currentConfig, draftValues, schemaFields, updateMutation],
+    [canSave, createMutation, currentConfig, draftValues, schemaFields, updateMutation],
   );
 
   const handleRestore = useCallback(
     async (fieldKey: string) => {
       const field = schemaFields.find((f) => f.key === fieldKey);
-      if (!canEdit || !field || !currentConfig?.id || field.defaultValue === undefined) return;
+      if (!canSave || !field || !currentConfig?.id || field.defaultValue === undefined) return;
 
       setDraftValues((prev) => ({ ...prev, [fieldKey]: String(field.defaultValue) }));
 
@@ -282,7 +331,7 @@ export const Environment = memo(function Environment() {
         }));
       }
     },
-    [canEdit, currentConfig, schemaFields, updateMutation],
+    [canSave, currentConfig, schemaFields, updateMutation],
   );
 
   // Don't render outside the public project
@@ -290,12 +339,20 @@ export const Environment = memo(function Environment() {
 
   return (
     <Box sx={styles.content}>
+      {isError && (
+        <Typography
+          role="alert"
+          sx={styles.loadError}
+        >
+          {t('shared.ui.settings.environment.loadError', 'The environment settings did not load, so the current values are unknown. Reload the page before you edit them.')}
+        </Typography>
+      )}
       {schemaFields.map((field) => (
         <EnvironmentFieldRow
           key={field.key}
           field={field}
           value={draftValues[field.key] ?? ''}
-          disabled={!canEdit || isBusy}
+          disabled={!canEdit || isBusy || isError}
           error={fieldErrors[field.key]}
           onChange={handleChange}
           onBlur={(...args) => void handleBlur(...args)}
@@ -318,5 +375,9 @@ const styles: Record<string, SxProps<Theme>> = {
     backgroundColor: palette.background.tabPanel,
     height: '100%',
     overflowY: 'auto',
+  }),
+  loadError: ({ palette }) => ({
+    color: palette.error.main,
+    alignSelf: 'stretch',
   }),
 };

@@ -68,7 +68,14 @@ export interface ToolCardContext {
   readonly versionId?: number | string | undefined;
   /** Replaces `useFormikContext().values.version_details.meta.attachment_toolkit_id`. */
   readonly attachmentToolkitId?: number | string | undefined;
-  /** Replaces `ToolkitsHelpers.isToolkitTypeBlocked`'s module-level `BLOCKED_TOOLKITS` read — `shared/config` has no `blocked_toolkits` key yet (real, disclosed gap, see `../lib/toolkitBlocklist.ts`). */
+  /**
+   * The guardrails blocklist, as canonical comparison keys.
+   *
+   * Replaces `ToolkitsHelpers.isToolkitTypeBlocked`'s module-level
+   * `BLOCKED_TOOLKITS` read. Supplied by `AgentToolRow` from
+   * `../api/useBlockedToolkitTypes`; it was declared and never filled until
+   * then, which made `isBlockedToolkit` structurally always false.
+   */
   readonly blockedToolkitTypes?: readonly string[] | undefined;
 }
 
@@ -137,7 +144,17 @@ export interface ToolCardProps {
   readonly context: ToolCardContext;
   readonly icon?: ToolCardIcon | undefined;
   readonly disassociate: ToolCardDisassociateProps;
-  readonly variables: ToolCardVariablesProps;
+  /**
+   * OPTIONAL, and omitting it WITHHOLDS the whole variables control — no
+   * "Show variables" toggle, no variables panel, regardless of
+   * `tool.variables` (#248). There is nowhere to store per-tool variables on
+   * this backend (no column, no table, no `tools` branch in `UpdateVersion`,
+   * and `fetchVersionDetails` emits no `variables` key), so the only caller
+   * — `AgentToolRow`, see its module doc comment — passes nothing rather than
+   * offering an editable field whose input is discarded. Hidden, not
+   * disabled, matching the legacy baseline's own omit-when-empty gate.
+   */
+  readonly variables?: ToolCardVariablesProps | undefined;
   readonly toolSelection: ToolCardToolSelectionProps;
   readonly validation?: ToolCardValidationProps | undefined;
   readonly delegatedAuth?: ToolCardDelegatedAuthProps | undefined;

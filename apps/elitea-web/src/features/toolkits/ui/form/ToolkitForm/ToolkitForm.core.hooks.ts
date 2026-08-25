@@ -21,7 +21,19 @@ import type { ResolvedToolkitFormProps, ToolkitConfigurationState } from './Tool
  * with `ToolkitForm.configuration.hooks.ts`'s `useToolkitFormConfiguration`)
  * purely to stay under the §3.5 400-line-per-file / complexity-12 budgets.
  */
-export type EditFieldFn = (field: string, value: unknown, replace?: boolean, options?: { readonly isAutoSelect?: boolean }) => Promise<void>;
+/**
+ * `options.section` carries the schema section of the field being edited, and
+ * exists so `applyAutoSelectFormReset` can carve `credentials` out of its
+ * dirty-suppression (EL-6180). A caller that renders a section-bearing field
+ * passes it through; the baseline threads it the same way, at
+ * `ToolBaseProperty.jsx:501` (`{ ...options, section }`).
+ */
+export type EditFieldFn = (
+  field: string,
+  value: unknown,
+  replace?: boolean,
+  options?: { readonly isAutoSelect?: boolean; readonly section?: string },
+) => Promise<void>;
 
 export interface CoreState {
   readonly view: string;

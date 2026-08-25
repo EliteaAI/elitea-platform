@@ -159,13 +159,17 @@ type assetProvisioner interface {
 
 // Client is the hardened JetStream client. It is safe for concurrent use.
 type Client struct {
-	cfg      Config
-	nc       conn
-	js       jetstream.JetStream
-	pub      publisher
-	budget   counterReader
-	cooldown kvCreator
-	breaker  *gobreaker.CircuitBreaker[uint64]
+	cfg    Config
+	nc     conn
+	js     jetstream.JetStream
+	pub    publisher
+	budget counterReader
+	// ratelimit is the GATEWAY_RATELIMIT counter stream (ratelimit.go). It is a
+	// separate handle from budget because the two streams have opposite
+	// retention needs; see that file's header.
+	ratelimit counterReader
+	cooldown  kvCreator
+	breaker   *gobreaker.CircuitBreaker[uint64]
 
 	// onStateChange, if set, is invoked on every breaker transition — the
 	// recovery-reconciliation goroutine (§8.5) subscribes here.
@@ -311,16 +315,21 @@ func (c *Client) ensureAssets(ctx context.Context, prov assetProvisioner) error 
 	// outage window is deduplicated at the publish side. MaxMsgs/MaxBytes cap
 	// unbounded growth if the scheduler is lagging.
 	if _, err := prov.CreateOrUpdateStream(sctx, jetstream.StreamConfig{
-		Name:      DeltasStream,
-		Subjects:  []string{DeltaSubject},
-		Storage:   jetstream.FileStorage,
-		Replicas:  c.cfg.Replicas,
-		Retention: jetstream.LimitsPolicy,
+		Name:       DeltasStream,
+		Subjects:   []string{DeltaSubject},
+		Storage:    jetstream.FileStorage,
+		Replicas:   c.cfg.Replicas,
+		Retention:  jetstream.LimitsPolicy,
 		Duplicates: RecoveryDedupeWindow,
-		MaxMsgs:   500_000,
-		MaxBytes:  512 * 1024 * 1024, // 512 MiB
+		MaxMsgs:    500_000,
+		MaxBytes:   512 * 1024 * 1024, // 512 MiB
 	}); err != nil {
 		return fmt.Errorf("nats: ensure deltas stream: %w", err)
+	}
+
+	// Governance rate-limit counter stream (ratelimit.go).
+	if err := c.ensureRateLimitAssets(sctx, prov); err != nil {
+		return err
 	}
 
 	// Bind the budget counter stream handle for reads/increments.

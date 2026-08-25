@@ -19,22 +19,30 @@
 //     the GATEWAY_BUDGET_DELTAS stream and elitea-scheduler's budgetwriteback
 //     consumer folds them into this table. So this API reports what the
 //     write-back path persists, which is issue #246's stated data source.
+//   - gateway.llm_usage_events — the per-request ledger added by issue #320:
+//     one row per billed call, carrying the member, the provider, the model and
+//     the provider-reported token counts. It is a REPORT of the same money the
+//     accumulator holds, written from the same delta under the same event id,
+//     and no budget decision reads it. Only the usage endpoint's dimensional
+//     views come from here; every limit and every spend figure still comes from
+//     the accumulator, so the two can never disagree about what was billed.
 //
-// # What the reference served that this cannot
+// # The dimensional views, and when they are absent
 //
-// The pylon original (legacy/plugins/elitea_core/api/v2/{project_budget,
-// project_budgets,user_budget,user_budgets,usage}.py) assembled its numbers
-// from LiteLLM, which kept a per-model, per-day, per-token ledger. The
-// write-back path persists a single accumulated USD figure per scope and
-// period. So the token counts (prompt_tokens / completion_tokens /
-// total_tokens), the per-model table and the per-day series are ABSENT from
-// these responses rather than present-and-zero. Zero-filling them would render
-// as "this project made no calls", which is a different and wrong claim; an
-// absent field is one a client can detect.
+// The pylon original assembled its numbers from LiteLLM, which kept a
+// per-model, per-day, per-token ledger. Until issue #320 nothing in this
+// platform kept one, so the token counts, the per-model table and the per-day
+// series were absent from every response. gateway.llm_usage_events supplies
+// them now.
 //
-// `spend_available` reports whether an accumulator row exists for the current
-// period at all, so "no spend yet" and "no data" stay distinguishable — the
-// same field, with the same meaning, the reference carried.
+// They are still ABSENT rather than empty for a project the ledger has no rows
+// for, and the distinction is load-bearing in a way an empty array cannot
+// carry. A deployment upgraded part-way through a billing period has
+// accumulator spend from before the ledger existed and no events behind it;
+// zero-filling the chart there would render as "this project made no calls",
+// which is a different and wrong claim about the same period. The usage payload
+// says which case it is in `usage_events_available`, exactly as
+// `spend_available` already distinguishes "no spend yet" from "no data".
 //
 // # Denominations
 //
@@ -59,6 +67,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // Permissions the routes are gated on in internal/api/router.go, transcribed
@@ -80,12 +89,13 @@ const (
 // project id as text.
 const budgetScopeProject = "project"
 
-// budgetScopeUser is the accumulator scope a per-member figure WOULD be keyed
-// by. Nothing writes it: the gateway's admission and billing path knows only
-// the project scope. The reads below still ask for it, so that the day a
-// user-scoped delta is published this API surfaces it without a schema change —
-// and until then every per-member row reports spend_available=false rather than
-// an invented number. See userBudgetScopeID for the key shape.
+// budgetScopeUser is the accumulator scope a per-member figure is keyed by.
+// Since issue #321 the gateway writes it: llmproxy/budget_gate.go bills a
+// second delta under this scope for every call that carries a member id, and
+// admits against it. Before that the reads below asked for a row nothing wrote,
+// and every per-member figure reported spend_available=false. See
+// userBudgetScopeID for the key shape, which the gateway mirrors in
+// failmode.UserScopeID.
 const budgetScopeUser = "user"
 
 // defaultCurrency is the only currency this platform prices in. The gateway
@@ -275,7 +285,7 @@ SELECT EXISTS (SELECT 1 FROM centry.project WHERE id = $1 AND name = $2)`,
 func writeJSON(w http.ResponseWriter, code int, payload any) {
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	encoded = append(encoded, '\n')

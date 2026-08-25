@@ -54,17 +54,34 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/elitea-auth-validate ./cmd/elitea-auth-validate && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-runtime-material ./cmd/elitea-runtime-material && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/elitea-auth-material ./cmd/elitea-auth-material && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/index-v2-preflight ./cmd/index-v2-preflight && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /out/cutover-ctl ./cmd/cutover-ctl
 
-# ── Stage 3: vulnerability scan ───────────────────────────────────────────────
-FROM aquasec/trivy:latest AS scanner
-COPY --from=builder /out/ /
-# Fail the build on HIGH/CRITICAL vulnerabilities in shipped binaries.
-RUN trivy rootfs --exit-code 1 --severity HIGH,CRITICAL --no-progress /
+# ── Vulnerability scan: NOT a stage here. Do not add one back. ────────────────
+# A `FROM aquasec/trivy:latest AS scanner` stage used to sit at this point. No
+# stage copied from it, so BuildKit and podman pruned it from every build graph
+# and the "fail the build on HIGH/CRITICAL" gate never ran once (issue #224).
+# Measured with `podman build --target final`: the log went `[2/7]` then
+# `[4/7]`, so the scanner stage was never entered.
+#
+# The scan is now the `container-scan` job in .github/workflows/ci-go.yml. It
+# runs `trivy image` against this Containerfile's `final` target — the artefact
+# that publish.yml ships — and it goes red on its own. Three reasons for a job
+# instead of a stage:
+#   1. A scan failure reads as a scan failure, not as a build error.
+#   2. The job prints every finding. A failed RUN prints a build log.
+#   3. The shipping image no longer depends on `aquasec/trivy:latest` at build
+#      time, so a local `podman build` needs no scanner image and no
+#      vulnerability database.
+# The job also fails when the report holds no Go binary. A scan that no longer
+# reaches the binaries therefore goes red instead of reporting zero findings.
 
-# ── Stage 4: shared runtime image ─────────────────────────────────────────────
+# ── Stage 3: shared runtime image ─────────────────────────────────────────────
 FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /out/ /
@@ -78,7 +95,7 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
 
 ENTRYPOINT ["/elitea-main"]
 
-# ── Stage 5: mixed Centry deployment ──────────────────────────────────────────
+# ── Stage 4: mixed Centry deployment ──────────────────────────────────────────
 # `/nonexistent` is deliberate and stays that way. In deploy/centry-hybrid the
 # traefik router sends only /healthz and a short list of API paths to
 # elitea-main; `/admin/app` falls through the `current-platform` PathPrefix(`/`)
@@ -88,7 +105,7 @@ FROM runtime AS hybrid
 
 ENV ADMIN_UI_STATIC_DIR=/nonexistent
 
-# ── Stage 6: E2E test image ───────────────────────────────────────────────────
+# ── Stage 5: E2E test image ───────────────────────────────────────────────────
 # Byte-identical to `final` below, which derives from it. The separate name is
 # kept only because deploy/docker-compose.e2e-standalone.yml selects
 # `target: e2e`; keeping `final` a child of this stage makes "E2E exercises the
@@ -97,7 +114,7 @@ FROM runtime AS e2e
 
 COPY --from=admin-builder /build/dist/admin /data/admin_ui/static/dist
 
-# ── Stage 7: standalone final image (default target) ──────────────────────────
+# ── Stage 6: standalone final image (default target) ──────────────────────────
 # Last stage, so a `docker build` with no --target still produces the shipping
 # image. publish.yml and docker-bake.hcl also name it explicitly.
 FROM e2e AS final

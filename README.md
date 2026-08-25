@@ -73,11 +73,19 @@ self-contained recipe for the **target** architecture: Go `elitea-main` +
 deploy/scripts/standalone-stack.sh certs   # once — local mTLS material (deploy/certs/, gitignored)
 deploy/scripts/standalone-stack.sh up
 deploy/scripts/standalone-stack.sh seed
+deploy/scripts/standalone-stack.sh seed-runtime
 OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # optional: a real provider credential
-deploy/scripts/standalone-stack.sh check   # gateway reachable over mTLS
+deploy/scripts/standalone-stack.sh check   # asserts the stack; read its last line
 
 open http://localhost:8084/app/
 ```
+
+`check` prints one line for each assertion. Its last line reports how many
+passed, how many failed, how many were skipped, and how many of the expected
+assertions reported a result at all. A skipped assertion exits non-zero unless
+you pass `--allow-skips`, and a run that reports fewer results than expected
+exits non-zero even with that flag. Read that line rather than the exit status
+alone.
 
 Or via Task: `task standalone:up` / `task standalone:down`.
 
@@ -169,7 +177,12 @@ prints only fixed generic failures and never prints the file path or contents.
 
 Agent runtime and SDK execution engine. Uses the shared pylon base image and loads plugins dynamically from the [bootstrap](https://github.com/EliteaAI/bootstrap) repository at startup.
 
-**Plugins loaded:** worker_core, sdk_plugin, indexer_worker, provider_worker, runtime_engine_litellm, tracing
+**Plugins loaded:** shared, auth, worker_core, sdk_plugin, indexer_worker, provider_worker, tracing
+
+`runtime_engine_litellm` is deliberately absent (issue #323). It ran a LiteLLM
+proxy inside this container, which was a second LLM data plane with no budget
+and no billing. The LLM data plane is `elitea-llm-gateway`, reached through
+`elitea-main` at `/llm/v1`.
 
 **Key environment variables:**
 

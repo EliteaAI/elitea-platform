@@ -3,27 +3,18 @@ package repos
 import (
 	"context"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	indexingapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/indexing"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/litellm"
 )
 
-type embeddingIntegrationMasterKey struct{}
-
-func (embeddingIntegrationMasterKey) MasterKey(context.Context) (string, error) {
-	return "integration-master-key", nil
-}
-
-func TestCurrentEmbeddingBindingResolvesFromTenantPostgresAndLiteLLM(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+// TestCurrentEmbeddingBindingResolvesFromTenantPostgres proves the binding is
+// resolved entirely from the tenant configuration rows — the same rows the
+// Bifrost gateway reads per project — with no LLM proxy registry involved.
+func TestCurrentEmbeddingBindingResolvesFromTenantPostgres(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
 	configurations, err := NewCurrentConfigurationsRepository(pool)
 	if err != nil {
 		t.Fatal(err)
@@ -52,64 +43,25 @@ INSERT INTO p_1.configuration (
 		t.Fatal(err)
 	}
 
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Authorization") != "Bearer integration-master-key" {
-			t.Errorf("missing LiteLLM administration identity")
-		}
-		writer.Header().Set("Content-Type", "application/json")
-		switch calls.Add(1) {
-		case 1:
-			if request.URL.Path != "/model_group/info" ||
-				request.URL.Query().Get("model_group") != "2_text-embedding-current" {
-				t.Errorf("group request=%s", request.URL.String())
-			}
-			_, _ = io.WriteString(writer, `{"data":[]}`)
-		case 2:
-			if request.URL.Path != "/model_group/info" ||
-				request.URL.Query().Get("model_group") != "1_text-embedding-current" {
-				t.Errorf("group request=%s", request.URL.String())
-			}
-			_, _ = io.WriteString(writer, `{"data":[{"model_group":"1_text-embedding-current","providers":["openai"]}]}`)
-		case 3, 4:
-			_, _ = io.WriteString(writer, `{"data":[]}`)
-		default:
-			t.Errorf("unexpected LiteLLM request %s", request.URL.String())
-			writer.WriteHeader(http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
-	client, err := litellm.NewClient(
-		litellm.ClientConfig{BaseURL: server.URL},
-		embeddingIntegrationMasterKey{},
-		server.Client(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resolver, err := indexingapp.NewCurrentEmbeddingBindingResolver(
-		configurations,
-		client,
-		1,
-	)
+	resolver, err := indexingapp.NewCurrentEmbeddingBindingResolver(configurations, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
+	// The caller's project p_2 holds no such row, so the shared public-project
+	// row backs the binding — and the wire name stays unprefixed, because the
+	// gateway resolves the project from the edge identity.
 	binding, err := resolver.Resolve(ctx, 2, "text-embedding-current", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if binding.ModelName != "text-embedding-current" ||
-		binding.ResolvedModelGroup != "1_text-embedding-current" ||
-		binding.Route != "public" ||
+		binding.ResolvedModelGroup != "text-embedding-current" ||
+		binding.Route != "raw" ||
 		binding.ConfigurationProjectID != 1 ||
 		binding.ConfigurationUUID != "00000000-0000-0000-0000-000000000107" ||
 		binding.ConfigurationDigest.IsZero() {
 		t.Fatalf("binding=%#v", binding)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("LiteLLM calls=%d", calls.Load())
 	}
 	preferredPublicProject := int32(1)
 	if _, err := resolver.Resolve(ctx, 2, "private-embedding", &preferredPublicProject); !errors.Is(
@@ -118,14 +70,54 @@ INSERT INTO p_1.configuration (
 	) {
 		t.Fatalf("private public-project binding escaped tenant scope: %v", err)
 	}
-	if calls.Load() != 4 {
-		t.Fatalf("unexpected LiteLLM calls=%d", calls.Load())
+
+	// A project-local row of the same name must win over the shared one.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_2.configuration (
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+) VALUES (
+    5, '00000000-0000-0000-0000-000000000207', 2, 'Embedding', 'embedding_current',
+    'embedding_model', 'embedding',
+    '{"name":"text-embedding-current","ai_credentials":{"elitea_title":"credential-local","private":true}}'::jsonb,
+    '{}'::jsonb, false, true, 'user'
+)`); err != nil {
+		t.Fatal(err)
+	}
+	local, err := resolver.Resolve(ctx, 2, "text-embedding-current", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if local.ConfigurationProjectID != 2 ||
+		local.ConfigurationUUID != "00000000-0000-0000-0000-000000000207" ||
+		local.ConfigurationDigest == binding.ConfigurationDigest {
+		t.Fatalf("project-local row lost to the shared duplicate: %#v", local)
+	}
+
+	// Two mutable rows sharing one model name stay an ambiguous catalog, not a
+	// silent pick of the first: the LIMIT 2 sentinel must reach the caller.
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_2.configuration (
+    id, uuid, project_id, label, elitea_title, type, section, data, meta,
+    shared, status_ok, source
+) VALUES (
+    6, '00000000-0000-0000-0000-000000000208', 2, 'Embedding copy', 'embedding_current_copy',
+    'embedding_model', 'embedding',
+    '{"name":"text-embedding-current","ai_credentials":{"elitea_title":"credential-local","private":true}}'::jsonb,
+    '{}'::jsonb, false, true, 'user'
+)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.Resolve(ctx, 2, "text-embedding-current", nil); !errors.Is(
+		err,
+		indexingapp.ErrCurrentEmbeddingBindingAmbiguous,
+	) {
+		t.Fatalf("duplicate mutable definitions error=%v", err)
 	}
 }
 
 func TestPostgresServiceBackedCurrentModelCatalogBoundsBeforeJSONProjection(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `

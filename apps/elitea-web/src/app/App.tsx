@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react';
 import { getConfig, MissingEnvPage } from '@/shared/config';
 import { configureGeneratedClient } from '@/shared/api/generated/mutator';
 import { createAuthPopupController } from '@/shared/api/auth';
+import { AUTH_CALLBACK_PATH } from '@/shared/api/auth/constants';
+import { authPlaneFromProbeStatus, buildLoginUrl, loginPathForPlane } from '@/shared/api/auth/login-redirect';
+
+import { useSelectedProjectStore } from '@/widgets/app-shell';
 
 import { AppProviders, getAppBasename } from './providers';
 import { createAppRouter } from './router';
@@ -69,13 +73,93 @@ export function App() {
    * match ROUTE-001.
    */
   const [authPopup] = useState(() =>
-    createAuthPopupController({ basePath: getAppBasename().replace(/\/$/, '') }),
+    createAuthPopupController({
+      basePath: getAppBasename().replace(/\/$/, ''),
+      /**
+       * The login entry point differs per authentication plane, and the two
+       * planes are mutually exclusive. A popup opened at the OIDC path on a
+       * form-auth deployment shows a 404. The callback route therefore never
+       * loads, and no result is ever posted. Every request behind the
+       * single-flight slot stays pending until the user closes the window.
+       *
+       * A GETTER, not a value. This initializer runs before the first
+       * `fetchSession()` resolves, so `probeStatus` is still undefined here
+       * and `authPlaneFromProbeStatus(undefined)` answers `'oidc'`. The
+       * getter runs once per flight, by which time the probe has answered.
+       */
+      loginPath: () =>
+        loginPathForPlane(authPlaneFromProbeStatus(useSessionStore.getState().probeStatus)),
+    }),
   );
+
+  /**
+   * Re-read the permission list when the user switches project, then re-run
+   * every active `beforeLoad`.
+   *
+   * A permission list answers for ONE project. Without this the list read at
+   * boot stays attached to the old project. `routes/-guards/requirePermission.ts`
+   * then keeps deferring for the rest of the session. The guards go inert
+   * again after the first switch.
+   *
+   * The boot fetch already reads the list for the first selection, so this
+   * skips the run before the session is loaded.
+   */
+  const selectedProjectId = useSelectedProjectStore((state) => state.project?.id);
+  const refreshPermissions = useSessionStore((state) => state.refreshPermissions);
+  useEffect(() => {
+    if (selectedProjectId === undefined) return;
+    if (!useSessionStore.getState().loaded) return;
+    void refreshPermissions().then(() => router.invalidate());
+  }, [selectedProjectId, refreshPermissions, router]);
 
   useEffect(() => {
     void fetchSession().then(() => {
       // Re-run all active beforeLoad guards now that the session is known.
       void router.invalidate();
+
+      // Not logged in -> send the browser to the login form.
+      //
+      // Without this the app renders `<RoutePending />` forever: nothing gates
+      // /app/** at the edge, so an unauthenticated deep link is served the SPA
+      // shell, the session probe correctly reports "no session", every route
+      // guard fails open, and the index guard returns {kind:'loading'}. The
+      // login form was one redirect away and nothing performed it.
+      //
+      // A full-page assign rather than the router: the login form is served by
+      // elitea-main and is outside this SPA's route tree.
+      //
+      // The callback path is exempt. It is where the OIDC popup lands to hand
+      // its result back, and it runs while the opener is still unauthenticated
+      // by definition — redirecting it would cancel the flight it completes.
+      const { user, probeStatus } = useSessionStore.getState();
+      if (user !== undefined) return;
+      if (window.location.pathname.endsWith(AUTH_CALLBACK_PATH)) return;
+
+      /*
+       * A probe that never ANSWERED is not a probe that said "no session".
+       *
+       * `probeStatus` is `undefined` only for the two `HttpFailure` kinds that
+       * carry no status: `network` and `aborted` (`shared/api/http.ts:48-51`).
+       * Every real answer has one — 200, 401 and the Form plane's 404 alike.
+       *
+       * DEFECT this repairs (J20c, webkit). The browser cancels every in-flight
+       * request the instant it starts leaving a page. `/forward-auth/info` is
+       * issued from this effect, so a reload or a link click during boot aborts
+       * it. `fetchSession` then stored `user: undefined`, this continuation ran
+       * inside the UNLOADING document, and the assign below fought the
+       * navigation already under way. Measured on the E2E stack: `page.reload()`
+       * failed with "Frame load interrupted" and the browser landed on the OIDC
+       * authorize page instead of the page it was loading. A signed-in user who
+       * reloads early was thrown into a re-login.
+       *
+       * Not redirecting is also the right answer away from that race: when the
+       * probe cannot reach elitea-main, the login form it would send the browser
+       * to is served by that same unreachable elitea-main.
+       */
+      if (probeStatus === undefined) return;
+
+      const returnTo = window.location.pathname + window.location.search;
+      window.location.assign(buildLoginUrl(authPlaneFromProbeStatus(probeStatus), returnTo));
     });
   }, [fetchSession, router]);
 

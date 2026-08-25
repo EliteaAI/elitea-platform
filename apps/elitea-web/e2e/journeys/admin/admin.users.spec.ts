@@ -49,6 +49,35 @@ interface AdminUIConfig {
 const SEEDED_ADMIN = 'e2e-admin@autotest.local';
 const SEEDED_MEMBER = 'e2e-member@autotest.local';
 
+/**
+ * The user journey 28 suspends — one row per browser project, and NEITHER of
+ * the two personas above (issue #519).
+ *
+ * Journey 28 used to suspend `SEEDED_MEMBER`. That is the identity almost
+ * every other journey in this suite signs in as, and elitea-main refuses a
+ * suspended principal: `authsvc.PrincipalValidator` reloads the row through
+ * `GetActiveUserPrincipalByID`, which filters on `suspended = false`, and the
+ * request is answered 401 "authenticated principal is inactive". So for the
+ * whole suspend-reload-unsuspend window, every request of every concurrently
+ * running journey was answered 401 rather than what it asked for.
+ *
+ * `fullyParallel` is on, so which journeys were inside the window changed on
+ * every run. That is measurable, not theoretical: journey 33 below reads the
+ * user listing AS THE MEMBER and asserts 403, and it received 401 — the two
+ * tests are in this one file, and the window is why the same tree gives a
+ * different result each time.
+ *
+ * One row per project for the reason `admin.features.spec.ts` gives for its
+ * Help Center card: both engines run this file against one platform-wide
+ * table when the suite is run locally with both projects, and a shared row
+ * would have each engine observing the other's suspend window.
+ */
+function suspendFixture(projectName: string): string {
+  return projectName === 'chromium'
+    ? 'e2e-suspend-chromium@autotest.local'
+    : 'e2e-suspend-webkit@autotest.local';
+}
+
 adminTest('J27: the admin SPA is served with injected config and lists database users', async ({ page }) => {
   const response = await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
 
@@ -93,18 +122,22 @@ adminTest('J27: the admin SPA is served with injected config and lists database 
   await checkA11y(page);
 });
 
-adminTest('J28: suspending a user is written to the database and survives a reload', async ({ page }) => {
+adminTest('J28: suspending a user is written to the database and survives a reload', async ({ page }, testInfo) => {
   await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
 
-  const memberRow = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
-  await expect(memberRow).toBeVisible({ timeout: 15_000 });
+  // NOT the member persona — see `suspendFixture`'s note. Every assertion
+  // below is the one this journey always made; only the row it acts on moved
+  // off the identity the rest of the suite signs in as.
+  const subject = suspendFixture(testInfo.project.name);
+  const subjectRow = page.getByRole('row').filter({ hasText: subject });
+  await expect(subjectRow).toBeVisible({ timeout: 15_000 });
 
   // Precondition, asserted rather than assumed: the seed creates this user
   // un-suspended, and a test that started from "already suspended" would prove
   // nothing about the write.
-  await expect(memberRow.getByText('Active')).toBeVisible();
+  await expect(subjectRow.getByText('Active')).toBeVisible();
 
-  const suspend = memberRow.getByRole('button', { name: 'Suspend user' });
+  const suspend = subjectRow.getByRole('button', { name: 'Suspend user' });
   await expect(suspend, 'the admin persona holds admin.auth.users, so the control must be live').toBeEnabled();
 
   // The response is what proves the request was AUTHORISED, not merely sent.
@@ -121,7 +154,7 @@ adminTest('J28: suspending a user is written to the database and survives a relo
   // that answers 200 and writes nothing (#130, #180) cannot pass, and the one
   // the deleted sessionStorage version of this journey only pretended to make.
   await page.reload({ waitUntil: 'domcontentloaded' });
-  const afterReload = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
+  const afterReload = page.getByRole('row').filter({ hasText: subject });
   await expect(afterReload.getByText('Suspended')).toBeVisible({ timeout: 15_000 });
 
   // Restore, so this journey leaves the stack as it found it and can be re-run.
@@ -132,7 +165,7 @@ adminTest('J28: suspending a user is written to the database and survives a relo
   expect(unsuspendResponse.status()).toBe(200);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(
-    page.getByRole('row').filter({ hasText: SEEDED_MEMBER }).getByText('Active'),
+    page.getByRole('row').filter({ hasText: subject }).getByText('Active'),
   ).toBeVisible({ timeout: 15_000 });
 });
 

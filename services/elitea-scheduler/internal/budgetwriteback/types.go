@@ -82,6 +82,50 @@ type BudgetDelta struct {
 	// DeltaNanoUSD is the billed increment in int64 nano-USD. May be negative
 	// for a correction. Coalesced (summed) per key before the accumulator UPSERT.
 	DeltaNanoUSD int64 `json:"delta_nano_usd"`
+
+	// Usage carries the request's reporting dimensions (issue #320). It is
+	// nil for a delta that has none, and the consumer then appends nothing to
+	// the usage ledger.
+	//
+	// It is NOT coalesced with the rest of the group. The accumulator is summed
+	// per (scope, scope_id, period) because money adds up; the ledger keeps one
+	// row per request, because a per-model table cannot be reconstructed from a
+	// sum. So a group of ten deltas produces ONE accumulator UPSERT and up to
+	// ten ledger rows.
+	Usage *UsageDimensions `json:"usage,omitempty"`
+}
+
+// UsageDimensions are the reporting dimensions of one billed request: the
+// member it is attributed to, the provider and model it was billed against, and
+// the provider-reported token counts (issue #320).
+//
+// The JSON keys MUST match the gateway's usageDimsPayload exactly
+// (services/elitea-llm-gateway/internal/governance/store.go).
+//
+// These fields never reach gateway.llm_budget_accumulators. Budget admission
+// reads money per (scope, scope_id, period) and nothing else; this struct
+// exists so the Usage page can draw the per-day series and the per-model table
+// that the LiteLLM tag ledger used to supply and that nothing has supplied
+// since.
+type UsageDimensions struct {
+	// UserID is nil when the call carried no resolvable member (a service
+	// account, a token-authenticated integration). Nil, not 0: the per-member
+	// views must be able to tell "no member" from "member 0".
+	UserID *int `json:"user_id,omitempty"`
+	// Provider and Model are the resolved upstream, as billed.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// PromptTokens / CompletionTokens are provider-REPORTED. A response with no
+	// usage field yields zeros; nothing here is estimated (#79).
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	// OccurredAtUnix is when the GATEWAY billed the request, not when this
+	// consumer stored the row. The consumer runs behind the stream, and an
+	// outage-deferred group is redelivered until the accumulator row stops
+	// being outage-owned, so the two instants can fall on different DATES and
+	// even in different billing periods. The per-day series buckets on this
+	// value, so it must be the gateway's.
+	OccurredAtUnix int64 `json:"occurred_at"`
 }
 
 // deltaKey is the coalescing / upsert key: one accumulator row per

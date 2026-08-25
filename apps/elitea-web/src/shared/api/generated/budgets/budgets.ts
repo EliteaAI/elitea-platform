@@ -2263,16 +2263,24 @@ export const getGetProjectUsageUrl = (
  * date range is accepted.
  *
  * `scope=project` reports the whole project; `scope=user` reports only the
- * calling member's own budget within it — which is NOT enforced (see
- * `enforced`) and reports no spend of its own, because the billing path
- * accrues by project.
+ * calling member's own budget within it.
+ *
+ * The dimensional views — `daily`, `models` and the token totals — come
+ * from the per-request usage ledger added by issue #320. They are ABSENT,
+ * not empty, when the ledger holds no row for the scope in this period:
+ * an empty series reads as "no calls were made", which is a different and
+ * wrong claim about a deployment upgraded part-way through a period.
+ * `usage_events_available` says which case the payload is in, exactly as
+ * `spend_available` distinguishes "no spend yet" from "no data".
  *
  * A member who may not see platform cost figures receives the same payload
  * with `monthly_limit`, `effective_limit`, `spend`, `remaining` and
- * `currency` REMOVED and `can_see_amounts: false`; percentages, the
- * warning threshold and the period are still present, so the usage bar
- * still renders. Project admins, and the owner of a personal project, see
- * the amounts.
+ * `currency` REMOVED and `can_see_amounts: false`; the `spend` inside each
+ * `daily` and `models` row is removed too, because leaving the same money
+ * in a per-day series would make the control decorative. Percentages, the
+ * warning threshold, the period and the token counts are still present, so
+ * the usage bar and the charts still render. Project admins, and the owner
+ * of a personal project, see the amounts.
  * @summary Current-period usage against the applicable budget
  */
 export const getProjectUsage = async (

@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { HeadingChip } from '@/shared/ui/HeadingChip';
 import { SingleSelect, type SingleSelectOption } from '@/shared/ui/SingleSelect';
@@ -271,8 +272,12 @@ export function SimpleLLMInputItem(props: SimpleLLMInputItemProps): ReactNode {
     [onChange, onChangeMapping, type, variable, variableName],
   );
 
+  // The capability is the first term because the assistant's only
+  // action POSTs `predict_llm`, which no router mounts — see
+  // `shared/config/backendCapabilities`. The field then renders as the plain
+  // input, which is the same field without the assistant button.
   const shouldEnableAIAssistant = useMemo(
-    () => enableAIAssistant && (type === 'fstring' || type === 'fixed') && AI_ASSISTANT_VARIABLE_NAMES.has(variableName),
+    () => hasBackendCapability('aiGeneration') && enableAIAssistant && (type === 'fstring' || type === 'fixed') && AI_ASSISTANT_VARIABLE_NAMES.has(variableName),
     [enableAIAssistant, type, variableName],
   );
 

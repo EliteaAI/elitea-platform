@@ -2,9 +2,8 @@
  * Inline editable cell for the secrets DataGrid.
  *
  * Renders an `<input>` (or `<textarea>` for multi-line) within the DataGrid
- * cell, with validation for name fields (alphanumeric + `_` / `-` only) and
- * a character limit.  Pressing Enter exits edit mode; Shift+Enter inserts a
- * newline.
+ * cell, with validation for name fields and a character limit. Pressing Enter
+ * exits edit mode; Shift+Enter inserts a newline.
  *
  * Ported from `apps/elitea-ui/src/[fsd]/features/settings/ui/secrets/
  * EditSecretInputGridTable.jsx`.
@@ -18,7 +17,16 @@ import { t } from '@/shared/i18n';
 
 /** Matches the baseline's `MAX_VARIABLES_LENGTH` (`common/constants.js:69`). */
 const MAX_SECRET_LENGTH = 768;
-const NAME_PATTERN = /^[a-zA-Z0-9_-]*$/;
+/**
+ * The name class the SERVER accepts: letters, digits and underscore
+ * (`internal/api/v2/secrets`, `acceptableSecretName`).
+ *
+ * This pattern also accepted a hyphen. The grid then let the user save
+ * `my-key`, and the API answered HTTP 400. A hyphenated name also cannot
+ * resolve: the expander matches `[A-Za-z0-9_]+` and leaves any other name as
+ * the literal `{{secret.<name>}}` text.
+ */
+const NAME_PATTERN = /^[a-zA-Z0-9_]*$/;
 
 export interface EditSecretInputGridTableProps {
   /** Unique row identifier. */
@@ -51,7 +59,10 @@ export const EditSecretInputGridTable = memo(function EditSecretInputGridTable({
   /* ── validation ───────────────────────────────────────────────────── */
   const validationError = useMemo(() => {
     if (field === 'name' && inputValue && !NAME_PATTERN.test(inputValue)) {
-      return t('entities.secret.validation.invalidName', 'Only alphanumeric characters, underscore and hyphen are allowed');
+      return t(
+        'entities.secret.validation.nameCharacters',
+        'Only letters, digits and underscore are allowed',
+      );
     }
     return null;
   }, [field, inputValue]);

@@ -5,10 +5,14 @@
  *
  * ## `permissions` is PRESENTATION state. It is NOT authorisation.
  *
- * That handler HARDCODES the permission array: every caller presenting a valid
- * `elitea_session` cookie receives the same fixed list of `admin.*` /
- * `configuration.*` strings, regardless of what roles they actually hold. It is
- * a hint about what to render, nothing more.
+ * That handler resolves the caller's real administration-mode permissions from
+ * `auth_core__user_role` and injects those. It injects an empty list when the
+ * resolver refuses or fails. The array is still a hint about what to render,
+ * nothing more.
+ *
+ * It used to HARDCODE a 37-string admin list for every caller with a valid
+ * `elitea_session` cookie. A rank-and-file user therefore saw the whole
+ * console, and every click returned 403. Do not restore that fallback.
  *
  * The server is the gate. Every admin write is gated in
  * `internal/api/router.go` by `RequireCentralPermissions(…, "admin.auth.users")`,
@@ -31,6 +35,7 @@ interface AdminUiConfig {
   readonly user_email?: string;
   /** Presentation hint only — see this module's header. */
   readonly permissions?: readonly string[];
+  /** Always empty. The handler resolves permissions only. */
   readonly roles?: readonly string[];
 }
 

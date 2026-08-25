@@ -47,12 +47,11 @@ import Typography from '@mui/material/Typography';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminUsersTable } from './AdminUsersTable';
 import { ADMIN_USERS_PAGE_SIZE, useAdminUsersPage } from './useAdminUsersPage';
 
-const { DrawerPage } = drawerPage;
 
 export function AdminUsers() {
   const state = useAdminUsersPage();

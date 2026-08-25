@@ -11,6 +11,10 @@ import type { ApplicationVersionDetail, ApplicationVersionSummary } from '@/shar
 import { renderAgentsRoute } from '../__tests__/testRouter';
 
 import { useEditApplicationVersionControls } from './useEditApplicationVersionControls';
+import {
+  useEditApplicationVersionFields,
+  type EditApplicationVersionFields,
+} from './useEditApplicationVersionFields';
 
 /**
  * Driven through the unit's REAL router fixture rather than a mocked
@@ -43,12 +47,15 @@ interface ProbeProps {
   readonly isFetching: boolean;
   readonly applicationId: number | undefined;
   readonly version: ApplicationVersionDetail | undefined;
+  /** Overrides the seeded fields, to stand in for edits the user has typed but not saved. */
+  readonly edits?: EditApplicationVersionFields | undefined;
 }
 
-function Probe({ starters, isReadOnly, isFetching, applicationId, version }: ProbeProps) {
+function Probe({ starters, isReadOnly, isFetching, applicationId, version, edits }: ProbeProps) {
   const form = useForm<ApplicationCreationInput>({
     values: { name: 'a', description: 'b', version_details: { conversation_starters: [...starters] } },
   });
+  const versionFields = useEditApplicationVersionFields(version);
   const state = useEditApplicationVersionControls({
     projectId: '9',
     applicationId,
@@ -56,6 +63,7 @@ function Probe({ starters, isReadOnly, isFetching, applicationId, version }: Pro
     versions,
     activeVersion: version,
     control: form.control,
+    versionFields: edits ?? versionFields.fields,
     isReadOnly,
     isFetching,
   });

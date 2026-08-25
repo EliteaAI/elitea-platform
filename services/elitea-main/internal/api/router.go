@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/adminui"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/gateway"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/health"
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	scimapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/scim"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/shadow"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/admin"
 	v2analytics "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/analytics"
@@ -20,6 +22,7 @@ import (
 	v2artifacts "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/artifacts"
 	v2auth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/auth"
 	v2branding "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/branding"
+	v2budgets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/budgets"
 	v2configs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/configurations"
 	v2contextmgr "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/contextmgr"
 	v2convs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/conversations"
@@ -32,7 +35,6 @@ import (
 	v2moderation "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/moderation"
 	v2openapidocs "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/openapidocs"
 	v2projectinfo "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projectinfo"
-	v2budgets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/budgets"
 	v2projects "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/projects"
 	v2promptcontextreads "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/promptcontextreads"
 	v2scheduling "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/scheduling"
@@ -44,13 +46,21 @@ import (
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/artifactbootstrap"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/applications"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/identityproviders"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/authsvc"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
 	dbrepos "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/legacyrbac"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/scimdirectory"
+	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
@@ -66,8 +76,8 @@ type AuthDeps struct {
 	ForwardedIdentityVerifier apimw.ForwardedIdentityPeerVerifier
 	SessionHandler            *v2auth.SessionHandler
 	OIDCHandler               *v2auth.OIDCHandler
+	SAMLHandler               *v2auth.SAMLHandler
 	SessionSecret             string
-	TrustedProxyCIDRs         []string
 }
 
 // NOTE(#126): IndexerDeps and its six fields — Predictor, LLMService,
@@ -96,6 +106,7 @@ type RouterConfig struct {
 	PrincipalValidator apimw.PrincipalValidator
 	SessionHandler     *v2auth.SessionHandler
 	OIDCHandler        *v2auth.OIDCHandler
+	SAMLHandler        *v2auth.SAMLHandler
 	HealthDeps         health.Deps
 	Pool               *pgxpool.Pool
 	// ArtifactPermissionResolver overrides the legacyrbac.NewPostgresResolver
@@ -104,6 +115,21 @@ type RouterConfig struct {
 	// other route keeps using the Pool-backed resolver regardless of this
 	// field.
 	ArtifactPermissionResolver platformauth.PermissionResolver
+	// ProjectAccessQuerier overrides the Pool-backed membership query that
+	// apimw.RequireProjectAccess runs for the /elitea_core project-scoped
+	// routes (#302) — tests inject one here to control the membership answer
+	// without a live database. With a nil Pool the middleware can only answer
+	// 503, which proves nothing about cross-tenant refusal. Production leaves
+	// this unset and keeps the Pool-backed query.
+	ProjectAccessQuerier apimw.ProjectAccessQuerier
+	// ProjectPermissionResolver overrides the legacyrbac.NewPostgresResolver
+	// built from Pool for the /elitea_core per-route permission gates (#302,
+	// #313) — tests inject one here to control which permissions a caller
+	// resolves without a live database. With a nil Pool the resolver can only
+	// answer denied, so every route would 403 and a test could not tell a
+	// working gate from a broken one. Production leaves this unset and keeps
+	// the Pool-backed resolver.
+	ProjectPermissionResolver platformauth.PermissionResolver
 	// ArtifactHandler overrides newArtifactHandler's Pool/ObjectStore-backed
 	// construction (S11) — newArtifactHandler always builds real
 	// Postgres-backed repositories from Pool with no injection seam, so a
@@ -112,6 +138,29 @@ type RouterConfig struct {
 	// other way to supply a working fake Repository/ObjectStore pair.
 	ArtifactHandler *v2artifacts.Handler
 	AppsRepo        applications.Repository
+	// ToolkitArgumentSchemas supplies GET /elitea_core/toolkits/prompt_lib/
+	// {projectID} with the per-tool argument schemas from the digest-pinned SDK
+	// snapshot. It is injected rather than constructed here because the snapshot
+	// is owned by internal/runtimecomposition, which imports this layer.
+	// Unassigned, the endpoint serves settings schemas with no argument schemas
+	// and every tool form in the web client renders empty.
+	ToolkitArgumentSchemas v2toolkits.ToolkitArgumentSchemaSource
+	// ToolkitSettingsDefinitions supplies the same endpoint with the "$defs"
+	// block each type's settings properties reference. It is injected for the
+	// same reason as ToolkitArgumentSchemas: the implementation joins two
+	// digest-pinned snapshots owned by internal/runtimecomposition.
+	// Unassigned, the endpoint serves no "$defs", and the web client's toolkit
+	// credential picker and index schedule credential select stay unreachable.
+	ToolkitSettingsDefinitions v2toolkits.ToolkitSettingsDefinitionSource
+	// ToolkitRegistry enumerates built-in toolkit types and their tools for
+	// `GET /admin/plugin_config_suggestions/administration/{key}`, which is what
+	// populates the guardrail fields' pickers on the admin Configuration page.
+	// It is the same digest-pinned snapshot as ToolkitArgumentSchemas, declared
+	// separately because it answers a different question and because a handler
+	// should not be handed a schema source in order to ask for a name list.
+	// Unassigned, the two toolkit suggestion sources answer 501 with a reason
+	// rather than an empty list.
+	ToolkitRegistry admin.ToolkitRegistrySource
 	SkillsRepo      v2skills.Repository
 	FoldersRepo     v2folders.Repository
 	TagsRepo        v2tags.Repository
@@ -120,11 +169,18 @@ type RouterConfig struct {
 	WebhookRepo     webhook.Repository
 	RedisClient     *goredis.Client
 	EventSource     v2events.EventSource
-	Shadow          *shadow.Comparator
-	ShadowMetrics   *shadow.Metrics
-	CutoverTracker  *cutover.Tracker
-	CutoverRouter   *cutover.Router
-	AdminUI         *adminui.Config
+	// ProjectVectorStore provisions a new project's PgVector credentials and
+	// its `vectorstorage` configuration row (#371). It is injected because the
+	// composition needs the Configurations runtime's finder, unsecreter and
+	// vault writer, and that runtime is owned by internal/runtimecomposition,
+	// which imports this layer. Unassigned, a created project has no vector
+	// store and cannot index — see createProjectVectorStore.
+	ProjectVectorStore projectprovisioning.ProjectVectorStore
+	Shadow             *shadow.Comparator
+	ShadowMetrics      *shadow.Metrics
+	CutoverTracker     *cutover.Tracker
+	CutoverRouter      *cutover.Router
+	AdminUI            *adminui.Config
 	// ObjectStore is the new S3/Azure/GCS-compatible backend (see
 	// docs/plans/storage-migration-plan.md). S8 reads it for the bucket-plane
 	// DELETE cascade, but only inside newProductionRouter — it is
@@ -132,7 +188,26 @@ type RouterConfig struct {
 	// routes there.
 	ObjectStore      storage.ObjectStore
 	BudgetAlertStore *gateway.BudgetAlertStore
-	SessionSecret    string
+	// GatewayStatus reads elitea-llm-gateway's `GET /governance/status` for the
+	// admin LLM Proxy section — the only surface that can tell an operator that
+	// a saved governance row was REJECTED, is INERT, or that the enforced
+	// snapshot is STALE.
+	//
+	// Typed as the interface so tests substitute a fake. Leave it nil on a
+	// deployment with no gateway address: the handler reports "not configured"
+	// as a state, and assigning a nil *gateway.GatewayStatusClient into it
+	// instead would produce a non-nil interface holding a nil pointer, which
+	// defeats that check and calls a method on a nil receiver (#86).
+	GatewayStatus gateway.StatusReader
+	SessionSecret string
+	// PATSigner signs the personal access tokens the /api/v2/auth/token route
+	// returns. Set it whenever the deployment validates a token with a key
+	// that is NOT SessionSecret. A form authentication graph does exactly
+	// that: it reads a token back with credentials.pat_signing_key_file.
+	//
+	// Leave it nil for the OIDC-only shape, where APPLICATION_SECRET_KEY both
+	// signs the token and reads it back. Never box a nil pointer into it.
+	PATSigner v2auth.TokenSigner
 	// InternalAdminToken is a disabled-by-default transitional control for
 	// shadow/cutover operations, not production workload identity. Empty leaves
 	// those routes unmounted.
@@ -163,7 +238,6 @@ type RouterConfig struct {
 	CurrentNotificationEvents     http.Handler
 	CurrentModelCatalog           http.Handler
 	CurrentModelDefault           http.Handler
-	CurrentLLMFacade              http.Handler
 	LLMProxy                      http.Handler
 	LLMProjectResolver            apimw.PersonalProjectResolver
 	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
@@ -171,6 +245,15 @@ type RouterConfig struct {
 	// in the production router.
 	GatewayProxy           http.Handler
 	GatewayProjectResolver apimw.PersonalProjectResolver
+	// ConfigConnectionChecker performs the real, minimal provider round trip
+	// backing /configurations/check_connection(s) (#319). nil leaves those
+	// routes reporting an honest "not available" failure rather than the
+	// previous unconditional-success stub.
+	ConfigConnectionChecker v2configs.ConnectionChecker
+	// ConfigProviderAdmission decides configuration.status_ok for a row the
+	// compatibility write routes store (#457). nil leaves every written row at
+	// the column default, false, which the LLM gateway refuses.
+	ConfigProviderAdmission v2configs.ProviderAdmission
 }
 
 type RuntimeRoutes struct {
@@ -230,6 +313,64 @@ func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 	return v2artifacts.NewHandler(artifactRepoAdapter{bucketsRepo, objectsRepo, grantsRepo}, cfg.ObjectStore), true
 }
 
+// bucketBootstrapRepoAdapter satisfies artifactbootstrap.Repository the same
+// way artifactRepoAdapter satisfies the artifacts one: the two S6 repositories
+// share no method names, so promotion supplies the union.
+type bucketBootstrapRepoAdapter struct {
+	*dbrepos.ArtifactBucketsRepository
+	*dbrepos.ArtifactObjectsRepository
+}
+
+// newProjectProvisioner builds the project-create pipeline (#333).
+//
+// ok is false without a pool, in which case the create route answers 503 rather
+// than provisioning half a tenant. The bucket bootstrapper is separate and
+// optional: a deployment with no object store still creates projects, it just
+// creates them without artifact buckets — which is the state EVERY project is
+// in today, so its absence cannot be a regression.
+//
+// The vector store is optional in the same way and for the same reason (#371),
+// with one difference worth stating: a project created without it CAN be
+// created and CANNOT index. Its absence is not a regression either, because no
+// Go-created project could index before, but it is not a working project.
+func newProjectProvisioner(cfg RouterConfig) (*projectprovisioning.Provisioner, bool) {
+	if cfg.Pool == nil {
+		return nil, false
+	}
+	// The secrets vault (#373). Not conditional: a project provisioned without
+	// one cannot show its model catalogue, so the provisioner refuses to run
+	// without this dependency rather than creating projects that look complete
+	// and have no model picker. The handler is constructed here rather than
+	// shared with the one mountSecretsRoutes builds because that one is built
+	// inside the route tree; both read the same tables under the same
+	// SECRETS_MASTER_KEY rule.
+	options := []projectprovisioning.Option{
+		projectprovisioning.WithProjectVault(v2secrets.NewHandler(cfg.Pool)),
+	}
+	// The vector store (#371) IS conditional — see this function's doc comment.
+	if cfg.ProjectVectorStore != nil {
+		options = append(options, projectprovisioning.WithVectorStore(cfg.ProjectVectorStore))
+	}
+	if cfg.ObjectStore != nil {
+		bucketsRepo, bucketsErr := dbrepos.NewArtifactBucketsRepository(cfg.Pool)
+		objectsRepo, objectsErr := dbrepos.NewArtifactObjectsRepository(cfg.Pool)
+		if bucketsErr == nil && objectsErr == nil {
+			options = append(options, projectprovisioning.WithArtifactBuckets(
+				artifactbootstrap.NewBootstrapper(
+					bucketBootstrapRepoAdapter{bucketsRepo, objectsRepo},
+					cfg.ObjectStore,
+				),
+			))
+		}
+	}
+	return projectprovisioning.New(
+		cfg.Pool,
+		migrate.New(cfg.Pool, platformmigrations.Files),
+		nil,
+		options...,
+	), true
+}
+
 // Permission strings from the existing configuration.artifacts.artifacts
 // catalog (S11). edit is easy to miss — legacy uses it for retention and pin
 // changes (PATCH), distinct from create (uploads, bucket/grant creation) and
@@ -251,8 +392,9 @@ type ArtifactDeps struct {
 	Resolver     platformauth.PermissionResolver
 }
 
-// mountArtifactRoutes registers all 16 artifact routes (13 from S7, plus
-// S16's 3 native-multipart continuation routes) on r, wrapped in
+// mountArtifactRoutes registers all 21 artifact routes (13 from S7, plus
+// S16's 3 native-multipart continuation routes, plus the 5 S3-shaped ones
+// the Python SDK speaks: list, download, upload, delete, stat) on r, wrapped in
 // deps.Authenticate and per-route RBAC (S11). Called once, from
 // newProductionRouter, so the oapiserver conformance suite and production
 // see an identical route shape. Deliberately NOT nested inside the
@@ -266,10 +408,40 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 	edit := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionEdit)
 	del := apimw.RequireResolvedPermissions(deps.Resolver, platformauth.PermissionModeDefault, artifactPermissionDelete)
 
+	// The S3-shaped routes below name their project in a QUERY parameter
+	// rather than a path segment, so RequireResolvedPermissions (whose
+	// extractor reads the {projectID} PATH param, and which fails closed —
+	// gating nothing — when there is none) cannot express their gate. Each
+	// tier below is deliberately the same resolver, mode and permission
+	// string as its path-based counterpart above; only the extractor differs,
+	// so the S3 representation cannot be a softer way in than the native
+	// route it mirrors.
+	byQueryProject := func(permission string) func(http.Handler) http.Handler {
+		return apimw.RequireResolvedPermissionsForProject(
+			deps.Resolver,
+			platformauth.PermissionModeDefault,
+			apimw.ProjectIDFromQuery("project_id"),
+			permission,
+		)
+	}
+	viewByQueryProject := byQueryProject(artifactPermissionView)
+	// PUT is gated on `create`, the same tier as the native POST upload it
+	// mirrors — not `edit`. An S3 PUT both creates and replaces, but so does
+	// the native upload (?overwrite=true), which S11 maps to create; adding
+	// edit here would let an edit-only principal create objects it cannot
+	// create natively, because RequireResolvedPermissionsForProject takes the
+	// INTERSECTION of the required set (any-of, see hasIntersection in
+	// middleware/rbac.go) — listing two permissions widens the gate, it does
+	// not narrow it.
+	createByQueryProject := byQueryProject(artifactPermissionCreate)
+	deleteByQueryProject := byQueryProject(artifactPermissionDelete)
+
 	listBuckets, createBucket, getBucket, updateBucket, deleteBucket := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	listObjects, uploadObject, batchDeleteObjects, downloadObject, statObject, deleteObject := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	createTransferGrant, commitTransferGrant := notImplementedArtifact, notImplementedArtifact
 	presignUploadPart, completeMultipartUpload, abortMultipartUpload := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
+	listObjectsS3, downloadObjectS3 := notImplementedArtifact, notImplementedArtifact
+	uploadObjectS3, deleteObjectS3, statObjectS3 := notImplementedArtifact, notImplementedArtifact, notImplementedArtifact
 	if deps.Handler != nil {
 		listBuckets, createBucket, getBucket, updateBucket, deleteBucket =
 			deps.Handler.ListBuckets, deps.Handler.CreateBucket, deps.Handler.GetBucket, deps.Handler.UpdateBucket, deps.Handler.DeleteBucket
@@ -278,6 +450,9 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 		createTransferGrant, commitTransferGrant = deps.Handler.CreateTransferGrant, deps.Handler.CommitTransferGrant
 		presignUploadPart, completeMultipartUpload, abortMultipartUpload =
 			deps.Handler.PresignUploadPart, deps.Handler.CompleteMultipartUpload, deps.Handler.AbortMultipartUpload
+		listObjectsS3, downloadObjectS3 = deps.Handler.ListObjectsS3, deps.Handler.DownloadObjectS3
+		uploadObjectS3, deleteObjectS3, statObjectS3 =
+			deps.Handler.UploadObjectS3, deps.Handler.DeleteObjectS3, deps.Handler.StatObjectS3
 	}
 
 	r.Group(func(r chi.Router) {
@@ -314,6 +489,50 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 			r.With(create).Post("/grants/{projectID}/{grantID}:completeMultipart", completeMultipartUpload)
 			r.With(create).Post("/grants/{projectID}/{grantID}:abortMultipart", abortMultipartUpload)
 		})
+
+		// S3-shaped bucket listing and object read — the two calls the SDK's
+		// artifact toolkit actually performs, and therefore the ones an index
+		// run depends on: it lists the bucket, then downloads every listed
+		// key (elitea-sdk runtime/tools/artifact.py, _base_loader then
+		// _extend_data).
+		//
+		// It is mounted at the ROOT, not under /api/v2, because that is
+		// where the request arrives: the worker's platform_origin is
+		// validated to carry no path (elitea-worker-python
+		// config.py:187-199), the SDK appends "/artifacts/s3" to it with no
+		// api_v2_path (elitea-sdk client.py:115 — note every sibling URL on
+		// the lines above it DOES include /api/v2, so the omission is the
+		// contract, not an oversight), and the platform edge forwards the
+		// path verbatim. Mounting this under /api/v2 would reproduce the
+		// original defect: a 404 the SDK swallows into an empty listing,
+		// leaving an index run green having indexed nothing.
+		//
+		// The project is a query parameter here, so this is the one
+		// artifact route RequireResolvedPermissions (which reads the
+		// {projectID} PATH param) cannot gate; viewByQueryProject applies
+		// the identical resolver/mode/permission through the query
+		// extractor instead. Nothing else about the authorization differs.
+		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}", listObjectsS3)
+		// The object read. A trailing wildcard, not a single {key} segment:
+		// the SDK quotes the key with safe='/' (client.py:1176), so a nested
+		// key arrives as literal path segments. Same `view` tier as the
+		// listing and as the native download route — reading an object's
+		// bytes is the same act as reading its metadata.
+		r.With(viewByQueryProject).Get("/artifacts/s3/{bucket}/*", downloadObjectS3)
+
+		// The object write verbs, on the same wildcard-key path as the read.
+		// They complete the surface the SDK speaks: upload_artifact_s3 PUTs
+		// raw bytes, delete_artifact_s3 DELETEs, head_artifact_s3 HEADs for
+		// existence (elitea-sdk client.py:1123, :1186, :1206).
+		//
+		// The permission tiers mirror the native object plane exactly —
+		// upload is `create`, delete is `delete`, and an existence check is
+		// `view` because it reveals only what the native HEAD (statObject)
+		// already reveals at the same tier. A write authorized by `view`
+		// would make this surface strictly weaker than /api/v2.
+		r.With(createByQueryProject).Put("/artifacts/s3/{bucket}/*", uploadObjectS3)
+		r.With(deleteByQueryProject).Delete("/artifacts/s3/{bucket}/*", deleteObjectS3)
+		r.With(viewByQueryProject).Head("/artifacts/s3/{bucket}/*", statObjectS3)
 	})
 }
 
@@ -341,7 +560,7 @@ func mountArtifactRoutes(r chi.Router, deps ArtifactDeps) {
 // pattern; the handler reads the tail with chi.URLParam(r, "*"), which is empty
 // for the first pair.
 func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(http.Handler) http.Handler) {
-	handler := v2mcp.NewHandler(pool)
+	handler := v2mcp.NewHandler(pool, apimw.NewDBPersonalProjectResolver(pool))
 	r.Group(func(r chi.Router) {
 		r.Use(authenticate)
 		r.Use(apimw.RequireProjectAccess(pool))
@@ -350,6 +569,39 @@ func mountMCPServerRoutes(r chi.Router, pool *pgxpool.Pool, authenticate func(ht
 		r.Get("/app/{projectID}/mcp/*", handler.Endpoint)
 		r.Post("/app/{projectID}/mcp/*", handler.Endpoint)
 	})
+}
+
+// compressJSONResponses gzips a JSON API response when the caller asks for it.
+//
+// DEFECT this fixes: the router had no compression middleware at all, so every
+// JSON answer went over the wire verbatim. `GET /api/v2/configurations/available/`
+// alone is a 136 KB catalogue that compresses to about 17 KB, and the credential
+// form waits for the whole of it.
+//
+// The allow-list holds `application/json` only. Two response kinds must never be
+// compressed, and both are excluded by it:
+//
+//   - Server-sent events. `text/event-stream` is not in the list, so chi writes
+//     those through raw. `Flush` and `Unwrap` still reach the real writer
+//     (chi v5.1.0 middleware/compress.go), which is what `pkg/ssewriter` and
+//     `http.NewResponseController` need.
+//   - A byte-range answer. chi compresses by content type without reading the
+//     status code, so a 206 would be gzipped while `Content-Range` still
+//     described the raw object. This middleware skips any request that carries a
+//     `Range` header. The artifact object routes, the only 206 in the service
+//     (internal/api/v2/artifacts/objects.go), also sit outside this group.
+func compressJSONResponses() func(http.Handler) http.Handler {
+	compress := chimw.Compress(5, "application/json")
+	return func(next http.Handler) http.Handler {
+		compressed := compress(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Range") != "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			compressed.ServeHTTP(w, r)
+		})
+	}
 }
 
 // newProductionRouter is the single route composition NewRouter builds. It
@@ -373,6 +625,9 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	}
 	if cfg.OIDCHandler == nil {
 		cfg.OIDCHandler = cfg.Auth.OIDCHandler
+	}
+	if cfg.SAMLHandler == nil {
+		cfg.SAMLHandler = cfg.Auth.SAMLHandler
 	}
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = cfg.Auth.SessionSecret
@@ -420,6 +675,24 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/auth_oidc/callback", cfg.OIDCHandler.Callback)
 			}
 			r.Get("/auth_oidc/logout", cfg.SessionHandler.Logout)
+			// SAML 2.0. Three routes, and the shapes are not
+			// interchangeable: metadata and login are GET navigations, and
+			// the assertion consumer service is a POST because the
+			// authentication request asks for the HTTP-POST binding.
+			//
+			// `/auth_saml/logout` clears the local session, as the OIDC one
+			// above does. Federated single logout — sending a LogoutRequest to
+			// the identity provider's SLO endpoint — is NOT mounted: it needs
+			// the session index of the assertion that started the session, and
+			// this deployment's session cookie does not carry one. Mounting a
+			// route that silently only cleared the local session would tell an
+			// operator their users were signed out everywhere.
+			if cfg.SAMLHandler != nil {
+				r.Get("/auth_saml/metadata", cfg.SAMLHandler.Metadata)
+				r.Get("/auth_saml/login", cfg.SAMLHandler.Login)
+				r.Post("/auth_saml/acs", cfg.SAMLHandler.ACS)
+				r.Get("/auth_saml/logout", cfg.SessionHandler.Logout)
+			}
 		})
 	}
 
@@ -490,6 +763,32 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	if artifactResolver == nil {
 		artifactResolver = permissionResolver
 	}
+
+	// projectPermission gates one route on the named legacy permission,
+	// resolved in DEFAULT mode against the {projectID} path segment.
+	//
+	// It is declared HERE, above every group that uses it, rather than inside
+	// /elitea_core where #302 first wrote it. /notifications, /context_manager
+	// and the /admin project listings are SIBLINGS of that group, not children,
+	// so a helper local to it could not reach them — and each of those groups
+	// names {projectID} in every path and then reads that project's rows.
+	//
+	// cfg.ProjectPermissionResolver overrides the live resolver for the route
+	// tests, exactly as cfg.ArtifactPermissionResolver does above. Production
+	// leaves it unset and gets permissionResolver. It is resolved through a
+	// local for the reason the /elitea_core note gives:
+	// TestNilGatedRouterFieldsAreWiredOrDeclared reads this file as TEXT and
+	// treats a nil-comparison against a config field as a gate that decides
+	// REGISTRATION. These two decide only the authorization answer; the same
+	// routes register either way.
+	coreResolver := cfg.ProjectPermissionResolver
+	if coreResolver == nil {
+		coreResolver = permissionResolver
+	}
+	projectPermission := func(permission string) func(http.Handler) http.Handler {
+		return apimw.RequireResolvedPermissions(
+			coreResolver, platformauth.PermissionModeDefault, permission)
+	}
 	artifactHandler := cfg.ArtifactHandler
 	if artifactHandler == nil {
 		artifactHandler, _ = newArtifactHandler(cfg)
@@ -500,7 +799,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		PrincipalValidator:        cfg.PrincipalValidator,
 		ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 		SessionSecret:             cfg.SessionSecret,
-		TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 	})
 	mountArtifactRoutes(r, ArtifactDeps{
 		Handler:      artifactHandler,
@@ -512,14 +810,19 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// mountMCPServerRoutes.
 	mountMCPServerRoutes(r, cfg.Pool, authenticate)
 
+	// This group holds the whole JSON API — the `/api/v2` route below is its
+	// only member. Compression sits at the top of it, ABOVE the shadow
+	// comparator: shadow buffers what the handler writes. A compressor under
+	// it would hand the comparator gzip bytes to diff against pylon's JSON.
+	// The comparator would then report a mismatch on every sampled request.
 	r.Group(func(r chi.Router) {
+		r.Use(compressJSONResponses())
 		r.Use(apimw.Auth(apimw.AuthConfig{
 			Client:                    cfg.AuthClient,
 			Validator:                 cfg.AuthValidator,
 			PrincipalValidator:        cfg.PrincipalValidator,
 			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 			SessionSecret:             cfg.SessionSecret,
-			TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 		}))
 
 		if cfg.CutoverRouter != nil {
@@ -536,18 +839,52 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		r.Route("/api/v2", func(r chi.Router) {
 			mountRuntimeRoutes(r, cfg.RuntimeRoutes)
 
+			// The PRE-BUILT MCP server catalogue (shared migration 0094) and
+			// the platform vault its client secrets are sealed into.
+			//
+			// One store and one vault seam, built once and given to BOTH the
+			// admin surface that writes the catalogue and the eliteacore
+			// handlers that read it. Building two would let the write path and
+			// the read path disagree about which pool they are on — the shape
+			// of #128, where a route answered while its backing was never
+			// composed.
+			//
+			// v2secrets.NewHandler is used as the vault here for the same reason
+			// projectprovisioning uses it: it is the one type in this service
+			// that can open and write a centry vault.
+			prebuiltMCPStore := mcpregistry.NewPrebuiltStore(cfg.Pool)
+			prebuiltMCPVault := v2secrets.NewHandler(cfg.Pool)
+
+			// The TYPED identity provider definitions (shared migration 0095) —
+			// the real surface behind the Configuration page's "Authentication"
+			// section. It shares the vault above rather than opening a second
+			// one, for the reason stated there: two vault handlers on two pools
+			// is how a write path and a read path come to disagree about which
+			// database holds the credential.
+			identityProviderStore := identityproviders.NewStore(cfg.Pool)
+
 			coreHandler := v2core.NewHandler(
 				cfg.Pool,
 				v2core.WithPermissionResolver(permissionResolver),
 				v2core.WithObjectStore(cfg.ObjectStore),
+				v2core.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
 			)
 
 			// === Auth endpoints ===
-			r.Mount("/auth", v2auth.NewHandler(
-				cfg.Pool,
+			//
+			// Sign a personal access token with the key that THIS deployment's
+			// validator reads it back with. A form authentication graph holds
+			// that key; SessionSecret is a different value and signing with it
+			// produced tokens that failed every later request with 401.
+			authOptions := []v2auth.Option{
 				v2auth.WithPermissionResolver(permissionResolver),
-				v2auth.WithTokenSigningKey(cfg.SessionSecret),
-			).Routes())
+			}
+			if cfg.PATSigner != nil {
+				authOptions = append(authOptions, v2auth.WithTokenSigner(cfg.PATSigner))
+			} else {
+				authOptions = append(authOptions, v2auth.WithTokenSigningKey(cfg.SessionSecret))
+			}
+			r.Mount("/auth", v2auth.NewHandler(cfg.Pool, authOptions...).Routes())
 
 			// === Projects endpoints ===
 			//
@@ -555,13 +892,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// the mount: the three group WRITES are gated per route inside
 			// `Routes()`, because chi cannot carry a per-route gate across a
 			// Mount boundary and the project LIST must stay open to any member.
-			r.Mount("/projects", v2projects.NewHandler(
-				cfg.Pool,
+			projectOptions := []v2projects.Option{
 				v2projects.WithPermissionResolver(permissionResolver),
-			).Routes())
+			}
+			if provisioner, ok := newProjectProvisioner(cfg); ok {
+				projectOptions = append(projectOptions, v2projects.WithProvisioner(provisioner))
+			}
+			r.Mount("/projects", v2projects.NewHandler(cfg.Pool, projectOptions...).Routes())
 
 			// === Admin endpoints ===
-			adminHandler := admin.NewHandler(cfg.Pool, admin.WithPermissionResolver(permissionResolver))
+			adminHandler := admin.NewHandler(
+				cfg.Pool,
+				admin.WithPermissionResolver(permissionResolver),
+				admin.WithToolkitRegistry(cfg.ToolkitRegistry),
+				admin.WithPrebuiltMCPCatalogue(prebuiltMCPStore, prebuiltMCPVault),
+				admin.WithIdentityProviders(identityProviderStore, prebuiltMCPVault),
+				// The same store the SCIM tree writes through. One store, so
+				// the screen and a group push can never disagree about which
+				// project a binding names.
+				admin.WithSCIMGroupBindings(scimdirectory.NewStore(cfg.Pool)),
+			)
 			moderationHandler := v2moderation.NewHandler(cfg.Pool)
 			// The admin panel's surface. Every route below is gated on the same
 			// pylon permission its Python counterpart declares in
@@ -612,6 +962,33 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// resolvable.
 			requireProjectsView := central("projects.projects.projects.view")
 			requireProjectsEdit := central("projects.projects.projects.edit")
+
+			// SCIM 2.0 user provisioning (shared migration 0096).
+			//
+			// Mounted UNDER /api/v2, not at the root, so it inherits the one
+			// authentication middleware this service has rather than acquiring a
+			// second identity check. The base URL an operator pastes into their
+			// identity provider is therefore `https://<host>/api/v2/scim/v2`;
+			// internal/api/scim states that in its package comment, next to the
+			// paths themselves.
+			//
+			// The gate is `admin.auth.users` in administration mode — the SAME
+			// permission the admin Users page's write routes carry above. A SCIM
+			// client creating and deactivating accounts is doing what that page
+			// does, so no new permission string arrives here and the grant gate
+			// in router_permission_grant_gate_test.go stays untripped.
+			// `/Groups` is served too, and the gate does not change with it. An
+			// identity provider presents ONE credential for both resources, so
+			// a second permission on the group half would stop every SCIM
+			// client already configured against this deployment. What a group
+			// push can do is bounded by the BINDING an administrator authored
+			// under `/admin/scim_group_bindings/administration` (below, on the
+			// project-membership permission), not by a second gate here: a push
+			// cannot choose a project, cannot choose a role, and cannot create
+			// or delete either.
+			r.With(requireAdminUsers).Mount(scimapi.MountPath,
+				scimapi.NewHandler(scimdirectory.NewStore(cfg.Pool)).Routes())
+
 			r.Route("/admin", func(r chi.Router) {
 				// Admin panel endpoints (administration mode, no projectID)
 				//
@@ -667,6 +1044,38 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Get("/user_project_permissions/administration", adminHandler.UserProjectPermissions)
 				r.With(central(admin.UserProjectPermissionsEditPermission)).
 					Put("/user_project_permissions/administration", adminHandler.UserProjectPermissionsSave)
+				// The SCIM group bindings (shared migration 0098): which
+				// identity provider group grants which role on which project.
+				//
+				// Gated on the SAME pair as the editor above, and deliberately
+				// so. Authoring a binding is authorising a directory to put
+				// people into a project with a role, which is exactly what
+				// `configuration.roles.user_project_permissions` governs. No new
+				// permission string arrives, so the grant gate in
+				// router_permission_grant_gate_test.go stays untripped.
+				//
+				// The mode segment is static `administration`: a binding is a
+				// deployment fact with no project-scoped view, so another mode
+				// 404s rather than being answered under a scope that does not
+				// apply.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingList)
+				// The roles a project REALLY has, for the binding editor's role
+				// control. `/admin/roles/{mode}/{projectID}` answers a hardcoded
+				// admin/editor/viewer for a project with no role rows, which
+				// would make this control offer a role the save then refuses.
+				//
+				// A static segment ahead of `{id}`: chi matches the literal
+				// first, so this cannot shadow the binding routes below.
+				r.With(central(admin.UserProjectPermissionsViewPermission)).
+					Get("/scim_group_bindings/administration/project_roles/{projectID}",
+						adminHandler.SCIMGroupBindingProjectRoles)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Post("/scim_group_bindings/administration", adminHandler.SCIMGroupBindingCreate)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Put("/scim_group_bindings/administration/{id}", adminHandler.SCIMGroupBindingSave)
+				r.With(central(admin.UserProjectPermissionsEditPermission)).
+					Delete("/scim_group_bindings/administration/{id}", adminHandler.SCIMGroupBindingDelete)
 				// The admin Roles page. Before it, only the GET existed —
 				// ungated, ignoring {scope}, and listing only already-granted
 				// permissions. See internal/api/v2/admin/roles.go.
@@ -715,6 +1124,46 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Get("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValues)
 				r.With(requireRuntimePlugins).
 					Put("/plugin_config_values/administration/{plugin}", adminHandler.AdministrationPluginConfigValuesSave)
+				// The PRE-BUILT MCP server catalogue — the real surface behind
+				// the Configuration page's "MCP Servers" section, which stays
+				// unavailable because its rows are plaintext and a catalogue
+				// entry carries a client secret (config_schemas.go).
+				//
+				// The permission is the SAME `runtime.plugins` the section it
+				// replaces already required, so an operator who could edit that
+				// section can edit the catalogue, and no new permission string
+				// arrives without a grant (router_permission_grant_gate_test.go).
+				//
+				// The mode segment is static `administration`: the catalogue is
+				// platform-wide and there is no project-scoped view of it, so
+				// another mode 404s rather than being answered with the same
+				// rows under a scope that does not apply to them.
+				r.With(requireRuntimePlugins).
+					Get("/mcp_prebuilt_servers/administration", adminHandler.PrebuiltMCPList)
+				r.With(requireRuntimePlugins).
+					Put("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPSave)
+				r.With(requireRuntimePlugins).
+					Delete("/mcp_prebuilt_servers/administration/{key}", adminHandler.PrebuiltMCPDelete)
+				// The TYPED identity provider definitions — the real surface
+				// behind the Configuration page's "Authentication" section,
+				// which stays unavailable because its rows are plaintext and a
+				// provider carries a client secret (config_schemas.go).
+				//
+				// The permission is the SAME `runtime.plugins` that section
+				// already required, so an operator who could edit it can author
+				// a provider, and no new permission string arrives without a
+				// grant (router_permission_grant_gate_test.go).
+				//
+				// The mode segment is static `administration`: federation is a
+				// deployment fact with no project-scoped view, so another mode
+				// 404s rather than being answered under a scope that does not
+				// apply.
+				r.With(requireRuntimePlugins).
+					Get("/identity_providers/administration", adminHandler.IdentityProviderList)
+				r.With(requireRuntimePlugins).
+					Put("/identity_providers/administration/{key}", adminHandler.IdentityProviderSave)
+				r.With(requireRuntimePlugins).
+					Delete("/identity_providers/administration/{key}", adminHandler.IdentityProviderDelete)
 				r.With(requireRuntimePlugins).Get("/plugin_config_suggestions/{mode}/{key}", adminHandler.PluginConfigSuggestions)
 				r.With(requireRuntimePlugins).Post("/plugin_config_restart/{mode}/{pylonID}", adminHandler.PluginConfigRestart)
 				// `/moderation_statuses/…` is NOT registered here. #209 gated the
@@ -745,7 +1194,58 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// nothing. They now reach real handlers, each gated on the same
 				// pylon permission its Python counterpart declares
 				// (legacy/plugins/admin/api/v2/users.py).
-				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
+				// The member LISTING was the last write-free route in this block
+				// with no gate at all, and it is the one that discloses the most:
+				// coreHandler.Users joins auth_core__project_user_role for the
+				// named project and answers with every member's EMAIL, name and
+				// roles. Any authenticated principal, a PAT holder included,
+				// could enumerate any project's membership by editing the
+				// {projectID} segment. Its own three writes beside it have been
+				// gated since #130.
+				//
+				// pylon declares `configuration.users.users.view` on the same
+				// handler (legacy/plugins/admin/api/v2/users.py, API.get), which
+				// is the string the /elitea_core fallback copy of this route
+				// already carries.
+				//
+				// TWO REGISTRATIONS, BECAUSE THE MODE DIFFERS — the same split
+				// the create and edit writes below needed, for the same reason.
+				// Read them together.
+				//
+				//   `{mode}` resolves in DEFAULT mode. It serves the project
+				//   settings Members page, which the web app calls as
+				//   `/admin/users/default/{projectID}`. legacyrbac answers a
+				//   default-mode gate purely from the caller's membership OF
+				//   THAT PROJECT, which is what this page means.
+				//
+				//   `administration` is a STATIC segment resolved CENTRALLY. It
+				//   serves the admin panel's project member dialog and activity
+				//   drawer, which call `/admin/users/administration/{projectID}`
+				//   (apps/elitea-web/src/pages/admin/api/adminProjectsApi.ts).
+				//   An operator acting on projects they are not a member of
+				//   scores zero in default mode, so the default-mode gate alone
+				//   would answer 403 to every legitimate caller of that dialog.
+				//
+				// The static registration is REQUIRED, not decorative: chi falls
+				// through to the `{mode}` route for a method the static node does
+				// not carry, so without a static GET here the admin panel's read
+				// would land on the default-mode gate and break.
+				//
+				// migrations/shared/0085 grants the administration-mode holders.
+				// The default-mode ones are already 0068's.
+				//
+				// The two default-mode reads take `projectPermission`, not the
+				// inline RequireResolvedPermissions the three writes below use.
+				// The two are the same middleware over the same resolver in
+				// production — cfg.ProjectPermissionResolver is unset there —
+				// but the helper is the one a route test can inject, and a gate
+				// with no injectable resolver can be proved only in the refusing
+				// direction. Without the admitting direction, a gate that
+				// refuses EVERY caller reads as a pass.
+				r.With(projectPermission("configuration.users.users.view")).
+					Get("/users/{mode}/{projectID}", coreHandler.Users)
+				r.With(central("configuration.users.users.view")).
+					Get("/users/administration/{projectID}", coreHandler.Users)
 				r.With(apimw.RequireResolvedPermissions(
 					permissionResolver, platformauth.PermissionModeDefault,
 					"configuration.users.users.create",
@@ -782,7 +1282,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					permissionResolver, platformauth.PermissionModeAdministration,
 					"configuration.users.users.edit",
 				)).Put("/users/administration/{projectID}", coreHandler.UsersUpdate)
-				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				// The project ROLE listing, gated the same way and for the same
+				// reason as the member listing above: `coreHandler.Roles` reads
+				// auth_core__project_role for the named project, pylon declares
+				// `configuration.roles.roles.view` on the same handler
+				// (legacy/plugins/admin/api/v2/roles.py, ProjectAPI.get), and
+				// two callers reach it in two modes — the project settings page
+				// as `/admin/roles/default/{projectID}` and the admin panel's
+				// member dialog as `/admin/roles/administration/{projectID}`
+				// (apps/elitea-web/src/pages/admin/ProjectMemberDialog.tsx).
+				//
+				// The two role listings do NOT get the same holders. The legacy
+				// matrix gives the administration-mode viewer
+				// `configuration.roles.roles.view` and withholds
+				// `configuration.users.users.view` from that same role. 0085
+				// transcribes that difference rather than levelling it.
+				r.With(projectPermission("configuration.roles.roles.view")).
+					Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				r.With(central("configuration.roles.roles.view")).
+					Get("/roles/administration/{projectID}", coreHandler.Roles)
 
 				// App requests / moderation (unit A14). Four routes, of which
 				// three did not exist and the fourth answered from a constant:
@@ -824,16 +1342,64 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Preserve current-main gateway administration. Server-side
 				// permission enforcement is required even when the UI hides
 				// these controls.
+				//
+				// This gate used `apimw.RequirePermissions`, which reads
+				// `auth.User.Permissions` instead of asking the resolver.
+				// Production never fills that field. The only source that
+				// assigns it is the legacy Redis-RPC validator at
+				// internal/infra/authsvc/rpc.go:121, and production wires
+				// `authsvc.NewPrincipalValidator` instead, which leaves the
+				// field nil. So the gate refused EVERY caller by construction,
+				// the operator included, and no migration could reach it. That
+				// is #386.
+				//
+				// `RequireCentralPermissions` in the `administration` mode is
+				// what every neighbour in this block uses, and it is the right
+				// shape here: the path carries no `{projectID}`, so the surface
+				// is platform-wide rather than project-scoped. The permission
+				// string does not change.
+				// shared/0082_admin_panel_permissions.sql grants it.
+				// The store is built over the shared pool because the config it
+				// holds is global and durable (issue #322). It used to be a
+				// process-local struct, which made a PUT a per-replica opinion
+				// that a restart discarded.
 				if cfg.BudgetAlertStore == nil {
-					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore()
+					cfg.BudgetAlertStore = gateway.NewBudgetAlertStore(cfg.Pool)
 				}
 				budgetAlertHandler := gateway.NewBudgetAlertHandler(cfg.BudgetAlertStore)
 				governanceHandler := gateway.NewGovernanceHandler(cfg.Pool)
+				// The LLM Proxy surface: the gateway's enforcement status and
+				// the model price catalogue, joined to the usage that makes the
+				// catalogue actionable. It shares this group's permission
+				// deliberately — it explains and prices the same enforcement
+				// the governance CRUD beside it authors, and a second
+				// permission string would need its own grant migration to reach
+				// anybody (the #386 shape, one block up).
+				//
+				// `cfg.GatewayStatus` may be nil. A deployment with no gateway
+				// address is supported, and the handler reports that posture
+				// rather than the composition refusing to build — but it is
+				// passed as a typed field rather than assigned into the
+				// interface here, because boxing a nil *GatewayStatusClient
+				// would make the handler's `status == nil` check false and turn
+				// "not configured" into a nil-receiver call.
+				//
+				// The pool is passed only when it is non-nil, for the same
+				// reason: `llmProxyQuerier` is an interface, and a nil
+				// *pgxpool.Pool boxed into it is NOT nil, so the handler's
+				// "no database pool" branches would never run and the first
+				// read would panic on a nil receiver instead.
+				var llmProxyDB gateway.LLMProxyQuerier
+				if cfg.Pool != nil {
+					llmProxyDB = cfg.Pool
+				}
+				llmProxyHandler := gateway.NewLLMProxyHandler(llmProxyDB, cfg.GatewayStatus)
 				r.Group(func(r chi.Router) {
-					r.Use(apimw.RequirePermissions("configuration.governance"))
+					r.Use(central("configuration.governance"))
 					r.Route("/gateway", func(r chi.Router) {
 						r.Mount("/", budgetAlertHandler.Routes())
 						governanceHandler.Register(r)
+						llmProxyHandler.Register(r)
 					})
 				})
 			})
@@ -878,9 +1444,28 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			)).Put("/scheduling/schedules/{mode}/{projectID}", schedulingHandler.SchedulesUpdate)
 
 			// === Configurations ===
+			//
+			// The per-project CREDENTIAL surface: 22 routes that derive the
+			// tenant schema from `{projectID}` and then read, write or delete
+			// that project's `configuration` rows. Until #496 the mounted
+			// subrouter applied NO gate — see the Routes() header in
+			// internal/api/v2/configurations/handler.go for what that let any
+			// authenticated caller do to any project, and for the permission
+			// each route now takes.
+			//
+			// The gates live inside the package, not on this mount, for the two
+			// reasons /secrets gives: the routes need five different strings, and
+			// a mount carries one middleware. `coreResolver` is used rather than
+			// `permissionResolver` so the route tests can substitute a resolver
+			// through cfg.ProjectPermissionResolver, exactly as the sibling
+			// groups below do; production leaves that field unset and both names
+			// are the same object.
 			r.Mount("/configurations", v2configs.NewHandler(
 				cfg.Pool,
-				v2configs.WithPermissionResolver(permissionResolver),
+				v2configs.WithPermissionResolver(coreResolver),
+				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
+				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+				v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
 			).Routes())
 
 			// === Secrets ===
@@ -906,55 +1491,239 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			).Routes())
 
 			// === Notifications ===
+			//
+			// Every route here names {projectID} and then reads or writes
+			// centry.notifications for that project. They shipped with NO gate
+			// of any kind: not a permission, not a membership check.
+			//
+			// The permissions are transcribed from the pylon notifications
+			// plugin, which is the same source the REVIEWED copy of this surface
+			// uses — internal/api/v2/notifications/api.go gates the identical
+			// paths on the identical four strings. That copy is registered by
+			// production_router.go only when cfg.CurrentNotifications is
+			// composed, and chi prefers its static path over this group's mount,
+			// so it SHADOWS these five registrations wherever it exists. Where it
+			// does not exist, this group is what answers, and until now it
+			// answered ungated. Two registrations of one surface must not carry
+			// two different authorization contracts.
+			//
+			//   notifications.py GET    → models.notifications.notifications.list
+			//   notifications.py PUT    → models.notifications.notification.update
+			//   notifications.py DELETE → models.notifications.notification.delete
+			//   notification.py  PUT    → models.notifications.notification.update
+			//   notification.py  DELETE → models.notifications.notification.delete
+			//
+			// migrations/shared/0079_notification_permissions.sql grants all
+			// four in DEFAULT mode, with the legacy matrix split: the list and
+			// the delete go to admin, editor and viewer, and the update goes to
+			// admin and editor alone.
+			requireNotificationUpdate := projectPermission("models.notifications.notification.update")
+			requireNotificationDelete := projectPermission("models.notifications.notification.delete")
 			r.Route("/notifications", func(r chi.Router) {
-				r.Get("/notifications/prompt_lib/{projectID}", coreHandler.Notifications)
-				r.Put("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
-				r.Delete("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
-				r.Delete("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
-				r.Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
+				r.With(projectPermission("models.notifications.notifications.list")).
+					Get("/notifications/prompt_lib/{projectID}", coreHandler.Notifications)
+				r.With(requireNotificationUpdate).
+					Put("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationDelete).
+					Delete("/notification/prompt_lib/{projectID}/{notificationID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationDelete).
+					Delete("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
+				r.With(requireNotificationUpdate).
+					Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
 			})
 
 			// === elitea_core plugin routes ===
 			r.Route("/elitea_core", func(r chi.Router) {
+				// projectScoped closes the cross-project hole measured in #302.
+				// 116 of this group's registrations named {projectID} in the
+				// path and ran on the group's Auth middleware alone. Every
+				// handler behind them derives its tenant schema straight from
+				// that path parameter — v2apps.Handler.Delete calls
+				// tenantSchema(projectID), eliteacore's Unpublish builds
+				// fmt.Sprintf("p_%s", projectID) — and none of them reads the
+				// caller's membership. Any authenticated principal, including
+				// any PAT holder, could therefore read and mutate any project
+				// by editing one path segment.
+				//
+				// MEMBERSHIP was all the first pass enforced, deliberately:
+				// the legacy permission NAMES were recoverable
+				// (testdata/legacy/legacy-rbac-static-catalog.json) but nothing
+				// granted them, and 0063's header states what that costs —
+				// "gating a route on a permission nothing grants is
+				// 403-for-everyone, which reads as a broken page rather than as
+				// a missing grant". #313 closed that: migrations/shared/
+				// 0068_elitea_core_route_permissions.sql seeds the default-mode
+				// grants, transcribed per role from the exported legacy matrix,
+				// so `projectPermission` below can be used at all. The two land
+				// together on purpose; either alone is a defect.
+				//
+				// `projectScoped` therefore survives only where legacy has NO
+				// permission to copy — see each remaining use for which one and
+				// why. Everywhere else the named permission REPLACES it, which
+				// is strictly stronger: legacyrbac's projectPermissions() joins
+				// the central default-mode fallback THROUGH the caller's
+				// assigned project roles, so a non-member resolves the empty
+				// set and is refused before any permission is compared.
+				//
+				// One behaviour does narrow. RequireProjectAccess admits a
+				// central `super_admin` who holds no role in the named project;
+				// the resolver does not, in default mode, and never has — the
+				// secrets, budgets, cost, trace, chat-config and index_meta
+				// gates already in this file all behave that way. A super_admin
+				// who needs a project's data joins the project, as they must
+				// today for every one of those.
+				//
+				// Both are resolved through locals, exactly as artifactResolver
+				// is above, and for a reason beyond style:
+				// TestNilGatedRouterFieldsAreWiredOrDeclared scans router.go
+				// for nil-comparisons against a config field and demands every
+				// such field be wired in main.go or allowlisted (note: it
+				// scans TEXT, so naming the pattern literally in a comment
+				// trips it), because those gates normally decide
+				// whether routes get REGISTERED. These do not — the same
+				// routes are registered either way, only the authorization
+				// decision behind them changes — so writing them as cfg gates
+				// would file a false "silently unregistered, answers 404"
+				// report against fields production is meant to leave unset.
+				projectAccessQuerier := cfg.ProjectAccessQuerier
+				projectScoped := apimw.RequireProjectAccess(cfg.Pool)
+				if projectAccessQuerier != nil {
+					projectScoped = apimw.RequireProjectAccessWith(projectAccessQuerier)
+				}
+
+				// `projectPermission` gates one route on the named legacy
+				// permission, resolved in DEFAULT mode against the {projectID}
+				// path segment. It is declared above the /notifications group,
+				// because /notifications and /context_manager need the same
+				// helper and are siblings of this group rather than children.
+				//
+				// Every name passed to it is transcribed from the pylon
+				// `check_api` declaration of the matching elitea_core/api/v2/*.py
+				// module and verb; router_elitea_core_permission_map_test.go
+				// re-derives both directions from
+				// testdata/legacy/legacy-rbac-static-catalog.json and from 0068,
+				// so a name that legacy never declared — or one that nothing
+				// grants — fails the build instead of shipping as a 403 nobody
+				// can clear.
+
 				// Applications
 				if cfg.AppsRepo != nil {
 					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
-					r.Get("/applications/prompt_lib/{projectID}", appHandler.List)
-					r.Post("/applications/prompt_lib/{projectID}", appHandler.Create)
-					r.Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
-					r.Put("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Update)
-					r.Delete("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Delete)
-					r.Get("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.ListVersions)
-					r.Post("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.CreateVersion)
-					r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersion)
-					r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
-					r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
-					r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", appHandler.GetDefaultVersion)
-					r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.SetDefaultVersion)
+					r.With(projectPermission("models.applications.applications.list")).
+						Get("/applications/prompt_lib/{projectID}", appHandler.List)
+					r.With(projectPermission("models.applications.applications.create")).
+						Post("/applications/prompt_lib/{projectID}", appHandler.Create)
+					r.With(projectPermission("models.applications.application.details")).
+						Get("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Get)
+					r.With(projectPermission("models.applications.application.update")).
+						Put("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Update)
+					r.With(projectPermission("models.applications.application.delete")).
+						Delete("/application/prompt_lib/{projectID}/{applicationID}", appHandler.Delete)
+					r.With(projectPermission("models.applications.versions.get")).
+						Get("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.ListVersions)
+					r.With(projectPermission("models.applications.versions.create")).
+						Post("/versions/prompt_lib/{projectID}/{applicationID}", appHandler.CreateVersion)
+					r.With(projectPermission("models.applications.version.details")).
+						Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersion)
+					r.With(projectPermission("models.applications.version.update")).
+						Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.UpdateVersion)
+					r.With(projectPermission("models.applications.version.delete")).
+						Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.DeleteVersion)
+					// PATCH on this path is a READ, not a partial update (#336).
+					// It serves the SDK's `get_app_version_details`, which sends
+					// a body-less PATCH and expects the expanded, secret-resolved
+					// version details.
+					//
+					// Pylon declares the READ permission
+					// `models.applications.version.details` on its own handler
+					// (legacy/plugins/elitea_core/api/v2/version.py:100-106), so
+					// this route takes the same permission as the GET above it —
+					// NOT `version.update`, which would refuse the viewer that
+					// pylon admits.
+					r.With(projectPermission("models.applications.version.details")).
+						Patch("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.GetVersionExpanded)
+					// pylon's default_version.py declares only `patch`; the GET
+					// beside it has no legacy verb to copy, so it takes the READ
+					// permission of the resource it returns — a version — rather
+					// than a name invented for it.
+					r.With(projectPermission("models.applications.version.details")).
+						Get("/default_version/prompt_lib/{projectID}/{applicationID}", appHandler.GetDefaultVersion)
+					r.With(projectPermission("models.applications.version.update")).
+						Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", appHandler.SetDefaultVersion)
 				}
 
-				// Agent categories
+				// Agent categories — deliberately NOT project-scoped.
+				//
+				// This is a global taxonomy, not project data: the handler
+				// returns nine hardcoded defaults merged with a globally
+				// authored extras row, and its own comment records that the
+				// per-project `publishing_guardrail` read "could only ever
+				// miss" because no surface writes one. So a project gate here
+				// protects nothing.
+				//
+				// It also breaks a cross-project surface. The Agent HUB renders
+				// this list beside the PUBLIC published-agent catalogue, which
+				// is itself ungated below; gating the categories emptied the
+				// hub's rail while the catalogue beside it kept working. Caught
+				// by the @visual agents-hub snapshot, whose oracle is a category
+				// name — no unit test covers a route that answers correctly for
+				// a member and is simply unreachable from a public page.
 				r.Get("/agent_categories/prompt_lib/{projectID}", coreHandler.AgentCategories)
 
 				// Skills (UI calls /skill/ and /skills/ paths)
 				if cfg.SkillsRepo != nil {
 					skillHandler := v2skills.NewHandler(cfg.SkillsRepo)
-					r.Get("/skills/{mode}/{projectID}", skillHandler.List)
-					r.Post("/skills/{mode}/{projectID}", skillHandler.Create)
-					r.Get("/skill/{mode}/{projectID}/{skillID}", skillHandler.Get)
-					r.Post("/skill/{mode}/{projectID}/{skillID}", skillHandler.Create)
-					r.Put("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Patch("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Delete("/skill/{mode}/{projectID}/{skillID}", skillHandler.Delete)
-					r.Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
-					r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.List)
-					r.Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
-					r.Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Export)
+					requireSkillCreate := projectPermission("models.applications.skills.create")
+					requireSkillUpdate := projectPermission("models.applications.skills.update")
+					requireSkillExport := projectPermission("models.applications.skills.export")
+					r.With(projectPermission("models.applications.skills.list")).
+						Get("/skills/{mode}/{projectID}", skillHandler.List)
+					r.With(requireSkillCreate).Post("/skills/{mode}/{projectID}", skillHandler.Create)
+					r.With(projectPermission("models.applications.skills.details")).
+						Get("/skill/{mode}/{projectID}/{skillID}", skillHandler.Get)
+					r.With(requireSkillCreate).Post("/skill/{mode}/{projectID}/{skillID}", skillHandler.Create)
+					r.With(requireSkillUpdate).Put("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
+					r.With(requireSkillUpdate).Patch("/skill/{mode}/{projectID}/{skillID}", skillHandler.Update)
+					r.With(projectPermission("models.applications.skills.delete")).
+						Delete("/skill/{mode}/{projectID}/{skillID}", skillHandler.Delete)
+					r.With(requireSkillUpdate).
+						Patch("/skill_default_version/{mode}/{projectID}/{skillID}", skillHandler.Update)
+					// application_skills.py declares the APPLICATION read, not
+					// the skill one: the resource is an agent's skill list.
+					//
+					// This pointed at skillHandler.List until #367. List reads
+					// {projectID} and never looks at {appVersionID}, so opening
+					// any agent version answered with EVERY skill in the
+					// project — at 200, in the same envelope, so no caller
+					// could see it. The reviewed route that does read the
+					// attachment (internal/api/v2/applicationskills) is gated
+					// on a flag no deployment sets, so this handler is the one
+					// every deployment reaches.
+					r.With(projectPermission("models.applications.applications.details")).
+						Get("/application_skills/{mode}/{projectID}/{appVersionID}", skillHandler.ListForApplication)
+					r.With(requireSkillCreate).Post("/skill_import/{mode}/{projectID}", skillHandler.Import)
+					r.With(requireSkillExport).Get("/skill_export/{mode}/{projectID}/{skillID}", skillHandler.Export)
+					r.With(requireSkillExport).
+						Get("/skill_export/{mode}/{projectID}/{skillID}/{versionID}", skillHandler.Export)
 				}
 
 				// Toolkits
-				toolkitHandler := v2toolkits.NewHandler(cfg.Pool)
+				// The guardrails source is constructed here rather than injected
+				// through RouterConfig: it needs only the pool this config
+				// already carries, and internal/platformconfig is a leaf the api
+				// layer already depends on (eliteacore reads its flags). A
+				// deployment with no pool gets no source, and every toolkit
+				// surface behaves as it did before guardrails existed — which is
+				// the only honest answer when there is no store to read a policy
+				// from.
+				toolkitOptions := []v2toolkits.Option{
+					v2toolkits.WithArgumentSchemas(cfg.ToolkitArgumentSchemas),
+					v2toolkits.WithSettingsDefinitions(cfg.ToolkitSettingsDefinitions),
+				}
+				if guardrailPolicies, err := platformconfig.NewGuardrailPolicyAdapter(cfg.Pool); err == nil {
+					toolkitOptions = append(toolkitOptions, v2toolkits.WithGuardrails(guardrailPolicies))
+				}
+				toolkitHandler := v2toolkits.NewHandler(cfg.Pool, toolkitOptions...)
 				// /tool(s)/ and /toolkits/ paths route to toolkitHandler (toolkit instances, not skills).
 				//
 				// NOTE the split, which was wrong until #129: /tools/ is the
@@ -970,60 +1739,82 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// the instance list). Both /toolkits/ registrations previously
 				// pointed at List, so ListTypeSchemas had no route at all and
 				// the MCP create screen could never show a type.
-				// Gate behind FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS for gradual rollout:
-				// when enabled, enforces project-level access control on all toolkit endpoints.
-				// Until vllm/bifrost integration is ready, set env var to "false" to disable.
-				if os.Getenv("FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS") != "false" {
-					r.Group(func(r chi.Router) {
-						r.Use(apimw.RequireProjectAccess(cfg.Pool))
-						r.Get("/tools/prompt_lib/{projectID}", toolkitHandler.List)
-						r.Post("/tools/prompt_lib/{projectID}", toolkitHandler.Create)
-						r.Get("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Get)
-						r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
-						r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
-						r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-						r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
-						r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
-						r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
-						r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
-						r.Get("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
-						r.Post("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
-						r.Post("/fork_toolkit/prompt_lib/{projectID}", toolkitHandler.ForkToolkit)
-						r.Post("/test_tool/prompt_lib/{projectID}/{toolID}", toolkitHandler.TestTool)
-						r.Post("/test_toolkit_tool/prompt_lib/{projectID}", toolkitHandler.TestToolkitTool)
-						r.Get("/export_toolkit/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ExportToolkit)
-						r.Get("/index_types/prompt_lib/{projectID}", toolkitHandler.IndexTypes)
-						r.Get("/index_meta/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.IndexMeta)
-						r.Get("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaGet)
-						r.Patch("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaUpdate)
-						r.Delete("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaDelete)
-						r.Delete("/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}", toolkitHandler.IndexCancel)
-					})
-				} else {
-					// Un-gated (legacy vllm/bifrost compatibility path)
-					r.Get("/tools/prompt_lib/{projectID}", toolkitHandler.List)
-					r.Post("/tools/prompt_lib/{projectID}", toolkitHandler.Create)
-					r.Get("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Get)
-					r.Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
-					r.Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
-					r.Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
-					r.Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
-					r.Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
-					r.Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
-					r.Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
-					r.Get("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
-					r.Post("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
-					r.Post("/fork_toolkit/prompt_lib/{projectID}", toolkitHandler.ForkToolkit)
-					r.Post("/test_tool/prompt_lib/{projectID}/{toolID}", toolkitHandler.TestTool)
-					r.Post("/test_toolkit_tool/prompt_lib/{projectID}", toolkitHandler.TestToolkitTool)
-					r.Get("/export_toolkit/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ExportToolkit)
-					r.Get("/index_types/prompt_lib/{projectID}", toolkitHandler.IndexTypes)
-					r.Get("/index_meta/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.IndexMeta)
-					r.Get("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaGet)
-					r.Patch("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaUpdate)
-					r.Delete("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaDelete)
-					r.Delete("/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}", toolkitHandler.IndexCancel)
+				// Gate behind FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS for gradual
+				// rollout: when enabled, each route resolves the permission its
+				// pylon module declares; setting the env var to "false"
+				// registers the same routes with no gate at all — the legacy
+				// vllm/bifrost compatibility path. The flag selects GATED
+				// versus UNGATED, never registered versus not.
+				//
+				// One registration list serves both settings. It used to be
+				// written out twice, once per branch, which is how twenty-two
+				// routes ended up maintained in two places where only the ON
+				// copy is ever read.
+				//
+				// The permissions replace the membership check this block
+				// carried: pylon's tools.py/tool.py split `list`/`create` from
+				// `details`/`update`/`patch`/`delete`, and PATCH is a different
+				// string from PUT there, which is why `tool.patch` also gates
+				// the index-START route and the MCP proxies below.
+				toolkitGate := projectPermission
+				if os.Getenv("FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS") == "false" {
+					toolkitGate = func(string) func(http.Handler) http.Handler {
+						return func(next http.Handler) http.Handler { return next }
+					}
 				}
+				requireToolDetails := toolkitGate("models.applications.tool.details")
+				requireToolPatch := toolkitGate("models.applications.tool.patch")
+				requireToolkitValidate := toolkitGate("models.applications.toolkit_validator.check")
+				requireIndexMetaRead := toolkitGate("models.applications.index_meta.details")
+				r.With(toolkitGate("models.applications.tools.list")).
+					Get("/tools/prompt_lib/{projectID}", toolkitHandler.List)
+				r.With(toolkitGate("models.applications.tools.create")).
+					Post("/tools/prompt_lib/{projectID}", toolkitHandler.Create)
+				r.With(requireToolDetails).
+					Get("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Get)
+				r.With(toolkitGate("models.applications.tool.update")).
+					Put("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
+				r.With(requireToolPatch).
+					Patch("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Update)
+				r.With(toolkitGate("models.applications.tool.delete")).
+					Delete("/tool/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.Delete)
+				r.With(toolkitGate("models.applications.toolkits.details")).
+					Get("/toolkits/prompt_lib/{projectID}", toolkitHandler.ListTypeSchemas)
+				r.With(toolkitGate("models.applications.tools.list")).
+					Get("/toolkit_types/prompt_lib/{projectID}", toolkitHandler.ListTypes)
+				r.With(requireToolDetails).
+					Get("/toolkit_available_tools/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.AvailableTools)
+				r.With(requireToolDetails).
+					Post("/toolkit_discover_tools/prompt_lib/{projectID}/{toolkitType}", toolkitHandler.DiscoverTools)
+				// toolkit_validator.py declares only `get`; the POST beside it
+				// runs the same check over a body and takes the same name.
+				r.With(requireToolkitValidate).
+					Get("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
+				r.With(requireToolkitValidate).
+					Post("/toolkit_validator/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ValidateToolkit)
+				r.With(toolkitGate("models.applications.fork.post")).
+					Post("/fork_toolkit/prompt_lib/{projectID}", toolkitHandler.ForkToolkit)
+				// pylon has test_toolkit_tool.py and no test_tool.py; both
+				// verbs here run one toolkit tool, so both take the string that
+				// module declares.
+				r.With(requireToolPatch).
+					Post("/test_tool/prompt_lib/{projectID}/{toolID}", toolkitHandler.TestTool)
+				r.With(requireToolPatch).
+					Post("/test_toolkit_tool/prompt_lib/{projectID}", toolkitHandler.TestToolkitTool)
+				r.With(toolkitGate("models.applications.export_toolkit.export")).
+					Get("/export_toolkit/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.ExportToolkit)
+				r.With(toolkitGate("models.applications.index_types.details")).
+					Get("/index_types/prompt_lib/{projectID}", toolkitHandler.IndexTypes)
+				r.With(requireIndexMetaRead).
+					Get("/index_meta/prompt_lib/{projectID}/{toolkitID}", toolkitHandler.IndexMeta)
+				r.With(requireIndexMetaRead).
+					Get("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaGet)
+				r.With(toolkitGate("models.applications.index_meta.edit")).
+					Patch("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaUpdate)
+				r.With(toolkitGate("models.applications.index_meta.delete")).
+					Delete("/index_meta/prompt_lib/{projectID}/{toolkitID}/{indexMetaID}", toolkitHandler.IndexMetaDelete)
+				r.With(toolkitGate("models.applications.task.delete")).
+					Delete("/index_cancel/prompt_lib/{projectID}/{toolkitID}/{indexName}/{taskID}", toolkitHandler.IndexCancel)
 
 				// Folders
 				if cfg.FoldersRepo != nil {
@@ -1034,20 +1825,37 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					// date_groups for a project with nine conversations
 					// (#128 defects 1 and 2).
 					folderHandler := v2folders.NewHandler(cfg.FoldersRepo).WithPool(cfg.Pool)
-					r.Get("/folder/prompt_lib/{projectID}", folderHandler.List)
-					r.Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
-					r.Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
-					r.Put("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
-					r.Patch("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
-					r.Delete("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Delete)
+					requireFolderRead := projectPermission("models.chat.folders.get")
+					requireFolderUpdate := projectPermission("models.chat.folders.update")
+					r.With(requireFolderRead).Get("/folder/prompt_lib/{projectID}", folderHandler.List)
+					r.With(projectPermission("models.chat.folders.create")).
+						Post("/folder/prompt_lib/{projectID}", folderHandler.Create)
+					r.With(requireFolderRead).Get("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Get)
+					r.With(requireFolderUpdate).Put("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
+					r.With(requireFolderUpdate).Patch("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Update)
+					r.With(projectPermission("models.chat.folders.delete")).
+						Delete("/folder/prompt_lib/{projectID}/{folderID}", folderHandler.Delete)
 				}
 
 				// Tags
 				if cfg.TagsRepo != nil {
 					tagHandler := v2tags.NewHandler(cfg.TagsRepo)
-					r.Get("/tags/prompt_lib/{projectID}", tagHandler.List)
-					r.Post("/tags/prompt_lib/{projectID}", tagHandler.Create)
-					r.Delete("/tags/prompt_lib/{projectID}/{tagID}", tagHandler.Delete)
+					r.With(projectPermission("models.promptlib_shared.tags.list")).
+						Get("/tags/prompt_lib/{projectID}", tagHandler.List)
+					// POST and DELETE stay at the MEMBERSHIP tier, alone in this
+					// group. pylon's tags.py defines `get` and nothing else — no
+					// legacy deployment has ever served a tag write on this
+					// resource, so there is no `check_api` declaration to
+					// transcribe. Naming one here would be a guess in one of two
+					// directions with no way to tell which: reuse
+					// `tags.list` and any viewer can delete a project's tags;
+					// invent `models.promptlib_shared.tags.create` and nothing
+					// grants it, so the button 403s for everyone. Both are worse
+					// than the membership check, which is at least the
+					// authorization these routes had a moment ago. #313 records
+					// this as a product decision rather than a transcription.
+					r.With(projectScoped).Post("/tags/prompt_lib/{projectID}", tagHandler.Create)
+					r.With(projectScoped).Delete("/tags/prompt_lib/{projectID}/{tagID}", tagHandler.Delete)
 				}
 
 				// Conversations
@@ -1061,29 +1869,63 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						WithPool(cfg.Pool).
 						WithObjectStore(cfg.ObjectStore).
 						WithAttachmentStore(newAttachmentStore(cfg.Pool))
-					r.Get("/conversations/prompt_lib/{projectID}", convHandler.List)
-					r.Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
-					r.Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
-					r.Put("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Update)
-					r.Delete("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
-					r.Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
-					r.Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
-					r.Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
-					r.Post("/participants/prompt_lib/{projectID}/{conversationID}", convHandler.AddParticipant)
-					r.Delete("/participant/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.RemoveParticipant)
-					r.Put("/entity_settings/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.UpdateEntitySettings)
-					r.Patch("/entity_settings/prompt_lib/{projectID}/{conversationID}", convHandler.BatchUpdateEntitySettings)
-					r.Post("/select_conversation/prompt_lib/{projectID}/{conversationID}", convHandler.SelectConversation)
-					r.Delete("/select_conversation/prompt_lib/{projectID}", convHandler.DeselectConversation)
-					r.Post("/regenerate/prompt_lib/{projectID}/{conversationID}", convHandler.Regenerate)
-					r.Post("/canvases/prompt_lib/{projectID}", convHandler.CreateCanvas)
-					r.Get("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.GetCanvas)
-					r.Put("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.UpdateCanvas)
-					r.Put("/attachment_storage/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateAttachmentStorage)
-					r.Post("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.AddAttachments)
-					r.Delete("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteAttachments)
-					r.Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextAnalytics)
-					r.Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
+					requireConversationRead := projectPermission("models.chat.conversation.details")
+					requireMessageDelete := projectPermission("models.chat.messages.delete")
+					requireEntitySettings := projectPermission("models.chat.entity_settings.update")
+					requireConversationEdit := projectPermission("models.chat.conversation.edit")
+					r.With(projectPermission("models.chat.conversations.list")).
+						Get("/conversations/prompt_lib/{projectID}", convHandler.List)
+					r.With(projectPermission("models.chat.conversations.create")).
+						Post("/conversations/prompt_lib/{projectID}", convHandler.Create)
+					r.With(requireConversationRead).
+						Get("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Get)
+					r.With(projectPermission("models.chat.conversation.update")).
+						Put("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Update)
+					r.With(projectPermission("models.chat.conversations.delete")).
+						Delete("/conversation/prompt_lib/{projectID}/{conversationID}", convHandler.Delete)
+					r.With(projectPermission("models.chat.messages.list")).
+						Get("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.ListMessages)
+					r.With(requireMessageDelete).
+						Delete("/messages/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteMessages)
+					r.With(requireMessageDelete).
+						Delete("/message/prompt_lib/{projectID}/{messageID}", convHandler.DeleteMessage)
+					r.With(projectPermission("models.chat.participants.create")).
+						Post("/participants/prompt_lib/{projectID}/{conversationID}", convHandler.AddParticipant)
+					r.With(projectPermission("models.chat.participant.delete")).
+						Delete("/participant/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.RemoveParticipant)
+					r.With(requireEntitySettings).
+						Put("/entity_settings/prompt_lib/{projectID}/{conversationID}/{participantID}", convHandler.UpdateEntitySettings)
+					r.With(requireEntitySettings).
+						Patch("/entity_settings/prompt_lib/{projectID}/{conversationID}", convHandler.BatchUpdateEntitySettings)
+					// select_conversation.py declares the conversation READ for
+					// both its verbs — selecting one is a per-user marker, not
+					// an edit of the conversation.
+					r.With(requireConversationRead).
+						Post("/select_conversation/prompt_lib/{projectID}/{conversationID}", convHandler.SelectConversation)
+					r.With(requireConversationRead).
+						Delete("/select_conversation/prompt_lib/{projectID}", convHandler.DeselectConversation)
+					r.With(projectPermission("models.chat.conversations.regenerate")).
+						Post("/regenerate/prompt_lib/{projectID}/{conversationID}", convHandler.Regenerate)
+					r.With(projectPermission("models.chat.canvas.create")).
+						Post("/canvases/prompt_lib/{projectID}", convHandler.CreateCanvas)
+					r.With(projectPermission("models.chat.canvas.details")).
+						Get("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.GetCanvas)
+					r.With(projectPermission("models.chat.canvas.update")).
+						Put("/canvas/prompt_lib/{projectID}/{canvasID}", convHandler.UpdateCanvas)
+					// attachment_storage has no pylon module; it writes the
+					// conversation's own storage setting, so it takes
+					// context_strategy.py's string — the other per-conversation
+					// setting write — rather than a name invented for it.
+					r.With(requireConversationEdit).
+						Put("/attachment_storage/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateAttachmentStorage)
+					r.With(projectPermission("models.chat.attachments.create")).
+						Post("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.AddAttachments)
+					r.With(projectPermission("models.chat.attachments.delete")).
+						Delete("/attachments/prompt_lib/{projectID}/{conversationID}", convHandler.DeleteAttachments)
+					r.With(requireConversationRead).
+						Get("/context_analytics/prompt_lib/{projectID}/{conversationID}", convHandler.GetContextAnalytics)
+					r.With(requireConversationEdit).
+						Put("/context_strategy/prompt_lib/{projectID}/{conversationID}", convHandler.UpdateContextStrategy)
 				}
 
 				// NOTE(#126): the Predict/LLM, Chat and Pipeline-trigger route
@@ -1104,11 +1946,19 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Batch version replacement
 				if cfg.AppsRepo != nil {
 					appHandler := v2apps.NewHandler(cfg.AppsRepo, cfg.Pool)
-					r.Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
+					// Neither this route nor the one below it has a pylon
+					// module: both are Go-side additions that WRITE an
+					// application version — one swaps a version reference across
+					// a project's agents, the other rewrites a version's
+					// attachment-storage setting — so both take version.py's
+					// update string rather than a name invented for them.
+					r.With(projectPermission("models.applications.version.update")).
+						Post("/batch_replace_version/prompt_lib/{projectID}/{oldVersionID}/{newVersionID}", appHandler.BatchReplaceVersion)
 				}
 
 				// Application attachment storage
-				r.Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
+				r.With(projectPermission("models.applications.version.update")).
+					Put("/application_attachment_storage/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.UpdateAttachmentStorage)
 
 				// NOTE(#126): webchat and the three AI-draft-generation routes
 				// stood here behind the same nil gate on RouterConfig.Predictor,
@@ -1121,16 +1971,46 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// on a narrow Predictor interface the current runtime could
 				// supply — but it now has no caller. #194 records that.
 
-				// Fork
-				r.Post("/fork/prompt_lib/{projectID}", coreHandler.ExportImportPost)
-
-				// Publishing
-				r.Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
-				r.Post("/unpublish/prompt_lib/{projectID}/{versionID}", coreHandler.Unpublish)
-				r.Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
-				r.Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
-				r.Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
-				r.Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				// Fork, and the application publish plane. These are the
+				// routes #302 names explicitly: publish writes a catalogue row
+				// for {projectID}, unpublish reverts that project's version to
+				// draft with a bare `UPDATE p_<projectID>.application_versions`,
+				// and fork imports an entity INTO the named project. The only
+				// caller-related read any of them performed was
+				// publishGuardrail, which is a deployment-wide kill switch plus
+				// a project whitelist — not a membership check.
+				//
+				// #302 asks explicitly for publish and unpublish to be gated on
+				// the publish permission rather than on membership; these are
+				// the strings publish.py, unpublish.py, publish_validate.py and
+				// fork.py declare. publish and unpublish are DIFFERENT names in
+				// pylon, and the legacy matrix withholds both from a viewer —
+				// which is the whole point of the tier, since a viewer that
+				// could publish would push a project's agent into the public
+				// catalogue.
+				requirePublish := projectPermission("models.applications.publish.post")
+				requireVersionValidate := projectPermission("models.applications.version_validator.check")
+				// The fork route runs the FORK handler (#505). It was registered
+				// on ExportImportPost, so `Handler.Fork` had no caller and a fork
+				// ran the import. The import does not read the keys `?fork=true`
+				// adds to the export the wizard sends it: it leaves
+				// llm_settings.model_project_id pointing at the SOURCE project,
+				// writes no meta.parent_entity_id, and drops every version variable
+				// and tag. api/openapi/v2.yaml already describes this path as the
+				// Fork handler.
+				r.With(projectPermission("models.applications.fork.post")).
+					Post("/fork/prompt_lib/{projectID}", coreHandler.Fork)
+				r.With(requirePublish).Post("/publish/prompt_lib/{projectID}/{versionID}", coreHandler.Publish)
+				r.With(projectPermission("models.applications.unpublish.post")).
+					Post("/unpublish/prompt_lib/{projectID}/{versionID}", coreHandler.Unpublish)
+				r.With(requirePublish).
+					Get("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
+				r.With(requirePublish).
+					Post("/publish_validate/prompt_lib/{projectID}/{versionID}", coreHandler.PublishValidate)
+				r.With(requireVersionValidate).
+					Post("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
+				r.With(requireVersionValidate).
+					Get("/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}", coreHandler.VersionValidator)
 
 				// Public applications
 				r.Get("/public_applications/prompt_lib", coreHandler.PublicApplications)
@@ -1154,42 +2034,50 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				r.Get("/public_skill/prompt_lib/{skillID}", skillPublishHandler.PublicSkill)
 				r.Get("/public_skill/prompt_lib/{skillID}/{versionName}", skillPublishHandler.PublicSkill)
 
-				// Everything project-scoped goes behind RequireProjectAccess.
+				// Everything project-scoped carries the permission its pylon
+				// module declares.
 				//
 				// These routes take {projectID} from the path and then read and
 				// write THAT project's schema — unpublish deletes a catalog row
 				// and reverts a source version, attach creates a skill and maps
-				// it onto that project's agents. Authentication alone would let
-				// any signed-in user aim them at a project they have nothing to
-				// do with. The neighbouring application publish routes predate
-				// this middleware and do not carry it; that is a gap to close
-				// separately, not a reason to ship new delete-capable surface
-				// with the same hole.
-				//
-				// Unconditional, unlike the toolkit block's flagged rollout:
-				// that flag exists because the check was retrofitted onto
-				// routes with live clients, and turning it on could break one.
-				// These routes are new in the same change as the middleware, so
-				// there is no client to regress and no rollout to stage — a
-				// switch here would only be a way to run them unprotected.
-				r.Group(func(r chi.Router) {
-					r.Use(apimw.RequireProjectAccess(cfg.Pool))
-					r.Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
-					r.Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
-					r.Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
-					r.Post("/attach_public_skill/prompt_lib/{projectID}", skillPublishHandler.AttachPublicSkill)
-					r.Get("/skill_categories/prompt_lib/{projectID}", skillPublishHandler.SkillCategories)
-					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
-					r.Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
-					r.Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
-				})
+				// it onto that project's agents. They shipped behind the
+				// membership check because nothing granted a permission then;
+				// #313's seeding migration is what lets them carry one now.
+				// pylon's publish_skill.py, unpublish_skill.py and
+				// publish_skill_validate.py all declare ONE string —
+				// `skills.publish` — unlike the application plane above, where
+				// publish and unpublish are separate names.
+				requireSkillPublish := projectPermission("models.applications.skills.publish")
+				requireSkillFork := projectPermission("models.applications.fork.post")
+				r.With(requireSkillPublish).
+					Post("/publish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Publish)
+				r.With(requireSkillPublish).
+					Post("/unpublish_skill/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.Unpublish)
+				r.With(requireSkillPublish).
+					Post("/publish_skill_validate/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.PublishValidate)
+				r.With(requireSkillFork).
+					Post("/attach_public_skill/prompt_lib/{projectID}", skillPublishHandler.AttachPublicSkill)
+				r.With(projectPermission("models.promptlib_shared.tags.list")).
+					Get("/skill_categories/prompt_lib/{projectID}", skillPublishHandler.SkillCategories)
+				r.With(requireSkillFork).
+					Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}", skillPublishHandler.ExportFork)
+				r.With(requireSkillFork).
+					Get("/skill_export_fork/prompt_lib/{projectID}/{skillID}/{versionID}", skillPublishHandler.ExportFork)
+				r.With(projectPermission("models.applications.applications.details")).
+					Get("/agents_with_skill/prompt_lib/{projectID}/{skillID}", skillPublishHandler.AgentsWithSkill)
 
 				// Check version in use
-				r.Get("/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				r.With(projectPermission("models.applications.version.details")).
+					Get("/check_version_in_use/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
 
-				// Authors / trending
+				// Authors / trending. /author names no project in its path —
+				// pylon's author.py is a ProjectAPI whose id is the AUTHOR's —
+				// so there is nothing for a project gate to resolve against and
+				// it stays as it is; the social plugin serves the same resource
+				// ungated (#161).
 				r.Get("/author/prompt_lib/{authorID}", coreHandler.Author)
-				r.Get("/trending_authors/prompt_lib/{projectID}", coreHandler.TrendingAuthors)
+				r.With(projectPermission("models.applications.trending_authors.list")).
+					Get("/trending_authors/prompt_lib/{projectID}", coreHandler.TrendingAuthors)
 
 				// Moderation used to be registered here as well, on
 				// `/elitea_core/moderation_status/…`. pylon serves that resource
@@ -1198,26 +2086,43 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// at the real handler, which would publish a second URL for the
 				// same rows. See internal/api/v2/moderation/requests.go.
 
-				// Application relations
-				r.Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
-				r.Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				// Application relations. application_relation.py declares only
+				// `patch`; the GET beside it is the same handler answering the
+				// same rows as check_version_in_use above, so it takes that
+				// module's read string.
+				r.With(projectPermission("models.applications.version.details")).
+					Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				r.With(projectPermission("models.applications.application_relation.patch")).
+					Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
 
-				// Recommendations
-				r.Get("/recommendations/prompt_lib/{projectID}", coreHandler.Recommendations)
+				// Recommendations — recommendations.py declares the agent LIST
+				// permission, since that is what it returns a slice of.
+				r.With(projectPermission("models.applications.applications.list")).
+					Get("/recommendations/prompt_lib/{projectID}", coreHandler.Recommendations)
 
-				// Feedbacks
+				// Feedbacks — left ungated on purpose. #302's acceptance notes
+				// name feedbacks.py among the modules legacy does not gate, and
+				// pylon serves this resource from the SOCIAL plugin, whose
+				// feedback.py guard is a different resource (one feedback row by
+				// id, not the project listing this path returns).
 				r.Get("/feedbacks/default/{projectID}", coreHandler.Feedbacks)
 
-				// Analytics (flat paths matching UI expectations)
+				// Analytics (flat paths matching UI expectations). All seven
+				// pylon analytics_*.py modules declare the SAME string as
+				// analytics_costs.py below — `models.monitoring.tracing.view` —
+				// so the eighth endpoint is no longer the only gated one. The
+				// grant that makes it resolvable on a Go-bootstrapped database
+				// is 0063's, already in the history.
 				if cfg.AnalyticsRepo != nil {
 					analyticsHandler := v2analytics.NewHandler(cfg.AnalyticsRepo)
-					r.Get("/analytics/prompt_lib/{projectID}", analyticsHandler.Usage)
-					r.Get("/analytics_agents/prompt_lib/{projectID}", analyticsHandler.Agents)
-					r.Get("/analytics_agent_detail/prompt_lib/{projectID}", analyticsHandler.Agents)
-					r.Get("/analytics_tools/prompt_lib/{projectID}", analyticsHandler.Tools)
-					r.Get("/analytics_tool_detail/prompt_lib/{projectID}", analyticsHandler.Tools)
-					r.Get("/analytics_users/prompt_lib/{projectID}", analyticsHandler.Users)
-					r.Get("/analytics_user_detail/prompt_lib/{projectID}", analyticsHandler.Users)
+					requireAnalyticsView := projectPermission(v2analytics.ViewPermission)
+					r.With(requireAnalyticsView).Get("/analytics/prompt_lib/{projectID}", analyticsHandler.Usage)
+					r.With(requireAnalyticsView).Get("/analytics_agents/prompt_lib/{projectID}", analyticsHandler.Agents)
+					r.With(requireAnalyticsView).Get("/analytics_agent_detail/prompt_lib/{projectID}", analyticsHandler.Agents)
+					r.With(requireAnalyticsView).Get("/analytics_tools/prompt_lib/{projectID}", analyticsHandler.Tools)
+					r.With(requireAnalyticsView).Get("/analytics_tool_detail/prompt_lib/{projectID}", analyticsHandler.Tools)
+					r.With(requireAnalyticsView).Get("/analytics_users/prompt_lib/{projectID}", analyticsHandler.Users)
+					r.With(requireAnalyticsView).Get("/analytics_user_detail/prompt_lib/{projectID}", analyticsHandler.Users)
 				}
 
 				// The eighth analytics endpoint (issue 253), and the only one
@@ -1241,10 +2146,8 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// on a Go-bootstrapped database is seeded by
 				// migrations/shared/0063_trace_and_cost_read_permissions.sql.
 				costsHandler := v2analytics.NewCostsHandler(cfg.Pool)
-				r.With(apimw.RequireResolvedPermissions(
-					permissionResolver, platformauth.PermissionModeDefault,
-					v2analytics.ViewPermission,
-				)).Get("/analytics_costs/prompt_lib/{projectID}", costsHandler.Costs)
+				r.With(projectPermission(v2analytics.ViewPermission)).
+					Get("/analytics_costs/prompt_lib/{projectID}", costsHandler.Costs)
 
 				// Chat execution-step traces (issue 253) — the pin strip under
 				// an agent's answer, and the step behind one pin.
@@ -1263,38 +2166,65 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// Gated on the two permissions the pylon handlers declare,
 				// resolved against the project in DEFAULT mode.
 				traceHandler := v2messagetraces.NewHandler(cfg.Pool)
-				r.With(apimw.RequireResolvedPermissions(
-					permissionResolver, platformauth.PermissionModeDefault,
-					v2messagetraces.ListPermission,
-				)).Get("/message_traces/prompt_lib/{projectID}/{conversationID}", traceHandler.List)
-				r.With(apimw.RequireResolvedPermissions(
-					permissionResolver, platformauth.PermissionModeDefault,
-					v2messagetraces.DetailPermission,
-				)).Get("/message_trace/prompt_lib/{projectID}/{stepID}", traceHandler.Get)
+				r.With(projectPermission(v2messagetraces.ListPermission)).
+					Get("/message_traces/prompt_lib/{projectID}/{conversationID}", traceHandler.List)
+				r.With(projectPermission(v2messagetraces.DetailPermission)).
+					Get("/message_trace/prompt_lib/{projectID}/{stepID}", traceHandler.Get)
 
-				// Icons
+				// Icons. default_icons.py carries no `check_api` at all — it
+				// returns the deployment's built-in icon set, the same list for
+				// every project — so it stays ungated, as #302's acceptance
+				// notes require for the modules legacy leaves open. upload_icon.py
+				// declares all four verbs, and the legacy matrix withholds every
+				// one of them from a viewer INCLUDING the GET, which is why the
+				// listing is gated on `.get` rather than treated as a free read.
 				r.Get("/default_icons/prompt_lib/{projectID}", coreHandler.DefaultIcons)
-				r.Get("/upload_icon/prompt_lib/{projectID}", coreHandler.ListUploadedIcons)
-				r.Post("/upload_icon/prompt_lib/{projectID}", coreHandler.UploadIcon)
-				r.Post("/upload_icon/prompt_lib/{projectID}/{entityID}", coreHandler.UploadIcon)
-				r.Put("/upload_icon/prompt_lib/{projectID}/{versionId}", coreHandler.UpdateIcon)
-				r.Delete("/upload_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteIcon)
+				requireIconUpload := projectPermission("models.applications.upload_icon.post")
+				r.With(projectPermission("models.applications.upload_icon.get")).
+					Get("/upload_icon/prompt_lib/{projectID}", coreHandler.ListUploadedIcons)
+				r.With(requireIconUpload).Post("/upload_icon/prompt_lib/{projectID}", coreHandler.UploadIcon)
+				r.With(requireIconUpload).Post("/upload_icon/prompt_lib/{projectID}/{entityID}", coreHandler.UploadIcon)
+				r.With(projectPermission("models.applications.upload_icon.update")).
+					Put("/upload_icon/prompt_lib/{projectID}/{versionId}", coreHandler.UpdateIcon)
+				r.With(projectPermission("models.applications.upload_icon.delete")).
+					Delete("/upload_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteIcon)
 
-				// Export/Import
-				r.Post("/export_import/prompt_lib/{projectID}/{entityID}", coreHandler.ExportImportPost)
-				r.Get("/export_import/prompt_lib/{projectID}/{entityID}", coreHandler.ExportImportGet)
+				// Export/Import. export_import.py declares `get` — the EXPORT —
+				// and nothing else; the POST beside it is an import, and
+				// import_wizard.py declares exactly that string for exactly that
+				// operation, so the two share it rather than the POST inheriting
+				// the export's read tier. export_converter.py carries no guard in
+				// pylon and names no project in its path, so it stays open.
+				r.With(projectPermission("models.applications.export_import.import")).
+					Post("/export_import/prompt_lib/{projectID}/{entityID}", coreHandler.ExportImportPost)
+				r.With(projectPermission("models.applications.export_import.export")).
+					Get("/export_import/prompt_lib/{projectID}/{entityID}", coreHandler.ExportImportGet)
 				r.Post("/export_converter/prompt_lib", coreHandler.ExportConverter)
 
-				// Pin
+				// Pin — left ungated on purpose, as #302's acceptance notes
+				// require: pylon serves it from social/api/v2/pin.py, which the
+				// legacy catalogue lists among the UNGUARDED handlers. Both verbs
+				// write only rows keyed by the caller's own user id.
 				r.Post("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", coreHandler.Pin)
 				r.Delete("/pin/prompt_lib/{projectID}/{entityType}/{entityID}", coreHandler.Unpin)
 
-				// Project info/context
-				r.Get("/project_info/prompt_lib/{projectID}/project-info", coreHandler.ProjectInfo)
-				r.Put("/project_info/prompt_lib/{projectID}/project-info", coreHandler.UpdateProjectInfo)
-				r.Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
-				r.Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
-				r.Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
+				// Project info/context. project_info.py, project_icon.py and
+				// project_context.py all declare the same pair —
+				// `models.project_context.view` for the reads and `.edit` for the
+				// writes. `.view` is 0062's grant, already in the history; `.edit`
+				// arrives with 0068.
+				requireProjectContextView := projectPermission("models.project_context.view")
+				requireProjectContextEdit := projectPermission("models.project_context.edit")
+				r.With(requireProjectContextView).
+					Get("/project_info/prompt_lib/{projectID}/project-info", coreHandler.ProjectInfo)
+				r.With(requireProjectContextEdit).
+					Put("/project_info/prompt_lib/{projectID}/project-info", coreHandler.UpdateProjectInfo)
+				r.With(requireProjectContextView).
+					Get("/project_icon/prompt_lib/{projectID}", coreHandler.ListProjectIcons)
+				r.With(requireProjectContextEdit).
+					Post("/project_icon/prompt_lib/{projectID}", coreHandler.CreateProjectIcon)
+				r.With(requireProjectContextEdit).
+					Delete("/project_icon/prompt_lib/{projectID}/{name}", coreHandler.DeleteProjectIcon)
 				// Registered unconditionally: this is the ONLY registration
 				// source for project-context GET/PUT in the router every real
 				// deployment reaches (CURRENT_PARITY_EVIDENCE.md,
@@ -1313,28 +2243,55 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// prefix comes from this route's enclosing r.Route groups)
 				// rather than a second hardcoded literal, purely so the two
 				// files can't drift on what path they're both talking about.
-				r.Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
-				r.Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
+				r.With(requireProjectContextView).
+					Get(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.ProjectContext)
+				r.With(requireProjectContextEdit).
+					Put(strings.TrimPrefix(v2promptcontextreads.CurrentProjectContextPath, "/api/v2/elitea_core"), coreHandler.UpdateProjectContext)
 
-				// Platform settings
+				// Platform settings — left ungated on purpose, and the reason is
+				// recorded here because a project in the path makes the route
+				// look gateable. platform_settings.py is one of the thirty-seven
+				// handlers testdata/legacy/legacy-rbac-static-catalog.json lists
+				// as UNGUARDED, so there is no permission to transcribe, and
+				// #302's acceptance notes forbid tightening what legacy leaves
+				// open.
+				//
+				// The handler DOES read the project: eliteacore/handler.go:104
+				// overlays `p_{projectID}.configuration` where
+				// type = 'environment_settings' onto ten built-in defaults. So
+				// this is not an ungated route that happens to read nothing. What
+				// it discloses is the project's own feature switches —
+				// chat_enabled, mcp_enabled and eight more booleans of the same
+				// shape — which the web app reads to decide which menu entries to
+				// draw. No credential, no member, no content.
+				// TestEliteaCoreLegacyUngatedRoutesStayUngated pins this.
 				r.Get("/platform_settings/prompt_lib/{projectID}", coreHandler.PlatformSettings)
 				r.Get("/platform_settings/prompt_lib", coreHandler.PlatformSettings)
 
 				// Search
-				r.Get("/search_options/prompt_lib/{projectID}", coreHandler.SearchOptions)
+				r.With(projectPermission("models.promptlib_shared.search")).
+					Get("/search_options/prompt_lib/{projectID}", coreHandler.SearchOptions)
 
-				// MCP OAuth & sync
-				r.Post("/mcp_oauth_proxy/{projectID}", coreHandler.MCPOAuthProxy)
-				r.Post("/mcp_dcr_proxy/{projectID}", coreHandler.MCPDCRProxy)
-				r.Post("/mcp_sync_tools/prompt_lib/{projectID}", coreHandler.MCPSyncTools)
+				// MCP OAuth & sync. All three pylon modules declare
+				// `models.applications.tool.patch`: each one writes a project's
+				// toolkit rows, whatever the transport in front of it looks like.
+				// The two proxies are mode-less ProjectAPI paths in pylon, which
+				// is why they carry no `prompt_lib` segment here either.
+				requireMCPToolWrite := projectPermission("models.applications.tool.patch")
+				r.With(requireMCPToolWrite).Post("/mcp_oauth_proxy/{projectID}", coreHandler.MCPOAuthProxy)
+				r.With(requireMCPToolWrite).Post("/mcp_dcr_proxy/{projectID}", coreHandler.MCPDCRProxy)
+				r.With(requireMCPToolWrite).Post("/mcp_sync_tools/prompt_lib/{projectID}", coreHandler.MCPSyncTools)
 
-				// The MCP REST surface (issue 252 P1). All three carry
-				// RequireProjectAccess: each names a project in its path and
+				// The MCP REST surface (issue 252 P1). All three stay at the
+				// MEMBERSHIP tier, and unlike the tag writes above that is not a
+				// gap waiting on a decision: pylon's tools_list.py and
+				// tools_call.py are two of the thirty-seven handlers the legacy
+				// catalogue lists as UNGUARDED, and internal_mcp_pat_status has
+				// no pylon module at all. There is no permission to transcribe,
+				// and #302's acceptance notes forbid tightening what legacy
+				// leaves open — but each still names a project in its path and
 				// then reads that project's toolkit rows or the caller's own
-				// tokens, and authentication alone would let any signed-in user
-				// aim them at a project they have nothing to do with. New
-				// routes, so there is no client to regress — the same reasoning
-				// the skill-publishing block above states.
+				// tokens, so the membership check they shipped with stays.
 				//
 				// The modes are pylon's, not a guess: tools_list/tools_call
 				// register `c.DEFAULT_MODE` only, internal_mcp_pat_status
@@ -1342,24 +2299,56 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// path 404s here rather than being answered with something
 				// plausible.
 				//
-				// tools_list and tools_call answer 501 with a stated reason —
-				// see internal/api/v2/mcp/registry.go. They are registered
-				// rather than left off so the refusal is explicit and pinned by
-				// a test: a 404 leaves the next person free to wire a stub up.
-				mcpHandler := v2mcp.NewHandler(cfg.Pool)
+				// tools_list is registered in BOTH mode shapes. pylon's
+				// `api_tools.with_modes` registers a route with and without the
+				// mode segment, so `/tools_list/1` and `/tools_list/default/1`
+				// are one endpoint there. The Python execution worker builds
+				// the mode-less form (`elitea_sdk/runtime/clients/client.py`),
+				// and the hybrid edge matches the mode-less form too, so
+				// registering only `/default/` would leave the caller that
+				// actually exists unserved.
+				//
+				// tools_call still answers 501 with a stated reason — see
+				// internal/api/v2/mcp/registry.go. It is registered rather than
+				// left off so the refusal is explicit and pinned by a test: a
+				// 404 leaves the next person free to wire a stub up.
+				mcpHandler := v2mcp.NewHandler(cfg.Pool, apimw.NewDBPersonalProjectResolver(cfg.Pool))
 				r.Group(func(r chi.Router) {
-					r.Use(apimw.RequireProjectAccess(cfg.Pool))
+					r.Use(projectScoped)
+					r.Get("/tools_list/{projectID}", mcpHandler.ToolsList)
 					r.Get("/tools_list/default/{projectID}", mcpHandler.ToolsList)
 					r.Post("/tools_call/default/{projectID}", mcpHandler.ToolsCall)
 					r.Get("/internal_mcp_pat_status/prompt_lib/{projectID}/{toolkitType}", mcpHandler.InternalMCPPATStatus)
 				})
 
 				// Import wizard
-				r.Post("/import_wizard/prompt_lib/{projectID}", coreHandler.ExportImportPost)
+				r.With(projectPermission("models.applications.export_import.import")).
+					Post("/import_wizard/prompt_lib/{projectID}", coreHandler.ExportImportPost)
 
-				// Users / Roles (served under /admin/ for UI compat, registered here as fallback)
-				r.Get("/users/{mode}/{projectID}", coreHandler.Users)
-				r.Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				// Users / Roles (served under /admin/ for UI compat, registered
+				// here as fallback). elitea_core has no users.py or roles.py;
+				// pylon serves both from the ADMIN plugin, whose ProjectAPI
+				// variants declare `configuration.users.users.view` and
+				// `configuration.roles.roles.view`. Both handlers here read the
+				// named project's membership — Users returns every member's
+				// email — so the project-scoped tier is the right one.
+				r.With(projectPermission("configuration.users.users.view")).
+					Get("/users/{mode}/{projectID}", coreHandler.Users)
+				r.With(projectPermission("configuration.roles.roles.view")).
+					Get("/roles/{mode}/{projectID}", coreHandler.Roles)
+				// /permissions stays ungated, and gating it would be the
+				// agent_categories mistake in a second shape. It is the caller's
+				// own permission SELF-READ: the handler resolves the requester's
+				// permissions for the project and hands them back, so a
+				// non-member already gets an empty list and there is nothing to
+				// leak. pylon's counterpart is auth/api/v2/permissions.py, which
+				// the legacy catalogue lists among the UNGUARDED handlers. The
+				// admin plugin's permissions.py IS guarded, on
+				// `configuration.roles.permissions.view`, but that is the
+				// role→permission MATRIX editor and a different resource; the
+				// legacy matrix grants that string to the default-mode ADMIN
+				// alone, so borrowing it here would 403 every editor and viewer
+				// on the request the web app uses to decide what to render.
 				r.Get("/permissions/prompt_lib/{projectID}", coreHandler.Permissions)
 
 				// The admin SERVICE DESCRIPTORS page (unit A14) — pylon's
@@ -1527,14 +2516,62 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// deadlines (S12).
 
 			// === Context Manager ===
+			//
+			// Six routes that shipped with NO gate of any kind. Each one names
+			// {projectID} and then builds that project's schema from the segment
+			// — internal/api/v2/contextmgr/handler.go:121 does
+			// `fmt.Sprintf("p_%s", projectID)` and reads chat_message_group from
+			// it — so any authenticated caller could read and write any
+			// project's conversation summaries by editing one path segment. That
+			// is the #302 hole in a group #302 did not reach.
+			//
+			// THE LEGACY MATRIX HAS NO ENTRY FOR THIS SURFACE, and this file
+			// says so rather than implying a transcription. There is no
+			// context_manager module in pylon at all:
+			// testdata/legacy/legacy-rbac-static-catalog.json lists none, guarded
+			// or unguarded. So there is no `check_api` declaration to copy and no
+			// legacy role split to read.
+			//
+			// THE SPLIT THIS FILE PROPOSES, and why. Every route acts on ONE
+			// conversation, named by {conversationID}, and the data is derived
+			// from that conversation's own messages. So each route takes the
+			// permission the conversation itself takes:
+			//
+			//   the two reads  → models.chat.conversation.details
+			//   the four writes → models.chat.conversation.edit
+			//
+			// This is the rule this router already applies to the other Go-only
+			// routes that act on a conversation and have no pylon module:
+			// `attachment_storage` and `context_strategy` both take
+			// `models.chat.conversation.edit` for the same reason, and their note
+			// states it. Reusing the conversation strings also keeps the surface
+			// GRANTABLE: 0068 seeds both in DEFAULT mode with the legacy matrix
+			// split — `details` to admin, editor and viewer, `edit` to admin and
+			// editor. A name invented for this surface would be granted by
+			// nothing and would answer 403 to every caller (#354, #359).
+			//
+			// A VIEWER KEEPS THE READS AND LOSES THE WRITES. That is the same
+			// line the chat screen already draws: a viewer may open a
+			// conversation and may not edit it. `optimize_context` is a write by
+			// that rule even though its handler is a stub today, because the
+			// name states what the route is for and a gate must match the route,
+			// not the current body.
+			requireConversationContextRead := projectPermission("models.chat.conversation.details")
+			requireConversationContextWrite := projectPermission("models.chat.conversation.edit")
 			ctxMgrHandler := v2contextmgr.NewHandler(cfg.Pool)
 			r.Route("/context_manager", func(r chi.Router) {
-				r.Post("/optimize_context/{projectID}/{conversationID}", ctxMgrHandler.OptimizeContext)
-				r.Get("/analytics/{projectID}/{conversationID}", ctxMgrHandler.GetAnalytics)
-				r.Get("/summaries/{projectID}/{conversationID}", ctxMgrHandler.ListSummaries)
-				r.Post("/summaries/{projectID}/{conversationID}", ctxMgrHandler.CreateSummary)
-				r.Put("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.UpdateSummary)
-				r.Delete("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.DeleteSummary)
+				r.With(requireConversationContextWrite).
+					Post("/optimize_context/{projectID}/{conversationID}", ctxMgrHandler.OptimizeContext)
+				r.With(requireConversationContextRead).
+					Get("/analytics/{projectID}/{conversationID}", ctxMgrHandler.GetAnalytics)
+				r.With(requireConversationContextRead).
+					Get("/summaries/{projectID}/{conversationID}", ctxMgrHandler.ListSummaries)
+				r.With(requireConversationContextWrite).
+					Post("/summaries/{projectID}/{conversationID}", ctxMgrHandler.CreateSummary)
+				r.With(requireConversationContextWrite).
+					Put("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.UpdateSummary)
+				r.With(requireConversationContextWrite).
+					Delete("/summary/{projectID}/{conversationID}/{summaryID}", ctxMgrHandler.DeleteSummary)
 			})
 
 			// === Support Assistant ===
@@ -1544,22 +2581,66 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Webhooks ===
+			//
+			// Five routes over `webhooks WHERE project_id = $1`. The listing
+			// returns the row's `secret` and the PUT rotates it, and until #496
+			// the subrouter carried no gate, so any authenticated caller could
+			// name any project id. The gates are inside the package — see that
+			// Routes() header for the permission each route takes and why the
+			// `configurations` strings are the proposal for a surface the legacy
+			// matrix has no entry for.
+			//
+			// NOTE FOR A READER MEASURING THE IMPACT: no migration in this
+			// repository creates a `webhooks` table, and nothing dispatches from
+			// it. On a database built from this corpus the routes answer the
+			// repository's error rather than another project's rows. The gate is
+			// still the fix: the disclosure is one CREATE TABLE away, and the
+			// route must not be the thing that decides.
 			if cfg.WebhookRepo != nil {
-				r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(cfg.WebhookRepo).Routes())
+				r.Mount("/webhooks/prompt_lib/{projectID}", webhook.NewHandler(
+					cfg.WebhookRepo,
+					webhook.WithPermissionResolver(coreResolver),
+				).Routes())
 			}
 
 			// === Events (SSE) ===
+			//
+			// The project event stream. Until #496 it carried no gate, so any
+			// authenticated caller could subscribe to
+			// events.ProjectChannel({projectID}) for any tenant. Both transport
+			// arms take the same resolver: two registrations of one surface must
+			// not carry two authorization contracts, and #152 records what
+			// happens when the two arms of this exact fallback are allowed to
+			// drift.
 			if cfg.EventSource != nil {
-				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(cfg.EventSource).Routes())
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandlerFromSource(
+					cfg.EventSource,
+					v2events.WithPermissionResolver(coreResolver),
+				).Routes())
 			} else if cfg.RedisClient != nil {
-				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(cfg.RedisClient).Routes())
+				r.Mount("/events/prompt_lib/{projectID}", v2events.NewHandler(
+					cfg.RedisClient,
+					v2events.WithPermissionResolver(coreResolver),
+				).Routes())
 			}
 		})
 	})
 
-	// /llm has two possible backends. GatewayProxy is the Bifrost gateway
-	// (LLM_GATEWAY_URL); LLMProxy is the older LiteLLM facade, reachable only
-	// under ELITEA_CONFIGURATIONS_ENABLED, which no deployment sets.
+	// /llm has one composed backend: GatewayProxy, the mTLS reverse proxy to
+	// elitea-llm-gateway-svc (LLM_GATEWAY_URL). The gateway is the only LLM
+	// data plane — it pulls per-project credentials and model definitions from
+	// p_{projectID}.configuration itself, so there is no second proxy for Main
+	// to compose and no LiteLLM facade to fall back to (that facade, its
+	// administration client and its ELITEA_LITELLM_* env surface were deleted;
+	// nothing may reintroduce a fallback here).
+	//
+	// LLMProxy survives as a deliberately unwired seam: it is a plain
+	// http.Handler with no composition site in cmd/elitea-main, declared
+	// optional-by-design in router_nil_gate_test.go, and exists so an
+	// alternative LLM backend can be mounted with the same Auth+Project
+	// middleware without reopening this routing decision. It is NOT the old
+	// facade. Gateway wins when both are set: it is the migration target, and
+	// preferring anything else over it would be a silent downgrade.
 	//
 	// The gateway arm is mounted HERE, not in production_router.go's
 	// mountReviewedProductionRoutes: NewRouter always builds this router
@@ -1568,9 +2649,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	// matters now — mountReviewedProductionRoutes explicitly defers to this
 	// registration rather than mounting /llm itself.
 	//
-	// Gateway wins when both are composed: it is the migration target, and
-	// serving the superseded facade in preference to it would be a silent
-	// downgrade.
 	// Each backend keeps its own literal per-field nil gate rather than being
 	// collapsed into one nil-check over a local. TestNilGatedRouterFieldsAreWiredOrDeclared
 	// reads this file as SOURCE to prove no route group is gated behind a field
@@ -1585,9 +2663,15 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				PrincipalValidator:        cfg.PrincipalValidator,
 				ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 				SessionSecret:             cfg.SessionSecret,
-				TrustedProxyCIDRs:         cfg.Auth.TrustedProxyCIDRs,
 			}))
-			r.Use(apimw.Project(apimw.ProjectConfig{Resolver: resolver}))
+			// Membership admits the caller-supplied project selector header
+			// (issue #318). Without it the edge admits no selector that names
+			// another project, so /llm keeps billing the caller's own project
+			// and never bills a project on an unchecked header.
+			r.Use(apimw.Project(apimw.ProjectConfig{
+				Resolver:   resolver,
+				Membership: apimw.NewProjectMembership(cfg.Pool),
+			}))
 			r.Mount("/llm", proxy)
 		})
 	}
@@ -1595,6 +2679,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		mountLLM(cfg.GatewayProxy, cfg.GatewayProjectResolver)
 	} else if cfg.LLMProxy != nil {
 		mountLLM(cfg.LLMProxy, cfg.LLMProjectResolver)
+	} else {
+		// Issue #463: NO backend is composed, because LLM_GATEWAY_URL is empty.
+		//
+		// This arm used to be absent. The path then stayed unregistered and
+		// answered 404, and the comment in production_router.go called that
+		// "visible". It is not visible. A 404 on /llm/v1/models is the same
+		// answer the caller gets for a misspelt path, so an operator who
+		// forgot the variable and a user who typed the URL wrongly read one
+		// response and cannot tell the two apart. The chart's own default for
+		// LLM_GATEWAY_URL is the empty value, so this was the DEFAULT state of
+		// a Kubernetes install: the gateway pods ran and nothing routed to
+		// them, silently.
+		//
+		// 503 with a named code is the same refusal, said out loud. It names
+		// the variable that turns the path on, so the answer itself is the
+		// remedy. It does NOT route anywhere: there is still exactly one
+		// composed backend for /llm, and nothing here reintroduces a fallback
+		// to a superseded data plane.
+		// Mount, not Handle, and on the same "/llm" pattern the composed arm
+		// uses. The route-surface snapshot in production_router_test.go and the
+		// spec-conformance suite both classify a /llm MOUNT as router plumbing
+		// and exclude it; two r.Handle registrations would instead appear as
+		// nine new API routes each and change a surface that has not changed.
+		r.Mount("/llm", llmNotConfiguredHandler())
 	}
 
 	// Register reviewed current-compatible routes last. Some broad prototype
@@ -1611,6 +2719,33 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	return r
 }
 
+// LLMNotConfiguredCode is the machine-readable code the /llm path answers with
+// when no gateway backend is composed (issue #463). It is a DISTINCT code from
+// the proxy's own upstream_unavailable: that one means "the gateway is
+// configured and did not answer", this one means "no gateway is configured at
+// all". An operator who cannot tell those apart cannot tell a broken deployment
+// from an unconfigured one.
+const LLMNotConfiguredCode = "llm_gateway_not_configured"
+
+// llmNotConfiguredHandler answers every /llm request while LLM_GATEWAY_URL is
+// empty.
+//
+// The body mirrors the shape internal/llmproxy already writes on an upstream
+// error, so a client parses one envelope for both. 503 rather than 404: the
+// path exists and the capability is off, which is a server state, and a client
+// may retry after the operator sets the variable.
+//
+// The message names the environment variable on purpose. This response is read
+// by the person who has to fix it far more often than by an end user, and the
+// alternative is a log line in a pod they have not thought to look at.
+func llmNotConfiguredHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"the LLM gateway is not configured: LLM_GATEWAY_URL is empty, so no /llm backend is composed","type":"service_unavailable","code":"` + LLMNotConfiguredCode + `"}}`))
+	})
+}
+
 func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {
 	// A partial composition is not exposed. Both public runtime paths share the
 	// same authenticated-principal provenance and strict PostgreSQL membership
@@ -1620,4 +2755,55 @@ func mountRuntimeRoutes(router chi.Router, routes RuntimeRoutes) {
 	}
 	router.Method(http.MethodPost, runtimeValidationPath, routes.Validation)
 	router.Method(http.MethodGet, runtimeEventsPath, routes.ExecutionEvents)
+}
+
+// configurationSecretSealer builds the project-vault writer the compatibility
+// configurations router seals provider credentials into.
+//
+// A nil result REFUSES every write that carries a schema-declared password
+// field. That is the required behaviour. The alternative is the defect this
+// function exists to close: the handler used to store the submitted `api_key`
+// verbatim in p_{project}.configuration, and migrations/shared/0072 grants the
+// read of that column to the project VIEWER role.
+//
+// cmd/elitea-main validates SECRETS_MASTER_KEY at start-up and stops on a
+// malformed value, so the error branch here is the programmatic caller's case,
+// not an operator's. An ABSENT variable is a supported state: the project key
+// is then stored unwrapped, and every path here reads it that way.
+//
+// The sealer also carries the vault creator, because a project can hold rows
+// and no vault. migrations/001_initial.sql inserts centry.project id 1 and
+// creates p_1 without calling the provisioner, so the default project of a
+// fresh install has no vault rows at all. Without the creator the first
+// credential save into that project answers 503, and the deployment can store
+// no provider credential.
+//
+// v2secrets.NewHandler is the creator because it is the ONE minter of a vault
+// key (#399). It reads the same SECRETS_MASTER_KEY this function reads, so the
+// creator and this writer share one key source.
+func configurationSecretSealer(pool *pgxpool.Pool) v2configs.SecretSealer {
+	if pool == nil {
+		return nil
+	}
+	// MasterKeyFromEnv is the VALIDATOR here, not the source. It returns the
+	// DECODED 32 key bytes, and this repository takes the ENCODED 44-byte
+	// form — the same form loadOptionalFernetMasterKey reads out of
+	// ELITEA_VAULT_MASTER_KEY_FILE, and the same form centrysecrets decodes.
+	// Handing it the decoded bytes made NewCurrentSecretVaultRepository reject
+	// the key, which returned a nil sealer, which refused EVERY credential save
+	// with 503. deploy/docker-compose.yml REQUIRES the variable (`:?`), so that
+	// is the default deployment.
+	decoded, err := v2secrets.MasterKeyFromEnv(os.Getenv)
+	if err != nil {
+		return nil
+	}
+	clear(decoded)
+	masterKey := []byte(os.Getenv(v2secrets.MasterKeyEnvVar))
+	sealer, err := dbrepos.NewCurrentSecretVaultRepository(pool, masterKey,
+		dbrepos.WithProjectVaultCreator(v2secrets.NewHandler(pool)))
+	clear(masterKey)
+	if err != nil || sealer == nil {
+		return nil
+	}
+	return sealer
 }

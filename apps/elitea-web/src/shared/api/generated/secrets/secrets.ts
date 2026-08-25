@@ -53,6 +53,11 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  AdminMessageResponse,
+  AdminSecretCreateRequest,
+  AdminSecretListItem,
+  AdminSecretUpdateRequest,
+  AdminSecretValue,
   ErrorResponse,
   HideSecret200,
   N400Response,
@@ -64,6 +69,8 @@ import type {
   SecretDetail,
   SecretListItem,
   SecretUpdateRequest,
+  SecretsModeErrorBody,
+  SecretsModeErrorResponse,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -89,7 +96,7 @@ const withQueryKey = <T extends object, K>(
 };
 
 export type listSecretsResponse200 = {
-  data: SecretListItem[];
+  data: SecretListItem[] | AdminSecretListItem[];
   status: 200;
 };
 
@@ -104,13 +111,13 @@ export type listSecretsResponse403 = {
 };
 
 export type listSecretsResponse404 = {
-  data: N404Response;
+  data: SecretsModeErrorResponse;
   status: 404;
 };
 
-export type listSecretsResponse501 = {
-  data: ErrorResponse;
-  status: 501;
+export type listSecretsResponse500 = {
+  data: SecretsModeErrorResponse;
+  status: 500;
 };
 
 export type listSecretsResponseSuccess = listSecretsResponse200 & {
@@ -120,7 +127,7 @@ export type listSecretsResponseError = (
   | listSecretsResponse401
   | listSecretsResponse403
   | listSecretsResponse404
-  | listSecretsResponse501
+  | listSecretsResponse500
 ) & {
   headers: Headers;
 };
@@ -136,8 +143,8 @@ export const getListSecretsUrl = (
 };
 
 /**
- * Values are never returned here — only `{{secret.<name>}}` placeholders. A project with no vault yet returns `[]` with 200, not a 404 (handler.go's List).
- * @summary List a project's secret names
+ * Values are never returned here. `default` returns `{{secret.<name>}}` placeholders; `administration` returns the literal mask "******" in each row's `secret`. A vault that does not exist yet returns `[]` with 200, not a 404 (handler.go's List, admin.go's AdminList).
+ * @summary List secret names
  */
 export const listSecrets = async (
   mode: "default" | "administration",
@@ -159,7 +166,7 @@ export const getListSecretsQueryKey = (
 
 export const getListSecretsQueryOptions = <
   TData = Awaited<ReturnType<typeof listSecrets>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -199,11 +206,11 @@ export type ListSecretsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listSecrets>>
 >;
 export type ListSecretsQueryError =
-  N401Response | N403Response | N404Response | ErrorResponse;
+  N401Response | N403Response | SecretsModeErrorResponse;
 
 export function useListSecrets<
   TData = Awaited<ReturnType<typeof listSecrets>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -227,7 +234,7 @@ export function useListSecrets<
 };
 export function useListSecrets<
   TData = Awaited<ReturnType<typeof listSecrets>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -251,7 +258,7 @@ export function useListSecrets<
 };
 export function useListSecrets<
   TData = Awaited<ReturnType<typeof listSecrets>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -266,12 +273,12 @@ export function useListSecrets<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary List a project's secret names
+ * @summary List secret names
  */
 
 export function useListSecrets<
   TData = Awaited<ReturnType<typeof listSecrets>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -576,7 +583,7 @@ export function useCreateSecret<
 }
 
 export type showSecretResponse200 = {
-  data: SecretDetail;
+  data: SecretDetail | AdminSecretValue;
   status: 200;
 };
 
@@ -591,13 +598,13 @@ export type showSecretResponse403 = {
 };
 
 export type showSecretResponse404 = {
-  data: N404Response;
+  data: SecretsModeErrorResponse;
   status: 404;
 };
 
-export type showSecretResponse501 = {
-  data: ErrorResponse;
-  status: 501;
+export type showSecretResponse500 = {
+  data: SecretsModeErrorResponse;
+  status: 500;
 };
 
 export type showSecretResponseSuccess = showSecretResponse200 & {
@@ -607,7 +614,7 @@ export type showSecretResponseError = (
   | showSecretResponse401
   | showSecretResponse403
   | showSecretResponse404
-  | showSecretResponse501
+  | showSecretResponse500
 ) & {
   headers: Headers;
 };
@@ -624,6 +631,7 @@ export const getShowSecretUrl = (
 };
 
 /**
+ * `default` returns the full SecretDetail. `administration` returns only `{"secret": "<value>"}`, and answers 200 with `{"secret": null}` for an unknown name (admin.go's AdminGet).
  * @summary Read one secret, including its plaintext value
  */
 export const showSecret = async (
@@ -651,7 +659,7 @@ export const getShowSecretQueryKey = (
 
 export const getShowSecretQueryOptions = <
   TData = Awaited<ReturnType<typeof showSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -694,11 +702,11 @@ export type ShowSecretQueryResult = NonNullable<
   Awaited<ReturnType<typeof showSecret>>
 >;
 export type ShowSecretQueryError =
-  N401Response | N403Response | N404Response | ErrorResponse;
+  N401Response | N403Response | SecretsModeErrorResponse;
 
 export function useShowSecret<
   TData = Awaited<ReturnType<typeof showSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -723,7 +731,7 @@ export function useShowSecret<
 };
 export function useShowSecret<
   TData = Awaited<ReturnType<typeof showSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -748,7 +756,7 @@ export function useShowSecret<
 };
 export function useShowSecret<
   TData = Awaited<ReturnType<typeof showSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -769,7 +777,7 @@ export function useShowSecret<
 
 export function useShowSecret<
   TData = Awaited<ReturnType<typeof showSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -799,13 +807,324 @@ export function useShowSecret<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
+export type createSecretInModeResponse200 = {
+  data: AdminMessageResponse;
+  status: 200;
+};
+
+export type createSecretInModeResponse400 = {
+  data: AdminMessageResponse;
+  status: 400;
+};
+
+export type createSecretInModeResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type createSecretInModeResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type createSecretInModeResponse404 = {
+  data: SecretsModeErrorResponse;
+  status: 404;
+};
+
+export type createSecretInModeResponse405 = {
+  data: ErrorResponse;
+  status: 405;
+};
+
+export type createSecretInModeResponse500 = {
+  data: AdminMessageResponse;
+  status: 500;
+};
+
+export type createSecretInModeResponseSuccess =
+  createSecretInModeResponse200 & {
+    headers: Headers;
+  };
+export type createSecretInModeResponseError = (
+  | createSecretInModeResponse400
+  | createSecretInModeResponse401
+  | createSecretInModeResponse403
+  | createSecretInModeResponse404
+  | createSecretInModeResponse405
+  | createSecretInModeResponse500
+) & {
+  headers: Headers;
+};
+
+export type createSecretInModeResponse =
+  createSecretInModeResponseSuccess | createSecretInModeResponseError;
+
+export const getCreateSecretInModeUrl = (
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+) => {
+  return `/secrets/secret/${mode}/${projectID}/${name}`;
+};
+
+/**
+ * NOTE(issue 151): internal/api/v2/secrets/handler.go registers this POST with an administration branch only (admin.go's AdminCreate). `default` answers 405, because pylon's project API defines only get/put/delete on this path. The name comes from the path and must match `^[A-Za-z0-9_]+$`. A duplicate name is a 400, never an overwrite.
+ * @summary Create one secret — administration mode only
+ */
+export const createSecretInMode = async (
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<createSecretInModeResponse> => {
+  return eliteaFetch<createSecretInModeResponse>(
+    getCreateSecretInModeUrl(mode, projectID, name),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(adminSecretCreateRequest),
+    },
+  );
+};
+
+export const getCreateSecretInModeQueryKey = (
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest?: AdminSecretCreateRequest,
+) => {
+  return [
+    "POST",
+    `/secrets/secret/${mode}/${projectID}/${name}`,
+    adminSecretCreateRequest,
+  ] as const;
+};
+
+export const getCreateSecretInModeQueryOptions = <
+  TData = Awaited<ReturnType<typeof createSecretInMode>>,
+  TError =
+    | AdminMessageResponse
+    | N401Response
+    | N403Response
+    | SecretsModeErrorResponse
+    | ErrorResponse,
+>(
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSecretInMode>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCreateSecretInModeQueryKey(
+      mode,
+      projectID,
+      name,
+      adminSecretCreateRequest,
+    );
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof createSecretInMode>>
+  > = ({ signal }) =>
+    createSecretInMode(mode, projectID, name, adminSecretCreateRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled:
+      mode !== null &&
+      mode !== undefined &&
+      projectID !== null &&
+      projectID !== undefined &&
+      name !== null &&
+      name !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof createSecretInMode>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CreateSecretInModeQueryResult = NonNullable<
+  Awaited<ReturnType<typeof createSecretInMode>>
+>;
+export type CreateSecretInModeQueryError =
+  | AdminMessageResponse
+  | N401Response
+  | N403Response
+  | SecretsModeErrorResponse
+  | ErrorResponse;
+
+export function useCreateSecretInMode<
+  TData = Awaited<ReturnType<typeof createSecretInMode>>,
+  TError =
+    | AdminMessageResponse
+    | N401Response
+    | N403Response
+    | SecretsModeErrorResponse
+    | ErrorResponse,
+>(
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSecretInMode>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createSecretInMode>>,
+          TError,
+          Awaited<ReturnType<typeof createSecretInMode>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateSecretInMode<
+  TData = Awaited<ReturnType<typeof createSecretInMode>>,
+  TError =
+    | AdminMessageResponse
+    | N401Response
+    | N403Response
+    | SecretsModeErrorResponse
+    | ErrorResponse,
+>(
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSecretInMode>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createSecretInMode>>,
+          TError,
+          Awaited<ReturnType<typeof createSecretInMode>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateSecretInMode<
+  TData = Awaited<ReturnType<typeof createSecretInMode>>,
+  TError =
+    | AdminMessageResponse
+    | N401Response
+    | N403Response
+    | SecretsModeErrorResponse
+    | ErrorResponse,
+>(
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSecretInMode>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Create one secret — administration mode only
+ */
+
+export function useCreateSecretInMode<
+  TData = Awaited<ReturnType<typeof createSecretInMode>>,
+  TError =
+    | AdminMessageResponse
+    | N401Response
+    | N403Response
+    | SecretsModeErrorResponse
+    | ErrorResponse,
+>(
+  mode: "default" | "administration",
+  projectID: number,
+  name: string,
+  adminSecretCreateRequest: AdminSecretCreateRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSecretInMode>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCreateSecretInModeQueryOptions(
+    mode,
+    projectID,
+    name,
+    adminSecretCreateRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
 export type updateSecretResponse200 = {
-  data: SecretListItem;
+  data: SecretListItem | AdminMessageResponse;
   status: 200;
 };
 
 export type updateSecretResponse400 = {
-  data: N400Response;
+  data: SecretsModeErrorResponse;
   status: 400;
 };
 
@@ -820,18 +1139,13 @@ export type updateSecretResponse403 = {
 };
 
 export type updateSecretResponse404 = {
-  data: N404Response;
+  data: SecretsModeErrorResponse;
   status: 404;
 };
 
 export type updateSecretResponse500 = {
-  data: N500Response;
+  data: SecretsModeErrorResponse;
   status: 500;
-};
-
-export type updateSecretResponse501 = {
-  data: ErrorResponse;
-  status: 501;
 };
 
 export type updateSecretResponseSuccess = updateSecretResponse200 & {
@@ -843,7 +1157,6 @@ export type updateSecretResponseError = (
   | updateSecretResponse403
   | updateSecretResponse404
   | updateSecretResponse500
-  | updateSecretResponse501
 ) & {
   headers: Headers;
 };
@@ -860,14 +1173,16 @@ export const getUpdateSecretUrl = (
 };
 
 /**
- * BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's Update). A rename to an existing name overwrites it silently — the duplicate check exists only on create.
+ * BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's Update). A rename to a name that the project vault already holds, in `secrets` or in `hidden_secrets`, is refused with 400: the vault is one encrypted blob with no history, so an overwrite there is unrecoverable.
+ * The two modes take DIFFERENT bodies. `default` takes the flat SecretUpdateRequest. `administration` takes the nested AdminSecretUpdateRequest, where `old_name` selects the entry to replace (admin.go's AdminUpdate). `administration` also answers 404 for a missing secret, where `default` answers 400.
  * @summary Rename and/or re-value a secret
  */
 export const updateSecret = async (
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<updateSecretResponse> => {
   return eliteaFetch<updateSecretResponse>(
@@ -876,7 +1191,7 @@ export const updateSecret = async (
       ...options,
       method: "PUT",
       headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(secretUpdateRequest),
+      body: JSON.stringify(secretUpdateRequestAdminSecretUpdateRequest),
     },
   );
 };
@@ -885,29 +1200,25 @@ export const getUpdateSecretQueryKey = (
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest?: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest?:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
 ) => {
   return [
     "PUT",
     `/secrets/secret/${mode}/${projectID}/${name}`,
-    secretUpdateRequest,
+    secretUpdateRequestAdminSecretUpdateRequest,
   ] as const;
 };
 
 export const getUpdateSecretQueryOptions = <
   TData = Awaited<ReturnType<typeof updateSecret>>,
-  TError =
-    | N400Response
-    | N401Response
-    | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+  TError = SecretsModeErrorResponse | N401Response | N403Response,
 >(
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof updateSecret>>, TError, TData>
@@ -919,15 +1230,23 @@ export const getUpdateSecretQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getUpdateSecretQueryKey(mode, projectID, name, secretUpdateRequest);
+    getUpdateSecretQueryKey(
+      mode,
+      projectID,
+      name,
+      secretUpdateRequestAdminSecretUpdateRequest,
+    );
 
   const queryFn: QueryFunction<Awaited<ReturnType<typeof updateSecret>>> = ({
     signal,
   }) =>
-    updateSecret(mode, projectID, name, secretUpdateRequest, {
-      signal,
-      ...requestOptions,
-    });
+    updateSecret(
+      mode,
+      projectID,
+      name,
+      secretUpdateRequestAdminSecretUpdateRequest,
+      { signal, ...requestOptions },
+    );
 
   return {
     queryKey,
@@ -951,27 +1270,17 @@ export type UpdateSecretQueryResult = NonNullable<
   Awaited<ReturnType<typeof updateSecret>>
 >;
 export type UpdateSecretQueryError =
-  | N400Response
-  | N401Response
-  | N403Response
-  | N404Response
-  | N500Response
-  | ErrorResponse;
+  SecretsModeErrorResponse | N401Response | N403Response;
 
 export function useUpdateSecret<
   TData = Awaited<ReturnType<typeof updateSecret>>,
-  TError =
-    | N400Response
-    | N401Response
-    | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+  TError = SecretsModeErrorResponse | N401Response | N403Response,
 >(
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options: {
     query: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof updateSecret>>, TError, TData>
@@ -992,18 +1301,13 @@ export function useUpdateSecret<
 };
 export function useUpdateSecret<
   TData = Awaited<ReturnType<typeof updateSecret>>,
-  TError =
-    | N400Response
-    | N401Response
-    | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+  TError = SecretsModeErrorResponse | N401Response | N403Response,
 >(
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof updateSecret>>, TError, TData>
@@ -1024,18 +1328,13 @@ export function useUpdateSecret<
 };
 export function useUpdateSecret<
   TData = Awaited<ReturnType<typeof updateSecret>>,
-  TError =
-    | N400Response
-    | N401Response
-    | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+  TError = SecretsModeErrorResponse | N401Response | N403Response,
 >(
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof updateSecret>>, TError, TData>
@@ -1052,18 +1351,13 @@ export function useUpdateSecret<
 
 export function useUpdateSecret<
   TData = Awaited<ReturnType<typeof updateSecret>>,
-  TError =
-    | N400Response
-    | N401Response
-    | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+  TError = SecretsModeErrorResponse | N401Response | N403Response,
 >(
   mode: "default" | "administration",
   projectID: number,
   name: string,
-  secretUpdateRequest: SecretUpdateRequest,
+  secretUpdateRequestAdminSecretUpdateRequest:
+    SecretUpdateRequest | AdminSecretUpdateRequest,
   options?: {
     query?: Partial<
       UseQueryOptions<Awaited<ReturnType<typeof updateSecret>>, TError, TData>
@@ -1078,7 +1372,7 @@ export function useUpdateSecret<
     mode,
     projectID,
     name,
-    secretUpdateRequest,
+    secretUpdateRequestAdminSecretUpdateRequest,
     options,
   );
 
@@ -1106,13 +1400,13 @@ export type deleteSecretResponse403 = {
 };
 
 export type deleteSecretResponse404 = {
-  data: N404Response;
+  data: SecretsModeErrorResponse;
   status: 404;
 };
 
-export type deleteSecretResponse501 = {
-  data: ErrorResponse;
-  status: 501;
+export type deleteSecretResponse500 = {
+  data: SecretsModeErrorResponse;
+  status: 500;
 };
 
 export type deleteSecretResponseSuccess = deleteSecretResponse204 & {
@@ -1122,7 +1416,7 @@ export type deleteSecretResponseError = (
   | deleteSecretResponse401
   | deleteSecretResponse403
   | deleteSecretResponse404
-  | deleteSecretResponse501
+  | deleteSecretResponse500
 ) & {
   headers: Headers;
 };
@@ -1139,7 +1433,7 @@ export const getDeleteSecretUrl = (
 };
 
 /**
- * Idempotent: deleting a name that does not exist — or a project with no vault at all — is still a 204 (handler.go's Delete). Removes the name from both `secrets` and `hidden_secrets`.
+ * Idempotent in BOTH modes: deleting a name that does not exist — or a vault that does not exist at all — is still a 204 (handler.go's Delete, admin.go's AdminDelete). `default` removes the name from both `secrets` and `hidden_secrets`.
  * @summary Delete a secret
  */
 export const deleteSecret = async (
@@ -1167,7 +1461,7 @@ export const getDeleteSecretQueryKey = (
 
 export const getDeleteSecretQueryOptions = <
   TData = Awaited<ReturnType<typeof deleteSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1210,11 +1504,11 @@ export type DeleteSecretQueryResult = NonNullable<
   Awaited<ReturnType<typeof deleteSecret>>
 >;
 export type DeleteSecretQueryError =
-  N401Response | N403Response | N404Response | ErrorResponse;
+  N401Response | N403Response | SecretsModeErrorResponse;
 
 export function useDeleteSecret<
   TData = Awaited<ReturnType<typeof deleteSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1239,7 +1533,7 @@ export function useDeleteSecret<
 };
 export function useDeleteSecret<
   TData = Awaited<ReturnType<typeof deleteSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1264,7 +1558,7 @@ export function useDeleteSecret<
 };
 export function useDeleteSecret<
   TData = Awaited<ReturnType<typeof deleteSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1285,7 +1579,7 @@ export function useDeleteSecret<
 
 export function useDeleteSecret<
   TData = Awaited<ReturnType<typeof deleteSecret>>,
-  TError = N401Response | N403Response | N404Response | ErrorResponse,
+  TError = N401Response | N403Response | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1326,7 +1620,7 @@ export type hideSecretResponse400 = {
 };
 
 export type hideSecretResponse401 = {
-  data: N401Response;
+  data: SecretsModeErrorBody;
   status: 401;
 };
 
@@ -1336,18 +1630,13 @@ export type hideSecretResponse403 = {
 };
 
 export type hideSecretResponse404 = {
-  data: N404Response;
+  data: SecretsModeErrorResponse;
   status: 404;
 };
 
 export type hideSecretResponse500 = {
-  data: N500Response;
+  data: SecretsModeErrorResponse;
   status: 500;
-};
-
-export type hideSecretResponse501 = {
-  data: ErrorResponse;
-  status: 501;
 };
 
 export type hideSecretResponseSuccess = hideSecretResponse200 & {
@@ -1359,7 +1648,6 @@ export type hideSecretResponseError = (
   | hideSecretResponse403
   | hideSecretResponse404
   | hideSecretResponse500
-  | hideSecretResponse501
 ) & {
   headers: Headers;
 };
@@ -1376,7 +1664,8 @@ export const getHideSecretUrl = (
 };
 
 /**
- * A hidden secret disappears from the list endpoint but is still readable by name through the single-secret GET, which reports `is_hidden: true`. BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's Hide) — matching pylon's hide.py.
+ * `default` mode only. A hidden secret disappears from the list endpoint but is still readable by name through the single-secret GET, which reports `is_hidden: true`. BUG-FOR-BUG: a missing secret is a 400, not a 404 (handler.go's Hide) — matching pylon's hide.py.
+ * `administration` mode ALWAYS answers 401. The global vault has no hidden section, so pylon refuses the call with that sentence and admin.go's AdminHide reproduces it. The admin page renders no hide control at all.
  * @summary Move a secret into hidden_secrets
  */
 export const hideSecret = async (
@@ -1406,11 +1695,9 @@ export const getHideSecretQueryOptions = <
   TData = Awaited<ReturnType<typeof hideSecret>>,
   TError =
     | N400Response
-    | N401Response
+    | SecretsModeErrorBody
     | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+    | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1453,22 +1740,15 @@ export type HideSecretQueryResult = NonNullable<
   Awaited<ReturnType<typeof hideSecret>>
 >;
 export type HideSecretQueryError =
-  | N400Response
-  | N401Response
-  | N403Response
-  | N404Response
-  | N500Response
-  | ErrorResponse;
+  N400Response | SecretsModeErrorBody | N403Response | SecretsModeErrorResponse;
 
 export function useHideSecret<
   TData = Awaited<ReturnType<typeof hideSecret>>,
   TError =
     | N400Response
-    | N401Response
+    | SecretsModeErrorBody
     | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+    | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1495,11 +1775,9 @@ export function useHideSecret<
   TData = Awaited<ReturnType<typeof hideSecret>>,
   TError =
     | N400Response
-    | N401Response
+    | SecretsModeErrorBody
     | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+    | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1526,11 +1804,9 @@ export function useHideSecret<
   TData = Awaited<ReturnType<typeof hideSecret>>,
   TError =
     | N400Response
-    | N401Response
+    | SecretsModeErrorBody
     | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+    | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,
@@ -1553,11 +1829,9 @@ export function useHideSecret<
   TData = Awaited<ReturnType<typeof hideSecret>>,
   TError =
     | N400Response
-    | N401Response
+    | SecretsModeErrorBody
     | N403Response
-    | N404Response
-    | N500Response
-    | ErrorResponse,
+    | SecretsModeErrorResponse,
 >(
   mode: "default" | "administration",
   projectID: number,

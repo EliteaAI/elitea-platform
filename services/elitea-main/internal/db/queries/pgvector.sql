@@ -44,3 +44,16 @@ WHERE configuration.project_id = EXCLUDED.project_id
   AND configuration.section = EXCLUDED.section
   AND configuration.source = EXCLUDED.source
 RETURNING id;
+
+-- The exact inverse of the statement above, and only that row. The four
+-- identity predicates repeat the ones the upsert conflicts on, so a
+-- user-created configuration that happens to carry the same title is never
+-- removed by a rollback of the system row.
+
+-- name: DeleteCurrentProjectPgvectorConfiguration :execrows
+DELETE FROM configuration
+WHERE project_id = sqlc.arg('project_id')::integer
+  AND elitea_title = sqlc.arg('elitea_title')::text
+  AND type = 'pgvector'
+  AND section = 'vectorstorage'
+  AND source = 'system';

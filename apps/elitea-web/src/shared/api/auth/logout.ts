@@ -10,7 +10,24 @@
  */
 import { clearNamespace } from '../../lib/storage';
 
-import { LOGOUT_PATH, OIDC_LOGIN_PATH, TARGET_TO_PARAM } from './constants';
+import { FORM_LOGIN_PATH, LOGOUT_PATH, TARGET_TO_PARAM } from './constants';
+
+/**
+ * The logout hand-off target. It is `/forward-auth/login`.
+ *
+ * Read the constant name as "the browser login entry point", not "the form
+ * plane only". Both authentication planes register this one path, and no
+ * other login path is registered on both:
+ *  - Form plane: `browserauth.LoginPath` opens a login transaction
+ *    (`internal/api/browserauth/handler.go`).
+ *  - OIDC plane: `internal/api/router.go` answers it with a 302 to
+ *    `/forward-auth/auth_oidc/login`.
+ *
+ * The `target_to`-dropping caveat on `FORM_LOGIN_PATH` applies to the re-auth
+ * popup, which must carry `auth_state` back to the callback route. A logout
+ * carries no return target, so the caveat does not apply here.
+ */
+const BROWSER_LOGIN_PATH = FORM_LOGIN_PATH;
 
 export interface LogoutDeps {
   /** Navigation seam; default assigns `window.location.href`. */
@@ -20,10 +37,50 @@ export interface LogoutDeps {
 }
 
 /**
+ * True from the moment `performLogout()` starts until this document dies.
+ *
+ * MEASURED DEFECT, not a precaution (issue #482). A logout does not end the
+ * document: the browser stays on the app page for the whole redirect chain
+ * `/forward-auth/logout` → `/forward-auth/auth_oidc/login` → the provider's
+ * authorize endpoint. The logout endpoint clears the session cookie on the
+ * first hop, so any request the page still has open then answers 401. That
+ * 401 reaches `shared/api/http.ts`'s `runReauth()`, which starts a re-auth
+ * flight, and the flight writes `el.auth.state` and `el.auth.flight.started`
+ * back into sessionStorage — AFTER `clearNamespace()` swept them.
+ *
+ * Two costs, and the second is the product one:
+ *  1. the namespace the logout is contracted to clear is not clear;
+ *  2. the user who asked to sign out is shown a sign-in popup.
+ *
+ * Observed on WebKit, in 2 of 60 runs of end-to-end journey J4, with exactly
+ * those two keys surviving. It is a race against the network, so it is rare
+ * and it never stops being possible.
+ *
+ * The flag is module state, not storage: its correct lifetime is exactly the
+ * lifetime of the document that starts the logout, and storage would outlive
+ * that and would itself be a key in the namespace.
+ */
+let loggingOut = false;
+
+/** True once `performLogout()` has run in this document. */
+export function isLoggingOut(): boolean {
+  return loggingOut;
+}
+
+/**
  * Clears the entire `el.` namespace (local + session), then hands the browser
  * to the backend logout (old UserButton.jsx:32 preserved:
- * `{origin}/forward-auth/logout`) with the OIDC login entry point as its
- * `target_to`.
+ * `{origin}/forward-auth/logout`) with the browser login entry point
+ * `/forward-auth/login` as its `target_to`.
+ *
+ * The target is PLANE-NEUTRAL, and that is a correction (see
+ * `BROWSER_LOGIN_PATH` above). The earlier revision named
+ * `/forward-auth/auth_oidc/login` here. `internal/api/router.go` registers
+ * that path inside `if cfg.OIDCHandler != nil`, so a form-auth deployment has
+ * no such route. There the chain ran `/forward-auth/logout` → 302
+ * `/forward-auth/auth_form/logout` → 302 `/forward-auth/auth_oidc/login` →
+ * chi's bare `404 page not found`. The user was signed out and parked on a
+ * plain-text dead end with no link back.
  *
  * The `target_to` is what makes JRNY-004's "…and the login screen is reached"
  * true, and it is BEHAVIOURAL parity with the old app rather than a new idea.
@@ -39,14 +96,18 @@ export interface LogoutDeps {
  * `browserflow.CanonicalReturnTarget` requires.
  *
  * Verified against the running E2E stack, as a real browser navigation chain:
- * `/forward-auth/logout?target_to=…` → 302 `/forward-auth/auth_oidc/login`
- * → 302 the provider's `/oauth2/authorize`. (On that stack the last hop then
- * fails DNS, because the issuer is the compose hostname `oidc-mock` which the
- * host browser cannot resolve — the same artifact `e2e/auth.setup.ts` works
- * around by rewriting the hostname. That is a property of the test stack, not
- * of this function.)
+ * `/forward-auth/logout?target_to=…` → 302 `/forward-auth/login` → 302
+ * `/forward-auth/auth_oidc/login` → 302 the provider's `/oauth2/authorize`.
+ * The OIDC end state is the same as before; one 302 hop is added. (On that
+ * stack the last hop then fails DNS. The issuer is the compose hostname
+ * `oidc-mock`, which the host browser cannot resolve. The same artifact
+ * `e2e/auth.setup.ts` works around it by rewriting the hostname. That is a
+ * property of the test stack, not of this function.)
  */
 export function performLogout(deps: LogoutDeps = {}): void {
+  // Set BEFORE the sweep, not after. A flight that starts between the two
+  // lines would write its keys after `clearNamespace()` has passed them.
+  loggingOut = true;
   clearNamespace();
   const origin = deps.origin ?? window.location.origin;
   const redirect =
@@ -55,6 +116,6 @@ export function performLogout(deps: LogoutDeps = {}): void {
       window.location.href = url;
     });
   redirect(
-    `${origin}${LOGOUT_PATH}?${TARGET_TO_PARAM}=${encodeURIComponent(OIDC_LOGIN_PATH)}`,
+    `${origin}${LOGOUT_PATH}?${TARGET_TO_PARAM}=${encodeURIComponent(BROWSER_LOGIN_PATH)}`,
   );
 }

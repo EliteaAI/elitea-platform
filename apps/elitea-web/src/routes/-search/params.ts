@@ -231,3 +231,32 @@ export function pickParams<K extends ParamKey>(...keys: readonly K[]) {
   }
   return z.object(shape);
 }
+
+/**
+ * The value each schema gives an ABSENT key. `__root.tsx` passes this map to
+ * `stripSearchParams`, which deletes every key whose value still equals it.
+ *
+ * DEFECT this exists to correct. `validateSearch` returns EVERY declared key
+ * on every call, because every schema above ends in `.prefault(default)`.
+ * TanStack Router runs `validateSearch` inside `buildLocation` with
+ * `_includeValidateSearch: true` (`router-core/dist/esm/router.js`, and
+ * `buildAndCommitLocation` sets that flag). The full defaulted object was
+ * therefore serialised back into the address bar on EVERY navigation. One click on an
+ * in-app link to `/chat` produced a 359-character URL carrying 29 empty or
+ * defaulted parameters. `JSON.stringify` also re-quoted the flag values, so
+ * `0` reached the address bar as `%220%22`.
+ *
+ * The map is COMPUTED FROM THE SCHEMAS, never written out by hand. A
+ * hand-written default that disagreed with a schema's `prefault` would strip
+ * nothing, silently, and the next reader of this file could not see it. Each
+ * schema is parsed with `undefined`, which is exactly the "key is absent"
+ * input `validateSearch` gives it, so the two can never drift.
+ *
+ * The parsed search object still carries the defaults, which is what keeps
+ * `useSearch()` readers working. Only the emitted URL loses them.
+ */
+export const PARAM_DEFAULTS: Readonly<Record<ParamKey, unknown>> = Object.freeze(
+  Object.fromEntries(
+    PARAM_KEYS.map((key) => [key, paramSchemas[key].parse(undefined)] as const),
+  ),
+) as Readonly<Record<ParamKey, unknown>>;

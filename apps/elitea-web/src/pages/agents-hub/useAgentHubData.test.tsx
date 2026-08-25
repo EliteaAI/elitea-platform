@@ -15,6 +15,8 @@ import { useAgentHubData } from './useAgentHubData';
 
 const globals = globalThis as unknown as Record<string, unknown>;
 
+const BASE = '/api/v2';
+
 function setConfig(publicProjectId: string): void {
   globals['elitea_ui_config'] = {
     vite_server_url: 'https://elitea.example',
@@ -30,10 +32,22 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
+/**
+ * The path is pinned to the FULL `/api/v2` base, and the body is the real
+ * top-level `{rows, total}` the handler sends
+ * (`internal/api/v2/eliteacore/handler.go`).
+ *
+ * DEFECT this guards: `fetchAllApplications` used a raw `fetch` with a bare
+ * `/elitea_core/...` path (404 — no `/api/v2` base). It then read
+ * `json.data.rows` from a body that carries `rows` at the top level. The old
+ * handler here hid both bugs. A `*` wildcard path matches the un-prefixed
+ * URL. The mock body wrapped the rows in the `data` key the server never
+ * sends.
+ */
 function mockBulkList(rows: unknown[]): void {
   server.use(
-    http.get('*/elitea_core/public_applications/prompt_lib', () =>
-      HttpResponse.json({ data: { rows, total: rows.length } }, { status: 200 }),
+    http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, () =>
+      HttpResponse.json({ rows, total: rows.length }, { status: 200 }),
     ),
   );
 }
@@ -47,7 +61,7 @@ describe('useAgentHubData', () => {
 
   it('fetches agent_categories for the configured VITE_PUBLIC_PROJECT_ID, not a hardcoded "1" (adversarial-review fix, cluster A13-agents-hub, finding 7)', async () => {
     setConfig('77');
-    configureGeneratedClient({ baseUrl: '/api/v2' });
+    configureGeneratedClient({ baseUrl: BASE });
     let requestedProjectId: string | undefined;
     server.use(
       http.get('*/elitea_core/agent_categories/prompt_lib/:projectId', ({ params }) => {
@@ -64,7 +78,7 @@ describe('useAgentHubData', () => {
 
   it('buckets fetched agents by meta.category (adversarial-review fix, cluster A13-agents-hub, finding 4, exercised end-to-end through this hook)', async () => {
     setConfig('1');
-    configureGeneratedClient({ baseUrl: '/api/v2' });
+    configureGeneratedClient({ baseUrl: BASE });
     server.use(getGetAgentCategoriesMockHandler({ categories: [{ name: 'Productivity', is_default: true }], total: 1 }));
     mockBulkList([
       {
@@ -85,16 +99,113 @@ describe('useAgentHubData', () => {
     expect(result.current.applicationsByTag['Productivity']?.[0]?.id).toBe('app-1');
   });
 
+  it('requests the /api/v2-based public_applications path and reads rows from the top level of the body', async () => {
+    // DEFECT: `fetchAllApplications` used a raw `fetch`, so the request lost
+    // the `/api/v2` base and 404'd. It then read `json.data.rows` from a body
+    // whose real shape is `{"rows":[],"total":0}`. Either bug alone leaves
+    // every Agent Hub category empty.
+    setConfig('1');
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(getGetAgentCategoriesMockHandler({ categories: [{ name: 'Productivity', is_default: true }], total: 1 }));
+
+    let requestedUrl = '';
+    server.use(
+      http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, ({ request }) => {
+        requestedUrl = request.url;
+        return HttpResponse.json(
+          {
+            rows: [
+              {
+                project_id: '1',
+                id: 'app-1',
+                name: 'Research Agent',
+                description: '',
+                version_id: 'v-1',
+                version_name: 'v1',
+                agent_type: 'agent',
+                meta: { category: 'Productivity' },
+              },
+            ],
+            total: 1,
+          },
+          { status: 200 },
+        );
+      }),
+    );
+
+    const { result } = renderHook(() => useAgentHubData([]), { wrapper });
+
+    await waitFor(() => expect(result.current.applicationsByTag['Productivity']).toHaveLength(1));
+    expect(new URL(requestedUrl).pathname).toBe('/api/v2/elitea_core/public_applications/prompt_lib');
+  });
+
+  it('exposes the list failure as an error instead of an empty hub and an unhandled rejection', async () => {
+    // DEFECT: the three fetches used `try { … } finally { … }` with no
+    // `catch`, and the effect discarded each promise with `void`. A 403 on
+    // `models.applications.application.list` therefore cleared the loading
+    // flag, left `applicationsByTag` empty, and surfaced only as an unhandled
+    // promise rejection. The page showed the ordinary "No agents found" empty
+    // state. A refusal was therefore indistinguishable from an empty catalog.
+    setConfig('1');
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(getGetAgentCategoriesMockHandler({ categories: [{ name: 'Productivity', is_default: true }], total: 1 }));
+    server.use(
+      http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, () =>
+        HttpResponse.json({ error: 'forbidden' }, { status: 403 }),
+      ),
+    );
+
+    const rejections: unknown[] = [];
+    const onRejection = (event: PromiseRejectionEvent) => {
+      rejections.push(event.reason);
+      event.preventDefault();
+    };
+    window.addEventListener('unhandledrejection', onRejection);
+
+    try {
+      const { result } = renderHook(() => useAgentHubData([]), { wrapper });
+
+      await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+      expect(result.current.isFetching).toBe(false);
+      expect(result.current.error?.message).toContain('403');
+      // A rejection that escapes the effect never reaches an error boundary.
+      await act(async () => { await Promise.resolve(); });
+      expect(rejections).toHaveLength(0);
+    } finally {
+      window.removeEventListener('unhandledrejection', onRejection);
+    }
+  });
+
+  it('surfaces a categories failure too, which the fetch effect skips over', async () => {
+    // DEFECT: when `agent_categories` fails, `categoryNames` is empty and the
+    // fetch effect returns early, so no list request ever runs. Before the
+    // fix nothing carried that refusal out of the hook and the hub rendered
+    // empty with no reason given.
+    setConfig('1');
+    configureGeneratedClient({ baseUrl: BASE });
+    server.use(
+      http.get(`${BASE}/elitea_core/agent_categories/prompt_lib/:projectId`, () =>
+        HttpResponse.json({ error: 'forbidden' }, { status: 403 }),
+      ),
+    );
+    mockBulkList([]);
+
+    const { result } = renderHook(() => useAgentHubData([]), { wrapper });
+
+    await waitFor(() => expect(result.current.error).toBeInstanceOf(Error));
+    expect(result.current.categoryNames).toHaveLength(0);
+  });
+
   it('still sends sort_by=likes/sort_order=desc for the Trending bucket and my_liked=true for My Liked (forward-compat with the disclosed backend gap — findings 5 & 6)', async () => {
     setConfig('1');
-    configureGeneratedClient({ baseUrl: '/api/v2' });
+    configureGeneratedClient({ baseUrl: BASE });
     server.use(getGetAgentCategoriesMockHandler({ categories: [{ name: 'Productivity', is_default: true }], total: 1 }));
 
     const seenQueries: string[] = [];
     server.use(
-      http.get('*/elitea_core/public_applications/prompt_lib', ({ request }) => {
+      http.get(`${BASE}/elitea_core/public_applications/prompt_lib`, ({ request }) => {
         seenQueries.push(new URL(request.url).search);
-        return HttpResponse.json({ data: { rows: [], total: 0 } }, { status: 200 });
+        return HttpResponse.json({ rows: [], total: 0 }, { status: 200 });
       }),
     );
 
@@ -107,7 +218,7 @@ describe('useAgentHubData', () => {
 
   it('filters applicationsByTag down to only the selected tag names when any are selected', async () => {
     setConfig('1');
-    configureGeneratedClient({ baseUrl: '/api/v2' });
+    configureGeneratedClient({ baseUrl: BASE });
     server.use(
       getGetAgentCategoriesMockHandler({
         categories: [

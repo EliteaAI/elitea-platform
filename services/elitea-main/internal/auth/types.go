@@ -35,6 +35,39 @@ type User struct {
 	Permissions []string `json:"permissions"`
 	ProjectID   string   `json:"project_id,omitempty"`
 	AuthType    string   `json:"auth_type,omitempty"`
+	// TokenProjectID is the project this access token is bound to, or nil when
+	// the token is unbound. Unbound is the default and stays the default: no
+	// existing token carries a binding (ADR-0018, spec-llm-project-scope §3.2).
+	//
+	// Only a credential validator that READ THE BINDING FROM STORAGE may set
+	// this field. It MUST NOT be derived from any request header, from the
+	// token `name`, or from the principal `name`. The token name is
+	// caller-supplied free text of up to 768 bytes, so a field derived from it
+	// would be self-service authorization over another project's budget and
+	// provider credentials (spec §7 invariant 2).
+	TokenProjectID *int64 `json:"token_project_id,omitempty"`
+	// TokenProjectActive reports whether the bound project is still active. It
+	// is a tri-state on purpose:
+	//
+	//   nil   — the validator did not determine the state. Treat the binding
+	//           as usable, which is the behaviour of every validator that
+	//           reads no storage.
+	//   true  — the bound project exists, is created, and is not suspended.
+	//   false — the bound project is suspended, not created, or gone. The
+	//           edge MUST refuse the request.
+	//
+	// A binding must not outlive membership (spec-llm-project-scope §7
+	// invariant 3). Suspension revokes no binding, so the state is re-checked
+	// here at resolution time. Only a credential validator that read the
+	// project row from storage may set this field.
+	TokenProjectActive *bool `json:"token_project_active,omitempty"`
+}
+
+// BoundProjectRefused reports a binding whose project is no longer usable.
+// The caller must refuse the request rather than fall back to another project:
+// a fallback moves the spend the suspension was meant to stop.
+func (u User) BoundProjectRefused() bool {
+	return u.TokenProjectID != nil && u.TokenProjectActive != nil && !*u.TokenProjectActive
 }
 
 // OwningUserID returns the database user that owns the authenticated identity.

@@ -10,6 +10,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { hasBackendCapability } from '@/shared/config';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { AiSparkleIcon } from '@/shared/ui/icons/ai-sparkle-icon';
@@ -62,6 +63,8 @@ export function GenerateProjectContextButton({
   const handleOpen = useCallback(() => setIsOpen(true), []);
   const handleClose = useCallback(() => setIsOpen(false), []);
 
+  // The draft endpoint is not mounted. See `shared/config/backendCapabilities`.
+  if (!hasBackendCapability('aiGeneration')) return null;
   if (!hasEditPermission) return null;
 
   return (

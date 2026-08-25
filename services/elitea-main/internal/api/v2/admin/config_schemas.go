@@ -29,8 +29,14 @@ import "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2
 const (
 	// pylonPluginConfigUnavailable covers every section whose fields address a
 	// key inside a Pylon plugin's YAML config and are read by that plugin at
-	// load time — guardrails, MCP server definitions, tracing switches, the
-	// indexer worker's runtime flags, the auth provider.
+	// load time — MCP server definitions, tracing switches, the indexer worker's
+	// runtime flags, the auth provider.
+	//
+	// `guardrails` used to be the first name on that list and no longer is. Its
+	// fields address `toolkit_security.*` in the same way, but the reason a
+	// section is withheld was never "the path looks like a plugin's" — it is
+	// "nothing here reads the values". This platform now reads them: see
+	// guardrailsSection() for the four consumers.
 	pylonPluginConfigUnavailable = "these settings configure Pylon plugin runtimes: the reference page collects them " +
 		"from plugin heartbeats and saves them by shipping patched plugin YAML back over the Arbiter bus. This " +
 		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
@@ -62,13 +68,30 @@ const (
 
 	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
 	// through this endpoint even in the reference: elitea-main has its own CRUD
-	// at `/admin/gateway/governance` writing `gateway.governance_config`. That
-	// surface is real, but nothing reads it — see internal/api/gateway/governance.go
-	// and the note in the PR: the gateway's GovernanceStore never queries the
-	// table, despite both the migration and this file previously claiming it did.
+	// at `/admin/gateway/governance` writing `gateway.governance_config`, and
+	// the SPA's page for it is `pages/admin/GatewayGovernance.tsx`.
+	//
+	// The reason this section is unavailable has CHANGED, and the change is the
+	// point of #218. It used to be withheld because nothing read the table: the
+	// gateway's budget engine never queried it, so a rule saved anywhere was
+	// enforced nowhere. That is no longer true — the gateway now reads every
+	// enabled row and enforces it on the /llm path (elitea-llm-gateway
+	// internal/policy). The section stays unavailable HERE for the narrower and
+	// older reason: this page is a flat form over one value document, and a
+	// governance corpus is a list of rows with per-row scope. The row editor is
+	// the surface that can express that; this form is not.
+	//
+	// The stale claim in the header of
+	// migrations/shared/0067_gateway_budget_schema.sql — which said the gateway
+	// reads these rows at load, and was wrong when it was written — has become
+	// accurate by the gateway catching up with it. Migration 0093 records that,
+	// because 0067 is checksum-immutable once applied
+	// (internal/infra/db/migrate/manifest.go) and cannot be edited.
 	governanceElsewhereUnavailable = "LLM governance is authored through /admin/gateway/governance, not through this " +
-		"page. It is withheld here because the gateway does not yet read gateway.governance_config, so definitions " +
-		"saved through either surface are not enforced."
+		"page, because a governance corpus is a list of scoped rows and this page is a flat form over a single " +
+		"value document. Definitions saved there ARE enforced: the LLM gateway reads gateway.governance_config and " +
+		"applies budgets, rate limits, model and MCP allowlists, credential rate policy and CEL routing rules on " +
+		"every /llm request."
 
 	// serviceDescriptorsElsewhereUnavailable — the section is unavailable for
 	// the SAME reason its own page is, and says so in the same words.
@@ -103,6 +126,36 @@ const (
 	supportAssistantWidgetUnavailable = "the in-app support assistant is not mounted in this application: the " +
 		"@eliteaai/elitea-assistant package is not a dependency and SupportAssistantWidget has no render site, so " +
 		"enabling it would change a flag no rendered surface reads."
+
+	// authProvidersElsewhereUnavailable — the Authentication section is now a
+	// pointer to a real surface, in the same way `mcp_servers` is.
+	//
+	// The reason it is not a form HERE has not changed and cannot: every field
+	// it declares addresses a key inside a pylon plugin's YAML, and two of them
+	// (`client_secret`, and a SAML service provider key) are credentials that
+	// `rejectCredentialField` refuses into a plaintext `centry.platform_config`
+	// row — correctly, because every holder of `runtime.plugins` can read those
+	// rows. A flat list of field values also cannot express "this document is
+	// an OIDC provider and these are its invariants", which is the shape the
+	// configuration provenance specification requires by name.
+	//
+	// What HAS changed is that the values now have somewhere to go and
+	// something that reads them. `elitea_auth.identity_providers` (shared
+	// migration 0095) holds one typed revision per provider, the admin surface
+	// at `/admin/identity_providers/administration` authors it, and the browser
+	// login path resolves the enabled definition on every login.
+	//
+	// FORM USERS ARE NOT PART OF THAT, and this says so. The form provider's
+	// user list is a file the deployment mounts
+	// (`authcomposition.FormProviderConfig.UsersJSONFile`), read once at
+	// startup after the deployment's own environment and vault resolution. It
+	// is not a row this service may rewrite, and an editor here would present
+	// a control whose saves the next restart discards.
+	authProvidersElsewhereUnavailable = "identity providers are authored on the Authentication editor on this page, " +
+		"which writes typed OIDC and SAML definitions rather than plugin configuration. The plugin-config value " +
+		"endpoints cannot serve this section: two of its fields are credentials, and those are sealed in the " +
+		"platform vault instead of stored in a settings row. Form users stay in the deployment's mounted user file " +
+		"and are not editable here."
 
 	// publishValidationRulesUnavailable is a FIELD-level reason, not a section
 	// one. The rest of `agent_publishing` is enforced for real; this one field
@@ -141,7 +194,7 @@ func configSections() []map[string]any {
 		skillPublishingSection(),
 		mcpServersSection(),
 		observabilitySection(),
-		litellmSection(),
+		llmProxySection(),
 		governanceSection(),
 		runtimeSection(),
 		adminPanelSection(),
@@ -176,21 +229,45 @@ func serviceDescriptorsSection() map[string]any {
 	}
 }
 
+// guardrailsSection — the platform-wide toolkit security policy. LIVE.
+//
+// Every field here is read, and the reason the section carried
+// `pylonPluginConfigUnavailable` until now was that none of them were. The four
+// consumers, in the order an operator meets them:
+//
+//   - the toolkit TYPE catalogue (`/toolkits`, `/toolkit_types`,
+//     `/toolkit_available_tools`, `/toolkit_discover_tools`) drops blocked types
+//     and blocked tools, so a blocked toolkit cannot be picked;
+//   - the toolkit WRITE paths (`Create`, `Update`, `ForkToolkit`) refuse a
+//     blocked type with a 403 that names it, so it cannot be created by a client
+//     that skipped the form;
+//   - the agent tool FREEZE (internal/application/agentexecution/tools.go)
+//     strips blocked toolkits and tools out of the execution input. This is the
+//     load-bearing one: an agent version saved before a toolkit was blocked
+//     still names it, and the freeze is the only point a running agent cannot
+//     route around;
+//   - `GET /elitea_core/platform_settings/prompt_lib` publishes
+//     `blocked_toolkits` so the product UI can mark an existing toolkit blocked.
+//
+// The sensitive-action fields are stored and served here, and reach the worker's
+// SensitiveToolGuardMiddleware through the agent execution input. Note the
+// enforcement asymmetry that the descriptions below have to be honest about:
+// catalogue and write-path enforcement are unconditional, while the freeze runs
+// only where the runtime plane is enabled.
 func guardrailsSection() map[string]any {
 	return map[string]any{
-		"id":                 "guardrails",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "Guardrails",
-		"description":        "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
-		"order":              1,
-		"icon":               "security",
+		"id":          "guardrails",
+		"title":       "Guardrails",
+		"description": "Control platform-wide security policies, toolkit restrictions, and MCP exposure settings.",
+		"order":       1,
+		"icon":        "security",
 		"fields": []map[string]any{
 			{
 				"key":         "blocked_toolkits",
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"title":       "Blocked Toolkits",
-				"description": "Toolkit types that are completely disabled platform-wide. Blocked toolkits will not be registered, listed, or creatable.",
+				"description": "Toolkit types disabled platform-wide. A blocked type cannot be listed or created, and is stripped out of every agent before it runs. Toolkits of this type that already exist stay visible to administrators so they can be reviewed and deleted \u2014 blocking stops them working, it does not remove them or their stored credentials.",
 				"path":        "toolkit_security.blocked_toolkits",
 				"section":     "guardrails",
 				"default":     []any{},
@@ -201,7 +278,7 @@ func guardrailsSection() map[string]any {
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"title":                "Blocked Tools",
-				"description":          "Specific tools blocked within allowed toolkits. Map of toolkit type to list of blocked tool names.",
+				"description":          "Individual tools blocked inside otherwise-allowed toolkits. Map of toolkit type to blocked tool names. Matching ignores case and separators, so 'Create File', 'create_file' and 'create-file' are one entry. Scoped to the named toolkit: blocking 'create_file' under github leaves other toolkits' identically-named tools alone.",
 				"path":                 "toolkit_security.blocked_tools",
 				"section":              "guardrails",
 				"default":              map[string]any{},
@@ -213,7 +290,7 @@ func guardrailsSection() map[string]any {
 				"type":                 "object",
 				"additionalProperties": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				"title":                "Sensitive Action Tools",
-				"description":          "Tools that require explicit user authorization before execution. Map of toolkit type to list of tool names that trigger an authorization dialog at runtime.",
+				"description":          "Tools that require the user to authorize each call before it runs. Map of toolkit type to tool names; the key '*' applies to every toolkit. Enforced by the agent runtime, so it takes effect where agent execution is enabled.",
 				"path":                 "toolkit_security.sensitive_tools",
 				"section":              "guardrails",
 				"default":              map[string]any{},
@@ -224,7 +301,7 @@ func guardrailsSection() map[string]any {
 				"key":         "sensitive_action_company_name",
 				"type":        "string",
 				"title":       "Company Name for Policy Message",
-				"description": "Company name displayed in the sensitive action authorization dialog. Used in the policy message template.",
+				"description": "Company name shown in the authorization dialog. Left blank, the runtime's own default (\"Your organization\") is used.",
 				"path":        "toolkit_security.sensitive_action_company_name",
 				"section":     "guardrails",
 				"default":     "",
@@ -233,7 +310,7 @@ func guardrailsSection() map[string]any {
 				"key":         "sensitive_action_message_template",
 				"type":        "string",
 				"title":       "Authorization Message Template",
-				"description": "Message template shown in the authorization dialog. Supports placeholders: {company_name}, {action_name}, {tool_name}, {toolkit_name}.",
+				"description": "Message shown in the authorization dialog. Supports the placeholders {company_name}, {action_name}, {tool_name} and {toolkit_name}. Left blank, the runtime's own default wording is used.",
 				"path":        "toolkit_security.sensitive_action_message_template",
 				"section":     "guardrails",
 				"default":     "",
@@ -373,7 +450,6 @@ func agentPublishingSection() map[string]any {
 				"path":               "publishing_guardrail.publish_validation_rules",
 				"section":            "agent_publishing",
 				"default":            "",
-				
 			},
 		},
 	}
@@ -398,26 +474,61 @@ func skillPublishingSection() map[string]any {
 	}
 }
 
+// mcpServersUnavailable sends this section's caller to the surface that really
+// holds the catalogue.
+//
+// This section used to carry pylonPluginConfigUnavailable, and that WAS true of
+// it: the values addressed the indexer_worker plugin descriptor, collected over
+// the Arbiter bus, and nothing here read them. It is no longer the whole truth,
+// because the catalogue itself now exists — shared migration 0094,
+// `internal/mcpregistry` and the three routes in mcp_prebuilt.go — so a reader
+// told only "Pylon plugin runtimes" would conclude the feature is missing when
+// it is merely somewhere else.
+//
+// The section stays unavailable rather than becoming writable for one reason,
+// and it is the same reason rejectCredentialField exists: a catalogue entry
+// carries a client secret, and this page's fields are stored as plaintext JSONB
+// rows in centry.platform_config that every holder of `runtime.plugins` can
+// read. The dedicated surface seals the secret into the platform vault and
+// returns a mask. Serving the same data here would mean either storing that
+// credential in clear text or accepting a save that silently drops it.
+const mcpServersUnavailable = "MCP server definitions are not stored as plugin configuration on this " +
+	"platform: an entry carries a client secret, and the values on this page are kept as plaintext " +
+	"rows readable by everyone who can open it. The catalogue lives at " +
+	"/api/v2/admin/mcp_prebuilt_servers/administration, which seals each client secret into the " +
+	"platform vault and never returns it. It takes effect on the next call rather than on the next " +
+	"restart, so no field here carries requires_restart."
+
 func mcpServersSection() map[string]any {
 	return map[string]any{
-		"id":                 "mcp_servers",
-		"unavailable_reason": pylonPluginConfigUnavailable,
+		"id": "mcp_servers",
+		// managed_surface names the dedicated surface that really holds this
+		// section's data, so the client can render the right editor WITHOUT a
+		// hardcoded list of section ids.
+		//
+		// That distinction is the whole reason this key exists on the server.
+		// The reference keeps section placement in two client-side lists that
+		// have to stay each other's exact complement by hand, and #217 already
+		// corrected one instance of it. A client that special-cased
+		// `id == "mcp_servers"` would be the same mistake in a new place: the
+		// server would move the catalogue and the client would go on rendering
+		// an editor for a surface that no longer exists.
+		//
+		// `unavailable_reason` STAYS. It is still true of the plugin-config
+		// value endpoints, which cannot serve this section — a client that
+		// cannot render the managed surface must still be told why the ordinary
+		// form is missing, and the two value endpoints must keep refusing.
+		"managed_surface":    "mcp_prebuilt_servers",
+		"unavailable_reason": mcpServersUnavailable,
 		"title":              "MCP Servers",
 		"description":        "Configure Model Context Protocol server definitions available to the indexer runtime.",
 		"order":              2,
 		"icon":               "dns",
-		"fields": []map[string]any{
-			{
-				"key":              "mcp_servers",
-				"type":             "object",
-				"title":            "MCP Server Definitions",
-				"description":      "Pre-configured MCP servers that appear as selectable toolkits. Supports stdio (local subprocess) and http (remote) server types.",
-				"path":             "mcp_servers",
-				"section":          "mcp_servers",
-				"default":          map[string]any{},
-				"requires_restart": true,
-			},
-		},
+		// No fields. The one field this section declared was the whole
+		// `mcp_servers` object, and declaring it here would describe a control
+		// that this page cannot serve — the same "renders as a working control
+		// and is not one" failure rejectUnavailableField was written for.
+		"fields": []map[string]any{},
 	}
 }
 
@@ -464,132 +575,80 @@ func observabilitySection() map[string]any {
 	}
 }
 
-func litellmSection() map[string]any {
+// llmProxyUnavailable explains why the ordinary plugin-config form cannot
+// serve this section.
+//
+// It is a different sentence from pylonPluginConfigUnavailable on purpose. That
+// reason says "these values address a Pylon plugin descriptor and nothing here
+// reads them", which was true of the LiteLLM section this replaces and is not
+// true of anything on this one: every value the LLM Proxy section shows is read,
+// and most of it is read on the billed request path. The reason it is not a form
+// is narrower — the surface is three unrelated shapes (a live status report, a
+// price catalogue keyed on provider+model, and one global alert setting), and a
+// flat form over one value document cannot express any of them.
+const llmProxyUnavailable = "the LLM proxy is not configured as plugin values on this platform. Its runtime " +
+	"status is read from the gateway itself, its model prices are rows in gateway.gateway_models keyed on " +
+	"provider and model, and neither is a field in a settings document. The dedicated editor at " +
+	"/api/v2/admin/gateway serves all three; this page's value endpoints cannot."
+
+// llmProxySection is the admin surface for Elitea's LLM gateway.
+//
+// ## What replaced what
+//
+// This section stands where `litellmSection()` stood. LiteLLM is gone — ADR-0015
+// replaced it with `services/elitea-llm-gateway`, a standalone service built on
+// maximhq/bifrost's core — and every field the old section declared described
+// that removed subsystem: which LiteLLM to talk to, its master key, its database,
+// and three action buttons that reconciled teams and keys inside it. None of them
+// has a referent any more, so none of them is carried over. A setting whose
+// subject no longer exists is not a setting an operator should be shown.
+//
+// What replaces them is not a translation of those fields. It is the subset of
+// Bifrost's own admin UI that this platform can actually back with real data:
+//
+//   - **Runtime status** — Bifrost's Observability/health view. Ours reports what
+//     the gateway HOLDS: the loaded governance snapshot, its age, rows that were
+//     rejected or are inert, and whether rate limits are enforceable at all.
+//     Nothing else in this platform can tell an operator that a saved rule is not
+//     in force.
+//   - **Model catalogue and pricing** — Bifrost's Model Catalog and Pricing
+//     Overrides. `gateway.gateway_models` is the cost basis for every billed
+//     request, and a model missing from it is billed at a rate the gateway
+//     invents rather than at a real one, so this is the one screen where a
+//     missing row is a silent, ongoing billing fault.
+//   - **Budget alerting** — the global soft-alert threshold. The endpoints have
+//     existed since #322 with nothing calling them.
+//
+// Deliberately absent, because this platform cannot back them honestly: Bifrost's
+// per-request Logs (no request-log store exists — `llm_usage_events` carries
+// billing dimensions only, with no latency, status or payload), Virtual Keys (the
+// Bifrost VK slot carries the Elitea project id; there is no key to mint or
+// rotate), and provider/key CRUD (provider credentials are per-project
+// `ai_credentials` rows in `p_{id}.configuration` sealed in the Fernet vault, not
+// global gateway config — they are authored per project, not here).
+//
+// ## Why it carries no fields
+//
+// `managed_surface` routes the client to the dedicated editor, exactly as
+// mcpServersSection() does. Declaring fields as well would describe controls the
+// plugin-config value endpoints cannot serve, which is the failure
+// rejectUnavailableField exists to prevent.
+func llmProxySection() map[string]any {
 	return map[string]any{
-		"id":                 "litellm",
-		"unavailable_reason": pylonPluginConfigUnavailable,
-		"title":              "LiteLLM",
-		"description":        "Configure the LiteLLM proxy — connection mode, credentials, and model access policies.",
-		"order":              4,
-		"icon":               "model_training",
-		"fields": []map[string]any{
-			{
-				"key":              "litellm_mode",
-				"type":             "string",
-				"title":            "LiteLLM Mode",
-				"description":      "Use the built-in Elitea LiteLLM proxy or connect to an external instance.",
-				"path":             "litellm_mode",
-				"section":          "litellm",
-				"default":          "built-in",
-				"enum":             []string{"built-in", "external"},
-				"requires_restart": true,
-			},
-			{
-				"key":              "litellm_database_mode",
-				"type":             "string",
-				"title":            "Database",
-				"description":      "Use the shared Elitea database or a custom PostgreSQL connection string.",
-				"path":             "litellm_database_mode",
-				"section":          "litellm",
-				"default":          "elitea",
-				"enum":             []string{"elitea", "custom"},
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":              "litellm_db_name",
-				"type":             "string",
-				"title":            "LiteLLM Database Name",
-				"description":      "Database name for LiteLLM on the shared PostgreSQL server. Uses POSTGRES_* env vars for host/credentials.",
-				"path":             "litellm_db_name",
-				"section":          "litellm",
-				"default":          "litellm",
-				"requires_restart": true,
-				"visible_when": []map[string]any{
-					{"field": "litellm_mode", "value": "built-in"},
-					{"field": "litellm_database_mode", "value": "elitea"},
-				},
-			},
-			{
-				"key":              "database_url",
-				"type":             "string",
-				"format":           "password",
-				"title":            "Custom Database URL",
-				"description":      "PostgreSQL connection string. Example: postgresql://user:pass@host:5432/litellm_db",
-				"path":             "database_url",
-				"section":          "litellm",
-				"default":          nil,
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_database_mode", "value": "custom"},
-			},
-			{
-				"key":              "external_litellm_url",
-				"type":             "string",
-				"title":            "External LiteLLM URL",
-				"description":      "Base URL of the external LiteLLM instance (e.g., https://litellm.example.com/llm).",
-				"path":             "external_litellm_url",
-				"section":          "litellm",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "external"},
-			},
-			{
-				"key":              "litellm_master_key",
-				"type":             "string",
-				"format":           "password",
-				"title":            "Master Key",
-				"description":      "API key for authenticating LiteLLM proxy requests.",
-				"path":             "litellm_master_key",
-				"section":          "litellm",
-				"default":          nil,
-				"requires_restart": true,
-			},
-			{
-				"key":              "log_request_response_data",
-				"type":             "boolean",
-				"title":            "Log Request/Response Data",
-				"description":      "Store full prompts and completions in LiteLLM spend logs.",
-				"path":             "log_request_response_data",
-				"section":          "litellm",
-				"default":          false,
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":         "allow_project_own_llms",
-				"type":        "boolean",
-				"title":       "Allow Projects to Bring Own LLMs",
-				"description": "When disabled, only public project models are available to all projects.",
-				"path":        "allow_project_own_llms",
-				"section":     "litellm",
-				"default":     true,
-			},
-			{
-				"key":          "sync_llm_entities",
-				"type":         "action",
-				"title":        "Sync LLM Entities",
-				"description":  "Reconcile all teams, keys, and models across all projects. Long-running operation.",
-				"section":      "litellm",
-				"action_task":  "sync_llm_entities",
-				"visible_when": map[string]any{"field": "litellm_mode", "value": "built-in"},
-			},
-			{
-				"key":         "import_llm_models",
-				"type":        "action",
-				"title":       "Import Models from LiteLLM",
-				"description": "Discover unmanaged models in LiteLLM, create configuration records, and update team access for all projects.",
-				"section":     "litellm",
-				"action_task": "import_llm_models",
-			},
-			{
-				"key":         "seed_llm_keys",
-				"type":        "action",
-				"title":       "Seed Project Keys",
-				"description": "Create missing LiteLLM teams and API keys for all projects. Use after initial setup or if projects are missing access.",
-				"section":     "litellm",
-				"action_task": "seed_llm_keys",
-			},
-		},
+		"id": "llm_proxy",
+		// The surface name, not the section id, is what the client keys its
+		// editor registry on — see mcpServersSection() for why that distinction
+		// is load-bearing.
+		"managed_surface":    "llm_proxy",
+		"unavailable_reason": llmProxyUnavailable,
+		"title":              "LLM Proxy",
+		"description": "Elitea's LLM gateway: runtime enforcement status, the model price catalogue that " +
+			"every billed request is costed against, and the global budget-alert threshold.",
+		"order": 4,
+		"icon":  "hub",
+		// No fields: this section's data is three shapes, none of them a value
+		// in a settings document. See the doc comment above.
+		"fields": []map[string]any{},
 	}
 }
 
@@ -603,15 +662,43 @@ func litellmSection() map[string]any {
 // governance CRUD routes (§4) — this attribute is convenience only.
 //
 // All values authored here are DEFINITIONS written to the global
-// gateway.governance_config table; the gateway GovernanceStore reads them at load
-// and enforces them. Budget limits are USD numbers (§5.1) — the gateway scales
-// them to nano-USD for counter comparison.
+// gateway.governance_config table, and the gateway now enforces them.
+//
+// The history matters, because this comment has been wrong in both directions.
+// It first asserted enforcement that did not exist while
+// governanceElsewhereUnavailable (this file, ~line 70) correctly denied it;
+// #466 removed the false assertion, and an operator had by then authored a rule
+// and believed a limit was in force. #218 closed the gap the other way round —
+// the gateway reads the table now (elitea-llm-gateway internal/policy), so the
+// two statements agree again, on the other value.
+//
+// Budget limits are USD numbers (§5.1). The gateway scales them to nano-USD at
+// the counter boundary and nowhere earlier; the three denominations in §5.1 are
+// not interchangeable.
+//
+// FOUR CONTROLS ARE ENFORCED WITH A CAVEAT, and the caveat belongs with the
+// schema rather than in a release note:
+//
+//   - A token rate limit is applied to the request AFTER the one that crossed
+//     it, because a request's token cost is unknown until the provider answers.
+//   - Rate limits need the gateway's NATS counter. Without it they load and do
+//     nothing; the gateway's GET /governance/status reports that.
+//   - `scope.team_ids` is not offered and is rejected on write: this platform
+//     has no teams for it to name.
+//   - A CEL rule may not reference team_id, tokens_used, complexity_tier or
+//     headers. The gateway cannot supply them, and a rule that names one is
+//     refused here rather than accepted and never matched — see
+//     unevaluableCELVariables in routing_cel.go.
+//
+// The claim in this comment, in the `description` below and in
+// governanceElsewhereUnavailable are pinned together by the guards in
+// config_schemas_claims_internal_test.go. Keep all three true at once.
 func governanceSection() map[string]any {
 	return map[string]any{
 		"id":                  "governance",
 		"unavailable_reason":  governanceElsewhereUnavailable,
 		"title":               "LLM Governance",
-		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are read by the gateway for enforcement.",
+		"description":         "Author LLM-gateway governance: budgets, rate limits, credential billing policy, per-model/provider scopes, MCP allowlists, and CEL routing rules. Definitions are enforced by the LLM gateway on every request.",
 		"order":               5,
 		"icon":                "policy",
 		"required_permission": "configuration.governance",
@@ -735,17 +822,6 @@ func governanceSection() map[string]any {
 				"section":     "governance",
 				"default":     []any{},
 				"enum_source": "projects",
-			},
-			{
-				"key":         "scope_team_ids",
-				"type":        "array",
-				"items":       map[string]any{"type": "integer"},
-				"title":       "Scoped Teams",
-				"description": "Teams this governance entry applies to. Empty means all teams.",
-				"path":        "scope.team_ids",
-				"section":     "governance",
-				"default":     []any{},
-				"enum_source": "gateway_teams",
 			},
 			// --- MCP allowlist ---
 			{
@@ -921,78 +997,29 @@ func adminPanelSection() map[string]any {
 
 func authSection() map[string]any {
 	return map[string]any{
-		"id":                 "auth",
-		"unavailable_reason": pylonPluginConfigUnavailable,
+		"id": "auth",
+		// managed_surface names the dedicated surface that really holds this
+		// section's data, so the client renders the right editor WITHOUT a
+		// hardcoded list of section ids. See mcpServersSection() for why that
+		// distinction is the server's to make.
+		"managed_surface":    "identity_providers",
+		"unavailable_reason": authProvidersElsewhereUnavailable,
 		"title":              "Authentication",
-		"description":        "Configure the authentication provider and identity settings.",
+		"description":        "Configure the identity providers this deployment federates logins through.",
 		"order":              7,
 		"icon":               "lock",
-		"fields": []map[string]any{
-			{
-				"key":              "auth_provider",
-				"type":             "string",
-				"title":            "Authentication Provider",
-				"description":      "The authentication method used for user login.",
-				"path":             "auth_provider",
-				"section":          "auth",
-				"default":          "form",
-				"enum":             []string{"form", "oidc"},
-				"requires_restart": true,
-			},
-			{
-				"key":              "form_users",
-				"type":             "array",
-				"title":            "Form Users",
-				"description":      "Users who can log in with the form-based authentication provider. Each user needs a login name, email address, and password.",
-				"path":             "users",
-				"section":          "auth",
-				"default":          []any{},
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "form"},
-				"items": map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"login":    map[string]any{"type": "string"},
-						"password": map[string]any{"type": "string"},
-						"email":    map[string]any{"type": "string"},
-					},
-				},
-			},
-			{
-				"key":              "oidc_metadata_endpoint",
-				"type":             "string",
-				"title":            "OIDC Metadata Endpoint",
-				"description":      "The OpenID Connect discovery endpoint URL (e.g. https://idp.example.com/.well-known/openid-configuration).",
-				"path":             "metadata_endpoint",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-			{
-				"key":              "oidc_client_id",
-				"type":             "string",
-				"title":            "OIDC Client ID",
-				"description":      "The client identifier registered with the identity provider.",
-				"path":             "client_id",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-			{
-				"key":              "oidc_client_secret",
-				"type":             "string",
-				"format":           "password",
-				"title":            "OIDC Client Secret",
-				"description":      "The client secret for authenticating with the identity provider.",
-				"path":             "client_secret",
-				"section":          "auth",
-				"default":          "",
-				"requires_restart": true,
-				"visible_when":     map[string]any{"field": "auth_provider", "value": "oidc"},
-			},
-		},
+		// No fields, for the same reason mcpServersSection() declares none.
+		//
+		// The five this section used to declare — `auth_provider`,
+		// `form_users`, and the three OIDC values — each addressed a key inside
+		// a pylon plugin's YAML, and two of them were `format: password`.
+		// Declaring them here would describe controls this page cannot serve,
+		// which is the "renders as a working control and is not one" failure
+		// rejectUnavailableField exists to stop. The typed editor at
+		// `/admin/identity_providers/administration` collects the real
+		// equivalents, and it collects more of them than these five could
+		// express.
+		"fields": []map[string]any{},
 	}
 }
 
@@ -1255,11 +1282,11 @@ func voiceFeaturesSection() map[string]any {
 		// constants, and it IS mounted: `pages/chat` → `ChatBox` →
 		// `buildChatBoxInputSlots()` → `<VoiceButton>`. Both flags are now
 		// marshalled by `GET /elitea_core/platform_settings/…` and read there.
-		"title":              "Voice Features",
-		"description":        "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
-		"order":              15,
-		"icon":               "record_voice_over",
-		"always_visible":     true,
+		"title":          "Voice Features",
+		"description":    "Control Voice-to-Voice, Text-to-Voice, and Voice-to-Text features environment-wide.",
+		"order":          15,
+		"icon":           "record_voice_over",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
 				"key":         "vite_voice_features_enabled",

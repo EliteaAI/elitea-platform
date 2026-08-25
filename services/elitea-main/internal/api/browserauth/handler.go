@@ -261,8 +261,12 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 	}
 	sessionID, err := h.cookies.Read(request)
 	if err != nil {
+		// The session cookie went away between the form render and this POST.
+		// That is a recoverable state, not a client defect: send the browser
+		// back to beginLogin, which mints a new session and a new transaction.
+		// A bare 400 leaves the user on a dead page with no way back.
 		_ = h.cookies.Clear(writer)
-		writeProblem(writer, http.StatusBadRequest)
+		h.redirectLoginFailure(writer, request)
 		return
 	}
 	if !h.admit(writer, request, BrowserAttempt{
@@ -280,10 +284,20 @@ func (h *Handler) authorizeForm(writer http.ResponseWriter, request *http.Reques
 	if err != nil {
 		switch {
 		case errors.Is(err, browserapp.ErrUnauthenticated),
-			errors.Is(err, browserapp.ErrAuthenticationExpired):
-			h.redirectLoginFailure(writer, request)
-		case errors.Is(err, browserapp.ErrInvalidRequest),
+			errors.Is(err, browserapp.ErrAuthenticationExpired),
+			// A rejected transaction means the rendered form went stale: it
+			// expired, it was already consumed, or beginLogin ran again and
+			// bound a newer transaction to the session cookie. The SPA makes
+			// that routine. An unauthenticated visit to /app/ redirects to
+			// the login page from the router AND from the first API call.
+			// Two begins therefore race, and the last Set-Cookie wins. The
+			// user then submits a form the server no longer accepts. Send
+			// them back to beginLogin, which mints a fresh session and
+			// transaction, instead of answering a bare "Bad Request" page
+			// with no way forward.
 			errors.Is(err, browserapp.ErrTransactionRejected):
+			h.redirectLoginFailure(writer, request)
+		case errors.Is(err, browserapp.ErrInvalidRequest):
 			writeProblem(writer, http.StatusBadRequest)
 		default:
 			writeProblem(writer, http.StatusServiceUnavailable)

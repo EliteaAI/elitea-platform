@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,12 @@ type MockRouterConfig struct {
 	// UnaryResponsesResponse overrides the object returned by unary
 	// ResponsesRequest / CountTokensRequest calls when Mode==StreamModeAnthropic.
 	UnaryResponsesResponse *schemas.BifrostResponsesResponse
+	// EmbeddingResponse overrides the object returned by EmbeddingRequest. The
+	// default carries Usage and NO Data, which is enough for a billing
+	// assertion but not for a client: openai-python reads data[0].embedding and
+	// raises on an empty list. Set this to drive a real embedding round trip
+	// (internal/preflight/sdkharness uses it for the base64 arm).
+	EmbeddingResponse *schemas.BifrostEmbeddingResponse
 	// InputTokens / OutputTokens are the usage values stamped on the final chunk
 	// and the unary response. Defaults are 100 / 50.
 	InputTokens  int64
@@ -165,6 +172,9 @@ func (m *MockRouter) TextCompletionRequest(_ *schemas.BifrostContext, _ *schemas
 
 func (m *MockRouter) EmbeddingRequest(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 	m.called.Store(true)
+	if m.cfg.EmbeddingResponse != nil {
+		return m.cfg.EmbeddingResponse, nil
+	}
 	return &schemas.BifrostEmbeddingResponse{
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: int(m.cfg.InputTokens)},
 	}, nil
@@ -239,6 +249,16 @@ func (m *MockRouter) ImageEditRequest(_ *schemas.BifrostContext, _ *schemas.Bifr
 func (m *MockRouter) ImageVariationRequest(_ *schemas.BifrostContext, _ *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	m.called.Store(true)
 	return &schemas.BifrostImageGenerationResponse{}, nil
+}
+
+func (m *MockRouter) SpeechRequest(_ *schemas.BifrostContext, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostSpeechResponse{}, nil
+}
+
+func (m *MockRouter) TranscriptionRequest(_ *schemas.BifrostContext, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	m.called.Store(true)
+	return &schemas.BifrostTranscriptionResponse{}, nil
 }
 
 // compile-time assertion: MockRouter must satisfy LLMRouter.
@@ -488,7 +508,8 @@ func fakeAssign(dest, v any) error {
 // Column order MUST match failmode.Store.ReadSnapshot's Scan call:
 //
 //	is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-//	nats_fail_mode (*string/NULL), acc_found, age_seconds
+//	nats_fail_mode (*string/NULL), acc_found, age_seconds,
+//	soft_alerts_disabled
 func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 	if d.SnapErr != nil {
 		return fakeRow{err: d.SnapErr}
@@ -503,6 +524,7 @@ func (d *FakeDB) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
 		natsFM,
 		snap.Found,
 		snap.Age.Seconds(),
+		snap.SoftAlertsDisabled,
 	}}
 }
 
@@ -516,7 +538,12 @@ func (d *FakeDB) Begin(_ context.Context) (failmode.Tx, error) {
 // fakeNopTx is a no-op failmode.Tx for the reconciler in test harness.
 type fakeNopTx struct{}
 
-func (t *fakeNopTx) QueryRow(_ context.Context, _ string, _ ...any) failmode.Row {
+func (t *fakeNopTx) QueryRow(_ context.Context, sql string, args ...any) failmode.Row {
+	// Issue #515: the outage-window write claims its event id first.
+	if strings.Contains(sql, "processed_event_ids") {
+		id, _ := args[0].(string)
+		return fakeRow{vals: []any{id}}
+	}
 	return fakeRow{err: errors.New("fakeNopTx: not used")}
 }
 func (t *fakeNopTx) Query(_ context.Context, _ string, _ ...any) (failmode.Rows, error) {

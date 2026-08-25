@@ -235,6 +235,23 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     expect(onRunFinish).toHaveBeenCalledWith('completed');
   });
 
+  // The other half of the same decision: a terminal frame that DOES carry a
+  // status, but not one this build knows, must not be reported as a success.
+  // `completed` is in RUNNABLE_INDEX_STATUSES, so the pre-fix `default:`
+  // branch did not merely mispaint — it advertised the index as searchable on
+  // the strength of a status nothing in the app has ever seen. Fails against
+  // any implementation that keeps mapping "unknown" to "completed".
+  it('refuses to report an UNRECOGNISED terminal status as completed', () => {
+    for (const status of ['aborted', 'OK', '', 'partly-indexed']) {
+      const client = createTestSocketClient();
+      const { onRunFinish } = setup(client, { executionId: 'exec-1' });
+      act(() => {
+        sse.emit('index.ingest.completed', JSON.stringify({ status }));
+      });
+      expect(onRunFinish, `status ${JSON.stringify(status)} must not settle as completed`).toHaveBeenLastCalledWith('failed');
+    }
+  });
+
   it('reports execution.failed as a failed run', () => {
     const client = createTestSocketClient();
     const { onRunFinish } = setup(client, { executionId: 'exec-1' });
@@ -244,6 +261,63 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     });
 
     expect(onRunFinish).toHaveBeenCalledWith('failed');
+  });
+
+  // `execution.failed`'s payload is `{code, safe_message, retryable}`
+  // (`infra/db/repos/command_outbox.go:29-30`). The handler used to take NO
+  // ARGUMENT, so all three were discarded and a cancellation, a deadline
+  // retirement and a hard fault were indistinguishable on screen. Asserting on
+  // the RENDERED text — not on a call count — is what makes this fail against
+  // a handler that receives the frame and drops it anyway.
+  it('surfaces the failure frame’s safe_message, code and retryability to the user', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit(
+        'execution.failed',
+        JSON.stringify({ code: 'DEADLINE_EXCEEDED', safe_message: 'The execution deadline was exceeded.', retryable: true }),
+      );
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered).toContain('The execution deadline was exceeded.');
+    expect(rendered).toContain('DEADLINE_EXCEEDED');
+    expect(rendered).toMatch(/retried/i);
+    expect(onRunFinish).toHaveBeenCalledWith('failed');
+  });
+
+  it('still says something useful when the failure frame carries no safe_message', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.failed', JSON.stringify({ code: 'CANCELLED', retryable: false }));
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered).toContain('CANCELLED');
+    expect(rendered).not.toMatch(/retried/i);
+  });
+
+  // `execution.replay_reset` is emitted when the durable log was pruned past
+  // the cursor being resumed from (`infra/db/repos/replay_events.go:89-102`).
+  // An SSE `event:` name with no registered listener is dropped SILENTLY by
+  // EventSource, so before this the frame arrived and nothing happened: a
+  // resumed long run rendered a transcript with an undisclosed hole in it.
+  it('discloses a replay reset to the user WITHOUT ending the run', () => {
+    const client = createTestSocketClient();
+    const { getChatHistory, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('execution.replay_reset', JSON.stringify({ reason: 'progress_retention_window_elapsed' }));
+    });
+
+    const rendered = getChatHistory().map((message) => String(message.content ?? '')).join('\n');
+    expect(rendered, 'the gap notice must reach the transcript').toContain('progress_retention_window_elapsed');
+    // The run is still going: a reset that settles the run would strand a
+    // live execution in a terminal state and close its own stream.
+    expect(onRunFinish).not.toHaveBeenCalled();
   });
 
   it('ignores every SSE frame while isAuthCheckSession is true', () => {
@@ -272,5 +346,140 @@ describe('useToolkitChatSocket — SSE execution stream (issue #93)', () => {
     // A transport failure is NOT an execution failure: the run is about to
     // be re-dispatched on socket.io, so it must not be reported as failed.
     expect(onRunFinish).not.toHaveBeenCalled();
+  });
+
+  // issue #310: once the stream has genuinely opened, a LATER drop must not
+  // re-dispatch the same run over socket.io — the execution is already
+  // progressing server-side, so that would start a second run.
+  it('does NOT forward a stream error to onStreamError once the stream has opened', () => {
+    const client = createTestSocketClient();
+    const { onStreamError, onRunFinish } = setup(client, { executionId: 'exec-1' });
+
+    act(() => {
+      sse.emit('open');
+    });
+    act(() => {
+      sse.fail();
+    });
+
+    expect(onStreamError).not.toHaveBeenCalled();
+    expect(onRunFinish).not.toHaveBeenCalled();
+  });
+
+  it('re-arms the open gate for a fresh executionId — a NEW run that never opens still falls back', () => {
+    const client = createTestSocketClient();
+    const onStreamError = vi.fn();
+    const { rerender } = renderHook(
+      (props: { executionId: string | undefined }) =>
+        useToolkitChatSocket({
+          isAuthCheckSession: false,
+          onMcpAuthRequired: undefined,
+          onRunFinish: vi.fn(),
+          onStartTask: vi.fn(),
+          setChatHistory: vi.fn(),
+          activeConversationId: undefined,
+          activeConversationUuid: undefined,
+          projectId: 'proj-1',
+          roomEnabled: false,
+          executionId: props.executionId,
+          onStreamError,
+        }),
+      { wrapper: withSocket(client), initialProps: { executionId: 'exec-1' } },
+    );
+
+    act(() => {
+      sse.emit('open');
+    });
+    act(() => {
+      sse.fail();
+    });
+    expect(onStreamError).not.toHaveBeenCalled();
+
+    // A brand-new run gets its own stream and its own open-gate state.
+    rerender({ executionId: 'exec-2' });
+    act(() => {
+      sse.fail();
+    });
+    expect(onStreamError).toHaveBeenCalledTimes(1);
+  });
+
+  // issue #310: "No message_id guard — any frame arriving on the stream
+  // reaches the reducer, regardless of which run it belongs to."
+  describe('message_id correlation', () => {
+    it('routes every frame belonging to the SAME message_id', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', message_id: 'm1', content: 'hello' }));
+      });
+
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('drops a frame naming a DIFFERENT message_id once one is tracked', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        // A stray frame from a different run's message_id must not reach
+        // the reducer and corrupt this run's transcript.
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', message_id: 'stray-run', content: 'oops' }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it('still routes a frame that carries no message_id at all', () => {
+      const client = createTestSocketClient();
+      const { setChatHistory } = setup(client, { executionId: 'exec-1' });
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+        sse.emit('execution.node_event', JSON.stringify({ type: 'chunk', content: 'no id here' }));
+      });
+
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
+
+    it('re-arms the tracked message_id for a fresh executionId', () => {
+      const client = createTestSocketClient();
+      const setChatHistory = vi.fn();
+      const { rerender } = renderHook(
+        (props: { executionId: string | undefined }) =>
+          useToolkitChatSocket({
+            isAuthCheckSession: false,
+            onMcpAuthRequired: undefined,
+            onRunFinish: vi.fn(),
+            onStartTask: vi.fn(),
+            setChatHistory,
+            activeConversationId: undefined,
+            activeConversationUuid: undefined,
+            projectId: 'proj-1',
+            roomEnabled: false,
+            executionId: props.executionId,
+            onStreamError: vi.fn(),
+          }),
+        { wrapper: withSocket(client), initialProps: { executionId: 'exec-1' } },
+      );
+
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm1', content: { task_id: 't1' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(1);
+
+      // A brand-new run (its own executionId, its own message_id) must not
+      // be gated by the PREVIOUS run's tracked message_id.
+      rerender({ executionId: 'exec-2' });
+      act(() => {
+        sse.emit('execution.node_event', JSON.stringify({ type: 'start_task', message_id: 'm2', content: { task_id: 't2' } }));
+      });
+      expect(setChatHistory).toHaveBeenCalledTimes(2);
+    });
   });
 });

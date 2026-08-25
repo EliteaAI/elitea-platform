@@ -45,3 +45,69 @@ export function maskedTokenValue(token: PersonalAccessToken): string {
 export function sortTokensByName(tokens: readonly PersonalAccessToken[]): PersonalAccessToken[] {
   return [...tokens].sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
 }
+
+/* ── project binding ───────────────────────────────────────────────────── */
+
+/**
+ * The bound project as a string key, or `null` when the token is unbound.
+ * `undefined` (a record from a backend that predates the binding) and `null`
+ * (an explicitly unbound record) collapse to the same answer on purpose —
+ * see `PersonalAccessToken.project_id`.
+ */
+export function tokenProjectKey(token: PersonalAccessToken): string | null {
+  const projectId = token.project_id;
+  if (projectId === null || projectId === undefined) return null;
+  return String(projectId);
+}
+
+/**
+ * The `project_id` a create-token request may carry, or `undefined` for an
+ * unbound token.
+ *
+ * The app holds the selected project id as a STRING; `POST /auth/token/` takes
+ * a positive integer. A value of another shape (an empty selection, `'0'`, a
+ * decimal, a name) gives `undefined`, and the caller then OMITS `project_id`.
+ * Absent is the unbound case (`spec-llm-project-scope` §4) — a caller must
+ * never send `null` or `0` in its place.
+ *
+ * Deep-imported by the create-token route, not re-exported from `index.ts`:
+ * see that file's note on the §3.3 budget.
+ */
+export function bindableProjectId(selectedProjectId: string): number | undefined {
+  if (!/^\d+$/.test(selectedProjectId)) return undefined;
+  const id = Number(selectedProjectId);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+/**
+ * The two failures `POST /api/v2/auth/token/` answers for a bad `project_id`
+ * (`spec-llm-project-scope` §4): 403 for a project the caller is not a member
+ * of, 400 for a malformed one.
+ */
+export type TokenProjectErrorCode = 'project_forbidden' | 'invalid_project_id';
+
+function readObject(value: unknown, key: string): unknown {
+  if (typeof value !== 'object' || value === null) return undefined;
+  return (value as Record<string, unknown>)[key];
+}
+
+/**
+ * Pull the machine-readable code out of a rejected create-token call.
+ *
+ * TWO ENVELOPE SHAPES REACH THIS FUNCTION, and that is the whole reason it
+ * exists. The two project failures use the NESTED shape
+ * `{"error":{"message","type","code"}}`, while every other failure on the same
+ * endpoint keeps the FLAT shape `{"error":"…"}`. A flat body has a string
+ * where this reads an object, so it falls through to `null` and the caller
+ * shows its generic message — no throw, no mis-parse.
+ *
+ * Reads structurally rather than through `instanceof EliteaApiError`: the
+ * rejection travels through react-query, and a structural read cannot be
+ * defeated by a second copy of the error class in the module graph.
+ */
+export function tokenProjectErrorCode(error: unknown): TokenProjectErrorCode | null {
+  const body = readObject(readObject(error, 'failure'), 'body');
+  const code = readObject(readObject(body, 'error'), 'code');
+  if (code === 'project_forbidden' || code === 'invalid_project_id') return code;
+  return null;
+}

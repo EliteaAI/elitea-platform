@@ -27,12 +27,15 @@ export interface TokensSectionProps {
   showPreview?: boolean;
   /** Callback when user clicks "Preview settings" on a token row. */
   onPreviewToken?: (token: PersonalAccessToken) => void;
+  /** Project id -> name for the binding column — see `TokensTable`. */
+  projectNames?: ReadonlyMap<string, string>;
 }
 
 export const TokensSection = memo(function TokensSection({
   search,
   showPreview = false,
   onPreviewToken,
+  projectNames,
 }: TokensSectionProps) {
   const styles = getStyles();
 
@@ -43,6 +46,7 @@ export const TokensSection = memo(function TokensSection({
           search={search}
           showPreview={showPreview}
           {...(onPreviewToken ? { onPreviewToken } : {})}
+          {...(projectNames ? { projectNames } : {})}
         />
       </Box>
     </Box>

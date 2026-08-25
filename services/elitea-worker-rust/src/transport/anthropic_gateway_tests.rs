@@ -183,7 +183,7 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
         request.headers.get(CONTENT_TYPE),
         Some(&HeaderValue::from_static("application/json"))
     );
-    assert_eq!(request.headers["openai-organization"], "23");
+    assert_eq!(request.headers["x-project-id"], "17");
     assert_eq!(request.headers["anthropic-version"], "2023-06-01");
     assert_eq!(
         request.headers["anthropic-beta"],

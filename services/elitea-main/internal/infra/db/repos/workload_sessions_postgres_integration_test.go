@@ -19,8 +19,7 @@ import (
 // interface. It is service-integration evidence, not a network TLS or process
 // end-to-end test.
 func TestPostgresServiceBackedWorkloadSessionRotationAndRevocation(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

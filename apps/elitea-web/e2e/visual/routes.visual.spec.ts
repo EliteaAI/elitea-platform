@@ -194,7 +194,19 @@ const ROUTES: readonly VisualRoute[] = [
     // allowed to run (issue #159).
     //
     // Re-measured under the corrected method: loaded YES, stalled no.
-    landmark: (page) => page.getByTestId('analytics-kpi-row'),
+    //
+    // The KPI row no longer renders at all. The analytics routes stopped
+    // fabricating zeros (#303) — every table they queried has never existed —
+    // so the live endpoint answers 500 and the page renders its error branch.
+    // The landmark moves to that branch's text, which keeps the property the
+    // comment above is defending: it is NOT satisfied during the spinner, only
+    // once the query has resolved. `getByRole('main')` would be, which is how
+    // this baseline came to be a photograph of a spinner in the first place.
+    //
+    // This is a landmark change, not a pixel change: with the old landmark the
+    // test never reached `toHaveScreenshot`, so `--update-snapshots` wrote no
+    // PNG and a regeneration run produced nothing to review.
+    landmark: (page) => page.getByText('Failed to load analytics data.', { exact: true }),
   },
   {
     // @covers /settings/project-params

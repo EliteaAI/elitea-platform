@@ -24,18 +24,19 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerCredentialTypes(t *testin
 			result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 			currentLifecycleEffectsRequireSuccess(t, result, err)
 			if got, want := recorder.callSnapshot(), []string{
-				"status:false", "ensure-credential:7_configuration-uuid", "status:true",
+				"status:false", "resolve:configuration-uuid", "status:true",
 			}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("calls = %#v, want %#v", got, want)
 			}
-			if len(recorder.credentialsEnsured) != 1 {
-				t.Fatalf("credentials ensured = %#v", recorder.credentialsEnsured)
+			if len(recorder.resolutions) != 1 {
+				t.Fatalf("resolutions = %#v", recorder.resolutions)
 			}
-			desired := recorder.credentialsEnsured[0]
-			if desired.EffectID != "event-1:litellm:ensure-after" || desired.Revision != 4 ||
-				desired.Name != "7_configuration-uuid" || desired.ProjectID != 7 ||
-				desired.ConfigurationUUID != "configuration-uuid" || desired.Configuration.Type != credentialType {
-				t.Fatalf("desired credential = %#v", desired)
+			resolution := recorder.resolutions[0]
+			if resolution.EffectID != "event-1:provider:resolve" || resolution.Revision != 4 ||
+				resolution.ProjectID != 7 || resolution.Section != "ai_credentials" ||
+				resolution.ConfigurationUUID != "configuration-uuid" ||
+				resolution.Configuration.Type != credentialType {
+				t.Fatalf("resolution = %#v", resolution)
 			}
 			currentLifecycleEffectsRequireStatuses(t, recorder.statuses)
 		})
@@ -61,17 +62,17 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerModelSections(t *testing.
 			result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 			currentLifecycleEffectsRequireSuccess(t, result, err)
 			if got, want := recorder.callSnapshot(), []string{
-				"status:false", "ensure-model:7_model-a", "status:true",
+				"status:false", "resolve:configuration-uuid", "status:true",
 			}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("calls = %#v, want %#v", got, want)
 			}
-			if len(recorder.modelsEnsured) != 1 {
-				t.Fatalf("models ensured = %#v", recorder.modelsEnsured)
+			if len(recorder.resolutions) != 1 {
+				t.Fatalf("resolutions = %#v", recorder.resolutions)
 			}
-			desired := recorder.modelsEnsured[0]
-			if desired.Name != "7_model-a" || desired.ConfigurationUUID != "configuration-uuid" ||
-				desired.Section != section || desired.Configuration.Data["secret"] != "{{secret.hidden}}" {
-				t.Fatalf("desired model = %#v", desired)
+			resolution := recorder.resolutions[0]
+			if resolution.ConfigurationUUID != "configuration-uuid" || resolution.Section != section ||
+				resolution.Configuration.Data["secret"] != "{{secret.hidden}}" {
+				t.Fatalf("resolution = %#v", resolution)
 			}
 		})
 	}
@@ -136,7 +137,27 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerGenericSDKTypesArePassive
 	}
 }
 
+// The project policy is enforced entirely through status_ok now that nothing is
+// pushed anywhere: every reader of a provider row — the Bifrost gateway's
+// credential query, the model catalog, the embedding binding — selects on
+// status_ok = true. A row the policy rejects must therefore end the cycle with
+// status_ok = false and must never be written true, in creation or in update.
 func TestCurrentConfigurationLifecycleEffectsReconcilerAppliesProjectPolicy(t *testing.T) {
+	assertNeverAdmitted := func(t *testing.T, recorder *currentLifecycleEffectsRecorder) {
+		t.Helper()
+		if len(recorder.resolutions) != 0 {
+			t.Fatalf("rejected project was resolved: %#v", recorder.resolutions)
+		}
+		if len(recorder.statuses) != 1 || recorder.statuses[0].StatusOK {
+			t.Fatalf("rejected project statuses = %#v", recorder.statuses)
+		}
+		for _, status := range recorder.statuses {
+			if status.StatusOK {
+				t.Fatalf("rejected project row was marked usable: %#v", status)
+			}
+		}
+	}
+
 	t.Run("private project creation is disabled", func(t *testing.T) {
 		recorder := &currentLifecycleEffectsRecorder{}
 		reconciler := currentLifecycleEffectsTestReconciler(t, recorder, false, 1)
@@ -148,6 +169,24 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerAppliesProjectPolicy(t *t
 		if got, want := recorder.callSnapshot(), []string{"status:false"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("calls = %#v, want %#v", got, want)
 		}
+		assertNeverAdmitted(t, recorder)
+	})
+
+	t.Run("private project update is disabled", func(t *testing.T) {
+		recorder := &currentLifecycleEffectsRecorder{}
+		reconciler := currentLifecycleEffectsTestReconciler(t, recorder, false, 1)
+		before := currentLifecycleEffectsTestSnapshot("llm_model", string(CurrentModelSectionLLM), "Private")
+		before.Data = currentLifecycleEffectsManagedModelData("old-model")
+		after := before
+		after.Data = currentLifecycleEffectsManagedModelData("new-model")
+		event, intent := currentLifecycleEffectsTestIntent(CurrentConfigurationUpdated, &before, &after)
+
+		result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
+		currentLifecycleEffectsRequireSuccess(t, result, err)
+		if got, want := recorder.callSnapshot(), []string{"status:false"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("calls = %#v, want %#v", got, want)
+		}
+		assertNeverAdmitted(t, recorder)
 	})
 
 	t.Run("public project creation remains enabled", func(t *testing.T) {
@@ -159,10 +198,22 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerAppliesProjectPolicy(t *t
 		result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 		currentLifecycleEffectsRequireSuccess(t, result, err)
 		if got, want := recorder.callSnapshot(), []string{
-			"status:false", "ensure-credential:7_configuration-uuid", "status:true",
+			"status:false", "resolve:configuration-uuid", "status:true",
 		}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("calls = %#v, want %#v", got, want)
 		}
+		currentLifecycleEffectsRequireStatuses(t, recorder.statuses)
+	})
+
+	t.Run("private project is admitted when the policy allows it", func(t *testing.T) {
+		recorder := &currentLifecycleEffectsRecorder{}
+		reconciler := currentLifecycleEffectsTestReconciler(t, recorder, true, 1)
+		after := currentLifecycleEffectsTestSnapshot("open_ai", "ai_credentials", "Private")
+		event, intent := currentLifecycleEffectsTestIntent(CurrentConfigurationCreated, nil, &after)
+
+		result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
+		currentLifecycleEffectsRequireSuccess(t, result, err)
+		currentLifecycleEffectsRequireStatuses(t, recorder.statuses)
 	})
 
 	t.Run("deletion is never blocked by creation policy", func(t *testing.T) {
@@ -171,12 +222,60 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerAppliesProjectPolicy(t *t
 		before := currentLifecycleEffectsTestSnapshot("open_ai", "ai_credentials", "Private")
 		event, intent := currentLifecycleEffectsTestIntent(CurrentConfigurationDeleted, &before, nil)
 
+		// Deleting the row is the withdrawal; no external registration is left
+		// to unregister, and a credential delete repairs no dependents.
 		result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 		currentLifecycleEffectsRequireSuccess(t, result, err)
-		if got, want := recorder.callSnapshot(), []string{"remove-credential:7_configuration-uuid"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("calls = %#v, want %#v", got, want)
+		if got := recorder.callSnapshot(); len(got) != 0 {
+			t.Fatalf("credential delete calls = %#v", got)
 		}
 	})
+}
+
+// A provider row that stops being one — its ai_credentials cleared — must fall
+// back to status_ok = false and stay there. Nothing is retracted remotely any
+// more, so this status write is the only thing that withdraws the row from the
+// gateway and the catalog.
+func TestCurrentConfigurationLifecycleEffectsReconcilerWithdrawsUnmanagedUpdate(t *testing.T) {
+	recorder := &currentLifecycleEffectsRecorder{}
+	reconciler := currentLifecycleEffectsTestReconciler(t, recorder, true, 1)
+	before := currentLifecycleEffectsTestSnapshot("llm_model", string(CurrentModelSectionLLM), "Model")
+	before.Data = currentLifecycleEffectsManagedModelData("model-a")
+	after := before
+	after.Data = map[string]any{"name": "model-a"}
+	event, intent := currentLifecycleEffectsTestIntent(CurrentConfigurationUpdated, &before, &after)
+
+	result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
+	currentLifecycleEffectsRequireSuccess(t, result, err)
+	if got, want := recorder.callSnapshot(), []string{"status:false"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %#v, want %#v", got, want)
+	}
+	if len(recorder.statuses) != 1 || recorder.statuses[0].StatusOK {
+		t.Fatalf("statuses = %#v", recorder.statuses)
+	}
+}
+
+// A managed model with no data.name cannot be catalogued or repaired on delete.
+// It is malformed input, so it must be dead-lettered rather than retried, and
+// it must never reach status_ok = true.
+func TestCurrentConfigurationLifecycleEffectsReconcilerRejectsNamelessManagedModel(t *testing.T) {
+	recorder := &currentLifecycleEffectsRecorder{}
+	reconciler := currentLifecycleEffectsTestReconciler(t, recorder, true, 1)
+	after := currentLifecycleEffectsTestSnapshot("llm_model", string(CurrentModelSectionLLM), "Nameless")
+	after.Data = map[string]any{"ai_credentials": map[string]any{"elitea_title": "OpenAI"}}
+	event, intent := currentLifecycleEffectsTestIntent(CurrentConfigurationCreated, nil, &after)
+
+	result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
+	if err != nil || result.Disposition != CurrentConfigurationLifecycleDead ||
+		result.ErrorCode != currentLifecycleIntentInvalidCode {
+		t.Fatalf("result=%#v error=%v", result, err)
+	}
+	if got, want := recorder.callSnapshot(), []string{"status:false"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("calls = %#v, want %#v", got, want)
+	}
+	if len(recorder.resolutions) != 0 {
+		t.Fatalf("nameless model was resolved: %#v", recorder.resolutions)
+	}
 }
 
 func TestCurrentConfigurationLifecycleEffectsReconcilerUpdateOrder(t *testing.T) {
@@ -193,16 +292,17 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerUpdateOrder(t *testing.T)
 	currentLifecycleEffectsRequireSuccess(t, result, err)
 	if got, want := recorder.callSnapshot(), []string{
 		"status:false",
-		"remove-model:7_old-model",
-		"ensure-model:7_new-model",
+		"resolve:configuration-uuid",
 		"rename:Before:After",
 		"status:true",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("calls = %#v, want %#v", got, want)
 	}
-	if len(recorder.modelsRemoved) != 1 || recorder.modelsRemoved[0].ConfigurationUUID != "configuration-uuid" ||
-		recorder.modelsRemoved[0].EffectID != "event-1:litellm:remove-before" {
-		t.Fatalf("removed models = %#v", recorder.modelsRemoved)
+	// The AFTER payload is what gets resolved and admitted; the before payload
+	// needs no retraction because the row itself already carries the new data.
+	if len(recorder.resolutions) != 1 ||
+		recorder.resolutions[0].Configuration.Data["name"] != "new-model" {
+		t.Fatalf("resolutions = %#v", recorder.resolutions)
 	}
 	if len(recorder.renames) != 1 || recorder.renames[0].EffectID != "event-1:dependents:rename" ||
 		recorder.renames[0].BeforeTitle != "Before" || recorder.renames[0].AfterTitle != "After" {
@@ -243,16 +343,17 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerDeleteModelSections(t *te
 
 			result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 			currentLifecycleEffectsRequireSuccess(t, result, err)
-			want := []string{"remove-model:7_model-a"}
+			// Deleting the row removes the model everywhere. Only the LLM
+			// section still owes dependents a repair.
+			var want []string
 			if section == string(CurrentModelSectionLLM) {
 				want = append(want, "repair-deleted-llm:model-a")
 			}
 			if got := recorder.callSnapshot(); !reflect.DeepEqual(got, want) {
 				t.Fatalf("calls = %#v, want %#v", got, want)
 			}
-			if len(recorder.modelsRemoved) != 1 || recorder.modelsRemoved[0].Name != "7_model-a" ||
-				recorder.modelsRemoved[0].ConfigurationUUID != "configuration-uuid" {
-				t.Fatalf("removed models = %#v", recorder.modelsRemoved)
+			if len(recorder.resolutions) != 0 {
+				t.Fatalf("delete resolved a provider row: %#v", recorder.resolutions)
 			}
 		})
 	}
@@ -285,11 +386,11 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerUsesDeterministicEffectID
 		result, err := reconciler.ReconcileCurrentConfigurationLifecycle(context.Background(), event, intent)
 		currentLifecycleEffectsRequireSuccess(t, result, err)
 	}
-	if len(recorder.credentialsEnsured) != 2 ||
-		recorder.credentialsEnsured[0].EffectID != recorder.credentialsEnsured[1].EffectID ||
+	if len(recorder.resolutions) != 2 ||
+		recorder.resolutions[0].EffectID != recorder.resolutions[1].EffectID ||
 		len(recorder.statuses) != 4 || recorder.statuses[0].EffectID != recorder.statuses[2].EffectID ||
 		recorder.statuses[1].EffectID != recorder.statuses[3].EffectID {
-		t.Fatalf("credential=%#v status=%#v", recorder.credentialsEnsured, recorder.statuses)
+		t.Fatalf("resolution=%#v status=%#v", recorder.resolutions, recorder.statuses)
 	}
 }
 
@@ -311,23 +412,12 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerReturnsOnlySafeFailureCod
 			wantCalls: []string{"status:false"},
 		},
 		{
-			name: "ensure", failCall: "ensure-credential:7_configuration-uuid", wantCode: currentLifecycleLiteLLMFailedCode,
+			name: "resolution", failCall: "resolve:configuration-uuid", wantCode: currentLifecycleProviderResolutionFailed,
 			build: func() (CurrentConfigurationLifecycleEvent, CurrentConfigurationLifecycleIntent) {
 				after := currentLifecycleEffectsTestSnapshot("open_ai", "ai_credentials", "Credential")
 				return currentLifecycleEffectsTestIntent(CurrentConfigurationCreated, nil, &after)
 			},
-			wantCalls: []string{"status:false", "ensure-credential:7_configuration-uuid"},
-		},
-		{
-			name: "remove", failCall: "remove-model:7_before", wantCode: currentLifecycleLiteLLMFailedCode,
-			build: func() (CurrentConfigurationLifecycleEvent, CurrentConfigurationLifecycleIntent) {
-				before := currentLifecycleEffectsTestSnapshot("llm_model", string(CurrentModelSectionLLM), "Before")
-				before.Data = currentLifecycleEffectsManagedModelData("before")
-				after := before
-				after.Data = currentLifecycleEffectsManagedModelData("after")
-				return currentLifecycleEffectsTestIntent(CurrentConfigurationUpdated, &before, &after)
-			},
-			wantCalls: []string{"status:false", "remove-model:7_before"},
+			wantCalls: []string{"status:false", "resolve:configuration-uuid"},
 		},
 		{
 			name: "rename", failCall: "rename:Before:After", wantCode: currentLifecycleRenameFailedCode,
@@ -354,7 +444,7 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerReturnsOnlySafeFailureCod
 				after := currentLifecycleEffectsTestSnapshot("open_ai", "ai_credentials", "Credential")
 				return currentLifecycleEffectsTestIntent(CurrentConfigurationCreated, nil, &after)
 			},
-			wantCalls: []string{"status:false", "ensure-credential:7_configuration-uuid", "status:true"},
+			wantCalls: []string{"status:false", "resolve:configuration-uuid", "status:true"},
 		},
 	}
 	for _, test := range tests {
@@ -394,7 +484,7 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerPreservesCancellation(t *
 
 	t.Run("dependency deadline", func(t *testing.T) {
 		recorder := &currentLifecycleEffectsRecorder{failures: map[string]error{
-			"ensure-credential:7_configuration-uuid": fmt.Errorf("secret payload: %w", context.DeadlineExceeded),
+			"resolve:configuration-uuid": fmt.Errorf("secret payload: %w", context.DeadlineExceeded),
 		}}
 		reconciler := currentLifecycleEffectsTestReconciler(t, recorder, true, 1)
 		after := currentLifecycleEffectsTestSnapshot("open_ai", "ai_credentials", "Credential")
@@ -450,25 +540,25 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerRejectsInvalidIntent(t *t
 
 func TestNewCurrentConfigurationLifecycleEffectsReconcilerValidatesDependencies(t *testing.T) {
 	recorder := &currentLifecycleEffectsRecorder{}
-	validPolicy := CurrentLiteLLMProjectPolicy{AllowProjectOwnLLMs: true, PublicProjectID: 1}
+	validPolicy := CurrentProviderProjectPolicy{AllowProjectOwnLLMs: true, PublicProjectID: 1}
 	tests := []struct {
 		name       string
-		litellm    CurrentLiteLLMConfigurationEffects
+		resolver   CurrentProviderConfigurationResolver
 		status     CurrentConfigurationLifecycleStatusWriter
 		renames    CurrentConfigurationRenameEffects
 		deletedLLM CurrentDeletedLLMEffects
-		policy     CurrentLiteLLMProjectPolicy
+		policy     CurrentProviderProjectPolicy
 	}{
-		{name: "nil LiteLLM", status: recorder, renames: recorder, deletedLLM: recorder, policy: validPolicy},
-		{name: "nil status", litellm: recorder, renames: recorder, deletedLLM: recorder, policy: validPolicy},
-		{name: "nil rename", litellm: recorder, status: recorder, deletedLLM: recorder, policy: validPolicy},
-		{name: "nil deleted LLM", litellm: recorder, status: recorder, renames: recorder, policy: validPolicy},
-		{name: "invalid public project", litellm: recorder, status: recorder, renames: recorder, deletedLLM: recorder},
+		{name: "nil resolver", status: recorder, renames: recorder, deletedLLM: recorder, policy: validPolicy},
+		{name: "nil status", resolver: recorder, renames: recorder, deletedLLM: recorder, policy: validPolicy},
+		{name: "nil rename", resolver: recorder, status: recorder, deletedLLM: recorder, policy: validPolicy},
+		{name: "nil deleted LLM", resolver: recorder, status: recorder, renames: recorder, policy: validPolicy},
+		{name: "invalid public project", resolver: recorder, status: recorder, renames: recorder, deletedLLM: recorder},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := NewCurrentConfigurationLifecycleEffectsReconciler(
-				test.litellm, test.status, test.renames, test.deletedLLM, test.policy,
+				test.resolver, test.status, test.renames, test.deletedLLM, test.policy,
 			)
 			if got != nil || !errors.Is(err, ErrInvalidCurrentConfigurationLifecycleEffectsReconciler) {
 				t.Fatalf("reconciler=%#v error=%v", got, err)
@@ -499,8 +589,8 @@ func TestCurrentConfigurationLifecycleEffectsReconcilerSupportsConcurrentCalls(t
 		}()
 	}
 	group.Wait()
-	if len(recorder.credentialsEnsured) != count || len(recorder.statuses) != count*2 {
-		t.Fatalf("ensured=%d statuses=%d", len(recorder.credentialsEnsured), len(recorder.statuses))
+	if len(recorder.resolutions) != count || len(recorder.statuses) != count*2 {
+		t.Fatalf("resolved=%d statuses=%d", len(recorder.resolutions), len(recorder.statuses))
 	}
 }
 
@@ -516,7 +606,7 @@ func currentLifecycleEffectsTestReconciler(
 		recorder,
 		recorder,
 		recorder,
-		CurrentLiteLLMProjectPolicy{
+		CurrentProviderProjectPolicy{
 			AllowProjectOwnLLMs: allowProjectOwnLLMs,
 			PublicProjectID:     publicProjectID,
 		},
@@ -596,55 +686,22 @@ func currentLifecycleEffectsRequireStatuses(
 type currentLifecycleEffectsRecorder struct {
 	mu sync.Mutex
 
-	calls              []string
-	failures           map[string]error
-	credentialsEnsured []CurrentLiteLLMCredentialDesired
-	credentialsRemoved []CurrentLiteLLMCredentialTarget
-	modelsEnsured      []CurrentLiteLLMModelDesired
-	modelsRemoved      []CurrentLiteLLMModelTarget
-	statuses           []CurrentConfigurationLifecycleStatusUpdate
-	renames            []CurrentConfigurationRenameEffect
-	deletedLLMs        []CurrentDeletedLLMEffect
+	calls       []string
+	failures    map[string]error
+	resolutions []CurrentProviderConfigurationResolution
+	statuses    []CurrentConfigurationLifecycleStatusUpdate
+	renames     []CurrentConfigurationRenameEffect
+	deletedLLMs []CurrentDeletedLLMEffect
 }
 
-func (r *currentLifecycleEffectsRecorder) EnsureCurrentLiteLLMCredential(
+func (r *currentLifecycleEffectsRecorder) ResolveCurrentProviderConfiguration(
 	_ context.Context,
-	desired CurrentLiteLLMCredentialDesired,
+	resolution CurrentProviderConfigurationResolution,
 ) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.credentialsEnsured = append(r.credentialsEnsured, desired)
-	return r.recordLocked("ensure-credential:" + desired.Name)
-}
-
-func (r *currentLifecycleEffectsRecorder) RemoveCurrentLiteLLMCredential(
-	_ context.Context,
-	target CurrentLiteLLMCredentialTarget,
-) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.credentialsRemoved = append(r.credentialsRemoved, target)
-	return r.recordLocked("remove-credential:" + target.Name)
-}
-
-func (r *currentLifecycleEffectsRecorder) EnsureCurrentLiteLLMModel(
-	_ context.Context,
-	desired CurrentLiteLLMModelDesired,
-) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.modelsEnsured = append(r.modelsEnsured, desired)
-	return r.recordLocked("ensure-model:" + desired.Name)
-}
-
-func (r *currentLifecycleEffectsRecorder) RemoveCurrentLiteLLMModel(
-	_ context.Context,
-	target CurrentLiteLLMModelTarget,
-) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.modelsRemoved = append(r.modelsRemoved, target)
-	return r.recordLocked("remove-model:" + target.Name)
+	r.resolutions = append(r.resolutions, resolution)
+	return r.recordLocked("resolve:" + resolution.ConfigurationUUID)
 }
 
 func (r *currentLifecycleEffectsRecorder) SetCurrentConfigurationLifecycleStatus(

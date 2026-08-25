@@ -1,6 +1,7 @@
 package llmproxy
 
 import (
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -36,6 +37,10 @@ func (h *Handler) ImageEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostImageEditRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #26: enforce the budget gate before calling the image provider.
 	provider, model := providerModelFromImageEditReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -48,9 +53,9 @@ func (h *Handler) ImageEdit(w http.ResponseWriter, r *http.Request) {
 		// Fix round-3 #8: fall back to fixed per-image cost when Usage is nil.
 		in, out, imgCount := usageFromImageResponse(resp)
 		if in > 0 || out > 0 {
-			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 		} else if imgCount > 0 {
-			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), identityUserFromCtx(ctx), provider, model, imgCount*perImageFallbackNano)
 		}
 	}
 }
@@ -74,6 +79,10 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostImageVariationRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #26: enforce the budget gate before calling the image provider.
 	provider, model := providerModelFromImageVariationReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -86,9 +95,9 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 		// Fix round-3 #8: fall back to fixed per-image cost when Usage is nil.
 		in, out, imgCount := usageFromImageResponse(resp)
 		if in > 0 || out > 0 {
-			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 		} else if imgCount > 0 {
-			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), identityUserFromCtx(ctx), provider, model, imgCount*perImageFallbackNano)
 		}
 	}
 }
@@ -96,6 +105,15 @@ func (h *Handler) ImageVariation(w http.ResponseWriter, r *http.Request) {
 // parseMultipart parses the request's multipart body, writing a 400 on failure.
 func parseMultipart(w http.ResponseWriter, r *http.Request) (*multipart.Form, bool) {
 	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+		// A body stopped by http.MaxBytesReader arrives here as a parse
+		// failure, and "invalid multipart body" would send the caller looking
+		// for a malformed request they do not have. Name the real cause.
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error",
+				"the uploaded body is larger than this route accepts", "payload_too_large")
+			return nil, false
+		}
 		writeError(w, http.StatusBadRequest, "invalid_request_error", "invalid multipart body: "+err.Error(), "")
 		return nil, false
 	}

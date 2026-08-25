@@ -16,6 +16,11 @@ import (
 // path-dispatch behaviour is exercised end-to-end here without importing
 // internal/api (which would form an import cycle: api → llmproxy). The
 // authoritative route-precedence assertions live in internal/api/router_test.go.
+// newTestRouter mirrors internal/api.NewRouter so package-internal tests can
+// exercise real dispatch. It is a COPY, and it cannot import the real one: the
+// api package imports this one, so the dependency only runs one way. Add every
+// route to BOTH tables. A route added only there is untested here; a route
+// added only here is not served.
 func newTestRouter(h *Handler) http.Handler {
 	r := chi.NewRouter()
 	r.NotFound(h.NotFound)
@@ -27,10 +32,15 @@ func newTestRouter(h *Handler) http.Handler {
 		r.Post("/images/edits", h.ImageEdit)
 		r.Post("/images/variations", h.ImageVariation)
 		r.Post("/images/generations", h.ImageGeneration)
+		r.Post("/audio/speech", h.Speech)
+		r.Post("/audio/transcriptions", h.Transcription)
+		r.Post("/audio/translations", h.Transcription)
 		r.Post("/chat/completions", h.Chat)
 		r.Post("/completions", h.TextCompletion)
 		r.Post("/embeddings", h.Embeddings)
 		r.Post("/responses", h.Responses)
+		r.Get("/realtime", h.Realtime)
+		r.Post("/realtime", h.Realtime)
 		r.Get("/models", h.Models)
 		r.Get("/models/*", h.Model)
 	})
@@ -59,6 +69,12 @@ type fakeRouter struct {
 
 	imgResp *schemas.BifrostImageGenerationResponse
 	imgErr  *schemas.BifrostError
+
+	speechResp *schemas.BifrostSpeechResponse
+	speechErr  *schemas.BifrostError
+
+	transcriptionResp *schemas.BifrostTranscriptionResponse
+	transcriptionErr  *schemas.BifrostError
 
 	// lastVK captures the virtual-key value seen on the context.
 	lastVK string
@@ -116,6 +132,14 @@ func (f *fakeRouter) ImageEditRequest(_ *schemas.BifrostContext, _ *schemas.Bifr
 
 func (f *fakeRouter) ImageVariationRequest(_ *schemas.BifrostContext, _ *schemas.BifrostImageVariationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
 	return f.imgResp, f.imgErr
+}
+
+func (f *fakeRouter) SpeechRequest(_ *schemas.BifrostContext, _ *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	return f.speechResp, f.speechErr
+}
+
+func (f *fakeRouter) TranscriptionRequest(_ *schemas.BifrostContext, _ *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	return f.transcriptionResp, f.transcriptionErr
 }
 
 func strPtr(s string) *string { return &s }

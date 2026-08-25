@@ -189,8 +189,20 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * first `tracing` tag. No UI ships with it (the routes exist for the OTel
  * collector proxy and elitea-main's own span export, not for a settings
  * page), so MANIFEST_ENTRY_COUNT is unchanged.
+ * 151 -> 152 when issue #336 added the expanded version read: one new spec
+ * operation (getApplicationVersionDetailExpanded, a body-less PATCH that reads
+ * the secret-resolved version detail) landed in v2.yaml alongside
+ * internal/api/v2/applications/handler.go's GetVersionExpanded. Only elitea-sdk
+ * calls it, and it needs the `X-SECRET` header, so no UI ships with it and
+ * MANIFEST_ENTRY_COUNT is unchanged.
+ * 152 -> 153 when the secrets domain's `administration` mode was documented:
+ * one new spec operation (`createSecretInMode`, POST
+ * /secrets/secret/{mode}/{projectID}/{name}) landed in v2.yaml. The route has
+ * existed since internal/api/v2/secrets/admin.go's AdminCreate; only the spec
+ * was missing it, which is why the admin Secrets page had to hand-roll its
+ * client. No new UI ships with it, so MANIFEST_ENTRY_COUNT is unchanged.
  */
-const GENERATED_OPERATION_COUNT = 151;
+const GENERATED_OPERATION_COUNT = 153;
 const MANIFEST_ENTRY_COUNT = 179;
 
 describe('GREEN — the real, checked-in manifest', () => {

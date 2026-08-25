@@ -45,6 +45,7 @@ package eliteacore
 import (
 	"context"
 	"fmt"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"net/http"
 	"strconv"
 	"time"
@@ -65,12 +66,12 @@ func (h *Handler) ProjectUserActivity(w http.ResponseWriter, r *http.Request) {
 
 	raw := query.Get("project_id")
 	if raw == "" {
-		http.Error(w, `{"error":"project_id is required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "project_id is required")
 		return
 	}
 	projectID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || projectID <= 0 {
-		http.Error(w, `{"error":"project_id must be a positive integer"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "project_id must be a positive integer")
 		return
 	}
 

@@ -156,11 +156,17 @@ describe('SecretsContent — happy path', () => {
  * qa/elitea-api-testing.
  */
 describe('SecretsContent — empty list and secret creation (issue 137)', () => {
+  // `.create` is granted here because these two tests CREATE. Since #402 the
+  // page renders the add button, and honours `?createSecret=1`, only for a
+  // caller that holds `configuration.secrets.secret.create` — a viewer now
+  // holds the list and none of the writes, so an ungated create row would open
+  // for a caller whose POST can only answer 403.
   function permissionsHandler(): ReturnType<typeof http.get> {
     return http.get(PERMISSIONS_PATH, () =>
       HttpResponse.json([
         { name: 'configuration.secrets.secret.list', enabled: true },
         { name: 'configuration.secrets.secret.unsecret', enabled: true },
+        { name: 'configuration.secrets.secret.create', enabled: true },
       ]),
     );
   }
@@ -239,5 +245,64 @@ describe('SecretsContent — empty list and secret creation (issue 137)', () => 
     });
     expect(created[0]!.url).toContain('/api/v2/secrets/secrets/default/proj-1');
     expect(created[0]!.body).toEqual({ name: 'API_KEY', value: 's3cret' });
+  }, 20_000);
+});
+
+/**
+ * #402 at the page: a viewer reads the secret NAMES and changes nothing.
+ *
+ * The legacy matrix withheld `configuration.secrets.secret.list` from the
+ * viewer, so a viewer saw a permanently empty table. Migration 0083 grants the
+ * list. That makes the viewer the first role that can read this page and hold
+ * none of the five write strings, and the page's controls were not gated for
+ * that role: the add button, the row menu and the copy button all rendered and
+ * could only produce a 403. Two of the three failed with no toast at all.
+ *
+ * Both directions are measured. The entitled caller is covered by the create
+ * test above, which still presses the add flow end to end.
+ */
+describe('SecretsContent — a viewer lists names and writes nothing (issue 402)', () => {
+  function viewerPermissionsHandler(): ReturnType<typeof http.get> {
+    return http.get(PERMISSIONS_PATH, () =>
+      HttpResponse.json([{ name: 'configuration.secrets.secret.list', enabled: true }]),
+    );
+  }
+
+  it('shows the names, hides every write control, and ignores ?createSecret=1', async () => {
+    useSelectedProjectStore.setState({ project: { id: 'proj-1', name: 'Acme' } });
+    const writes: string[] = [];
+    server.use(
+      viewerPermissionsHandler(),
+      http.get(SECRETS_PATH, () =>
+        HttpResponse.json([{ name: 'API_KEY', secret_name: 'API_KEY', is_default: false }]),
+      ),
+      http.post(SECRETS_PATH, ({ request }) => {
+        writes.push(request.url);
+        return HttpResponse.json({});
+      }),
+    );
+
+    render(
+      <AppProviders>
+        {/* `shouldCreate` is the `?createSecret=1` flag, which a bookmark or the
+            global create menu can set for any caller. */}
+        <SecretsContent shouldCreate search="" onSearchChange={noop} />
+      </AppProviders>,
+    );
+
+    // The grant works: the name the toolkit configuration references is on screen.
+    await waitFor(() => {
+      expect(screen.getAllByText('API_KEY').length).toBeGreaterThan(0);
+    });
+
+    // No control that could only answer 403.
+    expect(screen.queryByRole('button', { name: 'Create new secret' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'More actions' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show' })).not.toBeInTheDocument();
+
+    // The URL flag opens no editable row, so nothing can be typed and posted.
+    expect(within(screen.getByRole('grid')).queryAllByRole('textbox')).toHaveLength(0);
+    expect(writes).toHaveLength(0);
   }, 20_000);
 });

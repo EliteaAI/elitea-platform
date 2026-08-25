@@ -2,11 +2,38 @@
 # path rules remain prototype wiring and must not be treated as cutover routes.
 http:
   routers:
+    # `/icons/` and `/avatars/` are root-mounted in the Go router
+    # (internal/api/router.go: DownloadIcon and DownloadAvatar) and must stay on
+    # this list. An uploaded project icon is stored and returned as
+    # `/icons/<projectID>/<file>`. A browser <img src="..."> sends no
+    # Authorization header, so both reads are public by design. Without the two
+    # prefixes below no router matches them, and traefik answers its own 404.
+    # Every uploaded icon and avatar then renders as a broken image. They keep
+    # the strip-client-identity middleware of this router.
+    #
+    # /readyz and /startupz are deliberately NOT here. Nothing probes them
+    # through an edge. The Helm probes hit the pod, and the compose healthcheck
+    # curls 127.0.0.1 in the container. The readiness body names each
+    # dependency's state, which is not for a public browser entrypoint.
+    #
+    # The two /app static prefixes are Go file servers, not SPA paths
+    # (internal/api/router.go: application_icon and application_tool_icon).
+    # apps/elitea-web builds those URLs in entities/toolkit/model/toolForm.ts,
+    # so the `app` router below sent every tool icon to the SPA container.
+    #
+    # /llm is the OpenAI-compatible surface. The settings page shows
+    # `<origin>/llm/v1` for the user to copy, so the edge must forward it.
+    #
+    # services/elitea-main/tests/deployedge/edge_root_routes_test.go walks the
+    # real Go router. It fails if a route the router serves matches no rule
+    # here and no entry in its `notAtTheBrowserEdge` list.
     api:
-      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`)"
+      rule: "PathPrefix(`/api/`) || PathPrefix(`/forward-auth/`) || Path(`/auth`) || PathPrefix(`/socket.io/`) || Path(`/healthz`) || PathPrefix(`/icons/`) || PathPrefix(`/avatars/`) || PathPrefix(`/artifacts/`) || PathPrefix(`/admin/app`) || PathPrefix(`/app/application_icon/`) || PathPrefix(`/app/application_tool_icon/`) || PathPrefix(`/llm/`)"
       service: elitea-main
       entryPoints:
         - web
+      middlewares:
+        - strip-client-identity
     # The MCP SERVER (issue 252) shares the /app prefix with the SPA but is
     # served by elitea-main: pylon serves it from the app blueprint, and the
     # internal-toolkit URLs already written into projects hardcode
@@ -29,6 +56,8 @@ http:
       service: elitea-main
       entryPoints:
         - web
+      middlewares:
+        - strip-client-identity
     app:
       rule: "PathPrefix(`/app`)"
       service: elitea-ui
@@ -44,10 +73,60 @@ http:
       priority: 1
 
   middlewares:
+    # INGRESS-ONLY header removal, and an authentication control rather than
+    # hygiene (#326).
+    #
+    # elitea-main accepts X-Auth-Type/X-Auth-Id as a finished identity when the
+    # request arrives from a trusted proxy CIDR
+    # (internal/api/middleware/auth.go tryTrustedProxyHeaders +
+    # isFromTrustedProxy), and deploy/runtime/auth.form.yml trusts the whole
+    # compose network. This edge IS on that network, so without this middleware
+    # any browser client picks its own identity by sending the header, on every
+    # route that does not carry the #302 membership gate.
+    #
+    # Direction matters and is easy to get backwards: `customRequestHeaders`
+    # rewrites the REQUEST on its way in, so an empty value deletes what the
+    # CLIENT sent. It cannot delete what an authenticating edge later ADDS —
+    # forwardAuth's authResponseHeaders are applied after middlewares, which is
+    # why deploy/runtime/platform-edge-dynamic.yml can strip these same names
+    # and still project a verified identity. This edge runs no forwardAuth at
+    # all: elitea-main authenticates the session cookie itself, so nothing here
+    # is ever a legitimate client input.
+    #
+    # Names must be enumerated — traefik has no prefix wildcard. This is every
+    # X-Auth-*/X-Elitea-* name elitea-main or the LLM gateway reads as identity.
+    # The X-Elitea-* set is the elitea-main → gateway projection and never a
+    # browser input; it is listed so a future route through this edge cannot
+    # inherit a client-chosen project/tenant. Deliberately NOT listed:
+    # X-Elitea-Claim-Id / -Fence / -Source-* , which belong to the runtime
+    # content server's own mTLS listener (:9445) and never traverse this edge.
+    strip-client-identity:
+      headers:
+        customRequestHeaders:
+          X-Auth-Type: ""
+          X-Auth-ID: ""
+          X-Auth-User-ID: ""
+          X-Auth-Reference: ""
+          X-Auth-Avatar: ""
+          X-Auth-Avatar-State: ""
+          X-Auth-Session-Id: ""
+          X-Auth-Session-Name: ""
+          X-Auth-Session-Endpoint: ""
+          X-Elitea-Identity-Signature: ""
+          X-Elitea-Project-Id: ""
+          X-Elitea-User-Id: ""
+          X-Elitea-Tenant-Id: ""
+
     redirect-to-app:
       redirectRegex:
-        regex: "^(https?://[^/]*)/$"
-        replacement: "${1}/app/"
+        # The `(\\?.*)?` group is load-bearing. `redirectRegex` matches the whole
+        # request URI, query string included, and traefik passes a request that
+        # does not match straight to the next handler. With the regex anchored
+        # at `/$`, a link of the form `https://<host>/?utm_source=x` therefore
+        # skipped the redirect. The request reached the SPA container at path
+        # `/`. Its nginx does not serve that path.
+        regex: "^(https?://[^/]*)/(\\?.*)?$"
+        replacement: "${1}/app/${2}"
         permanent: false
 
   services:

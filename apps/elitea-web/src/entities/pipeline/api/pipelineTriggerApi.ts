@@ -10,15 +10,20 @@
  * removed the orval-generated `useGetPipelineTrigger` /
  * `getUpdatePipelineTriggerQueryOptions` this module replaces.
  *
- * The requests below are byte-identical to the generated ones, so the UI
- * behaves exactly as it did before the deletion — it still calls the same URLs
- * and still gets a 404. Migrating these call sites is deliberately NOT part of
- * that deletion; the capability they need is tracked as two product gaps,
- * #192 (inbound webhook pipeline trigger) and #193 (scheduled execution).
+ * The requests below are byte-identical to the generated ones. The module is
+ * KEPT rather than deleted. The capability it serves is tracked as two product
+ * gaps: #192 (inbound webhook pipeline trigger) and #193 (scheduled execution).
+ * A deletion would only force someone to write the port again.
+ *
+ * What changed: the SPA no longer FIRES these requests. The read query is
+ * disabled and the two trigger types that write are hidden, both keyed on
+ * the `pipelineTriggers` capability (`shared/config/backendCapabilities`).
+ * Turn it on in the same change that mounts the routes.
  */
 import { useQuery } from '@tanstack/react-query';
 import type { UseQueryResult } from '@tanstack/react-query';
 
+import { hasBackendCapability } from '@/shared/config';
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 import type { PipelineTrigger, PipelineTriggerUpdateRequest } from '@/shared/api/generated/model';
 
@@ -54,7 +59,11 @@ export function usePipelineTriggerQuery(
   versionId: number | undefined,
   options?: { readonly enabled?: boolean },
 ): UseQueryResult<PipelineTrigger> {
-  const enabled = (options?.enabled ?? true) && projectId !== undefined && versionId !== undefined;
+  // The route is not mounted, so the GET can only 404. A disabled query keeps
+  // the page from firing one on every mount — see
+  // `shared/config/backendCapabilities`.
+  const enabled = hasBackendCapability('pipelineTriggers')
+    && (options?.enabled ?? true) && projectId !== undefined && versionId !== undefined;
   return useQuery({
     queryKey: pipelineTriggerQueryKey(projectId ?? '', versionId ?? 0),
     queryFn: () => fetchPipelineTrigger(projectId ?? '', versionId ?? 0),

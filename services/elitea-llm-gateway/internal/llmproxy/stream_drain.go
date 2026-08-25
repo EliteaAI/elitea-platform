@@ -308,10 +308,14 @@ func responsesDeltaBytes(c *schemas.BifrostStreamChunk) int64 {
 // Billing evidence is provider-reported usage and nothing else. Providers emit
 // cumulative counts, so a later usage chunk overrides an earlier one.
 type streamSettler struct {
-	h                *Handler
-	loop             string
-	provider, model  string
-	projectID        string
+	h               *Handler
+	loop            string
+	provider, model string
+	projectID       string
+	// userID is captured with projectID rather than read from the context at
+	// settle time: the detached drain outlives the request, and the member the
+	// call is billed to must be the one who made it (issue #321).
+	userID           string
 	ctx              *schemas.BifrostContext
 	sc               *streamCancel
 	ch               chan *schemas.BifrostStreamChunk
@@ -334,6 +338,7 @@ func (h *Handler) newChatSettler(
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
 		projectID: identityProjectFromCtx(ctx),
+		userID:    identityUserFromCtx(ctx),
 		ctx:       ctx, sc: sc, ch: ch,
 		usageFrom: chatUsageFromChunk, deltaFrom: chatDeltaBytes,
 	}
@@ -351,6 +356,7 @@ func (h *Handler) newResponsesSettler(
 	return &streamSettler{
 		h: h, loop: loop, provider: provider, model: model,
 		projectID: identityProjectFromCtx(ctx),
+		userID:    identityUserFromCtx(ctx),
 		ctx:       ctx, sc: sc, ch: ch,
 		usageFrom: responsesUsageFromChunk, deltaFrom: responsesDeltaBytes,
 	}
@@ -570,7 +576,7 @@ func (s *streamSettler) report(reason, outcome string) {
 		// happens the spend is gone, and it must NOT disappear as a lone WARN:
 		// it is exactly the loss this event exists to make alarmable
 		// (gateway-review blocker 1, reproduced on the deploy path).
-		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID) {
+		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID, s.userID) {
 		case billBilled:
 			return
 		case billNotBillable:
@@ -595,12 +601,14 @@ func (s *streamSettler) report(reason, outcome string) {
 	s.h.publishUnbilledStreamEvent(s.projectID, s.provider, s.model, reason, outcome, s.observedOutBytes)
 }
 
-// drainLimiter bounds concurrent abandoned-stream drains both globally and per
-// project. Each in-flight drain holds a goroutine AND an open provider socket,
-// so the global bound protects the pod; the per-project bound stops one tenant
-// from consuming the whole pool and degrading everyone else's billing to the
-// saturated grace (gateway-review blocker 2).
-type drainLimiter struct {
+// slotLimiter bounds a pool of long-lived slots both globally and per project.
+// The global bound protects the pod; the per-project bound stops one tenant from
+// consuming the whole pool and degrading everyone else (gateway-review blocker
+// 2). Two pools use it, and they are deliberately SEPARATE instances: an
+// abandoned-stream drain and a realtime session hold different resources for
+// different lengths of time, so a disconnect storm must not consume the
+// capacity a live call needs.
+type slotLimiter struct {
 	mu         sync.Mutex
 	total      int
 	inUse      int
@@ -608,17 +616,24 @@ type drainLimiter struct {
 	byProject  map[string]int
 }
 
-// newDrainLimiter builds a limiter for n concurrent drains. n <= 0 returns nil,
-// meaning unbounded (unit-test construction).
-func newDrainLimiter(n int) *drainLimiter {
+// newSlotLimiter builds a limiter for n concurrent slots, with the per-project
+// cap derived as n/divisor (floor 1). n <= 0 returns nil, meaning unbounded
+// (unit-test construction).
+func newSlotLimiter(n, divisor int) *slotLimiter {
 	if n <= 0 {
 		return nil
 	}
-	per := n / drainPerProjectDivisor
+	per := n / divisor
 	if per < 1 {
 		per = 1
 	}
-	return &drainLimiter{total: n, perProject: per, byProject: make(map[string]int)}
+	return &slotLimiter{total: n, perProject: per, byProject: make(map[string]int)}
+}
+
+// newDrainLimiter builds the abandoned-stream drain pool. Each in-flight drain
+// holds a goroutine AND an open provider socket for up to the stream grace.
+func newDrainLimiter(n int) *slotLimiter {
+	return newSlotLimiter(n, drainPerProjectDivisor)
 }
 
 // effectiveDrainGrace reports the grace a NEW drain would receive right now:
@@ -636,7 +651,7 @@ func (h *Handler) effectiveDrainGrace() time.Duration {
 // acquire takes a slot for projectID. It never blocks: a caller that cannot get
 // one falls back to the saturated grace rather than queueing, because queueing
 // would hold the provider socket open anyway — the resource the bound protects.
-func (l *drainLimiter) acquire(projectID string) bool {
+func (l *slotLimiter) acquire(projectID string) bool {
 	if l == nil {
 		return true
 	}
@@ -652,7 +667,7 @@ func (l *drainLimiter) acquire(projectID string) bool {
 
 // release returns a slot. Releasing a project down to zero drops its map entry
 // so the map cannot grow without bound across projects.
-func (l *drainLimiter) release(projectID string) {
+func (l *slotLimiter) release(projectID string) {
 	if l == nil {
 		return
 	}
@@ -669,7 +684,7 @@ func (l *drainLimiter) release(projectID string) {
 }
 
 // snapshot reports current usage (tests and future gauges).
-func (l *drainLimiter) snapshot() (inUse, total, perProject int) {
+func (l *slotLimiter) snapshot() (inUse, total, perProject int) {
 	if l == nil {
 		return 0, 0, 0
 	}

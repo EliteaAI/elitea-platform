@@ -41,6 +41,16 @@ export interface SecretValueCellProps {
   onToggleVisibility: () => void;
   /** Gates the show/hide toggle behind `PERMISSIONS.secrets.unsecret` — omit the button entirely when the caller lacks that permission (matches the baseline's `checkPermission(PERMISSIONS.secrets.unsecret)` guard, `SecretsTable.jsx:492`). */
   canToggleVisibility: boolean;
+  /**
+   * Gates the COPY button on the same `PERMISSIONS.secrets.unsecret` (#402).
+   *
+   * Copy is not a clipboard operation over what is already on screen. `onCopy`
+   * re-fetches the live plaintext through
+   * `GET /api/v2/secrets/secret/default/{projectID}/{name}`, which is the route
+   * `.unsecret` gates. Without the permission it answers 403 and the user gets
+   * "Failed to copy to clipboard", which names the wrong cause.
+   */
+  canCopy: boolean;
 }
 
 export const SecretValueCell = memo(function SecretValueCell({
@@ -50,6 +60,7 @@ export const SecretValueCell = memo(function SecretValueCell({
   onCopy,
   onToggleVisibility,
   canToggleVisibility,
+  canCopy,
 }: SecretValueCellProps) {
   const displayText = isVisible ? value : label;
 
@@ -83,16 +94,18 @@ export const SecretValueCell = memo(function SecretValueCell({
           </IconButton>
         </Tooltip>
       )}
-      <Tooltip title={t('entities.secret.value.copy', 'Copy')}>
-        <IconButton
-          size="small"
-          color="tertiary"
-          onClick={() => void handleCopyValue()}
-          sx={styles.icon}
-        >
-          <ContentCopyIcon fontSize="small" />
-        </IconButton>
-      </Tooltip>
+      {canCopy && (
+        <Tooltip title={t('entities.secret.value.copy', 'Copy')}>
+          <IconButton
+            size="small"
+            color="tertiary"
+            onClick={() => void handleCopyValue()}
+            sx={styles.icon}
+          >
+            <ContentCopyIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
+      )}
     </Box>
   );
 });

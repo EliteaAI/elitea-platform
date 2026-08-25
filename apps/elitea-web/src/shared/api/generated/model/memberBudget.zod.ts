@@ -49,7 +49,7 @@ export const MemberBudget = zod
     enforced: zod
       .boolean()
       .describe(
-        "FALSE for as long as the gateway admits and bills by project\nscope alone. A per-member limit is stored and read back\nfaithfully, but nothing blocks a call on it — render it as\nauthored-but-inactive rather than as a live ceiling.\n",
+        "TRUE since issue #321: the gateway reads this limit on every\nLLM call that carries a member id, refuses an over-cap member\nwith 402 `member_budget_exceeded`, and bills a member-scoped\naccumulator alongside the project one.\n\nIt stays a field rather than a constant so a client renders\nwhat is true of the deployment it is talking to. A call that\ncarries no resolvable member — a token-authenticated\nintegration, a service account — has no member cap to apply and\nremains bounded by the project ceiling alone.\n",
       ),
   })
   .and(BudgetState);

@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,7 +17,14 @@ import (
 )
 
 const (
-	currentToolkitSchemaSnapshotVersion  = "elitea.current-toolkit-schema-snapshot.v1"
+	currentToolkitSchemaSnapshotVersion = "elitea.current-toolkit-schema-snapshot.v1"
+	// The pinned snapshot carries per-tool argument schemas as well as the
+	// settings annotations, so it is no longer a few kilobytes: it measured
+	// 595,983 bytes at SDK revision b5113a1 (56.8% of this ceiling, up from
+	// 0.8% before the argument schemas were retained). The limit is kept where
+	// it is deliberately — it still admits the file with ~440 KiB of headroom,
+	// and raising it to accommodate a future regeneration should be a decision
+	// someone makes on purpose, after looking at why the file grew.
 	maxCurrentToolkitSchemaSnapshotBytes = 1 << 20
 	maxCurrentToolkitSchemaEntries       = 1024
 	maxCurrentToolkitSchemaDepth         = 32
@@ -47,9 +55,18 @@ type currentToolkitSchemaSnapshotDocument struct {
 }
 
 type currentToolkitSchemaSnapshotJSONEntry struct {
-	Type       string                            `json:"type"`
-	Properties map[string]any                    `json:"properties"`
-	Naming     *currentToolkitSchemaSnapshotName `json:"naming"`
+	Type       string         `json:"type"`
+	Properties map[string]any `json:"properties"`
+	// ArgsSchemas is the per-tool argument JSON Schema, keyed by tool name,
+	// exactly as model_json_schema() produced it in the pinned SDK. It is held
+	// as decoded JSON (map[string]any trees) rather than a narrowed Go schema
+	// type because it must survive verbatim to the HTTP response: a narrowed
+	// representation drops sibling keywords such as $defs and leaves the $refs
+	// that point at them dangling. The generic tree is still validated — every
+	// node goes through cloneCurrentToolkitSchemaValue's depth/node/key budget,
+	// the same walker the settings annotations use.
+	ArgsSchemas map[string]map[string]any         `json:"args_schemas"`
+	Naming      *currentToolkitSchemaSnapshotName `json:"naming"`
 }
 
 type currentToolkitSchemaSnapshotName struct {
@@ -58,9 +75,10 @@ type currentToolkitSchemaSnapshotName struct {
 }
 
 type currentToolkitSchemaSnapshotEntry struct {
-	properties map[string]any
-	nameField  string
-	maxLength  int
+	properties  map[string]any
+	argsSchemas map[string]map[string]any
+	nameField   string
+	maxLength   int
 }
 
 // CurrentToolkitSchemaSnapshot is an immutable projection of the current
@@ -106,7 +124,8 @@ func LoadCurrentToolkitSchemaSnapshot(data []byte) (*CurrentToolkitSchemaSnapsho
 	previousType := ""
 	for index := range document.Entries {
 		entry := document.Entries[index]
-		if !validCurrentToolkitSchemaIdentifier(entry.Type) || entry.Properties == nil || entry.Naming == nil ||
+		if !validCurrentToolkitSchemaIdentifier(entry.Type) || entry.Properties == nil ||
+			entry.ArgsSchemas == nil || entry.Naming == nil ||
 			entry.Naming.MaxLength == nil || (index != 0 && entry.Type <= previousType) ||
 			*entry.Naming.MaxLength < 0 || *entry.Naming.MaxLength > maxCurrentToolkitNameLength {
 			return nil, ErrCurrentToolkitSchemaSnapshotInvalid
@@ -114,6 +133,14 @@ func LoadCurrentToolkitSchemaSnapshot(data []byte) (*CurrentToolkitSchemaSnapsho
 		previousType = entry.Type
 		budget := currentToolkitSchemaTreeBudget{}
 		properties, err := cloneCurrentToolkitSchemaObject(entry.Properties, 0, &budget)
+		if err != nil {
+			return nil, ErrCurrentToolkitSchemaSnapshotInvalid
+		}
+		// One budget for the whole entry: the annotations and every argument
+		// schema of a type share the node ceiling, so a type cannot buy extra
+		// tree by splitting it across tools. The largest entry at revision
+		// b5113a1 (github, 44 tools) measures 1,703 nodes.
+		argsSchemas, err := cloneCurrentToolkitArgumentSchemas(entry.ArgsSchemas, &budget)
 		if err != nil {
 			return nil, ErrCurrentToolkitSchemaSnapshotInvalid
 		}
@@ -126,9 +153,10 @@ func LoadCurrentToolkitSchemaSnapshot(data []byte) (*CurrentToolkitSchemaSnapsho
 			}
 		}
 		entries[entry.Type] = currentToolkitSchemaSnapshotEntry{
-			properties: properties,
-			nameField:  nameField,
-			maxLength:  *entry.Naming.MaxLength,
+			properties:  properties,
+			argsSchemas: argsSchemas,
+			nameField:   nameField,
+			maxLength:   *entry.Naming.MaxLength,
 		}
 	}
 	return &CurrentToolkitSchemaSnapshot{sdkRevision: document.SDKRevision, entries: entries}, nil
@@ -146,6 +174,99 @@ func (s *CurrentToolkitSchemaSnapshot) EntryCount() int {
 		return 0
 	}
 	return len(s.entries)
+}
+
+// ToolkitTypes returns every built-in toolkit type name the snapshot declares,
+// sorted.
+//
+// This is the registry the admin Configuration page's guardrail fields need to
+// offer as choices — the `enum_source: toolkit_names` the reference schema
+// declares. pylon answered it from `elitea_core.toolkit_schemas`, an in-process
+// dict populated at plugin load; this snapshot is the same registry, pinned to
+// the exact SDK revision the workers are admitted to run, which makes it a
+// BETTER source rather than a substitute: an operator cannot be offered a
+// toolkit name the workers would not recognise.
+func (s *CurrentToolkitSchemaSnapshot) ToolkitTypes() []string {
+	if s == nil {
+		return nil
+	}
+	types := make([]string, 0, len(s.entries))
+	for toolkitType := range s.entries {
+		types = append(types, toolkitType)
+	}
+	sort.Strings(types)
+	return types
+}
+
+// ToolkitToolNames returns the tool names one built-in toolkit type declares,
+// sorted. found=false means the type is not a built-in SDK toolkit.
+//
+// The names are the KEYS of the pinned argument schemas, which is where the tool
+// list authoritatively lives — the same keys ListTypeSchemas serves as
+// `selected_tools.args_schemas`. The reference read them out of a Literal enum
+// nested in a Pydantic JSON Schema and had to handle two draft formats to do it
+// (`enum`, and `const` for a single-value Literal); this snapshot has already
+// resolved that, so there is one shape here and no format sniffing.
+func (s *CurrentToolkitSchemaSnapshot) ToolkitToolNames(toolkitType string) ([]string, bool) {
+	if s == nil || !validCurrentToolkitSchemaIdentifier(toolkitType) {
+		return nil, false
+	}
+	entry, found := s.entries[toolkitType]
+	if !found {
+		return nil, false
+	}
+	names := make([]string, 0, len(entry.argsSchemas))
+	for name := range entry.argsSchemas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, true
+}
+
+// ToolkitArgumentSchemas returns a detached copy of one built-in toolkit
+// type's per-tool argument schemas, keyed by tool name. found=false means the
+// type is not a built-in SDK toolkit; an empty (non-nil) map means the type is
+// built in and legitimately exposes no argument schemas — mcp, mcp_config and
+// openapi are the three such types at revision b5113a1, because their tools are
+// discovered at runtime from a remote server or specification rather than
+// declared by an SDK model.
+func (s *CurrentToolkitSchemaSnapshot) ToolkitArgumentSchemas(
+	toolkitType string,
+) (map[string]map[string]any, bool, error) {
+	if s == nil || !validCurrentToolkitSchemaIdentifier(toolkitType) {
+		return nil, false, ErrCurrentToolkitSchemaSnapshotInvalid
+	}
+	entry, found := s.entries[toolkitType]
+	if !found {
+		return nil, false, nil
+	}
+	budget := currentToolkitSchemaTreeBudget{}
+	argsSchemas, err := cloneCurrentToolkitArgumentSchemas(entry.argsSchemas, &budget)
+	if err != nil {
+		return nil, false, ErrCurrentToolkitSchemaSnapshotInvalid
+	}
+	return argsSchemas, true, nil
+}
+
+func cloneCurrentToolkitArgumentSchemas(
+	argsSchemas map[string]map[string]any,
+	budget *currentToolkitSchemaTreeBudget,
+) (map[string]map[string]any, error) {
+	if argsSchemas == nil || budget == nil {
+		return nil, ErrCurrentToolkitSchemaSnapshotInvalid
+	}
+	cloned := make(map[string]map[string]any, len(argsSchemas))
+	for tool, schema := range argsSchemas {
+		if !validCurrentToolkitSchemaIdentifier(tool) || schema == nil {
+			return nil, ErrCurrentToolkitSchemaSnapshotInvalid
+		}
+		clonedSchema, err := cloneCurrentToolkitSchemaObject(schema, 0, budget)
+		if err != nil {
+			return nil, err
+		}
+		cloned[tool] = clonedSchema
+	}
+	return cloned, nil
 }
 
 func (s *CurrentToolkitSchemaSnapshot) findBuiltIn(

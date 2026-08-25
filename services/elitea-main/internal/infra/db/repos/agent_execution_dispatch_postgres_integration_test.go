@@ -13,8 +13,7 @@ import (
 )
 
 func TestPostgresAgentDispatchRetainsExactEnvelopeAcrossRedisOutageAndACKLoss(t *testing.T) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	policy := AgentExecutionDispatchPolicy{
 		StreamName:        "elitea:runtime:agent:commands",
 		CapabilityVersion: "1",

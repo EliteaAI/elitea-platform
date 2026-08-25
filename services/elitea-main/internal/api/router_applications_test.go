@@ -25,6 +25,8 @@ var applicationRoutes = []struct {
 	{http.MethodGet, "/api/v2/elitea_core/version/prompt_lib/1/2/3"},
 	{http.MethodPut, "/api/v2/elitea_core/version/prompt_lib/1/2/3"},
 	{http.MethodDelete, "/api/v2/elitea_core/version/prompt_lib/1/2/3"},
+	// PATCH on this path is the expanded READ the SDK calls, not an update (#336).
+	{http.MethodPatch, "/api/v2/elitea_core/version/prompt_lib/1/2/3"},
 	{http.MethodGet, "/api/v2/elitea_core/default_version/prompt_lib/1/2"},
 	{http.MethodPatch, "/api/v2/elitea_core/default_version/prompt_lib/1/2/3"},
 	{http.MethodPost, "/api/v2/elitea_core/batch_replace_version/prompt_lib/1/2/3"},

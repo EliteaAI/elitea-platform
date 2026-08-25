@@ -5,6 +5,18 @@
   "additionalProperties": true,
   "properties": {
     "replicaCount": { "type": "integer", "minimum": 0 },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "LocalObjectReference list for a registry that needs credentials. Required for ghcr.io/eliteaai/elitea-main, which is a private package: without it the Deployment and the migration Job both stop at ImagePullBackOff.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "image": {
       "type": "object",
       "additionalProperties": true,
@@ -45,6 +57,12 @@
             }
           }
         },
+        "stripIdentityHeaders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "gateway": {
           "type": "object",
           "additionalProperties": false,
@@ -63,11 +81,59 @@
         "authConfig": {
           "type": "object",
           "additionalProperties": false,
+          "description": "Production authentication. `document` is the authentication configuration itself (issue #444); with it the chart renders the ConfigMap and checks the five material paths while it renders. `configMapName` keeps the document outside the chart, and then only cmd/elitea-auth-material can check the paths. Exactly one of the two: templates/_helpers.tpl refuses both and refuses neither, with a message that names each field.",
           "properties": {
             "enabled": { "type": "boolean" },
+            "document": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "The SHAPE only. internal/authcomposition/config.go owns this schema, and a second copy of it here would drift from it. templates/_helpers.tpl checks the five material paths, which is the part the chart must know to mount them."
+            },
             "configMapName": { "type": "string" },
             "key": { "type": "string" },
-            "mountPath": { "type": "string" }
+            "mountPath": { "type": "string" },
+            "material": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Where the five authentication files come from (issue #444). secretName takes a plain Kubernetes Secret, and the chart adds an init container that installs it where internal/security/securefile can read it. volume takes a volume specification for a deployment that already writes real, owner-owned files. Which of the two is present is a COMBINATION, and templates/_helpers.tpl reports it with a message that names the Go source behind it.",
+              "properties": {
+                "mountPath": { "type": "string", "pattern": "^/" },
+                "secretName": { "type": "string" },
+                "secretDefaultMode": { "type": "integer", "minimum": 0, "maximum": 511 },
+                "sizeLimit": { "type": "string", "pattern": "^[0-9]+(Ki|Mi|Gi|K|M|G)?$" },
+                "volume": { "type": "object" }
+              }
+            }
+          },
+          "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+          "then": {
+            "properties": {
+              "material": { "required": ["mountPath"] }
+            },
+            "required": ["material"]
+          }
+        },
+        "llmGatewayClientMaterial": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "The mTLS client material for the /llm hop. Issue #463 turned the three LLM_GATEWAY_* variables into file paths but mounted nothing at them, so no Kubernetes install could compose the proxy. Nothing here passes through internal/security/securefile — internal/llmproxy/proxy.go calls tls.LoadX509KeyPair / os.ReadFile — so a plain Secret volume is enough and no init container copy is needed. secretName and volume are mutually exclusive.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "mountPath": {
+              "type": "string"
+            },
+            "defaultMode": {
+              "type": "integer"
+            },
+            "volume": {
+              "type": "object",
+              "additionalProperties": true
+            }
           }
         },
         "brandPack": {
@@ -84,6 +150,131 @@
     },
     "resources": { "type": "object", "additionalProperties": true },
     "env": { "type": "object", "additionalProperties": { "type": "string" } },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The runtime plane (issue #382). All-or-nothing: internal/runtimecomposition/config.go requires the whole set at once and refuses to start on a partial one. The `if enabled` blocks below reject a partial values file here, and templates/_helpers.tpl repeats the same checks with a message that names the field.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "commandStream": { "type": "string" },
+        "maxOutstanding": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "signingKeyId": { "type": "string" },
+        "agentExecutionDispatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "commandStream": { "type": "string" },
+            "consumerGroup": { "type": "string" },
+            "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 },
+            "currentMainBaseUrl": { "type": "string" }
+          }
+        },
+        "indexIngestDispatch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "commandStream": { "type": "string" },
+            "consumerGroup": { "type": "string" },
+            "streamMaxEntries": { "type": "integer", "minimum": 1, "maximum": 1024 }
+          }
+        },
+        "indexScheduling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "instanceId": { "type": "string" }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string" },
+            "poolSize": { "type": "integer", "minimum": 1, "maximum": 64 }
+          }
+        },
+        "listeners": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "controlAddress": { "type": "string", "minLength": 1 },
+            "outputAddress": { "type": "string", "minLength": 1 },
+            "contentAddress": { "type": "string", "minLength": 1 }
+          }
+        },
+        "material": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Where the runtime material comes from (issue #404). secretName takes a plain Kubernetes Secret, and the chart adds an init container that installs it where internal/security/securefile can read it. volume takes a volume specification for a deployment that already writes real, owner-owned files. Exactly one of the two: templates/_helpers.tpl refuses both and refuses neither, with a message that names each field.",
+          "properties": {
+            "mountPath": { "type": "string", "pattern": "^/" },
+            "secretName": { "type": "string" },
+            "secretDefaultMode": { "type": "integer", "minimum": 0, "maximum": 511 },
+            "sizeLimit": { "type": "string", "minLength": 1 },
+            "volume": { "type": "object" }
+          }
+        }
+      },
+      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+      "then": {
+        "description": "Every per-plane requirement sits INSIDE this block, so it applies only while the runtime is enabled. Do not move one back into its own subschema: a dispatch plane enabled while runtime.enabled is false would then be reported as missing sub-fields, and the operator needs to be told that the runtime is off instead. templates/_helpers.tpl owns that message.",
+        "properties": {
+          "commandStream": { "minLength": 1 },
+          "signingKeyId": { "minLength": 1 },
+          "agentExecutionDispatch": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "commandStream": { "minLength": 1 },
+                "consumerGroup": { "minLength": 1 },
+                "currentMainBaseUrl": { "minLength": 1, "pattern": "^https://" }
+              },
+              "required": ["commandStream", "consumerGroup", "streamMaxEntries", "currentMainBaseUrl"]
+            }
+          },
+          "indexIngestDispatch": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "commandStream": { "minLength": 1 },
+                "consumerGroup": { "minLength": 1 }
+              },
+              "required": ["commandStream", "consumerGroup", "streamMaxEntries"]
+            }
+          },
+          "indexScheduling": {
+            "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+            "then": {
+              "properties": {
+                "instanceId": { "minLength": 1, "pattern": "^[a-z0-9][a-z0-9._-]*$" }
+              },
+              "required": ["instanceId"]
+            }
+          },
+          "redis": {
+            "properties": {
+              "url": { "minLength": 1, "pattern": "^rediss://.+/0$" }
+            },
+            "required": ["url", "poolSize"]
+          },
+          "material": {
+            "description": "The SHAPE checks only. Which of secretName and volume is present is a COMBINATION, and templates/_helpers.tpl reports it with a message that names the Go source behind it, so it is not repeated here.",
+            "properties": {
+              "sizeLimit": { "pattern": "^[0-9]+(Ki|Mi|Gi|K|M|G)?$" }
+            },
+            "required": ["mountPath"]
+          },
+          "listeners": {
+            "required": ["controlAddress", "outputAddress", "contentAddress"]
+          }
+        },
+        "required": ["commandStream", "maxOutstanding", "streamMaxEntries", "signingKeyId", "redis", "listeners", "material"]
+      }
+    },
     "secrets": {
       "type": "object",
       "additionalProperties": {

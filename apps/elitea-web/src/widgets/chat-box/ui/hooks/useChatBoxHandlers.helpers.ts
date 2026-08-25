@@ -67,6 +67,101 @@ export interface ChatBoxHandlerDeps {
   readonly socketId?: string | undefined;
   /** Session-scoped bookkeeping of MCP servers declined/authenticated this conversation (never persisted). Lifetime owned by the caller. */
   readonly sessionDeclinedMcpServersRef?: { current: Map<string, Record<string, unknown>> };
+  /**
+   * Start the run over REST and subscribe to its SSE replay stream
+   * (`features/chat-messages`'s `useChatStreamTransport`).
+   *
+   * Reports a `StreamStartOutcome`, not a boolean: a boolean cannot say WHY
+   * the start did not happen, and the two reasons need opposite handling.
+   *
+   * Optional so a caller that has not wired the transport keeps the socket
+   * behaviour unchanged.
+   */
+  readonly startStreamedExecution?: (params: {
+    readonly conversationUuid: string;
+    readonly payload: Record<string, unknown>;
+  }) => Promise<StreamStartOutcome>;
+  /**
+   * Resume a PAUSED run over REST
+   * (`POST /elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}`).
+   *
+   * Optional for the same reason as `startStreamedExecution`: a caller that
+   * has not wired the transport keeps the socket behaviour unchanged.
+   */
+  readonly continueStreamedExecution?: (params: {
+    readonly conversationUuid: string;
+    readonly body: Record<string, unknown>;
+  }) => Promise<StreamStartOutcome>;
+}
+/**
+ * What one attempt to start a run over REST reports back.
+ *
+ * `started` — the transport owns the run. `chat_predict` must NOT also be
+ * emitted: the two are separate starts, and emitting both runs the agent
+ * twice.
+ *
+ * `no-transport` — this deployment serves no replay stream, or the body could
+ * not satisfy the route's contract. The socket emit is the correct fallback.
+ *
+ * `rejected` — the turn cannot succeed and the reason is already known. The
+ * socket fallback must NOT run, because it only hides the reason.
+ */
+export type StreamStartOutcome =
+  | { readonly started: true }
+  | { readonly started: false; readonly reason: 'no-transport' }
+  | { readonly started: false; readonly reason: 'rejected'; readonly message: string };
+/** The run is live server-side; the SSE transport owns it. */
+export const STREAM_STARTED: StreamStartOutcome = { started: true };
+/** No REST start happened; the socket emit is the fallback. */
+export const NO_STREAM_TRANSPORT: StreamStartOutcome = { started: false, reason: 'no-transport' };
+/**
+ * Emits one socket event and reports whether ANY transport took the payload.
+ *
+ * `SocketClient.emit` answers `false` for the no-op stub the app injects when
+ * `vite_socket_server` is empty, and throws when socket.io itself refuses.
+ * Both mean the payload went nowhere. The old call sites ignored the return
+ * value, so on a socket-less deployment the message was dropped in silence.
+ */
+export function tryEmit(emit: () => boolean, label: string): boolean {
+  try {
+    return emit();
+  } catch (error) {
+    console.warn(`[useChatBoxHandlers] ${label} emit failed:`, error);
+    return false;
+  }
+}
+/**
+ * An assistant-role message that carries the reason a turn never ran.
+ *
+ * It has to be a NEW message rather than a patch of the optimistic user
+ * bubble. The user bubble carries no in-flight flag. The stream reducer's
+ * settle pass therefore does not rewrite it. `ApplicationAnswer` renders
+ * `ErrorTrace` only for an assistant answer that has an `exception`.
+ */
+export function buildFailedTurnMessage(questionId: string, message: string): ChatMessage {
+  return {
+    id: `${questionId}-error`,
+    role: ROLES.Assistant,
+    name: '',
+    content: '',
+    createdAt: new Date().toISOString(),
+    questionId,
+    exception: message,
+  };
+}
+/**
+ * Puts a message back the way it was before an optimistic continuation patch,
+ * and shows why the resume did not happen.
+ *
+ * The patch clears `hitlInterrupt`/`hitlInterrupts`/`toolActions` and sets
+ * `isLoading`/`isStreaming`. Without this revert a continuation that reached
+ * no transport left the approval card gone and the bubble spinning for the
+ * rest of the session.
+ */
+export function revertContinuation(setChatHistory: ChatBoxHandlerDeps['setChatHistory'], original: ChatMessage, message: string): void {
+  setChatHistory((prev) =>
+    prev.map((item) => (item.id !== original.id ? item : { ...original, isLoading: false, isStreaming: false, exception: message })),
+  );
 }
 /** Result of the handlers hook. `regenerateAnswer`: baseline never emits a separate socket event — the REST call's `sid` links it to the live stream. */
 export interface UseChatBoxHandlersResult {
@@ -75,7 +170,7 @@ export interface UseChatBoxHandlersResult {
   readonly regenerateAnswer: (messageId: string, updatedItems?: readonly UpdatedMessageItem[]) => Promise<void>;
   readonly deleteAnswer: (messageId: string) => Promise<void>;
   readonly clearChat: () => Promise<void>;
-  readonly continueHitl: (action: HitlInterruptAction) => void;
+  readonly continueHitl: (action: HitlInterruptAction) => Promise<void>;
   readonly resumeMcpFlow: (messageId: string, addToIgnoreList?: boolean) => void;
   readonly continueTokenLimit: (messageId: string) => void;
 }

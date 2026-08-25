@@ -388,12 +388,64 @@ func TestDownloadObject_FullAndRange(t *testing.T) {
 		t.Errorf("expected full body %q, got %q", "0123456789", fullRR.Body.String())
 	}
 
+	if got := fullRR.Header().Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("full download Accept-Ranges = %q, want %q", got, "bytes")
+	}
+
+	// DEFECT: the 206 branch set Content-Length and nothing else. RFC 7233
+	// makes Content-Range mandatory on a 206, and without it a browser media
+	// element cannot map the bytes into the timeline and aborts playback;
+	// `curl -C -` and every resumable downloader fail the same way. The old
+	// fake store ignored the range argument and returned the whole object,
+	// so this could not be seen: the body, the Content-Length and the status
+	// all looked right.
 	rangeReq := httptest.NewRequest(http.MethodGet, "/objects/1/reports/hello.txt", nil)
 	rangeReq.Header.Set("Range", "bytes=2-4")
 	rangeRR := httptest.NewRecorder()
 	r.ServeHTTP(rangeRR, rangeReq)
 	if rangeRR.Code != http.StatusPartialContent {
 		t.Fatalf("range download: expected 206, got %d: %s", rangeRR.Code, rangeRR.Body.String())
+	}
+	if got := rangeRR.Header().Get("Content-Range"); got != "bytes 2-4/10" {
+		t.Errorf("range download Content-Range = %q, want %q", got, "bytes 2-4/10")
+	}
+	if got := rangeRR.Body.String(); got != "234" {
+		t.Errorf("range download body = %q, want %q", got, "234")
+	}
+	// The declared length must match the bytes actually written. On GCS the
+	// backend reported the WHOLE object size for a ranged read, so net/http
+	// saw a short write and killed the connection: every ranged download
+	// ended in an unexpected EOF.
+	if got := rangeRR.Header().Get("Content-Length"); got != "3" {
+		t.Errorf("range download Content-Length = %q, want %q", got, "3")
+	}
+
+	// An open-ended range reaches the end of the object.
+	openReq := httptest.NewRequest(http.MethodGet, "/objects/1/reports/hello.txt", nil)
+	openReq.Header.Set("Range", "bytes=7-")
+	openRR := httptest.NewRecorder()
+	r.ServeHTTP(openRR, openReq)
+	if openRR.Code != http.StatusPartialContent {
+		t.Fatalf("open range download: expected 206, got %d: %s", openRR.Code, openRR.Body.String())
+	}
+	if got := openRR.Header().Get("Content-Range"); got != "bytes 7-9/10" {
+		t.Errorf("open range Content-Range = %q, want %q", got, "bytes 7-9/10")
+	}
+	if got := openRR.Body.String(); got != "789" {
+		t.Errorf("open range body = %q, want %q", got, "789")
+	}
+
+	// A range that starts past the end is unsatisfiable. RFC 7233 answers
+	// 416 and states the current length.
+	pastReq := httptest.NewRequest(http.MethodGet, "/objects/1/reports/hello.txt", nil)
+	pastReq.Header.Set("Range", "bytes=99-")
+	pastRR := httptest.NewRecorder()
+	r.ServeHTTP(pastRR, pastReq)
+	if pastRR.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("past-end range: expected 416, got %d: %s", pastRR.Code, pastRR.Body.String())
+	}
+	if got := pastRR.Header().Get("Content-Range"); got != "bytes */10" {
+		t.Errorf("past-end range Content-Range = %q, want %q", got, "bytes */10")
 	}
 }
 

@@ -42,9 +42,10 @@
  * NOT covered here (deliberate, and not implied by a green run):
  *  - The delete path (`CredentialsControls` -> `onDiscarded`) — same
  *    callback, already driven here through Discard.
- *  - Search params on these routes (`from`/`prefill_*`/`section`), which the
- *    create routes do not thread today; `searchParams.credentials.test.tsx`
- *    covers only their VALIDATION, not their effect on the page.
+ *  - `from`/`forceCustom` on these routes. `prefill_name`/`prefill_id`/
+ *    `section` ARE covered below, since the create routes now thread them;
+ *    `searchParams.credentials.test.tsx` covers only their VALIDATION, not
+ *    their effect on the page.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
@@ -532,5 +533,40 @@ describe('ROUTE-065 /settings/edit-configuration/:credential_uid navigation call
     const scope = await main();
     expect(await scope.findByText('Configuration')).toBeInTheDocument();
     expect(scope.queryByText('Credential')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * DEFECT: neither create route declared `prefill_name`/`prefill_id`/`section`
+ * nor read them, so TanStack dropped all three. `CredentialWarningBanner`
+ * builds `/credentials/create-credential/{type}?prefill_id=…&prefill_name=…
+ * &section=…`. Every one of those deep links opened a form with an empty
+ * name. The form read its type catalogue for EVERY section.
+ *
+ * Evidence at the time: a grep for `useSearch|prefillName|prefillId|section`
+ * over both route files returned nothing. `CreateCredential`'s own header
+ * called the props "resolved values" that nothing resolved.
+ */
+describe('the create routes thread their deep-link search params', () => {
+  it('prefills the name from ?prefill_name', async () => {
+    installHandlers();
+    mountAt('/credentials/create-credential/openai?prefill_name=GitHub%20token');
+
+    expect(await (await main()).findByLabelText('Name')).toHaveValue('GitHub token');
+  });
+
+  it('reads the type catalogue for the section the link names', async () => {
+    installHandlers();
+    const sections: string[][] = [];
+    server.use(
+      http.get('*/configurations/available/', ({ request }) => {
+        sections.push(new URL(request.url).searchParams.getAll('section'));
+        return HttpResponse.json([TYPE_DESCRIPTOR]);
+      }),
+    );
+
+    mountAt('/credentials/create-credential?section=service_prompts');
+
+    await waitFor(() => expect(sections).toContainEqual(['service_prompts']));
   });
 });

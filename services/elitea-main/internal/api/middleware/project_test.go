@@ -36,17 +36,39 @@ func captureHandler(seen *ProjectContext, invoked *bool) http.Handler {
 	})
 }
 
+// withTokenProvenance records the provenance the Auth middleware records for a
+// bearer token, and returns the request.
+//
+// Every /llm test uses it. Project refuses an identity that no authentication
+// path recorded (issue #461), so a test that calls auth.ContextWithUser gets
+// HTTP 401 and proves nothing about the project rules. See
+// project_provenance_test.go.
+func withTokenProvenance(req *http.Request, user auth.User) *http.Request {
+	return req.WithContext(
+		auth.ContextWithAuthenticatedUser(req.Context(), user, auth.AuthenticationSourceToken),
+	)
+}
+
+// TestProject_SystemProjectUserName is direction 2 of issue #459 at the
+// middleware level: an entitled system project-user still resolves its project
+// from its name. The name is admitted because the caller is a member of the
+// project it names, and for no other reason.
 func TestProject_SystemProjectUserName(t *testing.T) {
 	resolver := &fakeResolver{id: 999} // must NOT be consulted for system names
+	queries := &fakeMemberQuerier{allow: map[int32]bool{7: true}}
 	var seen ProjectContext
 	var invoked bool
 
-	mw := Project(ProjectConfig{Resolver: resolver, PublicProjectID: 1})
+	mw := Project(ProjectConfig{
+		Resolver:        resolver,
+		PublicProjectID: 1,
+		Membership:      NewProjectMembershipWith(queries),
+	})
 	h := mw(captureHandler(&seen, &invoked))
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
-	user := auth.User{ID: "42", Name: ":system:project:7:", AuthType: "token"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	user := auth.User{ID: "42", UserID: "42", TokenID: "900", Name: ":system:project:7:", AuthType: "token"}
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -57,13 +79,20 @@ func TestProject_SystemProjectUserName(t *testing.T) {
 		t.Fatal("next handler was not invoked")
 	}
 	if resolver.called {
-		t.Error("resolver must not be called for system project-user names")
+		t.Error("resolver must not be called for an admitted system project-user name")
 	}
 	if seen.ProjectID != 7 {
 		t.Errorf("expected project id 7, got %d", seen.ProjectID)
 	}
 	if seen.PublicProjectID != 1 {
 		t.Errorf("expected public project id 1, got %d", seen.PublicProjectID)
+	}
+	if len(queries.calls) != 1 {
+		t.Fatalf("membership queries = %d, want 1", len(queries.calls))
+	}
+	if queries.calls[0].UserID != 42 || queries.calls[0].ProjectID != 7 {
+		t.Errorf("membership asked for user %d project %d, want user 42 project 7",
+			queries.calls[0].UserID, queries.calls[0].ProjectID)
 	}
 }
 
@@ -77,7 +106,7 @@ func TestProject_PersonalProjectFallback(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User", AuthType: "token"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -131,7 +160,7 @@ func TestProject_UnresolvableProject_Returns400(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -157,7 +186,7 @@ func TestProject_ResolverError_Returns400(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -182,7 +211,7 @@ func TestProject_NilResolver_NonSystemUser_Returns400(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -191,24 +220,60 @@ func TestProject_NilResolver_NonSystemUser_Returns400(t *testing.T) {
 	}
 }
 
-func TestProject_NilResolver_SystemUser_OK(t *testing.T) {
+// TestProject_NilMembership_SystemUserName_IsNotBilled is criterion 4 of issue
+// #459: a nil membership checker must not let a name-derived project through.
+// The resolver is nil too, so the only two answers left are the named project
+// and an error. The named project is the wrong one.
+func TestProject_NilMembership_SystemUserName_IsNotBilled(t *testing.T) {
 	var seen ProjectContext
 	var invoked bool
 
-	mw := Project(ProjectConfig{Resolver: nil, PublicProjectID: 1})
+	mw := Project(ProjectConfig{Resolver: nil, PublicProjectID: 1, Membership: nil})
 	h := mw(captureHandler(&seen, &invoked))
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
-	user := auth.User{ID: "42", Name: ":system:project:12:"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	user := auth.User{ID: "42", UserID: "42", Name: ":system:project:12:"}
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if seen.ProjectID == 12 {
+		t.Fatal("the named project was billed with no membership checker composed")
 	}
-	if seen.ProjectID != 12 {
-		t.Errorf("expected project id 12, got %d", seen.ProjectID)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body = %s", rec.Code, rec.Body.String())
+	}
+	if invoked {
+		t.Error("next handler must not be invoked when no project resolves")
+	}
+	assertProjectJSONErrorBody(t, rec.Body.Bytes())
+}
+
+// TestProject_NilMembership_SystemUserName_FallsBackToPersonal is the other
+// half of criterion 4: when a resolver is composed, the caller's own project is
+// the answer. The named project is still never the answer.
+func TestProject_NilMembership_SystemUserName_FallsBackToPersonal(t *testing.T) {
+	resolver := &fakeResolver{id: 55}
+	var seen ProjectContext
+	var invoked bool
+
+	mw := Project(ProjectConfig{Resolver: resolver, PublicProjectID: 1, Membership: nil})
+	h := mw(captureHandler(&seen, &invoked))
+
+	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
+	user := auth.User{ID: "42", UserID: "42", Name: ":system:project:12:"}
+	req = withTokenProvenance(req, user)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if seen.ProjectID == 12 {
+		t.Fatal("the named project was billed with no membership checker composed")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body = %s", rec.Code, rec.Body.String())
+	}
+	if seen.ProjectID != 55 {
+		t.Errorf("billed project = %d, want the caller's own project 55", seen.ProjectID)
 	}
 }
 
@@ -224,7 +289,7 @@ func TestProject_PublicProjectIDFromEnv(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -244,7 +309,7 @@ func TestProject_PublicProjectIDDefault(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/llm/v1/models", nil)
 	user := auth.User{ID: "42", Name: "Regular User"}
-	req = req.WithContext(auth.ContextWithUser(req.Context(), user))
+	req = withTokenProvenance(req, user)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -257,10 +322,10 @@ func TestProject_PublicProjectIDDefault(t *testing.T) {
 
 func TestProjectIDFromUserName(t *testing.T) {
 	cases := []struct {
-		name    string
-		input   string
-		wantID  int
-		wantOK  bool
+		name   string
+		input  string
+		wantID int
+		wantOK bool
 	}{
 		{"valid system name", ":system:project:42:", 42, true},
 		{"valid large id", ":system:project:100000:", 100000, true},
@@ -282,9 +347,13 @@ func TestProjectIDFromUserName(t *testing.T) {
 	}
 }
 
-func TestResolveProjectID_SystemNameShortCircuits(t *testing.T) {
+func TestResolveProjectID_AdmittedSystemNameShortCircuits(t *testing.T) {
 	resolver := &fakeResolver{id: 1}
-	id, err := resolveProjectID(context.Background(), resolver, auth.User{ID: "9", Name: ":system:project:5:"})
+	cfg := ProjectConfig{
+		Resolver:   resolver,
+		Membership: NewProjectMembershipWith(&fakeMemberQuerier{allow: map[int32]bool{5: true}}),
+	}
+	id, err := resolveProjectID(context.Background(), cfg, auth.User{ID: "9", UserID: "9", Name: ":system:project:5:"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,12 +361,33 @@ func TestResolveProjectID_SystemNameShortCircuits(t *testing.T) {
 		t.Errorf("expected 5, got %d", id)
 	}
 	if resolver.called {
-		t.Error("resolver must not be consulted for system names")
+		t.Error("resolver must not be consulted for an admitted system name")
+	}
+}
+
+func TestResolveProjectID_RefusedSystemNameFallsBack(t *testing.T) {
+	resolver := &fakeResolver{id: 1}
+	cfg := ProjectConfig{
+		Resolver:   resolver,
+		Membership: NewProjectMembershipWith(&fakeMemberQuerier{allow: map[int32]bool{}}),
+	}
+	id, err := resolveProjectID(context.Background(), cfg, auth.User{ID: "9", UserID: "9", Name: ":system:project:5:"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if id == 5 {
+		t.Fatal("a non-member kept the project its name asked for")
+	}
+	if id != 1 {
+		t.Errorf("expected the caller's own project 1, got %d", id)
+	}
+	if !resolver.called {
+		t.Error("resolver must be consulted after a refused system name")
 	}
 }
 
 func TestResolveProjectID_NilResolverNonSystem(t *testing.T) {
-	id, err := resolveProjectID(context.Background(), nil, auth.User{ID: "9", Name: "Bob"})
+	id, err := resolveProjectID(context.Background(), ProjectConfig{}, auth.User{ID: "9", Name: "Bob"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

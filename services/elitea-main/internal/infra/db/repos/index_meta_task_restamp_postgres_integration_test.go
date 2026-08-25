@@ -18,8 +18,7 @@ import (
 func TestPostgresNodeEventTaskRestampIntentRetryAndTenantAuthority(
 	t *testing.T,
 ) {
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	dispatchPolicy := IndexIngestDispatchPolicy{
 		StreamName:        "elitea:runtime:index:commands",
 		CapabilityVersion: "1",

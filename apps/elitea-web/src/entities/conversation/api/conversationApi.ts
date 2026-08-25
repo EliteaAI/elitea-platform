@@ -264,6 +264,44 @@ export async function startAgentExecution(params: StartAgentExecutionParams): Pr
   );
 }
 
+/* ── continueAgentExecution — POST elitea_core/continue_predict/prompt_lib/{projectId}/{conversationUuid} ── */
+/* manifest: conversation.continueAgentExecution */
+
+/**
+ * The HITL continuation contract the Go route admits
+ * (`agentexecution/route.go`: `CurrentContinuationContract`).
+ *
+ * The route admits one other value, `agent.continue.authorization.v1`, for the
+ * MCP re-authorization pause. This app does not send it: the contract requires
+ * an `authorization_request_id`, and nothing here captures that field off the
+ * `mcp_authorization_required` frame yet. The route admits NO token-limit
+ * continuation at all. Both of those resumes stay on the socket.
+ */
+export const AGENT_CONTINUE_HITL_CONTRACT = 'agent.continue.hitl.v1';
+
+export interface ContinueAgentExecutionParams {
+  readonly projectId: string | number;
+  /** Conversation UUID — the route's `{conversationID}` segment. */
+  readonly conversationUuid: string;
+  readonly contract: string;
+  readonly body: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Resume one paused run.
+ *
+ * The body must satisfy the route's own checks: `project_id` is a NUMBER equal
+ * to the path project, `conversation_uuid` equals the path conversation, and
+ * `message_id` is not empty. The route answers 422 for anything else.
+ */
+export async function continueAgentExecution(params: ContinueAgentExecutionParams): Promise<AgentExecutionStart> {
+  const { projectId, conversationUuid, contract, body } = params;
+  return fetchData<AgentExecutionStart>(
+    `/elitea_core/continue_predict/prompt_lib/${String(projectId)}/${conversationUuid}?execution_contract=${encodeURIComponent(contract)}`,
+    { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
 /* ── stopChatTask — DELETE elitea_core/task/prompt_lib/{projectId}/{taskId} ── */
 /* Reuses `pipelines.stopLlmTask`'s route — no new manifest entry (see module doc). Baseline param name is `messageGroupUuid`; same route. */
 

@@ -129,12 +129,31 @@ function selectDefaultModel(models: readonly ToolkitLlmModel[], wire: LlmModelLi
   return byName ?? models.find((model) => model['default'] === true) ?? null;
 }
 
-export function useToolkitLlmModels(projectId: string | undefined): UseQueryResult<ToolkitLlmModelList> {
+/**
+ * The `section` values this endpoint recognises, for the three model-picker
+ * field kinds `ToolBaseProperty` dispatches
+ * (`ToolBaseProperty.kinds.ts`'s `CREDENTIAL_LIKE_TYPES`). Baseline:
+ * `components/LlmModelSelect.jsx` / `EmbeddingModelSelect.jsx` /
+ * `ImageGenerationModelSelect.jsx` each pin their own literal on the same
+ * `useListModelsQuery({section})` call.
+ */
+export type ToolkitModelSection = 'llm' | 'embedding' | 'image_generation';
+
+/**
+ * One project's models for a given section. #308 — generalised from the
+ * llm-only `useToolkitLlmModels` below (which now delegates here) so the
+ * embedding- and image-generation-model form fields have a data source: the
+ * response shape is identical across sections, only the query param differs.
+ */
+export function useToolkitModels(
+  projectId: string | undefined,
+  section: ToolkitModelSection,
+): UseQueryResult<ToolkitLlmModelList> {
   return useQuery({
-    queryKey: ['toolkits', 'llmModels', projectId],
+    queryKey: ['toolkits', 'models', section, projectId],
     queryFn: async ({ signal }): Promise<ToolkitLlmModelList> => {
       const wire = await fetchData<LlmModelListWire>(
-        `/configurations/models/${String(projectId)}?section=llm&include_shared=true`,
+        `/configurations/models/${String(projectId)}?section=${section}&include_shared=true`,
         { signal },
       );
       const models = (wire.items ?? []).map(withModelId);
@@ -146,4 +165,8 @@ export function useToolkitLlmModels(projectId: string | undefined): UseQueryResu
     // whole tab.
     placeholderData: EMPTY_MODEL_LIST,
   });
+}
+
+export function useToolkitLlmModels(projectId: string | undefined): UseQueryResult<ToolkitLlmModelList> {
+  return useToolkitModels(projectId, 'llm');
 }

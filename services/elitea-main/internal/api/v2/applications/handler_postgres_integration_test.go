@@ -69,7 +69,11 @@ func newHandlerTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// 120 s, not the old 20 s to 30 s. This DROP queues behind the
+		// CREATE DATABASE calls of every package that `go test ./...` runs at
+		// the same time, so the wait is server load and not a hang. Two full
+		// runs failed here with "drop isolated ... database: timeout" (#409).
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer dropCancel()
 		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quoted+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop isolated database: %v", err)
@@ -107,6 +111,11 @@ func newHandlerTestServer(t *testing.T, pool *pgxpool.Pool, user auth.User) *chi
 	r.Get("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.GetVersion)
 	r.Put("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.UpdateVersion)
 	r.Delete("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.DeleteVersion)
+	// PATCH on this path is the expanded READ the SDK calls, not an update
+	// (#336). It is registered here because this server re-declares the router's
+	// table rather than importing it; a route missing here is invisible to every
+	// test in this file.
+	r.Patch("/version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.GetVersionExpanded)
 	r.Get("/default_version/prompt_lib/{projectID}/{applicationID}", h.GetDefaultVersion)
 	r.Patch("/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}", h.SetDefaultVersion)
 	return r
@@ -313,6 +322,202 @@ func TestHandlerPostgres_UpdateVersionPersists(t *testing.T) {
 	}
 	if instructions != "Revised brief." || welcome != "hey" || !strings.Contains(llm, "gpt-4o") {
 		t.Errorf("row = instructions=%q welcome=%q llm=%s", instructions, welcome, llm)
+	}
+}
+
+// TestHandlerPostgres_UpdateVersionPersistsVariables covers #307: the agent
+// editor sends `variables` on every save and UpdateVersion had no branch for
+// the key, so the PUT answered 201 and the edit was gone. Asserted by
+// reading the row back (and by re-GETting the version), not by the 201 —
+// a 201 is exactly what passed while the field was being dropped.
+func TestHandlerPostgres_UpdateVersionPersistsVariables(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("variable-editor"))
+	applicationID := created["id"].(string)
+	versionDetails := created["version_details"].(map[string]any)
+	versionID := versionDetails["id"].(string)
+
+	// The body the web client actually sends: `meta` spread from the stored
+	// blob (so it still carries the OLD variables) plus a separate, edited
+	// `variables` list. See pages/agents/lib/editApplicationMappers.ts.
+	storedMeta, _ := versionDetails["meta"].(map[string]any)
+	if storedMeta == nil {
+		storedMeta = map[string]any{}
+	}
+	recorder, updated := do(t, router, http.MethodPut,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID),
+		map[string]any{
+			"name": "base",
+			"meta": storedMeta,
+			"variables": []any{
+				map[string]any{"name": "region", "value": "emea"},
+				map[string]any{"name": "tier", "value": "gold"},
+			},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	echoed, _ := updated["variables"].([]any)
+	if len(echoed) != 2 {
+		t.Errorf("update response variables = %v, want the 2 edited variables", updated["variables"])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var meta string
+	if err := pool.QueryRow(ctx,
+		`SELECT meta::text FROM p_1.application_versions WHERE id = $1`, versionID).Scan(&meta); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(meta, "region") || !strings.Contains(meta, "emea") {
+		t.Errorf("stored meta = %s, want the edited variables", meta)
+	}
+	if strings.Contains(meta, `"k"`) {
+		t.Errorf("stored meta = %s, still carries the pre-edit variable", meta)
+	}
+	if !strings.Contains(meta, "step_limit") {
+		t.Errorf("stored meta = %s, folding variables dropped the rest of meta", meta)
+	}
+
+	_, reread := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID), nil)
+	rereadVariables, _ := reread["variables"].([]any)
+	if len(rereadVariables) != 2 {
+		t.Errorf("GET after save returned variables = %v, want the 2 saved variables", reread["variables"])
+	}
+}
+
+// TestHandlerPostgres_CreatePersistsVariables is the other half of #307: the
+// create paths folded `variables` into `meta` and stopped there, so an agent
+// created WITH variables answered 201 with them echoed back and then returned
+// `"variables": []` on every GET until someone saved the version. Nothing in
+// the create response discriminates — the echo is built from `meta`, which
+// really is written — so the assertion that matters is the GET, plus the
+// `application_variables` rows the GET reads from.
+func TestHandlerPostgres_CreatePersistsVariables(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	body := j14CreateBody("created-with-variables")
+	body["versions"].([]any)[0].(map[string]any)["variables"] = []any{
+		map[string]any{"name": "region", "value": "emea"},
+		map[string]any{"name": "tier", "value": "gold"},
+		// The blank row the editor emits the moment a user clicks "add": it
+		// must not be stored, and must not fail the create either.
+		map[string]any{"name": "", "value": ""},
+	}
+	recorder, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	applicationID := created["id"].(string)
+	versionID := created["version_details"].(map[string]any)["id"].(string)
+
+	assertStoredVariables(t, pool, versionID, map[string]string{"region": "emea", "tier": "gold"})
+
+	// The reload the agent editor performs the instant it opens the new agent.
+	getRecorder, fetched := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, versionID), nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	assertVariablesInResponse(t, fetched, map[string]string{"region": "emea", "tier": "gold"})
+}
+
+// TestHandlerPostgres_CreateVersionPersistsVariables covers the second create
+// entry point — "save as a new version" in the editor — which builds its
+// version through the same versionFromBody and had the same gap.
+func TestHandlerPostgres_CreateVersionPersistsVariables(t *testing.T) {
+	pool := newHandlerTestPool(t)
+	seedHandlerUser(t, pool, 1, "one@elitea.ai")
+	router := newHandlerTestServer(t, pool, auth.User{ID: "1", UserID: "1", Email: "one@elitea.ai"})
+
+	_, created := do(t, router, http.MethodPost, "/applications/prompt_lib/1", j14CreateBody("version-source"))
+	applicationID := created["id"].(string)
+
+	recorder, second := do(t, router, http.MethodPost, "/versions/prompt_lib/1/"+applicationID,
+		map[string]any{
+			"name":       "v2",
+			"agent_type": "openai",
+			"variables": []any{
+				map[string]any{"name": "channel", "value": "slack"},
+			},
+		})
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("create version status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	secondID := second["id"].(string)
+
+	assertStoredVariables(t, pool, secondID, map[string]string{"channel": "slack"})
+
+	getRecorder, fetched := do(t, router, http.MethodGet,
+		fmt.Sprintf("/version/prompt_lib/1/%s/%s", applicationID, secondID), nil)
+	if getRecorder.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getRecorder.Code, getRecorder.Body.String())
+	}
+	assertVariablesInResponse(t, fetched, map[string]string{"channel": "slack"})
+
+	// The new version owns its own variables: the base version it was created
+	// alongside keeps the one it was created with, unchanged.
+	baseID := created["version_details"].(map[string]any)["id"].(string)
+	assertStoredVariables(t, pool, baseID, map[string]string{"k": "v"})
+}
+
+func assertStoredVariables(t *testing.T, pool *pgxpool.Pool, versionID string, want map[string]string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	rows, err := pool.Query(ctx,
+		`SELECT name, COALESCE(value, '') FROM p_1.application_variables WHERE application_version_id = $1`, versionID)
+	if err != nil {
+		t.Fatalf("read application_variables: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			t.Fatalf("scan application_variables: %v", err)
+		}
+		got[name] = value
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate application_variables: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Errorf("application_variables rows for version %s = %v, want %v", versionID, got, want)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("application_variables[%q] = %q, want %q (all rows: %v)", name, got[name], value, got)
+		}
+	}
+}
+
+func assertVariablesInResponse(t *testing.T, response map[string]any, want map[string]string) {
+	t.Helper()
+	raw, _ := response["variables"].([]any)
+	got := map[string]string{}
+	for _, entry := range raw {
+		item, _ := entry.(map[string]any)
+		if item == nil {
+			continue
+		}
+		name, _ := item["name"].(string)
+		value, _ := item["value"].(string)
+		got[name] = value
+	}
+	if len(got) != len(want) {
+		t.Errorf("GET variables = %v, want %v", response["variables"], want)
+	}
+	for name, value := range want {
+		if got[name] != value {
+			t.Errorf("GET variables[%q] = %q, want %q (all: %v)", name, got[name], value, response["variables"])
+		}
 	}
 }
 

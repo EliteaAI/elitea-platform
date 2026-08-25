@@ -28,20 +28,26 @@ export function resolveConversationsDefaults(props: ConversationsProps): Resolve
 }
 
 /**
- * `FolderConversationRef` (the folder-domain "list row", `id`/`updatedAt`/
- * `createdAt`/`isPlayback` only) -> `Conversation` (this feature's own
- * state-tree element type, per `conversationListState.types.ts`'s own
- * module doc) — duplicated from `useQueryFoldersList.hooks.ts`'s
- * unexported, same-named private helper rather than imported (that
- * function isn't part of that hook's public return value, and this file is
- * outside this unit's brief to modify). `name: ''`/`isPrivate: true` are
- * the same synthesized placeholders that hook's own doc comment discloses.
+ * `FolderConversationRef` (the folder-domain list row) -> `Conversation`
+ * (this feature's own state-tree element type).
+ *
+ * This function is a copy of the same-named private helper in
+ * `useQueryFoldersList.hooks.ts`. That helper is not exported. Keep the two
+ * bodies equal.
+ *
+ * The copy drifted once. It dropped `authorId` and `name`, so a row that
+ * arrived through "Load more" showed an empty title. The row menu also
+ * denied Delete and Edit on the user's own conversation.
+ *
+ * `name: ''` and `isPrivate: true` stay as the fallback values. They are the
+ * synthesized placeholders that the sibling helper also uses.
  */
 function toConversation(ref: FolderConversationRef): Conversation {
   return {
     id: ref.id,
-    name: '',
-    isPrivate: true,
+    name: ref.name ?? '',
+    isPrivate: ref.isPrivate ?? true,
+    ...(ref.authorId !== undefined ? { authorId: ref.authorId } : {}),
     ...(ref.updatedAt !== undefined ? { updatedAt: ref.updatedAt } : {}),
     ...(ref.createdAt !== undefined ? { createdAt: ref.createdAt } : {}),
     ...(ref.isPlayback !== undefined ? { isPlayback: ref.isPlayback } : {}),

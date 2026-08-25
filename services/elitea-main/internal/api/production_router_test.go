@@ -1535,28 +1535,43 @@ func TestProductionRouterMountsCurrentAvailableAliasesAsGetOnly(t *testing.T) {
 	}
 }
 
-func TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath(t *testing.T) {
-	calls := 0
-	facade := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		calls++
-		if request.URL.Path != "/llm/v1/embeddings" || request.Method != http.MethodPost {
-			t.Fatalf("facade request = %s %s", request.Method, request.URL.Path)
-		}
-		writer.WriteHeader(http.StatusNoContent)
-	})
-	router := NewRouter(RouterConfig{CurrentLLMFacade: facade})
-
+// The /llm routing contract after the LiteLLM removal.
+//
+// This replaces TestProductionRouterMountsCurrentLLMFacadeWithoutStrippingContractPath,
+// which pinned the opposite contract: a bare RouterConfig carrying only a
+// CurrentLLMFacade served /llm from that facade. There is no facade and no
+// last-resort arm any more — the Bifrost gateway is the only backend.
+//
+// Issue #463 changed HOW the uncomposed state answers, not WHAT it serves. The
+// path is now registered and answers 503 llm_gateway_not_configured. So the
+// discriminating signal can no longer be "no /llm pattern exists": it is the
+// not-configured code in the body, which no real backend would ever produce.
+// A reintroduced fallback turns this test from that code into a served
+// response, exactly as the 404 assertion used to.
+func TestProductionRouterLLMRouteHasNoLastResortBackend(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", strings.NewReader(`{"model":"embed"}`)))
-	if recorder.Code != http.StatusNoContent || calls != 1 {
-		t.Fatalf("status=%d calls=%d body=%s", recorder.Code, calls, recorder.Body.String())
+	NewRouter(RouterConfig{}).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", strings.NewReader(`{"model":"gpt-4o"}`)),
+	)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("uncomposed /llm status=%d body=%s (want 503: no backend is composed)", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), LLMNotConfiguredCode) {
+		t.Fatalf("uncomposed /llm body=%s — want the %s code, which proves nothing served the request", recorder.Body.String(), LLMNotConfiguredCode)
 	}
 
-	unmounted := NewRouter(RouterConfig{})
-	recorder = httptest.NewRecorder()
-	unmounted.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/llm/v1/embeddings", nil))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("uncomposed facade status=%d", recorder.Code)
+	// With the gateway composed the pattern appears, so the assertion above is
+	// reading a real registration and not a router that never mounts /llm.
+	withGateway := routePatterns(t, NewRouter(RouterConfig{GatewayProxy: http.NotFoundHandler()}))
+	mounted := false
+	for _, pattern := range withGateway {
+		if strings.Contains(pattern, "/llm") {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("GatewayProxy composed but no /llm pattern registered; patterns=%v", withGateway)
 	}
 }
 
@@ -1599,7 +1614,11 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 
 	want := []string{
 		"DELETE /api/v2/admin/gateway/governance/{id}",
+		"DELETE /api/v2/admin/gateway/models/{id}",
+		"DELETE /api/v2/admin/identity_providers/administration/{key}",
+		"DELETE /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"DELETE /api/v2/admin/modes/administration",
+		"DELETE /api/v2/admin/scim_group_bindings/administration/{id}",
 		"DELETE /api/v2/admin/users/{mode}/{projectID}",
 		"DELETE /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"DELETE /api/v2/artifacts/objects/{projectID}/{bucket}/*",
@@ -1628,18 +1647,29 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
 		"DELETE /api/v2/notifications/notifications/prompt_lib/{projectID}",
 		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
+		// Project DELETE (#333). Destructive: it drops the tenant schema.
+		"DELETE /api/v2/projects/project/{mode}/{projectID}",
+		"DELETE /api/v2/scim/v2/Groups/{id}",
+		"DELETE /api/v2/scim/v2/Users/{id}",
 		"DELETE /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		// The S3-shaped write verbs, root-mounted and wildcard-captured for
+		// the same reasons as the reads below.
+		"DELETE /artifacts/s3/{bucket}/*",
 		"GET /api/openapi.json",
 		"GET /api/openapi.yaml",
 		"GET /api/v2/admin/active_tasks/{mode}",
 		"GET /api/v2/admin/auth_users/{mode}",
 		"GET /api/v2/admin/gateway/*/budget-alerts",
 		"GET /api/v2/admin/gateway/governance",
+		"GET /api/v2/admin/gateway/models",
+		"GET /api/v2/admin/gateway/status",
+		"GET /api/v2/admin/identity_providers/administration",
 		"GET /api/v2/admin/maintenance/{mode}",
+		"GET /api/v2/admin/mcp_prebuilt_servers/administration",
 		"GET /api/v2/admin/moderation_status/{mode}/{projectID}/{entityID}",
 		"GET /api/v2/admin/moderation_statuses/administration",
 		"GET /api/v2/admin/modes/administration",
@@ -1649,15 +1679,19 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/admin/plugin_config_values/administration/{plugin}",
 		"GET /api/v2/admin/plugin_config_values/prompt_lib/resources",
 		"GET /api/v2/admin/projects/{mode}",
+		"GET /api/v2/admin/roles/administration/{projectID}",
 		"GET /api/v2/admin/roles/{mode}/{projectID}",
 		"GET /api/v2/admin/runtime_plugin/{mode}/{pluginName}",
 		"GET /api/v2/admin/runtime_remote/{mode}",
 		"GET /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
+		"GET /api/v2/admin/scim_group_bindings/administration",
+		"GET /api/v2/admin/scim_group_bindings/administration/project_roles/{projectID}",
 		"GET /api/v2/admin/system_info/prompt_lib",
 		"GET /api/v2/admin/system_info/{mode}",
 		"GET /api/v2/admin/tasks/{mode}",
 		"GET /api/v2/admin/tasks/{mode}/",
 		"GET /api/v2/admin/user_project_permissions/administration",
+		"GET /api/v2/admin/users/administration/{projectID}",
 		"GET /api/v2/admin/users/{mode}/{projectID}",
 		"GET /api/v2/artifacts/buckets/{projectID}",
 		"GET /api/v2/artifacts/buckets/{projectID}/{bucket}",
@@ -1757,6 +1791,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/elitea_core/toolkits/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/tools/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/tools_list/default/{projectID}",
+		"GET /api/v2/elitea_core/tools_list/{projectID}",
 		"GET /api/v2/elitea_core/trending_authors/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/upload_icon/prompt_lib/{projectID}",
 		"GET /api/v2/elitea_core/usage/prompt_lib/{projectID}/usage",
@@ -1775,6 +1810,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/projects/statistics/{projectID}",
 		"GET /api/v2/scheduling/schedules/administration/{projectID}",
 		"GET /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"GET /api/v2/scim/v2/Groups",
+		"GET /api/v2/scim/v2/Groups/{id}",
+		"GET /api/v2/scim/v2/ResourceTypes",
+		"GET /api/v2/scim/v2/Schemas",
+		"GET /api/v2/scim/v2/ServiceProviderConfig",
+		"GET /api/v2/scim/v2/Users",
+		"GET /api/v2/scim/v2/Users/{id}",
 		"GET /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"GET /api/v2/secrets/secret/{projectID}/{name}",
 		"GET /api/v2/secrets/secrets/{mode}/{projectID}",
@@ -1791,6 +1833,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
 		"GET /app/{projectID}/mcp",
 		"GET /app/{projectID}/mcp/*",
+		// Root-mounted on purpose: the SDK builds this URL from a bare
+		// origin with no /api/v2 segment, so this is the path that actually
+		// arrives. See mountArtifactRoutes in router.go.
+		"GET /artifacts/s3/{bucket}",
+		// The object read, wildcard-captured so a nested key
+		// ("folder/sub/file.txt") matches as one key rather than 404ing.
+		"GET /artifacts/s3/{bucket}/*",
 		"GET /auth",
 		"GET /avatars/{projectID}/{filename}",
 		"GET /docs",
@@ -1800,6 +1849,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /startupz",
 		"HEAD /api/v2/artifacts/objects/{projectID}/{bucket}/*",
 		"HEAD /api/v2/branding/bootstrap.js",
+		"HEAD /artifacts/s3/{bucket}/*",
 		"PATCH /api/v2/artifacts/buckets/{projectID}/{bucket}",
 		"PATCH /api/v2/elitea_core/application_relation/prompt_lib/{projectID}/{appID}/{versionID}",
 		"PATCH /api/v2/elitea_core/default_version/prompt_lib/{projectID}/{applicationID}/{versionID}",
@@ -1809,6 +1859,10 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
+		// The expanded version READ the SDK calls with a body-less PATCH (#336).
+		"PATCH /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
+		"PATCH /api/v2/scim/v2/Groups/{id}",
+		"PATCH /api/v2/scim/v2/Users/{id}",
 		"POST /api/v2/admin/auth_users/{mode}",
 		"POST /api/v2/admin/gateway/governance",
 		"POST /api/v2/admin/gateway/governance/validate-cel",
@@ -1818,6 +1872,7 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/admin/plugin_config_restart/{mode}/{pylonID}",
 		"POST /api/v2/admin/runtime_pylons/{mode}",
 		"POST /api/v2/admin/runtime_remote_config/{mode}/{pluginID}",
+		"POST /api/v2/admin/scim_group_bindings/administration",
 		"POST /api/v2/admin/user_invite/administration",
 		"POST /api/v2/admin/users/administration/{projectID}",
 		"POST /api/v2/admin/users/{mode}/{projectID}",
@@ -1882,6 +1937,11 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
 		"POST /api/v2/projects/group/prompt_lib/{projectID}",
+		// Project CREATE (#333). The handler refuses any {mode} other than
+		// `administration`, matching the reference's route table.
+		"POST /api/v2/projects/project/{mode}",
+		"POST /api/v2/scim/v2/Groups",
+		"POST /api/v2/scim/v2/Users",
 		"POST /api/v2/secrets/hide/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"POST /api/v2/secrets/secrets/{mode}/{projectID}",
@@ -1898,12 +1958,16 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /app/{projectID}/mcp/*",
 		"PUT /api/v2/admin/gateway/*/budget-alerts",
 		"PUT /api/v2/admin/gateway/governance/{id}",
+		"PUT /api/v2/admin/gateway/models",
+		"PUT /api/v2/admin/identity_providers/administration/{key}",
 		"PUT /api/v2/admin/maintenance/{mode}",
+		"PUT /api/v2/admin/mcp_prebuilt_servers/administration/{key}",
 		"PUT /api/v2/admin/moderation_status/administration",
 		"PUT /api/v2/admin/permissions/{scope}/{mode}",
 		"PUT /api/v2/admin/plugin_config_values/administration/{plugin}",
 		"PUT /api/v2/admin/project_suspend/{mode}/{projectID}",
 		"PUT /api/v2/admin/runtime_plugin/{mode}/{pluginName}",
+		"PUT /api/v2/admin/scim_group_bindings/administration/{id}",
 		"PUT /api/v2/admin/user_project_permissions/administration",
 		"PUT /api/v2/admin/user_suspend/{mode}/{userID}",
 		"PUT /api/v2/admin/users/administration/{projectID}",
@@ -1933,10 +1997,13 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PUT /api/v2/projects/quota/{projectID}",
 		"PUT /api/v2/scheduling/schedules/administration/{projectID}",
 		"PUT /api/v2/scheduling/schedules/{mode}/{projectID}",
+		"PUT /api/v2/scim/v2/Groups/{id}",
+		"PUT /api/v2/scim/v2/Users/{id}",
 		"PUT /api/v2/secrets/secret/{mode}/{projectID}/{name}",
 		"PUT /api/v2/social/author",
 		"PUT /api/v2/social/author/",
 		"PUT /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
+		"PUT /artifacts/s3/{bucket}/*",
 	}
 
 	if len(got) != len(want) {
@@ -2093,13 +2160,17 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 		{method: http.MethodGet, path: "/forward-auth/auth_form/logout", want: http.StatusFound},
 		{method: http.MethodHead, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
 		{method: http.MethodOptions, path: "/forward-auth/auth_form/logout", want: http.StatusMethodNotAllowed},
-		// GET 500s here because newCompleteProductionRouter's OIDCHandler is
-		// a zero-value test double with no real OAuth2 config — a real
-		// OIDCHandler (as main.go constructs via NewOIDCHandler, which does
-		// live OIDC discovery) redirects (302) instead. Pinned exactly
-		// rather than accepted as "any non-2xx" so a change to *this*
-		// specific crash doesn't slip past silently either.
-		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusInternalServerError},
+		// GET 503s here because newCompleteProductionRouter's OIDCHandler is a
+		// zero-value test double: it holds neither an environment runtime nor a
+		// provider store, so it resolves no identity provider and says so. A
+		// real OIDCHandler redirects (302) instead.
+		//
+		// This WAS a 500, and the 500 was a nil dereference on the handler's
+		// oauth2 configuration. Resolving the provider per request replaced the
+		// crash with a refusal that names the condition. Pinned exactly rather
+		// than accepted as "any non-2xx", so a change back to a crash does not
+		// slip past either.
+		{method: http.MethodGet, path: "/forward-auth/auth_oidc/login", want: http.StatusServiceUnavailable},
 		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
 		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login", want: http.StatusMethodNotAllowed},
 		// Not a registered route: the OIDC callback path is "auth_oidc/callback",
@@ -2108,6 +2179,17 @@ func TestProductionBrowserAuthSurfaceNeverSucceedsWithoutCredentials(t *testing.
 		{method: http.MethodHead, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 		{method: http.MethodPost, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
 		{method: http.MethodOptions, path: "/forward-auth/auth_oidc/login_callback", want: http.StatusNotFound},
+		// SAML. All three refuse with 503 here: the handler holds no provider
+		// store, so it federates nothing and says so. None of them can answer a
+		// success without a verified assertion, which is what this test is for.
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/metadata", want: http.StatusServiceUnavailable},
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/login", want: http.StatusServiceUnavailable},
+		{method: http.MethodPost, path: "/forward-auth/auth_saml/acs", want: http.StatusServiceUnavailable},
+		// The assertion consumer service is POST-only: the authentication
+		// request asks for the HTTP-POST binding, and a GET here would be a
+		// login attempt carrying the assertion in the URL.
+		{method: http.MethodGet, path: "/forward-auth/auth_saml/acs", want: http.StatusMethodNotAllowed},
+		{method: http.MethodPost, path: "/forward-auth/auth_saml/login", want: http.StatusMethodNotAllowed},
 	}
 
 	for _, route := range routes {
@@ -2137,6 +2219,12 @@ func newCompleteProductionRouter(sessionSecret string) chi.Router {
 		AuthValidator:  testTokenValidator{user: authenticatedTestUser()},
 		SessionHandler: v2auth.NewSessionHandler(nil, sessionSecret),
 		OIDCHandler:    &v2auth.OIDCHandler{},
+		// A zero-value SAML handler: it holds no provider store, so every one
+		// of its routes resolves no provider and refuses. It is wired anyway so
+		// the browser-auth surface below PINS the SAML paths — a handler left
+		// out of this router would let all three routes be removed without a
+		// test noticing.
+		SAMLHandler:    &v2auth.SAMLHandler{},
 		SessionSecret:  sessionSecret,
 		Shadow:         shadow.NewComparator(shadow.Config{Timeout: time.Second}),
 		ShadowMetrics:  shadow.NewMetrics(10),

@@ -65,7 +65,6 @@ import type {
   ListObjectsResponse,
   N401Response,
   N403Response,
-  N404Response,
   PresignUploadPartResponse,
   TransferGrantResponse,
   UpdateBucketRequest,
@@ -498,7 +497,7 @@ export type getBucketResponse403 = {
 };
 
 export type getBucketResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -538,7 +537,7 @@ export const getGetBucketQueryKey = (projectID: number, bucket: string) => {
 
 export const getGetBucketQueryOptions = <
   TData = Awaited<ReturnType<typeof getBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -575,11 +574,11 @@ export const getGetBucketQueryOptions = <
 export type GetBucketQueryResult = NonNullable<
   Awaited<ReturnType<typeof getBucket>>
 >;
-export type GetBucketQueryError = N401Response | N403Response | N404Response;
+export type GetBucketQueryError = N401Response | N403Response | Error;
 
 export function useGetBucket<
   TData = Awaited<ReturnType<typeof getBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -603,7 +602,7 @@ export function useGetBucket<
 };
 export function useGetBucket<
   TData = Awaited<ReturnType<typeof getBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -627,7 +626,7 @@ export function useGetBucket<
 };
 export function useGetBucket<
   TData = Awaited<ReturnType<typeof getBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -647,7 +646,7 @@ export function useGetBucket<
 
 export function useGetBucket<
   TData = Awaited<ReturnType<typeof getBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -692,7 +691,7 @@ export type updateBucketResponse403 = {
 };
 
 export type updateBucketResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -750,7 +749,7 @@ export const getUpdateBucketQueryKey = (
 
 export const getUpdateBucketQueryOptions = <
   TData = Awaited<ReturnType<typeof updateBucket>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   bucket: string,
@@ -795,11 +794,11 @@ export const getUpdateBucketQueryOptions = <
 export type UpdateBucketQueryResult = NonNullable<
   Awaited<ReturnType<typeof updateBucket>>
 >;
-export type UpdateBucketQueryError = Error | N401Response | N404Response;
+export type UpdateBucketQueryError = Error | N401Response;
 
 export function useUpdateBucket<
   TData = Awaited<ReturnType<typeof updateBucket>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   bucket: string,
@@ -824,7 +823,7 @@ export function useUpdateBucket<
 };
 export function useUpdateBucket<
   TData = Awaited<ReturnType<typeof updateBucket>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   bucket: string,
@@ -849,7 +848,7 @@ export function useUpdateBucket<
 };
 export function useUpdateBucket<
   TData = Awaited<ReturnType<typeof updateBucket>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   bucket: string,
@@ -870,7 +869,7 @@ export function useUpdateBucket<
 
 export function useUpdateBucket<
   TData = Awaited<ReturnType<typeof updateBucket>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   bucket: string,
@@ -916,7 +915,7 @@ export type deleteBucketResponse403 = {
 };
 
 export type deleteBucketResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -960,7 +959,7 @@ export const getDeleteBucketQueryKey = (projectID: number, bucket: string) => {
 
 export const getDeleteBucketQueryOptions = <
   TData = Awaited<ReturnType<typeof deleteBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -999,11 +998,11 @@ export const getDeleteBucketQueryOptions = <
 export type DeleteBucketQueryResult = NonNullable<
   Awaited<ReturnType<typeof deleteBucket>>
 >;
-export type DeleteBucketQueryError = N401Response | N403Response | N404Response;
+export type DeleteBucketQueryError = N401Response | N403Response | Error;
 
 export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1027,7 +1026,7 @@ export function useDeleteBucket<
 };
 export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1051,7 +1050,7 @@ export function useDeleteBucket<
 };
 export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1071,7 +1070,7 @@ export function useDeleteBucket<
 
 export function useDeleteBucket<
   TData = Awaited<ReturnType<typeof deleteBucket>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1111,7 +1110,7 @@ export type listObjectsResponse403 = {
 };
 
 export type listObjectsResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -1178,7 +1177,7 @@ export const getListObjectsQueryKey = (
 
 export const getListObjectsQueryOptions = <
   TData = Awaited<ReturnType<typeof listObjects>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1218,11 +1217,11 @@ export const getListObjectsQueryOptions = <
 export type ListObjectsQueryResult = NonNullable<
   Awaited<ReturnType<typeof listObjects>>
 >;
-export type ListObjectsQueryError = N401Response | N403Response | N404Response;
+export type ListObjectsQueryError = N401Response | N403Response | Error;
 
 export function useListObjects<
   TData = Awaited<ReturnType<typeof listObjects>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1247,7 +1246,7 @@ export function useListObjects<
 };
 export function useListObjects<
   TData = Awaited<ReturnType<typeof listObjects>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1272,7 +1271,7 @@ export function useListObjects<
 };
 export function useListObjects<
   TData = Awaited<ReturnType<typeof listObjects>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1293,7 +1292,7 @@ export function useListObjects<
 
 export function useListObjects<
   TData = Awaited<ReturnType<typeof listObjects>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1344,7 +1343,7 @@ export type uploadObjectResponse403 = {
 };
 
 export type uploadObjectResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -1435,7 +1434,7 @@ export const getUploadObjectQueryKey = (
 
 export const getUploadObjectQueryOptions = <
   TData = Awaited<ReturnType<typeof uploadObject>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1481,12 +1480,11 @@ export const getUploadObjectQueryOptions = <
 export type UploadObjectQueryResult = NonNullable<
   Awaited<ReturnType<typeof uploadObject>>
 >;
-export type UploadObjectQueryError =
-  Error | N401Response | N403Response | N404Response;
+export type UploadObjectQueryError = Error | N401Response | N403Response;
 
 export function useUploadObject<
   TData = Awaited<ReturnType<typeof uploadObject>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1512,7 +1510,7 @@ export function useUploadObject<
 };
 export function useUploadObject<
   TData = Awaited<ReturnType<typeof uploadObject>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1538,7 +1536,7 @@ export function useUploadObject<
 };
 export function useUploadObject<
   TData = Awaited<ReturnType<typeof uploadObject>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1560,7 +1558,7 @@ export function useUploadObject<
 
 export function useUploadObject<
   TData = Awaited<ReturnType<typeof uploadObject>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1613,7 +1611,7 @@ export type batchDeleteObjectsResponse403 = {
 };
 
 export type batchDeleteObjectsResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -1672,7 +1670,7 @@ export const getBatchDeleteObjectsQueryKey = (
 
 export const getBatchDeleteObjectsQueryOptions = <
   TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1721,12 +1719,11 @@ export const getBatchDeleteObjectsQueryOptions = <
 export type BatchDeleteObjectsQueryResult = NonNullable<
   Awaited<ReturnType<typeof batchDeleteObjects>>
 >;
-export type BatchDeleteObjectsQueryError =
-  Error | N401Response | N403Response | N404Response;
+export type BatchDeleteObjectsQueryError = Error | N401Response | N403Response;
 
 export function useBatchDeleteObjects<
   TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1755,7 +1752,7 @@ export function useBatchDeleteObjects<
 };
 export function useBatchDeleteObjects<
   TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1784,7 +1781,7 @@ export function useBatchDeleteObjects<
 };
 export function useBatchDeleteObjects<
   TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1809,7 +1806,7 @@ export function useBatchDeleteObjects<
 
 export function useBatchDeleteObjects<
   TData = Awaited<ReturnType<typeof batchDeleteObjects>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -1864,7 +1861,7 @@ export type downloadObjectResponse403 = {
 };
 
 export type downloadObjectResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -1920,7 +1917,7 @@ export const getDownloadObjectQueryKey = (
 
 export const getDownloadObjectQueryOptions = <
   TData = Awaited<ReturnType<typeof downloadObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1962,12 +1959,11 @@ export const getDownloadObjectQueryOptions = <
 export type DownloadObjectQueryResult = NonNullable<
   Awaited<ReturnType<typeof downloadObject>>
 >;
-export type DownloadObjectQueryError =
-  N401Response | N403Response | N404Response;
+export type DownloadObjectQueryError = N401Response | N403Response | Error;
 
 export function useDownloadObject<
   TData = Awaited<ReturnType<typeof downloadObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -1992,7 +1988,7 @@ export function useDownloadObject<
 };
 export function useDownloadObject<
   TData = Awaited<ReturnType<typeof downloadObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2017,7 +2013,7 @@ export function useDownloadObject<
 };
 export function useDownloadObject<
   TData = Awaited<ReturnType<typeof downloadObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2038,7 +2034,7 @@ export function useDownloadObject<
 
 export function useDownloadObject<
   TData = Awaited<ReturnType<typeof downloadObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2084,7 +2080,7 @@ export type statObjectResponse403 = {
 };
 
 export type statObjectResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -2136,7 +2132,7 @@ export const getStatObjectQueryKey = (
 
 export const getStatObjectQueryOptions = <
   TData = Awaited<ReturnType<typeof statObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2178,11 +2174,11 @@ export const getStatObjectQueryOptions = <
 export type StatObjectQueryResult = NonNullable<
   Awaited<ReturnType<typeof statObject>>
 >;
-export type StatObjectQueryError = N401Response | N403Response | N404Response;
+export type StatObjectQueryError = N401Response | N403Response | Error;
 
 export function useStatObject<
   TData = Awaited<ReturnType<typeof statObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2207,7 +2203,7 @@ export function useStatObject<
 };
 export function useStatObject<
   TData = Awaited<ReturnType<typeof statObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2232,7 +2228,7 @@ export function useStatObject<
 };
 export function useStatObject<
   TData = Awaited<ReturnType<typeof statObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2253,7 +2249,7 @@ export function useStatObject<
 
 export function useStatObject<
   TData = Awaited<ReturnType<typeof statObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2299,7 +2295,7 @@ export type deleteObjectResponse403 = {
 };
 
 export type deleteObjectResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -2354,7 +2350,7 @@ export const getDeleteObjectQueryKey = (
 
 export const getDeleteObjectQueryOptions = <
   TData = Awaited<ReturnType<typeof deleteObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2396,11 +2392,11 @@ export const getDeleteObjectQueryOptions = <
 export type DeleteObjectQueryResult = NonNullable<
   Awaited<ReturnType<typeof deleteObject>>
 >;
-export type DeleteObjectQueryError = N401Response | N403Response | N404Response;
+export type DeleteObjectQueryError = N401Response | N403Response | Error;
 
 export function useDeleteObject<
   TData = Awaited<ReturnType<typeof deleteObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2425,7 +2421,7 @@ export function useDeleteObject<
 };
 export function useDeleteObject<
   TData = Awaited<ReturnType<typeof deleteObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2450,7 +2446,7 @@ export function useDeleteObject<
 };
 export function useDeleteObject<
   TData = Awaited<ReturnType<typeof deleteObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2471,7 +2467,7 @@ export function useDeleteObject<
 
 export function useDeleteObject<
   TData = Awaited<ReturnType<typeof deleteObject>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   bucket: string,
@@ -2522,7 +2518,7 @@ export type createTransferGrantResponse403 = {
 };
 
 export type createTransferGrantResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -2584,7 +2580,7 @@ export const getCreateTransferGrantQueryKey = (
 
 export const getCreateTransferGrantQueryOptions = <
   TData = Awaited<ReturnType<typeof createTransferGrant>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -2637,12 +2633,11 @@ export const getCreateTransferGrantQueryOptions = <
 export type CreateTransferGrantQueryResult = NonNullable<
   Awaited<ReturnType<typeof createTransferGrant>>
 >;
-export type CreateTransferGrantQueryError =
-  Error | N401Response | N403Response | N404Response;
+export type CreateTransferGrantQueryError = Error | N401Response | N403Response;
 
 export function useCreateTransferGrant<
   TData = Awaited<ReturnType<typeof createTransferGrant>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -2671,7 +2666,7 @@ export function useCreateTransferGrant<
 };
 export function useCreateTransferGrant<
   TData = Awaited<ReturnType<typeof createTransferGrant>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -2700,7 +2695,7 @@ export function useCreateTransferGrant<
 };
 export function useCreateTransferGrant<
   TData = Awaited<ReturnType<typeof createTransferGrant>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -2725,7 +2720,7 @@ export function useCreateTransferGrant<
 
 export function useCreateTransferGrant<
   TData = Awaited<ReturnType<typeof createTransferGrant>>,
-  TError = Error | N401Response | N403Response | N404Response,
+  TError = Error | N401Response | N403Response,
 >(
   projectID: number,
   bucket: string,
@@ -2775,7 +2770,7 @@ export type commitTransferGrantResponse403 = {
 };
 
 export type commitTransferGrantResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -2846,7 +2841,7 @@ export const getCommitTransferGrantQueryKey = (
 
 export const getCommitTransferGrantQueryOptions = <
   TData = Awaited<ReturnType<typeof commitTransferGrant>>,
-  TError = N401Response | N403Response | N404Response | Error,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   grantID: string,
@@ -2891,12 +2886,11 @@ export const getCommitTransferGrantQueryOptions = <
 export type CommitTransferGrantQueryResult = NonNullable<
   Awaited<ReturnType<typeof commitTransferGrant>>
 >;
-export type CommitTransferGrantQueryError =
-  N401Response | N403Response | N404Response | Error;
+export type CommitTransferGrantQueryError = N401Response | N403Response | Error;
 
 export function useCommitTransferGrant<
   TData = Awaited<ReturnType<typeof commitTransferGrant>>,
-  TError = N401Response | N403Response | N404Response | Error,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   grantID: string,
@@ -2924,7 +2918,7 @@ export function useCommitTransferGrant<
 };
 export function useCommitTransferGrant<
   TData = Awaited<ReturnType<typeof commitTransferGrant>>,
-  TError = N401Response | N403Response | N404Response | Error,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   grantID: string,
@@ -2952,7 +2946,7 @@ export function useCommitTransferGrant<
 };
 export function useCommitTransferGrant<
   TData = Awaited<ReturnType<typeof commitTransferGrant>>,
-  TError = N401Response | N403Response | N404Response | Error,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   grantID: string,
@@ -2976,7 +2970,7 @@ export function useCommitTransferGrant<
 
 export function useCommitTransferGrant<
   TData = Awaited<ReturnType<typeof commitTransferGrant>>,
-  TError = N401Response | N403Response | N404Response | Error,
+  TError = N401Response | N403Response | Error,
 >(
   projectID: number,
   grantID: string,
@@ -3029,7 +3023,7 @@ export type presignUploadPartResponse403 = {
 };
 
 export type presignUploadPartResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -3100,7 +3094,7 @@ export const getPresignUploadPartQueryKey = (
 
 export const getPresignUploadPartQueryOptions = <
   TData = Awaited<ReturnType<typeof presignUploadPart>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3151,11 +3145,11 @@ export const getPresignUploadPartQueryOptions = <
 export type PresignUploadPartQueryResult = NonNullable<
   Awaited<ReturnType<typeof presignUploadPart>>
 >;
-export type PresignUploadPartQueryError = Error | N401Response | N404Response;
+export type PresignUploadPartQueryError = Error | N401Response;
 
 export function usePresignUploadPart<
   TData = Awaited<ReturnType<typeof presignUploadPart>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3184,7 +3178,7 @@ export function usePresignUploadPart<
 };
 export function usePresignUploadPart<
   TData = Awaited<ReturnType<typeof presignUploadPart>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3213,7 +3207,7 @@ export function usePresignUploadPart<
 };
 export function usePresignUploadPart<
   TData = Awaited<ReturnType<typeof presignUploadPart>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3238,7 +3232,7 @@ export function usePresignUploadPart<
 
 export function usePresignUploadPart<
   TData = Awaited<ReturnType<typeof presignUploadPart>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3293,7 +3287,7 @@ export type completeMultipartUploadResponse403 = {
 };
 
 export type completeMultipartUploadResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -3373,7 +3367,7 @@ export const getCompleteMultipartUploadQueryKey = (
 
 export const getCompleteMultipartUploadQueryOptions = <
   TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3426,12 +3420,11 @@ export const getCompleteMultipartUploadQueryOptions = <
 export type CompleteMultipartUploadQueryResult = NonNullable<
   Awaited<ReturnType<typeof completeMultipartUpload>>
 >;
-export type CompleteMultipartUploadQueryError =
-  Error | N401Response | N404Response;
+export type CompleteMultipartUploadQueryError = Error | N401Response;
 
 export function useCompleteMultipartUpload<
   TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3460,7 +3453,7 @@ export function useCompleteMultipartUpload<
 };
 export function useCompleteMultipartUpload<
   TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3489,7 +3482,7 @@ export function useCompleteMultipartUpload<
 };
 export function useCompleteMultipartUpload<
   TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3514,7 +3507,7 @@ export function useCompleteMultipartUpload<
 
 export function useCompleteMultipartUpload<
   TData = Awaited<ReturnType<typeof completeMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3569,7 +3562,7 @@ export type abortMultipartUploadResponse403 = {
 };
 
 export type abortMultipartUploadResponse404 = {
-  data: N404Response;
+  data: Error;
   status: 404;
 };
 
@@ -3632,7 +3625,7 @@ export const getAbortMultipartUploadQueryKey = (
 
 export const getAbortMultipartUploadQueryOptions = <
   TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3677,12 +3670,11 @@ export const getAbortMultipartUploadQueryOptions = <
 export type AbortMultipartUploadQueryResult = NonNullable<
   Awaited<ReturnType<typeof abortMultipartUpload>>
 >;
-export type AbortMultipartUploadQueryError =
-  Error | N401Response | N404Response;
+export type AbortMultipartUploadQueryError = Error | N401Response;
 
 export function useAbortMultipartUpload<
   TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3710,7 +3702,7 @@ export function useAbortMultipartUpload<
 };
 export function useAbortMultipartUpload<
   TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3738,7 +3730,7 @@ export function useAbortMultipartUpload<
 };
 export function useAbortMultipartUpload<
   TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,
@@ -3762,7 +3754,7 @@ export function useAbortMultipartUpload<
 
 export function useAbortMultipartUpload<
   TData = Awaited<ReturnType<typeof abortMultipartUpload>>,
-  TError = Error | N401Response | N404Response,
+  TError = Error | N401Response,
 >(
   projectID: number,
   grantID: string,

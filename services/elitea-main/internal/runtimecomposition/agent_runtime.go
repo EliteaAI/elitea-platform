@@ -8,6 +8,7 @@ import (
 	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/repos"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -63,10 +64,15 @@ func newCurrentAgentVersionFreezer(
 	if err != nil {
 		return nil, err
 	}
+	guardrailPolicies, err := platformconfig.NewGuardrailPolicyAdapter(pool)
+	if err != nil {
+		return nil, fmt.Errorf("construct current agent guardrail policy source: %w", err)
+	}
 	return agentexecutionapp.NewCurrentApplicationToolSnapshotService(
 		settings,
 		currentAgentToolkitNameAdapter{names: names},
 		configurations.models,
+		guardrailPolicies,
 		configurations.publicProjectID,
 	)
 }

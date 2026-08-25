@@ -91,8 +91,69 @@ type ListResponse struct {
 	TotalPages int     `json:"total_pages"`
 }
 
+// SkillEntityTypeAgent is the only entity type that can carry a skill.
+//
+// Pylon closes the set to one member: `SkillEntityTypes` has `agent` and
+// nothing else (legacy/plugins/elitea_core/models/enums/all.py:72-74), and the
+// request model types the field as that enum
+// (legacy/plugins/elitea_core/models/pd/skill.py:355), so "pipeline" is a 400
+// there. Both read paths filter on this literal — the chat read
+// (internal/db/queries/agent_chat.sql:132) and the attached-skill registry
+// (internal/api/v2/applications/handler.go:1398) — so a row written with any
+// other value is a row nothing reads.
+const SkillEntityTypeAgent = "agent"
+
+// MaxSkillsPerEntityVersion caps the skills one agent version may carry.
+//
+// It is pylon's MAX_SKILLS_PER_AGENT
+// (legacy/plugins/elitea_core/utils/skill_utils.py:31). The read side already
+// publishes the same number: applicationskills.MaxCurrentApplicationSkills,
+// which the old skill picker renders as "n/5 skills added" and uses to disable
+// the menu. Without the same cap on the write side the counter can show 6/5.
+const MaxSkillsPerEntityVersion = 5
+
+// SkillRelation is one row of entity_skill_mapping, as the relation form of
+// PATCH /skill/{mode}/{projectID}/{skillID} names it.
+//
+// The table has NO entity_id column (001_initial.sql:422-431). Its key is
+// (entity_version_id, skill_id, entity_type), and the skill id comes from the
+// path, so these three fields plus the path segment address one row exactly.
+type SkillRelation struct {
+	// EntityVersionID is application_versions.id, not applications.id.
+	EntityVersionID string
+	// EntityType is "agent" when the request does not name one.
+	EntityType string
+	// SkillVersionID names the skill version the attachment serves. Attach
+	// requires it; detach does not read it, because it is not part of the key.
+	SkillVersionID string
+}
+
+// SkillAttachment is the attach response body.
+//
+// It is pylon's four-key dict, verbatim
+// (legacy/plugins/elitea_core/utils/skill_utils.py:1228-1233). The ids are
+// numbers there, so they are numbers here.
+type SkillAttachment struct {
+	SkillID        int    `json:"skill_id"`
+	SkillVersionID int    `json:"skill_version_id"`
+	SkillName      string `json:"skill_name"`
+	VersionName    string `json:"version_name"`
+}
+
 type Repository interface {
 	List(ctx context.Context, projectID string, params ListParams) (ListResponse, error)
+	// ListForApplicationVersion returns only the skills attached to one agent
+	// version. It is part of this interface rather than a separate optional
+	// one that the router type-asserts for: an assertion that fails leaves the
+	// route unregistered, which is the silent gap #367 is about. Here a
+	// repository that cannot answer it does not compile.
+	ListForApplicationVersion(ctx context.Context, projectID, appVersionID string) (ListResponse, error)
+	// AttachSkill and DetachSkill own the entity_skill_mapping row that
+	// ListForApplicationVersion reads. They live on this interface for the same
+	// reason: a repository that cannot write the attachment does not compile,
+	// so the read can never be the only half that exists.
+	AttachSkill(ctx context.Context, projectID, skillID string, relation SkillRelation) (SkillAttachment, error)
+	DetachSkill(ctx context.Context, projectID, skillID string, relation SkillRelation) error
 	Get(ctx context.Context, projectID, skillID string) (Skill, error)
 	GetByName(ctx context.Context, projectID, name string) (Skill, bool, error)
 	Create(ctx context.Context, projectID string, skill Skill) (Skill, error)
@@ -145,6 +206,51 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// ListForApplication answers GET /application_skills/{mode}/{projectID}/{appVersionID}
+// with the skills attached to that agent version.
+//
+// The route used to point at List, which never reads {appVersionID} and so
+// returned every skill in the project (#367). Both handlers answer 200 and both
+// return the same envelope, so no caller could tell the two apart — the screen
+// simply showed the wrong skills.
+//
+// A malformed {appVersionID} is refused rather than coerced. Passing a
+// non-numeric segment through to the query would make the answer depend on how
+// PostgreSQL casts it, and the failure mode of the bug being fixed here is
+// exactly "answers confidently with the wrong set".
+func (h *Handler) ListForApplication(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	appVersionID := chi.URLParam(r, "appVersionID")
+
+	if !isPositiveInteger(appVersionID) {
+		apierr.Write(w, apierr.BadRequest("app version id must be a positive integer"))
+		return
+	}
+
+	resp, err := h.repo.ListForApplicationVersion(r.Context(), projectID, appVersionID)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isPositiveInteger accepts decimal digits only, and rejects zero however it is
+// written. "0" and "000" are not version ids, and entity_version_id is never 0,
+// so accepting them would turn a malformed request into an empty list — an
+// answer indistinguishable from "this version has no skills".
+func isPositiveInteger(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, digit := range value {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return strings.Trim(value, "0") != ""
+}
+
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	skillID := chi.URLParam(r, "skillID")
@@ -174,12 +280,44 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, created)
 }
 
+// Update serves PUT and PATCH on /skill/{mode}/{projectID}/{skillID}.
+//
+// The URL is overloaded, and the body shape selects the operation. A body that
+// carries a `has_relation` key attaches or detaches a skill; any other body
+// updates the skill itself. This is the convention the old app already uses on
+// this exact URL (apps/elitea-ui/src/[fsd]/features/skill/api/skillsApi.js:306-331,
+// `updateSkillRelation`), and the convention the toolkit twin already
+// implements in Go (internal/api/v2/toolkits/handler.go:826). A new route would
+// leave the contract the frontend calls unserved.
+//
+// Before this change the relation body decoded into `createRequest`, which
+// names none of its four keys. Every field was dropped, the skill's own name
+// and description were overwritten with "", and the caller got 200. Nothing was
+// attached.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	skillID := chi.URLParam(r, "skillID")
 
+	// The body is read once and unmarshalled twice, because presence of a key
+	// cannot be seen through `createRequest`.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxUpdateBytes))
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
+
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(body, &keys); err != nil {
+		apierr.Write(w, apierr.BadRequest("invalid request body"))
+		return
+	}
+	if _, present := keys["has_relation"]; present {
+		h.updateSkillRelation(w, r, projectID, skillID, keys)
+		return
+	}
+
 	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		apierr.Write(w, apierr.BadRequest("invalid request body"))
 		return
 	}
@@ -190,6 +328,159 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// maxUpdateBytes bounds the body Update reads into memory before it can tell
+// the two operations apart.
+const maxUpdateBytes = 1 << 20 // 1MiB
+
+// updateSkillRelation attaches or detaches one skill.
+//
+// Status codes and bodies follow pylon's `patch`
+// (legacy/plugins/elitea_core/api/v2/skill.py:209-245): attach answers 201 with
+// the four-key attachment, detach answers 200 with {"ok": true}.
+func (h *Handler) updateSkillRelation(
+	w http.ResponseWriter,
+	r *http.Request,
+	projectID, skillID string,
+	body map[string]json.RawMessage,
+) {
+	skillID, err := rowID(skillID, "skill id")
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest(err.Error()))
+		return
+	}
+
+	// A non-boolean `has_relation` is refused, not coerced. The toolkit twin
+	// reads it with a comma-ok assertion, so a string or a null there means
+	// false, which means DETACH — a request that says nothing intelligible
+	// deletes an attachment. The two directions of this route are not
+	// symmetrical in cost, so an unreadable value gets no default.
+	//
+	// A JSON null needs its own refusal: encoding/json unmarshals null into a
+	// bool as a no-op and reports no error, which would leave the false that
+	// means detach.
+	var hasRelation bool
+	raw := body["has_relation"]
+	if string(raw) == "null" || json.Unmarshal(raw, &hasRelation) != nil {
+		apierr.Write(w, apierr.BadRequest("has_relation must be true or false"))
+		return
+	}
+
+	entityVersionID, err := relationID(body, "entity_version_id")
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest(err.Error()))
+		return
+	}
+	if entityVersionID == "" {
+		apierr.Write(w, apierr.BadRequest("entity_version_id is required"))
+		return
+	}
+
+	entityType, err := relationEntityType(body)
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest(err.Error()))
+		return
+	}
+
+	relation := SkillRelation{EntityVersionID: entityVersionID, EntityType: entityType}
+
+	if !hasRelation {
+		if err := h.repo.DetachSkill(r.Context(), projectID, skillID, relation); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		return
+	}
+
+	skillVersionID, err := relationID(body, "skill_version_id")
+	if err != nil {
+		apierr.Write(w, apierr.BadRequest(err.Error()))
+		return
+	}
+	// Required on attach, and pylon says so in a model validator
+	// (legacy/plugins/elitea_core/models/pd/skill.py:357-362). It is not
+	// optional in practice either: both readers of the row LEFT JOIN
+	// skill_versions through this column and serve
+	// COALESCE(instructions, ''), and the registry then DROPS a skill whose
+	// instructions are blank. An attachment with no skill version is therefore
+	// a row that the agent run cannot see.
+	if skillVersionID == "" {
+		apierr.Write(w, apierr.BadRequest("skill_version_id is required when has_relation is true"))
+		return
+	}
+	relation.SkillVersionID = skillVersionID
+
+	attachment, err := h.repo.AttachSkill(r.Context(), projectID, skillID, relation)
+	if err != nil {
+		apierr.Write(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, attachment)
+}
+
+// relationEntityType reads `entity_type`, which defaults to "agent".
+func relationEntityType(body map[string]json.RawMessage) (string, error) {
+	raw, present := body["entity_type"]
+	if !present || string(raw) == "null" {
+		return SkillEntityTypeAgent, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("entity_type must be %q", SkillEntityTypeAgent)
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return SkillEntityTypeAgent, nil
+	}
+	if value != SkillEntityTypeAgent {
+		return "", fmt.Errorf("entity_type must be %q", SkillEntityTypeAgent)
+	}
+	return value, nil
+}
+
+// relationID reads one id off the relation body and returns it as a decimal
+// string, or "" when the key is absent or null.
+//
+// Both a JSON number and a JSON string are accepted. Pylon types these fields
+// `int`, and pydantic coerces a numeric string to an int, so both shapes reach
+// the same place there. Anything that is not a positive whole number is
+// refused rather than coerced: these values address a row, and a coerced id
+// addresses the wrong one.
+func relationID(body map[string]json.RawMessage, key string) (string, error) {
+	raw, present := body[key]
+	if !present || string(raw) == "null" {
+		return "", nil
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return "", nil
+		}
+		return rowID(text, key)
+	}
+
+	var number json.Number
+	if err := json.Unmarshal(raw, &number); err != nil {
+		return "", fmt.Errorf("%s must be a positive integer", key)
+	}
+	return rowID(number.String(), key)
+}
+
+// rowID refuses an id that no row can carry, and returns it in canonical form.
+//
+// The columns are PostgreSQL INTEGER, so a value above 2147483647 has no row
+// and reaches pgx as "value out of range" — a 500 for a request the caller got
+// wrong. The bound turns that into a 400.
+func rowID(value, key string) (string, error) {
+	parsed, err := strconv.ParseInt(value, 10, 32)
+	if err != nil || parsed < 1 {
+		return "", fmt.Errorf("%s must be a positive integer", key)
+	}
+	return strconv.FormatInt(parsed, 10), nil
 }
 
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {

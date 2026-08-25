@@ -7,8 +7,7 @@ import (
 
 func newAttachmentChunksTestRepo(t *testing.T) *AttachmentChunksRepository {
 	t.Helper()
-	pool := newPostgresIntegrationPool(t)
-	applyPostgresIntegrationMigrations(t, pool)
+	pool := newMigratedPostgresIntegrationPool(t)
 	repo, err := NewAttachmentChunksRepository(pool)
 	if err != nil {
 		t.Fatalf("NewAttachmentChunksRepository: %v", err)

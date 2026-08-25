@@ -11,12 +11,11 @@ import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import type { Theme } from '@mui/material/styles';
 
+import { useVoiceFeatureFlags } from '@/shared/lib/hooks/useVoiceFeatureFlags';
 import { MegaphoneIcon } from '@/shared/ui/icons/megaphone-icon';
 
 import { VoiceControlButton } from './VoiceControlButton';
 import type { VoiceControlButtonProps } from './VoiceControlButton';
-
-const VOICE_FEATURES_ENABLED = true;
 
 export type VoiceMiniPlayerProps = VoiceControlButtonProps;
 
@@ -39,7 +38,13 @@ const pillSx = (theme: Theme) => ({
 const iconStyle = { width: '1rem', height: '1rem' };
 
 export function VoiceMiniPlayer(props: VoiceMiniPlayerProps): ReactNode {
-  if (!VOICE_FEATURES_ENABLED) return null;
+  // Same platform switch as `VoiceControlButton` (A14, issue 200), read rather
+  // than the `const VOICE_FEATURES_ENABLED = true` module constant that stood
+  // here. The pill must go with the button: `VoiceControlButton` already
+  // returns null while voice is off, so a hardcoded `true` here left an empty
+  // bordered pill with only the megaphone icon in it.
+  const voiceFlags = useVoiceFeatureFlags();
+  if (!voiceFlags.enabled) return null;
 
   return (
     <Box

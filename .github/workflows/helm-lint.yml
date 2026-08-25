@@ -6,12 +6,33 @@ on:
       - "deploy/helm/**"
       - "deploy/argocd/**"
       - ".github/workflows/helm-lint.yml"
+      # The capability gate below reads the required runtime names straight out
+      # of runtimecomposition/config.go. Without this path a pull request that
+      # adds a new `required("ELITEA_RUNTIME_X")` and touches nothing under
+      # deploy/helm/ never runs the gate that exists to catch it — the same
+      # false green as a workflow that never triggers at all (#429).
+      - "services/elitea-main/internal/runtimecomposition/**"
+      # The LLM-path gate below compares the charts with the standalone compose
+      # file. A change to that file alone must run the gate that reads it.
+      - "deploy/docker-compose.standalone-full.yml"
+      # The publish-coverage gate below reads the chart matrix out of
+      # publish.yml. Without this path a pull request that drops a chart from
+      # that matrix and touches nothing under deploy/helm/ never runs the gate
+      # that exists to catch it — the #429/#518 shape again.
+      - ".github/workflows/publish.yml"
   push:
     branches:
       - main
     paths:
       - "deploy/helm/**"
       - "deploy/argocd/**"
+      - "services/elitea-main/internal/runtimecomposition/**"
+      - "deploy/docker-compose.standalone-full.yml"
+      - ".github/workflows/publish.yml"
+      # This workflow's own file. The pull_request arm above names it and this
+      # arm did not, so a push that edited only the gate could not start the
+      # gate it edited (#518).
+      - ".github/workflows/helm-lint.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -23,6 +44,8 @@ permissions:
 
 env:
   KUBECONFORM_VERSION: v0.6.7
+  # Read by the LLM-path gate below. Pinned, not "latest".
+  YQ_VERSION: v4.44.6
   # CRD schemas (argoproj.io Application, cert-manager Certificate) come from
   # the datreeio catalog. PINNED to a release tag, not `main`: an unpinned
   # third-party branch is a hard dependency of every deploy PR, so a rename
@@ -41,13 +64,178 @@ jobs:
         with:
           version: v3.16.0
 
+      # A bare loop takes the status of its LAST iteration, so a broken early
+      # chart read as a pass. `bash -e` hides that today by stopping the step on
+      # the first failure — but that is a property of the caller, not of the
+      # loop, and the loop is what gets copied. #409 gave `task helm:lint` the
+      # collecting form; this is the same shape (#429).
+      #
+      # A glob that matches nothing is a failure too. Zero charts linted is not
+      # "all charts pass"; it means the charts moved and this gate stopped
+      # measuring anything.
       - name: Lint charts
         run: |
+          failed=""
+          found=0
           for chart in deploy/helm/*/Chart.yaml; do
-            dir=$(dirname "$chart")
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            dir="$(dirname "$chart")"
             echo "Linting $dir..."
-            helm lint "$dir"
+            if ! helm lint "$dir"; then
+              failed="$failed $dir"
+            fi
           done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this gate linted nothing"
+            exit 1
+          fi
+          if [ -n "$failed" ]; then
+            echo "::error::these charts failed helm lint:$failed"
+            exit 1
+          fi
+          echo "helm lint: $found chart(s) passed"
+
+      # `helm lint` proves a chart is well formed. It never reads the rendered
+      # environment, so it stayed green for as long as the elitea-main chart
+      # set no capability flag at all — and a Kubernetes install therefore ran
+      # with the runtime plane dark while the same image on compose ran it
+      # (#382). This gate asserts the rendered YAML, and it reads the required
+      # runtime names straight out of internal/runtimecomposition/config.go, so
+      # a newly required name fails here until the chart renders it.
+      - name: Capability flags reach the container environment
+        run: bash deploy/helm/elitea-main/tests/render-capabilities.sh
+
+      # The runner image ships yq, so this usually downloads nothing. The
+      # version is PINNED for the same reason as KUBECONFORM_VERSION and
+      # CRD_SCHEMAS above: an unpinned third-party download is a hard
+      # dependency of every deploy pull request.
+      - name: Install yq
+        run: |
+          if ! command -v yq >/dev/null 2>&1; then
+            sudo wget -qO /usr/local/bin/yq \
+              "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+            sudo chmod +x /usr/local/bin/yq
+          fi
+          yq --version
+
+      # The LLM-path gate (#463, #467, #458, #464). It asserts both directions:
+      # the charts render the LLM path ON, and the gateway chart REFUSES an
+      # empty guard variable.
+      #
+      # #473 wrote this script and no job ran it. So the refusal that the
+      # template job below now satisfies had no test that it still fires. Delete
+      # the guard and every gate in this file stays green; only this step goes
+      # red (#497).
+      - name: The charts do not ship the LLM path off, and the guards refuse
+        run: bash deploy/helm/tests/render-llm-path.sh
+
+      # The BF0.2b render assertions (#485). This file was `deploy/test_bf0_2b.sh`
+      # and no workflow, Taskfile task or script called it. Wiring it found two
+      # defects on the first run:
+      #
+      #   1. It could not render the gateway chart at all. The chart has refused
+      #      an empty `env.GATEWAY_SELF_LLM_ORIGINS` since #467/#473, and the
+      #      script still called `helm template` with no values. It now supplies
+      #      the same render-only postures the template matrix supplies.
+      #   2. Its ArgoCD sync-wave assertion read `deploy/argocd/nats.yaml`. The
+      #      children moved into `deploy/argocd/applications/` with the
+      #      app-of-apps layout (#265), so the assertion raised
+      #      FileNotFoundError. With no caller, nothing printed it.
+      #
+      # It covers what no other step here covers: the two NATS profiles, the KV
+      # and stream bootstrap, the gateway Service shape and its SSE autoscaling
+      # metric, and the sync-wave ORDER (the argocd job below asserts only that a
+      # wave annotation is present).
+      - name: The NATS and gateway render assertions (BF0.2b)
+        run: |
+          python3 -c 'import yaml' 2>/dev/null \
+            || python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          bash deploy/helm/tests/render-bf0-2b.sh
+
+      # `helm lint` covers every chart. The `template` job below covers only the
+      # charts its matrix names, and a chart in neither list is never rendered
+      # and never schema-checked, with nothing reporting the hole.
+      # otel-collector was exactly that chart until #429: the matrix comment
+      # excused nats/ and nats-bootstrap/ by name and said nothing about it.
+      #
+      # This step reads the matrix out of this file, so adding a chart
+      # directory fails here until somebody either templates it or writes down
+      # why it cannot be templated.
+      - name: Every chart is templated or excluded on purpose
+        run: |
+          # Charts `helm template` cannot cover on this runner, with the reason:
+          # nats/ vendors an upstream subchart, so templating it needs
+          # `helm dependency build` and network access to the upstream repo,
+          # and nats-bootstrap/ is its companion hook chart.
+          excluded="nats nats-bootstrap"
+          matrix="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/helm-lint.yml \
+                      | awk '{print $3}' | tr '\n' ' ')"
+          if [ -z "$matrix" ]; then
+            echo "::error::read no chart name out of the template matrix — this check measured nothing"
+            exit 1
+          fi
+          found=0
+          missing=""
+          for chart in deploy/helm/*/Chart.yaml; do
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            name="$(basename "$(dirname "$chart")")"
+            case " $matrix $excluded " in
+              *" $name "*) ;;
+              *) missing="$missing $name" ;;
+            esac
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this check measured nothing"
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::these charts are neither in the template matrix nor excluded:$missing"
+            exit 1
+          fi
+          echo "chart coverage: $found chart(s), all templated or excluded on purpose"
+
+      # A chart that no release publishes is a chart nobody outside this
+      # repository can install. `helm lint` and the template matrix both stay
+      # green for it, because neither one asks whether the chart is
+      # distributed — the same "absence reads as correctness" shape the two
+      # coverage checks above exist for.
+      #
+      # This reads the chart matrix out of publish.yml, so adding a chart
+      # directory fails here until somebody either publishes it or writes down
+      # why it must not be published.
+      - name: Every chart is published or excluded on purpose
+        run: |
+          # Charts deliberately not pushed to the OCI registry, with the
+          # reason. Empty today: all eight charts are published.
+          excluded=""
+          published="$(grep -oE '^ +- chart: [a-z0-9-]+' .github/workflows/publish.yml \
+                        | awk '{print $3}' | tr '\n' ' ')"
+          if [ -z "$published" ]; then
+            echo "::error::read no chart name out of publish.yml — this check measured nothing"
+            exit 1
+          fi
+          found=0
+          missing=""
+          for chart in deploy/helm/*/Chart.yaml; do
+            [ -f "$chart" ] || continue
+            found=$((found + 1))
+            name="$(basename "$(dirname "$chart")")"
+            case " $published $excluded " in
+              *" $name "*) ;;
+              *) missing="$missing $name" ;;
+            esac
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no chart matched deploy/helm/*/Chart.yaml — this check measured nothing"
+            exit 1
+          fi
+          if [ -n "$missing" ]; then
+            echo "::error::these charts are published by no release:$missing"
+            exit 1
+          fi
+          echo "publish coverage: $found chart(s), all published or excluded on purpose"
 
   template:
     name: Helm Template (${{ matrix.chart }})
@@ -66,9 +254,23 @@ jobs:
             # Ingress path uses kubeconform's built-in kubernetes-version
             # schema, no CRD needed.
             toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
+          # This chart REFUSES to render until the operator states two postures
+          # (#467, #473): the self-referential-credential origins, and the
+          # egress posture. Neither can have a chart default, because both name
+          # addresses that only the operator knows. So this gate must supply
+          # them, exactly as an operator does. A chart that renders on an empty
+          # guard is the defect the refusal exists to stop (#497).
+          #
+          # These are RENDER-ONLY values. `.invalid` is reserved by RFC 2606 and
+          # never resolves, and the label says what the value is for, so no
+          # reader can mistake either one for a shipped default.
           - chart: elitea-llm-gateway
-            values: ""
-            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]'
+            values: --set-string env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1 --set-string egressPosture=public-unrestricted
+            # The last --set of a key wins, so the two lines below move this
+            # pass to the OTHER egress posture. The allowlist posture is the
+            # only one that renders a non-empty GATEWAY_EGRESS_ALLOWLIST, so a
+            # break in it is invisible in the default pass above.
+            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]' --set-string egressPosture=allowlist --set-string env.GATEWAY_EGRESS_ALLOWLIST=ci-render-only.example.invalid:8000
           - chart: elitea-scheduler
             values: ""
             toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
@@ -78,10 +280,15 @@ jobs:
           - chart: pylon-indexer
             values: ""
             toggles: --set persistence.enabled=true --set probes.startup.enabled=false --set probes.liveness.enabled=false
+          - chart: otel-collector
+            values: ""
+            toggles: --set serviceAccount.create=false --set service.type=NodePort
           # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
           # upstream subchart, so templating it needs `helm dependency build`
           # and network access to the upstream repo. `helm lint` above still
-          # covers them.
+          # covers them. The "Every chart is templated or excluded on purpose"
+          # step in the lint job holds this list and the matrix together, so a
+          # new chart cannot quietly join neither.
     steps:
       - uses: actions/checkout@v7
 
@@ -119,6 +326,22 @@ jobs:
             -schema-location default \
             -schema-location "$CRD_SCHEMAS" \
             "/tmp/${{ matrix.chart }}.yaml"
+
+      # The pylon-free capability set (#382). It renders objects no other pass
+      # produces — the runtime material volume and the three runtime listener
+      # ports on both the Deployment and the Service — so a schema error in
+      # them is invisible everywhere else.
+      - name: helm template + kubeconform (standalone capability values)
+        if: matrix.chart == 'elitea-main'
+        run: |
+          helm template ci-release deploy/helm/elitea-main \
+            -f deploy/helm/elitea-main/values-standalone.yaml \
+            > /tmp/elitea-main-standalone.yaml
+          kubeconform -strict -summary -verbose \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            -schema-location "$CRD_SCHEMAS" \
+            /tmp/elitea-main-standalone.yaml
 
       # Toggled-off/on paths (HPA, PVC, optional Services and probes, hook Jobs)
       # render zero objects in the default pass, so a break in them is invisible

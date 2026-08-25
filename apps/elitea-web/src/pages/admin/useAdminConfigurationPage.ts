@@ -131,7 +131,19 @@ function useAdminConfigSectionsPage(page: string | undefined): AdminConfiguratio
       const chosen = sections.find((section) => section.id === selectedId);
       if (chosen !== undefined) return chosen;
     }
-    return sections.find((section) => section.unavailable_reason === undefined) ?? sections[0];
+    // A section with a dedicated surface counts as available for this purpose,
+    // even though it keeps its `unavailable_reason` for the plugin-config value
+    // endpoints. Otherwise the page would open on a refusal while a fully
+    // working editor sat one click away.
+    //
+    // The test is the SERVER-declared `managed_surface`, not the view's editor
+    // registry: this file is behaviour and must not acquire a second copy of
+    // which surfaces this build can render.
+    return (
+      sections.find((section) => section.unavailable_reason === undefined) ??
+      sections.find((section) => (section.managed_surface ?? '') !== '') ??
+      sections[0]
+    );
   }, [sections, selectedId]);
 
   const isAvailable =

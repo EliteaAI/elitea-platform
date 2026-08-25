@@ -151,6 +151,10 @@ type artifactTransferGrantQueriesStub struct {
 
 	markRows int64
 	markErr  error
+
+	claimRows []sqlcgen.ClaimExpiredArtifactTransferGrantsRow
+	claimArg  sqlcgen.ClaimExpiredArtifactTransferGrantsParams
+	claimErr  error
 }
 
 func (stub *artifactTransferGrantQueriesStub) CreateArtifactTransferGrant(
@@ -178,4 +182,56 @@ func (stub *artifactTransferGrantQueriesStub) MarkArtifactTransferGrantConsumed(
 	_ context.Context, _ string,
 ) (int64, error) {
 	return stub.markRows, stub.markErr
+}
+
+func (stub *artifactTransferGrantQueriesStub) ClaimExpiredArtifactTransferGrants(
+	_ context.Context, arg sqlcgen.ClaimExpiredArtifactTransferGrantsParams,
+) ([]sqlcgen.ClaimExpiredArtifactTransferGrantsRow, error) {
+	stub.claimArg = arg
+	return stub.claimRows, stub.claimErr
+}
+
+// TestArtifactGrantRepositoryClaimsExpiredGrants covers the query that lets
+// the retention sweeper reclaim the bytes behind a grant nobody committed.
+// Before it existed, those bytes had no objects row, so neither the project
+// quota nor the object sweep could ever see them.
+func TestArtifactGrantRepositoryClaimsExpiredGrants(t *testing.T) {
+	uploadID := "upload-9"
+	olderThan := time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)
+	queries := &artifactTransferGrantQueriesStub{
+		claimRows: []sqlcgen.ClaimExpiredArtifactTransferGrantsRow{{
+			ID: "grant-1", ProjectID: 7, BucketID: 42, Key: "grant-1",
+			Method: "PUT", UploadID: &uploadID,
+			ExpiresAt: pgtype.Timestamptz{Time: olderThan, Valid: true},
+		}},
+	}
+	repository, err := newArtifactTransferGrantsRepository(queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := repository.ClaimExpiredTransferGrants(context.Background(), olderThan, 500)
+	if err != nil {
+		t.Fatalf("ClaimExpiredTransferGrants: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0].ID != "grant-1" || rows[0].Method != "PUT" || rows[0].UploadID == nil || *rows[0].UploadID != uploadID {
+		t.Errorf("row = %+v, want the grant id, method and upload id carried through", rows[0])
+	}
+	if !queries.claimArg.OlderThan.Time.Equal(olderThan) || queries.claimArg.RowLimit != 500 {
+		t.Errorf("query arguments = %+v, want olderThan=%v limit=500", queries.claimArg, olderThan)
+	}
+}
+
+func TestArtifactGrantRepositoryWrapsAClaimFailure(t *testing.T) {
+	queries := &artifactTransferGrantQueriesStub{claimErr: errors.New("boom")}
+	repository, err := newArtifactTransferGrantsRepository(queries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.ClaimExpiredTransferGrants(context.Background(), time.Now(), 10); err == nil {
+		t.Fatal("expected the claim failure to surface")
+	}
 }

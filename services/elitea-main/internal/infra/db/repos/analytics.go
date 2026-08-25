@@ -1,8 +1,64 @@
 package repos
 
+// AnalyticsRepo — the /elitea_core/analytics reads, and the reason they now
+// refuse instead of answering.
+//
+// # What was here
+//
+// Four methods, each a SELECT against `usage_records` or `tool_usage_records`.
+// Neither table exists. No migration in any of this service's four migration
+// sets creates them, nothing in the repository INSERTs into them, and a
+// repository-wide search for the names found only those four queries
+// (issue #303). Every call raised PostgreSQL 42P01 — undefined_table — on every
+// deployment this service has ever had.
+//
+// It went unnoticed because the handler discarded the error (`summary, _ :=`)
+// and answered 200 with hardcoded zeros. So a project with real spend and a
+// project that does not exist produced byte-identical dashboards, and the one
+// state the endpoint could actually be in — broken — was the one it could not
+// report. Deleting the queries is not a behaviour change: they never returned a
+// row. What changes is that the failure is now visible.
+//
+// # Why they are not simply repointed at real tables
+//
+// Because most of what this endpoint claims to report has no producer anywhere
+// in the platform, and the rest cannot be sourced without a product decision
+// this file is not the place to take. Measured against the current corpus:
+//
+//   - total_tokens — NO producer. The gateway computes token counts and
+//     converts them to nano-USD on the spot; a GATEWAY_BUDGET_DELTAS delta
+//     carries {event_id, scope, scope_id, project_id, org_id, period_start,
+//     period_end, delta_nano_usd} and no token fields
+//     (elitea-scheduler/internal/budgetwriteback/types.go), so the counts are
+//     not recoverable downstream. `centry.audit_events` has the columns and is
+//     READ-ONLY from this service — the legacy tracing plugin was its writer.
+//   - llm_calls — NO producer, same reason. There is no per-call row. The
+//     accumulator's count(*) counts billing periods, not calls; /analytics_costs
+//     is careful to publish it as `rows` and this endpoint must be too.
+//   - unique_users / ai_active_users / adoption_rate — NO producer. Per-user AI
+//     attribution lives in `centry.audit_events`, which nothing writes here.
+//   - total_cost — HAS a producer (gateway.llm_budget_accumulators), and
+//     /analytics_costs already reports it. Duplicating that read here would be
+//     a second view of the same money, which is fine, but on its own it does
+//     not make this endpoint answerable.
+//   - agent_runs, tool_runs, chat_msgs — HAVE producers, and each carries a
+//     real modelling fork that has to be decided rather than guessed:
+//     elitea_runtime.execution_jobs has no `project_id`, it has
+//     `resource_project_id` AND `projection_project_id` and they can differ;
+//     the chat and trace tables are scoped by TENANT SCHEMA rather than by a
+//     column and store `timestamp` where the runtime and gateway tables store
+//     `timestamptz`, so one "analytics for project N" query spans both only
+//     with dynamic SQL and an explicit cast — the kind of mismatch that yields
+//     a plausible wrong window rather than an error.
+//
+// Answering "what should the analytics dashboard count, from which of those
+// two project columns, over which clock" is a product question. Until it is
+// answered, this repository reports that it has no source rather than inventing
+// one, and the handler turns that into a 500. A 500 is a worse dashboard than
+// real numbers and a better one than fabricated zeros: an operator can see it.
+
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,102 +73,27 @@ func NewAnalyticsRepo(pool *pgxpool.Pool) *AnalyticsRepo {
 	return &AnalyticsRepo{pool: pool}
 }
 
-func (r *AnalyticsRepo) GetUsageSummary(ctx context.Context, params analytics.QueryParams) (analytics.UsageSummary, error) {
-	query := `SELECT COALESCE(SUM(total_tokens), 0), COALESCE(SUM(total_cost), 0), COUNT(*)
-		FROM usage_records WHERE project_id = $1`
-	args := []any{params.ProjectID}
+// The pool field is retained deliberately. Nothing reads it today because every
+// method below refuses, and it is what the first real query will need —
+// dropping it would turn wiring one back up into a constructor change across
+// cmd/elitea-main/main.go and internal/api/router.go as well.
 
-	if params.StartDate != "" {
-		query += ` AND created_at >= $2`
-		args = append(args, params.StartDate)
-	}
-	if params.EndDate != "" {
-		query += fmt.Sprintf(` AND created_at <= $%d`, len(args)+1)
-		args = append(args, params.EndDate)
-	}
-
-	var summary analytics.UsageSummary
-	err := r.pool.QueryRow(ctx, query, args...).Scan(
-		&summary.TotalTokens, &summary.TotalCost, &summary.TotalRuns,
-	)
-	if err != nil {
-		return analytics.UsageSummary{}, fmt.Errorf("analytics: usage summary: %w", err)
-	}
-	summary.ProjectID = params.ProjectID
-	summary.Period = params.Period
-	return summary, nil
+func (r *AnalyticsRepo) GetUsageSummary(context.Context, analytics.QueryParams) (analytics.UsageSummary, error) {
+	return analytics.UsageSummary{}, analytics.NoSourceError("usage summary",
+		"total_tokens and llm_calls have no producer; total_cost is served by /analytics_costs")
 }
 
-func (r *AnalyticsRepo) GetAgentAnalytics(ctx context.Context, params analytics.QueryParams) ([]analytics.AgentAnalytics, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT application_id, a.name, COUNT(*) as run_count,
-			AVG(duration_ms) as avg_duration, COALESCE(SUM(total_tokens), 0) as total_tokens,
-			COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0) as error_rate
-		FROM usage_records u
-		JOIN applications a ON a.id = u.application_id
-		WHERE u.project_id = $1
-		GROUP BY application_id, a.name
-		ORDER BY run_count DESC`, params.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("analytics: agents: %w", err)
-	}
-	defer rows.Close()
-
-	var items []analytics.AgentAnalytics
-	for rows.Next() {
-		var a analytics.AgentAnalytics
-		if err := rows.Scan(&a.ApplicationID, &a.Name, &a.RunCount, &a.AvgDuration, &a.TotalTokens, &a.ErrorRate); err != nil {
-			return nil, fmt.Errorf("analytics: scan agent: %w", err)
-		}
-		items = append(items, a)
-	}
-	return items, nil
+func (r *AnalyticsRepo) GetAgentAnalytics(context.Context, analytics.QueryParams) ([]analytics.AgentAnalytics, error) {
+	return nil, analytics.NoSourceError("agent analytics",
+		"elitea_runtime.execution_jobs is project-scoped by two different columns and records no token or duration figures")
 }
 
-func (r *AnalyticsRepo) GetToolAnalytics(ctx context.Context, params analytics.QueryParams) ([]analytics.ToolAnalytics, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT toolkit_id, tool_name, COUNT(*) as run_count,
-			AVG(duration_ms) as avg_duration,
-			COALESCE(SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0), 0) as error_rate
-		FROM tool_usage_records
-		WHERE project_id = $1
-		GROUP BY toolkit_id, tool_name
-		ORDER BY run_count DESC`, params.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("analytics: tools: %w", err)
-	}
-	defer rows.Close()
-
-	var items []analytics.ToolAnalytics
-	for rows.Next() {
-		var t analytics.ToolAnalytics
-		if err := rows.Scan(&t.ToolkitID, &t.ToolName, &t.RunCount, &t.AvgDuration, &t.ErrorRate); err != nil {
-			return nil, fmt.Errorf("analytics: scan tool: %w", err)
-		}
-		items = append(items, t)
-	}
-	return items, nil
+func (r *AnalyticsRepo) GetToolAnalytics(context.Context, analytics.QueryParams) ([]analytics.ToolAnalytics, error) {
+	return nil, analytics.NoSourceError("tool analytics",
+		"p_<id>.chat_message_trace_step records tool_name but no toolkit_id, and covers chat turns only")
 }
 
-func (r *AnalyticsRepo) GetUserActivity(ctx context.Context, params analytics.QueryParams) ([]analytics.UserActivity, error) {
-	rows, err := r.pool.Query(ctx,
-		`SELECT user_id, email, COUNT(*) as run_count, MAX(created_at) as last_active_at
-		FROM usage_records
-		WHERE project_id = $1
-		GROUP BY user_id, email
-		ORDER BY run_count DESC`, params.ProjectID)
-	if err != nil {
-		return nil, fmt.Errorf("analytics: users: %w", err)
-	}
-	defer rows.Close()
-
-	var items []analytics.UserActivity
-	for rows.Next() {
-		var u analytics.UserActivity
-		if err := rows.Scan(&u.UserID, &u.Email, &u.RunCount, &u.LastActiveAt); err != nil {
-			return nil, fmt.Errorf("analytics: scan user: %w", err)
-		}
-		items = append(items, u)
-	}
-	return items, nil
+func (r *AnalyticsRepo) GetUserActivity(context.Context, analytics.QueryParams) ([]analytics.UserActivity, error) {
+	return nil, analytics.NoSourceError("user activity",
+		"centry.audit_events is the per-user AI attribution table and is READ-ONLY from this service")
 }

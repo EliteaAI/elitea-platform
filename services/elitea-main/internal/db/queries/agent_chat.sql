@@ -238,6 +238,19 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
         AND pending_response.is_streaming
         AND NOT EXISTS (
             SELECT 1
+            FROM chat_message_group AS newer_response
+            WHERE newer_response.conversation_id = pending_response.conversation_id
+              AND newer_response.reply_to_id IS NOT NULL
+              AND (
+                  newer_response.created_at > pending_response.created_at
+                  OR (
+                      newer_response.created_at = pending_response.created_at
+                      AND newer_response.id > pending_response.id
+                  )
+              )
+        )
+        AND NOT EXISTS (
+            SELECT 1
             FROM chat_message_group AS retried_question
             WHERE retried_question.id = pending_response.reply_to_id
               AND retried_question.uuid = sqlc.arg(question_id)::uuid
@@ -268,6 +281,26 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
 SELECT application_version.id AS application_version_id,
        application_version.application_id,
        application_version.agent_type,
+       COALESCE((
+           SELECT jsonb_agg(
+               jsonb_build_object(
+                   'skill_id', skill_mapping.skill_id,
+                   'name', skill.name,
+                   'icon_meta', CASE
+                       WHEN skill_version.id IS NULL THEN 'null'::jsonb
+                       ELSE COALESCE(skill_version.meta -> 'icon_meta', 'null'::jsonb)
+                   END
+               )
+               ORDER BY skill_mapping.id
+           )
+           FROM entity_skill_mapping AS skill_mapping
+           JOIN skills AS skill
+             ON skill.id = skill_mapping.skill_id
+           LEFT JOIN skill_versions AS skill_version
+             ON skill_version.id = skill_mapping.skill_version_id
+           WHERE skill_mapping.entity_version_id = application_version.id
+             AND skill_mapping.entity_type = 'agent'
+       ), '[]'::jsonb)::text AS skills_json,
        COALESCE((
            SELECT jsonb_agg(
                jsonb_build_object(
@@ -541,6 +574,19 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
       FROM chat_message_group AS pending_response
       WHERE pending_response.conversation_id = conversation.id
         AND pending_response.is_streaming
+        AND NOT EXISTS (
+            SELECT 1
+            FROM chat_message_group AS newer_response
+            WHERE newer_response.conversation_id = pending_response.conversation_id
+              AND newer_response.reply_to_id IS NOT NULL
+              AND (
+                  newer_response.created_at > pending_response.created_at
+                  OR (
+                      newer_response.created_at = pending_response.created_at
+                      AND newer_response.id > pending_response.id
+                  )
+              )
+        )
         AND NOT EXISTS (
             SELECT 1
             FROM chat_message_group AS retried_question
@@ -1214,6 +1260,19 @@ WITH resolved AS MATERIALIZED (
           FROM chat_message_group AS pending_response
           WHERE pending_response.conversation_id = conversation.id
             AND pending_response.is_streaming
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chat_message_group AS newer_response
+                WHERE newer_response.conversation_id = pending_response.conversation_id
+                  AND newer_response.reply_to_id IS NOT NULL
+                  AND (
+                      newer_response.created_at > pending_response.created_at
+                      OR (
+                          newer_response.created_at = pending_response.created_at
+                          AND newer_response.id > pending_response.id
+                      )
+                  )
+            )
       )
       AND NOT EXISTS (
           SELECT 1
@@ -1465,6 +1524,19 @@ WITH resolved AS MATERIALIZED (
           FROM chat_message_group AS pending_response
           WHERE pending_response.conversation_id = conversation.id
             AND pending_response.is_streaming
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chat_message_group AS newer_response
+                WHERE newer_response.conversation_id = pending_response.conversation_id
+                  AND newer_response.reply_to_id IS NOT NULL
+                  AND (
+                      newer_response.created_at > pending_response.created_at
+                      OR (
+                          newer_response.created_at = pending_response.created_at
+                          AND newer_response.id > pending_response.id
+                      )
+                  )
+            )
       )
       AND NOT EXISTS (
           SELECT 1

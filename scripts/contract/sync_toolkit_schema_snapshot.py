@@ -2,10 +2,11 @@
 """Synchronize Main's built-in toolkit settings projection from the worker SDK.
 
 The current indexer publishes ``elitea_sdk.runtime.toolkits.tools.get_toolkits``
-schemas to Main. Main consumes only the top-level annotations used to expand
-configuration references and derive a stable toolkit name. This script runs
-that exact SDK registry from the source revision admitted by the worker lock
-and emits only those consumed annotations.
+schemas to Main. Main consumes the top-level annotations used to expand
+configuration references and derive a stable toolkit name, plus the per-tool
+argument schemas it serves to toolkit tool forms. This script runs that exact
+SDK registry from the source revision admitted by the worker lock and emits
+only those consumed parts.
 
 Deployment-defined MCP servers are intentionally excluded from this immutable
 built-in snapshot. They remain actor/project-visible dynamic schemas in Main.
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tomllib
 from collections.abc import Iterable, Mapping
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,26 @@ ANNOTATION_FIELDS = (
     "toolkit_name",
 )
 MAX_TOOLKIT_NAME_LENGTH = 4096
+# The SDK publishes each toolkit's per-tool argument schemas as a
+# ``json_schema_extra`` payload on the tool-selection field, which Pydantic
+# merges verbatim into that property's JSON Schema. Main needs those argument
+# schemas to render toolkit tool forms, so they are projected as a sibling of
+# ``properties`` instead of being folded into ANNOTATION_FIELDS: the annotation
+# projection is a fixed, flat allowlist of scalar hints, while an argument
+# schema is an arbitrarily nested JSON Schema document with its own ``$defs``.
+TOOL_SELECTION_FIELD = "selected_tools"
+ARGUMENT_SCHEMAS_FIELD = "args_schemas"
+# One SDK tool builds an argument default from the clock. In
+# elitea_sdk/tools/carrier/ui_reports_tool.py the ``current_date`` field reads
+# ``datetime.now()`` when Python imports the module, so the projected default
+# is the date of the projection run. Such a value cannot enter an immutable
+# snapshot: the committed file becomes stale at the next midnight, and the
+# --check gate then fails for every later change to this repository. Remove
+# the ``default`` key when it holds a date that this run observed, and keep
+# the remainder of the schema verbatim. A removed default leaves the field
+# empty in the toolkit tool form. The worker then applies the model default,
+# which reads the clock of the run and gives the correct current date.
+DEFAULT_FIELD = "default"
 
 
 class ContractSyncError(RuntimeError):
@@ -91,29 +113,58 @@ def _package_tree_digest(package_root: Path) -> tuple[int, str]:
     return len(paths), digest.hexdigest()
 
 
+def _require_locked_patch_paths(
+    sdk_root: Path,
+    patch_revisions: object,
+) -> None:
+    if not isinstance(patch_revisions, list) or any(
+        not isinstance(revision, str) or len(revision) != 40
+        for revision in patch_revisions
+    ):
+        raise ContractSyncError("worker SDK patch lock is invalid")
+
+    expected: set[str] = set()
+    for revision in patch_revisions:
+        paths = _git(
+            sdk_root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            revision,
+            "--",
+            "elitea_sdk",
+            "pyproject.toml",
+        )
+        expected.update(path for path in paths.splitlines() if path)
+
+    actual = _git(
+        sdk_root,
+        "diff",
+        "--name-only",
+        "HEAD",
+        "--",
+        "elitea_sdk",
+        "pyproject.toml",
+    )
+    if {path for path in actual.splitlines() if path} != expected:
+        raise ContractSyncError("SDK source changes do not match the worker patch lock")
+
+
 def _require_sdk_identity(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
     try:
         lock = json.loads(lock_path.read_bytes())
         revision = lock["source"]["revision"]
         version = lock["distribution_version"]
         archive_digest = lock["source"]["git_archive_sha256"]
+        patch_revisions = lock["source"].get("patch_revisions", [])
         tree = lock["installed_package_tree"]
     except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
         raise ContractSyncError("worker SDK lock is invalid") from exc
 
     if _git(sdk_root, "rev-parse", "HEAD") != revision:
         raise ContractSyncError("SDK checkout does not match the worker lock")
-    dirty = _git(
-        sdk_root,
-        "status",
-        "--porcelain",
-        "--untracked-files=no",
-        "--",
-        "elitea_sdk",
-        "pyproject.toml",
-    )
-    if dirty:
-        raise ContractSyncError("SDK source has tracked local changes")
+    _require_locked_patch_paths(sdk_root, patch_revisions)
 
     try:
         project = tomllib.loads((sdk_root / "pyproject.toml").read_text())
@@ -159,9 +210,83 @@ def _annotation_projection(
     return projected, {"field": name_field, "max_length": max_length}
 
 
+def _without_clock_defaults(value: Any, clock_dates: frozenset[str]) -> Any:
+    """Remove each schema default that holds a date from the projection run.
+
+    The walk keeps every other key and every other value. It removes only a
+    ``default`` that is a string in ``clock_dates``, so ``$ref`` pointers keep
+    their targets and no other part of the document moves.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _without_clock_defaults(item, clock_dates)
+            for key, item in value.items()
+            if not (
+                key == DEFAULT_FIELD
+                and isinstance(item, str)
+                and item in clock_dates
+            )
+        }
+    if isinstance(value, list):
+        return [_without_clock_defaults(item, clock_dates) for item in value]
+    return value
+
+
+def _argument_schema_projection(
+    properties: Mapping[str, Any],
+    clock_dates: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Project each tool's argument schema from the tool-selection property.
+
+    The payload is carried verbatim: an argument schema is a self-contained
+    JSON Schema whose internal ``$ref`` pointers resolve against its own
+    ``$defs``, so narrowing it the way ``_annotation_projection`` narrows
+    annotations would produce documents that no longer describe their own
+    inputs. Toolkits without a tool-selection field legitimately publish no
+    argument schemas and project an empty mapping; a tool-selection field whose
+    payload is present but malformed is a contract break and fails closed.
+    """
+
+    selection = properties.get(TOOL_SELECTION_FIELD)
+    if selection is None:
+        return {}
+    if not isinstance(selection, Mapping):
+        raise ContractSyncError("toolkit tool selection property is invalid")
+    raw_schemas = selection.get(ARGUMENT_SCHEMAS_FIELD)
+    if raw_schemas is None:
+        return {}
+    if not isinstance(raw_schemas, Mapping):
+        raise ContractSyncError("toolkit argument schemas are not a tool mapping")
+
+    projected: dict[str, Any] = {}
+    for tool_name, schema in raw_schemas.items():
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ContractSyncError("toolkit argument schema has an invalid tool name")
+        if not isinstance(schema, Mapping):
+            raise ContractSyncError(
+                f"toolkit argument schema for tool {tool_name!r} is not an object"
+            )
+        stable = _without_clock_defaults(schema, clock_dates)
+        # Reject anything the canonical encoder cannot represent here rather
+        # than at write time, so the failure names the offending tool.
+        try:
+            _canonical(stable)
+        except (TypeError, ValueError) as exc:
+            raise ContractSyncError(
+                f"toolkit argument schema for tool {tool_name!r} is not canonical JSON"
+            ) from exc
+        projected[tool_name] = stable
+    # The canonical encoder already sorts keys, but the in-memory document is
+    # compared directly by the tests and by --check callers, so keep the
+    # mapping ordered here too.
+    return {name: projected[name] for name in sorted(projected)}
+
+
 def project_toolkit_schemas(
     models: Iterable[Any],
     revision: str,
+    clock_dates: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -189,6 +314,7 @@ def project_toolkit_schemas(
             {
                 "type": type_name,
                 "properties": projected,
+                "args_schemas": _argument_schema_projection(properties, clock_dates),
                 "naming": naming,
             }
         )
@@ -208,6 +334,10 @@ def generate_document(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
     sys.path.insert(0, str(sdk_root))
     logging.getLogger("elitea_sdk.tools").setLevel(logging.ERROR)
     try:
+        # Read the date before the import and again after the registry call.
+        # The SDK evaluates its clock default between these two points. A run
+        # that crosses midnight observes two dates, and both count as volatile.
+        clock_dates = {date.today().isoformat()}
         module = importlib.import_module("elitea_sdk.runtime.toolkits.tools")
         module_path = Path(module.__file__ or "").resolve()
         try:
@@ -226,7 +356,12 @@ def generate_document(sdk_root: Path, lock_path: Path) -> dict[str, Any]:
             raise ContractSyncError(
                 "SDK toolkit imports failed: " + ", ".join(sorted(unexpected_failures))
             )
-        return project_toolkit_schemas(models, lock["source"]["revision"])
+        clock_dates.add(date.today().isoformat())
+        return project_toolkit_schemas(
+            models,
+            lock["source"]["revision"],
+            frozenset(clock_dates),
+        )
     finally:
         sys.path.pop(0)
 

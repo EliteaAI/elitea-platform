@@ -67,7 +67,12 @@ const runtime = process.env['CONTAINER_RUNTIME'] ?? 'podman';
 // PLAYWRIGHT_BASE_URL is NOT the same as an absent one: `?? 'http://localhost:8082'`
 // in playwright.config.ts only fires on undefined, so `''` would win and every
 // navigation would resolve against nothing.
-const forwardedEnv = ['PLAYWRIGHT_BASE_URL', 'E2E_OIDC_PORT'].flatMap((name) => {
+//
+// `E2E_TZ` is forwarded for a stronger reason than the other two. It is set on
+// the HOST, where it moves the day boundary `e2e-stack.sh seed` anchors its
+// calendar-day fixtures on. Left out of this list it would move the seed and
+// NOT the browser, which is exactly the disagreement issue #214 is about.
+const forwardedEnv = ['PLAYWRIGHT_BASE_URL', 'E2E_OIDC_PORT', 'E2E_TZ'].flatMap((name) => {
   const value = process.env[name];
   return value === undefined || value === '' ? [] : ['-e', `${name}=${value}`];
 });

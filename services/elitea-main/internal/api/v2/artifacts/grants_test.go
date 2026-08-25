@@ -96,29 +96,39 @@ func TestArtifactGrantCreateFallsBackToFacadeURLWhenPresignUnsupported(t *testin
 	h, _, _ := newObjectTestHandler(t)
 	r := newGrantTestRouter(h)
 
-	t.Run("PUT", func(t *testing.T) {
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, newGrantRequest(t, "/grants/1/reports", `{"method":"PUT","content_type":"image/png","max_bytes":1024}`))
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
-		}
-		resp := decodeGrantResponse(t, rr.Body)
-		if resp.URL != "/api/v2/artifacts/objects/1/reports" {
-			t.Fatalf("url = %q, want the facade upload endpoint", resp.URL)
-		}
-	})
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newGrantRequest(t, "/grants/1/reports", `{"method":"PUT","content_type":"image/png","max_bytes":1024}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
+	}
+	resp := decodeGrantResponse(t, rr.Body)
+	if resp.URL != "/api/v2/artifacts/objects/1/reports" {
+		t.Fatalf("url = %q, want the facade upload endpoint", resp.URL)
+	}
+}
 
-	t.Run("GET", func(t *testing.T) {
-		rr := httptest.NewRecorder()
-		r.ServeHTTP(rr, newGrantRequest(t, "/grants/1/reports", `{"method":"GET","content_type":"image/png","max_bytes":1024}`))
-		if rr.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body=%s", rr.Code, rr.Body.String())
-		}
-		resp := decodeGrantResponse(t, rr.Body)
-		if resp.URL != "/api/v2/artifacts/objects/1/reports/"+resp.GrantID {
-			t.Fatalf("url = %q, want the facade download endpoint for grant_id %q", resp.URL, resp.GrantID)
-		}
-	})
+// A download grant could never work, so it is refused.
+//
+// DEFECT this guards: `method: "GET"` was accepted, and the handler then
+// presigned the grant's OWN key — a value it had just generated at random.
+// No request field names an existing object, so that key holds nothing and
+// the returned URL answered 404 on every backend. The previous version of
+// this test asserted the dead URL and so certified the defect. An
+// authenticated download has its own endpoint, GET
+// /api/v2/artifacts/objects/{projectID}/{bucket}/{key}.
+func TestArtifactGrantCreateRefusesADownloadGrant(t *testing.T) {
+	h, _, _ := newObjectTestHandler(t)
+	r := newGrantTestRouter(h)
+
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, newGrantRequest(t, "/grants/1/reports", `{"method":"GET","content_type":"image/png","max_bytes":1024}`))
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "method must be PUT") {
+		t.Fatalf("body = %s, want the reason for the refusal", rr.Body.String())
+	}
 }
 
 func TestArtifactGrantCreateRejectsInvalidMethod(t *testing.T) {
@@ -513,10 +523,28 @@ func TestArtifactGrantCommitExceedingProjectQuotaReturns413AndRollsBack(t *testi
 	}
 }
 
+// Commit still refuses a non-PUT grant.
+//
+// The row is written straight through the repository, because the API no
+// longer creates one: a GET grant is refused at creation now. A deployment
+// can still hold rows written before that, so the commit guard must stay.
 func TestArtifactGrantCommitNonPutGrantReturns400(t *testing.T) {
-	h, _, _ := newObjectTestHandler(t)
+	h, repo, _ := newObjectTestHandler(t)
 	r := newGrantTestRouter(h)
-	grantID := createTestGrant(t, r, `{"method":"GET","content_type":"image/png","max_bytes":1024}`)
+
+	const grantID = "11111111-2222-4333-8444-555555555555"
+	if _, err := repo.CreateTransferGrant(t.Context(), repos.NewTransferGrantInput{
+		ID:          grantID,
+		ProjectID:   1,
+		BucketID:    1,
+		Key:         grantID,
+		Method:      "GET",
+		ContentType: "image/png",
+		MaxBytes:    1024,
+		ExpiresAt:   time.Now().Add(15 * time.Minute),
+	}); err != nil {
+		t.Fatalf("seed the legacy grant: %v", err)
+	}
 
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/grants/1/"+grantID+":commit", nil))

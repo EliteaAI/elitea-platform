@@ -1,5 +1,46 @@
 import { QueryClient, type DefaultOptions } from '@tanstack/react-query';
 
+import { EliteaApiError } from '@/shared/api/generated/mutator';
+
+/**
+ * The HTTP status a rejected query carries, or `undefined` when the rejection
+ * is not an ANSWER TO THE REQUEST AS SENT — a network error, an abort, a
+ * thrown TypeError, or a `kind: 'auth'` session failure.
+ *
+ * `kind: 'auth'` IS DELIBERATELY EXCLUDED, and it is the whole reason this
+ * function exists apart from `isFinalClientAnswer` below. The two kinds carry
+ * a status each, but they answer different questions:
+ *
+ *  - `kind: 'http'` is the server's verdict on the REQUEST. Its inputs are the
+ *    method, the path and the body, and a replay repeats all three.
+ *  - `kind: 'auth'` is the server's verdict on the SESSION. `shared/api/
+ *    http.ts` only builds one after it ran the single-flight re-authentication
+ *    AND replayed the request, and the replay answered 401 as well.
+ *
+ * A session is not an input the caller controls, and it changes on its own:
+ * the user is in the middle of a login the moment this rejection is built. So
+ * a later attempt CAN answer differently, which is exactly what
+ * {@link isFinalClientAnswer} means by "final" and what a 401 is not.
+ */
+function httpStatusOf(error: unknown): number | undefined {
+  if (!(error instanceof EliteaApiError)) return undefined;
+  const { failure } = error;
+  return failure.kind === 'http' ? failure.status : undefined;
+}
+
+/**
+ * `true` when the server has already given its final answer, so repeating the
+ * request cannot change it.
+ *
+ * 408 (Request Timeout) and 429 (Too Many Requests) are excluded: both are 4xx
+ * codes that explicitly invite the caller to try again.
+ */
+function isFinalClientAnswer(error: unknown): boolean {
+  const status = httpStatusOf(error);
+  if (status === undefined) return false;
+  return status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
 /**
  * TanStack Query defaults (spec §2.3 "Server state"; §9.3 unit R2).
  *
@@ -50,8 +91,9 @@ export const QUERY_DEFAULT_OPTIONS: DefaultOptions = {
     gcTime: 5 * 60_000,
     /**
      * 1, not the library default of 3. `shared/api/http.ts` (unit F4) already
-     * resolves any 401/403 through its own single-flight re-auth before a
-     * query's promise ever settles (§5.4) — by the time a query's promise
+     * resolves any 401 through its own single-flight re-auth before a
+     * query's promise ever settles (§5.4; a 403 is an authorization refusal
+     * and deliberately settles straight away) — by the time a query's promise
      * rejects, F4 has already done everything it can about an auth failure,
      * so a query-level retry only fires for a genuine network error or a
      * non-auth 5xx. The library default's 3 attempts with exponential
@@ -59,8 +101,44 @@ export const QUERY_DEFAULT_OPTIONS: DefaultOptions = {
      * the final attempt) delays error UI by several seconds against a truly
      * down endpoint; 1 retry still absorbs a single transient blip without
      * that cost.
+     *
+     * A PLAIN `retry: 1` STILL REPEATS A 4xx. TanStack Query's retry count
+     * applies to every rejection, whatever its cause, so a 403 was requested
+     * twice before the screen could show anything. That is measurable: a HAR
+     * of one page load against a live deployment holds 32 requests to
+     * /api/v2/configurations/configurations/1, all 403, and 10 to
+     * /api/v2/configurations/models/1. Half of each set is this retry.
+     *
+     * A 4xx is the server's final answer to the request as sent. Repeating it
+     * byte for byte cannot change the result; it only doubles the load on a
+     * failing endpoint and doubles the delay before the user sees the error.
+     * Retry now covers exactly what it was reasoned for above: a network
+     * error, an abort, a 5xx — and a `kind: 'auth'` session failure.
+     *
+     * THE RE-AUTHENTICATED 401 IS THE EXCEPTION, and leaving it out cost the
+     * app its only recovery. Measured on the E2E stack, journey J3
+     * (`e2e/journeys/shell/shell.session.spec.ts`): a 401 mid-session opens
+     * the re-auth popup, the user completes a real OIDC round trip, and
+     * `http.ts` replays the request the instant the flight resolves — about
+     * 10ms BEFORE the popup's `close` event. A replay that lands in that
+     * window still answers 401. With a 401 classified as final, every query
+     * that failed during the expiry then stayed in its error state for the
+     * rest of the page's life: nothing refetches it, `refetchOnWindowFocus`
+     * needs a `visibilitychange` the opener never gets, and no other timer
+     * exists. The sidebar's Create button reads `usePermissionSet`, so it
+     * came back DISABLED after a login the user completed, and only a manual
+     * page reload cleared it. Both engines reproduce; webkit lost the race on
+     * 3 runs of 3, chromium on 1 of 4.
+     *
+     * One retry, on the library's 1s backoff, is the recovery. It is bounded
+     * — a second `kind: 'auth'` failure ends the query — and it repeats a
+     * request the server already refused only when the SESSION, not the
+     * request, is what it refused.
      */
-    retry: 1,
+    retry: (failureCount: number, error: unknown): boolean => {
+      if (isFinalClientAnswer(error)) return false;
+      return failureCount < 1;
+    },
     /**
      * Kept equal to the library default (`true`), pinned for the same
      * "don't silently inherit" reason as gcTime. Desirable for a

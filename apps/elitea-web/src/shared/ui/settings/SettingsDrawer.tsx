@@ -68,6 +68,14 @@ const getIconComponent = (tabId: string): React.ComponentType => {
 const menuItemSx =
   (isActive: boolean): SxProps<Theme> =>
   ({ palette }) => ({
+    // The item renders as a real <button> (see the render below). The four
+    // properties here reset the user-agent button styling. That styling
+    // would otherwise override the ported look: a grey background, a
+    // bevelled border, the browser's own font, and centred text.
+    border: 'none',
+    font: 'inherit',
+    textAlign: 'left',
+    width: 'calc(100% - 2rem)',
     padding: '0.5rem 1rem',
     margin: '0 1rem',
     gap: '0.5rem',
@@ -167,8 +175,18 @@ export const SettingsDrawer = memo(function SettingsDrawer({ sections, onItemCli
             const IconComponent = getIconComponent(tab.id);
             const isActive = isActiveTab(tab.id);
             return (
+              // A REAL BUTTON, NOT A DIV WITH onClick. Every item here — the
+              // whole of Settings navigation, "Log out" included — used to be
+              // a plain <Box onClick>. That renders a <div> with no role, no
+              // tabindex and no href. A keyboard could not reach any of them
+              // and assistive technology read the labels as plain text. The
+              // accessibility tree of a live deployment showed all eleven as
+              // StaticText.
               <Box
                 key={tab.id}
+                component="button"
+                type="button"
+                aria-current={isActive ? 'page' : undefined}
                 onClick={() => handleItemClick(tab.id)}
                 sx={menuItemSx(isActive)}
               >

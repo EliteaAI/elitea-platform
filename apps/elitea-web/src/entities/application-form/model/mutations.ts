@@ -60,7 +60,10 @@ function toVersionWriteRequest(draft: ApplicationVersionDraft): VersionWriteRequ
     instructions: draft.instructions,
     conversation_starters: [...draft.conversationStarters],
     variables: draft.variables.map((variable) => ({ name: variable.name, value: variable.value })),
-    meta: { ...draft.meta },
+    // `internal_tools` is copied, not spread through: the draft holds it as a
+    // `readonly string[]` and `VersionMeta` now models it as a mutable
+    // `string[]` — same copy `conversation_starters` above already makes.
+    meta: { ...draft.meta, internal_tools: [...draft.meta.internal_tools] },
     // #135: omitted entirely when the draft has none, so a non-pipeline save
     // never sends the key and the server leaves the stored column alone.
     ...(draft.pipelineSettings !== undefined ? { pipeline_settings: { ...draft.pipelineSettings } } : {}),

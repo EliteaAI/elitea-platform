@@ -47,12 +47,9 @@ import { useSelectedProjectStore } from '@/widgets/app-shell';
 import { DrawerPageHeader } from '@/shared/ui/settings/DrawerPageHeader';
 import { secretsFeature } from '@/features/settings';
 import { handleCopy } from '@/shared/lib/clipboard';
-import { PERMISSIONS } from '@/shared/lib/permissions';
 import { EliteaApiError } from '@/shared/api/generated/mutator';
-import { usePermissionList } from '@/shared/api/generated/auth/auth';
-import type { Permission } from '@/shared/api/generated/model';
 
-const { SecretsTable } = secretsFeature;
+const { SecretsTable, useSecretPermissions } = secretsFeature;
 import { t } from '@/shared/i18n';
 
 /**
@@ -111,18 +108,11 @@ export const SecretsContent = memo(function SecretsContent({
   const projectId = useSelectedProjectStore((s) => s.project?.id ?? '');
 
   /* ── permissions ───────────────────────────────────────────────────── */
-  const permissionQuery = usePermissionList(projectId, { query: { enabled: !!projectId } });
-  const permissions = useMemo(() => {
-    const list = permissionQuery.data?.data as Permission[] | undefined;
-    if (!list) return new Set<string>();
-    return new Set(list.filter((entry) => entry.enabled).map((entry) => entry.name));
-  }, [permissionQuery.data]);
-  const checkPermission = useCallback(
-    (permission: string) => (permission ? permissions.has(permission) : true),
-    [permissions],
-  );
-  const canList = checkPermission(PERMISSIONS.secrets.list);
-  const canUnsecret = checkPermission(PERMISSIONS.secrets.unsecret);
+  // `canList` gates the QUERY; the rest gate controls. #402 grants the list to
+  // the viewer, which is the first role that reads this page and writes nothing
+  // on it, so every write control below is gated too.
+  const { canList, controls: secretPermissions } = useSecretPermissions(projectId);
+  const canCreate = secretPermissions.canCreate;
 
   /* ── API query ────────────────────────────────────────────────────── */
   const { data, isFetching, isError, error } = useListSecretsQuery(projectId, {
@@ -178,9 +168,12 @@ export const SecretsContent = memo(function SecretsContent({
     }
   }, [secrets, isFetching, setRows]);
 
-  // Handle ?createSecret=1 URL flag
+  // Handle ?createSecret=1 URL flag. Gated on `canCreate` (#402): the flag is
+  // reachable from a bookmark and from the global create menu, and the row it
+  // opens ends in a POST. Ungated, a viewer types a name and a value, presses
+  // save, and watches the row vanish while the POST answers 403.
   useEffect(() => {
-    if (shouldCreate && projectId) {
+    if (shouldCreate && projectId && canCreate) {
       const id = `new-${Date.now()}`;
       const newRow: SecretRow = {
         id,
@@ -192,7 +185,7 @@ export const SecretsContent = memo(function SecretsContent({
       };
       setRows((prev) => [newRow, ...prev]);
     }
-  }, [shouldCreate, projectId, setRows]);
+  }, [shouldCreate, projectId, canCreate, setRows]);
 
   // Filtered rows — client-side search filter (matches old-app pattern)
   const filteredRows = useMemo(() => {
@@ -298,7 +291,7 @@ export const SecretsContent = memo(function SecretsContent({
       <DrawerPageHeader
         title={t('entities.secret.pageTitle', 'Secrets')}
         showSearchInput
-        showAddButton
+        showAddButton={canCreate}
         slotProps={{
           searchInput: {
             search,
@@ -331,7 +324,7 @@ export const SecretsContent = memo(function SecretsContent({
           setRowModesModel={actions.setRowModesModel}
           isFetching={isFetching}
           isShowSecretMap={actions.isShowSecretMap}
-          canUnsecret={canUnsecret}
+          permissions={secretPermissions}
           validationErrors={actions.validationErrors}
           onValidationChange={actions.onValidationChange}
           actions={{

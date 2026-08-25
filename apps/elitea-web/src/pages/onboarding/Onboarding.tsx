@@ -19,18 +19,16 @@
  * 3. **No Suspense for OnboardingTour.**  The old app wraps the tour in
  *    `Suspense` + `lazyWithRetry`.  Here we import it directly (inlined).
  *
- * 4. **No route wiring.**  The `handleJumpIn` navigates to `RouteDefinitions.Chat`.
- *    Out of scope — the page can be mounted by a future route.  Uses
- *    `window.history.back()` for back and `window.location` for jump-in.
- *    The back button's visibility mirrors the `user.personal_project_id`
- *    half of the old app's guard (see change 9); the other half —
- *    `location.state?.from` — has no equivalent here: this page reads no
- *    router state, and `src/routes/_shell/onboarding.tsx` (a different
- *    unit's file, outside `src/pages/onboarding/`) doesn't mount this
- *    component yet, so there's no router context to read from regardless.
- *    **Follow-up outside this cluster:** once that route mounts
- *    `Onboarding`, add a second condition using its location state (e.g.
- *    `useRouterState().location.state`), matching `location.state?.from`.
+ * 4. **Route wiring.**  `routes/_shell/onboarding.tsx` mounts this page, and
+ *    `routes/-guards/indexRoute.ts` sends a user with no `personal_project_id`
+ *    here. "Jump in" navigates through the router. A root-relative
+ *    `window.location.href = '/chat'` ignored the router `basepath` (`/app/`
+ *    in every real deployment). A new account therefore left the SPA. It hit
+ *    a 404 on its first action. Router navigation does not reload the page. The
+ *    `_shouldRefreshProjects` gap in `handlePersonalProjectReady` therefore
+ *    stays visible, which a full reload would hide. Back keeps
+ *    `window.history.back()`, which ignores the basename. Its other half,
+ *    `location.state?.from`, is a follow-up (see change 9).
  *
  * 5. **Logo.**  Uses the new-app icon component `@/shared/ui/icons/logo-icon`.
  *
@@ -69,6 +67,7 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { Box, CircularProgress, IconButton, LinearProgress, Typography } from '@mui/material';
+import { useNavigate } from '@tanstack/react-router';
 
 import { FIRST_ELITEA_TOUR_ID, markTourPending } from '@/features/interactive-tours';
 import { OnboardingTour, Welcome, WorkspaceIsReady } from '@/features/onboarding';
@@ -95,6 +94,7 @@ const PROGRESS_STEP = 95 / 150;
 const Onboarding = memo(() => {
   // Disclosed, not silently dropped: useTrackEvent is unavailable in the new
   // app — no analytics infra yet.
+  const navigate = useNavigate();
   const progressIntervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const queryStatusIntervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [thePrivateProjectIsReady, setThePrivateProjectIsReady] = useState(false);
@@ -184,7 +184,9 @@ const Onboarding = memo(() => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_jump_in') is
     // called by the old page here — analytics gap.
     sessionStore.remove(ONBOARDING_STORAGE_KEY);
-    window.location.href = '/chat';
+    // Router navigation, so the app's `basepath` (`/app/`) is applied. A raw
+    // `window.location.href = '/chat'` left the SPA and hit a 404.
+    void navigate({ to: '/chat' });
     onClearIntervals();
   };
 

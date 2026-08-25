@@ -1,3 +1,37 @@
+// Package currentcore holds the outbound client for the suggestion policy of
+// the current platform.
+//
+// DELIBERATE GAP — issue #334. This package records the gap. It does not repair
+// it.
+//
+// No readable repository implements
+// `GET /api/v2/elitea_core/next_input_suggestion_config/prompt_lib/{projectID}`.
+// A search covers this monorepo, the pylon runtime, the plugin repositories, the
+// pylon runtime clones, the ADR-0008 worktrees, the frontends, the documents and
+// the Python SDK. It finds the path in four places. The four places are the
+// request below, its own unit test, the hybrid Traefik rule and the CI check for
+// that rule. The consumer is public. The server is not.
+//
+// This call is not dead code. Every chat send, regeneration, continuation and
+// ad-hoc turn reaches it. The route is registered at
+// internal/api/production_router.go:157-160.
+//
+// Both shipped deployments make the call fail. The hybrid edge sends the path to
+// legacy Centry, which registers no such rule. The standalone stack aims an
+// https origin at a cleartext port. The caller reads a failure as "no policy"
+// and continues (internal/application/agentexecution/start.go:281-295). Each
+// turn therefore carries `next_input_suggestion: null`.
+//
+// The issue names two repairs. Both need the product owner. To own the policy,
+// you must invent its shape and its storage, because the original is unreadable.
+// To drop the feature, you must delete recent work (pull request #231) for a
+// server that the issue puts on an unpublished branch.
+//
+// This package makes the failure visible instead. Each of the eight failure
+// paths below returned one bare sentinel. No path gave a cause, and no path
+// wrote a log line. Each path now names its cause and wraps the sentinel. The
+// client reports the fault once for each process. The request, the response
+// contract and the turn do not change.
 package currentcore
 
 import (
@@ -9,10 +43,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -40,6 +76,37 @@ type NextInputSuggestionResolver struct {
 	issuer  ActorTokenIssuer
 	client  *http.Client
 	timeout time.Duration
+	// reported keeps the first failure at warning level and every later one at
+	// debug level. The fault this guards against is a DEPLOYMENT condition — a
+	// route that is absent, an origin that speaks cleartext — so it is identical
+	// on every request, and one line for each chat turn would bury the operator
+	// in copies of one fact. One loud line for each process is the granularity
+	// that matches the fault.
+	reported sync.Once
+}
+
+// unavailable reports the cause and returns the caller's sentinel. Every failure
+// path used to return `ErrNextInputSuggestionPolicyUnavailable` on its own, so
+// eight different faults — no token, no route, a cleartext origin, a body over
+// the cap, a field the contract does not name — were one indistinguishable
+// value. `%w` on the sentinel keeps `errors.Is` true for every existing caller.
+func (resolver *NextInputSuggestionResolver) unavailable(
+	ctx context.Context,
+	reason string,
+	cause error,
+) error {
+	attributes := []any{"reason", reason, "endpoint", resolver.baseURL.String()}
+	if cause != nil {
+		attributes = append(attributes, "error", cause)
+	}
+	resolver.reported.Do(func() {
+		slog.WarnContext(ctx, "next-input-suggestion policy is unavailable; the turn carries no policy (#334)", attributes...)
+	})
+	slog.DebugContext(ctx, "next-input-suggestion policy lookup failed", attributes...)
+	if cause != nil {
+		return fmt.Errorf("%w: %s: %w", ErrNextInputSuggestionPolicyUnavailable, reason, cause)
+	}
+	return fmt.Errorf("%w: %s", ErrNextInputSuggestionPolicyUnavailable, reason)
 }
 
 func NewNextInputSuggestionResolver(
@@ -96,14 +163,17 @@ func (resolver *NextInputSuggestionResolver) ResolveNextInputSuggestionPolicy(
 	actorUserID int64,
 ) (json.RawMessage, error) {
 	if ctx == nil || projectID <= 0 || actorUserID <= 0 {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		return nil, resolver.unavailable(context.Background(), "invalid actor or project", nil)
 	}
 	requestContext, cancel := context.WithTimeout(ctx, resolver.timeout)
 	defer cancel()
 
 	token, err := resolver.issuer.IssueToken(requestContext, actorUserID)
-	if err != nil || !validBearerToken(token) {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+	if err != nil {
+		return nil, resolver.unavailable(ctx, "actor token was not issued", err)
+	}
+	if !validBearerToken(token) {
+		return nil, resolver.unavailable(ctx, "actor token is not a usable bearer token", nil)
 	}
 	endpoint := *resolver.baseURL
 	endpoint.Path = "/api/v2/elitea_core/next_input_suggestion_config/prompt_lib/" +
@@ -115,28 +185,37 @@ func (resolver *NextInputSuggestionResolver) ResolveNextInputSuggestionPolicy(
 		nil,
 	)
 	if err != nil {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		return nil, resolver.unavailable(ctx, "policy request was not built", err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)
 
 	response, err := resolver.client.Do(request)
 	if err != nil {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		return nil, resolver.unavailable(ctx, "policy request did not reach the current platform", err)
 	}
 	defer func() {
 		_ = response.Body.Close()
 	}()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxNextInputSuggestionPolicyBytes))
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		// 404 here is the shape of #334: the path is routed, and no server
+		// answers it.
+		return nil, resolver.unavailable(ctx,
+			"policy endpoint answered "+strconv.Itoa(response.StatusCode), nil)
 	}
 	body, err := io.ReadAll(io.LimitReader(
 		response.Body,
 		maxNextInputSuggestionPolicyBytes+1,
 	))
-	if err != nil || len(body) > maxNextInputSuggestionPolicyBytes || !validJSONObject(body) {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+	if err != nil {
+		return nil, resolver.unavailable(ctx, "policy body was not read", err)
+	}
+	if len(body) > maxNextInputSuggestionPolicyBytes {
+		return nil, resolver.unavailable(ctx, "policy body is larger than the limit", nil)
+	}
+	if !validJSONObject(body) {
+		return nil, resolver.unavailable(ctx, "policy body is not a JSON object", nil)
 	}
 	var policy struct {
 		Enabled          bool `json:"enabled"`
@@ -145,14 +224,16 @@ func (resolver *NextInputSuggestionResolver) ResolveNextInputSuggestionPolicy(
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&policy); err != nil ||
-		policy.MinResponseChars < 1 || policy.MinResponseChars > 100_000 ||
+	if err := decoder.Decode(&policy); err != nil {
+		return nil, resolver.unavailable(ctx, "policy body does not match the contract", err)
+	}
+	if policy.MinResponseChars < 1 || policy.MinResponseChars > 100_000 ||
 		policy.TimeoutSeconds < 1 || policy.TimeoutSeconds > 300 {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		return nil, resolver.unavailable(ctx, "policy values are outside the permitted range", nil)
 	}
 	canonical, err := json.Marshal(policy)
 	if err != nil {
-		return nil, ErrNextInputSuggestionPolicyUnavailable
+		return nil, resolver.unavailable(ctx, "policy was not re-encoded", err)
 	}
 	return canonical, nil
 }

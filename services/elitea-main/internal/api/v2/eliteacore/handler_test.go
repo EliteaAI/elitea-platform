@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -276,7 +278,24 @@ func TestPermissions_WithAuth_ReturnsPermissionList(t *testing.T) {
 
 // ---- DefaultIcons -----------------------------------------------------------
 
-func TestDefaultIcons(t *testing.T) {
+// DEFECT: DefaultIcons returned five invented entries — /icons/robot.svg,
+// /icons/brain.svg, /icons/chat.svg, /icons/code.svg and /icons/data.svg.
+// No such file exists in the repository. The only /icons route the router
+// mounts is the two-segment /icons/{projectID}/{filename} object-store route
+// (internal/api/router.go:625). Every one of those URLs therefore answered 404.
+//
+// The project icon picker renders each entry as <img src={icon.url}> and takes
+// the url branch, so its initial-letter fallback never runs: the "Default"
+// section showed five broken images. The legacy handler
+// (legacy/plugins/elitea_core/api/v2/default_icons.py) enumerated a real
+// directory; the port replaced that with a hardcoded list.
+//
+// The catalogue now reports only files that exist. An empty directory means an
+// empty array, never a fabricated URL.
+
+func TestDefaultIconsReportsNoIconWhenTheDirectoryIsAbsent(t *testing.T) {
+	t.Setenv("DEFAULT_ICON_DATA_DIR", filepath.Join(t.TempDir(), "absent"))
+
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.DefaultIcons(w, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -285,24 +304,57 @@ func TestDefaultIcons(t *testing.T) {
 	assertContentTypeJSON(t, w)
 
 	// Handler returns a plain JSON array of icon objects (no wrapper object).
+	if items := decodeArr(t, w); len(items) != 0 {
+		t.Fatalf("catalogue = %v for a directory that does not exist, want an empty array; "+
+			"every entry here renders as a broken image", items)
+	}
+}
+
+func TestDefaultIconsEnumeratesTheIconDirectory(t *testing.T) {
+	directory := t.TempDir()
+	for _, filename := range []string{"robot.svg", "brain.svg"} {
+		if err := os.WriteFile(filepath.Join(directory, filename), []byte("<svg/>"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A sub-directory and a dot file are not icons.
+	if err := os.Mkdir(filepath.Join(directory, "nested"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".keep"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DEFAULT_ICON_DATA_DIR", directory)
+
+	h := newHandler()
+	w := httptest.NewRecorder()
+	h.DefaultIcons(w, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	assertStatus(t, w, http.StatusOK)
 	items := decodeArr(t, w)
-	const wantCount = 5
-	if len(items) != wantCount {
-		t.Errorf("expected %d icons, got %d", wantCount, len(items))
+	if len(items) != 2 {
+		t.Fatalf("catalogue = %v, want the two files on disk", items)
 	}
 
+	urls := map[string]string{}
 	for i, raw := range items {
 		icon, ok := raw.(map[string]any)
 		if !ok {
-			t.Errorf("icon[%d] is not an object", i)
-			continue
+			t.Fatalf("icon[%d] is not an object", i)
 		}
-		if name, _ := icon["name"].(string); name == "" {
+		name, _ := icon["name"].(string)
+		iconURL, _ := icon["url"].(string)
+		if name == "" {
 			t.Errorf("icon[%d] missing or empty 'name'", i)
 		}
-		if url, _ := icon["url"].(string); url == "" {
-			t.Errorf("icon[%d] missing or empty 'url'", i)
+		if !strings.HasPrefix(iconURL, eliteacore.DefaultIconURLPrefix) {
+			t.Errorf("icon[%d] url = %q, want the %q prefix that a static route serves",
+				i, iconURL, eliteacore.DefaultIconURLPrefix)
 		}
+		urls[name] = iconURL
+	}
+	if got := urls["robot"]; got != eliteacore.DefaultIconURLPrefix+"robot.svg" {
+		t.Errorf("robot url = %q", got)
 	}
 }
 
@@ -325,31 +377,73 @@ func TestUploadIcon(t *testing.T) {
 
 // ---- Export / Import --------------------------------------------------------
 
-func TestExportImportPost(t *testing.T) {
+// TestExportImportPostRefusesWithNoPool corrects a test that agreed with a
+// defect (#505).
+//
+// It read:
+//
+//	// With nil pool and empty body, the handler returns 201 with result/errors shape.
+//	assertStatus(t, w, http.StatusCreated)
+//
+// The comment describes the behaviour correctly and the assertion approves of
+// it. 201 Created is the answer "every entity in your file was imported". A
+// handler with no pool imported nothing and can import nothing, so the answer
+// was untrue, and the import wizard reads any 2xx as a completed import: it
+// marks each selected entity green and closes. The test would have failed the
+// repair, which is worse than having no test at all.
+//
+// The condition is not reachable in the production router, which always builds
+// the handler with a pool. It is reachable in this package, and the assertion
+// is what the repair has to be measured against: a handler that cannot write
+// must not report a write.
+func TestExportImportPostRefusesWithNoPool(t *testing.T) {
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.ExportImportPost(w, httptest.NewRequest(http.MethodPost, "/", nil))
 
-	// With nil pool and empty body, the handler returns 201 with result/errors shape.
-	assertStatus(t, w, http.StatusCreated)
+	assertStatus(t, w, http.StatusInternalServerError)
 	body := decodeObj(t, w)
-	if _, hasResult := body["result"]; !hasResult {
-		t.Error("response must contain 'result' key")
+	if _, hasResult := body["result"]; hasResult {
+		t.Error("a refusal must not carry a 'result' key: nothing was imported")
 	}
-	if _, hasErrors := body["errors"]; !hasErrors {
-		t.Error("response must contain 'errors' key")
+	message, _ := body["error"].(string)
+	if message == "" {
+		t.Errorf("response must name the reason, got %v", body)
 	}
 }
 
-func TestExportImportGet(t *testing.T) {
+// TestExportImportGetRefusesWithNoPool is the same correction on the export.
+//
+// The old assertion was `assertStatus(t, w, http.StatusOK)` on a body of
+// {"ok": true}. That body has no `applications` key at all, and the export
+// button saves whatever it is given as the agent's backup file. An empty
+// backup that reports success is the failure mode this whole issue is about.
+func TestExportImportGetRefusesWithNoPool(t *testing.T) {
 	h := newHandler()
 	w := httptest.NewRecorder()
 	h.ExportImportGet(w, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	assertStatus(t, w, http.StatusOK)
+	assertStatus(t, w, http.StatusInternalServerError)
 	body := decodeObj(t, w)
-	if ok, _ := body["ok"].(bool); !ok {
-		t.Error("ok should be true")
+	if ok, _ := body["ok"].(bool); ok {
+		t.Error("a failed export must not answer ok")
+	}
+	if _, hasApplications := body["applications"]; hasApplications {
+		t.Error("a failed export must not carry an 'applications' key")
+	}
+}
+
+// TestForkRefusesWithNoPool is the third of the same shape. Fork now has a
+// route (#505), so the answer it gives when it cannot write is a real answer.
+func TestForkRefusesWithNoPool(t *testing.T) {
+	h := newHandler()
+	w := httptest.NewRecorder()
+	h.Fork(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"applications":[{"name":"a"}]}`)))
+
+	assertStatus(t, w, http.StatusInternalServerError)
+	body := decodeObj(t, w)
+	if _, hasResult := body["result"]; hasResult {
+		t.Error("a refusal must not carry a 'result' key: nothing was forked")
 	}
 }
 

@@ -90,19 +90,34 @@ describe('OpenAPISchemaInput', () => {
       />,
     );
     fireEvent.click(getByText('Schema'));
-    // The full-screen button's wrapper (`fullScreenWrapperSx`) is
-    // `display: 'none'` until the editor area is hovered (`'&:hover': {'&
-    // [aria-label="full-scrn-btn"]': {display: 'block'}}`) — a real,
-    // baseline-matching hover-reveal affordance, not a bug. jsdom has no
-    // `:hover` pseudo-class engine (synthetic `mouseOver`/`mouseEnter`
-    // events never flip that CSS rule), so `getByRole`'s default
-    // accessible-only query never finds it; `{ hidden: true }` is
-    // testing-library's own documented escape hatch for exactly this class
-    // of CSS-hidden-but-present element — this test exercises "clicking it
-    // opens the modal", not the hover mechanic itself (jsdom cannot exercise
-    // that regardless of query option).
-    fireEvent.click(getByRole('button', { name: 'Full screen view', hidden: true }));
+    // No `{ hidden: true }` escape hatch. The full-screen button's wrapper
+    // used to be `display: 'none'` until a mouse hover, which removed the
+    // button from the accessibility tree and the tab order: a keyboard-only
+    // or touch user could never reach the full-screen editor, and
+    // `:focus-within` could never fire because there was nothing to focus.
+    // The wrapper is now `opacity: 0` instead, so the control is present and
+    // reachable; a plain `getByRole` finding it is the regression guard.
+    fireEvent.click(getByRole('button', { name: 'Full screen view' }));
     expect(getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('keeps the full-screen toggle out of sight until the editor is hovered or focused', () => {
+    const { getByText, getByRole, container } = renderWithTheme(
+      <OpenAPISchemaInput
+        value={VALID_SCHEMA}
+        onValueChange={vi.fn()}
+        setToolErrors={vi.fn()}
+      />,
+    );
+    fireEvent.click(getByText('Schema'));
+    // The visual affordance is preserved: hidden by opacity, revealed by the
+    // wrapper's `:hover`/`:focus-within` rule. Pinned so a later change
+    // cannot go back to `display: none`, which is what removed the control
+    // from the accessibility tree.
+    const wrapper = container.querySelector('[data-fullscreen-toggle]');
+    expect(wrapper).not.toBeNull();
+    expect(getComputedStyle(wrapper as Element).opacity).toBe('0');
+    expect(getByRole('button', { name: 'Full screen view' })).toBeInTheDocument();
   });
 
   it('parses a valid schema typed into the editor and reports actions + description via onValueChange', async () => {

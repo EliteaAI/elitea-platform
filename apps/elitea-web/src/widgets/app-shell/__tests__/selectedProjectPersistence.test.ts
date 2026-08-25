@@ -4,7 +4,7 @@ import { installWebStorageShim } from '@/test/webstorage';
 
 installWebStorageShim();
 
-import { readPersistedProject, writePersistedProject } from '../lib/selectedProjectPersistence';
+import { readPersistedProject, writePersistedProject } from '@/shared/lib/selectedProjectPersistence';
 
 beforeEach(() => {
   window.localStorage.clear();

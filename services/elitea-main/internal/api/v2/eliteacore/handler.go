@@ -6,21 +6,26 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
 
 func generateID() string {
@@ -39,6 +44,11 @@ type Handler struct {
 	permissionResolver auth.PermissionResolver
 	httpClient         *http.Client
 	store              storage.ObjectStore
+	// The pre-built MCP server catalogue and the vault holding its client
+	// secrets (mcp_prebuilt_resolution.go). Both nil unless
+	// WithPrebuiltMCPCatalogue is applied, in which case resolution is a no-op.
+	prebuiltMCP      *mcpregistry.PrebuiltStore
+	prebuiltMCPVault PrebuiltSecretReader
 }
 
 type Option func(*Handler)
@@ -143,6 +153,26 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	voice := h.voiceFlags(r.Context())
 	defaults["voice_features_enabled"] = voice.enabled
 	defaults["voice_features_temporarily_disabled"] = voice.temporarilyDisabled
+
+	// The guardrails blocklist, for the product UI to mark a toolkit blocked.
+	//
+	// This is the counterpart of a decision taken on the server: the toolkit
+	// INSTANCE list is deliberately not filtered, so an administrator can still
+	// see and delete toolkits of a type they have blocked rather than having
+	// them vanish with their stored settings and vault references. A client that
+	// is shown those rows needs to know which of them are blocked, or it renders
+	// a toolkit as usable that no agent will run.
+	//
+	// It is the canonical keys that are published, not the operator's raw
+	// strings. The client compares with the same normalisation
+	// (`canonToolkitKey` in apps/elitea-web) and sending the raw values would
+	// make correctness depend on the client repeating a rule it can only get
+	// wrong — the list is for comparison, never for display.
+	//
+	// Added rather than overlaid, for the reason the MCP pair above is: the
+	// schema declares `additionalProperties: true`, so this is an addition the
+	// contract already permits and no spec edit follows.
+	defaults["blocked_toolkits"] = h.blockedToolkits(r.Context())
 
 	writeJSON(w, http.StatusOK, defaults)
 }
@@ -253,22 +283,21 @@ func (h *Handler) SearchOptions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "collections": []any{}})
 }
 
-func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	ctx := r.Context()
-
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if limit <= 0 {
-		limit = 20
-	}
-
-	items := make([]map[string]any, 0)
-	total := 0
-
-	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
-		// Count total: project members UNION super_admins (excluding system users)
-		countQ := `
+// usersCountQuery and usersPageQuery list the members of one project, plus the
+// central platform administrators.
+//
+// THE MODE PREDICATE IS LOAD-BEARING. A role name alone does not identify a
+// platform administrator. auth_core__role is UNIQUE (name, mode), so a legacy
+// database carries a `super_admin` role in the `default` and `developer` modes
+// as well. Only the `administration` mode grants central access. Without
+// `r.mode = 'administration'` every holder of a same-named role joined every
+// project's member list as a phantom member.
+//
+// They are package constants rather than locals for a second reason:
+// scripts/validate_contract_static.sh reads only the first 80 lines of the
+// Users function to find its writeJSON call. Inline, the two queries pushed
+// that call to line 81 and the gate reported the response shape as unmeasured.
+const usersCountQuery = `
 			SELECT COUNT(*) FROM (
 				SELECT au.id FROM auth_core__user au
 				JOIN auth_core__project_user_role pur ON pur.user_id = au.id AND pur.project_id = $1
@@ -277,13 +306,14 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				SELECT au.id FROM auth_core__user au
 				JOIN auth_core__user_role ur ON ur.user_id = au.id
 				JOIN auth_core__role r ON r.id = ur.role_id
-				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+				WHERE r.name = 'super_admin' AND r.mode = 'administration'
+					AND au.email NOT LIKE '%@centry.user'
 			) combined
 		`
-		_ = h.pool.QueryRow(ctx, countQ, pidNum).Scan(&total) // failure leaves total=0, which is safe
 
-		// Fetch paginated: project-specific roles for members, 'super_admin' for global admins
-		q := `
+// usersPageQuery is usersCountQuery's page: project roles for a member, and the
+// literal `super_admin` for a central administrator who is not one.
+const usersPageQuery = `
 			SELECT id, email, name, roles FROM (
 				SELECT au.id, au.email, COALESCE(au.name, '') as name,
 					COALESCE(array_agg(pr.name) FILTER (WHERE pr.name IS NOT NULL), ARRAY['viewer']) as roles
@@ -298,7 +328,8 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 				FROM auth_core__user au
 				JOIN auth_core__user_role ur ON ur.user_id = au.id
 				JOIN auth_core__role r ON r.id = ur.role_id
-				WHERE r.name = 'super_admin' AND au.email NOT LIKE '%@centry.user'
+				WHERE r.name = 'super_admin' AND r.mode = 'administration'
+					AND au.email NOT LIKE '%@centry.user'
 					AND au.id NOT IN (
 						SELECT pur2.user_id FROM auth_core__project_user_role pur2 WHERE pur2.project_id = $1
 					)
@@ -306,7 +337,24 @@ func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
 			ORDER BY name, id
 			LIMIT $2 OFFSET $3
 		`
-		rows, err := h.pool.Query(ctx, q, pidNum, limit, offset)
+
+func (h *Handler) Users(w http.ResponseWriter, r *http.Request) {
+	projectID := chi.URLParam(r, "projectID")
+	ctx := r.Context()
+
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+	if limit <= 0 {
+		limit = 20
+	}
+
+	items := make([]map[string]any, 0)
+	total := 0
+
+	if pidNum, err := strconv.Atoi(projectID); err == nil && pidNum > 0 {
+		_ = h.pool.QueryRow(ctx, usersCountQuery, pidNum).Scan(&total) // failure leaves total=0, which is safe
+
+		rows, err := h.pool.Query(ctx, usersPageQuery, pidNum, limit, offset)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
@@ -690,7 +738,21 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		FROM %q.application_versions WHERE id = $1
 		RETURNING id`, s, s)
 
-	err = h.pool.QueryRow(ctx, cloneQ, versionID, body.VersionName, metaOverlay).Scan(&cloneID)
+	// A publish is all-or-nothing, for the reason ForkAgent is
+	// (internal/api/oapiserver/publishing.go). The version clone and the two
+	// attachment copies below run in one transaction. The tool copy used to run on
+	// the pool with its error discarded, so a failed copy published a version and
+	// answered 200. The user then saw a published agent that had lost every
+	// toolkit, and nothing was logged. A published shell is worse than a refusal
+	// the caller can retry, because the caller cannot see that it must retry.
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent"})
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op once Commit has run
+
+	err = tx.QueryRow(ctx, cloneQ, versionID, body.VersionName, metaOverlay).Scan(&cloneID)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "_application_version_name_uc") {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -707,11 +769,43 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clone entity_tool_mapping rows from source version to new published version
-	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+	// Clone entity_tool_mapping rows from source version to new published version.
+	// The copy keeps the source `entity_type` and `entity_id`: the clone above
+	// selects the source `application_id`, so the published version belongs to the
+	// same agent, and the chat read joins `entity_id` to that application
+	// (internal/db/queries/agent_chat.sql:107).
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 		SELECT $2, entity_id, entity_type, tool_id, selected_tools
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID) // best-effort copy
+		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent tool attachments"})
+		return
+	}
+
+	// Clone entity_skill_mapping rows from source version to new published version.
+	// Publish copied tool mappings only, so a published agent carried no skills
+	// (#351). Fork sets the precedent it now matches
+	// (internal/api/oapiserver/publishing.go:149).
+	//
+	// The table has no `entity_id` column (001_initial.sql:422-432): a skill
+	// attachment is keyed by (entity_version_id, skill_id, entity_type) alone.
+	// `entity_type` is carried from the source row rather than defaulted, because
+	// it is part of that key and the chat read matches on it
+	// (internal/db/queries/agent_chat.sql:132). `skill_version_id` rides along
+	// because the same read LEFT JOINs it for the skill instructions — dropping it
+	// publishes a named skill with an empty body.
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`
+		INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+		SELECT $2, entity_type, skill_id, skill_version_id
+		FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent skill attachments"})
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent"})
+		return
+	}
 
 	// Embed sub-agents: clone application_tools of type 'application' recursively
 	h.embedSubAgents(ctx, s, versionID, cloneID)
@@ -765,7 +859,8 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 }
 
 // embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
-// For each sub-agent tool, it creates a new embedded application+version and links it.
+// For each sub-agent tool, it creates a new embedded application+version, copies the
+// tool and skill attachments of that sub-agent onto the embedded version, and links it.
 func (h *Handler) embedSubAgents(ctx context.Context, schema string, sourceVersionID string, targetVersionID int) {
 	h.embedSubAgentsRecursive(ctx, schema, sourceVersionID, targetVersionID, 0)
 }
@@ -825,6 +920,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			FROM %q.applications WHERE id = $1
 			RETURNING id`, schema, schema), ref.appID).Scan(&embeddedAppID)
 		if err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent application clone failed",
+				"schema", schema, "source_application_id", ref.appID,
+				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
 
@@ -850,15 +948,51 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			embeddedAppID, ref.versionID, ref.versionID, ref.appID, projectID,
 			strconv.Itoa(parentAppID), strconv.Itoa(targetVersionID)).Scan(&embeddedVerID)
 		if err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent version clone failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
 
-		// Clone entity_tool_mapping for the embedded version
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+		// Clone entity_tool_mapping for the embedded version.
+		//
+		// The copy stays outside the publish transaction, because the publish
+		// committed before embedSubAgents ran. Its error is logged rather than
+		// discarded: the publish cannot be withdrawn, so the caller keeps its 200,
+		// and the log is the only channel that can report the loss. See the
+		// pull request for issue #406 for the full reasoning.
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 			SELECT $2, $3, entity_type, tool_id, selected_tools
 			FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
-			ref.versionID, embeddedVerID, embeddedAppID) // best-effort copy
+			ref.versionID, embeddedVerID, embeddedAppID); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: tool attachment copy failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
+
+		// Clone entity_skill_mapping for the embedded version. The embed copied
+		// tool attachments only, so an embedded sub-agent ran without the skills
+		// its author gave it (#406). Publish has the same copy (#351), and fork
+		// has it too (internal/api/oapiserver/publishing.go:149).
+		//
+		// The table has no `entity_id` column (001_initial.sql:422-432): a skill
+		// attachment is keyed by (entity_version_id, skill_id, entity_type) alone.
+		// That is why this statement names four columns where the tool copy above
+		// names five. `entity_type` is carried from the source row rather than
+		// defaulted, because it is part of that key and the chat read matches on it
+		// (internal/db/queries/agent_chat.sql:132). `skill_version_id` rides along
+		// because the same read LEFT JOINs it for the skill instructions — dropping
+		// it embeds a named skill with an empty body.
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+			SELECT $2, entity_type, skill_id, skill_version_id
+			FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema, schema),
+			ref.versionID, embeddedVerID); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: skill attachment copy failed",
+				"schema", schema, "source_version_id", ref.versionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
 
 		// Create application_tools entry on the published version pointing to embedded copy
 		embeddedSettings := map[string]any{
@@ -866,10 +1000,14 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			"application_version_id": strconv.Itoa(embeddedVerID),
 		}
 		settingsJSON, _ := json.Marshal(embeddedSettings)
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, schema),
-			targetVersionID, ref.name, settingsJSON) // best-effort link
+			targetVersionID, ref.name, settingsJSON); err != nil {
+			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent link failed",
+				"schema", schema, "parent_version_id", targetVersionID,
+				"embedded_version_id", embeddedVerID, "err", err)
+		}
 
 		// Recursively embed sub-agents of this sub-agent
 		h.embedSubAgentsRecursive(ctx, schema, ref.versionID, embeddedVerID, depth+1)
@@ -1071,10 +1209,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 					"context": nil,
 					"fix":     "Remove one of the circular sub-agent references to break the cycle",
 				}},
-				"warnings":               []map[string]any{},
-				"recommendations":        []map[string]any{},
-				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
-				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"warnings":                []map[string]any{},
+				"recommendations":         []map[string]any{},
+				"summary":                 fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                  map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
 				"ai_validation_available": false,
 				"validation_token":        nil,
 			}, http.StatusUnprocessableEntity
@@ -1089,10 +1227,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 					"context": nil,
 					"fix":     "Reduce the nesting depth of sub-agent references",
 				}},
-				"warnings":               []map[string]any{},
-				"recommendations":        []map[string]any{},
-				"summary":                fmt.Sprintf("Validation FAIL for version %s", versionID),
-				"counts":                 map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
+				"warnings":                []map[string]any{},
+				"recommendations":         []map[string]any{},
+				"summary":                 fmt.Sprintf("Validation FAIL for version %s", versionID),
+				"counts":                  map[string]any{"critical": 1, "warnings": 0, "suggestions": 0},
 				"ai_validation_available": false,
 				"validation_token":        nil,
 			}, http.StatusUnprocessableEntity
@@ -1257,10 +1395,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	resp := map[string]any{
 		"status":                  status,
 		"critical_issues":         criticalIssues,
-		"warnings":               warnings,
-		"recommendations":        recommendations,
-		"summary":                fmt.Sprintf("Validation %s for version %s", status, versionID),
-		"counts":                 map[string]any{"critical": len(criticalIssues), "warnings": len(warnings), "suggestions": len(recommendations)},
+		"warnings":                warnings,
+		"recommendations":         recommendations,
+		"summary":                 fmt.Sprintf("Validation %s for version %s", status, versionID),
+		"counts":                  map[string]any{"critical": len(criticalIssues), "warnings": len(warnings), "suggestions": len(recommendations)},
 		"ai_validation_available": false,
 		"validation_token":        token,
 	}
@@ -1463,9 +1601,9 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	}
 
 	var llmSettings, meta, starters, pipelineSettings any
-	_ = json.Unmarshal(llmJSON, &llmSettings)         // DB jsonb columns
-	_ = json.Unmarshal(metaJSON, &meta)               // DB jsonb columns
-	_ = json.Unmarshal(startersJSON, &starters)       // DB jsonb columns
+	_ = json.Unmarshal(llmJSON, &llmSettings)           // DB jsonb columns
+	_ = json.Unmarshal(metaJSON, &meta)                 // DB jsonb columns
+	_ = json.Unmarshal(startersJSON, &starters)         // DB jsonb columns
 	_ = json.Unmarshal(pipelineJSON, &pipelineSettings) // DB jsonb columns
 
 	projIDInt, _ := strconv.Atoi(publicProjectID)
@@ -1544,7 +1682,7 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	}
 
 	versionDetails := map[string]any{
-		"id":                     strconv.Itoa(vID),
+		"id":                    strconv.Itoa(vID),
 		"application_id":        strconv.Itoa(appID),
 		"name":                  vName,
 		"status":                vStatus,
@@ -1783,14 +1921,93 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
-	icons := []map[string]any{
-		{"name": "robot", "url": "/icons/robot.svg"},
-		{"name": "brain", "url": "/icons/brain.svg"},
-		{"name": "chat", "url": "/icons/chat.svg"},
-		{"name": "code", "url": "/icons/code.svg"},
-		{"name": "data", "url": "/icons/data.svg"},
+// DefaultIconURLPrefix is the public path the default entity icons are served
+// under. It follows /app/application_icon/ and /app/application_tool_icon/,
+// the two static directories internal/api/router.go already mounts.
+//
+// The two-segment /icons/{projectID}/{filename} route is NOT this prefix: it
+// serves the per-project icons a user uploads, out of the object store.
+//
+// NO ROUTE SERVES THIS PREFIX YET, and no build bakes icon files into the
+// image. Read the consequence plainly. DefaultIconCatalogue enumerates a
+// directory that no current image creates. GET
+// /api/v2/elitea_core/default_icons/prompt_lib/{projectID} therefore answers
+// `[]` in every build, and the "Default" section of the icon picker is empty.
+//
+// This state corrects a worse one. It is not the finished feature. The
+// endpoint answered with five invented URLs before. Every one of them
+// returned 404, and the picker drew five broken images, because it has no
+// fallback for a url that fails. An empty section is honest.
+//
+// Three items complete the feature. Legacy does all three
+// (legacy/plugins/elitea_core/routes/application_icon.py:15 and
+// legacy/plugins/elitea_core/module.py:599-616):
+//
+//  1. Mount a static file server on this prefix in internal/api/router.go,
+//     beside /app/application_icon/ and /app/application_tool_icon/.
+//  2. Add the prefix to internal/api/main_public_rules.go. A browser <img>
+//     tag sends no Authorization header.
+//  3. Give the pod the icon files. Legacy downloads the
+//     EliteaAI/elitea_static archive into /data/static at start-up.
+const DefaultIconURLPrefix = "/app/default_entity_icons/"
+
+// defaultIconDataDir is the directory that holds the default entity icons.
+// DEFAULT_ICON_DATA_DIR overrides it.
+const defaultIconDataDir = "/data/static/elitea_static-main/default_entity_icons"
+
+// iconDirEnvOr reads the icon directory override, or gives the compiled-in
+// default.
+//
+// The `*Or(...)` NAME IS LOAD-BEARING, not a style choice. The env-drift gate
+// (services/elitea-llm-gateway/scripts/env-drift-check.sh:117) sorts every env
+// name the code reads by the shape of the call. A bare `os.Getenv("X")` counts
+// as REQUIRED. It fails the gate when the chart never sets it. An
+// `*Or("X", fallback)` call counts as DEFAULTED and only warns. This variable
+// has a compiled-in default, so the second tier is the honest one. Read through
+// a bare os.Getenv, it failed the gate. It then read as a feature that is
+// silently broken in the deployed pod. It is not broken.
+func iconDirEnvOr(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
 	}
+	return fallback
+}
+
+// DefaultIconCatalogue lists the default entity icons that exist on disk.
+//
+// It returns an empty slice when the directory is absent or empty. It NEVER
+// invents a name: an entry the client cannot load renders as a broken image,
+// because the icon picker has no fallback for a url that answers 404.
+func DefaultIconCatalogue() []map[string]any {
+	directory := iconDirEnvOr("DEFAULT_ICON_DATA_DIR", defaultIconDataDir)
+	icons := make([]map[string]any, 0)
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return icons
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		filename := entry.Name()
+		if strings.HasPrefix(filename, ".") {
+			continue
+		}
+		name := strings.TrimSuffix(filename, filepath.Ext(filename))
+		icons = append(icons, map[string]any{
+			"name": name,
+			"url":  DefaultIconURLPrefix + url.PathEscape(filename),
+		})
+	}
+	return icons
+}
+
+func (h *Handler) DefaultIcons(w http.ResponseWriter, _ *http.Request) {
+	// The local is load-bearing. scripts/validate_contract_static.sh reads the
+	// third argument of writeJSON to prove this route answers a plain array. Its
+	// pattern accepts a slice literal or a lowercase identifier, so an inline
+	// `DefaultIconCatalogue()` call left the shape unmeasured and failed the gate.
+	icons := DefaultIconCatalogue()
 	writeJSON(w, http.StatusOK, icons)
 }
 
@@ -2004,20 +2221,64 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	s := fmt.Sprintf("p_%s", projectID)
 
-	// Body can be either a flat array (import_wizard) or a map with "applications" key
-	bodyBytes, _ := io.ReadAll(r.Body)
-	var entities []any
-	if len(bodyBytes) > 0 && bodyBytes[0] == '[' {
-		_ = json.Unmarshal(bodyBytes, &entities) // request body; malformed means empty entities
-	} else {
-		var bodyMap map[string]any
-		_ = json.Unmarshal(bodyBytes, &bodyMap) // request body; malformed means empty map
-		if apps, ok := bodyMap["applications"].([]any); ok {
-			entities = apps
-		}
+	ctx := r.Context()
+
+	// Checked before the body, because it is the handler's own precondition
+	// and not the caller's fault. It shared a branch with an empty entity list
+	// and answered 201, so an import that could reach no database at all
+	// reported that it had imported everything (#505).
+	if h.pool == nil {
+		slog.ErrorContext(ctx, "import: "+importWriteFailed, "schema", s)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
 	}
 
-	if len(entities) == 0 || h.pool == nil {
+	// Body can be either a flat array (import_wizard) or a map with an
+	// "applications" key. Three faults lived in the ten lines this replaces,
+	// and all three ended at the same 201 with an empty result:
+	//
+	//   - the io.ReadAll error was discarded, so a body that was cut off part
+	//     way through was imported as far as it got, which is nothing;
+	//   - both json.Unmarshal errors were discarded under a comment that said
+	//     "malformed means empty entities", so a corrupt export file was a
+	//     successful import of no entities;
+	//   - the array branch tested bodyBytes[0], so a body with any leading
+	//     whitespace — a newline from a text editor is enough — went to the map
+	//     branch, failed to decode as a map, and took the same silent exit.
+	//
+	// bytes.TrimSpace removes the third. The other two are reported.
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		slog.ErrorContext(ctx, "import: unable to read the request body", "schema", s, "error", err)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unable to read the request body"})
+		return
+	}
+	trimmed := bytes.TrimSpace(bodyBytes)
+	var entities []any
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		if err := json.Unmarshal(trimmed, &entities); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+			return
+		}
+	} else {
+		var bodyMap map[string]any
+		if err := json.Unmarshal(trimmed, &bodyMap); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body: " + err.Error()})
+			return
+		}
+		// A body that carries no `applications` array names nothing to import.
+		// It used to answer 201 with an empty result, which the wizard reads as
+		// a completed import. An `applications` key that IS an array and IS
+		// empty keeps that answer: it asks for nothing and gets nothing.
+		apps, ok := bodyMap["applications"].([]any)
+		if !ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the request body must carry an applications array"})
+			return
+		}
+		entities = apps
+	}
+
+	if len(entities) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"result": map[string]any{"agents": []any{}},
 			"errors": map[string]any{"agents": []any{}},
@@ -2025,12 +2286,16 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	user, _ := auth.UserFromContext(ctx)
-	userID := 1
-	if user.ID != "" {
-		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
+	userID, ok := importPrincipalUserID(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "an authenticated principal is required to import"})
+		return
 	}
+
+	resultAgents := make([]map[string]any, 0)
+	errorAgents := make([]any, 0)
+	resultToolkits := make([]map[string]any, 0)
+	errorToolkits := make([]any, 0)
 
 	// Separate entities by type, preserving original indices for error reporting
 	type toolkitEntry struct {
@@ -2045,9 +2310,19 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	var agentEntries []agentEntry
 	var toolkitEntries []toolkitEntry
 
+	// An entry that is not a JSON object was dropped by a bare `continue`, so
+	// the wizard showed it neither in the result nor in the errors and the
+	// import still answered 201. It is reported on the agents channel because
+	// nothing in an entry the handler cannot read says which channel it belongs
+	// to, and the wizard maps an error entry by its index, not by its channel
+	// (apps/elitea-ui, getErrorImportUUID).
 	for i, raw := range entities {
 		ent, ok := raw.(map[string]any)
 		if !ok {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": i, "name": "",
+				"msg": "Import function has been failed: the entry is not a JSON object",
+			})
 			continue
 		}
 		entity, _ := ent["entity"].(string)
@@ -2058,11 +2333,6 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			agentEntries = append(agentEntries, agentEntry{entityIdx: i, raw: ent})
 		}
 	}
-
-	resultAgents := make([]map[string]any, 0)
-	errorAgents := make([]any, 0)
-	resultToolkits := make([]map[string]any, 0)
-	errorToolkits := make([]any, 0)
 
 	validAgentTypes := map[string]bool{"openai": true, "react": true, "dial": true, "pipeline": true, "": true}
 
@@ -2120,6 +2390,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
 			if !ok {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: a version entry is not a JSON object",
+				})
 				continue
 			}
 			vName, _ := v["name"].(string)
@@ -2132,23 +2407,22 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 			instructions, _ := v["instructions"].(string)
 			welcomeMsg, _ := v["welcome_message"].(string)
-			llmJSON := "{}"
-			if llm, ok := v["llm_settings"].(map[string]any); ok {
-				if b, e := json.Marshal(llm); e == nil {
-					llmJSON = string(b)
-				}
-			}
-			startersJSON := "[]"
-			if cs, ok := v["conversation_starters"].([]any); ok {
-				if b, e := json.Marshal(cs); e == nil {
-					startersJSON = string(b)
-				}
-			}
-			metaJSON := "{}"
-			if m, ok := v["meta"].(map[string]any); ok {
-				if b, e := json.Marshal(m); e == nil {
-					metaJSON = string(b)
-				}
+
+			// Three jsonb columns, one rule. A key that is absent, or null,
+			// keeps the column default. A key of the wrong JSON type, or one
+			// that cannot be encoded, is reported. It used to take the same
+			// empty default as an absent key, so a file whose llm_settings was
+			// not an object imported an agent with no model, and answered 201.
+			llmJSON, llmErr := importedJSONObject(v, "llm_settings")
+			startersJSON, startersErr := importedJSONArray(v, "conversation_starters")
+			metaJSON, metaErr := importedJSONObject(v, "meta")
+			if columnErr := errors.Join(llmErr, startersErr, metaErr); columnErr != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: unable to import version " + vName + ": " + columnErr.Error(),
+				})
+				continue
 			}
 
 			var vID int
@@ -2157,6 +2431,18 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
 				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
 			if err != nil {
+				// Sibling of the tool-link defect below (#420). The bare
+				// `continue` dropped the version and told nobody. The insert
+				// above had already written the agent row. The import therefore
+				// answered 201, and the agent held fewer versions than the file.
+				// An agent whose every version failed held no version at all.
+				slog.ErrorContext(ctx, "import: application version insert failed",
+					"schema", s, "application_id", appID, "version_name", vName, "error", err)
+				errorAgents = append(errorAgents, map[string]any{
+					"index": ae.entityIdx,
+					"name":  name,
+					"msg":   "Import function has been failed: unable to import version " + vName + ": " + err.Error(),
+				})
 				continue
 			}
 
@@ -2179,26 +2465,26 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
 				"application_id": fmt.Sprintf("%d", appID),
-				"name":          vName,
-				"status":        "draft",
+				"name":           vName,
+				"status":         "draft",
 			})
 
 			var llmParsed, startersParsed any
-			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)       // already marshaled above; can't fail
+			_ = json.Unmarshal([]byte(llmJSON), &llmParsed)           // already marshaled above; can't fail
 			_ = json.Unmarshal([]byte(startersJSON), &startersParsed) // already marshaled above; can't fail
 
 			versionDetails = map[string]any{
 				"id":                    fmt.Sprintf("%d", vID),
 				"application_id":        fmt.Sprintf("%d", appID),
 				"name":                  vName,
-				"status":               "draft",
-				"author_id":            fmt.Sprintf("%d", userID),
-				"agent_type":           agentType,
-				"instructions":         instructions,
-				"welcome_message":      welcomeMsg,
-				"llm_settings":         llmParsed,
+				"status":                "draft",
+				"author_id":             fmt.Sprintf("%d", userID),
+				"agent_type":            agentType,
+				"instructions":          instructions,
+				"welcome_message":       welcomeMsg,
+				"llm_settings":          llmParsed,
 				"conversation_starters": startersParsed,
-				"tools":                []any{},
+				"tools":                 []any{},
 			}
 		}
 
@@ -2218,6 +2504,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	importUUIDToToolID := map[string]int{}
 	failedToolkitImportUUIDs := map[string]bool{}
 
+	// elitea_tools.owner_id is the DESTINATION PROJECT and is NOT NULL on a
+	// schema this repository's migration corpus made — see
+	// importToolkitInsertSQL for the column's meaning and the evidence for it.
+	toolkitOwnerID, toolkitOwnerErr := tenantOwnerID(projectID)
+
 	for _, tk := range toolkitEntries {
 		tkName, _ := tk.raw["name"].(string)
 		tkType, _ := tk.raw["type"].(string)
@@ -2225,8 +2516,20 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			tkType = "custom"
 		}
 
-		settings, _ := tk.raw["settings"].(map[string]any)
-		if settings == nil {
+		// A toolkit's settings hold its URL, its repository and everything else
+		// the toolkit needs to reach its service. A `settings` key of the wrong
+		// JSON type was replaced with an empty object, so the toolkit imported,
+		// answered 201 and could reach nothing.
+		settings, hasSettings := tk.raw["settings"].(map[string]any)
+		if !hasSettings {
+			if raw, present := tk.raw["settings"]; present && raw != nil {
+				errorToolkits = append(errorToolkits, map[string]any{
+					"index": tk.entityIdx, "name": tkName,
+					"msg": "Import function has been failed: settings must be a JSON object",
+				})
+				failedToolkitImportUUIDs[tk.importUUID] = true
+				continue
+			}
 			settings = map[string]any{}
 		}
 
@@ -2253,16 +2556,25 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		settingsJSON := "{}"
-		if b, e := json.Marshal(settings); e == nil {
-			settingsJSON = string(b)
+		settingsJSON, settingsErr := importedJSONEncode("settings", settings)
+		if settingsErr != nil {
+			errorToolkits = append(errorToolkits, map[string]any{
+				"index": tk.entityIdx, "name": tkName,
+				"msg": "Import function has been failed: " + settingsErr.Error(),
+			})
+			failedToolkitImportUUIDs[tk.importUUID] = true
+			continue
 		}
 
 		tkDesc, _ := tk.raw["description"].(string)
+		if toolkitOwnerErr != nil {
+			errorToolkits = append(errorToolkits, map[string]any{"index": tk.entityIdx, "name": tkName, "msg": "Import function has been failed: " + toolkitOwnerErr.Error()})
+			failedToolkitImportUUIDs[tk.importUUID] = true
+			continue
+		}
 		var toolID int
-		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.elitea_tools (name, type, settings, author_id, description, meta) VALUES ($1, $2, $3::jsonb, $4, $5, '{}'::jsonb) RETURNING id`, s),
-			tkName, tkType, settingsJSON, userID, tkDesc).Scan(&toolID)
+		err := h.pool.QueryRow(ctx, importToolkitInsertSQL(s),
+			tkName, tkType, settingsJSON, toolkitOwnerID, userID, tkDesc).Scan(&toolID)
 		if err == nil {
 			if tk.importUUID != "" {
 				importUUIDToToolID[tk.importUUID] = toolID
@@ -2284,7 +2596,15 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		agentResult := resultAgents[resultIdx]
 		resultIdx++
 
+		name, _ := ae.raw["name"].(string)
 		hasLinkError := false
+		// #420: the insert below ran as `_, _ = h.pool.Exec(...)`. A failed link
+		// was therefore silent. `hasLinkError` above cannot carry this fault. That
+		// flag has one message, and the message says the toolkit was not
+		// imported. A failed insert is a different fault. The toolkit IS
+		// imported, and the row that joins it to the agent is missing. Each lost
+		// link therefore gets its own message.
+		var linkInsertFailures []string
 		var vTools []any
 
 		// Get version IDs from the created versions
@@ -2296,6 +2616,10 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 			vIDStr, _ := createdVersions[vIdx]["id"].(string)
 			var vID int
+			// This reads back a value phase 1 wrote with fmt.Sprintf("%d", vID)
+			// on the line that created the entry, so it cannot fail. It is not
+			// the class of substitution #505 repairs, which read a value that
+			// came from the request.
 			_, _ = fmt.Sscanf(vIDStr, "%d", &vID)
 
 			for _, toolRef := range toolRefs {
@@ -2308,16 +2632,37 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				if toolID, found := importUUIDToToolID[refUUID]; found {
-					selToolsJSON := "{}"
-					if st, ok := toolRef["selected_tools"].(map[string]any); ok {
-						if b, e := json.Marshal(st); e == nil {
-							selToolsJSON = string(b)
-						}
+					// THE DATA LOSS (#505). This read `selected_tools` as
+					// `map[string]any` and wrote `{}` when the assertion
+					// failed. The column holds a JSON ARRAY: `[]` is its own
+					// default (001_initial.sql), the route the tool menu drives
+					// writes an array of tool names (internal/api/v2/toolkits,
+					// selectedToolsPayload), and the chat read only counts an
+					// array (internal/db/queries/agent_chat.sql). The export
+					// writes the column out as the database holds it. So every
+					// selection a user had actually made failed the assertion,
+					// became `{}` on import, and an export followed by an import
+					// silently unchecked every tool of every toolkit.
+					//
+					// The value is now kept whatever its JSON type, so the
+					// import reproduces the file it was given.
+					selToolsJSON, selErr := importedJSONValue(toolRef, "selected_tools", "[]")
+					if selErr != nil {
+						linkInsertFailures = append(linkInsertFailures,
+							"Import function has been failed: unable to link toolkit "+strconv.Itoa(toolID)+": "+selErr.Error())
+						continue
 					}
-					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 						VALUES ($1, $2, 'application', $3, $4::jsonb)`, s),
-						vID, info.appID, toolID, selToolsJSON) // best-effort link
+						vID, info.appID, toolID, selToolsJSON); err != nil {
+						slog.ErrorContext(ctx, "import: tool link insert failed",
+							"schema", s, "application_id", info.appID, "version_id", vID, "tool_id", toolID, "error", err)
+						linkInsertFailures = append(linkInsertFailures,
+							"Import function has been failed: unable to link toolkit "+strconv.Itoa(toolID)+": "+err.Error())
+						// The response must not name a link that has no row.
+						continue
+					}
 					vTools = append(vTools, map[string]any{"id": strconv.Itoa(toolID), "type": "custom", "name": ""})
 				} else {
 					hasLinkError = true
@@ -2325,8 +2670,15 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Update version_details.tools with resolved tools
-		if vd, ok := agentResult["version_details"].(map[string]any); ok {
+		// Update version_details.tools with resolved tools.
+		//
+		// `vd != nil` is load-bearing. It is not defensive. `versionDetails` in
+		// phase 1 is a `var` of map type. Only a successful version insert fills
+		// it. An agent whose every version insert fails therefore stores a NIL
+		// map in this key. The type assertion below still succeeds, because the
+		// interface holds a type. The write then panics with "assignment to entry
+		// in nil map". A request can reach that panic today.
+		if vd, ok := agentResult["version_details"].(map[string]any); ok && vd != nil {
 			if vTools == nil {
 				vTools = []any{}
 			}
@@ -2334,11 +2686,17 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if hasLinkError {
-			name, _ := ae.raw["name"].(string)
 			errorAgents = append(errorAgents, map[string]any{
 				"index": ae.entityIdx,
 				"name":  name,
 				"msg":   "Import function has been failed: unable to link tools cause the later was not imported",
+			})
+		}
+		for _, message := range linkInsertFailures {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": ae.entityIdx,
+				"name":  name,
+				"msg":   message,
 			})
 		}
 	}
@@ -2361,9 +2719,45 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Fork copies one or more published applications into the caller's project.
+//
+// # It now has a route
+//
+// It had none. `POST /elitea_core/fork/prompt_lib/{projectID}` was registered
+// on `ExportImportPost`, so this function was code with no caller and the fork
+// button ran the import instead (#505). The two are not interchangeable. The
+// export the fork button reads is fetched with `?fork=true`, which adds
+// `owner_id`, `original_exported` and the shared-origin keys, and only this
+// function reads them. Serving the route with the import meant that a forked
+// agent:
+//
+//   - kept `llm_settings.model_project_id` pointing at the SOURCE project, so
+//     the model the copy runs on belongs to a project the caller may not be a
+//     member of. Only this function rewrites it to the destination;
+//   - carried no `meta.parent_entity_id`, so nothing recorded where it came
+//     from and the read path reported `is_forked: false` on a fork;
+//   - lost every version variable and every tag, which the import never reads.
+//
+// The registration is the repair. This function keeps the errors channel and
+// the status rule the import uses, because the same wizard reads both.
+//
+// # Why every error entry carries an index
+//
+// `getErrorImportUUID` in `apps/elitea-ui` reads `selectedData[item.index]`
+// with no guard. The entries this function used to build carried `name` and
+// `error` and no index, so the first fork failure would have thrown a
+// TypeError inside the wizard and stopped it. They now carry `index` and `msg`,
+// which is the shape the import already writes and the wizard already maps.
 func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	s := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	if h.pool == nil {
+		slog.ErrorContext(ctx, "fork: "+importWriteFailed, "schema", s)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
+	}
 
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -2371,8 +2765,16 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	apps, _ := body["applications"].([]any)
-	if len(apps) == 0 || h.pool == nil {
+	// A body with no `applications` array named nothing to fork and answered
+	// 201 with an empty result, which the wizard reads as a completed fork.
+	// An `applications` key that IS an array and IS empty keeps that answer:
+	// it asks for nothing and gets nothing.
+	apps, hasApps := body["applications"].([]any)
+	if !hasApps {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the request body must carry an applications array"})
+		return
+	}
+	if len(apps) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"result": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
 			"errors": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
@@ -2380,19 +2782,22 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	user, _ := auth.UserFromContext(ctx)
-	userID := 1
-	if user.ID != "" {
-		_, _ = fmt.Sscanf(user.ID, "%d", &userID)
+	userID, ok := importPrincipalUserID(ctx)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "an authenticated principal is required to fork"})
+		return
 	}
 
 	resultAgents := make([]map[string]any, 0)
 	errorAgents := make([]any, 0)
 
-	for _, appRaw := range apps {
+	for entityIdx, appRaw := range apps {
 		app, ok := appRaw.(map[string]any)
 		if !ok {
+			errorAgents = append(errorAgents, map[string]any{
+				"index": entityIdx, "name": "",
+				"msg": "Fork function has been failed: the entry is not a JSON object",
+			})
 			continue
 		}
 		name, _ := app["name"].(string)
@@ -2404,7 +2809,11 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			VALUES ($1, $2, $3) RETURNING id`, s),
 			name, desc, userID).Scan(&appID)
 		if err != nil {
-			errorAgents = append(errorAgents, map[string]any{"name": name, "error": err.Error()})
+			slog.ErrorContext(ctx, "fork: application insert failed", "schema", s, "name", name, "error", err)
+			errorAgents = append(errorAgents, map[string]any{
+				"index": entityIdx, "name": name,
+				"msg": "Fork function has been failed: " + err.Error(),
+			})
 			continue
 		}
 
@@ -2416,6 +2825,10 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
 			if !ok {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: a version entry is not a JSON object",
+				})
 				continue
 			}
 			vName, _ := v["name"].(string)
@@ -2428,27 +2841,47 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			}
 			instructions, _ := v["instructions"].(string)
 			welcomeMsg, _ := v["welcome_message"].(string)
-			llmSettings, _ := v["llm_settings"].(map[string]any)
-			if llmSettings == nil {
+			llmSettings, hasLLM := v["llm_settings"].(map[string]any)
+			if !hasLLM {
+				if raw, present := v["llm_settings"]; present && raw != nil {
+					errorAgents = append(errorAgents, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: unable to fork version " + vName + ": llm_settings must be a JSON object",
+					})
+					continue
+				}
 				llmSettings = map[string]any{}
 			}
 			// Override model_project_id to target project
 			llmSettings["model_project_id"] = projectID
 
-			llmJSON := "{}"
-			if b, e := json.Marshal(llmSettings); e == nil {
-				llmJSON = string(b)
+			llmJSON, err := importedJSONEncode("llm_settings", llmSettings)
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
-			startersJSON := "[]"
-			if cs, ok := v["conversation_starters"].([]any); ok {
-				if b, e := json.Marshal(cs); e == nil {
-					startersJSON = string(b)
-				}
+			startersJSON, err := importedJSONArray(v, "conversation_starters")
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
 
 			// Build meta with fork info
-			metaIn, _ := v["meta"].(map[string]any)
-			if metaIn == nil {
+			metaIn, hasMeta := v["meta"].(map[string]any)
+			if !hasMeta {
+				if raw, present := v["meta"]; present && raw != nil {
+					errorAgents = append(errorAgents, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: unable to fork version " + vName + ": meta must be a JSON object",
+					})
+					continue
+				}
 				metaIn = map[string]any{}
 			}
 			forkMeta := map[string]any{}
@@ -2468,22 +2901,38 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 				forkMeta["step_limit"] = nil
 			}
 
-			metaJSON := "{}"
-			if b, e := json.Marshal(forkMeta); e == nil {
-				metaJSON = string(b)
+			metaJSON, err := importedJSONEncode("meta", forkMeta)
+			if err != nil {
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
+				continue
 			}
 
 			var vID int
-			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+			// The bare `continue` this replaces dropped the version and told
+			// nobody. The application row was already written, so a fork whose
+			// every version failed answered 201 and produced an agent with no
+			// version at all.
+			if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
-				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
-			if err != nil {
+				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID); err != nil {
+				slog.ErrorContext(ctx, "fork: application version insert failed",
+					"schema", s, "application_id", appID, "version_name", vName, "error", err)
+				errorAgents = append(errorAgents, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": "Fork function has been failed: unable to fork version " + vName + ": " + err.Error(),
+				})
 				continue
 			}
 			createdVersionID = vID
 
-			// Insert variables
+			// Insert variables. A variable is a value the agent needs to run,
+			// and these two statements were written `_, _ = h.pool.Exec(...)`
+			// under the words "best-effort insert". A lost variable left a fork
+			// that answers 201 and an agent that fails on its first turn.
 			if vars, ok := v["variables"].([]any); ok {
 				for _, varRaw := range vars {
 					varMap, _ := varRaw.(map[string]any)
@@ -2492,9 +2941,16 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					}
 					varName, _ := varMap["name"].(string)
 					varValue, _ := varMap["value"].(string)
-					_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
 						INSERT INTO %q.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
-						vID, varName, varValue) // best-effort insert
+						vID, varName, varValue); err != nil {
+						slog.ErrorContext(ctx, "fork: application variable insert failed",
+							"schema", s, "version_id", vID, "variable", varName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork variable " + varName + ": " + err.Error(),
+						})
+					}
 				}
 			}
 
@@ -2506,22 +2962,37 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					tagName, _ := tagMap["name"].(string)
-					tagDataJSON := "{}"
-					if td, ok := tagMap["data"]; ok {
-						if b, e := json.Marshal(td); e == nil {
-							tagDataJSON = string(b)
-						}
+					tagDataJSON, err := importedJSONValue(tagMap, "data", "{}")
+					if err != nil {
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
+						continue
 					}
 					var tagID int
 					// Upsert tag
-					err2 := h.pool.QueryRow(ctx, fmt.Sprintf(`
+					if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 						INSERT INTO %q.tags (name, data) VALUES ($1, $2::jsonb)
 						ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data
-						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID)
-					if err2 == nil {
-						_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
-							INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
-							ON CONFLICT DO NOTHING`, s), vID, tagID) // best-effort insert
+						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID); err != nil {
+						slog.ErrorContext(ctx, "fork: tag upsert failed",
+							"schema", s, "version_id", vID, "tag", tagName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
+						continue
+					}
+					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+						INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+						ON CONFLICT DO NOTHING`, s), vID, tagID); err != nil {
+						slog.ErrorContext(ctx, "fork: tag association insert failed",
+							"schema", s, "version_id", vID, "tag", tagName, "error", err)
+						errorAgents = append(errorAgents, map[string]any{
+							"index": entityIdx, "name": name,
+							"msg": "Fork function has been failed: unable to fork tag " + tagName + ": " + err.Error(),
+						})
 					}
 				}
 			}
@@ -2529,8 +3000,8 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
 				"application_id": fmt.Sprintf("%d", appID),
-				"name":          vName,
-				"status":        "draft",
+				"name":           vName,
+				"status":         "draft",
 			})
 
 			// Build version_details response
@@ -2561,18 +3032,18 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 				"id":                    fmt.Sprintf("%d", vID),
 				"application_id":        fmt.Sprintf("%d", appID),
 				"name":                  vName,
-				"status":               "draft",
-				"author_id":            fmt.Sprintf("%d", userID),
-				"agent_type":           agentType,
-				"instructions":         instructions,
-				"welcome_message":      welcomeMsg,
-				"llm_settings":         llmSettings,
+				"status":                "draft",
+				"author_id":             fmt.Sprintf("%d", userID),
+				"agent_type":            agentType,
+				"instructions":          instructions,
+				"welcome_message":       welcomeMsg,
+				"llm_settings":          llmSettings,
 				"conversation_starters": starters,
-				"meta":                 forkMeta,
-				"is_forked":            true,
-				"variables":            respVars,
-				"tags":                 respTags,
-				"tools":                []any{},
+				"meta":                  forkMeta,
+				"is_forked":             true,
+				"variables":             respVars,
+				"tags":                  respTags,
+				"tools":                 []any{},
 			}
 		}
 
@@ -2591,21 +3062,38 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		resultAgents = append(resultAgents, agentResult)
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
+	// The status rule the import already uses, for the same reason and for the
+	// same reader: 400 when nothing was forked, 207 when part of it was, 201
+	// when all of it was. The wizard reads a 2xx body and a 400 body through
+	// the same branch, so an error entry reaches the user either way.
+	forkStatus := http.StatusCreated
+	if len(errorAgents) > 0 {
+		if len(resultAgents) == 0 {
+			forkStatus = http.StatusBadRequest
+		} else {
+			forkStatus = http.StatusMultiStatus
+		}
+	}
+
+	writeJSON(w, forkStatus, map[string]any{
 		"result": map[string]any{"agents": resultAgents},
 		"errors": map[string]any{"agents": errorAgents},
 	})
 }
 
 func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	// A handler with no pool cannot read anything. It answered
+	// 200 {"ok": true}, which is a document with no `applications` key at all,
+	// and the export button saved it as the agent's backup file (#505).
 	if h.pool == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		slog.ErrorContext(ctx, "export: "+exportReadFailed, "reason", "the handler holds no database pool")
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
 		return
 	}
 
 	projectID := chi.URLParam(r, "projectID")
 	entityID := chi.URLParam(r, "entityID")
-	ctx := r.Context()
 	s := fmt.Sprintf("p_%s", projectID)
 
 	var name, desc, appUUID string
@@ -2619,184 +3107,42 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine app type from its versions
+	// Determine app type from its versions. A lost read used to leave
+	// hasPipeline false under a comment that called that safe. It is not: the
+	// file then says a pipeline is an agent, and the import that reads the file
+	// builds the wrong kind of entity.
 	appType := "agent"
 	var hasPipeline bool
-	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), entityID).Scan(&hasPipeline) // failure leaves hasPipeline=false, safe
+	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
+		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s),
+		entityID).Scan(&hasPipeline); err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "application type", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
+	}
 	if hasPipeline {
 		appType = "pipeline"
 	}
 
-	// Fetch toolkits and build import_uuid map (toolID -> uuid)
-	toolkitMap := map[int]string{} // tool_id -> import_uuid
-	toolkits := make([]map[string]any, 0)
-	toolkitRows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT DISTINCT t.id, t.name, t.type, COALESCE(t.settings::text, '{}')
-		FROM %q.entity_tool_mapping etm
-		JOIN %q.elitea_tools t ON t.id = etm.tool_id
-		JOIN %q.application_versions av ON av.id = etm.entity_version_id
-		WHERE av.application_id = $1`, s, s, s), entityID)
-	if err == nil {
-		defer toolkitRows.Close()
-		for toolkitRows.Next() {
-			var tID int
-			var tName, tType, configStr string
-			if toolkitRows.Scan(&tID, &tName, &tType, &configStr) != nil {
-				continue
-			}
-			tUUID := fmt.Sprintf("tool-%d", tID)
-			var config map[string]any
-			_ = json.Unmarshal([]byte(configStr), &config) // DB jsonb column; malformed means empty config
-			if config == nil {
-				config = map[string]any{}
-			}
-			// Strip sensitive settings for export
-			settings := map[string]any{}
-			for k, v := range config {
-				settings[k] = v
-			}
-			for _, sk := range []string{"api_key", "access_token", "token", "api_key_type",
-				"client_secret", "gitlab_personal_access_token", "private_token",
-				"sonar_token", "qtest_api_token", "client_id",
-				"password", "secret", "app_id"} {
-				delete(settings, sk)
-			}
-			toolkitMap[tID] = tUUID
-			toolkits = append(toolkits, map[string]any{
-				"id": tID, "name": tName, "type": tType,
-				"import_uuid": tUUID, "settings": settings,
-			})
-		}
+	// The toolkits, and the versions with their tools, variables and tags. Each
+	// read used to run under `if err == nil`, drop a row it could not scan, and
+	// never read rows.Err() — the three-part pattern #439 repaired elsewhere.
+	// An export that lost a version answered 200 and served the rest, so the
+	// operator kept a backup file with a version missing from it.
+	toolkits, toolkitMap, err := h.exportedToolkits(ctx, s, entityID)
+	if err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "toolkits", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
 	}
-
-	// Fetch versions with full data and tools
-	versions := make([]map[string]any, 0)
-	vRows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, status, COALESCE(agent_type, 'openai'),
-			COALESCE(instructions, ''), COALESCE(welcome_message, ''),
-			COALESCE(llm_settings::text, '{}'), COALESCE(conversation_starters::text, '[]'),
-			COALESCE(meta::text, '{}'), COALESCE(uuid::text, ''), application_id, COALESCE(author_id, 0)
-		FROM %q.application_versions WHERE application_id = $1
-		ORDER BY created_at`, s), entityID)
-	if err == nil {
-		defer vRows.Close()
-		for vRows.Next() {
-			var vID, vAppID, vAuthorID int
-			var vName, vStatus, agentType, instructions, welcomeMsg string
-			var llmStr, startersStr, metaStr, vUUID string
-			if vRows.Scan(&vID, &vName, &vStatus, &agentType, &instructions, &welcomeMsg, &llmStr, &startersStr, &metaStr, &vUUID, &vAppID, &vAuthorID) != nil {
-				continue
-			}
-			var llm, starters, meta any
-			_ = json.Unmarshal([]byte(llmStr), &llm)       // DB jsonb columns
-			_ = json.Unmarshal([]byte(startersStr), &starters) // DB jsonb columns
-			_ = json.Unmarshal([]byte(metaStr), &meta)      // DB jsonb columns
-
-			// Ensure meta has icon_meta
-			if metaMap, ok := meta.(map[string]any); ok {
-				if _, hasIcon := metaMap["icon_meta"]; !hasIcon {
-					metaMap["icon_meta"] = map[string]any{}
-				}
-			} else {
-				meta = map[string]any{"icon_meta": map[string]any{}}
-			}
-
-			// Ensure llm_settings.model_project_id is a string
-			if llmMap, ok := llm.(map[string]any); ok {
-				if mpid, exists := llmMap["model_project_id"]; exists {
-					switch v := mpid.(type) {
-					case float64:
-						llmMap["model_project_id"] = fmt.Sprintf("%d", int(v))
-					}
-				}
-			}
-
-			// Fetch tool references for this version
-			vTools := make([]map[string]any, 0)
-			tRows, tErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT tool_id, COALESCE(selected_tools::text, '{}')
-				FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), vID)
-			if tErr == nil {
-				for tRows.Next() {
-					var toolID int
-					var selToolsStr string
-					if tRows.Scan(&toolID, &selToolsStr) != nil {
-						continue
-					}
-					var selTools any
-					_ = json.Unmarshal([]byte(selToolsStr), &selTools) // DB jsonb column
-					importUUID := toolkitMap[toolID]
-					vTools = append(vTools, map[string]any{
-						"import_uuid":    importUUID,
-						"selected_tools": selTools,
-					})
-				}
-				tRows.Close()
-			}
-
-			// Fetch variables for this version
-			variables := make([]map[string]any, 0)
-			varRows, varErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT name, COALESCE(value, '') FROM %q.application_variables
-				WHERE application_version_id = $1 ORDER BY id`, s), vID)
-			if varErr == nil {
-				for varRows.Next() {
-					var varName, varValue string
-					if varRows.Scan(&varName, &varValue) != nil {
-						continue
-					}
-					variables = append(variables, map[string]any{"name": varName, "value": varValue})
-				}
-				varRows.Close()
-			}
-
-			// Fetch tags for this version
-			tags := make([]map[string]any, 0)
-			tagRows, tagErr := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT t.name, COALESCE(t.data::text, '{}')
-				FROM %q.application_version_tag_association vta
-				JOIN %q.tags t ON t.id = vta.tag_id
-				WHERE vta.version_id = $1`, s, s), vID)
-			if tagErr == nil {
-				for tagRows.Next() {
-					var tagName, tagDataStr string
-					if tagRows.Scan(&tagName, &tagDataStr) != nil {
-						continue
-					}
-					var tagData any
-					_ = json.Unmarshal([]byte(tagDataStr), &tagData) // DB jsonb column
-					if tagData == nil {
-						tagData = map[string]any{}
-					}
-					tags = append(tags, map[string]any{"name": tagName, "data": tagData})
-				}
-				tagRows.Close()
-			}
-
-			// Determine is_forked from meta containing parent_entity_id
-			isForked := false
-			if metaMap, ok := meta.(map[string]any); ok {
-				if _, has := metaMap["parent_entity_id"]; has {
-					isForked = true
-				}
-			}
-
-			vEntry := map[string]any{
-				"id": fmt.Sprintf("%d", vID), "name": vName, "status": vStatus,
-				"application_id": fmt.Sprintf("%d", vAppID),
-				"author_id":      fmt.Sprintf("%d", vAuthorID),
-				"agent_type":     agentType, "instructions": instructions,
-				"welcome_message": welcomeMsg, "llm_settings": llm,
-				"conversation_starters": starters, "meta": meta,
-				"tools": vTools, "variables": variables, "tags": tags,
-				"is_forked": isForked,
-			}
-			if vUUID != "" {
-				vEntry["import_version_uuid"] = vUUID
-			}
-			versions = append(versions, vEntry)
-		}
+	versions, err := h.exportedVersions(ctx, s, entityID, toolkitMap)
+	if err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "versions", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
 	}
 
 	isFork := strings.EqualFold(r.URL.Query().Get("fork"), "true")
@@ -3003,6 +3349,12 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 		RefreshToken  string `json:"refresh_token,omitempty"`
 		Scope         string `json:"scope,omitempty"`
 		ToolkitID     string `json:"toolkit_id,omitempty"`
+		// ToolkitType names the pre-built catalogue entry whose credentials
+		// this exchange should use. apps/elitea-web has always sent it
+		// (features/mcps/api/mcpOAuthClient.ts); until the catalogue existed
+		// there was nothing here to look it up in, so it was decoded into
+		// nothing. pylon reads the same field at mcp_oauth_proxy.py:112.
+		ToolkitType string `json:"toolkit_type,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -3040,6 +3392,28 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+
+	// The catalogue is the LAST source consulted, after the request body and
+	// after the toolkit's own stored settings. That is pylon's priority order
+	// and the safe one: an operator's platform-wide default must not override a
+	// credential the project configured for itself.
+	if clientID == "" || clientSecret == "" {
+		resolved, err := h.resolvePrebuiltSettings(ctx, map[string]any{
+			"client_id":     clientID,
+			"client_secret": clientSecret,
+		}, body.ToolkitType)
+		if err != nil {
+			// Exchanging with a half-resolved client would send an empty or
+			// absent secret and be rejected by the authorisation server, which
+			// reports it as a bad client rather than as this service failing to
+			// read its own catalogue.
+			writeJSON(w, http.StatusServiceUnavailable,
+				map[string]any{"error": "prebuilt_catalogue_unavailable"})
+			return
+		}
+		clientID = stringSetting(resolved, "client_id", clientID)
+		clientSecret = stringSetting(resolved, "client_secret", clientSecret)
 	}
 
 	grantType := body.GrantType
@@ -3144,16 +3518,29 @@ func (h *Handler) MCPDCRProxy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp.StatusCode, dcrResp)
 }
 
-// MCPSyncTools reports that MCP tool discovery has no backend in this stack.
+// MCPSyncTools discovers the tools of a remote MCP server and records them.
 //
 // NOTE(#126): it used to forward to an injected MCPToolSyncer, whose only
 // implementation was the prototype indexersvc Redis RPC client. That client was
-// never assigned in any composition root, so this endpoint has always answered
-// 503 — the injection seam was decoration on an unconditional failure. The
-// transport it spoke was retired (see the IndexerDeps note in
-// internal/api/router.go), so the seam went with it and the 503 is now stated
-// directly. This route stays registered and its response is byte-identical to
-// what every deployment already returned. #194 records the missing capability.
+// never assigned in any composition root, so this endpoint always answered 503
+// — the injection seam was decoration on an unconditional failure.
+//
+// Issue 335 gives it a real backend. The discovery is an outbound HTTP exchange
+// with the MCP server named in the body, over the streamable-HTTP transport,
+// through the same validated sender the OAuth and DCR proxies in this file
+// already use. pylon reaches the same servers through a task node that imports
+// the Python SDK; the protocol on the wire is the same.
+//
+// The result is also WRITTEN to `elitea_mcp.registered_servers`, which is what
+// `GET /elitea_core/tools_list/{projectID}` reads. That write is the reason the
+// listing endpoint can stop answering 501: this is the registration path, so
+// there is no second source of the same data.
+//
+// The response shape is pylon's `McpSyncToolsResponseModel`, flat rather than
+// wrapped in `{"result": …}`. The web client accepts either
+// (`useGetRemoteMcpTools.ts:192` reads `response.result ?? response`), and flat
+// is the truthful one here: pylon nests because the value arrives from an
+// asynchronous task, and this path has no task.
 func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	// Gated BEFORE the body is decoded, so a disabled deployment answers the
 	// same 403 to a well-formed request and a malformed one. Deciding after the
@@ -3162,13 +3549,136 @@ func (h *Handler) MCPSyncTools(w http.ResponseWriter, r *http.Request) {
 	if !h.requireMCPEnabled(w, r) {
 		return
 	}
-	var body map[string]any
+
+	var body struct {
+		URL         string            `json:"url"`
+		Headers     map[string]string `json:"headers"`
+		Timeout     int               `json:"timeout"`
+		ToolkitType string            `json:"toolkit_type"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request"})
 		return
 	}
 
-	writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "indexer service not available"})
+	// `ssl_verify` is read from the body by pylon and honoured. It is ignored
+	// here, and TLS verification always applies: AGENTS.md makes verification
+	// mandatory outside an explicitly isolated test. A caller that needs a
+	// private certificate authority configures the service trust bundle
+	// (WithHTTPClient), which is auditable, rather than switching verification
+	// off per request, which is not.
+	// A pre-built MCP toolkit leaves the platform to supply the endpoint and the
+	// credentials, which is what pylon's `resolve_mcp_prebuilt_settings` does
+	// from its plugin configuration. The catalogue is a table here (shared
+	// migration 0094); the resolution fills only fields the caller left empty,
+	// so a toolkit that carries its own URL still wins.
+	if mcpregistry.IsPrebuiltToolkitType(body.ToolkitType) {
+		resolved, err := h.resolvePrebuiltSettings(r.Context(), map[string]any{
+			"url":     body.URL,
+			"headers": headersAsAny(body.Headers),
+			"timeout": body.Timeout,
+		}, body.ToolkitType)
+		if err != nil {
+			// An unreadable catalogue is not an uncatalogued toolkit. Proceeding
+			// would open the connection without the credentials the operator
+			// configured, and the remote server's 401 would name none of this.
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"success": false,
+				"error":   "the pre-built MCP catalogue could not be read",
+			})
+			return
+		}
+		body.URL = stringSetting(resolved, "url", body.URL)
+		body.Headers = headerSettings(resolved, body.Headers)
+		body.Timeout = intSetting(resolved, "timeout", body.Timeout)
+	}
+
+	if strings.TrimSpace(body.URL) == "" {
+		// Still empty: either the toolkit is not a pre-built one, or no
+		// catalogue entry defines it. The URL must be supplied rather than
+		// invented, and the message names the catalogue so an operator who
+		// expected it to be filled knows where to look.
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"success": false,
+			"error": "url is required: no pre-built MCP catalogue entry supplies one for this " +
+				"toolkit type",
+		})
+		return
+	}
+	endpoint, err := validateMCPProxyURL(body.URL)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"success": false, "error": "invalid_mcp_url"})
+		return
+	}
+
+	timeout := time.Duration(body.Timeout) * time.Second
+	if timeout <= 0 || timeout > mcpSyncMaxTimeout {
+		timeout = mcpSyncDefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	tools, err := mcpregistry.NewDiscoverer(h.doMCPProxyRequest).
+		Discover(ctx, endpoint.String(), body.Headers)
+	if err != nil {
+		// The stated cause is the remote server's, not this service's, so it is
+		// reported as a failed discovery rather than a fault here. The web
+		// client renders `error` directly.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success":    false,
+			"error":      "MCP tool discovery failed",
+			"server_url": endpoint.String(),
+		})
+		return
+	}
+
+	// The registration is stored under the toolkit type, because that is the
+	// name a worker matches a toolkit against: the SDK looks the toolkit's
+	// `type` up among the server names that `tools_list` returns
+	// (`elitea_sdk/runtime/toolkits/tools.py:_mcp_tools`). A discovery with no
+	// toolkit type is a preview for the toolkit editor — nothing would ever
+	// match it — so it is answered but not stored.
+	projectID, validProject := parsePositiveID(chi.URLParam(r, "projectID"))
+	if serverName := strings.TrimSpace(body.ToolkitType); serverName != "" && validProject && h.pool != nil {
+		registration := mcpregistry.Registration{
+			ProjectID: projectID,
+			Name:      serverName,
+			ServerURL: endpoint.String(),
+			Tools:     tools,
+		}
+		if err := mcpregistry.NewStore(h.pool).Save(ctx, registration); err != nil {
+			// The discovery succeeded and the caller asked for the tools. A
+			// failed write must not withhold them; it costs the caller the
+			// listing, not this answer.
+			slog.ErrorContext(ctx, "mcp_sync_tools: store registration failed",
+				"project_id", projectID, "server", serverName, "err", err)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":    true,
+		"tools":      tools,
+		"count":      len(tools),
+		"server_url": endpoint.String(),
+	})
+}
+
+// mcpSyncDefaultTimeout and mcpSyncMaxTimeout bound the outbound discovery.
+// pylon defaults the synchronous form to 120 seconds; the ceiling stops a
+// caller-supplied value from holding a request open indefinitely.
+const (
+	mcpSyncDefaultTimeout = 120 * time.Second
+	mcpSyncMaxTimeout     = 300 * time.Second
+)
+
+// parsePositiveID accepts only a plain positive integer, which is what pylon's
+// `<int:project_id>` converter accepts.
+func parsePositiveID(raw string) (int64, bool) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 func (h *Handler) SupportConfig(w http.ResponseWriter, _ *http.Request) {
@@ -3394,8 +3904,8 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var appEntities, dsEntities []any
-	_ = json.Unmarshal(appsJSON, &appEntities)         // DB jsonb column; malformed means empty list
-	_ = json.Unmarshal(datasourcesJSON, &dsEntities)   // DB jsonb column; malformed means empty list
+	_ = json.Unmarshal(appsJSON, &appEntities)       // DB jsonb column; malformed means empty list
+	_ = json.Unmarshal(datasourcesJSON, &dsEntities) // DB jsonb column; malformed means empty list
 
 	// Separate applications vs pipelines
 	var apps, pipelines []map[string]any

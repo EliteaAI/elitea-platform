@@ -25,32 +25,49 @@ func TestCurrentConfigurationsConfigIsExplicitAndMinimal(t *testing.T) {
 		}, want: currentConfigurationsConfig{
 			Enabled: true, PublicProjectID: 7, VaultMasterKeyFile: "/run/secrets/centry-vault-master-key", AllowProjectOwnLLMs: true,
 		}},
-		{name: "enabled with LiteLLM", values: map[string]string{
+		// The retired transport settings no longer influence anything: with the
+		// facade deleted there is nothing for a base URL or a proxy master key
+		// to configure, so they parse to the same config as if unset. This case
+		// exists so a reintroduced read shows up as a field difference rather
+		// than passing silently.
+		{name: "retired LiteLLM transport settings are inert", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_ENABLED":  "true",
 			"ELITEA_AI_PROJECT_ID":           "7",
 			"ELITEA_LITELLM_BASE_URL":        "https://litellm.internal",
 			"ELITEA_LITELLM_MASTER_KEY_FILE": "/run/secrets/litellm-master-key",
 		}, want: currentConfigurationsConfig{
-			Enabled: true, PublicProjectID: 7, LiteLLMBaseURL: "https://litellm.internal", LiteLLMMasterKeyFile: "/run/secrets/litellm-master-key", AllowProjectOwnLLMs: true,
+			Enabled: true, PublicProjectID: 7, AllowProjectOwnLLMs: true,
 		}},
 		{name: "mutation explicitly enabled with complete lifecycle", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_ENABLED":          "true",
 			"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true",
 			"ELITEA_AI_PROJECT_ID":                   "7",
 			"ELITEA_VAULT_MASTER_KEY_FILE":           "/run/secrets/centry-vault-master-key",
-			"ELITEA_LITELLM_BASE_URL":                "https://litellm.internal",
-			"ELITEA_LITELLM_MASTER_KEY_FILE":         "/run/secrets/litellm-master-key",
 		}, want: currentConfigurationsConfig{
 			Enabled: true, MutationEnabled: true, PublicProjectID: 7,
-			VaultMasterKeyFile: "/run/secrets/centry-vault-master-key",
-			LiteLLMBaseURL:     "https://litellm.internal", LiteLLMMasterKeyFile: "/run/secrets/litellm-master-key",
+			VaultMasterKeyFile:  "/run/secrets/centry-vault-master-key",
 			AllowProjectOwnLLMs: true,
 		}},
 		{name: "project LLM policy disabled", values: map[string]string{
+			"ELITEA_CONFIGURATIONS_ENABLED": "true",
+			"ELITEA_AI_PROJECT_ID":          "7",
+			"ELITEA_ALLOW_PROJECT_OWN_LLMS": "false",
+		}, want: currentConfigurationsConfig{Enabled: true, PublicProjectID: 7}},
+		// The rename is hard, not aliased. Accepting the old name silently would
+		// be indistinguishable from ignoring it, and ignoring a `false` fails
+		// OPEN: every project would regain permission to define its own LLM
+		// credentials and status_ok would start admitting rows the operator
+		// meant to exclude. Rejecting it is the only outcome an operator sees.
+		{name: "retired policy name is rejected, not aliased", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_ENABLED":         "true",
 			"ELITEA_AI_PROJECT_ID":                  "7",
 			"ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS": "false",
-		}, want: currentConfigurationsConfig{Enabled: true, PublicProjectID: 7}},
+		}, wantErr: true},
+		{name: "retired policy name is rejected even when it agrees with the default", values: map[string]string{
+			"ELITEA_CONFIGURATIONS_ENABLED":         "true",
+			"ELITEA_AI_PROJECT_ID":                  "7",
+			"ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS": "true",
+		}, wantErr: true},
 		{name: "implicit enablement rejected", values: map[string]string{"ELITEA_AI_PROJECT_ID": "1"}, wantErr: true},
 		{name: "implicit mutation enablement rejected", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true",
@@ -60,7 +77,7 @@ func TestCurrentConfigurationsConfigIsExplicitAndMinimal(t *testing.T) {
 			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "TRUE", "ELITEA_AI_PROJECT_ID": "1",
 		}, wantErr: true},
 		{name: "invalid project LLM policy", values: map[string]string{
-			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS": "yes", "ELITEA_AI_PROJECT_ID": "1",
+			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_ALLOW_PROJECT_OWN_LLMS": "yes", "ELITEA_AI_PROJECT_ID": "1",
 		}, wantErr: true},
 		{name: "missing public project", values: map[string]string{"ELITEA_CONFIGURATIONS_ENABLED": "true"}, wantErr: true},
 		{name: "invalid public project", values: map[string]string{
@@ -69,25 +86,33 @@ func TestCurrentConfigurationsConfigIsExplicitAndMinimal(t *testing.T) {
 		{name: "relative key path", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_VAULT_MASTER_KEY_FILE": "vault-key",
 		}, wantErr: true},
-		{name: "incomplete LiteLLM settings", values: map[string]string{
-			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_LITELLM_BASE_URL": "https://litellm.internal",
-		}, wantErr: true},
-		{name: "relative LiteLLM key", values: map[string]string{
-			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_LITELLM_BASE_URL": "https://litellm.internal", "ELITEA_LITELLM_MASTER_KEY_FILE": "key",
-		}, wantErr: true},
-		{name: "reused vault and LiteLLM key", values: map[string]string{
-			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_VAULT_MASTER_KEY_FILE": "/run/secrets/key", "ELITEA_LITELLM_BASE_URL": "https://litellm.internal", "ELITEA_LITELLM_MASTER_KEY_FILE": "/run/secrets/key",
-		}, wantErr: true},
 		{name: "mutation with current database vault", values: map[string]string{
-			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_LITELLM_BASE_URL": "https://litellm.internal", "ELITEA_LITELLM_MASTER_KEY_FILE": "/run/secrets/litellm-master-key",
+			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1",
 		}, want: currentConfigurationsConfig{
 			Enabled: true, MutationEnabled: true, PublicProjectID: 1,
-			LiteLLMBaseURL: "https://litellm.internal", LiteLLMMasterKeyFile: "/run/secrets/litellm-master-key",
 			AllowProjectOwnLLMs: true,
 		}},
-		{name: "mutation without LiteLLM lifecycle rejected", values: map[string]string{
+		// Configuration mutation composes without any LiteLLM settings. The
+		// lifecycle no longer pushes rows into that proxy — the Bifrost gateway
+		// reads them — so requiring its base URL and master key here would keep
+		// a gateway-only deployment from accepting configuration writes at all.
+		{name: "mutation without LiteLLM lifecycle accepted", values: map[string]string{
 			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1", "ELITEA_VAULT_MASTER_KEY_FILE": "/run/secrets/centry-vault-master-key",
-		}, wantErr: true},
+		}, want: currentConfigurationsConfig{
+			Enabled: true, MutationEnabled: true, PublicProjectID: 1,
+			VaultMasterKeyFile:  "/run/secrets/centry-vault-master-key",
+			AllowProjectOwnLLMs: true,
+		}},
+		// The policy flag survives LiteLLM's removal and must keep parsing:
+		// false still means only the public project may define its own LLMs.
+		{name: "project-own LLM policy is honoured without LiteLLM settings", values: map[string]string{
+			"ELITEA_CONFIGURATIONS_ENABLED": "true", "ELITEA_CONFIGURATIONS_MUTATION_ENABLED": "true", "ELITEA_AI_PROJECT_ID": "1",
+			"ELITEA_VAULT_MASTER_KEY_FILE": "/run/secrets/centry-vault-master-key", "ELITEA_ALLOW_PROJECT_OWN_LLMS": "false",
+		}, want: currentConfigurationsConfig{
+			Enabled: true, MutationEnabled: true, PublicProjectID: 1,
+			VaultMasterKeyFile:  "/run/secrets/centry-vault-master-key",
+			AllowProjectOwnLLMs: false,
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -6,21 +6,40 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/runtimecomposition"
 )
 
-func TestValidateRuntimeCompositionRejectsIncompleteIndexDataPlane(t *testing.T) {
+func TestValidateRuntimeCompositionRejectsIndexIngestWithoutConfigurations(t *testing.T) {
+	t.Parallel()
+
+	err := validateRuntimeComposition(
+		currentConfigurationsConfig{},
+		runtimecomposition.Config{Enabled: true, IndexIngestDispatchEnabled: true},
+	)
+	if err == nil {
+		t.Fatal("index ingest was accepted without the Configurations chain")
+	}
+}
+
+// TestValidateRuntimeCompositionComposesIndexIngestWithoutLiteLLM pins the
+// Bifrost contract: the embedding binding is resolved from the Configurations
+// rows the gateway itself reads, so the index plane must compose with no LLM
+// facade configured at all. This test used to assert the opposite — that a
+// missing ELITEA_LITELLM_BASE_URL (or its master key) blocked index ingest —
+// which is exactly what kept the index plane off on a gateway-only stack. Those
+// settings no longer exist on this config at all, so the remaining cases pin
+// that the Configurations flag is the ONLY input to the index-ingest decision.
+func TestValidateRuntimeCompositionComposesIndexIngestWithoutLiteLLM(t *testing.T) {
 	t.Parallel()
 
 	for name, configurations := range map[string]currentConfigurationsConfig{
-		"configurations disabled": {},
-		"llm facade disabled": {
+		"configurations only": {
 			Enabled: true,
 		},
-		"llm base URL missing": {
-			Enabled:              true,
-			LiteLLMMasterKeyFile: "/run/secrets/litellm-master-key",
+		"configurations with project-own LLMs denied": {
+			Enabled:             true,
+			AllowProjectOwnLLMs: false,
 		},
-		"llm master key missing": {
-			Enabled:        true,
-			LiteLLMBaseURL: "http://litellm:4000",
+		"configurations with a vault key": {
+			Enabled:            true,
+			VaultMasterKeyFile: "/run/secrets/centry-vault-master-key",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -29,26 +48,10 @@ func TestValidateRuntimeCompositionRejectsIncompleteIndexDataPlane(t *testing.T)
 				configurations,
 				runtimecomposition.Config{Enabled: true, IndexIngestDispatchEnabled: true},
 			)
-			if err == nil {
-				t.Fatal("incomplete index data plane was accepted")
+			if err != nil {
+				t.Fatalf("index ingest rejected without a LiteLLM facade: %v", err)
 			}
 		})
-	}
-}
-
-func TestValidateRuntimeCompositionAcceptsCompleteIndexDataPlane(t *testing.T) {
-	t.Parallel()
-
-	err := validateRuntimeComposition(
-		currentConfigurationsConfig{
-			Enabled:              true,
-			LiteLLMBaseURL:       "http://litellm:4000",
-			LiteLLMMasterKeyFile: "/run/secrets/litellm-master-key",
-		},
-		runtimecomposition.Config{Enabled: true, IndexIngestDispatchEnabled: true},
-	)
-	if err != nil {
-		t.Fatalf("complete index data plane rejected: %v", err)
 	}
 }
 

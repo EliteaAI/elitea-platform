@@ -3,6 +3,7 @@ package authsvc
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -75,6 +76,199 @@ func TestLocalValidatorAcceptsBaselinePyJWTHS512TokenAndPreservesTypedIDs(t *tes
 	if len(principal.Roles) != 0 || len(principal.Permissions) != 0 {
 		t.Fatalf("token authentication must not cache RBAC authority: %+v", principal)
 	}
+	if principal.TokenProjectID != nil {
+		t.Fatalf("token binding = %d, want nil; a token with no binding row is unbound", *principal.TokenProjectID)
+	}
+}
+
+// TestLocalValidatorReportsStoredTokenProjectBinding proves the binding reaches
+// the identity from STORAGE, on the row the validator already reads, and in one
+// query (ADR-0018, spec-llm-project-scope §3.2). A second lookup here would be
+// an extra round trip on every authenticated request.
+func TestLocalValidatorReportsStoredTokenProjectBinding(t *testing.T) {
+	const (
+		secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		uuid   = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
+	)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, tokenClaims{UUID: uuid})
+	encoded, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, test := range map[string]struct {
+		stored *int32
+		want   *int64
+	}{
+		"bound":    {stored: int32Address(42), want: int64Address(42)},
+		"unbound":  {stored: nil, want: nil},
+		"zero":     {stored: int32Address(0), want: nil},
+		"negative": {stored: int32Address(-1), want: nil},
+		"maximumInt32": {
+			stored: int32Address(math.MaxInt32),
+			want:   int64Address(math.MaxInt32),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookups := 0
+			validator := &LocalValidator{
+				secretKey: []byte(secret),
+				queries: activePATQueriesFunc(func(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error) {
+					lookups++
+					return sqlcgen.GetActivePATPrincipalByUUIDRow{
+						TokenID:   42,
+						UserID:    7,
+						Email:     "owner@example.test",
+						ProjectID: test.stored,
+					}, nil
+				}),
+			}
+			principal, err := validator.ValidateToken(context.Background(), encoded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lookups != 1 {
+				t.Fatalf("database lookups = %d, want 1; the binding must not cost a second query", lookups)
+			}
+			switch {
+			case test.want == nil && principal.TokenProjectID != nil:
+				t.Fatalf("token binding = %d, want nil", *principal.TokenProjectID)
+			case test.want != nil && principal.TokenProjectID == nil:
+				t.Fatalf("token binding = nil, want %d", *test.want)
+			case test.want != nil && *principal.TokenProjectID != *test.want:
+				t.Fatalf("token binding = %d, want %d", *principal.TokenProjectID, *test.want)
+			}
+		})
+	}
+}
+
+// TestLocalValidatorIgnoresTokenAndPrincipalNamesForBinding is spec §7
+// invariant 2 as an executable check. The token name is caller-supplied free
+// text of up to 768 bytes. A binding derived from it would be self-service
+// authorization over another project's budget and provider credentials.
+func TestLocalValidatorIgnoresTokenAndPrincipalNamesForBinding(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	token := jwt.NewWithClaims(
+		jwt.SigningMethodHS512,
+		tokenClaims{UUID: "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"},
+	)
+	encoded, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := &LocalValidator{
+		secretKey: []byte(secret),
+		queries: activePATQueriesFunc(func(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error) {
+			return sqlcgen.GetActivePATPrincipalByUUIDRow{
+				TokenID: 42,
+				UserID:  7,
+				Email:   ":system:project:99:@centry.user",
+			}, nil
+		}),
+	}
+
+	principal, err := validator.ValidateToken(context.Background(), encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if principal.TokenProjectID != nil {
+		t.Fatalf("token binding = %d, want nil; only a stored binding may set it", *principal.TokenProjectID)
+	}
+	if principal.Name != "" {
+		t.Fatalf("principal name = %q, want empty; the validator must not populate it", principal.Name)
+	}
+}
+
+// TestLocalValidatorReportsBoundProjectLifecycleState covers the validator half
+// of the suspension fix. The middleware refuses a bound token whose project is
+// suspended, and it reads that state from auth.User.TokenProjectActive only.
+// The middleware tests build auth.User by hand, so nothing else proves that
+// this validator fills the field from the row.
+//
+// The UNBOUND row is the important one. GetActivePATPrincipalByUUID scans
+// bound_project_active into a non-nullable bool, so an unbound row always
+// carries false. A validator that copied that false into the identity would
+// mark every unbound caller as bound to a suspended project. The edge would
+// then refuse each one. Unbound must stay nil, which means "not determined".
+func TestLocalValidatorReportsBoundProjectLifecycleState(t *testing.T) {
+	const (
+		secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		uuid   = "8ce4be49-0d10-4f05-a63f-d6d46f99a3f0"
+	)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS512, tokenClaims{UUID: uuid})
+	encoded, err := token.SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, test := range map[string]struct {
+		stored *int32
+		active bool
+		want   *bool
+	}{
+		// The row an unbound token produces: no binding, and the LEFT JOIN
+		// scans false into the lifecycle column.
+		"unbound reports no lifecycle state": {stored: nil, active: false, want: nil},
+		"bound and live":                     {stored: int32Address(42), active: true, want: boolAddress(true)},
+		"bound and suspended":                {stored: int32Address(42), active: false, want: boolAddress(false)},
+		// A stored value that names no project reads as unbound, exactly as
+		// tokenProjectID reads it.
+		"zero binding reports no lifecycle state":     {stored: int32Address(0), active: true, want: nil},
+		"negative binding reports no lifecycle state": {stored: int32Address(-1), active: true, want: nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			lookups := 0
+			validator := &LocalValidator{
+				secretKey: []byte(secret),
+				queries: activePATQueriesFunc(func(context.Context, string) (sqlcgen.GetActivePATPrincipalByUUIDRow, error) {
+					lookups++
+					return sqlcgen.GetActivePATPrincipalByUUIDRow{
+						TokenID:            42,
+						UserID:             7,
+						Email:              "owner@example.test",
+						ProjectID:          test.stored,
+						BoundProjectActive: test.active,
+					}, nil
+				}),
+			}
+
+			principal, err := validator.ValidateToken(context.Background(), encoded)
+			if err != nil {
+				t.Fatalf("the token must still authenticate: %v", err)
+			}
+			if lookups != 1 {
+				t.Fatalf("database lookups = %d, want 1; the lifecycle state rides on the row the validator already reads", lookups)
+			}
+			if principal.UserID != "7" || principal.TokenID != "42" {
+				t.Fatalf("principal identity = %+v", principal)
+			}
+			assertBoundProjectActive(t, principal.TokenProjectActive, test.want)
+		})
+	}
+}
+
+func assertBoundProjectActive(t *testing.T, got, want *bool) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("bound project active = %t, want nil", *got)
+	case want != nil && got == nil:
+		t.Fatalf("bound project active = nil, want %t", *want)
+	case want != nil && *got != *want:
+		t.Fatalf("bound project active = %t, want %t", *got, *want)
+	}
+}
+
+func boolAddress(value bool) *bool {
+	return &value
+}
+
+func int32Address(value int32) *int32 {
+	return &value
+}
+
+func int64Address(value int64) *int64 {
+	return &value
 }
 
 func TestLocalValidatorFailsClosedForInactiveOrMissingPAT(t *testing.T) {

@@ -229,7 +229,7 @@ export const getCreateTransferGrantResponseMock = (
     faker.string.alpha({ length: { min: 10, max: 20 } }),
     undefined,
   ]),
-  method: faker.helpers.arrayElement(["GET", "PUT"] as const),
+  method: faker.helpers.arrayElement(["PUT"] as const),
   expires_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   content_type: faker.string.alpha({ length: { min: 10, max: 20 } }),
   max_bytes: faker.number.int(),

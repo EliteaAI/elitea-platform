@@ -50,7 +50,8 @@ import type {
   ModeRoleAssignResult,
   ModeRoleListing,
   ModeRoleRemoveResult,
-  ModerationStatusResponse,
+  ModerationRequestList,
+  ModerationRequestRow,
   PlatformSettings,
   PublishedAgentsListing,
   Role,
@@ -190,16 +191,56 @@ export const getRoleListResponseMock = (): Role[] =>
   }));
 
 export const getModerationStatusResponseMock = (
-  overrideResponse: Partial<Extract<ModerationStatusResponse, object>> = {},
-): ModerationStatusResponse => ({
-  status: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  overrideResponse: Partial<Extract<ModerationRequestList, object>> = {},
+): ModerationRequestList => ({
+  total: faker.number.int(),
+  rows: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    user_id: faker.number.int(),
+    user_email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    project_id: faker.number.int(),
+    issue_type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    entity_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([
+      "pending",
+      "approved",
+      "rejected",
+    ] as const),
+    rejection_comment: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      null,
+    ]),
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    updated_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  })),
   ...overrideResponse,
 });
 
 export const getCreateModerationRequestResponseMock = (
-  overrideResponse: Partial<Extract<ModerationStatusResponse, object>> = {},
-): ModerationStatusResponse => ({
-  status: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  overrideResponse: Partial<Extract<ModerationRequestRow, object>> = {},
+): ModerationRequestRow => ({
+  id: faker.number.int(),
+  user_id: faker.number.int(),
+  user_email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  project_id: faker.number.int(),
+  issue_type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  entity_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([
+    "pending",
+    "approved",
+    "rejected",
+  ] as const),
+  rejection_comment: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    null,
+  ]),
+  created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  updated_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   ...overrideResponse,
 });
 
@@ -226,6 +267,13 @@ export const getGetPlatformSettingsResponseMock = (
   ]),
   voice_features_temporarily_disabled: faker.helpers.arrayElement([
     faker.datatype.boolean(),
+    undefined,
+  ]),
+  blocked_toolkits: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
     undefined,
   ]),
   ...overrideResponse,
@@ -569,10 +617,10 @@ export const getRoleListMockHandler = (
 
 export const getModerationStatusMockHandler = (
   overrideResponse?:
-    | ModerationStatusResponse
+    | ModerationRequestList
     | ((
         info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<ModerationStatusResponse> | ModerationStatusResponse),
+      ) => Promise<ModerationRequestList> | ModerationRequestList),
   options?: RequestHandlerOptions,
 ) => {
   return http.get(
@@ -595,10 +643,10 @@ export const getModerationStatusMockHandler = (
 
 export const getCreateModerationRequestMockHandler = (
   overrideResponse?:
-    | ModerationStatusResponse
+    | ModerationRequestRow
     | ((
         info: Parameters<Parameters<typeof http.post>[1]>[0],
-      ) => Promise<ModerationStatusResponse> | ModerationStatusResponse),
+      ) => Promise<ModerationRequestRow> | ModerationRequestRow),
   options?: RequestHandlerOptions,
 ) => {
   return http.post(
@@ -612,7 +660,7 @@ export const getCreateModerationRequestMockHandler = (
             ? await overrideResponse(info)
             : overrideResponse
           : getCreateModerationRequestResponseMock(),
-        { status: 200 },
+        { status: 201 },
       );
     },
     options,

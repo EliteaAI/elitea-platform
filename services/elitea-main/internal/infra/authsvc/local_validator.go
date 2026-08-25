@@ -95,10 +95,52 @@ func (v *LocalValidator) ValidateToken(ctx context.Context, tokenStr string) (au
 	}
 
 	return auth.User{
-		ID:       strconv.FormatInt(int64(principal.UserID), 10),
-		UserID:   strconv.FormatInt(int64(principal.UserID), 10),
-		TokenID:  strconv.FormatInt(int64(principal.TokenID), 10),
-		Email:    principal.Email,
-		AuthType: "token",
+		ID:             strconv.FormatInt(int64(principal.UserID), 10),
+		UserID:         strconv.FormatInt(int64(principal.UserID), 10),
+		TokenID:        strconv.FormatInt(int64(principal.TokenID), 10),
+		Email:          principal.Email,
+		AuthType:       "token",
+		TokenProjectID: tokenProjectID(principal.ProjectID),
+		TokenProjectActive: tokenProjectActive(
+			principal.ProjectID,
+			principal.BoundProjectActive,
+		),
 	}, nil
+}
+
+// tokenProjectActive carries the bound project's lifecycle state, which the
+// same row already answers, so it costs no additional round trip.
+//
+// It returns nil for an unbound token: there is no project to report on, and
+// nil means "not determined" to the edge.
+//
+// DEFECT this closes: an operator suspends a project with one UPDATE on
+// centry.project, and no binding is revoked. A token bound to that project
+// kept resolving to it at the /llm edge. The gateway then kept decrypting the
+// project's provider credentials and charging its budget. An UNBOUND caller
+// naming the same project was already refused, because that path runs
+// IsCurrentUserProjectMember, which requires suspended IS FALSE.
+func tokenProjectActive(stored *int32, active bool) *bool {
+	if stored == nil || *stored <= 0 {
+		return nil
+	}
+	value := active
+	return &value
+}
+
+// tokenProjectID converts the stored binding into the identity field. The
+// binding comes from elitea_identity.token_project_binding, which the same
+// GetActivePATPrincipalByUUID row already carries, so it costs no additional
+// round trip (spec-llm-project-scope §3.2). Storage is the only source: no
+// header, no token name and no principal name may reach this value.
+//
+// A non-positive stored value cannot name a project, so it reads as unbound
+// rather than as project 0. That fails closed: the caller falls back to the
+// personal project instead of binding to an identifier that names nothing.
+func tokenProjectID(stored *int32) *int64 {
+	if stored == nil || *stored <= 0 {
+		return nil
+	}
+	value := int64(*stored)
+	return &value
 }

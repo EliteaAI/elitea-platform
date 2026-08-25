@@ -37,7 +37,9 @@ describe('StyledShowContextModal', () => {
     expect(screen.getByText('world')).toBeInTheDocument();
   });
 
-  it('calls onClose when the close button is clicked', () => {
+  // The dismiss control is an icon-only `IconButton`. Without an `aria-label`
+  // it announces as a bare "button", so this query finds it by name.
+  it('names the close button and calls onClose when it is clicked', () => {
     const onClose = vi.fn();
     renderWithProviders(
       <StyledShowContextModal
@@ -46,8 +48,7 @@ describe('StyledShowContextModal', () => {
         context="content"
       />,
     );
-    const buttons = screen.getAllByRole('button');
-    fireEvent.click(buttons[buttons.length - 1]!);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalled();
   });
 

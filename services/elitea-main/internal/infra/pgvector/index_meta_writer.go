@@ -21,6 +21,13 @@ const (
 	defaultCurrentIndexMetaWriteTimeout = 30 * time.Second
 	defaultCurrentIndexMetaWrites       = 16
 	maxCurrentIndexMetaAdoptionHistory  = 4_096
+
+	// maxCurrentIndexMetaHistoryBytes is the largest encoded history array one
+	// index metadata row keeps. Entry size is data-dependent, so the entry
+	// ceiling alone cannot hold the row under the write cap. The row nests the
+	// array as a JSON string, and escaping can double that string. A quarter of
+	// the write cap therefore holds the row under the cap in the worst case.
+	maxCurrentIndexMetaHistoryBytes = indexingapp.MaxCurrentInitialIndexMetaBytes / 4
 )
 
 var ErrCurrentIndexMetaWrite = errors.New("pgvector: current index metadata write failed")
@@ -692,7 +699,7 @@ WHERE cmetadata @> '{"type":"index_meta"}'::jsonb
   AND cmetadata->>'collection' = $1
 ORDER BY id
 LIMIT 2
-FOR UPDATE`, indexName, indexingapp.MaxCurrentInitialIndexMetaBytes)
+FOR UPDATE`, indexName, indexingapp.MaxCurrentIndexMetaReadBytes)
 	if err != nil {
 		return nil, currentIndexMetaWriteError(ctx, err)
 	}
@@ -706,8 +713,10 @@ FOR UPDATE`, indexName, indexingapp.MaxCurrentInitialIndexMetaBytes)
 		if err := rows.Scan(&stored.id, &stored.document, &raw, &storedBytes); err != nil {
 			return nil, currentIndexMetaWriteError(ctx, err)
 		}
+		// The read ceiling is larger than the write cap on purpose. An
+		// over-cap row must stay readable, because the write path repairs it.
 		if stored.id == "" || storedBytes <= 0 ||
-			int(storedBytes) > indexingapp.MaxCurrentInitialIndexMetaBytes || len(raw) == 0 {
+			int(storedBytes) > indexingapp.MaxCurrentIndexMetaReadBytes || len(raw) == 0 {
 			return nil, indexingapp.ErrCurrentIndexMetaConflict
 		}
 		metadata, err := decodeCurrentIndexMetaJSON(raw)
@@ -903,7 +912,7 @@ func planCurrentTerminalIndexMeta(
 			return currentIndexMetaWritePlan{},
 				indexingapp.ErrCurrentIndexMetaConflict
 		}
-		history[runIndex] = cloneCurrentIndexMetaValue(terminal)
+		history[runIndex] = currentIndexMetaHistoryEntrySnapshot(terminal)
 	} else {
 		// Main still owns terminalization when the SDK never started.
 		if state != "in_progress" ||
@@ -911,7 +920,7 @@ func planCurrentTerminalIndexMeta(
 			return currentIndexMetaWritePlan{},
 				indexingapp.ErrCurrentIndexMetaConflict
 		}
-		history = append(history, cloneCurrentIndexMetaValue(terminal))
+		history = append(history, currentIndexMetaHistoryEntrySnapshot(terminal))
 	}
 	metadata, err := encodeCurrentIndexMetaWithHistory(terminal, history)
 	if err != nil {
@@ -950,7 +959,7 @@ func planCurrentScheduledFailure(
 	failed["state"] = "failed"
 	failed["updated_on"] = currentIndexMetaUnixSeconds(effect.OccurredAt)
 	failed["error"] = effect.SafeReason
-	historyEntry := cloneCurrentIndexMetaObject(failed)
+	historyEntry := currentIndexMetaHistoryEntrySnapshot(failed)
 	historyEntry["schedule_effect_id"] = effect.EffectID
 	history = append(history, historyEntry)
 	metadata, err := encodeCurrentIndexMetaWithHistory(failed, history)
@@ -1719,8 +1728,56 @@ func currentIndexMetaRetryMatches(stored, initial map[string]any) bool {
 	return true
 }
 
+// currentIndexMetaHistoryEntrySnapshot clones source for storage as one new
+// history entry and removes chunking_config from its index_configuration.
+// Main writes the SDK's full chunking_config default into the top-level
+// index_configuration exactly once, at index creation. Every history entry
+// is otherwise a full clone of that top level, so without this trim, each
+// new entry repeats the same ~3.4 KB default; nothing reads chunking_config
+// back out of a history entry (issue #297). Removing the copy also holds
+// back the stored row from the 1 MiB encode cap that issue #299 tracks. The
+// source map is left untouched, so the top-level metadata built from it
+// keeps its own chunking_config. Both stored index_configuration shapes are
+// handled: the modern nested object and the Python-era JSON-string
+// encoding.
+func currentIndexMetaHistoryEntrySnapshot(source map[string]any) map[string]any {
+	entry := cloneCurrentIndexMetaObject(source)
+	switch configuration := entry["index_configuration"].(type) {
+	case map[string]any:
+		delete(configuration, "chunking_config")
+	case string:
+		if trimmed, ok := currentIndexMetaConfigurationWithoutChunking(configuration); ok {
+			entry["index_configuration"] = trimmed
+		}
+	}
+	return entry
+}
+
+// currentIndexMetaConfigurationWithoutChunking mirrors
+// indexmeta.currentConfigurationWithoutChunking for the one legacy shape the
+// writer can encounter: a pre-fence row's top-level index_configuration,
+// stored as a JSON string rather than a nested object.
+func currentIndexMetaConfigurationWithoutChunking(encoded string) (string, bool) {
+	if len(encoded) == 0 || len(encoded) > indexingapp.MaxCurrentInitialIndexMetaBytes {
+		return "", false
+	}
+	configuration, err := decodeCurrentIndexMetaJSON([]byte(encoded))
+	if err != nil {
+		return "", false
+	}
+	if _, present := configuration["chunking_config"]; !present {
+		return "", false
+	}
+	delete(configuration, "chunking_config")
+	trimmed, err := json.Marshal(configuration)
+	if err != nil {
+		return "", false
+	}
+	return string(trimmed), true
+}
+
 func currentCreatedIndexMetaMarker(initial map[string]any) map[string]any {
-	marker := cloneCurrentIndexMetaObject(initial)
+	marker := currentIndexMetaHistoryEntrySnapshot(initial)
 	marker["state"] = "created"
 	marker["task_id"] = nil
 	marker["conversation_id"] = nil
@@ -1840,18 +1897,72 @@ func currentIndexMetaHistoryHasUnfencedActiveRun(history []any) bool {
 	return !ok || last["state"] == "in_progress"
 }
 
+// boundCurrentIndexMetaHistory keeps the newest history entries that satisfy
+// the entry ceiling and the history byte budget. It discards the oldest
+// entries first, because the run-history view reads the newest runs. It always
+// keeps the newest entry, so the caller still records the run it writes now.
+//
+// It discards the oldest entries as one contiguous prefix, and it never keeps
+// the "created" marker while it discards a later entry. The legacy adoption
+// fence compares the marker with the first lifecycle entry, so a marker that
+// outlived its own first run would fail that fence.
+func boundCurrentIndexMetaHistory(history []any) ([]any, error) {
+	if len(history) == 0 {
+		return history, nil
+	}
+	if len(history) > indexingapp.MaxCurrentIndexMetaHistoryEntries {
+		history = history[len(history)-indexingapp.MaxCurrentIndexMetaHistoryEntries:]
+	}
+	last := len(history) - 1
+	// json.Marshal writes one byte for each bracket, and one byte for each
+	// separator between two entries.
+	total := len("[]")
+	first := last
+	for index := last; index >= 0; index-- {
+		entry, err := json.Marshal(history[index])
+		if err != nil {
+			return nil, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		next := total + len(entry)
+		if index < last {
+			next += len(",")
+		}
+		if index < last && next > maxCurrentIndexMetaHistoryBytes {
+			break
+		}
+		total = next
+		first = index
+	}
+	return history[first:], nil
+}
+
 func encodeCurrentIndexMetaWithHistory(initial map[string]any, history []any) ([]byte, error) {
-	historyBytes, err := json.Marshal(history)
-	if err != nil || len(historyBytes) == 0 || len(historyBytes) > indexingapp.MaxCurrentInitialIndexMetaBytes {
-		return nil, indexingapp.ErrCurrentIndexMetaConflict
+	bounded, err := boundCurrentIndexMetaHistory(history)
+	if err != nil {
+		return nil, err
 	}
-	metadata := cloneCurrentIndexMetaObject(initial)
-	metadata["history"] = string(historyBytes)
-	encoded, err := json.Marshal(metadata)
-	if err != nil || len(encoded) == 0 || len(encoded) > indexingapp.MaxCurrentInitialIndexMetaBytes {
-		return nil, indexingapp.ErrCurrentIndexMetaConflict
+	for {
+		historyBytes, err := json.Marshal(bounded)
+		if err != nil || len(historyBytes) == 0 ||
+			len(historyBytes) > indexingapp.MaxCurrentInitialIndexMetaBytes {
+			return nil, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		metadata := cloneCurrentIndexMetaObject(initial)
+		metadata["history"] = string(historyBytes)
+		encoded, err := json.Marshal(metadata)
+		if err != nil || len(encoded) == 0 {
+			return nil, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		if len(encoded) <= indexingapp.MaxCurrentInitialIndexMetaBytes {
+			return encoded, nil
+		}
+		// The byte budget holds the history array under the cap. The top level
+		// can still push the row over it. Discard one more entry and retry.
+		if len(bounded) <= 1 {
+			return nil, indexingapp.ErrCurrentIndexMetaConflict
+		}
+		bounded = bounded[1:]
 	}
-	return encoded, nil
 }
 
 func currentIndexMetaHistory(value any) []any {

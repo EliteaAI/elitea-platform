@@ -18,7 +18,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 )
 
 // billingCtxTimeout is the deadline for the background billing context used
@@ -44,7 +46,56 @@ const (
 )
 
 // budgetScopeProject is the scope string used for project-level budget checks.
-const budgetScopeProject = "project"
+const budgetScopeProject = failmode.ScopeProject
+
+// budgetScopeUser is the scope string used for per-member budget checks
+// (issue #321). Its scope_id is "{project_id}:{user_id}"; see
+// failmode.UserScopeID for why that shape is fixed.
+const budgetScopeUser = failmode.ScopeUser
+
+// The budget refusal wire contract. Every budget refusal this gateway writes
+// uses these three constants, and the SDK's reader is the reason they are what
+// they are.
+//
+// elitea-sdk `runtime/exceptions.py::budget_exceeded_from` is the ONE place any
+// SDK caller decides whether a 402 is a budget rejection. It does two things,
+// in this order:
+//
+//  1. It matches on error.TYPE only: `detail.get("type") == "budget_exceeded"`.
+//     A body whose type is anything else returns None from the same branch —
+//     it does NOT fall through to the message-text path below it.
+//  2. It reads the SCOPE out of error.CODE, and accepts exactly two values:
+//     "project_budget_exceeded" and "member_budget_exceeded". Any other code
+//     resolves to the default scope, which is the project one.
+//
+// So the type carries "this is a budget refusal" and the code carries "which
+// budget". A refusal that puts the scope in the type is not recognised as a
+// budget refusal at all: the SDK returns None, the handler treats the 402 as an
+// ordinary provider error, and the policy rejection is fed back to the model as
+// message content. The SDK's own docstring names that outcome as the thing the
+// typed exception exists to prevent.
+//
+// The scope also survives past the SDK: BudgetExceededError.scope becomes the
+// agent event's `budget_error_code`, which is what the front end keys its
+// member-versus-project message on (EliteaUI budgetError.constants.js). The
+// front end never sees this HTTP body.
+const (
+	// budgetErrorType is the ONLY error type a budget refusal may carry. It is
+	// the SDK's match key; see above.
+	budgetErrorType = "budget_exceeded"
+	// budgetCodeProject is the project-ceiling code. It stays the OpenAI
+	// canonical "insufficient_quota" rather than "project_budget_exceeded":
+	// a generic OpenAI client understands it, spec §2.5 and the cutover gate
+	// (cutover-ctl budget-check, BFF.9E) both assert it, and the SDK resolves
+	// an unrecognised code to the project scope anyway — which is the correct
+	// scope for this refusal. TestBudgetRefusalMatchesSDKContract pins that
+	// reliance so it cannot become accidental.
+	budgetCodeProject = "insufficient_quota"
+	// budgetCodeMember is the member-ceiling code. The member cap is an Elitea
+	// concept with no OpenAI equivalent, so there is no canonical code to keep
+	// here, and the SDK needs this exact spelling to report the member scope.
+	budgetCodeMember = "member_budget_exceeded"
+)
 
 // perImageFallbackNano is the fixed per-image billing cost in nano-USD used
 // when an image-generation response carries no token-based Usage field.
@@ -111,11 +162,87 @@ func parseProjectID(s string) int {
 //
 // Returns (proceed=true) when the caller should continue; (proceed=false) means
 // the response has already been written and the caller must return immediately.
+//
+// It is a thin HTTP wrapper over admissionVerdict, which holds the whole
+// decision and touches no http.ResponseWriter. The split exists for the
+// realtime route (realtime.go): that route hijacks the connection, so after the
+// upgrade there is no ResponseWriter left to refuse a turn with, and it needs
+// the SAME verdict this function writes. Keeping one decision function is what
+// stops the realtime re-check from drifting into a second, weaker gate.
 func (h *Handler) checkBudget(
 	w http.ResponseWriter,
 	ctx context.Context,
 	model string,
 ) bool {
+	v := h.admissionVerdict(ctx, model)
+	if v.allow {
+		return true
+	}
+	if v.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64(v.retryAfter/time.Second)+1, 10))
+	}
+	writeError(w, v.status, v.errType, v.message, v.code)
+	return false
+}
+
+// budgetVerdict is one admission decision, with no dependency on how it is
+// delivered. allow=true means dispatch; otherwise the four refusal fields carry
+// exactly what writeError would have written, so an HTTP caller and a WebSocket
+// caller refuse on identical terms.
+//
+// retryAfter is non-zero only for the loop-breaker refusal, which is the one
+// refusal that carries a Retry-After header on the HTTP path.
+type budgetVerdict struct {
+	allow      bool
+	status     int
+	errType    string
+	message    string
+	code       string
+	retryAfter time.Duration
+}
+
+// budgetAllowed is the verdict every admitted request gets.
+var budgetAllowed = budgetVerdict{allow: true}
+
+// admissionMode says whether an admission question comes from an ARRIVAL or
+// from a RE-CHECK of work already admitted.
+//
+// The two differ in ONE place: the amplification backstop. An arrival is a
+// request, so it is counted. A re-check is not, so it is only observed. See
+// loopBreaker.observe for the defect that split them.
+type admissionMode int
+
+const (
+	// admissionArrival is a request that just arrived. It COUNTS toward the
+	// per-(project, model) backstop.
+	admissionArrival admissionMode = iota
+	// admissionRecheck re-asks the question for work already admitted, such as
+	// a live realtime session's periodic budget re-check. It respects an open
+	// circuit but records no hit.
+	admissionRecheck
+)
+
+// admissionVerdict is checkBudget's decision, with the response writing removed.
+// The order of the three checks — loop breaker, project ceiling, member ceiling
+// — and every log line are unchanged from the single function this was split
+// out of.
+func (h *Handler) admissionVerdict(ctx context.Context, model string) budgetVerdict {
+	return h.admissionVerdictFor(ctx, model, admissionArrival)
+}
+
+// recheckVerdict answers the SAME admission question for work that is already
+// running, and it does NOT count as a request.
+//
+// It exists for the realtime route: a live session re-asks the budget on a
+// ticker, and that ticker used to feed the amplification backstop's sliding
+// window. Long sessions on one (project, model) pair could then open the
+// circuit for the project's real /llm traffic. The budget half of the answer is
+// identical; only the backstop half changes.
+func (h *Handler) recheckVerdict(ctx context.Context, model string) budgetVerdict {
+	return h.admissionVerdictFor(ctx, model, admissionRecheck)
+}
+
+func (h *Handler) admissionVerdictFor(ctx context.Context, model string, mode admissionMode) budgetVerdict {
 	// Circular-routing guard #2 (spec §2.6) runs BEFORE the budget gate and
 	// regardless of whether budget enforcement is wired: a routing loop must
 	// be contained even on a deployment without governance. The tuple key is
@@ -123,26 +250,43 @@ func (h *Handler) checkBudget(
 	// project are not tracked (they cannot form a stable loop tuple).
 	if h.loopGuard != nil && model != "" {
 		if projectID := identityProjectFromCtx(ctx); projectID != "" {
-			if ok, retryAfter := h.loopGuard.allow(projectID, model); !ok {
+			// observe READS the circuit; allow reads it AND records an arrival.
+			// A re-check is not an arrival, so it must never take the second
+			// path. See loopBreaker.observe.
+			consult := h.loopGuard.allow
+			if mode == admissionRecheck {
+				consult = h.loopGuard.observe
+			}
+			if ok, retryAfter := consult(projectID, model); !ok {
 				h.logger.Warn("loop breaker: circuit open for (project, model) tuple — possible circular routing",
 					"project_id", projectID, "model", model, "retry_after", retryAfter)
-				w.Header().Set("Retry-After", strconv.FormatInt(int64(retryAfter/time.Second)+1, 10))
-				writeError(w, http.StatusTooManyRequests, "rate_limit_error",
-					"Too many requests for this (project, model) pair; possible circular routing. Retry later.",
-					"rate_limit_exceeded")
-				return false
+				return budgetVerdict{
+					status:     http.StatusTooManyRequests,
+					errType:    "rate_limit_error",
+					message:    "Too many requests for this (project, model) pair; possible circular routing. Retry later.",
+					code:       "rate_limit_exceeded",
+					retryAfter: retryAfter,
+				}
 			}
 		}
 	}
 
+	// The authored per-minute ceilings run next, and BEFORE the budget gate.
+	// Both are reads, so the order is not about cost: a request over its rate
+	// limit must be refused as a rate limit, and letting the budget gate answer
+	// first would report the wrong reason whenever a project is over both.
+	if v := h.rateVerdict(ctx, model, mode); !v.allow {
+		return v
+	}
+
 	if h.budgetGate == nil {
-		return true
+		return budgetAllowed
 	}
 
 	pid := parseProjectID(identityProjectFromCtx(ctx))
 	if pid < 0 {
 		// No resolvable project — treat as unlimited (no row = no cap).
-		return true
+		return budgetAllowed
 	}
 	scopeID := strconv.Itoa(pid)
 
@@ -164,9 +308,12 @@ func (h *Handler) checkBudget(
 		// enforcement.
 		h.logger.Error("budget gate: CheckBudget error; blocking request",
 			"project_id", pid, "err", err)
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service error; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service error; try again shortly",
+			code:    "nats_unavailable",
+		}
 	}
 
 	switch dec.Verdict {
@@ -181,35 +328,163 @@ func (h *Handler) checkBudget(
 				"state", dec.State.String(),
 			)
 		}
-		return true
+		// The project has room. The member cap is a SECOND ceiling inside it,
+		// so it is asked only after the project admits (issue #321).
+		return h.memberVerdict(ctx, pid, periodStart)
 	case failmode.Block402:
-		writeError(w, http.StatusPaymentRequired, "budget_exceeded",
-			"project budget exhausted for this billing period", "insufficient_quota")
-		return false
+		return budgetVerdict{
+			status:  http.StatusPaymentRequired,
+			errType: budgetErrorType,
+			message: "project budget exhausted for this billing period",
+			code:    budgetCodeProject,
+		}
 	case failmode.Block503:
-		writeError(w, http.StatusServiceUnavailable, "service_unavailable",
-			"budget service temporarily unavailable; try again shortly", "nats_unavailable")
-		return false
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service temporarily unavailable; try again shortly",
+			code:    "nats_unavailable",
+		}
 	default:
-		// Unknown verdict: fail open (log and proceed). Should never happen.
+		// Unknown verdict: fail open on the PROJECT ceiling (log and proceed).
+		// Should never happen. The member ceiling is still applied — a verdict
+		// this code does not recognise is not a reason to skip a second,
+		// independent limit.
 		h.logger.Warn("budget gate: unknown verdict; allowing request",
 			"verdict", fmt.Sprintf("%v", dec.Verdict))
-		return true
+		return h.memberVerdict(ctx, pid, periodStart)
+	}
+}
+
+// memberVerdict is the per-member half of the admission check (issue #321).
+//
+// Until this existed, a project admin could set a member's monthly cap, get a
+// 200 back, watch the value round-trip through the API, and that member could
+// still spend the entire project budget. The limit was authored, served and
+// rendered; nothing read it.
+//
+// It runs on the SAME machinery as the project check — the same FSM, the same
+// tiered-hybrid fallback, the same NATS counter and write-back — because the
+// accumulator has always been keyed by (scope, scope_id, period) and
+// elitea-main has always read the user scope. Only the gateway's read and write
+// of that scope were missing.
+//
+// A request with no resolvable member id is admitted: an integration
+// authenticating with a project token has no member to charge, and refusing it
+// would break every non-interactive caller. Those calls remain bounded by the
+// project ceiling, which is the ceiling they have always been bounded by.
+//
+// The refusal carries the member scope in error.CODE, and the shared
+// `budget_exceeded` type. The front end has had a distinct message for
+// `member_budget_exceeded` since before the Go port (EliteaUI
+// budgetError.constants.js), and it deep-links to the member's own Usage tab;
+// collapsing the two would send a member who is over THEIR cap to a project
+// budget screen they cannot act on.
+//
+// The scope moved from the type to the code in the SDK-compatibility pass. It
+// was in the type, and the front end never received it: EliteaUI does not read
+// this HTTP body. It reads the agent event's `budget_error_code`, which is
+// elitea-sdk's BudgetExceededError.scope, and the SDK derives that scope from
+// error.CODE after matching error.TYPE against `budget_exceeded` alone. A
+// member refusal typed `member_budget_exceeded` failed that match, so
+// budget_exceeded_from returned None, no typed exception was raised, and the
+// refusal reached the model as ordinary message content. See budgetErrorType.
+func (h *Handler) memberVerdict(
+	ctx context.Context,
+	projectID int,
+	periodStart int64,
+) budgetVerdict {
+	raw := identityUserFromCtx(ctx)
+	uid := parseUserID(raw)
+	if uid < 0 {
+		// "No member" and "a member id we could not read" are different, and
+		// only the second is a fault. Without this line they look identical in
+		// production, and a member cap that quietly stops applying is the #321
+		// shape all over again.
+		if raw != "" {
+			h.logger.Warn("budget gate: member id is present but unusable; the member cap is not applied",
+				"project_id", projectID, "user_id_header", raw)
+		}
+		return budgetAllowed
+	}
+	scopeID := failmode.UserScopeID(projectID, uid)
+
+	gateCtx, gateCancel := context.WithTimeout(ctx, budgetGateTimeout)
+	dec, err := h.budgetGate.CheckBudget(gateCtx, projectID, budgetScopeUser, scopeID, periodStart, 0)
+	gateCancel()
+	if err != nil {
+		// Same reasoning as the project gate: a hard error is not a licence to
+		// skip the ceiling.
+		h.logger.Error("budget gate: member CheckBudget error; blocking request",
+			"project_id", projectID, "user_id", uid, "err", err)
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service error; try again shortly",
+			code:    "nats_unavailable",
+		}
+	}
+
+	switch dec.Verdict {
+	case failmode.Block402:
+		h.logger.Info("budget gate: member budget exhausted",
+			"project_id", projectID, "user_id", uid, "state", dec.State.String())
+		return budgetVerdict{
+			status:  http.StatusPaymentRequired,
+			errType: budgetErrorType,
+			message: "member budget exhausted for this billing period",
+			code:    budgetCodeMember,
+		}
+	case failmode.Block503:
+		return budgetVerdict{
+			status:  http.StatusServiceUnavailable,
+			errType: "service_unavailable",
+			message: "budget service temporarily unavailable; try again shortly",
+			code:    "nats_unavailable",
+		}
+	default:
+		return budgetAllowed
 	}
 }
 
 // identityProjectFromCtx extracts the project ID string set on the
 // BifrostContext by newContext (via schemas.BifrostContextKeyVirtualKey).
 func identityProjectFromCtx(ctx context.Context) string {
+	return bifrostCtxString(ctx, schemas.BifrostContextKeyVirtualKey)
+}
+
+// identityUserFromCtx extracts the member ID string set on the BifrostContext
+// by newContext from the X-Elitea-User-Id header. elitea-main has forwarded
+// that header since the llmproxy identity path was written; until issue #321
+// the gateway carried it and read it for nothing.
+func identityUserFromCtx(ctx context.Context) string {
+	return bifrostCtxString(ctx, schemas.BifrostContextKeyUserID)
+}
+
+func bifrostCtxString(ctx context.Context, key any) string {
 	type bifrostCtx interface {
 		Value(key any) any
 	}
 	if bc, ok := ctx.(bifrostCtx); ok {
-		if v, ok2 := bc.Value(schemas.BifrostContextKeyVirtualKey).(string); ok2 {
+		if v, ok2 := bc.Value(key).(string); ok2 {
 			return v
 		}
 	}
 	return ""
+}
+
+// parseUserID converts the member ID string from the identity headers into an
+// int. It returns -1 for an absent or unusable value, which every caller reads
+// as "no member to charge" — the same convention parseProjectID uses.
+func parseUserID(s string) int {
+	if s == "" {
+		return -1
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return -1
+	}
+	return n
 }
 
 // updateUsage records the billed cost for a completed request onto the
@@ -249,6 +524,50 @@ func (h *Handler) updateUsage(
 	model string,
 	inputTokens, outputTokens int64,
 	projectIDStr string,
+	userIDStr string,
+) billOutcome {
+	return h.updateUsageUnits(ctx, surfaceAudio, provider, model,
+		cost.Units{InputTokens: inputTokens, OutputTokens: outputTokens},
+		projectIDStr, userIDStr)
+}
+
+// billingSurface names which /llm surface a billed request came from.
+//
+// It exists because the two non-token counters below are AUDIO controls, and a
+// realtime turn bills through this same function. Without the distinction a
+// live realtime session moved gateway_audio_non_token_basis_total and
+// gateway_audio_default_priced_total, and logged itself as "audio: …" — so an
+// operator alarming on the audio controls could not tell a whisper-1
+// transcription from a realtime session, and the realtime counters
+// under-reported the same events. Realtime publishes its own counters
+// (RealtimeMetricNames); these two stay the audio routes' own.
+type billingSurface int
+
+const (
+	// surfaceAudio is the unary /llm/v1/audio/* routes, and the token routes
+	// that reach here through updateUsage.
+	surfaceAudio billingSurface = iota
+	// surfaceRealtime is a turn of a /llm/v1/realtime session.
+	surfaceRealtime
+)
+
+// updateUsageUnits is updateUsage over any denomination the catalog can price:
+// tokens, seconds (carried as milliseconds) or characters (issue #323). Only
+// the two audio routes call it directly. updateUsage is the token-only form,
+// and its eleven call sites are unchanged.
+//
+// It is one function and not two because everything after the price lookup —
+// the period bounds, the ledger dimensions, the drain guard, the member scope,
+// the soft alert — is identical for every basis. A second copy of that path is
+// a second place for the money to go missing.
+func (h *Handler) updateUsageUnits(
+	ctx context.Context,
+	surface billingSurface,
+	provider string,
+	model string,
+	u cost.Units,
+	projectIDStr string,
+	userIDStr string,
 ) billOutcome {
 	if h.budgetGate == nil || h.costCalc == nil {
 		return billNotBillable
@@ -257,7 +576,6 @@ func (h *Handler) updateUsage(
 	if pid < 0 {
 		return billNotBillable
 	}
-	scopeID := strconv.Itoa(pid)
 	now := time.Now()
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
@@ -268,15 +586,126 @@ func (h *Handler) updateUsage(
 	costCtx, costCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 	defer costCancel()
 
-	actualCost := h.costCalc.Cost(costCtx, provider, model, inputTokens, outputTokens)
-	if actualCost.TotalNanoUSD <= 0 {
+	actualCost := h.costCalc.CostUnits(costCtx, provider, model, u)
+
+	// Report which rate paid, and refuse to let an UNPRICED audio request look
+	// like a cheap one. The two counters live in audio.go, where their names
+	// are published to /metrics.
+	//
+	// The test is written against the basis the UNITS ask for, not against
+	// Cost.Basis alone, and that is deliberate. A token-billed request whose
+	// price is zero is PRICED and costs nothing; reading Cost.Basis alone would
+	// make every zero-cost estimator stub look unpriced and would put the
+	// eleven token call sites on a path they never take today.
+	if surface == surfaceAudio && u.Basis() != cost.BasisTokens {
+		if actualCost.Basis == "" {
+			// The provider reported seconds or characters and the catalog holds
+			// no rate for them. Billing zero here is unavoidable — inventing a
+			// rate would put a made-up figure on the authoritative counter — but
+			// it must not be silent. This is the number an operator alarms on.
+			audioUnpriced.Add(1)
+			h.logger.WarnContext(ctx, "audio: the catalog carries no rate for the units this response reported; the request bills zero",
+				"provider", provider, "model", model,
+				"unit_basis", u.Basis(), "metric", MetricAudioUnpriced)
+			return billNotBillable
+		}
+		audioNonTokenBasis.Add(1)
+		h.logger.InfoContext(ctx, "audio: a non-token rate priced this request",
+			"provider", provider, "model", model,
+			"basis", actualCost.Basis, "source", actualCost.Source,
+			"cost_nano", actualCost.TotalNanoUSD, "metric", MetricAudioNonTokenBasis)
+	} else if surface == surfaceAudio && actualCost.TotalNanoUSD > 0 && !actualCost.FromCatalog() {
+		// The audio response reported TOKENS, and the token price did not come
+		// from the catalog.
+		//
+		// The seconds and characters bases cannot reach here: audioCost refuses
+		// a rate that is not from the catalog, so they bill a real price or
+		// nothing. The token basis is different — it falls back to the pylon
+		// default table like every other route, which is longstanding and
+		// disclosed. The consequence for AUDIO is what was silent: the amount is
+		// non-zero and plausible, so MetricAudioUnpriced cannot fire (a price
+		// was produced) and MetricAudioNonTokenBasis cannot fire (the basis is
+		// tokens). An invented figure reached the authoritative counter and left
+		// no trace.
+		//
+		// This does NOT refuse the request. Refusing would change the pricing
+		// policy of the token basis for one route, and that is a [human
+		// decision]. It makes the condition alarmable, which is what was
+		// missing.
+		audioDefaultPriced.Add(1)
+		h.logger.WarnContext(ctx, "audio: billed a token price the catalog did not supply",
+			"provider", provider, "model", model,
+			"source", actualCost.Source, "cost_nano", actualCost.TotalNanoUSD,
+			"metric", MetricAudioDefaultPriced)
+	}
+
+	// The authored credential rate policy decides whether this cost reaches the
+	// counter at all (policy_gate.go). It runs AFTER pricing on purpose: the
+	// price is what an operator sees in the ledger for a zero-rated request,
+	// and skipping the lookup would make a zero-rate-metered row indistinguishable
+	// from a genuinely free one.
+	ratePolicy := h.ratePolicyFor(ctx, provider, model)
+	switch ratePolicy {
+	case policy.RatePolicyExcluded:
+		h.logger.DebugContext(ctx, "governance: the authored rate policy excludes this usage from accounting",
+			"provider", provider, "model", model, "cost_nano", actualCost.TotalNanoUSD)
+		// The tokens still count toward the rate limit. `excluded` is a BILLING
+		// treatment, not an exemption from the ceilings that protect the
+		// platform from load.
+		h.recordPolicyTokens(ctx, provider, model, u.InputTokens+u.OutputTokens, now)
+		return billNotBillable
+	case policy.RatePolicyZeroRateMetered:
+		h.logger.DebugContext(ctx, "governance: the authored rate policy meters this usage at zero cost",
+			"provider", provider, "model", model, "priced_nano", actualCost.TotalNanoUSD)
+		actualCost.TotalNanoUSD = 0
+	}
+
+	// The completed request's tokens go onto its rate-limit window. This is the
+	// only place the authoritative token count is known.
+	h.recordPolicyTokens(ctx, provider, model, u.InputTokens+u.OutputTokens, now)
+
+	// A zero-rate-metered request continues past this guard deliberately: it
+	// must still produce a ledger row, which is the whole difference between
+	// `zero-rate-metered` and `excluded`. The counter moves by zero.
+	if actualCost.TotalNanoUSD <= 0 && ratePolicy != policy.RatePolicyZeroRateMetered {
 		return billNotBillable // nothing to bill
 	}
 
-	if h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, actualCost.TotalNanoUSD) {
+	// The dimensions the usage ledger records for this request (issue #320).
+	// They are the values the billing path ALREADY has — the resolved provider
+	// and model it just priced, and the token counts the provider reported. No
+	// count is derived or estimated: an estimated token is not a billed one.
+	// The token columns stay the TOKEN counts. A seconds-billed or
+	// characters-billed request reports none, so they stay zero: writing a
+	// millisecond count into a column named prompt_tokens would put a duration
+	// on a page of token figures, and nothing downstream would say so.
+	dims := &failmode.UsageDimensions{
+		UserID:           optionalUserID(userIDStr),
+		Provider:         provider,
+		Model:            model,
+		PromptTokens:     u.InputTokens,
+		CompletionTokens: u.OutputTokens,
+		// The instant THIS gateway billed the request, taken from the same
+		// `now` the period bounds come from. The ledger row is written by the
+		// scheduler, minutes later or more, so a column default would date the
+		// request to whenever the consumer got to it.
+		OccurredAtUnix: now.Unix(),
+	}
+
+	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, actualCost.TotalNanoUSD, dims) {
 		return billBilled
 	}
 	return billRefused
+}
+
+// optionalUserID renders the identity header's member id as a *int for the
+// ledger: nil when there is no member to attribute the call to.
+func optionalUserID(userIDStr string) *int {
+	uid := parseUserID(userIDStr)
+	if uid < 0 {
+		return nil
+	}
+	return &uid
 }
 
 // updateUsageDirect bills a pre-computed costNano amount (nano-USD) for the
@@ -289,6 +718,9 @@ func (h *Handler) updateUsage(
 func (h *Handler) updateUsageDirect(
 	ctx context.Context,
 	projectIDStr string,
+	userIDStr string,
+	provider string,
+	model string,
 	costNano int64,
 ) billOutcome {
 	if h.budgetGate == nil || costNano <= 0 {
@@ -298,12 +730,22 @@ func (h *Handler) updateUsageDirect(
 	if pid < 0 {
 		return billNotBillable
 	}
-	scopeID := strconv.Itoa(pid)
 	now := time.Now()
 	periodStart := billingPeriodStart(now)
 	periodEnd := billingPeriodEnd(now)
 
-	if h.spawnBillingGoroutine(pid, scopeID, periodStart, periodEnd, costNano) {
+	// An image response that reports no Usage still has a provider, a model and
+	// a cost, so it still belongs in the ledger and in the per-model table. Its
+	// token counts stay 0 — the provider reported none, and inventing one to
+	// fill a column would put an estimate on a page of billed figures.
+	dims := &failmode.UsageDimensions{
+		UserID:         optionalUserID(userIDStr),
+		Provider:       provider,
+		Model:          model,
+		OccurredAtUnix: now.Unix(),
+	}
+
+	if h.spawnBillingGoroutine(pid, userIDStr, periodStart, periodEnd, costNano, dims) {
 		return billBilled
 	}
 	return billRefused
@@ -324,13 +766,27 @@ func (h *Handler) updateUsageDirect(
 // It returns false when the goroutine was NOT spawned (drain in progress), so a
 // caller holding known, provider-reported spend can meter the drop rather than
 // letting it vanish into a log line.
+// The member scope is billed in the SAME goroutine, with its OWN event id.
+// Two ids, not one, because gateway.processed_event_ids has event_id as its
+// primary key: a member delta reusing the project delta's id would be seen as
+// an already-applied redelivery and silently contribute nothing to the member's
+// accumulator. The member cap would then admit forever while appearing enforced
+// — the same defect as #321, one layer down.
+//
+// The member increment carries NO usage dimensions. The ledger row written for
+// the project delta already names the member in its user_id column; a second
+// row would double every token count, request count and cost figure the
+// per-day and per-model views report.
 func (h *Handler) spawnBillingGoroutine(
 	pid int,
-	scopeID string,
+	userIDStr string,
 	periodStart, periodEnd int64,
 	costNano int64,
+	dims *failmode.UsageDimensions,
 ) bool {
+	scopeID := strconv.Itoa(pid)
 	eventID := uuid.NewString()
+	uid := parseUserID(userIDStr)
 
 	// Fix round-3 #2: guard against Add-after-Wait (billingClosing already set
 	// by DrainBilling) and track in-flight goroutines so DrainBilling can wait.
@@ -359,11 +815,40 @@ func (h *Handler) spawnBillingGoroutine(
 		billCtx, cancel := context.WithTimeout(context.Background(), billingCtxTimeout)
 		defer cancel()
 
-		if err := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
-			costNano, periodStart, periodEnd); err != nil {
+		projectErr := h.budgetGate.UpdateUsage(billCtx, pid, budgetScopeProject, scopeID, eventID,
+			costNano, periodStart, periodEnd, dims)
+		if projectErr != nil {
 			h.logger.Warn("budget gate: UpdateUsage failed; spend may be under-counted",
 				"project_id", pid, "cost_nano", costNano,
-				"event_id", eventID, "err", err)
+				"event_id", eventID, "err", projectErr)
+		}
+
+		// Bill the member scope even when the project increment failed: the two
+		// counters are independent, and skipping the member increment because
+		// the project one erred would leave a member cap under-counted for
+		// reasons that have nothing to do with that member.
+		//
+		// It gets its OWN timeout budget rather than sharing billCtx, for the
+		// reason FIX #27 gives one to the pre-increment snapshot: a slow project
+		// increment would otherwise spend the whole 10 s and hand this call an
+		// already-expired context. That is not a missed alert, it is member
+		// spend dropped — and the member cap that admits forever afterwards is
+		// the defect #321 exists about, one layer down.
+		if uid > 0 {
+			memberEventID := uuid.NewString()
+			memberCtx, memberCancel := context.WithTimeout(context.Background(), billingCtxTimeout)
+			err := h.budgetGate.UpdateUsage(memberCtx, pid, budgetScopeUser,
+				failmode.UserScopeID(pid, uid), memberEventID,
+				costNano, periodStart, periodEnd, nil)
+			memberCancel()
+			if err != nil {
+				h.logger.Warn("budget gate: member UpdateUsage failed; member spend may be under-counted",
+					"project_id", pid, "user_id", uid, "cost_nano", costNano,
+					"event_id", memberEventID, "err", err)
+			}
+		}
+
+		if projectErr != nil {
 			return
 		}
 
@@ -445,6 +930,22 @@ func (h *Handler) trySoftAlert(
 		"cost_just_billed_nano", costJustBilled)
 
 	if !crossed {
+		return
+	}
+
+	// The platform soft-alert switch (issue #322). An operator who turns alert
+	// emission off through PUT /admin/gateway/budget-alerts used to get 200 OK,
+	// a changed GET, and alerts that kept firing until the pod restarted and the
+	// GET silently flipped back. The switch now lives in a row the gateway
+	// reads, and this is where it takes effect.
+	//
+	// It is checked AFTER the crossing test and BEFORE the cooldown claim, on
+	// purpose: not claiming the cooldown means the first crossing after an
+	// operator re-enables alerts still fires, rather than being suppressed by a
+	// claim made silently while alerts were off.
+	if postDec.SoftAlertsDisabled {
+		h.logger.Debug("budget gate: soft alert suppressed by platform switch",
+			"project_id", pid, "scope_id", scopeID)
 		return
 	}
 

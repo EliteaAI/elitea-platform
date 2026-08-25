@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '../__tests__/testUtils';
 import type { AgentDraftValues } from '../model/types';
@@ -190,19 +191,42 @@ describe('CreateAgentForm', () => {
     expect(screen.queryByText('Generate')).not.toBeInTheDocument();
   });
 
-  it('renders the iconSlot/tagsSlot/conversationStartersSlot content where supplied', () => {
+  it('renders the iconSlot/tagsSlot content where supplied', () => {
     renderWithProviders(
       <CreateAgentForm
         values={baseValues}
         onFieldChange={vi.fn()}
         iconSlot={<div>ICON</div>}
         tagsSlot={<div>TAGS</div>}
-        conversationStartersSlot={<div>STARTERS</div>}
       />,
     );
-    expect(screen.getByText('ICON')).toBeInTheDocument();
-    expect(screen.getByText('TAGS')).toBeInTheDocument();
-    expect(screen.getByText('STARTERS')).toBeInTheDocument();
+    expect(screen.getByText('ICON')).toBeVisible();
+    expect(screen.getByText('TAGS')).toBeVisible();
+  });
+
+  // #307 — the conversation-starters editor is rendered by this component
+  // itself now (it was a slot every caller left empty). Asserted through the
+  // callback, not by the section merely existing: an editor that renders and
+  // routes nothing is the exact defect this closes.
+  it('renders the conversation-starters editor and routes an edit to version_details.conversation_starters', async () => {
+    const user = userEvent.setup();
+    const onFieldChange = vi.fn();
+    renderWithProviders(
+      <CreateAgentForm
+        values={{
+          ...baseValues,
+          version_details: { ...baseValues.version_details, conversation_starters: ['first'] },
+        }}
+        onFieldChange={onFieldChange}
+      />,
+    );
+
+    const input = screen.getByTestId('agent-conversation-starter-input');
+    expect(input).toBeVisible();
+    expect(input).toHaveValue('first');
+
+    await user.type(input, '!');
+    expect(onFieldChange).toHaveBeenCalledWith('version_details.conversation_starters', ['first!']);
   });
 
   it('does not render ApplicationVariables when there are no variables', () => {

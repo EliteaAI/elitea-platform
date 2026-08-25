@@ -30,6 +30,7 @@
  *    eventually mounts `<AgentHub/>` once that lands.
  */
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
@@ -45,6 +46,9 @@ import CloseIcon from '@mui/icons-material/Close';
 
 import { useNavigate } from '@tanstack/react-router';
 
+import { t } from '@/shared/i18n';
+import { StyledShowContextModal } from '@/features/agents';
+
 const IconButtonAny = IconButton as React.ComponentType<
   React.ComponentProps<typeof IconButton> & { variant?: string }
 >;
@@ -54,6 +58,22 @@ import AgentHubLike from './AgentHubLike';
 import { AgentWelcomeMessage } from './AgentWelcomeMessage';
 import { useAgentVersionDetail } from '../useAgentVersionDetail';
 import type { ApplicationData, AuthorData } from '../types';
+
+interface AgentContextDialogProps {
+  readonly open: boolean;
+  readonly onClose: () => void;
+  readonly instructions: string;
+  readonly isLoading: boolean;
+}
+
+/**
+ * The "Show context" dialog. Split out of `AgentModal` to keep that
+ * component's cyclomatic complexity within the oxlint budget of 12.
+ */
+function AgentContextDialog({ open, onClose, instructions, isLoading }: AgentContextDialogProps): ReactNode {
+  if (!open) return null;
+  return <StyledShowContextModal context={instructions} open onClose={onClose} isLoading={isLoading} />;
+}
 
 /** Small-height layout threshold (baseline: `AgentModal.jsx`'s `window.innerHeight <= 390`). */
 const SMALL_HEIGHT_BREAKPOINT_PX = 390;
@@ -79,7 +99,13 @@ export interface AgentModalProps {
 
 const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentModalProps) => {
   const navigate = useNavigate();
-  const [, setShowContext] = useState(false);
+  /**
+   * The "Show context" dialog (baseline: `AgentModal.jsx:56,263-269`).
+   *
+   * The getter used to be discarded. The click set a value that nothing
+   * read, so no dialog opened.
+   */
+  const [showContext, setShowContext] = useState(false);
   const [isSmallHeight, setIsSmallHeight] = useState(() => window.innerHeight <= SMALL_HEIGHT_BREAKPOINT_PX);
 
   // Adversarial-review fix (cluster A13-agents-hub, finding 11): the
@@ -96,7 +122,10 @@ const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentMod
   // agent's real version detail so Welcome Message / Conversation Starters
   // below can render actual data instead of always falling back to their
   // empty state.
-  const { versionDetails } = useAgentVersionDetail(agent.id, agent.version_name);
+  const { versionDetails, isLoading: isVersionLoading } = useAgentVersionDetail(agent.id, agent.version_name);
+  // Memoized in its own function scope: the two fallbacks would otherwise
+  // count against `AgentModal`'s own complexity budget.
+  const instructions = useMemo(() => versionDetails?.instructions ?? '', [versionDetails]);
   const welcomeMessage = versionDetails?.welcome_message || agent.welcome_message || '';
   const conversationStarters = useMemo(
     () => (versionDetails?.conversation_starters?.length ? toStringArray(versionDetails.conversation_starters) : (agent.conversation_starters ?? [])),
@@ -138,6 +167,7 @@ const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentMod
   );
 
   return (
+    <>
     <Dialog
       open={open}
       onClose={onClose}
@@ -154,7 +184,12 @@ const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentMod
           </Box>
           <Box sx={styles.authorRow}>
             <AgentHubLike data={agent} />
-            <IconButtonAny variant="elitea" color="secondary" onClick={onClose}>
+            <IconButtonAny
+              variant="elitea"
+              color="secondary"
+              aria-label={t('common.closeAriaLabel', 'Close')}
+              onClick={onClose}
+            >
               <CloseIcon fontSize="small" />
             </IconButtonAny>
           </Box>
@@ -200,6 +235,13 @@ const AgentModal = memo(({ open, onClose, agent, onStartConversation }: AgentMod
         </DialogActions>
       </Box>
     </Dialog>
+    <AgentContextDialog
+      open={showContext}
+      onClose={() => setShowContext(false)}
+      instructions={instructions}
+      isLoading={isVersionLoading}
+    />
+    </>
   );
 });
 

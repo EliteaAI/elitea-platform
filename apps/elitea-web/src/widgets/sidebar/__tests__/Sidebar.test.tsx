@@ -14,8 +14,8 @@ import { renderAtPath } from './testRouter';
 installWebStorageShim();
 
 const projects: readonly Project[] = [
-  { id: 11, name: 'Public', status: 'active', suspended: false },
-  { id: 2, name: 'Alpha Co', status: 'active', suspended: false },
+  { id: 11, name: 'Public', suspended: false },
+  { id: 2, name: 'Alpha Co', suspended: false },
 ];
 
 const allPermissions = new Set(Object.values(PERMISSION_GROUPS).flat());

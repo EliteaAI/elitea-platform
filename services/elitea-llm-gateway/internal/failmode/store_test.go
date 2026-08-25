@@ -83,9 +83,27 @@ type storeFakeTx struct {
 	execRan    bool
 	committed  bool
 	rolledBack bool
+	// dedupTaken models the write-back consumer having already applied this
+	// event id, so the outage-window claim finds a conflict (issue #515).
+	dedupTaken bool
+	// dedupErr models the claim itself failing.
+	dedupErr error
+	// claimRan records that the claim statement ran at all.
+	claimRan bool
 }
 
-func (t *storeFakeTx) QueryRow(context.Context, string, ...any) Row {
+func (t *storeFakeTx) QueryRow(_ context.Context, sql string, args ...any) Row {
+	if strings.Contains(sql, "processed_event_ids") {
+		t.claimRan = true
+		switch {
+		case t.dedupErr != nil:
+			return scriptedRow{scanErr: t.dedupErr}
+		case t.dedupTaken:
+			return scriptedRow{scanErr: pgx.ErrNoRows}
+		}
+		id, _ := args[0].(string)
+		return scriptedRow{vals: []any{id}}
+	}
 	return scriptedRow{scanErr: errors.New("unused")}
 }
 func (t *storeFakeTx) Query(context.Context, string, ...any) (Rows, error) {
@@ -112,9 +130,9 @@ func (t *storeFakeTx) Rollback(context.Context) error { t.rolledBack = true; ret
 
 func TestReadSnapshot_Found(t *testing.T) {
 	// cols: is_unlimited, hard_limit_nano, accumulated_nano, soft_alert_pct,
-	//       nats_fail_mode, acc_found, age_seconds
+	//       nats_fail_mode, acc_found, age_seconds, soft_alerts_disabled
 	db := &storeFakeDB{queryRow: scriptedRow{vals: []any{
-		false, int64(100) * NanoUSD, int64(42) * NanoUSD, 80, "tiered_hybrid", true, 30.0,
+		false, int64(100) * NanoUSD, int64(42) * NanoUSD, 80, "tiered_hybrid", true, 30.0, false,
 	}}}
 	s := NewStore(db)
 	snap, err := s.ReadSnapshot(context.Background(), 7, "project", "7", 1000)
@@ -135,7 +153,7 @@ func TestReadSnapshot_Found(t *testing.T) {
 func TestReadSnapshot_MissingAccumulatorRowIsFreshZero(t *testing.T) {
 	// acc_found=false ⇒ Age must be left zero regardless of the age column.
 	db := &storeFakeDB{queryRow: scriptedRow{vals: []any{
-		false, int64(100) * NanoUSD, int64(0), 80, nil, false, 0.0,
+		false, int64(100) * NanoUSD, int64(0), 80, nil, false, 0.0, false,
 	}}}
 	s := NewStore(db)
 	snap, err := s.ReadSnapshot(context.Background(), 7, "project", "7", 1000)
@@ -198,6 +216,7 @@ func validDelta() OutageDelta {
 		ProjectID:    7,
 		Scope:        "project",
 		ScopeID:      "7",
+		EventID:      "33333333-3333-3333-3333-333333333333",
 		PeriodStart:  1000,
 		PeriodEnd:    2000,
 		DeltaNanoUSD: 5 * NanoUSD,
@@ -220,12 +239,14 @@ func TestPersistOutageDelta_Commits(t *testing.T) {
 }
 
 func TestPersistOutageDelta_Validation(t *testing.T) {
+	const evt = "44444444-4444-4444-4444-444444444444"
 	bad := []OutageDelta{
-		{Scope: "project", ScopeID: "7", PeriodStart: 1, PeriodEnd: 2},               // project_id<1
-		{ProjectID: 1, ScopeID: "7", PeriodStart: 1, PeriodEnd: 2},                   // empty scope
-		{ProjectID: 1, Scope: "project", PeriodStart: 1, PeriodEnd: 2},               // empty scope_id
-		{ProjectID: 1, Scope: "project", ScopeID: "7", PeriodEnd: 2},                 // period_start<=0
-		{ProjectID: 1, Scope: "project", ScopeID: "7", PeriodStart: 5, PeriodEnd: 5}, // end<=start
+		{Scope: "project", ScopeID: "7", EventID: evt, PeriodStart: 1, PeriodEnd: 2},               // project_id<1
+		{ProjectID: 1, ScopeID: "7", EventID: evt, PeriodStart: 1, PeriodEnd: 2},                   // empty scope
+		{ProjectID: 1, Scope: "project", EventID: evt, PeriodStart: 1, PeriodEnd: 2},               // empty scope_id
+		{ProjectID: 1, Scope: "project", ScopeID: "7", PeriodStart: 1, PeriodEnd: 2},               // empty event_id
+		{ProjectID: 1, Scope: "project", ScopeID: "7", EventID: evt, PeriodEnd: 2},                 // period_start<=0
+		{ProjectID: 1, Scope: "project", ScopeID: "7", EventID: evt, PeriodStart: 5, PeriodEnd: 5}, // end<=start
 	}
 	for i, d := range bad {
 		tx := &storeFakeTx{}

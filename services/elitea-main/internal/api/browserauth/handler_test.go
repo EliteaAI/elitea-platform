@@ -592,6 +592,70 @@ func TestFormAuthorizeMapsCredentialAndDependencyFailuresGenerically(t *testing.
 	})
 }
 
+// TestFormAuthorizeRecoversFromStaleFormInsteadOfDeadEnding gates the fix for
+// the login dead end.
+//
+// THE DEFECT. An unauthenticated visit to /app/ asks for the login page twice:
+// the SPA router redirects, and the first API call answers 302 to the same
+// place. Each GET of /forward-auth/login mints a new session cookie and a new
+// transaction, so the two begins race and the last Set-Cookie wins. The form on
+// screen then carries a transaction the server no longer accepts. Complete
+// answers ErrTransactionRejected.
+//
+// Before the fix that produced a bare text/plain "Bad Request" page with no
+// form and no link. A normal browser could not sign in at all. The two cases
+// below must both put the browser back on a fresh login form.
+func TestFormAuthorizeRecoversFromStaleFormInsteadOfDeadEnding(t *testing.T) {
+	t.Run("stale transaction", func(t *testing.T) {
+		handler, dependencies := newTestHandler(t)
+		dependencies.flow.completeErr = browserapp.ErrTransactionRejected
+		recorder := authorize(t, handler, dependencies, "admin", "secret-canary")
+		if recorder.Code != http.StatusFound ||
+			recorder.Header().Get("Location") != BasePath+LoginPath+"?error=true" {
+			t.Fatalf("status = %d location = %q, want 302 to the login page",
+				recorder.Code, recorder.Header().Get("Location"))
+		}
+		if strings.Contains(recorder.Body.String(), "secret-canary") {
+			t.Fatalf("response leaked credential input: %q", recorder.Body.String())
+		}
+	})
+
+	t.Run("session cookie gone", func(t *testing.T) {
+		handler, dependencies := newTestHandler(t)
+		form := url.Values{
+			"target":   {dependencies.flow.beginResult.TransactionID},
+			"login":    {"admin"},
+			"password": {"secret-canary"},
+		}.Encode()
+		request := httptest.NewRequest(
+			http.MethodPost,
+			BasePath+FormAuthorizePath,
+			strings.NewReader(form),
+		)
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		// No session cookie: it expired between the render and this POST.
+		recorder := httptest.NewRecorder()
+		mount(handler).ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusFound ||
+			recorder.Header().Get("Location") != BasePath+LoginPath+"?error=true" {
+			t.Fatalf("status = %d location = %q, want 302 to the login page",
+				recorder.Code, recorder.Header().Get("Location"))
+		}
+		if dependencies.flow.completeCalls != 0 {
+			t.Fatal("a request with no session cookie reached the authentication flow")
+		}
+	})
+
+	t.Run("malformed request stays a client error", func(t *testing.T) {
+		handler, dependencies := newTestHandler(t)
+		dependencies.flow.completeErr = browserapp.ErrInvalidRequest
+		recorder := authorize(t, handler, dependencies, "admin", "secret")
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+		}
+	})
+}
+
 func TestFormAuthorizeRejectsNonRotatedSession(t *testing.T) {
 	handler, dependencies := newTestHandler(t)
 	dependencies.flow.completeResult.SessionID = dependencies.flow.beginResult.SessionID

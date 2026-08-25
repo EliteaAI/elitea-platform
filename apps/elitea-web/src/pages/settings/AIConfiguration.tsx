@@ -13,10 +13,12 @@ import { memo, useState } from 'react';
 import { useTheme, type Theme } from '@mui/material/styles';
 
 import Box from '@mui/material/Box';
+import Button from '@mui/material/Button';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
+import Typography from '@mui/material/Typography';
 
-import { isPublicProject } from '@/entities/project';
+import { EliteaApiError } from '@/shared/api/generated/mutator';
 import { getConfig } from '@/shared/config';
 import { t } from '@/shared/i18n';
 
@@ -27,7 +29,6 @@ const {
   OpenAITemplate,
   ProjectAIConfiguration,
   useConfigurationsBySection,
-  useModelsQuery,
 } = aiConfigurationFeature;
 
 /**
@@ -44,6 +45,38 @@ function useUserApiUrl(): string {
   return configResult.status === 'ok' ? configResult.config.vite_server_url : '';
 }
 
+/** `EliteaApiError`'s 403 case — the same test `pages/credentials/CredentialsList.tsx` applies. */
+function isForbiddenError(error: unknown): boolean {
+  if (!(error instanceof EliteaApiError)) return false;
+  const { failure } = error;
+  return (failure.kind === 'http' || failure.kind === 'auth') && failure.status === 403;
+}
+
+/**
+ * A FAILED SECTION LIST IS NOT AN EMPTY ONE. Before this branch existed, a
+ * 403 from `GET /configurations/configurations/{projectId}` reached the page
+ * as seven empty sections. The screen told the user the project had no LLM
+ * configuration when the request never returned a list at all.
+ */
+function ConfigurationsError({ error, onRetry, styles }: {
+  error: unknown;
+  onRetry: () => void;
+  styles: ReturnType<typeof getStyles>;
+}) {
+  return (
+    <Box sx={styles.loadingCenter}>
+      <Typography variant="bodyMedium" role="alert">
+        {isForbiddenError(error)
+          ? t('ai-configuration.section.forbidden', 'You do not have permission to read the configurations of this project.')
+          : t('ai-configuration.section.loadFailed', 'The configurations could not be loaded.')}
+      </Typography>
+      <Button onClick={onRetry} variant="text">
+        {t('ai-configuration.section.retry', 'Try again')}
+      </Button>
+    </Box>
+  );
+}
+
 export interface AIConfigurationProps {
   /** Currently-selected project id — threaded down from the route. */
   projectId: string;
@@ -51,25 +84,18 @@ export interface AIConfigurationProps {
 
 export const AIConfiguration = memo(function AIConfiguration({ projectId }: AIConfigurationProps) {
   const [activeTab, setActiveTab] = useState(0);
-  const { data: configurationsBySection, isLoading } = useConfigurationsBySection(projectId);
+  const { data: configurationsBySection, isLoading, error, refetch } = useConfigurationsBySection(projectId);
   const theme = useTheme();
   const styles = getStyles(theme);
 
   const userApiUrl = useUserApiUrl();
-  const configResult = getConfig();
-  const includeShared =
-    configResult.status === 'ok' && !isPublicProject(projectId, configResult.config.vite_public_project_id);
-  /**
-   * Baseline passes `model.project_id` — the project owning the model the user
-   * has picked in `ModelConfiguration.jsx`'s own selector. That per-model
-   * selection state (`useModelOptions`/`useModelConfiguration`) is not ported
-   * to this page yet (see #71's parity follow-up), so this uses the project's
-   * configured default LLM model instead, which is what the selector is seeded
-   * with on mount in the baseline. Same `useModelsQuery(projectId, 'llm', …)`
-   * call `ConfigurationsPanel` already makes, so it de-dupes on the shared
-   * React Query cache key rather than firing a second request.
+  /*
+   * The model-owning project id used to be computed here and passed to
+   * ProjectAIConfiguration, which advertised it as `OpenAI-Project`. It is
+   * gone: that panel now shows the billing project only. A reader could not
+   * tell the two ids apart, and the generated samples sent the model's project
+   * as the project to bill (ADR-0018, spec-llm-project-scope §9).
    */
-  const modelProjectId = useModelsQuery(projectId, 'llm', includeShared).data?.default_model_project_id;
 
   const tabs = [
     { label: t('ai-configuration.tabs.configurations', 'Configurations') },
@@ -108,13 +134,14 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
         <ProjectAIConfiguration
           userApiUrl={userApiUrl}
           projectId={projectId}
-          modelProjectId={modelProjectId}
         />
       )}
 
       {/* Tab content */}
       <Box sx={styles.tabPanel}>
-        {activeTab === 0 && configurationsBySection ? (
+        {activeTab === 0 && error ? (
+          <ConfigurationsError error={error} onRetry={refetch} styles={styles} />
+        ) : activeTab === 0 && configurationsBySection ? (
           <ConfigurationsPanel
             configurationsBySection={configurationsBySection as unknown as Record<string, Record<string, unknown>[]>}
             projectId={projectId}
@@ -170,6 +197,8 @@ function getStyles(theme: ReturnType<typeof useTheme>) {
     loadingCenter: {
       flex: 1,
       display: 'flex',
+      flexDirection: 'column',
+      gap: '0.5rem',
       alignItems: 'center',
       justifyContent: 'center',
       color: t.vars.palette.text.secondary,

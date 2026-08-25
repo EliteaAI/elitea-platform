@@ -3,7 +3,8 @@ import { useCallback, useMemo } from 'react';
 import { useWatch, type UseFormReturn } from 'react-hook-form';
 
 import type { ApplicationCreationInput } from '@/entities/application-form';
-import type { ApplicationVersionDetail } from '@/shared/api/generated/model';
+
+import type { EditApplicationVersionFieldsState } from './useEditApplicationVersionFields';
 
 /**
  * Bridges `EditApplication`'s RHF form to `CreateAgentForm`'s plain
@@ -25,6 +26,7 @@ export interface EditApplicationEditorBridge {
     readonly name: string;
     readonly description: string;
     readonly version_details: {
+      readonly conversation_starters: readonly string[];
       readonly instructions: string;
       readonly welcome_message: string;
       readonly variables: readonly { readonly name: string; readonly value: string }[];
@@ -36,40 +38,69 @@ export interface EditApplicationEditorBridge {
 
 export function useEditApplicationEditorBridge(
   form: UseFormReturn<ApplicationCreationInput>,
-  activeVersion: ApplicationVersionDetail | undefined,
+  versionFields: EditApplicationVersionFieldsState,
 ): EditApplicationEditorBridge {
   const name = useWatch({ control: form.control, name: 'name' }) ?? '';
   const description = useWatch({ control: form.control, name: 'description' }) ?? '';
+  /*
+   * #307 — `conversation_starters` IS an RHF field (it is the one field
+   * `applicationCreationSchema` validates beyond name/description, and the
+   * one the save payload always read), but nothing put it into `values`, so
+   * the newly-mounted editor would have rendered an empty list over a
+   * version that had starters and then overwritten them on the first edit.
+   * Same `useWatch` subscription as the two fields above, for the same
+   * reason: the values arrive asynchronously with the agent detail.
+   */
+  const conversationStarters = useWatch({ control: form.control, name: 'version_details.conversation_starters' });
+  const starters = useMemo(
+    () => (conversationStarters ?? []).filter((entry): entry is string => typeof entry === 'string'),
+    [conversationStarters],
+  );
+
+  const { fields, applyFieldChange } = versionFields;
 
   const values = useMemo(
     () => ({
       name,
       description,
       version_details: {
-        instructions: activeVersion?.instructions ?? '',
-        welcome_message: activeVersion?.welcome_message ?? '',
-        variables: [],
-        meta: { step_limit: undefined },
+        conversation_starters: starters,
+        instructions: fields.instructions,
+        welcome_message: fields.welcomeMessage,
+        variables: fields.variables,
+        meta: { step_limit: fields.stepLimit },
       },
     }),
-    [name, description, activeVersion],
+    [name, description, starters, fields],
   );
 
   /*
-   * Only `name`/`description` are routed back into the form: those are the two
-   * fields `applicationCreationSchema` validates and the two the Save button is
-   * gated on. The version-level fields `CreateAgentForm` also renders are
-   * display-only here — `useEditApplicationForm` persists
-   * `conversation_starters` alone (see that hook, and this page's doc comment on
-   * the ApplicationUpdateRequest gap). Routing them into the form would imply a
-   * save path that does not exist.
+   * #307 — this used to `return` for every path except `name`/`description`,
+   * so instructions, the welcome message, the variables and the step limit
+   * were rendered from the server response and then discarded on every
+   * keystroke. They now go to `useEditApplicationVersionFields`, which holds
+   * them outside the RHF form (they are not in `applicationCreationSchema`)
+   * and hands them to `useEditApplicationForm`'s save payload.
+   *
+   * `name`/`description` still go through RHF: they are the two fields the
+   * schema validates and the two the Save button's `formState.isValid` gate
+   * reads.
    */
   const onFieldChange = useCallback(
     (path: string, value: unknown) => {
+      if (applyFieldChange(path, value)) return;
+      if (path === 'version_details.conversation_starters') {
+        form.setValue(
+          'version_details.conversation_starters',
+          Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [],
+          { shouldValidate: true, shouldDirty: true },
+        );
+        return;
+      }
       if (path !== 'name' && path !== 'description') return;
       form.setValue(path, typeof value === 'string' ? value : '', { shouldValidate: true, shouldDirty: true });
     },
-    [form],
+    [form, applyFieldChange],
   );
 
   return { values, onFieldChange };

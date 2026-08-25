@@ -64,9 +64,8 @@ func TestCurrentApplicationContinuationReusesCheckpointAndResponse(t *testing.T)
 		AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,9 +137,8 @@ func TestCurrentApplicationContinuationCarriesBlockWithCommentToOneExactDecision
 		ExecutionID: "execution-comment", CommandID: "command-comment", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +197,7 @@ func TestCurrentApplicationContinuationCarriesClarifyingAnswerToOneExactDecision
 		ExecutionID: "execution-answer", CommandID: "command-answer", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
@@ -261,9 +259,8 @@ func TestCurrentApplicationContinuationCarriesOneAtomicDecisionPerPendingInterru
 		ExecutionID: "execution-parallel-hitl", CommandID: "command-parallel-hitl", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,9 +305,8 @@ func TestCurrentApplicationContinuationRejectsIncompleteOrAmbiguousParallelDecis
 		HITLInterrupts: interrupts,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, &currentApplicationAdmissionStub{},
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, &currentApplicationAdmissionStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,9 +369,8 @@ func TestCurrentApplicationAuthorizationContinuationCarriesOnlyRuntimeCredential
 		ExecutionID: "execution-authorization", CommandID: "command-authorization", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +449,7 @@ func TestCurrentApplicationAuthorizationContinuationCarriesExactCompleteDecision
 		ExecutionID: "execution-parallel-authorization", CommandID: "command-parallel-authorization", Created: true,
 	}}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
 		&currentApplicationVersionFreezerStub{}, admissions,
 	)
 	if err != nil {
@@ -510,9 +505,8 @@ func TestCurrentAuthorizationContinuationRejectsDifferentInvocation(t *testing.T
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -550,9 +544,8 @@ func TestCurrentContinuationRejectsUnavailableActionBeforeAdmission(t *testing.T
 	}}
 	admissions := &currentApplicationAdmissionStub{}
 	service, err := NewCurrentApplicationStartService(
-		resolver, resolver, resolver, resolver, resolver,
-		&currentApplicationVersionFreezerStub{}, admissions,
-	)
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions)
 	if err != nil {
 		t.Fatal(err)
 	}

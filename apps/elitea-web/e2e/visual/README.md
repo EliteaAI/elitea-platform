@@ -40,8 +40,8 @@ workflow files.
 `deploy/docker-compose.e2e-standalone.yml` and `scripts/e2e-stack.sh` take
 `E2E_PROJECT` / `E2E_PORT` / `E2E_PG_PORT` / `E2E_REDIS_PORT` / `E2E_OIDC_PORT`
 so a second stack can run beside the first (#228). To point this suite at it,
-set `PLAYWRIGHT_BASE_URL` and `E2E_OIDC_PORT` — the script forwards exactly
-those two into the container:
+set `PLAYWRIGHT_BASE_URL` and `E2E_OIDC_PORT` — the script forwards those, plus
+`E2E_TZ`, into the container:
 
 ```bash
 E2E_PROJECT=elitea-e2e-b E2E_PORT=8086 E2E_PG_PORT=15434 \
@@ -56,6 +56,12 @@ variable is not a degraded run — it is a run against a DIFFERENT stack:
 `playwright.config.ts` falls back to `http://localhost:8082` and
 `auth.setup.ts` to OIDC port 9400. Both are unset by default, so CI and the
 ordinary local path are unaffected.
+
+`E2E_TZ` is forwarded for a stronger reason. It names the one IANA zone the
+browser runs in AND the zone `e2e-stack.sh seed` anchors its calendar-day
+fixtures in, so the two must always receive the same value (#214). Unforwarded,
+setting it on the host would move the seed's day boundary and leave the browser
+on UTC. It defaults to `UTC` on both sides.
 
 ## Start from a CLEAN stack
 

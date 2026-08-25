@@ -1,12 +1,15 @@
 package artifacts
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -94,6 +97,8 @@ func statusForCode(code string) int {
 		return http.StatusForbidden
 	case "NotImplemented":
 		return http.StatusNotImplemented
+	case "RangeNotSatisfiable":
+		return http.StatusRequestedRangeNotSatisfiable
 	case "DigestMismatch", "MediaTypeMismatch":
 		return http.StatusConflict
 	default:
@@ -103,10 +108,11 @@ func statusForCode(code string) int {
 
 // writeStorageError maps a storage.ObjectStore error onto the typed error
 // envelope, choosing both the HTTP status and the error code from the same
-// sentinel classification.
-func writeStorageError(w http.ResponseWriter, err error) {
-	code := storageErrorCode(err)
-	writeError(w, statusForCode(code), code, err.Error())
+// sentinel classification. An unclassified cause never reaches the caller —
+// see classifyStorageError.
+func (h *Handler) writeStorageError(ctx context.Context, w http.ResponseWriter, op string, err error) {
+	code, message := h.classifyStorageError(ctx, op, err)
+	writeError(w, statusForCode(code), code, message)
 }
 
 // isMaxBytesError reports whether err (or something it wraps) is
@@ -140,7 +146,7 @@ func (h *Handler) requireBucket(w http.ResponseWriter, r *http.Request, projectI
 		if errors.Is(err, storage.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NotFound", "bucket not found")
 		} else {
-			writeError(w, http.StatusInternalServerError, "Internal", "get bucket: "+err.Error())
+			h.writeInternal(w, r, "get bucket", err)
 		}
 		return repos.BucketRow{}, false
 	}
@@ -181,6 +187,74 @@ func artifactMaxObjectBytesFromEnv() (int64, bool) {
 	return v, true
 }
 
+// listObjectsQuery is the parsed, validated form of a bucket listing
+// request. It exists because elitea-main serves the same underlying listing
+// through two representations — the native route (ListObjects) and the
+// S3-shaped route the SDK's artifact toolkit speaks (ListObjectsS3, s3.go).
+// Only the wire rendering differs between them, so everything up to and
+// including the storage query is shared here rather than written twice:
+// a divergence between the two would be invisible until an index run
+// silently listed nothing.
+type listObjectsQuery struct {
+	prefix    string
+	delimiter string
+	maxKeys   int32
+	cursor    string
+}
+
+// parseListObjectsQuery validates the listing parameters both
+// representations accept. A non-empty code means the request is bad and the
+// caller must render (code, message) in its own error vocabulary — the two
+// representations use different code sets (artifact codes vs S3 codes), so
+// classification is shared here while rendering stays with the caller.
+func parseListObjectsQuery(q url.Values) (listObjectsQuery, string, string) {
+	prefix := q.Get("prefix")
+	if err := storage.ValidateKeyPrefix(prefix); err != nil {
+		return listObjectsQuery{}, "InvalidKey", err.Error()
+	}
+
+	var maxKeys int32
+	if limitStr := q.Get("limit"); limitStr != "" {
+		limit, err := strconv.ParseInt(limitStr, 10, 32)
+		if err != nil || limit < 0 {
+			return listObjectsQuery{}, "InvalidArgument", "limit must be a non-negative integer"
+		}
+		maxKeys = int32(limit)
+	}
+
+	return listObjectsQuery{
+		prefix:    prefix,
+		delimiter: q.Get("delimiter"),
+		maxKeys:   maxKeys,
+		cursor:    q.Get("cursor"),
+	}, "", ""
+}
+
+// errInvalidBucketRef marks a NewBucketRef failure inside listBucketObjects.
+// Callers reach that point only after requireBucket has confirmed the bucket
+// row exists, so a ref that will not build means the stored bucket name
+// violates the storage ref pattern — an internal inconsistency, not caller
+// error, and both representations must map it to "internal" rather than to
+// the InvalidKey they'd infer from the wrapped storage.ErrInvalidKey.
+var errInvalidBucketRef = errors.New("build bucket ref")
+
+// listBucketObjects runs the storage query shared by both listing
+// representations. The caller has already resolved and authorized the
+// project and confirmed the bucket exists.
+func (h *Handler) listBucketObjects(ctx context.Context, projectIDStr, bucket string, q listObjectsQuery) (storage.ListPage, error) {
+	bucketRef, err := storage.NewBucketRef(projectIDStr, bucket)
+	if err != nil {
+		return storage.ListPage{}, fmt.Errorf("%w: %w", errInvalidBucketRef, err)
+	}
+	return h.store.List(ctx, storage.ListQuery{
+		Bucket:            bucketRef,
+		KeyPrefix:         q.prefix,
+		Delimiter:         q.delimiter,
+		MaxKeys:           q.maxKeys,
+		ContinuationToken: q.cursor,
+	})
+}
+
 func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -193,38 +267,19 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bucketRef, err := storage.NewBucketRef(projectIDStr, bucket)
+	q, code, message := parseListObjectsQuery(r.URL.Query())
+	if code != "" {
+		writeError(w, statusForCode(code), code, message)
+		return
+	}
+
+	page, err := h.listBucketObjects(r.Context(), projectIDStr, bucket, q)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "list objects: "+err.Error())
-		return
-	}
-
-	q := r.URL.Query()
-	prefix := q.Get("prefix")
-	if err := storage.ValidateKeyPrefix(prefix); err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
-		return
-	}
-
-	var maxKeys int32
-	if limitStr := q.Get("limit"); limitStr != "" {
-		limit, err := strconv.ParseInt(limitStr, 10, 32)
-		if err != nil || limit < 0 {
-			writeError(w, http.StatusBadRequest, "InvalidArgument", "limit must be a non-negative integer")
+		if errors.Is(err, errInvalidBucketRef) {
+			h.writeInternal(w, r, "list objects", err)
 			return
 		}
-		maxKeys = int32(limit)
-	}
-
-	page, err := h.store.List(r.Context(), storage.ListQuery{
-		Bucket:            bucketRef,
-		KeyPrefix:         prefix,
-		Delimiter:         q.Get("delimiter"),
-		MaxKeys:           maxKeys,
-		ContinuationToken: q.Get("cursor"),
-	})
-	if err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "list objects", err)
 		return
 	}
 
@@ -254,6 +309,107 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// resolveObjectSizeLimit reads the project's storage policy and derives the
+// per-object byte cap from it, in the precedence S12 fixed: an explicit
+// project policy first, then ARTIFACT_MAX_OBJECT_BYTES, then the legacy
+// 150 MiB default. The policy itself is returned alongside because the
+// caller needs its MaxTotalBytes for the post-write quota check, and reading
+// it twice would let the two halves of the same decision disagree.
+//
+// Shared by both upload representations — the native multipart route
+// (UploadObject) and the S3-shaped raw-body one (UploadObjectS3, s3.go) — so
+// the S3 verb cannot become a way to write past a limit the native route
+// enforces.
+func (h *Handler) resolveObjectSizeLimit(ctx context.Context, projectID int64) (repos.ProjectStoragePolicy, int64, error) {
+	policy, err := h.repo.GetProjectStoragePolicy(ctx, projectID)
+	if err != nil {
+		return repos.ProjectStoragePolicy{}, 0, err
+	}
+	maxObjectBytes := defaultMaxObjectBytes
+	if policy.MaxObjectBytes != nil {
+		maxObjectBytes = *policy.MaxObjectBytes
+	} else if envLimit, ok := artifactMaxObjectBytesFromEnv(); ok {
+		maxObjectBytes = envLimit
+	}
+	return policy, maxObjectBytes, nil
+}
+
+// storeObjectInput is everything storeObject needs that the two upload
+// representations resolve differently: only how the bytes and the key are
+// carried on the wire differs between them (a multipart "file" part with a
+// Content-Disposition filename versus a raw body with the key in the path).
+type storeObjectInput struct {
+	projectID   int64
+	bucketRow   repos.BucketRow
+	ref         storage.ObjectRef
+	body        io.Reader
+	contentType string
+	policy      repos.ProjectStoragePolicy
+}
+
+// storeObject performs the write half shared by both upload representations:
+// the streaming Put, the object's metadata row, and the project-wide quota
+// check with its two-part rollback. Everything that decides whether bytes
+// survive a request lives here, so the S3 verb cannot silently skip the
+// quota accounting the native route takes seriously.
+//
+// Like streamObject, it writes nothing itself: on failure it returns a code
+// in THIS package's vocabulary and the caller renders it in its own (the
+// native artifact codes, or the S3 codes the SDK can phrase). A non-empty
+// code means nothing has been written to the response yet.
+//
+// The caller has already resolved and authorized the project, confirmed the
+// bucket exists, validated the key, and wrapped the body in
+// http.MaxBytesReader — the cap can only be enforced where the raw
+// http.Request is in scope, which is the caller.
+//
+// The quota check runs after the write, not before, because the object's
+// exact byte length isn't known until the stream has been fully read.
+func (h *Handler) storeObject(ctx context.Context, in storeObjectInput) (storage.ObjectInfo, string, string) {
+	info, err := h.store.Put(ctx, in.ref, in.body, storage.PutOptions{
+		ContentType:   in.contentType,
+		ContentLength: -1,
+	})
+	if err != nil {
+		if isMaxBytesError(err) {
+			return storage.ObjectInfo{}, "TooLarge", "object exceeds the project's max_object_bytes limit"
+		}
+		code, message := h.classifyStorageError(ctx, "put object", err)
+		return storage.ObjectInfo{}, code, message
+	}
+
+	// The object's own retention window starts now. It does not inherit the
+	// bucket's frozen expires_at — see computeExpiresAt. An overwrite
+	// restarts the window, because UpsertArtifactObject's ON CONFLICT branch
+	// refreshes expires_at; that matches an S3 lifecycle rule, which also
+	// measures age from the newest version.
+	if _, err := h.repo.UpsertObject(ctx, repos.NewObjectInput{
+		BucketID:   in.bucketRow.ID,
+		Key:        info.Key,
+		ByteLength: info.Size,
+		MediaType:  in.contentType,
+		ExpiresAt:  computeExpiresAt(in.bucketRow.RetentionDays),
+	}); err != nil {
+		h.logInternal(ctx, "record object metadata", err)
+		return storage.ObjectInfo{}, "Internal", "record object metadata"
+	}
+
+	if in.policy.MaxTotalBytes != nil {
+		total, err := h.repo.SumProjectBytes(ctx, in.projectID)
+		if err != nil {
+			h.logInternal(ctx, "sum project bytes", err)
+			return storage.ObjectInfo{}, "Internal", "sum project bytes"
+		}
+		if total > *in.policy.MaxTotalBytes {
+			_ = h.repo.DeleteObjects(ctx, in.bucketRow.ID, []string{info.Key})
+			_ = h.store.Delete(ctx, in.ref)
+			return storage.ObjectInfo{}, "TooLarge", "upload would exceed the project's storage quota"
+		}
+	}
+
+	return info, "", ""
+}
+
 // UploadObject streams the multipart "file" part straight into
 // ObjectStore.Put. It deliberately avoids every net/http form-parsing helper
 // that buffers the body to memory or spills it to os.TempDir (ADR-0016) —
@@ -263,9 +419,8 @@ func (h *Handler) ListObjects(w http.ResponseWriter, r *http.Request) {
 // per-request read deadline, then — after a successful write — records the
 // object's metadata row (UpsertObject) and enforces the project-wide quota
 // against the resulting SumProjectBytes, rolling back both the physical
-// object and its metadata row on violation. The quota check runs after the
-// write, not before, because the object's exact byte length isn't known
-// until the stream has been fully read.
+// object and its metadata row on violation. That post-decode half lives in
+// storeObject above, shared with the S3-shaped PUT.
 func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := parseProjectID(r)
 	if !ok {
@@ -279,16 +434,10 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	policy, err := h.repo.GetProjectStoragePolicy(r.Context(), projectID)
+	policy, maxObjectBytes, err := h.resolveObjectSizeLimit(r.Context(), projectID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "get project storage policy: "+err.Error())
+		h.writeInternal(w, r, "get project storage policy", err)
 		return
-	}
-	maxObjectBytes := defaultMaxObjectBytes
-	if policy.MaxObjectBytes != nil {
-		maxObjectBytes = *policy.MaxObjectBytes
-	} else if envLimit, ok := artifactMaxObjectBytesFromEnv(); ok {
-		maxObjectBytes = envLimit
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxObjectBytes)
 
@@ -354,7 +503,7 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "AlreadyExists", "key already exists; pass overwrite=true to replace it")
 			return
 		} else if !errors.Is(statErr, storage.ErrNotFound) {
-			writeStorageError(w, statErr)
+			h.writeStorageError(r.Context(), w, "stat object", statErr)
 			return
 		}
 	}
@@ -364,42 +513,17 @@ func (h *Handler) UploadObject(w http.ResponseWriter, r *http.Request) {
 		contentType = mimeFromExtension(filename)
 	}
 
-	info, err := h.store.Put(r.Context(), ref, part, storage.PutOptions{
-		ContentType:   contentType,
-		ContentLength: -1,
+	info, code, message := h.storeObject(r.Context(), storeObjectInput{
+		projectID:   projectID,
+		bucketRow:   bucketRow,
+		ref:         ref,
+		body:        part,
+		contentType: contentType,
+		policy:      policy,
 	})
-	if err != nil {
-		if isMaxBytesError(err) {
-			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "object exceeds the project's max_object_bytes limit")
-			return
-		}
-		writeStorageError(w, err)
+	if code != "" {
+		writeError(w, statusForCode(code), code, message)
 		return
-	}
-
-	if _, err := h.repo.UpsertObject(r.Context(), repos.NewObjectInput{
-		BucketID:   bucketRow.ID,
-		Key:        info.Key,
-		ByteLength: info.Size,
-		MediaType:  contentType,
-		ExpiresAt:  bucketRow.ExpiresAt,
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "record object metadata: "+err.Error())
-		return
-	}
-
-	if policy.MaxTotalBytes != nil {
-		total, err := h.repo.SumProjectBytes(r.Context(), projectID)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "Internal", "sum project bytes: "+err.Error())
-			return
-		}
-		if total > *policy.MaxTotalBytes {
-			_ = h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{info.Key})
-			_ = h.store.Delete(r.Context(), ref)
-			writeError(w, http.StatusRequestEntityTooLarge, "TooLarge", "upload would exceed the project's storage quota")
-			return
-		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -451,7 +575,7 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	if len(refs) > 0 {
 		result, err := h.store.DeleteBatch(r.Context(), refs)
 		if err != nil {
-			writeStorageError(w, err)
+			h.writeStorageError(r.Context(), w, "delete objects", err)
 			return
 		}
 		deleted = result.Deleted
@@ -459,11 +583,12 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 			deleted = []string{}
 		}
 		for _, f := range result.Failed {
-			failed = append(failed, batchDeleteFailure{Key: f.Key, Code: storageErrorCode(f.Err), Message: f.Err.Error()})
+			code, message := h.classifyStorageError(r.Context(), "delete object "+f.Key, f.Err)
+			failed = append(failed, batchDeleteFailure{Key: f.Key, Code: code, Message: message})
 		}
 		if len(deleted) > 0 {
 			if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, deleted); err != nil {
-				writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+				h.writeInternal(w, r, "delete object metadata", err)
 				return
 			}
 		}
@@ -472,33 +597,30 @@ func (h *Handler) BatchDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "failed": failed})
 }
 
-func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
-	projectID, ok := parseProjectID(r)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid project id")
-		return
-	}
-	projectIDStr := chi.URLParam(r, "projectID")
-	bucket := chi.URLParam(r, "bucket")
-	key := objectKeyFromRequest(r)
-
-	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
-		return
-	}
-
-	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
-		return
-	}
-
+// streamObject performs the object read shared by both download
+// representations — the native route (DownloadObject) and the S3-shaped one
+// the SDK's artifact toolkit speaks (DownloadObjectS3, s3.go). Everything
+// that decides what bytes go on the wire lives here: the Range parse, the
+// storage Get, the write deadline, the entity headers and the copy. Only the
+// error vocabulary differs between the two, so on failure this writes
+// nothing and returns a code in THIS package's vocabulary for the caller to
+// render in its own — the same split parseListObjectsQuery/listBucketObjects
+// already use for the two listings, and for the same reason: a divergence
+// between the representations would be invisible until an index run silently
+// downloaded nothing.
+//
+// A non-empty code means nothing has been written yet and the caller must
+// render the error. An empty code means the response is complete.
+//
+// The caller has already resolved and authorized the project and confirmed
+// the bucket exists.
+func (h *Handler) streamObject(w http.ResponseWriter, r *http.Request, ref storage.ObjectRef, key string) (code, message string) {
 	status := http.StatusOK
 	var rng *storage.ByteRange
 	if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
 		parsed, ok := parseRangeHeader(rangeHeader)
 		if !ok {
-			writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid Range header")
-			return
+			return "InvalidArgument", "invalid Range header"
 		}
 		rng = &parsed
 		status = http.StatusPartialContent
@@ -506,8 +628,7 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 
 	body, info, err := h.store.Get(r.Context(), ref, rng)
 	if err != nil {
-		writeStorageError(w, err)
-		return
+		return h.classifyStorageError(r.Context(), "get object", err)
 	}
 	defer func() { _ = body.Close() }()
 
@@ -522,12 +643,63 @@ func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
 		contentType = mimeFromExtension(key)
 	}
 	w.Header().Set("Content-Type", contentType)
+	// Advertise range support on every download, not only on a 206. A client
+	// that probes with a HEAD or a first full GET decides from this header
+	// whether it may resume.
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	if info.ETag != "" {
 		w.Header().Set("ETag", info.ETag)
 	}
+	if rng != nil {
+		// RFC 7233 makes Content-Range mandatory on a 206. Without it a
+		// browser media element cannot place the bytes in the timeline and
+		// aborts, and a resuming downloader fails.
+		total := info.TotalSize
+		if total <= 0 {
+			total = rng.Start + info.Size
+		}
+		if info.Size <= 0 || rng.Start >= total {
+			// An unsatisfiable range answers 416 and states the current
+			// length. The caller renders the body; this header survives,
+			// because writeError has not written the head yet.
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Range", "bytes */"+strconv.FormatInt(total, 10))
+			return "RangeNotSatisfiable", "requested range is not satisfiable"
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rng.Start, rng.Start+info.Size-1, total))
+	}
 	w.WriteHeader(status)
 	_, _ = io.Copy(w, body)
+	return "", ""
+}
+
+func (h *Handler) DownloadObject(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := parseProjectID(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "InvalidArgument", "invalid project id")
+		return
+	}
+	projectIDStr := chi.URLParam(r, "projectID")
+	bucket := chi.URLParam(r, "bucket")
+	key := objectKeyFromRequest(r)
+
+	// Deliberately before the bucket lookup, as it always has been: a
+	// malformed key is caller error and must 400 regardless of whether the
+	// bucket happens to exist.
+	ref, err := storage.NewObjectRef(projectIDStr, bucket, key)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "InvalidKey", err.Error())
+		return
+	}
+
+	if _, ok := h.requireBucket(w, r, projectID, bucket); !ok {
+		return
+	}
+
+	if code, message := h.streamObject(w, r, ref, key); code != "" {
+		writeError(w, statusForCode(code), code, message)
+	}
 }
 
 func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {
@@ -561,6 +733,9 @@ func (h *Handler) StatObject(w http.ResponseWriter, r *http.Request) {
 		contentType = mimeFromExtension(key)
 	}
 	w.Header().Set("Content-Type", contentType)
+	// A client that HEADs first to decide whether it may resume never sees
+	// the download response's headers, so this one belongs here too.
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	if info.ETag != "" {
 		w.Header().Set("ETag", info.ETag)
@@ -596,17 +771,17 @@ func (h *Handler) DeleteObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.store.Stat(r.Context(), ref); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "stat object", err)
 		return
 	}
 
 	if err := h.store.Delete(r.Context(), ref); err != nil {
-		writeStorageError(w, err)
+		h.writeStorageError(r.Context(), w, "delete object", err)
 		return
 	}
 
 	if err := h.repo.DeleteObjects(r.Context(), bucketRow.ID, []string{key}); err != nil {
-		writeError(w, http.StatusInternalServerError, "Internal", "delete object metadata: "+err.Error())
+		h.writeInternal(w, r, "delete object metadata", err)
 		return
 	}
 

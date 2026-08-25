@@ -9,6 +9,21 @@ export const AUTH_STATE_PARAM = 'auth_state';
 /** sessionStorage (logical): the CSRF state of the in-flight popup flow. */
 export const AUTH_STATE_STORAGE_KEY = 'auth.state';
 /**
+ * sessionStorage (logical): `Date.now()` of the moment the flight started.
+ *
+ * The single-flight guard of the controller is closure state, so it dies with
+ * the document. A full page load while the popup is open therefore built a
+ * SECOND controller with an empty slot, and that controller opened a second
+ * flight into the popup that was already open (issue #364, measured on
+ * WebKit: two documents, two controllers, two `auth_state` values, one tab).
+ *
+ * sessionStorage is per tab and survives a same-tab navigation, so the new
+ * document reads this marker and ADOPTS the flight that already runs. The
+ * timestamp bounds the adoption: a marker that no document ever cleared, left
+ * by a popup the user abandoned, must not block re-auth for ever.
+ */
+export const AUTH_FLIGHT_STARTED_KEY = 'auth.flight.started';
+/**
  * localStorage (logical) prefix: cross-window result fallback channel. The
  * key is STATE-SCOPED, exactly like the BroadcastChannel name — with a single
  * shared key two controllers (two tabs) consume each other's result: the
@@ -23,6 +38,22 @@ export function authResultStorageKey(state: string): string {
 }
 export const AUTH_CALLBACK_PATH = '/auth-callback'; // ROUTE-001
 export const AUTH_CHANNEL_PREFIX = 'elitea-auth-';
+/**
+ * Window-name prefix for the re-auth popup. The name is STATE-SCOPED.
+ *
+ * `window.open` REPLACES the page of a window that already carries the given
+ * name. A fixed name therefore lets a second flight re-navigate the popup the
+ * user works in: the typed value disappears and the form submits empty
+ * (issue #364, measured on a WebKit trace of J3 — two authorize hops, two
+ * `auth_state` values, one popup page, 0.8 s apart). Per-flight names make
+ * that impossible, and they also cover the case no in-page guard can reach:
+ * two tabs, two controllers, one shared name.
+ */
+const AUTH_WINDOW_NAME_PREFIX = 'elitea-auth-popup-';
+
+export function authWindowName(state: string): string {
+  return AUTH_WINDOW_NAME_PREFIX + state;
+}
 export const LOGOUT_PATH = '/forward-auth/logout'; // old UserButton.jsx:32
 
 /**
@@ -42,11 +73,23 @@ export const LOGOUT_PATH = '/forward-auth/logout'; // old UserButton.jsx:32
  * which is what carries `auth_state` through (`safeRedirectTarget` returns
  * the value unchanged, `internal/api/v2/auth/util.go`).
  *
- * `/forward-auth/login` is NOT used: it redirects to the path below while
- * dropping `target_to` (`internal/api/api/router.go`), which would land the
- * popup on `/` instead of the callback page and strand the flight.
+ * `/forward-auth/login` is not used BY THE POPUP: on the OIDC plane it
+ * redirects to the path below while dropping `target_to`
+ * (`internal/api/api/router.go`), which would land the popup on `/` instead of
+ * the callback page and strand the flight. It is the right entry point on the
+ * FORM plane, where it is the only path that opens a login transaction — see
+ * `FORM_LOGIN_PATH` below and `login-redirect.ts` for which plane is which.
  */
 export const OIDC_LOGIN_PATH = '/forward-auth/auth_oidc/login';
+
+/**
+ * Form login entry point.
+ *
+ * `/forward-auth/auth_form/login` renders the form itself and 400s without a
+ * transaction id; only this path creates one (`beginLogin`,
+ * `internal/api/browserauth/handler.go`), so this is what a browser is sent to.
+ */
+export const FORM_LOGIN_PATH = '/forward-auth/login';
 export const TARGET_TO_PARAM = 'target_to';
 
 export interface AuthResultMessage {

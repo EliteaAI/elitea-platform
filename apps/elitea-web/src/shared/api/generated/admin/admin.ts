@@ -57,14 +57,16 @@ import type {
   GetUserProjectPermissionsParams,
   GlobalUserInviteRequest,
   GlobalUserInviteResult,
-  IgnoredRequestBody,
   ListAdminPublishedAgentsParams,
   MessageResponse,
   ModeRoleAssignRequest,
   ModeRoleAssignResult,
   ModeRoleListing,
   ModeRoleRemoveResult,
-  ModerationStatusResponse,
+  ModerationRequestCreate,
+  ModerationRequestList,
+  ModerationRequestRow,
+  ModerationStatusParams,
   N400Response,
   N401Response,
   N403Response,
@@ -2606,8 +2608,13 @@ export function useRoleList<
 }
 
 export type moderationStatusResponse200 = {
-  data: ModerationStatusResponse;
+  data: ModerationRequestList;
   status: 200;
+};
+
+export type moderationStatusResponse400 = {
+  data: N400Response;
+  status: 400;
 };
 
 export type moderationStatusResponse401 = {
@@ -2620,18 +2627,13 @@ export type moderationStatusResponse403 = {
   status: 403;
 };
 
-export type moderationStatusResponse404 = {
-  data: N404Response;
-  status: 404;
-};
-
 export type moderationStatusResponseSuccess = moderationStatusResponse200 & {
   headers: Headers;
 };
 export type moderationStatusResponseError = (
+  | moderationStatusResponse400
   | moderationStatusResponse401
   | moderationStatusResponse403
-  | moderationStatusResponse404
 ) & {
   headers: Headers;
 };
@@ -2639,22 +2641,42 @@ export type moderationStatusResponseError = (
 export type moderationStatusResponse =
   moderationStatusResponseSuccess | moderationStatusResponseError;
 
-export const getModerationStatusUrl = (projectId: string, entityId: number) => {
-  return `/admin/moderation_status/default/${projectId}/${entityId}`;
+export const getModerationStatusUrl = (
+  projectId: string,
+  entityId: string,
+  params?: ModerationStatusParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/admin/moderation_status/default/${projectId}/${entityId}?${stringifiedParams}`
+    : `/admin/moderation_status/default/${projectId}/${entityId}`;
 };
 
 /**
- * NOTE(W2): static stub — always {"status":"approved"}
- * (internal/api/v2/eliteacore/handler.go:1586-1588).
- * @summary Get moderation status for an entity
+ * NOTE(W2): internal/api/v2/moderation/requests.go:561-595. Scoped to
+ * the authenticated caller in SQL — the answer is "what have I asked
+ * for", never "what has anyone asked for". Rows come newest first, so
+ * the current state is `rows[0]`. The optional `issue_type` query
+ * parameter narrows the list to one label.
+ * @summary List the caller's own moderation requests for an entity
  */
 export const moderationStatus = async (
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<moderationStatusResponse> => {
   return eliteaFetch<moderationStatusResponse>(
-    getModerationStatusUrl(projectId, entityId),
+    getModerationStatusUrl(projectId, entityId, params),
     {
       ...options,
       method: "GET",
@@ -2664,17 +2686,22 @@ export const moderationStatus = async (
 
 export const getModerationStatusQueryKey = (
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
 ) => {
-  return [`/admin/moderation_status/default/${projectId}/${entityId}`] as const;
+  return [
+    `/admin/moderation_status/default/${projectId}/${entityId}`,
+    ...(params ? [params] : []),
+  ] as const;
 };
 
 export const getModerationStatusQueryOptions = <
   TData = Awaited<ReturnType<typeof moderationStatus>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -2689,12 +2716,16 @@ export const getModerationStatusQueryOptions = <
   const { query: queryOptions, request: requestOptions } = options ?? {};
 
   const queryKey =
-    queryOptions?.queryKey ?? getModerationStatusQueryKey(projectId, entityId);
+    queryOptions?.queryKey ??
+    getModerationStatusQueryKey(projectId, entityId, params);
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof moderationStatus>>
   > = ({ signal }) =>
-    moderationStatus(projectId, entityId, { signal, ...requestOptions });
+    moderationStatus(projectId, entityId, params, {
+      signal,
+      ...requestOptions,
+    });
 
   return {
     queryKey,
@@ -2716,14 +2747,15 @@ export type ModerationStatusQueryResult = NonNullable<
   Awaited<ReturnType<typeof moderationStatus>>
 >;
 export type ModerationStatusQueryError =
-  N401Response | N403Response | N404Response;
+  N400Response | N401Response | N403Response;
 
 export function useModerationStatus<
   TData = Awaited<ReturnType<typeof moderationStatus>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params: undefined | ModerationStatusParams,
   options: {
     query: Partial<
       UseQueryOptions<
@@ -2748,10 +2780,11 @@ export function useModerationStatus<
 };
 export function useModerationStatus<
   TData = Awaited<ReturnType<typeof moderationStatus>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -2776,10 +2809,11 @@ export function useModerationStatus<
 };
 export function useModerationStatus<
   TData = Awaited<ReturnType<typeof moderationStatus>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -2795,15 +2829,16 @@ export function useModerationStatus<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Get moderation status for an entity
+ * @summary List the caller's own moderation requests for an entity
  */
 
 export function useModerationStatus<
   TData = Awaited<ReturnType<typeof moderationStatus>>,
-  TError = N401Response | N403Response | N404Response,
+  TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
+  entityId: string,
+  params?: ModerationStatusParams,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -2821,6 +2856,7 @@ export function useModerationStatus<
   const queryOptions = getModerationStatusQueryOptions(
     projectId,
     entityId,
+    params,
     options,
   );
 
@@ -2832,9 +2868,9 @@ export function useModerationStatus<
   return withQueryKey(query, queryOptions.queryKey);
 }
 
-export type createModerationRequestResponse200 = {
-  data: ModerationStatusResponse;
-  status: 200;
+export type createModerationRequestResponse201 = {
+  data: ModerationRequestRow;
+  status: 201;
 };
 
 export type createModerationRequestResponse400 = {
@@ -2853,7 +2889,7 @@ export type createModerationRequestResponse403 = {
 };
 
 export type createModerationRequestResponseSuccess =
-  createModerationRequestResponse200 & {
+  createModerationRequestResponse201 & {
     headers: Headers;
   };
 export type createModerationRequestResponseError = (
@@ -2869,21 +2905,23 @@ export type createModerationRequestResponse =
 
 export const getCreateModerationRequestUrl = (
   projectId: string,
-  entityId: number,
+  entityId: string,
 ) => {
   return `/admin/moderation_status/default/${projectId}/${entityId}`;
 };
 
 /**
- * NOTE(W2): same stub as GET — the body is ignored and
- * {"status":"approved"} is returned
- * (internal/api/v2/eliteacore/handler.go:1586-1588).
- * @summary Submit a moderation request for an entity
+ * NOTE(W2): internal/api/v2/moderation/requests.go:612-664. Creates one
+ * `centry.moderation_state` row and answers 201 with it. The row is
+ * always authored by the authenticated caller and always starts
+ * `pending`; a body that sets `user_id`, a `status` other than
+ * "pending", or a non-empty `meta` is refused with 400.
+ * @summary File a moderation request for an entity
  */
 export const createModerationRequest = async (
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options?: Parameters<typeof eliteaFetch>[1],
 ): Promise<createModerationRequestResponse> => {
   return eliteaFetch<createModerationRequestResponse>(
@@ -2892,20 +2930,20 @@ export const createModerationRequest = async (
       ...options,
       method: "POST",
       headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(ignoredRequestBody),
+      body: JSON.stringify(moderationRequestCreate),
     },
   );
 };
 
 export const getCreateModerationRequestQueryKey = (
   projectId: string,
-  entityId: number,
-  ignoredRequestBody?: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate?: ModerationRequestCreate,
 ) => {
   return [
     "POST",
     `/admin/moderation_status/default/${projectId}/${entityId}`,
-    ignoredRequestBody,
+    moderationRequestCreate,
   ] as const;
 };
 
@@ -2914,8 +2952,8 @@ export const getCreateModerationRequestQueryOptions = <
   TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -2931,12 +2969,16 @@ export const getCreateModerationRequestQueryOptions = <
 
   const queryKey =
     queryOptions?.queryKey ??
-    getCreateModerationRequestQueryKey(projectId, entityId, ignoredRequestBody);
+    getCreateModerationRequestQueryKey(
+      projectId,
+      entityId,
+      moderationRequestCreate,
+    );
 
   const queryFn: QueryFunction<
     Awaited<ReturnType<typeof createModerationRequest>>
   > = ({ signal }) =>
-    createModerationRequest(projectId, entityId, ignoredRequestBody, {
+    createModerationRequest(projectId, entityId, moderationRequestCreate, {
       signal,
       ...requestOptions,
     });
@@ -2968,8 +3010,8 @@ export function useCreateModerationRequest<
   TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options: {
     query: Partial<
       UseQueryOptions<
@@ -2997,8 +3039,8 @@ export function useCreateModerationRequest<
   TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -3026,8 +3068,8 @@ export function useCreateModerationRequest<
   TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -3043,7 +3085,7 @@ export function useCreateModerationRequest<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Submit a moderation request for an entity
+ * @summary File a moderation request for an entity
  */
 
 export function useCreateModerationRequest<
@@ -3051,8 +3093,8 @@ export function useCreateModerationRequest<
   TError = N400Response | N401Response | N403Response,
 >(
   projectId: string,
-  entityId: number,
-  ignoredRequestBody: IgnoredRequestBody,
+  entityId: string,
+  moderationRequestCreate: ModerationRequestCreate,
   options?: {
     query?: Partial<
       UseQueryOptions<
@@ -3070,7 +3112,7 @@ export function useCreateModerationRequest<
   const queryOptions = getCreateModerationRequestQueryOptions(
     projectId,
     entityId,
-    ignoredRequestBody,
+    moderationRequestCreate,
     options,
   );
 

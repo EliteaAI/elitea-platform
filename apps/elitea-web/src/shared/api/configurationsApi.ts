@@ -5,7 +5,8 @@
  * Source: `apps/elitea-ui/src/api/configurations.js` — RTK Query endpoints
  * (`getConfigurationsList` / `getAvailableConfigurationsType` /
  * `createConfiguration` / `updateConfiguration`). Every route maps to real
- * Go handlers under `/configurations/configurations/{project_id}`.
+ * Go handlers. The list path is `/configurations/configurations/{project_id}`.
+ * The detail path is `/configurations/configuration/{project_id}/{config_id}`.
  *
  * The generated `admin.ts` does NOT include these endpoints (they live on
  * a different route namespace), so this is a handwritten client following
@@ -99,10 +100,28 @@ export interface UpdateConfigurationBody {
 /* ── transport helpers ────────────────────────────────────────────────── */
 
 /* The Go handler mounts at /configurations with inner routes /configurations/…
-   (handler.go:37-40), so the full API path is /configurations/configurations/{id}.
+   (handler.go:37-40), so the full API path is /configurations/configurations/{project_id}.
    The old app does NOT use a mode prefix for configurations. */
 function configurationsPath(projectId: string): string {
   return `/configurations/configurations/${projectId}`;
+}
+
+/* The DETAIL path is singular and carries both identifiers:
+   `/configurations/configuration/{project_id}/{config_id}`
+   (CurrentConfigurationDetailsPath in
+   services/elitea-main/internal/api/v2/configurations/read.go).
+   PUT and DELETE are registered on this path only. */
+function configurationDetailPath(projectId: string, configId: string): string {
+  return `/configurations/configuration/${projectId}/${configId}`;
+}
+
+/* The MODEL CATALOGUE, which is a different route from the configuration list
+   above. `/configurations/configurations/{id}?section=models` returns
+   CREDENTIAL rows (elitea_title / label / data); this one returns models
+   (`name`, `display_name`, `context_window`, `supports_reasoning`) — the shape
+   `ConfigModel` declares, field for field. */
+function modelCatalogPath(projectId: string): string {
+  return `/configurations/models/${projectId}`;
 }
 
 function availableTypesPath(): string {
@@ -204,19 +223,25 @@ export function useCreateConfigurationMutation(
   });
 }
 
-/* ── updateConfiguration — PUT /configurations/configurations/{id} ────────── */
+/* ── updateConfiguration — PUT /configurations/configuration/{project_id}/{config_id} ── */
 /* manifest: configurations.update */
 
+/** Arguments the caller gives to the update mutation. */
 export interface UpdateConfigurationArgs {
   readonly configId: string;
   readonly body: UpdateConfigurationBody;
 }
 
+/** Arguments the update request needs. The hook adds the project id. */
+export interface UpdateConfigurationRequest extends UpdateConfigurationArgs {
+  readonly projectId: string;
+}
+
 export async function updateConfiguration(
-  { configId, body }: UpdateConfigurationArgs,
+  { projectId, configId, body }: UpdateConfigurationRequest,
 ): Promise<void> {
   await eliteaFetch<unknown>(
-    `/configurations/configurations/${configId}`,
+    configurationDetailPath(projectId, configId),
     {
       method: 'PUT',
       body: JSON.stringify(body),
@@ -231,7 +256,7 @@ export function useUpdateConfigurationMutation(
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args: UpdateConfigurationArgs) =>
-      updateConfiguration({ configId: args.configId, body: args.body }),
+      updateConfiguration({ projectId, configId: args.configId, body: args.body }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['settings', 'configurations', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['settings', 'availableTypes'] });
@@ -268,20 +293,27 @@ export interface ListModelsParams {
   readonly include_shared?: boolean;
 }
 
+/**
+ * The models a project can run — what the chat composer's picker offers.
+ *
+ * Reads the MODEL CATALOGUE, not the configuration list. It used to call
+ * `/configurations/configurations/{id}?section=models`, which returns model
+ * CREDENTIALS: rows carrying `elitea_title`/`label`/`data` and no `name` at
+ * all. Every consumer here reads `.name`, so the picker rendered rows with an
+ * EMPTY label — a menu of entries nobody can identify — and anything that did
+ * choose one sent a credential's title where the backend expects a model alias,
+ * which it rejects (#293).
+ *
+ * The catalogue answers `{name, display_name, project_id, shared,
+ * context_window, max_output_tokens, supports_reasoning}` — `ConfigModel`'s
+ * declared shape, field for field, which is the evidence this was always the
+ * intended source.
+ */
 export async function listModels(
   params: ListModelsParams,
 ): Promise<ConfigModelsListResponse> {
-  const qs = new URLSearchParams({
-    section: 'models',
-    include_shared: String(params.include_shared ?? false),
-    limit: '100',
-    offset: '0',
-    sort_by: 'created_at',
-    sort_order: 'desc',
-  });
-  return fetchData<ConfigModelsListResponse>(
-    `${configurationsPath(params.projectId)}?${qs}`,
-  );
+  const qs = new URLSearchParams({ include_shared: String(params.include_shared ?? false) });
+  return fetchData<ConfigModelsListResponse>(`${modelCatalogPath(params.projectId)}?${qs}`);
 }
 
 export function useListModelsQuery(

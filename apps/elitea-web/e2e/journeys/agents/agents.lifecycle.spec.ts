@@ -299,6 +299,104 @@ test('J25: unsaved-changes nav block: navigate away from dirty agent → dialog 
 });
 
 /*
+ * #307 — the agent edit page persists what a user types.
+ *
+ * Was EXPECTED-FAIL before #307. The page rendered the full editing form and
+ * saved nothing a user could change: `useEditApplicationEditorBridge` routed
+ * only `name`/`description` into the form and dropped every other field on
+ * the floor, while `useEditApplicationForm` submitted `conversation_starters`
+ * alone — and then called `form.reset()`, so the Save button reported success
+ * and the edit vanished.
+ *
+ * Deliberately asserted after a FULL RELOAD, not against the live form: every
+ * field on this page keeps a local mirror of what the user typed
+ * (`WelcomeMessageInput`'s `inputValue`, `useCreateAgentFormState`'s `name`),
+ * so re-reading the input after clicking Save proves only that React kept the
+ * string in memory — exactly the false green the old page would have produced.
+ * Only a reload re-reads the server.
+ *
+ * NOT COVERED, and deliberately not smuggled in with an `if (visible)`:
+ *  - `variables` — sent by the page, but the Go `UpdateVersion` handler has
+ *    no `variables` branch (applications/handler.go:807-836), so it is a
+ *    silent server-side no-op on update. Asserting it would fail for a
+ *    reason this page cannot fix.
+ *  - `conversation_starters` — persists, but has no input mounted anywhere:
+ *    the baseline's `ConversationStarters` editor has no port in this app.
+ */
+test('J14: the agent edit page persists an edited name, description and welcome message across a reload', async ({
+  page,
+}) => {
+  // The name input carries maxlength="32" (entities/application-form). The
+  // edited value below appends "-ed", so the BASE name must leave room for it
+  // or the browser silently truncates and the reload assertion compares a
+  // 33-character expectation against the 32 characters the field could hold.
+  // Measured: `autotest_persist-<9 digits>` is 25, plus "-ed" is 28.
+  const name = `${AUTOTEST_PREFIX}persist-${Date.now() % 1e9}`;
+  const { id } = await createAgent(page.request, name);
+  try {
+    await page.goto(BASE_URL + `/app/agents/latest/${id}`);
+
+    const editPanel = page.getByTestId('edit-application-configuration-tab-panel');
+    await expect(editPanel).toBeVisible({ timeout: 15_000 });
+    const nameInput = editPanel.getByTestId('agent-name-input');
+    // The whole form renders `disabled` while the detail fetch is in flight,
+    // and the panel mounts before it settles — typing during that window is
+    // dropped silently. A populated name is the page's own "loaded" signal.
+    await expect(nameInput).toHaveValue(name, { timeout: 15_000 });
+
+    const editedName = `${name}-ed`;
+    const editedDescription = `${AUTOTEST_PREFIX}edited description`;
+    const editedWelcome = `${AUTOTEST_PREFIX}welcome aboard`;
+
+    await nameInput.fill(editedName);
+    await editPanel.getByTestId('agent-description-input').fill(editedDescription);
+
+    // `toBeVisible`, not `toBeInTheDocument`: this input lives in an
+    // accordion, and a collapsed panel still has the node in the DOM.
+    const welcomeInput = editPanel.getByTestId('agent-welcome-message-input');
+    await expect(welcomeInput).toBeVisible();
+    await welcomeInput.fill(editedWelcome);
+
+    // Both PUTs must LAND before the reload. #307 made this page issue two —
+    // the application PUT carrying name/description and the version PUT
+    // carrying the welcome message — and reloading while either is in flight
+    // discards it. Measured: without this wait the run is engine-dependent,
+    // chromium winning the race and webkit losing it, so the reload read back
+    // the ORIGINAL name and the journey failed for a reason that had nothing
+    // to do with persistence.
+    const saved: number[] = [];
+    const onResponse = (response: import('@playwright/test').Response): void => {
+      if (response.request().method() === 'PUT' && response.url().includes('/elitea_core/')) {
+        saved.push(response.status());
+      }
+    };
+    page.on('response', onResponse);
+
+    await page.getByTestId('agent-save-button').click();
+
+    await expect(() => expect(saved.length).toBeGreaterThanOrEqual(2)).toPass({ timeout: 15_000 });
+    page.off('response', onResponse);
+    expect(saved.every((status) => status < 400), `save PUTs must succeed, got ${saved.join(',')}`).toBe(true);
+
+    // A successful save clears the dirty flag, so this reload must NOT be
+    // intercepted by the unsaved-changes guard. If the page ever regresses to
+    // "reports success without sending", this is where it shows up.
+    await page.reload();
+
+    await expect(editPanel).toBeVisible({ timeout: 15_000 });
+    // Application-level fields: these travel on a DIFFERENT endpoint (the
+    // application PUT) that this page did not call at all before #307.
+    await expect(nameInput).toHaveValue(editedName, { timeout: 15_000 });
+    await expect(editPanel.getByTestId('agent-description-input')).toHaveValue(editedDescription);
+    // Version-level field: the version PUT, whose body previously carried
+    // conversation starters and nothing else.
+    await expect(welcomeInput).toHaveValue(editedWelcome);
+  } finally {
+    await deleteAgent(page.request, id);
+  }
+});
+
+/*
  * The issue's literal repro (#133): "/agents/<id>", the EDIT page, not the
  * create form the journey above drives. Both pages had the same hole and both
  * are now armed, but only the create page was measured — this closes that.

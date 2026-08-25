@@ -138,11 +138,21 @@ func TestCompileRoutingCEL(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid bool over vars", `provider == "openai" && budget_used < 0.9`, false},
-		{"valid using tokens_used", `tokens_used > 1000`, false},
-		{"valid map access", `headers["x-tier"] == complexity_tier`, false},
+		{"valid over customer and params", `customer_id == "acme" && params.stream == true`, false},
+		// The four variables below TYPE-CHECK — they are declared in the same
+		// environment as the rest — and are refused anyway, because the gateway
+		// has no value to put in them. A rule naming one would report itself
+		// valid and never match. See unevaluableCELVariables in routing_cel.go.
+		{"refuses tokens_used", `tokens_used > 1000`, true},
+		{"refuses headers and complexity_tier", `headers["x-tier"] == complexity_tier`, true},
+		{"refuses team_id", `team_id == "7"`, true},
+		// A map KEY that happens to spell a refused variable is not a reference
+		// to it. This is the case the lexical check has to get right.
+		{"params key named headers is not the headers variable", `params.headers == "x"`, false},
+		{"identifier prefix is not a reference", `provider == "team_idle"`, false},
 		{"empty", ``, true},
 		{"non-bool result", `provider + model`, true},
-		{"int result", `tokens_used + 1`, true},
+		{"int result", `budget_used + 1.0`, true},
 		{"syntax error", `provider ==`, true},
 		{"unknown variable", `unknown_var == "x"`, true},
 	}
@@ -432,7 +442,7 @@ func TestDeleteError(t *testing.T) {
 
 func TestValidateCELActionValid(t *testing.T) {
 	h := NewGovernanceHandler(&fakeQuerier{})
-	rr := doJSON(h, http.MethodPost, "/governance/validate-cel", `{"cel":"tokens_used > 100"}`)
+	rr := doJSON(h, http.MethodPost, "/governance/validate-cel", `{"cel":"budget_used > 0.5"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}

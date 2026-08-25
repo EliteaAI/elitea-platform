@@ -25,11 +25,13 @@ import (
 	"encoding/json"
 	"expvar"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -42,7 +44,9 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/governance"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/infra/nats"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/server"
 )
 
@@ -64,6 +68,12 @@ func main() {
 	// probe the NATS circuit breaker.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", livenessHandler)
+
+	// Issue #465: mount the operator controls on THIS mux. expvar publishes
+	// /debug/vars on http.DefaultServeMux, which this process never serves, so
+	// every published variable was unreadable. /metrics serves an allowlist —
+	// see gatewayMetrics for why the full expvar surface stays unpublished.
+	mux.Handle("/metrics", makeMetricsHandler(gatewayMetrics()))
 
 	// Open the Postgres pool BEFORE the server: it backs the vault-backed
 	// Account (BFF.6), the governance/failmode store (FIX #0), and the
@@ -89,8 +99,9 @@ func main() {
 		defer pool.Close()
 
 		modelResolver = llmproxy.NewModelResolver(llmproxy.ModelResolverConfig{
-			DB:     llmproxy.NewModelPoolQuerier(pool),
-			Logger: logger,
+			DB:              llmproxy.NewModelPoolQuerier(pool),
+			Logger:          logger,
+			PublicProjectID: cfg.PublicProjectIDString(),
 		})
 	}
 
@@ -108,6 +119,12 @@ func main() {
 	// gateway keeps the zero-provider bootstrap account — it will start, but
 	// every provider call fails until the database returns.
 	var acct schemas.Account
+	// egressPolicy backs /llm/v1/check_connection (#319): it needs the exact
+	// same egress-allowlist decision GetKeysForProvider applies to persisted
+	// credentials, for a credential under test that has no row yet. nil (no
+	// pool) leaves the endpoint refusing every request — fail closed, not
+	// silently unchecked.
+	var egressPolicy llmproxy.EgressPolicy
 	if pool != nil {
 		vault, verr := account.NewFernetVault(account.NewPoolQuerier(pool))
 		if verr != nil {
@@ -123,6 +140,7 @@ func main() {
 			ProviderConcurrency: cfg.ProviderConcurrency,
 			SelfOrigins:         cfg.SelfLLMOrigins,
 			EgressAllowlist:     cfg.EgressAllowlist,
+			PublicProjectID:     cfg.PublicProjectIDString(),
 			Logger:              logger,
 		})
 		if aerr != nil {
@@ -130,6 +148,7 @@ func main() {
 			os.Exit(1)
 		}
 		acct = eliteaAcct
+		egressPolicy = eliteaAcct
 		if len(cfg.SelfLLMOrigins) == 0 {
 			logger.Warn("GATEWAY_SELF_LLM_ORIGINS is empty — the request-time SELF_REFERENTIAL_CREDENTIAL guard (spec §2.6 guard #1) is inert")
 		}
@@ -144,6 +163,16 @@ func main() {
 			logger.Warn("GATEWAY_EGRESS_ALLOWLIST is empty — tenant-authored api_base hosts are UNRESTRICTED (public only). " +
 				"bifrost's SSRF-safe dialer stays on for every provider, so self-hosted vLLM/Ollama on a private " +
 				"network will NOT work until the allowlist names those hosts (issue #13)")
+		}
+		// Issue #316: say whether platform-shared models are reachable. With the
+		// scope off, a project sees only its own credentials, so a deployment
+		// that runs on shared models alone has no usable model at all.
+		if id := cfg.PublicProjectIDString(); id != "" {
+			logger.Info("SHARED MODEL SCOPE ARMED: the gateway also reads the public project's shared credentials and models",
+				"public_project_id", id)
+		} else {
+			logger.Warn("ELITEA_AI_PROJECT_ID is unset — platform-shared models are UNREACHABLE. " +
+				"Each project can use only its own credentials and models (issue #316)")
 		}
 		logger.Info("vault-backed Account ENABLED", "self_origins", len(cfg.SelfLLMOrigins))
 	} else {
@@ -191,6 +220,27 @@ func main() {
 	// endpoints — see issue #242. govStore is nil when enforcement is
 	// disabled, in which case the route reports ready unconditionally.
 	//
+	// Issue #304: "unconditionally" was wrong for one specific case — NATS
+	// CONFIGURED but never reachable, so server.New left the client nil and
+	// govStore was never built. That pod serves /llm with no budget gate and
+	// no billing for the whole life of the process (server.New connects once;
+	// nats.MaxReconnects(-1) only ever resurrects a connection that succeeded
+	// at least once, and there is no later re-wire), yet reported ready.
+	//
+	// This is NOT a new fail-open/closed policy — it removes an inconsistency.
+	// Lose NATS one second AFTER boot and Ping already fails, so /readyz
+	// already answers 503 and the pod already drains, in EVERY fail mode. Lose
+	// it one second BEFORE boot and the same outage produced the opposite
+	// outcome: ready, serving, unmetered. The gate below makes the two agree.
+	//
+	// Scoped to GATEWAY_NATS_URL being set, so the NATS-less dev/CI posture
+	// (URL unset ⇒ enforcement deliberately off) still reports ready.
+	unwired := budgetEnforcementUnwired(cfg, govStore)
+	if unwired {
+		logger.Error("READINESS GATED: budget enforcement is configured but was not wired; /readyz will report not_ready",
+			"reason", budgetDisabledReason(cfg, nc, pool))
+	}
+	//
 	// Passing govStore straight into the pinger parameter puts a typed nil
 	// *GovernanceStore into a non-nil interface, so makeReadyzHandler's
 	// `p != nil` guard stays true and this dispatches to Ping. That used to
@@ -200,7 +250,64 @@ func main() {
 	// which is the one guard this needs: any future caller that boxes a typed
 	// nil *GovernanceStore into an interface is covered too, not just this
 	// call site. Measured against the standalone compose stack.
-	mux.HandleFunc("/readyz", makeReadyzHandler(govStore))
+	mux.HandleFunc("/readyz", makeReadyzHandler(govStore, unwired))
+
+	// The authored-governance plane (issue #218). It is a SEPARATE wiring from
+	// the budget engine above and has different preconditions:
+	//
+	//   - It needs only a DATABASE POOL. A gateway with no NATS still enforces
+	//     model allowlists, MCP allowlists, routing rules and rate policy; only
+	//     the per-minute rate limits need a counter.
+	//   - It survives a NATS-less deployment, which the budget engine does not.
+	//
+	// Wiring them together would have made every authored control depend on
+	// NATS, which is how the definitions came to be enforced nowhere.
+	var (
+		policyStore   *policy.Store
+		policyLimiter *policy.Limiter
+	)
+	if pool != nil {
+		policyStore = policy.NewStore(policy.Config{
+			DB:              policy.NewPoolQuerier(pool),
+			Logger:          logger,
+			RefreshInterval: cfg.GovernanceRefresh,
+		})
+		// Start performs the FIRST load synchronously, so the gateway is
+		// enforcing what an operator authored before it serves a request.
+		policyStore.Start(ctx)
+
+		if rc, ok := nc.(policy.RateCounter); ok && nc != nil {
+			policyLimiter = policy.NewLimiter(policy.LimiterConfig{
+				Counter: rc,
+				Subject: nats.RateLimitSubject,
+				Logger:  logger,
+			})
+			logger.Info("GOVERNANCE ENFORCEMENT ENABLED: authored definitions are read from "+
+				"gateway.governance_config, and per-minute rate limits run on the shared NATS counter",
+				"refresh", cfg.GovernanceRefresh)
+		} else {
+			logger.Warn("GOVERNANCE RATE LIMITS DISABLED: no NATS counter is available, so an authored " +
+				"tokens_per_min or requests_per_min ceiling is loaded and NOT enforced. Every other authored " +
+				"control — model allowlists, MCP allowlists, routing rules, rate policy — is in force. " +
+				"GET /governance/status reports this as rate_limits_enforceable=false")
+		}
+		var usage llmproxy.BudgetUsageReader
+		if govStore != nil {
+			usage = govStore
+			// An authored budget row becomes the FALLBACK ceiling for a project
+			// with no gateway.project_budget row. Without this the budget rows
+			// on the governance page would load, appear in /governance/status,
+			// and gate nothing — the same shape of gap the whole issue is about.
+			govStore.SetBudgetDefaults(policyBudgetDefaults{store: policyStore})
+		}
+		budgetOpts = append(budgetOpts, llmproxy.WithGovernancePolicy(policyStore, policyLimiter, usage))
+	} else {
+		logger.Warn("GOVERNANCE ENFORCEMENT DISABLED: no database pool, so no authored governance definition " +
+			"is read or enforced")
+	}
+
+	// The operator's answer to "is the rule I saved actually in force?".
+	mux.HandleFunc("/governance/status", makeGovernanceStatusHandler(policyStore, policyLimiter))
 
 	// The soft-alert event publisher (gateway.events.*, spec §8.3) rides the
 	// same NATS connection as the budget counters; without NATS the alert
@@ -237,17 +344,33 @@ func main() {
 	// trailer can still be billed, with the concurrent drains bounded. Without
 	// this wiring a mid-stream disconnect is free inference — a hard-budget
 	// bypass; TestMainWiring asserts both are present.
+	// The realtime WebSocket route (issue #323 follow-up). Its four options are
+	// all load-bearing and TestMainWiring asserts each of them:
+	//   - WithRealtimeDialer      without it the route answers 501 and the
+	//                             pylon-indexer relay keeps its own LiteLLM.
+	//   - WithRealtimeBudgetRecheck  a session is otherwise gated ONCE for its
+	//                             whole life; bifrost's turn-start signal is one
+	//                             the only known caller never sends.
+	//   - WithRealtimeSessionLimit   a hijacked connection has no server-side
+	//                             timeout, so nothing else bounds the pool.
+	//   - WithRealtimeOrigins     a WebSocket handshake is not subject to CORS.
 	handlerOpts := append(
 		[]llmproxy.HandlerOption{
 			llmproxy.WithModelResolver(modelResolver),
 			llmproxy.WithLoopBreakerParams(breakerParams),
 			llmproxy.WithStreamGrace(cfg.StreamGrace),
 			llmproxy.WithStreamDrainLimit(cfg.StreamDrainLimit),
+			llmproxy.WithEgressPolicy(egressPolicy),
+			llmproxy.WithRealtimeDialer(llmproxy.NewBifrostRealtimeDialer(srv.Core(), logger)),
+			llmproxy.WithRealtimeBudgetRecheck(cfg.RealtimeBudgetRecheck),
+			llmproxy.WithRealtimeSessionLimit(cfg.RealtimeMaxSessions),
+			llmproxy.WithRealtimeOrigins(cfg.RealtimeAllowedOrigins),
 		},
 		budgetOpts...,
 	)
 	logger.Info("stream disconnect billing configured",
 		"grace", cfg.StreamGrace, "drain_max_inflight", cfg.StreamDrainLimit)
+	logRealtimeMode(logger, cfg)
 	handler := llmproxy.NewHandler(
 		llmproxy.NewBifrostRouter(srv.Core()),
 		logger,
@@ -274,7 +397,7 @@ func main() {
 		slog.Info("shutdown signal received")
 	}
 
-	if err := shutdownSequence(context.Background(), handler, srv, handler, govStore); err != nil {
+	if err := shutdownSequence(context.Background(), handler, srv, handler, handler, govStore); err != nil {
 		slog.Error("gateway shutdown error", "err", err)
 		failed = true
 	}
@@ -289,7 +412,12 @@ func main() {
 // os.Exit sitting between two calls, and missed a live regression.
 type (
 	streamGraceStopper interface{ StopStreamGrace() }
-	httpShutdowner     interface {
+	// realtimeCloser ends live WebSocket sessions. It is its OWN seam and not
+	// part of streamGraceStopper: a session is not a stream drain, and the two
+	// run in different phases for different reasons (llmproxy/realtime.go,
+	// CloseRealtimeSessions).
+	realtimeCloser interface{ CloseRealtimeSessions(context.Context) }
+	httpShutdowner interface {
 		ShutdownHTTP(context.Context) error
 		Close()
 	}
@@ -304,9 +432,12 @@ type (
 //  2. StopStreamGrace  — only now do in-flight drains stop waiting for provider
 //     usage trailers, so the grace cannot extend the pod's termination window
 //     past this point. Billing stays OPEN.
-//  3. drainForShutdown — billing goroutines, then the governance store's
+//  3. CloseRealtimeSessions — live WebSocket sessions end. They are hijacked
+//     connections, so ShutdownHTTP neither closed nor waited for them, and
+//     their last turn still has to bill.
+//  4. drainForShutdown — billing goroutines, then the governance store's
 //     persist goroutines.
-//  4. Close            — NATS last, once no further increment can be issued.
+//  5. Close            — NATS last, once no further increment can be issued.
 //
 // StopStreamGrace MUST NOT be hoisted above ShutdownHTTP. It both sets
 // drainsClosing and closes the drainClosing channel, so running it first gives
@@ -324,6 +455,7 @@ func shutdownSequence(
 	ctx context.Context,
 	grace streamGraceStopper,
 	srv httpShutdowner,
+	rt realtimeCloser,
 	h billingDrainer,
 	gov govDrainer,
 ) error {
@@ -336,6 +468,17 @@ func shutdownSequence(
 	}
 	if grace != nil {
 		grace.StopStreamGrace()
+	}
+	if rt != nil {
+		// AFTER ShutdownHTTP because http.Server.Shutdown neither closes nor
+		// waits for a hijacked connection, so nothing else ends a session.
+		// BEFORE the billing drain because a session's LAST turn spawns its
+		// billing goroutine as it closes, and that goroutine needs billing open
+		// and NATS live — the same reason a recovered stream trailer is billed
+		// before billing closes.
+		closeCtx, cancel := context.WithTimeout(ctx, llmproxy.RealtimeCloseTimeout)
+		rt.CloseRealtimeSessions(closeCtx)
+		cancel()
 	}
 	drainForShutdown(h, gov)
 	if srv != nil {
@@ -482,6 +625,24 @@ func buildGovernance(
 	return govStore, calc, nil
 }
 
+// budgetEnforcementUnwired reports whether this process was CONFIGURED to
+// enforce budgets but could not wire enforcement at startup (issue #304).
+//
+// GATEWAY_NATS_URL being set is the operator's statement that this deployment
+// enforces budgets; a nil govStore is the statement that it does not. When the
+// two disagree the pod is serving /llm with no budget gate and no billing, and
+// it will keep doing so until it is restarted — server.New dials NATS exactly
+// once, and nothing rebuilds govStore afterwards. Callers use this to gate
+// /readyz so the pod drains instead of silently serving unmetered traffic.
+//
+// govStore is a concrete pointer rather than an interface on purpose: the
+// caller's variable is a typed *governance.GovernanceStore, and taking it as
+// an interface here would reintroduce the typed-nil-in-non-nil-interface trap
+// that already produced a /readyz panic once.
+func budgetEnforcementUnwired(cfg config.Config, govStore *governance.GovernanceStore) bool {
+	return cfg.NATSURL != "" && govStore == nil
+}
+
 // budgetDisabledReason returns a human-readable explanation for why enforcement
 // is off (for the startup warning log line).
 func budgetDisabledReason(cfg config.Config, nc server.NATSClient, pool *pgxpool.Pool) string {
@@ -513,20 +674,229 @@ func parseLevel(s string) slog.Level {
 	}
 }
 
-// budgetEnforcementEnabled is the scrapable expvar gauge for budget enforcement
-// status (Fix round-3 #9). Set once at startup; operators can alert on 0.
+// metricBudgetEnforcementEnabled is the name of the budget-enforcement gauge.
+const metricBudgetEnforcementEnabled = "gateway_budget_enforcement_enabled"
+
+// budgetEnforcementEnabled is the budget-enforcement gauge (Fix round-3 #9).
+// It is set once at startup. The gateway serves it on GET /metrics, so an
+// operator can alarm on the value 0.
 //
 //	gateway_budget_enforcement_enabled == 1 → enforcement active
 //	gateway_budget_enforcement_enabled == 0 → enforcement DISABLED (loud startup warning already logged)
-var budgetEnforcementEnabled = expvar.NewInt("gateway_budget_enforcement_enabled")
+//
+// Issue #465: this gauge had NO route for its whole life. expvar registers
+// /debug/vars on http.DefaultServeMux, and this process never serves that mux.
+// The alarm this gauge exists for could not be built. That mattered most for
+// issue #304: a gateway that starts while NATS is unreachable enforces nothing
+// for the life of the process, and this gauge is the control that reports it.
+var budgetEnforcementEnabled = expvar.NewInt(metricBudgetEnforcementEnabled)
 
-// recordBudgetEnforcementEnabled sets the expvar gauge. Called once at startup
+// recordBudgetEnforcementEnabled sets the gauge. Called once at startup
 // after governance assembly succeeds or fails.
 func recordBudgetEnforcementEnabled(enabled bool) {
 	if enabled {
 		budgetEnforcementEnabled.Set(1)
 	} else {
 		budgetEnforcementEnabled.Set(0)
+	}
+}
+
+// gatewayMetric is one variable that GET /metrics serves.
+type gatewayMetric struct {
+	name string
+	// kind is the Prometheus metric type: "gauge" or "counter".
+	kind string
+	help string
+	v    expvar.Var
+}
+
+// gatewayMetrics lists every variable GET /metrics serves, in a fixed order.
+//
+// The list is an ALLOWLIST, and that is the answer to the second half of issue
+// #465: /debug/vars must NOT be public. expvar.Handler() writes every variable
+// the process publishes, which includes `cmdline` (the process arguments) and
+// `memstats`, plus anything any dependency publishes. This route writes the
+// gateway's own controls and nothing else.
+//
+// The listener that serves this route also serves /llm. In the shipped
+// deployment that listener is a ClusterIP Service with mutual TLS, and the
+// edge proxies only the /llm paths, so /metrics is reachable from inside the
+// cluster and not from a tenant.
+//
+// The model-map names come from llmproxy.ModelMapMetricNames, so the package
+// that publishes a counter also states its name. Nothing here copies a name
+// from another file.
+func gatewayMetrics() []gatewayMetric {
+	metrics := []gatewayMetric{{
+		name: metricBudgetEnforcementEnabled,
+		kind: "gauge",
+		help: "1 when this gateway enforces budgets. 0 when enforcement is off.",
+		v:    budgetEnforcementEnabled,
+	}}
+	for _, name := range llmproxy.ModelMapMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: "Count of requests the model map refused because it could not read the project model set.",
+			v:    expvar.Get(name),
+		})
+	}
+	// Issue #323: the audio money-path controls. An audio provider may sell by
+	// the second or by the character, not by the token. The gateway prices all
+	// three, but only from the catalog, so a model with no catalog audio rate is
+	// still delivered and billed as zero. These counters are the only things
+	// that say so out loud. The names come from the package that publishes them.
+	for _, name := range llmproxy.AudioMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: audioMetricHelp(name),
+			v:    expvar.Get(name),
+		})
+	}
+	// The price-catalog schema controls. A gateway pod that rolls out ahead of
+	// elitea-migrate reads a gateway_models table with no audio price columns.
+	// The catalog SELECT degrades to the pre-0086 statement so TOKEN pricing
+	// survives the skew, and these two say the skew is happening: without them
+	// the only signal is one log line per model per cache TTL. The name, the
+	// kind and the help all come from the package that publishes the variable,
+	// so a gauge cannot be scraped here as a counter.
+	for _, m := range cost.Metrics() {
+		metrics = append(metrics, gatewayMetric{
+			name: m.Name,
+			kind: m.Kind,
+			help: m.Help,
+			v:    expvar.Get(m.Name),
+		})
+	}
+	// The realtime session controls. gateway_realtime_turns_unpriced_total is
+	// the one that matters most: a transcription-intent turn reports usage that
+	// bifrost's own extractor cannot read, and a turn nobody could price must be
+	// a number an operator sees rather than a silent zero. The names come from
+	// the package that publishes them.
+	for _, name := range llmproxy.RealtimeMetricNames() {
+		metrics = append(metrics, gatewayMetric{
+			name: name,
+			kind: "counter",
+			help: realtimeMetricHelp(name),
+			v:    expvar.Get(name),
+		})
+	}
+	// Issue #515: the budget-outage controls. A row that the recovery pass owns
+	// holds back the durable spend for its scope, and before these two lines
+	// nothing outside the log said so. The name and the value both come from
+	// the failmode package, which publishes them.
+	metrics = append(metrics,
+		gatewayMetric{
+			name: failmode.MetricBudgetOutageRows,
+			kind: "gauge",
+			help: "Accumulator rows the gateway recovery pass still owns. Above zero, the durable spend for those scopes does not advance.",
+			v:    expvar.Get(failmode.MetricBudgetOutageRows),
+		},
+		gatewayMetric{
+			name: failmode.MetricBudgetRecoveryFailuresTotal,
+			kind: "counter",
+			help: "Count of scopes a recovery pass could not reconcile. The rows stay held until a later pass succeeds.",
+			v:    expvar.Get(failmode.MetricBudgetRecoveryFailuresTotal),
+		},
+	)
+	return metrics
+}
+
+// audioMetricHelp returns the help text for one audio counter.
+//
+// The default is a generic sentence and NOT an empty string on purpose. A new
+// counter that reaches AudioMetricNames before it reaches this switch must
+// still scrape: TestGatewayMetrics_EveryListedMetricIsPublished refuses an
+// empty help text, so an empty default would turn a missing sentence into a
+// red build for a control that works.
+func audioMetricHelp(name string) string {
+	switch name {
+	case llmproxy.MetricAudioUnpriced:
+		return "Count of audio responses the gateway could not price, because the provider reported no usable usage or the catalog carries no rate for the units it reported. Each one billed zero."
+	case llmproxy.MetricAudioNonTokenBasis:
+		return "Count of requests a non-token rate priced: a per-second or per-character catalog rate, not a per-token one."
+	default:
+		return "An audio money-path counter published by the llmproxy package."
+	}
+}
+
+// realtimeMetricHelp returns the help text for one realtime counter. Its
+// default is a generic sentence, never an empty string, for the reason
+// audioMetricHelp gives: a counter that reaches the name list before it reaches
+// this switch must still scrape.
+func realtimeMetricHelp(name string) string {
+	switch name {
+	case llmproxy.MetricRealtimeSessionsOpened:
+		return "Count of realtime WebSocket sessions that passed admission and completed the upgrade."
+	case llmproxy.MetricRealtimeRefusedUnpricedModel:
+		return "Count of realtime upgrades refused because the price catalogue holds no rate for the model. An unpriced session has no natural bound, so it is refused rather than billed as zero."
+	case llmproxy.MetricRealtimeRefusedCapacity:
+		return "Count of realtime upgrades refused because the global or per-project session pool was full."
+	case llmproxy.MetricRealtimeTurnsBilled:
+		return "Count of realtime turns whose usage reached the authoritative budget counter."
+	case llmproxy.MetricRealtimeTurnsUnpriced:
+		return "Count of realtime turns that ended with no usable usage, so nothing was billed for them."
+	case llmproxy.MetricRealtimeTurnsRefused:
+		return "Count of realtime turn starts the gateway did not forward to the provider because the budget gate did not admit them. Read gateway_realtime_frames_dropped_total beside it: the only known caller sends no turn-start event."
+	case llmproxy.MetricRealtimeSessionsClosedBudget:
+		return "Count of realtime sessions the budget gate closed: an exhausted budget, or too many consecutive gate outages."
+	case llmproxy.MetricRealtimeFramesDropped:
+		return "Count of client frames a realtime session did not forward to the provider because the budget gate was refusing. This is the number of frames a refusal really stopped; the turns counter cannot report it for a caller that sends no turn-start event."
+	case llmproxy.MetricRealtimeTurnBasisMismatch:
+		return "Count of realtime turns whose usage arrived on a price basis the catalogue does not carry for that model. Such a turn bills nothing, so this is the only signal that an admitted session bills zero."
+	case llmproxy.MetricRealtimeTurnsUnbilled:
+		return "Count of realtime turns whose provider-reported spend was dropped because billing was already draining."
+	case llmproxy.MetricRealtimeSessionsClosedModel:
+		return "Count of realtime sessions closed because a client frame asked the provider for a model that admission refused."
+	default:
+		return "A realtime session counter published by the llmproxy package."
+	}
+}
+
+// logRealtimeMode states the realtime route's operator settings once at
+// startup. The Origin policy is the half that must never be silent: an empty
+// allowlist is the SECURE default (same-origin only), and an operator who
+// widened it has to be able to see that from the log alone.
+func logRealtimeMode(logger *slog.Logger, cfg config.Config) {
+	if len(cfg.RealtimeAllowedOrigins) == 0 {
+		logger.Info("REALTIME ROUTE ARMED: browser origins are restricted to the gateway's own host "+
+			"(a WebSocket handshake is not subject to CORS, so this is the secure default). "+
+			"Set LLM_REALTIME_ALLOWED_ORIGINS to admit a browser origin.",
+			"budget_recheck", cfg.RealtimeBudgetRecheck, "max_sessions", cfg.RealtimeMaxSessions)
+		return
+	}
+	logger.Warn("REALTIME ROUTE ARMED WITH A WIDENED ORIGIN POLICY: the listed browser origins may open "+
+		"/llm/v1/realtime cross-site with the user's ambient credentials.",
+		"origins", strings.Join(cfg.RealtimeAllowedOrigins, ","),
+		"budget_recheck", cfg.RealtimeBudgetRecheck, "max_sessions", cfg.RealtimeMaxSessions)
+}
+
+// makeMetricsHandler answers GET /metrics with the given variables, in the
+// Prometheus text exposition format. That format is what an operator's alarm
+// reads, and the gateway published no metrics route before issue #465.
+//
+// A variable that is not published writes an `# UNPUBLISHED` comment line. It
+// does not write nothing: a name that silently disappears from a scrape looks
+// the same as a control that reports zero, and this repository has lost several
+// controls that way. TestGatewayMetrics_EveryListedMetricIsPublished fails
+// before an operator ever sees such a line.
+func makeMetricsHandler(metrics []gatewayMetric) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var b strings.Builder
+		for _, m := range metrics {
+			if m.v == nil {
+				b.WriteString("# UNPUBLISHED " + m.name + "\n")
+				continue
+			}
+			b.WriteString("# HELP " + m.name + " " + m.help + "\n")
+			b.WriteString("# TYPE " + m.name + " " + m.kind + "\n")
+			b.WriteString(m.name + " " + m.v.String() + "\n")
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, b.String())
 	}
 }
 
@@ -589,8 +959,23 @@ func livenessHandler(w http.ResponseWriter, _ *http.Request) {
 // NATS circuit breaker (govStore); a nil p means budget enforcement is
 // disabled, so readiness is unconditional. This is the handler that used to
 // be mounted at /healthz.
-func makeReadyzHandler(p pinger) http.HandlerFunc {
+//
+// enforcementUnwired (issue #304) is the one case a nil p must NOT be read as
+// "deliberately disabled": NATS was configured, the connect failed at boot,
+// and nothing re-wires enforcement for the life of the process. It is decided
+// once at startup because that is exactly how long it stays true — a nil
+// govStore never becomes non-nil. Checked BEFORE the p == nil guard because
+// the disabled path passes a typed-nil *GovernanceStore, which is non-nil as
+// an interface and whose Ping is nil-receiver safe and returns success.
+func makeReadyzHandler(p pinger, enforcementUnwired bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if enforcementUnwired {
+			writeHealthJSON(w, http.StatusServiceUnavailable, healthStatus{
+				Status: "not_ready",
+				Checks: map[string]string{"budget_enforcement": "unwired"},
+			})
+			return
+		}
 		if p == nil {
 			writeHealthJSON(w, http.StatusOK, healthStatus{Status: "ready"})
 			return

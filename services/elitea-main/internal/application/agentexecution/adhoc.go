@@ -129,7 +129,11 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 		request.ProjectID,
 		request.ActorUserID,
 	)
-	input, err := currentAdhocInput(request, target, frozen, suggestionPolicy)
+	toolkitGuardrails, err := service.resolveToolkitGuardrails(ctx)
+	if err != nil {
+		return CurrentApplicationStartOutcome{}, err
+	}
+	input, err := currentAdhocInput(request, target, frozen, suggestionPolicy, toolkitGuardrails)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, fmt.Errorf("build current ad-hoc execution input: %w", err)
 	}
@@ -253,6 +257,7 @@ func currentAdhocInput(
 	target CurrentAdhocTarget,
 	frozen json.RawMessage,
 	nextInputSuggestion json.RawMessage,
+	toolkitGuardrails json.RawMessage,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	var snapshot map[string]any
 	if err := decodeCurrentJSON(frozen, &snapshot); err != nil {
@@ -306,6 +311,7 @@ func currentAdhocInput(
 		InputAttachments: []byte(`[]`), ParallelReconcile: []byte(`null`),
 		ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion:    bytes.Clone(nextInputSuggestion),
+		ToolkitGuardrails:      bytes.Clone(toolkitGuardrails),
 	}
 	if stepsLimit != nil {
 		input.StepsLimit = stepsLimit

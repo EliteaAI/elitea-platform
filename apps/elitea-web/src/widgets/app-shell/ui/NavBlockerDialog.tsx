@@ -70,19 +70,51 @@ export function NavBlockerDialog(): ReactNode {
    * Reading the store here is strictly more correct for every caller —
    * including the chat-embedded editors, which had the same latent
    * staleness — because the question "is there unsaved work RIGHT NOW" can
-   * only be answered at the instant the navigation is attempted. The
-   * selected values above are still what drive the dialog's own render
-   * (`warningMessage`) and the `beforeunload` listener below, which do need
-   * to re-render on change.
+   * only be answered at the instant the navigation is attempted.
+   *
+   * The same reasoning applies to `enableBeforeUnload` below. The selected
+   * values above still drive the dialog's own render (`warningMessage`) and
+   * the `beforeunload` listener, which do need to re-render on change.
    */
   const { status, proceed, reset } = useBlocker({
     shouldBlockFn: ({ current, next }) => {
       const live = useNavBlockerStore.getState();
       return (live.isBlockNav || live.isStreaming) && current.pathname !== next.pathname;
     },
+    /*
+     * `enableBeforeUnload` DEFAULTS TO `true`, AND THAT PROMPTED ON EVERY PAGE.
+     *
+     * `useBlocker` installs its own `beforeunload` listener, separate from the
+     * hand-rolled one this component adds below. The router's listener does NOT
+     * consult `shouldBlockFn`: it walks the registered blockers and prompts
+     * when any of them has `enableBeforeUnload !== false`
+     * (`useBlocker.d.ts:35` types it `boolean | (() => boolean)`). This
+     * component is mounted by the app shell on every route. Leaving the
+     * option unset therefore armed the browser's "Leave site?" prompt across
+     * the whole application. It fired on every reload, tab close and external
+     * navigation, with nothing unsaved and nothing streaming.
+     *
+     * Measured on a live deployment: on a freshly loaded /app/toolkits,
+     * `window.dispatchEvent(new Event('beforeunload', {cancelable: true}))`
+     * came back with `defaultPrevented === true`.
+     *
+     * The predicate reads the LIVE store for the same reason `shouldBlockFn`
+     * does: the browser asks at unload time, not at render time.
+     */
+    enableBeforeUnload: () => {
+      const live = useNavBlockerStore.getState();
+      return live.isBlockNav || live.isStreaming;
+    },
     withResolver: true,
   });
 
+  /*
+   * The router installs its `beforeunload` listener inside `createBrowserHistory`,
+   * so it exists only under a real browser history. This listener covers the
+   * memory-history case as well. It has always been correctly gated. The
+   * router's ungated one beside it produced the spurious prompt.
+   * Two listeners calling preventDefault on one event still yield one prompt.
+   */
   useEffect(() => {
     function onBeforeUnload(event: BeforeUnloadEvent): void {
       if (!isBlockNav && !isStreaming) return;

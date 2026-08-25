@@ -1,13 +1,31 @@
 package middleware
 
 import (
+	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 )
 
+// RequirePermissions gates a route on the permission set the caller ALREADY
+// carries in `auth.User.Permissions`. It asks no resolver and reads no database.
+//
+// DO NOT USE IT ON A PRODUCTION ROUTE. Production never fills that field. The
+// only source that assigns it is the legacy Redis-RPC validator at
+// internal/infra/authsvc/rpc.go:121, and production wires
+// `authsvc.NewPrincipalValidator` instead, which leaves the field nil. So a
+// route gated this way answers 403 to EVERY caller, the operator included, and
+// no migration can grant a way in.
+//
+// That defect shipped on the gateway governance routes and #386 fixed it. The
+// route now uses RequireCentralPermissions. This constructor has no production
+// call site today. Use RequireCentralPermissions for a platform-wide surface, or
+// RequireResolvedPermissions for a project-scoped one. Both ask the resolver.
 func RequirePermissions(required ...string) func(http.Handler) http.Handler {
 	requiredSet := make(map[string]struct{}, len(required))
 	for _, p := range required {
@@ -18,12 +36,12 @@ func RequirePermissions(required ...string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := auth.UserFromContext(r.Context())
 			if !ok {
-				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+				apierr.WriteStatus(w, http.StatusUnauthorized, "authentication required")
 				return
 			}
 
 			if !hasIntersection(requiredSet, permissionSet(user.Permissions)) {
-				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				apierr.WriteStatus(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
 
@@ -94,17 +112,17 @@ func RequireResolvedPermissionsForProject(
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, ok := auth.UserFromContext(r.Context())
 			if !ok {
-				http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+				apierr.WriteStatus(w, http.StatusUnauthorized, "authentication required")
 				return
 			}
 			if resolver == nil || projectID == nil {
-				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				apierr.WriteStatus(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
 
 			resolvedProjectID, validProjectID := projectID(r)
 			if !validProjectID {
-				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+				apierr.WriteStatus(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
 
@@ -114,8 +132,12 @@ func RequireResolvedPermissionsForProject(
 				mode,
 				resolvedProjectID,
 			)
-			if err != nil || !hasIntersection(requiredSet, permissionSet(resolution.Permissions)) {
-				http.Error(w, `{"error":"insufficient permissions"}`, http.StatusForbidden)
+			if err != nil {
+				writeResolverError(w, r, err)
+				return
+			}
+			if !hasIntersection(requiredSet, permissionSet(resolution.Permissions)) {
+				apierr.WriteStatus(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
 
@@ -123,6 +145,33 @@ func RequireResolvedPermissionsForProject(
 			ctx := auth.ContextWithUser(r.Context(), user)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
+	}
+}
+
+// writeResolverError answers a permission-resolver error.
+//
+// The resolver reports a REFUSAL as auth.ErrPermissionDenied. Every other
+// error is an infrastructure failure: a saturated connection pool, a query
+// timeout, or a scan failure. The two must not share one status code. When
+// they do, a database outage reaches the user as "insufficient permissions" on
+// every screen. It reaches the operator as a wall of 403 answers with no 5xx
+// and no error rate alert.
+//
+// A canceled request context means the client went away. It gets no status and
+// no log line, because a 5xx there is a false alarm.
+func writeResolverError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, auth.ErrPermissionDenied):
+		apierr.WriteStatus(w, http.StatusForbidden, "insufficient permissions")
+	case errors.Is(err, context.Canceled), errors.Is(r.Context().Err(), context.Canceled):
+		return
+	default:
+		slog.ErrorContext(r.Context(), "permission resolution failed",
+			"error", err,
+			"method", r.Method,
+			"path", r.URL.Path,
+		)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "permission resolution failed")
 	}
 }
 

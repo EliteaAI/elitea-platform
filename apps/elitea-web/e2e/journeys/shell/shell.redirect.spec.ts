@@ -132,9 +132,9 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   //
   // and that matcher cannot express what logout does, for a reason measured
   // directly rather than assumed. `performLogout()` sends the browser to
-  // `/forward-auth/logout?target_to=/forward-auth/auth_oidc/login`, which
-  // elitea-main answers 302 → `/forward-auth/auth_oidc/login`, itself 302 →
-  // the provider's `/oauth2/authorize`. All three hops were observed as real
+  // `/forward-auth/logout?target_to=/forward-auth/login`, which elitea-main
+  // answers 302 → `/forward-auth/login` → 302 `/forward-auth/auth_oidc/login`,
+  // itself 302 → the provider's `/oauth2/authorize`. All hops were observed as real
   // navigation requests — but a chain of server-side 302s COMMITS exactly one
   // document, so `page.url()` and `framenavigated` only ever report the final
   // landing and both intermediate hops are invisible to a URL matcher.
@@ -165,9 +165,19 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   // A sentinel in the namespace performLogout() is contracted to sweep, plus
   // the two keys the app itself writes (`el.project.id` / `el.project.name`,
   // widgets/app-shell/lib/selectedProjectPersistence.ts).
+  //
+  // The CONTROL key is outside the namespace, and it is what makes step 3
+  // below a measurement rather than a formality. Step 3 reads the storage from
+  // a document that is not the app (see its note). A probe that read the wrong
+  // origin, or an empty store, would report "no `el.` keys survive" and pass
+  // while proving nothing. The control key must survive the logout, so a
+  // vacuous read fails. It also proves the sweep is scoped to the namespace
+  // and is not a blanket `clear()`.
   await page.evaluate(() => {
-    window.localStorage.setItem('el.test-sentinel-shell', '1');
-    window.sessionStorage.setItem('el.test-sentinel-shell', '1');
+    for (const store of [window.localStorage, window.sessionStorage]) {
+      store.setItem('el.test-sentinel-shell', '1');
+      store.setItem('e2e-logout-control', '1');
+    }
   });
 
   const navigations: string[] = [];
@@ -188,11 +198,21 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   expect(logoutHop, 'the browser must navigate to /forward-auth/logout').toBeTruthy();
   // The hand-off must name the login screen as its target, or the signed-out
   // user is parked on the index route's loading state instead.
-  expect(new URL(logoutHop!).searchParams.get('target_to')).toBe('/forward-auth/auth_oidc/login');
-  // ...and the login hop must sit BETWEEN the logout and the provider.
+  //
+  // The target is `/forward-auth/login`, NOT `/forward-auth/auth_oidc/login`.
+  // Only `/forward-auth/login` is registered on both authentication planes.
+  // The OIDC-only path ended a form-plane logout on a bare 404. THIS stack is
+  // the OIDC plane. On it, `/forward-auth/login` answers 302 to
+  // `/forward-auth/auth_oidc/login`. The chain below is therefore one hop
+  // longer. Its end state is the same.
+  expect(new URL(logoutHop!).searchParams.get('target_to')).toBe('/forward-auth/login');
+  // ...and the login hops must sit BETWEEN the logout and the provider.
   const order = (predicate: (url: string) => boolean): number => navigations.findIndex(predicate);
-  expect(order((url) => url.includes('/forward-auth/auth_oidc/login'))).toBeGreaterThan(
+  expect(order((url) => url.includes('/forward-auth/login'))).toBeGreaterThan(
     order((url) => url.includes('/forward-auth/logout')),
+  );
+  expect(order((url) => url.includes('/forward-auth/auth_oidc/login'))).toBeGreaterThan(
+    order((url) => url.includes('/forward-auth/login')),
   );
 
   // 2. The SERVER session must be gone — the "user state is cleared" half.
@@ -200,18 +220,76 @@ test('J4: logout clears user state and el.* storage', async ({ page }) => {
   const after = await page.request.get(BASE_URL + '/forward-auth/info');
   expect(await after.json()).toMatchObject({ authenticated: false });
 
-  // 3. ...and it must have swept the namespace on the way out. Read from the
-  //    app origin, not from wherever the redirect landed.
-  await page.goto(BASE_URL + '/app/', { waitUntil: 'domcontentloaded' });
-  const survivingElKeys = await page.evaluate(() => {
-    const keys: string[] = [];
+  // 3. ...and it must have swept the namespace on the way out.
+  //
+  // THE READ MUST NOT START A NEW AUTHENTICATION FLIGHT — issue #482. Read
+  // this before you replace the probe below with a plain `goto('/app/')`.
+  //
+  // Web storage is per ORIGIN, and the logout chain parks the tab on the
+  // identity provider's origin, so the read has to come back to the app
+  // origin. Web storage is also per TAB for the session area, so the read has
+  // to happen in THIS tab: a second page of the same context gets its own
+  // sessionStorage and could never see the sentinel written above.
+  //
+  // The earlier revision came back with `page.goto(BASE_URL + '/app/')`. That
+  // path serves the SPA (measured, and stated in J2's note above), the SPA
+  // finds no session, and its re-auth controller starts a NEW flight, which
+  // writes `el.auth.state` and `el.auth.flight.started`
+  // (`shared/api/auth/constants.ts`). Those are two of the keys this assertion
+  // then looks for, so the last step of the test caused the condition the test
+  // measures. Measured: one tree, two runs, opposite results, and exactly
+  // those two keys surviving in the failure.
+  //
+  // A retry or a longer timeout cannot correct that, because the keys are not
+  // late — they are new. Waiting for the new flight to settle and then
+  // ignoring its two keys is worse: it stops the test proving that logout
+  // clears `el.auth.state`, which is one of the keys the test exists to check.
+  //
+  // So the tab returns to the app ORIGIN in a document that is not the app.
+  // The probe response is served by the test, so no bundle loads, nothing
+  // probes the session, and no flight can start. The URL decides the origin,
+  // and the origin decides which storage the read sees, so both areas below
+  // are the application's — asserted, not assumed, on the two lines that read
+  // `location.origin` and the control key.
+  //
+  // The probe then found a SECOND writer, which is a product defect and is
+  // fixed in `shared/api/auth/logout.ts` rather than accommodated here: the
+  // logging-out document lives through the whole redirect chain, its open
+  // requests 401 once the cookie is cleared, and `runReauth()` started a
+  // flight that put the same two keys back. 2 failures in 60 WebKit runs.
+  // `performLogout()` now marks the document, and the popup controller
+  // refuses a flight while that mark is set.
+  const probeUrl = BASE_URL + '/app/e2e-storage-probe';
+  await page.route(probeUrl, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!doctype html><title>storage probe</title>',
+    }),
+  );
+  await page.goto(probeUrl, { waitUntil: 'domcontentloaded' });
+
+  const probe = await page.evaluate(() => {
+    const surviving: string[] = [];
+    const control: string[] = [];
     for (const store of [window.localStorage, window.sessionStorage]) {
       for (let i = 0; i < store.length; i++) {
-        const k = store.key(i);
-        if (k?.startsWith('el.')) keys.push(k);
+        const key = store.key(i);
+        if (key === null) continue;
+        if (key.startsWith('el.')) surviving.push(key);
+        if (key === 'e2e-logout-control') control.push(key);
       }
     }
-    return keys;
+    return { origin: window.location.origin, surviving, control };
   });
-  expect(survivingElKeys).toEqual([]);
+  await page.unroute(probeUrl);
+
+  // The read happened on the application's origin...
+  expect(probe.origin).toBe(new URL(BASE_URL).origin);
+  // ...and it really saw the store the application wrote to. Both areas still
+  // hold the control key, so an empty `surviving` list is a measurement and
+  // not an artefact of reading the wrong place.
+  expect(probe.control).toHaveLength(2);
+  // ...and no key of the namespace survived the logout.
+  expect(probe.surviving).toEqual([]);
 });

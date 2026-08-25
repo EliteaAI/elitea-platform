@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -81,9 +82,17 @@ func buildMinimalRouterConfig(t *testing.T, validator apimw.TokenValidator, reso
 
 // --- tests -------------------------------------------------------------------
 
-// TestLLMRoute_NotMountedWhenProxyNil verifies that when LLMProxy is nil the
-// /llm path returns 404 so existing deployments are unaffected.
-func TestLLMRoute_NotMountedWhenProxyNil(t *testing.T) {
+// TestLLMRoute_SaysNotConfiguredWhenProxyNil verifies that when no proxy is
+// composed the /llm path answers 503 llm_gateway_not_configured (issue #463).
+//
+// This test previously required 404. That was the defect: the chart ships
+// LLM_GATEWAY_URL empty, so 404 was the answer every Kubernetes install gave,
+// and it is the same answer a misspelt path gives. The operator could not tell
+// an unconfigured deployment from a typo.
+//
+// The body is asserted, not only the status. A status alone would still pass if
+// some other layer began answering 503 for an unrelated reason.
+func TestLLMRoute_SaysNotConfiguredWhenProxyNil(t *testing.T) {
 	cfg := buildMinimalRouterConfig(t, nil, nil, nil)
 	r := api.NewRouter(cfg)
 
@@ -91,8 +100,16 @@ func TestLLMRoute_NotMountedWhenProxyNil(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 when LLMProxy is nil, got %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no LLM backend is composed, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), api.LLMNotConfiguredCode) {
+		t.Fatalf("expected the body to carry %q, got %s", api.LLMNotConfiguredCode, rec.Body.String())
+	}
+	// The remedy has to be in the answer. An operator reading this response
+	// must learn which variable turns the path on.
+	if !strings.Contains(rec.Body.String(), "LLM_GATEWAY_URL") {
+		t.Fatalf("expected the body to name LLM_GATEWAY_URL, got %s", rec.Body.String())
 	}
 }
 
@@ -115,18 +132,29 @@ func TestLLMRoute_UnauthenticatedReturns401(t *testing.T) {
 	}
 }
 
-// TestLLMRoute_SystemProjectUser verifies the happy path with a system
-// project-user token: the Project middleware extracts the project id from the
-// name (no DB call), sets ProjectContext, and the proxy is reached.
-func TestLLMRoute_SystemProjectUser(t *testing.T) {
-	// System project-user name encodes project id 42 directly.
+// TestLLMRoute_SystemProjectUserNameIsNotAnUncheckedClaim is the router-level
+// form of issue #459.
+//
+// The route composes the membership checker from RouterConfig.Pool
+// (apimw.NewProjectMembership). This configuration has no pool, so no checker
+// is composed, and no project the principal name asks for may be admitted. The
+// caller's own project is the answer instead.
+//
+// Direction 2 — an entitled caller keeps its named project — needs an injected
+// membership answer, which RouterConfig cannot carry. It is proved in
+// internal/api/middleware (TestPrincipalName_MemberProjectIsBilled) and end to
+// end in internal/llmproxy
+// (TestEdge_PrincipalNameMemberProjectReachesTheGatewayIdentity).
+func TestLLMRoute_SystemProjectUserNameIsNotAnUncheckedClaim(t *testing.T) {
+	// System project-user name asks for project 42.
 	systemUser := auth.User{
 		ID:       "100",
+		UserID:   "100",
 		Name:     ":system:project:42:",
 		AuthType: "token",
 	}
 	validator := &stubTokenValidator{user: systemUser}
-	resolver := &stubProjectResolver{id: 999} // must NOT be consulted for system names
+	resolver := &stubProjectResolver{id: 999}
 	proxy := &recordingHandler{}
 
 	cfg := buildMinimalRouterConfig(t, validator, resolver, proxy)
@@ -137,17 +165,20 @@ func TestLLMRoute_SystemProjectUser(t *testing.T) {
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 
+	if proxy.project.ProjectID == 42 {
+		t.Fatal("the proxy received project 42, which only the principal name asked for")
+	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	if !proxy.reached {
 		t.Fatal("proxy was not reached for authenticated /llm request")
 	}
-	if resolver.called {
-		t.Error("personal project resolver must not be consulted for system project-user names")
+	if !resolver.called {
+		t.Error("personal project resolver must run after a refused principal name")
 	}
-	if proxy.project.ProjectID != 42 {
-		t.Errorf("expected ProjectID 42 in proxy context, got %d", proxy.project.ProjectID)
+	if proxy.project.ProjectID != 999 {
+		t.Errorf("expected the caller's own project 999, got %d", proxy.project.ProjectID)
 	}
 }
 
@@ -189,11 +220,14 @@ func TestLLMRoute_PersonalProjectFallback(t *testing.T) {
 // reaches the proxy (chi Mount strips the /llm prefix; we just check the proxy
 // is reached regardless of sub-path).
 func TestLLMRoute_SubpathPreserved(t *testing.T) {
-	user := auth.User{ID: "1", Name: ":system:project:5:"}
+	// A regular user with a resolved personal project. The principal name is
+	// not a project source here (issue #459), so this test must not depend on
+	// one.
+	user := auth.User{ID: "1", UserID: "1", Name: "alice@example.com", AuthType: "token"}
 	validator := &stubTokenValidator{user: user}
 	proxy := &recordingHandler{}
 
-	cfg := buildMinimalRouterConfig(t, validator, nil, proxy)
+	cfg := buildMinimalRouterConfig(t, validator, &stubProjectResolver{id: 5}, proxy)
 	r := api.NewRouter(cfg)
 
 	for _, path := range []string{"/llm/v1/models", "/llm/v1/chat/completions", "/llm/v1/embeddings"} {
@@ -209,40 +243,44 @@ func TestLLMRoute_SubpathPreserved(t *testing.T) {
 	}
 }
 
-// TestTrustedProxyCIDRs_ThreadedThroughAuthDeps verifies Fix round-3 #5:
-// TrustedProxyCIDRs set on AuthDeps reaches both Auth middleware constructions
-// in NewRouter (the main /api/v2 group and the /llm group). A request arriving
-// from a trusted IP with Traefik X-Auth-Type headers is accepted without a
-// Bearer token when TrustedProxyCIDRs includes the loopback address.
-func TestTrustedProxyCIDRs_ThreadedThroughAuthDeps(t *testing.T) {
-	// Traefik-side user injected via headers (no Bearer token in the request).
-	proxy := &recordingHandler{}
+// TestForwardedHeadersAloneAreRefusedThroughTheRouter is the router-level guard
+// for #390. It asserts the contract through NewRouter, so it covers every Auth
+// middleware construction, not the middleware in isolation.
+//
+// This test replaces TestTrustedProxyCIDRs_ThreadedThroughAuthDeps, which
+// asserted the opposite: that X-Auth-Type / X-Auth-Id from a trusted CIDR
+// authenticate a caller with no Bearer token. That path is deleted. It called
+// serveAuthenticated directly, so no principal check ever ran on it, and the
+// headers were the whole credential.
+func TestForwardedHeadersAloneAreRefusedThroughTheRouter(t *testing.T) {
+	// Name the range that used to grant access, through the switch that used
+	// to enable it. Neither may authenticate the caller now.
+	t.Setenv("TRUSTED_PROXY_CIDRS", "127.0.0.0/8")
 
+	proxy := &recordingHandler{}
 	cfg := api.RouterConfig{
 		Auth: api.AuthDeps{
-			Client:            newTestAuthClient(t),
-			Validator:         nil, // not needed for header-auth path
-			TrustedProxyCIDRs: []string{"127.0.0.0/8"},
+			Client: newTestAuthClient(t),
 		},
 		LLMProxy:           proxy,
 		LLMProjectResolver: &stubProjectResolver{id: 10},
 	}
 	r := api.NewRouter(cfg)
 
-	// Simulate a request from Traefik (127.0.0.1) carrying X-Auth-Type headers.
-	// The Auth middleware must accept this and let the request through.
-	req := httptest.NewRequest(http.MethodPost, "/llm/v1/chat/completions", nil)
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("X-Auth-Type", "traefik")
-	req.Header.Set("X-Auth-Id", "user-traefik")
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, req)
+	for _, path := range []string{"/llm/v1/chat/completions", "/api/v2/projects"} {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-Auth-Type", "user")
+		req.Header.Set("X-Auth-Id", "1")
+		rec := httptest.NewRecorder()
 
-	// 200 proves the CIDR was threaded to the middleware — not 401.
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 (trusted proxy accepted), got %d; TrustedProxyCIDRs may not have been threaded to AuthConfig", rec.Code)
+		r.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want %d", path, rec.Code, http.StatusUnauthorized)
+		}
 	}
-	if !proxy.reached {
-		t.Error("proxy was not reached; request was blocked despite trusted CIDR")
+	if proxy.reached {
+		t.Error("forwarded headers alone reached the LLM proxy")
 	}
 }

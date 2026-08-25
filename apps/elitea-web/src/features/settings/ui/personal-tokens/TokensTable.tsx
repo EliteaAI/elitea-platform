@@ -46,6 +46,7 @@ import { t } from '@/shared/i18n';
 import {
   maskedTokenValue,
   sortTokensByName,
+  tokenProjectKey,
   useDeleteTokenMutation,
   useListTokensQuery,
 } from '@/entities/token';
@@ -78,7 +79,7 @@ function selectPersonalProjectId(context: unknown): string | undefined {
 /* ── column definitions ────────────────────────────────────────────────── */
 
 interface ColumnDef {
-  id: 'name' | 'token' | 'expires' | 'actions';
+  id: 'name' | 'token' | 'project' | 'expires' | 'actions';
   label: string;
   sortable: boolean;
 }
@@ -86,9 +87,35 @@ interface ColumnDef {
 const COLUMNS: ColumnDef[] = [
   { id: 'name', label: t('entities.token.table.name', 'Token name'), sortable: true },
   { id: 'token', label: t('entities.token.table.tokenValue', 'Token value'), sortable: false },
+  { id: 'project', label: t('entities.token.table.project', 'Project'), sortable: false },
   { id: 'expires', label: t('entities.token.table.expiration', 'Expiration'), sortable: true },
   { id: 'actions', label: t('entities.token.table.actions', 'Actions'), sortable: false },
 ];
+
+/* ── project binding cell (spec-llm-project-scope §4) ──────────────────── */
+
+/**
+ * What this key bills. An UNBOUND key reads as a word, never as an empty
+ * cell — blank cannot be told apart from "the name did not load".
+ *
+ * A bound key whose project is not in `projectNames` still says which project
+ * it is, by id: the name map comes from the caller's own project list, and a
+ * key can outlive the caller's membership of the project it bills — exactly
+ * the case a user most needs to see.
+ */
+function projectCellLabel(
+  row: PersonalAccessToken,
+  projectNames: ReadonlyMap<string, string> | undefined,
+): string {
+  const key = tokenProjectKey(row);
+  if (key === null) return t('entities.token.table.projectNone', 'Not bound');
+  /*
+   * i18n trap: the bundle value carries `{{id}}`, and a bundle placeholder
+   * BEATS the call-site fallback — so this passes an interpolation option
+   * and must never be written as a template literal.
+   */
+  return projectNames?.get(key) ?? t('entities.token.table.projectId', 'Project {{id}}', { id: key });
+}
 
 /* ── main table ────────────────────────────────────────────────────────── */
 
@@ -99,12 +126,21 @@ export interface TokensTableProps {
   showPreview?: boolean;
   /** Callback when a user clicks "Preview settings" on a token. */
   onPreviewToken?: (token: PersonalAccessToken) => void;
+  /**
+   * Project id -> project name, for the binding column. Supplied by the route
+   * (`routes/_shell/settings/tokens.tsx`), which reads the app's existing
+   * projects query; this component cannot fetch it itself, because the query
+   * lives in `widgets/` and `features/` may not import upward (R-L1). Absent
+   * or incomplete is fine — the cell falls back to the project id.
+   */
+  projectNames?: ReadonlyMap<string, string>;
 }
 
 export const TokensTable = memo(function TokensTable({
   search = '',
   showPreview = false,
   onPreviewToken,
+  projectNames,
 }: TokensTableProps) {
   const routeContext: unknown = useRouteContext({ strict: false });
   const personalProjectId = selectPersonalProjectId(routeContext);
@@ -184,13 +220,24 @@ export const TokensTable = memo(function TokensTable({
         );
       }
 
+      if (column.id === 'project') {
+        return (
+          <Typography
+            variant="bodyMedium"
+            color="text.secondary"
+          >
+            {projectCellLabel(row, projectNames)}
+          </Typography>
+        );
+      }
+
       if (column.id === 'expires') {
         return <ExpiryCell expires={row.expires} />;
       }
 
       return '-';
     },
-    [styles.nameCell],
+    [styles.nameCell, projectNames],
   );
 
   /* ── render actions ───────────────────────────────────────────────── */

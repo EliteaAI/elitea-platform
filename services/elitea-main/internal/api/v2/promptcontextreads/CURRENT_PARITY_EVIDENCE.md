@@ -4,23 +4,31 @@ This slice owns two current-baseline, read-only HTTP contracts. The
 project-context `PUT` and `DELETE` contracts remain with the current
 application and are not mounted here.
 
-**Gating (updated by #194).** `ELITEA_PROMPT_CONTEXT_READS_ENABLED=true` —
-which additionally requires `ELITEA_CONFIGURATIONS_ENABLED=true` — is no longer
-what makes the chat-config read reachable, and never made it reachable in
-practice: that chain is set in no deployment, and it gates composition while
-the router every environment actually runs (the compatibility router) never
-mounted the route at all, so `GET /elitea_core/chat_config/prompt_lib/
-{projectID}` answered 404 everywhere. `main.go` now composes these routes
-whenever they were not composed by the flag and a credential exists (FormGraph
-or an OIDC session), reusing the Configurations runtime's vault loader when
-that chain IS enabled so a `ELITEA_VAULT_MASTER_KEY_FILE` deployment keeps
-unwrapping project keys correctly. The flag remains only as an explicit,
-still-validated way to compose the pair inside the Configurations chain.
+**Gating (updated by #194, flag removed by #367).** `main.go` composes these
+routes whenever a credential exists (FormGraph or an OIDC session), reusing the
+Configurations runtime's vault loader when `ELITEA_CONFIGURATIONS_ENABLED` is on
+so a `ELITEA_VAULT_MASTER_KEY_FILE` deployment keeps unwrapping project keys
+correctly.
 
-Which paths this makes reachable is decided at the router: the compatibility
-router mounts the chat-config path only (the project-context path is already
-served there by the prototype eliteacore handler); the production router mounts
-both.
+`ELITEA_PROMPT_CONTEXT_READS_ENABLED` used to compose the same pair a second
+time, inside the Configurations chain. #367 deleted it. No deployment set it,
+and the ungated composition above builds the identical pair in every case the
+flag could have applied to, so the flag could only pre-empt a block that was
+going to run anyway.
+
+Two claims this section used to make were wrong and are recorded here because
+each was load-bearing for a decision:
+
+- "that chain is set in no deployment" — stale.
+  `deploy/docker-compose.standalone-full.yml` sets
+  `ELITEA_CONFIGURATIONS_ENABLED: "true"`.
+- "the production router mounts both" — false in code.
+  `mountReviewedProductionRoutes` registers the chat-config path only, and its
+  doc comment gives the reason: the project-context path is already served by
+  the prototype eliteacore handler, whose default for `enabled` differs.
+
+Which paths this makes reachable is therefore decided at the router, and only
+the chat-config path is registered from this slice.
 
 Authentication was relaxed to match `notificationsapi.
 NewCurrentNotificationEventsRoute` (#152): `PrincipalValidator` and

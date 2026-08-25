@@ -8,6 +8,8 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +29,49 @@ type mockSkillRepo struct {
 	// call so tests can assert query/sort_by/sort_order are actually wired
 	// through from the HTTP layer.
 	lastListParams handler.ListParams
+
+	// attached maps an agent version id to the skills attached to it, so a
+	// test can tell "the handler read {appVersionID}" apart from "the handler
+	// returned the whole project and happened to look right".
+	attached map[string][]handler.Skill
+	// lastAppVersionID records what ListForApplicationVersion was asked for.
+	// The bug in #367 was a handler that never asked at all.
+	lastAppVersionID string
+
+	// attachCalls/detachCalls record the relation writes, and updateCalls
+	// records the plain skill updates, so a test can prove which of the two
+	// operations the overloaded PATCH selected (#38).
+	attachCalls []attachCall
+	detachCalls []attachCall
+	updateCalls int
+	// relationErr is the error AttachSkill and DetachSkill return.
+	relationErr error
+}
+
+func (m *mockSkillRepo) ListForApplicationVersion(
+	_ context.Context,
+	_ string,
+	appVersionID string,
+) (handler.ListResponse, error) {
+	m.lastAppVersionID = appVersionID
+	if m.err != nil {
+		return handler.ListResponse{}, m.err
+	}
+	items := m.attached[appVersionID]
+	if items == nil {
+		items = []handler.Skill{}
+	}
+	totalPages := 0
+	if len(items) > 0 {
+		totalPages = 1
+	}
+	return handler.ListResponse{
+		Items:      items,
+		Total:      len(items),
+		Page:       1,
+		PageSize:   len(items),
+		TotalPages: totalPages,
+	}, nil
 }
 
 func (m *mockSkillRepo) List(_ context.Context, _ string, params handler.ListParams) (handler.ListResponse, error) {
@@ -85,6 +130,7 @@ func (m *mockSkillRepo) Create(_ context.Context, projectID string, skill handle
 }
 
 func (m *mockSkillRepo) Update(_ context.Context, projectID, skillID string, skill handler.Skill) (handler.Skill, error) {
+	m.updateCalls++
 	if m.err != nil {
 		return handler.Skill{}, m.err
 	}
@@ -96,6 +142,42 @@ func (m *mockSkillRepo) Update(_ context.Context, projectID, skillID string, ski
 
 func (m *mockSkillRepo) Delete(_ context.Context, _, _ string) error {
 	return m.err
+}
+
+// attachCall records one AttachSkill or DetachSkill call. The relation form of
+// PATCH used to decode into `createRequest`, which names none of the four
+// relation keys, so it reached the repository as a name/description update and
+// answered 200. A test that reads only the status code cannot see that. These
+// fields let a test assert what the repository was asked to do.
+type attachCall struct {
+	projectID string
+	skillID   string
+	relation  handler.SkillRelation
+}
+
+func (m *mockSkillRepo) AttachSkill(
+	_ context.Context,
+	projectID, skillID string,
+	relation handler.SkillRelation,
+) (handler.SkillAttachment, error) {
+	m.attachCalls = append(m.attachCalls, attachCall{projectID, skillID, relation})
+	if m.relationErr != nil {
+		return handler.SkillAttachment{}, m.relationErr
+	}
+	return handler.SkillAttachment{
+		SkillID:     1,
+		SkillName:   "Reviewer",
+		VersionName: "base",
+	}, nil
+}
+
+func (m *mockSkillRepo) DetachSkill(
+	_ context.Context,
+	projectID, skillID string,
+	relation handler.SkillRelation,
+) error {
+	m.detachCalls = append(m.detachCalls, attachCall{projectID, skillID, relation})
+	return m.relationErr
 }
 
 func setupSkillsRouter(repo handler.Repository) *chi.Mux {
@@ -769,5 +851,334 @@ func TestGenerateSkillDraft_PredictorError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// ---- ListForApplication -----------------------------------------------------
+
+// TestSkillListForApplication_ReturnsOnlyThatVersionsSkills is the HTTP-level
+// half of #367's acceptance test.
+//
+// The mock separates the two questions on purpose: List answers with all three
+// project skills, ListForApplicationVersion answers with the two attached to
+// version 42. Both produce a 200 and the same envelope, so the ONLY thing that
+// distinguishes the fixed handler from the one this route used to point at is
+// which skills come back. Re-point the route at List and this test reports
+// three items where it wants two.
+func TestSkillListForApplication_ReturnsOnlyThatVersionsSkills(t *testing.T) {
+	repo := &mockSkillRepo{
+		skills: []handler.Skill{
+			{ID: "s-1", ProjectID: "proj-1", Name: "Reviewer", Type: "tool"},
+			{ID: "s-2", ProjectID: "proj-1", Name: "Summarizer", Type: "tool"},
+			{ID: "s-3", ProjectID: "proj-1", Name: "Translator", Type: "tool"},
+		},
+		attached: map[string][]handler.Skill{
+			"42": {
+				{ID: "s-1", ProjectID: "proj-1", Name: "Reviewer", Type: "tool"},
+				{ID: "s-2", ProjectID: "proj-1", Name: "Summarizer", Type: "tool"},
+			},
+		},
+	}
+
+	r := chi.NewRouter()
+	r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", handler.NewHandler(repo).ListForApplication)
+
+	req := httptest.NewRequest(http.MethodGet, "/application_skills/prompt_lib/proj-1/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	var resp handler.ListResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	var names []string
+	for _, item := range resp.Items {
+		names = append(names, item.Name)
+	}
+	want := []string{"Reviewer", "Summarizer"}
+	if !reflect.DeepEqual(names, want) {
+		t.Errorf("skills = %v, want %v — the handler answered for the project, not for version 42", names, want)
+	}
+	if repo.lastAppVersionID != "42" {
+		t.Errorf("repository was asked for app version %q, want %q — the path parameter was not read",
+			repo.lastAppVersionID, "42")
+	}
+}
+
+// A version id the route cannot mean is refused, not answered. Returning an
+// empty list here would be indistinguishable from "this version has no
+// skills", which is the class of silent wrong answer #367 is about.
+func TestSkillListForApplication_RefusesAMalformedVersionID(t *testing.T) {
+	for _, appVersionID := range []string{"abc", "0", "000", "-1", "1x"} {
+		t.Run(appVersionID, func(t *testing.T) {
+			repo := &mockSkillRepo{
+				skills: []handler.Skill{{ID: "s-1", ProjectID: "proj-1", Name: "Reviewer", Type: "tool"}},
+			}
+			r := chi.NewRouter()
+			r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", handler.NewHandler(repo).ListForApplication)
+
+			req := httptest.NewRequest(http.MethodGet, "/application_skills/prompt_lib/proj-1/"+appVersionID, nil)
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 for app version %q, got %d; body: %s",
+					appVersionID, rec.Code, rec.Body.String())
+			}
+			if repo.lastAppVersionID != "" {
+				t.Errorf("repository was queried with %q; a malformed id must not reach it", repo.lastAppVersionID)
+			}
+		})
+	}
+}
+
+// A repository failure is a 500, never an empty list. SkillsRepo.List swallows
+// query errors into an empty page; repeating that here would report "this
+// version has no skills" whenever the database is unreachable.
+func TestSkillListForApplication_FailsLoudlyOnRepositoryError(t *testing.T) {
+	repo := &mockSkillRepo{err: errors.New("boom")}
+	r := chi.NewRouter()
+	r.Get("/application_skills/{mode}/{projectID}/{appVersionID}", handler.NewHandler(repo).ListForApplication)
+
+	req := httptest.NewRequest(http.MethodGet, "/application_skills/prompt_lib/proj-1/42", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"items"`) {
+		t.Errorf("failure body looks like a skills list: %s", rec.Body.String())
+	}
+}
+
+// ---- Relation PATCH (#38) ----------------------------------------------------
+
+// setupSkillRelationRouter mirrors the registration internal/api/router.go
+// makes: PUT and PATCH on ONE path, both on Update. The overload lives in the
+// body, so a test router that mounts only PATCH cannot show that the plain
+// update still works on the same URL.
+func setupSkillRelationRouter(repo handler.Repository) *chi.Mux {
+	r := chi.NewRouter()
+	h := handler.NewHandler(repo)
+	r.Put("/elitea_core/skill/{mode}/{projectID}/{skillID}", h.Update)
+	r.Patch("/elitea_core/skill/{mode}/{projectID}/{skillID}", h.Update)
+	return r
+}
+
+func patchSkill(t *testing.T, r *chi.Mux, skillID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(
+		http.MethodPatch, "/elitea_core/skill/prompt_lib/7/"+skillID, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestSkillRelation_AttachReachesTheRepository is the acceptance test for the
+// attach half of #38.
+//
+// The assertion is on WHAT THE REPOSITORY WAS ASKED FOR, never on the status
+// code. Before this change the same request answered 200 and reached
+// repo.Update with an empty name — a status code cannot tell the two apart.
+func TestSkillRelation_AttachReachesTheRepository(t *testing.T) {
+	repo := &mockSkillRepo{}
+	r := setupSkillRelationRouter(repo)
+
+	rec := patchSkill(t, r, "11", `{
+		"has_relation": true,
+		"entity_version_id": 42,
+		"skill_version_id": 5,
+		"entity_type": "agent"
+	}`)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("attach status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCalls != 0 {
+		t.Errorf("a relation body reached repo.Update %d times; it must reach AttachSkill only", repo.updateCalls)
+	}
+	if len(repo.attachCalls) != 1 {
+		t.Fatalf("AttachSkill calls = %d, want 1", len(repo.attachCalls))
+	}
+	got := repo.attachCalls[0]
+	want := attachCall{
+		projectID: "7",
+		skillID:   "11",
+		relation: handler.SkillRelation{
+			EntityVersionID: "42",
+			EntityType:      "agent",
+			SkillVersionID:  "5",
+		},
+	}
+	if got != want {
+		t.Errorf("AttachSkill called with %+v, want %+v", got, want)
+	}
+
+	// The body is pylon's four-key attachment, not an echo of the request.
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode attach body: %v", err)
+	}
+	for _, key := range []string{"skill_id", "skill_version_id", "skill_name", "version_name"} {
+		if _, ok := body[key]; !ok {
+			t.Errorf("attach body is missing %q: %s", key, rec.Body.String())
+		}
+	}
+}
+
+// TestSkillRelation_DetachReachesTheRepository is the detach half.
+//
+// `skill_version_id` is absent, exactly as the old app's useDetachSkill hook
+// sends it. It is not part of the mapping key, so a handler that demanded it
+// would refuse every real detach.
+func TestSkillRelation_DetachReachesTheRepository(t *testing.T) {
+	repo := &mockSkillRepo{}
+	r := setupSkillRelationRouter(repo)
+
+	rec := patchSkill(t, r, "11", `{"has_relation": false, "entity_version_id": 42}`)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detach status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCalls != 0 {
+		t.Errorf("a relation body reached repo.Update %d times", repo.updateCalls)
+	}
+	if len(repo.detachCalls) != 1 {
+		t.Fatalf("DetachSkill calls = %d, want 1", len(repo.detachCalls))
+	}
+	got := repo.detachCalls[0]
+	want := attachCall{
+		projectID: "7",
+		skillID:   "11",
+		relation:  handler.SkillRelation{EntityVersionID: "42", EntityType: "agent"},
+	}
+	if got != want {
+		t.Errorf("DetachSkill called with %+v, want %+v", got, want)
+	}
+	if strings.TrimSpace(rec.Body.String()) != `{"ok":true}` {
+		t.Errorf("detach body = %s, want {\"ok\":true}", rec.Body.String())
+	}
+}
+
+// TestSkillRelation_StringIdsAreAccepted keeps the JSON-string form working.
+// The old app reads these ids out of the redux store, where a version id can be
+// a string.
+func TestSkillRelation_StringIdsAreAccepted(t *testing.T) {
+	repo := &mockSkillRepo{}
+	r := setupSkillRelationRouter(repo)
+
+	rec := patchSkill(t, r, "11", `{
+		"has_relation": true, "entity_version_id": "42", "skill_version_id": "5"
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("attach status = %d, want 201; body: %s", rec.Code, rec.Body.String())
+	}
+	if len(repo.attachCalls) != 1 || repo.attachCalls[0].relation.EntityVersionID != "42" {
+		t.Fatalf("AttachSkill calls = %+v", repo.attachCalls)
+	}
+	// Absent entity_type defaults to "agent"; both readers of the row filter
+	// on that literal, so a blank one writes a row nothing reads.
+	if repo.attachCalls[0].relation.EntityType != "agent" {
+		t.Errorf("entity_type = %q, want \"agent\"", repo.attachCalls[0].relation.EntityType)
+	}
+}
+
+// TestSkillRelation_PlainUpdateStillWorks proves the overload did not take the
+// URL away from the operation that already used it.
+func TestSkillRelation_PlainUpdateStillWorks(t *testing.T) {
+	repo := &mockSkillRepo{}
+	r := setupSkillRelationRouter(repo)
+
+	rec := patchSkill(t, r, "11", `{"name": "Renamed", "description": "d", "instructions": "i"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if repo.updateCalls != 1 {
+		t.Errorf("repo.Update calls = %d, want 1", repo.updateCalls)
+	}
+	if len(repo.attachCalls)+len(repo.detachCalls) != 0 {
+		t.Errorf("a plain update reached the relation path")
+	}
+
+	var updated handler.Skill
+	if err := json.Unmarshal(rec.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode update body: %v", err)
+	}
+	if updated.Name != "Renamed" {
+		t.Errorf("updated name = %q, want %q", updated.Name, "Renamed")
+	}
+}
+
+// TestSkillRelation_RefusesMalformedRequests covers every input the handler
+// refuses before it reaches the repository. Each case asserts that NOTHING was
+// written, because a 400 over a completed write is the failure this repository
+// keeps finding.
+func TestSkillRelation_RefusesMalformedRequests(t *testing.T) {
+	cases := []struct {
+		name    string
+		skillID string
+		body    string
+	}{
+		{"has_relation is a string", "11", `{"has_relation": "true", "entity_version_id": 42}`},
+		{"has_relation is null", "11", `{"has_relation": null, "entity_version_id": 42}`},
+		{"entity_version_id missing", "11", `{"has_relation": true, "skill_version_id": 5}`},
+		{"entity_version_id is zero", "11", `{"has_relation": true, "entity_version_id": 0, "skill_version_id": 5}`},
+		{"entity_version_id is a word", "11", `{"has_relation": false, "entity_version_id": "abc"}`},
+		{"entity_version_id overflows int32", "11", `{"has_relation": false, "entity_version_id": 4294967296}`},
+		{"skill_version_id missing on attach", "11", `{"has_relation": true, "entity_version_id": 42}`},
+		{"skill_version_id is null on attach", "11", `{"has_relation": true, "entity_version_id": 42, "skill_version_id": null}`},
+		{"entity_type is not agent", "11", `{"has_relation": true, "entity_version_id": 42, "skill_version_id": 5, "entity_type": "pipeline"}`},
+		{"skill id is not a number", "abc", `{"has_relation": true, "entity_version_id": 42, "skill_version_id": 5}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockSkillRepo{}
+			r := setupSkillRelationRouter(repo)
+
+			rec := patchSkill(t, r, tc.skillID, tc.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+			}
+			if n := len(repo.attachCalls) + len(repo.detachCalls) + repo.updateCalls; n != 0 {
+				t.Errorf("a refused request still reached the repository %d times", n)
+			}
+		})
+	}
+}
+
+// TestSkillRelation_CarriesTheRepositoryStatus proves the handler does not
+// flatten the repository's refusals into one code. The old app's version
+// selector reads the 409 to decide whether to re-attach.
+func TestSkillRelation_CarriesTheRepositoryStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"already attached", apierr.Conflict("Skill 11 is already attached to agent version 42"), http.StatusConflict},
+		{"unknown skill", apierr.NotFound("Skill with id 11 not found"), http.StatusNotFound},
+		{"skill limit", apierr.BadRequest("Agent version 42 already has 5 skills attached."), http.StatusBadRequest},
+		{"unknown failure", errors.New("boom"), http.StatusInternalServerError},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := &mockSkillRepo{relationErr: tc.err}
+			r := setupSkillRelationRouter(repo)
+
+			rec := patchSkill(t, r, "11", `{
+				"has_relation": true, "entity_version_id": 42, "skill_version_id": 5
+			}`)
+			if rec.Code != tc.want {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tc.want, rec.Body.String())
+			}
+		})
 	}
 }

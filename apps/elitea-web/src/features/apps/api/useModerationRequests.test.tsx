@@ -8,11 +8,12 @@ import {
   getModerationStatusMockHandler,
 } from '@/shared/api/generated/admin/admin.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import type { ModerationRequestRow } from '@/shared/api/generated/model';
 import { server } from '@/test/setup';
 
 import { REQUEST_STATUS } from '../lib/constants';
 
-import { entityIdForType, useModerationRequests } from './useModerationRequests';
+import { useModerationRequests } from './useModerationRequests';
 import { renderHookWithRouter } from '../__tests__/testUtils';
 
 /**
@@ -41,6 +42,32 @@ function buildProdParityQueryClient(): QueryClient {
   });
 }
 
+/**
+ * A full `ModerationRequestRow`, as the spec now models it. The generated msw
+ * handlers type their overrides against the real schema. A bare `{status}`
+ * does not compile.
+ *
+ * The return type is the generated type. It keeps every field checked against
+ * the schema. Only `status` gets a cast. One test sends a value that is
+ * outside the enum. The server can send such a value. The schema is the
+ * contract, not a runtime guarantee.
+ */
+function moderationRow(status: string): ModerationRequestRow {
+  return {
+    id: 1,
+    user_id: 7,
+    user_email: 'requester@example.com',
+    project_id: 1,
+    issue_type: 'Inventory',
+    entity_id: 'inventory',
+    description: 'I need this for onboarding',
+    status: status as ModerationRequestRow['status'],
+    rejection_comment: null,
+    created_at: '2026-08-01T10:00:00Z',
+    updated_at: '2026-08-01T10:00:00Z',
+  };
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
 });
@@ -49,20 +76,56 @@ afterEach(() => {
   resetGeneratedClient();
 });
 
-describe('entityIdForType', () => {
-  it('is deterministic for the same type', () => {
-    expect(entityIdForType('inventory')).toBe(entityIdForType('inventory'));
+describe('entity_id addressing', () => {
+  // DEFECT: `v2.yaml` typed the `entity_id` path parameter as an integer.
+  // That integer type is a leftover from a retired static stub. The generated
+  // client therefore demanded a number, and this hook hashed the catalogue
+  // key with FNV-1a. The column is a VARCHAR, the handler stores the raw
+  // string, and the legacy UI sends "inventory". One catalogue entry
+  // therefore had two addresses.
+  //
+  // A request filed here was invisible in the other client. That client filed
+  // a second row for the same entry. The admin queue showed an opaque
+  // number.
+  it('addresses the catalogue entry by its raw key, not by a numeric hash', async () => {
+    const seen: string[] = [];
+    server.use(
+      http.get('*/admin/moderation_status/default/:projectId/:entityId', ({ params }) => {
+        seen.push(String(params['entityId']));
+        return HttpResponse.json({ total: 0, rows: [] });
+      }),
+    );
+
+    const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+    expect(seen).toContain('inventory');
+    expect(seen).toContain('wikis_Wikis');
   });
 
-  it('differs across the two catalog types (no collision for this app)', () => {
-    expect(entityIdForType('inventory')).not.toBe(entityIdForType('wikis_Wikis'));
-  });
+  it('posts a new request to the raw key, with only the two fields a requester owns', async () => {
+    let postedTo = '';
+    let postedBody: unknown;
+    server.use(
+      getModerationStatusMockHandler({ total: 0, rows: [] }),
+      http.post('*/admin/moderation_status/default/:projectId/:entityId', async ({ params, request }) => {
+        postedTo = String(params['entityId']);
+        postedBody = await request.json();
+        return HttpResponse.json({ id: 1, status: REQUEST_STATUS.PENDING }, { status: 201 });
+      }),
+    );
 
-  it('is always a non-negative 32-bit integer', () => {
-    const id = entityIdForType('inventory');
-    expect(Number.isInteger(id)).toBe(true);
-    expect(id).toBeGreaterThanOrEqual(0);
-    expect(id).toBeLessThanOrEqual(0xffffffff);
+    const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
+    await waitFor(() => expect(result.current.isFetching).toBe(false));
+
+    await act(async () => {
+      await result.current.submitRequest('inventory', 'I need this for onboarding', 'Inventory');
+    });
+
+    expect(postedTo).toBe('inventory');
+    // `status` and `meta` are refused or ignored server-side, so they are
+    // no longer sent.
+    expect(postedBody).toEqual({ issue_type: 'Inventory', description: 'I need this for onboarding' });
   });
 });
 
@@ -75,7 +138,7 @@ describe('useModerationRequests', () => {
   });
 
   it('reports REQUEST_STATUS.NONE for a type outside the catalogue', async () => {
-    server.use(getModerationStatusMockHandler({ status: REQUEST_STATUS.APPROVED }));
+    server.use(getModerationStatusMockHandler({ total: 1, rows: [moderationRow(REQUEST_STATUS.APPROVED)] }));
     const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
     await waitFor(() => expect(result.current.isFetching).toBe(false));
     expect(result.current.getRequestStatus('not-a-catalog-type')).toBe(REQUEST_STATUS.NONE);
@@ -84,10 +147,10 @@ describe('useModerationRequests', () => {
   it('reads the {total, rows} envelope the real endpoint returns, newest row first', async () => {
     // The shape unit A14's Go handler answers with, and pylon's before it. Until
     // A14 the Go side returned a bare `{"status":"approved"}` from a static
-    // stub, and this hook read only that — so against a real server it found no
-    // `status` field, fell through to NONE, and the "Pending approval" state on
-    // a catalogue card was unreachable: the card kept offering "Request Access"
-    // after the request had been filed.
+    // stub, and this hook read only that. Against a real server it found no
+    // `status` field and fell through to NONE. The "Pending approval" state on
+    // a catalogue card was therefore unreachable. The card kept offering
+    // "Request Access" after the request had been filed.
     server.use(
       http.get('*/admin/moderation_status/default/:projectId/:entityId', () =>
         HttpResponse.json({
@@ -123,7 +186,7 @@ describe('useModerationRequests', () => {
   });
 
   it('reports the status the (stub) backend returns for a real project', async () => {
-    server.use(getModerationStatusMockHandler({ status: REQUEST_STATUS.APPROVED }));
+    server.use(getModerationStatusMockHandler({ total: 1, rows: [moderationRow(REQUEST_STATUS.APPROVED)] }));
 
     const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
 
@@ -133,7 +196,7 @@ describe('useModerationRequests', () => {
   });
 
   it('falls back to REQUEST_STATUS.NONE for an unrecognised status value from the server', async () => {
-    server.use(getModerationStatusMockHandler({ status: 'something-unexpected' }));
+    server.use(getModerationStatusMockHandler({ total: 1, rows: [moderationRow('something-unexpected')] }));
 
     const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
 
@@ -143,8 +206,8 @@ describe('useModerationRequests', () => {
 
   it('submitRequest sets isSubmitting for the duration of the call and clears it after', async () => {
     server.use(
-      getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
-      getCreateModerationRequestMockHandler({ status: REQUEST_STATUS.APPROVED }),
+      getModerationStatusMockHandler({ total: 0, rows: [] }),
+      getCreateModerationRequestMockHandler(moderationRow(REQUEST_STATUS.APPROVED)),
     );
 
     const { result } = renderHookWithRouter(() => useModerationRequests(), { projectId: 'proj-1' });
@@ -170,7 +233,7 @@ describe('useModerationRequests', () => {
   it('submitRequest fires a fresh POST on every call, even with identical arguments inside the real 30s staleTime window (regression test — queryClient.fetchQuery() against query-flavoured options would dedup this non-idempotent POST against the QueryClient cache and skip the second network call entirely)', async () => {
     let postCount = 0;
     server.use(
-      getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
+      getModerationStatusMockHandler({ total: 0, rows: [] }),
       http.post('*/admin/moderation_status/default/:projectId/:entityId', () => {
         postCount += 1;
         return HttpResponse.json({ status: REQUEST_STATUS.APPROVED });
@@ -201,7 +264,7 @@ describe('useModerationRequests', () => {
   it('does not auto-retry a failed submitRequest (regression test — queryClient.fetchQuery() picks up the real query default retry: 1, silently replaying the non-idempotent POST once on failure)', async () => {
     let postCount = 0;
     server.use(
-      getModerationStatusMockHandler({ status: REQUEST_STATUS.NONE }),
+      getModerationStatusMockHandler({ total: 0, rows: [] }),
       http.post('*/admin/moderation_status/default/:projectId/:entityId', () => {
         postCount += 1;
         return HttpResponse.json({ error: 'boom' }, { status: 500 });

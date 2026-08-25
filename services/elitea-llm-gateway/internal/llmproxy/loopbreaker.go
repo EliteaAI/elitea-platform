@@ -210,6 +210,35 @@ func (b *loopBreaker) allow(projectID, model string) (bool, time.Duration) {
 	return true, 0
 }
 
+// observe reports whether the tuple's circuit is open, and records NOTHING.
+//
+// It is the READ-ONLY half of allow, and it exists for the realtime budget
+// re-check (realtime.go, gateVerdict). That re-check runs on a ticker for the
+// whole life of every live session, and it used to call allow — so every tick
+// appended a timestamp to the tuple's sliding window, exactly as an arriving
+// /llm request does. Enough long sessions on one (project, model) pair then
+// opened the amplification backstop for that project's REAL traffic, which is
+// an availability defect caused by the gateway's own housekeeping.
+//
+// A re-check is not an arrival. It must still RESPECT an open circuit, because
+// an open circuit says this replica is past what it can serve, but it must not
+// count toward opening one.
+//
+// It does not delete an elapsed cooldown either: reclaiming is allow's job and
+// pruneLocked's, and a read that mutates is a read that surprises somebody.
+func (b *loopBreaker) observe(projectID, model string) (bool, time.Duration) {
+	key := loopKey(projectID, model)
+	nowNS := b.now().UnixNano()
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if until, ok := b.openUntil[key]; ok && nowNS < until {
+		return false, time.Duration(until-nowNS) * time.Nanosecond
+	}
+	return true, 0
+}
+
 // pruneLocked reclaims dead entries from BOTH maps at instant nowNS: hits whose
 // newest timestamp has fallen out of the sliding window, and openUntil entries
 // whose cooldown has elapsed. Pruning openUntil here is what keeps it bounded —

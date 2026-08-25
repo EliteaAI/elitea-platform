@@ -41,11 +41,36 @@ spec:
         app.kubernetes.io/name: {{ include "elitea-main.name" . }}-migrate
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "elitea-main.serviceAccountName" . }}
+      # NOT the chart's ServiceAccount, unless the operator names one.
+      #
+      # This Job is a pre-install/pre-upgrade hook, and the chart's
+      # ServiceAccount is an ordinary resource. Hooks are applied BEFORE the
+      # release's own objects, so on a FIRST install that ServiceAccount does
+      # not exist yet and the Job cannot create a pod at all:
+      #
+      #   Error creating: pods "elitea-main-migrate-" is forbidden:
+      #     error looking up service account elitea/elitea-main: not found
+      #
+      # The Job then burns its backoffLimit and the release fails. On an
+      # upgrade the ServiceAccount survives from the previous sync, so this is
+      # invisible until somebody installs the chart from nothing — which is
+      # exactly what happened.
+      #
+      # The migration needs no Kubernetes API access: it opens DATABASE_URL and
+      # applies SQL. So it runs as the namespace default ServiceAccount, and
+      # migrations.serviceAccountName exists for the deployment that must name
+      # one anyway — cloud IAM database auth binds a role to an SA.
+      {{- with .Values.migrations.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
       restartPolicy: Never
       containers:
         - name: elitea-migrate

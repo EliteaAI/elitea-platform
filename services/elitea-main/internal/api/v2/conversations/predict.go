@@ -279,9 +279,13 @@ func (cp *chatPredictor) findOrCreateUserParticipant(ctx context.Context, projec
 	}
 
 	// Map to conversation
+	// ON CONFLICT names the COLUMNS, not the constraint: only the legacy
+	// bootstrap schema names this unique key `_participant_conversation_uc`,
+	// and the ledgered tenant migration every real deployment runs declares it
+	// anonymously. The constraint form failed there with SQLSTATE 42704.
 	qm := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
 		VALUES ($1, $2, '{}'::jsonb)
-		ON CONFLICT ON CONSTRAINT _participant_conversation_uc DO NOTHING`, s)
+		ON CONFLICT (participant_id, conversation_id) DO NOTHING`, s)
 	_, err = cp.pool.Exec(ctx, qm, conversationID, newPID)
 	if err != nil {
 		return 0, fmt.Errorf("map user participant: %w", err)

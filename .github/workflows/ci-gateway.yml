@@ -11,11 +11,21 @@ on:
     paths:
       - "services/elitea-llm-gateway/**"
       - ".github/workflows/ci-gateway.yml"
+      # internal/sdkpin/pin_test.go compares sdk-pin.json against this lock
+      # file, so a lock-file-only SDK bump is exactly the change that gate
+      # exists to catch. Without this path the job never starts on it, and the
+      # gate cannot run on its own subject (#518 again).
+      - "services/elitea-worker-python/elitea-sdk.lock.json"
   push:
     branches:
       - main
     paths:
       - "services/elitea-llm-gateway/**"
+      # This workflow's own file. The pull_request arm above names it and this
+      # arm did not, so a push that edited only the gate could not start the
+      # gate it edited (#518).
+      - ".github/workflows/ci-gateway.yml"
+      - "services/elitea-worker-python/elitea-sdk.lock.json"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

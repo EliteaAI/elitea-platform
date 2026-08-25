@@ -115,7 +115,7 @@ export function useChatBoxActions({
   const handleHitlResume = useCallback(
     (payload: { action: 'approve' | 'reject' | 'edit' | 'block_with_comment'; value?: string | undefined; toolCallId?: string | undefined }) => {
       const childThreadId = deriveHitlChildThreadId(data.pendingHitlMessage, payload.toolCallId);
-      handlers.continueHitl({
+      void handlers.continueHitl({
         action: payload.action,
         ...(payload.value !== undefined ? { value: payload.value } : {}),
         ...(payload.toolCallId !== undefined ? { toolCallId: payload.toolCallId } : {}),

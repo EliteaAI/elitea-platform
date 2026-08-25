@@ -8,6 +8,7 @@ import type { ApplicationVersionDetail, VersionWriteRequest } from '@/shared/api
 import type { AgentPipelineVersionOption } from '../lib/types';
 
 import { AgentPipelineVersionSelector } from './AgentPipelineVersionSelector';
+import { DeleteVersionButton } from './DeleteVersionButton';
 import { SaveNewVersionButton } from './SaveNewVersionButton';
 
 /**
@@ -49,6 +50,23 @@ export interface AgentVersionControlsProps {
   readonly canSaveNewVersion: boolean;
   readonly onNewVersionSaved: (created: ApplicationVersionDetail) => void;
   readonly onNewVersionError?: ((message: string) => void) | undefined;
+  /**
+   * #307 — version delete. `useDeleteVersion` was exported from this slice's
+   * public API for "a not-yet-built version-delete dialog" and then had no
+   * caller anywhere; `VersionReplacementModal`, its in-use branch, had none
+   * either. Both hang off `DeleteVersionButton`, composed here so the
+   * version bar stays the single mount point for everything version-scoped.
+   * Optional: a caller that cannot supply `onVersionDeleted` (nowhere to
+   * navigate afterwards) gets no delete affordance rather than a dead one.
+   */
+  readonly versionDelete?:
+    | {
+        readonly applicationVersionId: number | undefined;
+        readonly versionName: string;
+        readonly onVersionDeleted: () => void;
+        readonly onVersionDeleteError?: ((message: string) => void) | undefined;
+      }
+    | undefined;
 }
 
 const wrapperSx: SxProps<Theme> = { display: 'flex', alignItems: 'center', gap: '0.75rem' };
@@ -63,6 +81,7 @@ export function AgentVersionControls({
   canSaveNewVersion,
   onNewVersionSaved,
   onNewVersionError,
+  versionDelete,
 }: AgentVersionControlsProps): ReactNode {
   return (
     <Box sx={wrapperSx}>
@@ -71,6 +90,16 @@ export function AgentVersionControls({
         versions={versions}
         onSelectVersion={onSelectVersion}
       />
+      {versionDelete !== undefined && canSaveNewVersion && (
+        <DeleteVersionButton
+          projectId={projectId}
+          applicationId={Number(applicationId)}
+          versionId={versionDelete.applicationVersionId}
+          versionName={versionDelete.versionName}
+          onDeleted={versionDelete.onVersionDeleted}
+          {...(versionDelete.onVersionDeleteError === undefined ? {} : { onError: versionDelete.onVersionDeleteError })}
+        />
+      )}
       {canSaveNewVersion && (
         <SaveNewVersionButton
           applicationId={applicationId}

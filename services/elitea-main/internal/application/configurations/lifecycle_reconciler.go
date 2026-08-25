@@ -3,19 +3,37 @@ package configurations
 import (
 	"context"
 	"errors"
-	"strconv"
 )
 
-// Current baseline evidence for this reconciler:
+// This reconciler no longer pushes anything into a provider proxy. The Bifrost
+// gateway (services/elitea-llm-gateway) resolves per-project credentials and
+// model definitions by reading the very p_{projectID}.configuration rows this
+// lifecycle already writes — see that service's internal/account/credentials.go
+// — so there is nothing to materialize into a second system. What survives is
+// the DB-side half the product still depends on:
+//
+//   - status_ok, which is not decoration. The gateway's credential query filters
+//     `section = 'ai_credentials' AND ... AND status_ok = true`, and the model
+//     catalog and embedding-binding reads in this service filter on it too. A
+//     row that never reaches status_ok = true is a row no runtime will use, so
+//     the flag remains the single admission decision for a provider row.
+//   - the reference/secret resolution that gates that flag. Expanding a
+//     configuration's declared references and redeeming its hidden-secret
+//     references is the one check that can still fail locally, so it stays as
+//     the precondition for status_ok = true (see
+//     CurrentProviderConfigurationResolver).
+//   - the two internal reference-repair effects after a rename or an LLM delete.
+//
+// Current baseline evidence for the surviving behavior:
 //
 //   - projects/centry/pylon_main/plugins/runtime_interface_litellm/methods/
 //     configuration_entities.py:36-203 at revision
-//     997ecd9c866d0ac048fffb01bbecd2197c3d7435 creates and deletes the six
-//     credential types and the llm, embedding, image_generation, tts, and asr
-//     model sections. It skips models whose ai_credentials value is empty.
+//     997ecd9c866d0ac048fffb01bbecd2197c3d7435 manages the six credential types
+//     and the llm, embedding, image_generation, tts, and asr model sections. It
+//     skips models whose ai_credentials value is empty.
 //   - projects/centry/pylon_main/plugins/runtime_interface_litellm/methods/
-//     configuration_transformations.py:38-115 at the same revision delegates
-//     provider mapping after configuration expansion and unsecreting.
+//     configuration_transformations.py:38-115 at the same revision performs the
+//     expansion and unsecreting that the resolution port preserves.
 //   - projects/centry/pylon_main/plugins/runtime_interface_litellm/methods/
 //     tools.py:97-111 at the same revision applies allow_project_own_llms while
 //     always permitting the public project.
@@ -25,7 +43,7 @@ import (
 //     references and application defaults after an LLM configuration delete.
 //
 // Generic configuration schemas remain owned by elitea-sdk. A configuration
-// that is not one of the exact LiteLLM credential or model contracts below is
+// that is not one of the exact provider credential or model contracts below is
 // deliberately passive here.
 
 var ErrInvalidCurrentConfigurationLifecycleEffectsReconciler = errors.New(
@@ -33,91 +51,76 @@ var ErrInvalidCurrentConfigurationLifecycleEffectsReconciler = errors.New(
 )
 
 const (
-	currentLifecycleIntentInvalidCode      = "LIFECYCLE_INTENT_INVALID"
-	currentLifecycleLiteLLMFailedCode      = "LITELLM_EFFECT_FAILED"
-	currentLifecycleStatusFailedCode       = "STATUS_WRITE_FAILED"
-	currentLifecycleRenameFailedCode       = "CONFIGURATION_RENAME_FAILED"
-	currentLifecycleDeletedLLMFailedCode   = "DELETED_LLM_REPAIR_FAILED"
-	currentLifecycleStatusReconcilingCode  = "LITELLM_RECONCILING"
-	currentLifecycleStatusReconciledCode   = "LITELLM_RECONCILED"
-	currentLifecycleEffectRemoveBefore     = "litellm:remove-before"
-	currentLifecycleEffectEnsureAfter      = "litellm:ensure-after"
-	currentLifecycleEffectStatusPending    = "status:pending"
-	currentLifecycleEffectStatusHealthy    = "status:healthy"
-	currentLifecycleEffectRename           = "dependents:rename"
-	currentLifecycleEffectDeletedLLMRepair = "dependents:deleted-llm"
+	currentLifecycleIntentInvalidCode        = "LIFECYCLE_INTENT_INVALID"
+	currentLifecycleProviderResolutionFailed = "PROVIDER_RESOLUTION_FAILED"
+	currentLifecycleStatusFailedCode         = "STATUS_WRITE_FAILED"
+	currentLifecycleRenameFailedCode         = "CONFIGURATION_RENAME_FAILED"
+	currentLifecycleDeletedLLMFailedCode     = "DELETED_LLM_REPAIR_FAILED"
+	currentLifecycleStatusReconcilingCode    = "PROVIDER_RECONCILING"
+	currentLifecycleStatusReconciledCode     = "PROVIDER_RECONCILED"
+	currentLifecycleEffectProviderResolve    = "provider:resolve"
+	currentLifecycleEffectStatusPending      = "status:pending"
+	currentLifecycleEffectStatusHealthy      = "status:healthy"
+	currentLifecycleEffectRename             = "dependents:rename"
+	currentLifecycleEffectDeletedLLMRepair   = "dependents:deleted-llm"
 )
 
 type currentConfigurationLifecycleEntityKind uint8
 
 const (
 	currentConfigurationLifecyclePassive currentConfigurationLifecycleEntityKind = iota
-	currentConfigurationLifecycleLiteLLMCredential
-	currentConfigurationLifecycleLiteLLMModel
+	currentConfigurationLifecycleProviderCredential
+	currentConfigurationLifecycleProviderModel
 )
 
-// CurrentLiteLLMProjectPolicy preserves the baseline allow_project_own_llms
+// CurrentProviderProjectPolicy preserves the baseline allow_project_own_llms
 // behavior for project-bound configuration events. Administration entities
 // without a project are outside this configuration lifecycle contract.
-type CurrentLiteLLMProjectPolicy struct {
+//
+// The policy outlives the proxy it was written for. It decides whether a
+// non-public project's own provider row is admitted, and admission is now
+// expressed as status_ok: a rejected row keeps status_ok = false, which is
+// exactly the predicate the Bifrost gateway, the model catalog, and the
+// embedding-binding lookup all filter on. Disallowing project-own LLMs
+// therefore still means those rows are never used by any runtime.
+type CurrentProviderProjectPolicy struct {
 	AllowProjectOwnLLMs bool
 	PublicProjectID     int32
 }
 
-// CurrentLiteLLMCredentialDesired is immutable input to an idempotent ensure
-// operation. Configuration.Data contains hidden-secret references, not resolved
-// credentials. The adapter owns bounded expansion/unsecreting at the LiteLLM
-// boundary and must not mutate or log the snapshot.
-type CurrentLiteLLMCredentialDesired struct {
-	EffectID          string
-	Revision          int64
-	Name              string
-	ProjectID         int32
-	ConfigurationUUID string
-	Configuration     CurrentConfigurationLifecycleSnapshot
+// admits reports whether the project may own a provider row. It is the single
+// copy of the rule: the lifecycle reconciler and CurrentProviderAdmission both
+// call it, so a write route and the lifecycle cannot disagree about which
+// project is allowed its own credential.
+func (policy CurrentProviderProjectPolicy) admits(projectID int32) bool {
+	return policy.AllowProjectOwnLLMs || projectID == policy.PublicProjectID
 }
 
-// CurrentLiteLLMCredentialTarget identifies the one credential to remove.
-type CurrentLiteLLMCredentialTarget struct {
+// CurrentProviderConfigurationResolution is immutable input to the resolution
+// check that gates status_ok. Configuration.Data contains hidden-secret
+// references and declared configuration references, not resolved values; the
+// adapter owns bounded expansion/unsecreting, must not mutate or log the
+// snapshot, and must not persist or return the resolved result.
+type CurrentProviderConfigurationResolution struct {
 	EffectID          string
 	Revision          int64
-	Name              string
-	ProjectID         int32
-	ConfigurationUUID string
-}
-
-// CurrentLiteLLMModelDesired is immutable input to an idempotent model ensure.
-// The adapter expands ai_credentials and performs the six provider mappings.
-type CurrentLiteLLMModelDesired struct {
-	EffectID          string
-	Revision          int64
-	Name              string
 	ProjectID         int32
 	ConfigurationUUID string
 	Section           string
 	Configuration     CurrentConfigurationLifecycleSnapshot
 }
 
-// CurrentLiteLLMModelTarget fences removal by stable model name and the
-// originating configuration UUID. An implementation must not remove another
-// configuration's model when the names collide.
-type CurrentLiteLLMModelTarget struct {
-	EffectID          string
-	Revision          int64
-	Name              string
-	ProjectID         int32
-	ConfigurationUUID string
-	Section           string
-}
-
-// CurrentLiteLLMConfigurationEffects owns idempotent, context-aware LiteLLM
-// management operations. A retry with the same EffectID must be safe even when
-// the preceding attempt may have completed remotely.
-type CurrentLiteLLMConfigurationEffects interface {
-	EnsureCurrentLiteLLMCredential(context.Context, CurrentLiteLLMCredentialDesired) error
-	RemoveCurrentLiteLLMCredential(context.Context, CurrentLiteLLMCredentialTarget) error
-	EnsureCurrentLiteLLMModel(context.Context, CurrentLiteLLMModelDesired) error
-	RemoveCurrentLiteLLMModel(context.Context, CurrentLiteLLMModelTarget) error
+// CurrentProviderConfigurationResolver proves that a provider configuration's
+// references and hidden secrets actually resolve before the row is marked
+// usable. It replaces the ensure-into-LiteLLM effect: the push used to fail
+// when a reference dangled or a secret was missing, and that failure was what
+// held status_ok at false. Nothing is pushed anywhere now, but the same local
+// failure must still hold the row back, otherwise an unusable row would be
+// advertised to the gateway and fail only at request time.
+//
+// A retry with the same EffectID must be safe; the check is read-only.
+type CurrentProviderConfigurationResolver interface {
+	ResolveCurrentProviderConfiguration(context.Context, CurrentProviderConfigurationResolution) error
 }
 
 type CurrentConfigurationLifecycleStatusUpdate struct {
@@ -175,25 +178,25 @@ type CurrentDeletedLLMEffects interface {
 // revisions remain owned by CurrentConfigurationLifecycleProcessor and its
 // PostgreSQL store.
 type CurrentConfigurationLifecycleEffectsReconciler struct {
-	litellm    CurrentLiteLLMConfigurationEffects
+	resolver   CurrentProviderConfigurationResolver
 	status     CurrentConfigurationLifecycleStatusWriter
 	renames    CurrentConfigurationRenameEffects
 	deletedLLM CurrentDeletedLLMEffects
-	policy     CurrentLiteLLMProjectPolicy
+	policy     CurrentProviderProjectPolicy
 }
 
 func NewCurrentConfigurationLifecycleEffectsReconciler(
-	litellm CurrentLiteLLMConfigurationEffects,
+	resolver CurrentProviderConfigurationResolver,
 	status CurrentConfigurationLifecycleStatusWriter,
 	renames CurrentConfigurationRenameEffects,
 	deletedLLM CurrentDeletedLLMEffects,
-	policy CurrentLiteLLMProjectPolicy,
+	policy CurrentProviderProjectPolicy,
 ) (*CurrentConfigurationLifecycleEffectsReconciler, error) {
-	if litellm == nil || status == nil || renames == nil || deletedLLM == nil || policy.PublicProjectID <= 0 {
+	if resolver == nil || status == nil || renames == nil || deletedLLM == nil || policy.PublicProjectID <= 0 {
 		return nil, ErrInvalidCurrentConfigurationLifecycleEffectsReconciler
 	}
 	return &CurrentConfigurationLifecycleEffectsReconciler{
-		litellm: litellm, status: status, renames: renames, deletedLLM: deletedLLM, policy: policy,
+		resolver: resolver, status: status, renames: renames, deletedLLM: deletedLLM, policy: policy,
 	}, nil
 }
 
@@ -202,7 +205,7 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) ReconcileCurrentConfigu
 	event CurrentConfigurationLifecycleEvent,
 	intent CurrentConfigurationLifecycleIntent,
 ) (CurrentConfigurationLifecycleReconcileResult, error) {
-	if ctx == nil || r == nil || r.litellm == nil || r.status == nil || r.renames == nil || r.deletedLLM == nil {
+	if ctx == nil || r == nil || r.resolver == nil || r.status == nil || r.renames == nil || r.deletedLLM == nil {
 		return currentConfigurationLifecycleDeadResult(currentLifecycleIntentInvalidCode), nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -229,7 +232,7 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 	event CurrentConfigurationLifecycleEvent,
 	after CurrentConfigurationLifecycleSnapshot,
 ) (CurrentConfigurationLifecycleReconcileResult, error) {
-	if !currentConfigurationNeedsLiteLLM(after) {
+	if !currentConfigurationNeedsProviderResolution(after) {
 		return currentConfigurationLifecycleSuccessResult(), nil
 	}
 	if result, err, failed := r.setCurrentConfigurationLifecycleStatus(
@@ -237,10 +240,14 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 	); failed {
 		return result, err
 	}
-	if !r.currentLiteLLMAllowed(after.ProjectID) {
+	// A project the policy does not admit stops here, holding status_ok at
+	// false. That is the whole enforcement: every reader of a provider row —
+	// the Bifrost gateway's credential query, the model catalog, the embedding
+	// binding — selects on status_ok = true.
+	if !r.currentProviderConfigurationAllowed(after.ProjectID) {
 		return currentConfigurationLifecycleSuccessResult(), nil
 	}
-	if result, err, failed := r.ensureCurrentConfigurationLiteLLM(ctx, event, after); failed {
+	if result, err, failed := r.resolveCurrentProviderConfiguration(ctx, event, after); failed {
 		return result, err
 	}
 	if result, err, failed := r.setCurrentConfigurationLifecycleStatus(
@@ -257,8 +264,13 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 	before CurrentConfigurationLifecycleSnapshot,
 	after CurrentConfigurationLifecycleSnapshot,
 ) (CurrentConfigurationLifecycleReconcileResult, error) {
-	beforeManaged := currentConfigurationNeedsLiteLLM(before)
-	afterManaged := currentConfigurationNeedsLiteLLM(after)
+	beforeManaged := currentConfigurationNeedsProviderResolution(before)
+	afterManaged := currentConfigurationNeedsProviderResolution(after)
+	// The pending write is still keyed off the BEFORE snapshot too: a row that
+	// stops being a provider row (its ai_credentials was cleared, say) must
+	// drop back to status_ok = false, because the new payload was never
+	// resolved. There is no remote copy to retract any more — withdrawing the
+	// row from every reader is exactly this status write.
 	if beforeManaged || afterManaged {
 		if result, err, failed := r.setCurrentConfigurationLifecycleStatus(
 			ctx, event, after, false, currentLifecycleEffectStatusPending, currentLifecycleStatusReconcilingCode,
@@ -266,17 +278,12 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 			return result, err
 		}
 	}
-	if beforeManaged {
-		if result, err, failed := r.removeCurrentConfigurationLiteLLM(ctx, event, before); failed {
+	resolvedAfter := false
+	if afterManaged && r.currentProviderConfigurationAllowed(after.ProjectID) {
+		if result, err, failed := r.resolveCurrentProviderConfiguration(ctx, event, after); failed {
 			return result, err
 		}
-	}
-	ensuredAfter := false
-	if afterManaged && r.currentLiteLLMAllowed(after.ProjectID) {
-		if result, err, failed := r.ensureCurrentConfigurationLiteLLM(ctx, event, after); failed {
-			return result, err
-		}
-		ensuredAfter = true
+		resolvedAfter = true
 	}
 	if before.EliteaTitle != after.EliteaTitle {
 		effect := CurrentConfigurationRenameEffect{
@@ -293,7 +300,7 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 			return result, err
 		}
 	}
-	if ensuredAfter {
+	if resolvedAfter {
 		if result, err, failed := r.setCurrentConfigurationLifecycleStatus(
 			ctx, event, after, true, currentLifecycleEffectStatusHealthy, currentLifecycleStatusReconciledCode,
 		); failed {
@@ -308,11 +315,9 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 	event CurrentConfigurationLifecycleEvent,
 	before CurrentConfigurationLifecycleSnapshot,
 ) (CurrentConfigurationLifecycleReconcileResult, error) {
-	if currentConfigurationNeedsLiteLLM(before) {
-		if result, err, failed := r.removeCurrentConfigurationLiteLLM(ctx, event, before); failed {
-			return result, err
-		}
-	}
+	// Deleting the configuration row is the withdrawal. Every consumer reads the
+	// row, so once it is gone the credential or model is gone with it; there is
+	// no external registration left behind to unregister.
 	if before.Section == string(CurrentModelSectionLLM) {
 		modelName, ok := currentConfigurationLifecycleModelSourceName(before)
 		if !ok {
@@ -334,76 +339,36 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) reconcileCurrentConfigu
 	return currentConfigurationLifecycleSuccessResult(), nil
 }
 
-func (r *CurrentConfigurationLifecycleEffectsReconciler) ensureCurrentConfigurationLiteLLM(
+func (r *CurrentConfigurationLifecycleEffectsReconciler) resolveCurrentProviderConfiguration(
 	ctx context.Context,
 	event CurrentConfigurationLifecycleEvent,
 	configuration CurrentConfigurationLifecycleSnapshot,
 ) (CurrentConfigurationLifecycleReconcileResult, error, bool) {
-	switch currentConfigurationLifecycleKind(configuration) {
-	case currentConfigurationLifecycleLiteLLMCredential:
-		desired := CurrentLiteLLMCredentialDesired{
-			EffectID:          currentConfigurationLifecycleEffectID(event.EventID, currentLifecycleEffectEnsureAfter),
-			Revision:          event.Revision,
-			Name:              currentConfigurationLifecycleCredentialName(configuration),
-			ProjectID:         configuration.ProjectID,
-			ConfigurationUUID: configuration.UUID,
-			Configuration:     configuration,
-		}
-		return currentConfigurationLifecycleEffectFailure(
-			ctx, r.litellm.EnsureCurrentLiteLLMCredential(ctx, desired), currentLifecycleLiteLLMFailedCode,
-		)
-	case currentConfigurationLifecycleLiteLLMModel:
-		name, ok := currentConfigurationLifecycleModelName(configuration)
-		if !ok {
-			return currentConfigurationLifecycleDeadResult(currentLifecycleIntentInvalidCode), nil, true
-		}
-		desired := CurrentLiteLLMModelDesired{
-			EffectID: currentConfigurationLifecycleEffectID(event.EventID, currentLifecycleEffectEnsureAfter),
-			Revision: event.Revision, Name: name, ProjectID: configuration.ProjectID,
-			ConfigurationUUID: configuration.UUID, Section: configuration.Section,
-			Configuration: configuration,
-		}
-		return currentConfigurationLifecycleEffectFailure(
-			ctx, r.litellm.EnsureCurrentLiteLLMModel(ctx, desired), currentLifecycleLiteLLMFailedCode,
-		)
-	default:
+	kind := currentConfigurationLifecycleKind(configuration)
+	if kind == currentConfigurationLifecyclePassive {
 		return currentConfigurationLifecycleSuccessResult(), nil, false
 	}
-}
-
-func (r *CurrentConfigurationLifecycleEffectsReconciler) removeCurrentConfigurationLiteLLM(
-	ctx context.Context,
-	event CurrentConfigurationLifecycleEvent,
-	configuration CurrentConfigurationLifecycleSnapshot,
-) (CurrentConfigurationLifecycleReconcileResult, error, bool) {
-	switch currentConfigurationLifecycleKind(configuration) {
-	case currentConfigurationLifecycleLiteLLMCredential:
-		target := CurrentLiteLLMCredentialTarget{
-			EffectID:          currentConfigurationLifecycleEffectID(event.EventID, currentLifecycleEffectRemoveBefore),
-			Revision:          event.Revision,
-			Name:              currentConfigurationLifecycleCredentialName(configuration),
-			ProjectID:         configuration.ProjectID,
-			ConfigurationUUID: configuration.UUID,
-		}
-		return currentConfigurationLifecycleEffectFailure(
-			ctx, r.litellm.RemoveCurrentLiteLLMCredential(ctx, target), currentLifecycleLiteLLMFailedCode,
-		)
-	case currentConfigurationLifecycleLiteLLMModel:
-		name, ok := currentConfigurationLifecycleModelName(configuration)
-		if !ok {
+	if kind == currentConfigurationLifecycleProviderModel {
+		// A managed model with no data.name is unusable and always was: the
+		// catalog keys on that name, and so does the deleted-LLM repair. It is
+		// a malformed intent, not a transient failure, so it must not retry.
+		if _, ok := currentConfigurationLifecycleModelSourceName(configuration); !ok {
 			return currentConfigurationLifecycleDeadResult(currentLifecycleIntentInvalidCode), nil, true
 		}
-		target := CurrentLiteLLMModelTarget{
-			EffectID: currentConfigurationLifecycleEffectID(event.EventID, currentLifecycleEffectRemoveBefore),
-			Revision: event.Revision, Name: name, ProjectID: configuration.ProjectID,
-			ConfigurationUUID: configuration.UUID, Section: configuration.Section,
-		}
-		return currentConfigurationLifecycleEffectFailure(
-			ctx, r.litellm.RemoveCurrentLiteLLMModel(ctx, target), currentLifecycleLiteLLMFailedCode,
-		)
-	default:
-		return currentConfigurationLifecycleSuccessResult(), nil, false
 	}
+	resolution := CurrentProviderConfigurationResolution{
+		EffectID:          currentConfigurationLifecycleEffectID(event.EventID, currentLifecycleEffectProviderResolve),
+		Revision:          event.Revision,
+		ProjectID:         configuration.ProjectID,
+		ConfigurationUUID: configuration.UUID,
+		Section:           configuration.Section,
+		Configuration:     configuration,
+	}
+	return currentConfigurationLifecycleEffectFailure(
+		ctx,
+		r.resolver.ResolveCurrentProviderConfiguration(ctx, resolution),
+		currentLifecycleProviderResolutionFailed,
+	)
 }
 
 func (r *CurrentConfigurationLifecycleEffectsReconciler) setCurrentConfigurationLifecycleStatus(
@@ -425,20 +390,47 @@ func (r *CurrentConfigurationLifecycleEffectsReconciler) setCurrentConfiguration
 	)
 }
 
-func (r *CurrentConfigurationLifecycleEffectsReconciler) currentLiteLLMAllowed(projectID int32) bool {
-	return r.policy.AllowProjectOwnLLMs || projectID == r.policy.PublicProjectID
+func (r *CurrentConfigurationLifecycleEffectsReconciler) currentProviderConfigurationAllowed(projectID int32) bool {
+	return r.policy.admits(projectID)
 }
 
 func currentConfigurationLifecycleKind(
 	configuration CurrentConfigurationLifecycleSnapshot,
 ) currentConfigurationLifecycleEntityKind {
-	if configuration.Section == "ai_credentials" && currentLiteLLMCredentialType(configuration.Type) {
-		return currentConfigurationLifecycleLiteLLMCredential
+	if configuration.Section == "ai_credentials" && currentProviderCredentialType(configuration.Type) {
+		return currentConfigurationLifecycleProviderCredential
 	}
 	if currentConfigurationLifecycleModelSection(configuration.Section) {
-		return currentConfigurationLifecycleLiteLLMModel
+		return currentConfigurationLifecycleProviderModel
 	}
 	return currentConfigurationLifecyclePassive
+}
+
+// currentProviderCredentialType lists the p_{projectID}.configuration `type`
+// values that the LLM data plane can consume as a provider credential.
+//
+// It is deliberately NOT currentLiteLLMCredentialType. That predicate is the
+// LiteLLM provider table, and it stays where it is: it decides which create
+// normalizer owns a registry entry. The data plane is the Bifrost gateway now,
+// and its table is larger — see providerConfigTypes in
+// services/elitea-llm-gateway/internal/account/credentials.go, which adds
+// open_ai_azure, anthropic and vllm. A credential of one of those three types
+// was left passive by the lifecycle, so it never reached status_ok = true, so
+// the gateway could never read it. The standalone stack seeds a vllm
+// credential, which is one reason its seed writes status_ok in raw SQL.
+//
+// A type outside both tables stays passive on purpose. No runtime can use it,
+// so marking it usable would say something untrue about it.
+// TestCurrentProviderCredentialTypeCoversGatewayProviderTable reads the gateway
+// source and fails when the two tables drift apart.
+func currentProviderCredentialType(typeName string) bool {
+	switch typeName {
+	case "open_ai", "azure_open_ai", "open_ai_azure", "ai_dial", "anthropic",
+		"ollama", "amazon_bedrock", "vertex_ai", "vllm":
+		return true
+	default:
+		return false
+	}
 }
 
 func currentConfigurationLifecycleModelSection(section string) bool {
@@ -451,11 +443,15 @@ func currentConfigurationLifecycleModelSection(section string) bool {
 	}
 }
 
-func currentConfigurationNeedsLiteLLM(configuration CurrentConfigurationLifecycleSnapshot) bool {
+// currentConfigurationNeedsProviderResolution selects the rows whose usability
+// this lifecycle decides. An imported model (no ai_credentials) declares no
+// references and holds no secrets, so there is nothing to resolve and its
+// status is left exactly as the writer stored it.
+func currentConfigurationNeedsProviderResolution(configuration CurrentConfigurationLifecycleSnapshot) bool {
 	switch currentConfigurationLifecycleKind(configuration) {
-	case currentConfigurationLifecycleLiteLLMCredential:
+	case currentConfigurationLifecycleProviderCredential:
 		return true
-	case currentConfigurationLifecycleLiteLLMModel:
+	case currentConfigurationLifecycleProviderModel:
 		return currentConfigurationLifecycleTruthy(configuration.Data["ai_credentials"])
 	default:
 		return false
@@ -479,20 +475,6 @@ func currentConfigurationLifecycleTruthy(value any) bool {
 	default:
 		return true
 	}
-}
-
-func currentConfigurationLifecycleCredentialName(configuration CurrentConfigurationLifecycleSnapshot) string {
-	return strconv.FormatInt(int64(configuration.ProjectID), 10) + "_" + configuration.UUID
-}
-
-func currentConfigurationLifecycleModelName(
-	configuration CurrentConfigurationLifecycleSnapshot,
-) (string, bool) {
-	name, ok := currentConfigurationLifecycleModelSourceName(configuration)
-	if !ok {
-		return "", false
-	}
-	return strconv.FormatInt(int64(configuration.ProjectID), 10) + "_" + name, true
 }
 
 func currentConfigurationLifecycleModelSourceName(

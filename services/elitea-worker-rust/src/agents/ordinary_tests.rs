@@ -746,9 +746,9 @@ fn nested_agent_version(
 
 fn assert_nested_agent_model_requests(captured: &[CapturedModelRequest]) {
     assert_eq!(captured.len(), 3);
-    assert_eq!(captured[0].headers["openai-organization"], "17");
-    assert_eq!(captured[1].headers["openai-organization"], "23");
-    assert_eq!(captured[2].headers["openai-organization"], "17");
+    assert_eq!(captured[0].headers["x-project-id"], "17");
+    assert_eq!(captured[1].headers["x-project-id"], "17");
+    assert_eq!(captured[2].headers["x-project-id"], "17");
     let root_first: serde_json::Value =
         serde_json::from_slice(&captured[0].body).expect("root tool request");
     assert_eq!(
@@ -934,7 +934,7 @@ async fn application_and_adhoc_share_authorized_redemption_model_session_and_pro
                 AgentExecutionKind::Adhoc => "be concise",
             }
         );
-        assert_eq!(captured[0].headers["openai-organization"], "17");
+        assert_eq!(captured[0].headers["x-project-id"], "17");
         assert!(captured[0].headers["authorization"].is_sensitive());
     }
 }
@@ -1006,7 +1006,7 @@ async fn application_and_adhoc_select_native_anthropic_without_changing_the_life
         assert_eq!(body["messages"][1]["content"][0]["text"], "earlier ");
         assert_eq!(body["messages"][1]["content"][1]["text"], "answer");
         assert_eq!(body["messages"][2]["content"], "current");
-        assert_eq!(captured[0].headers["openai-organization"], "17");
+        assert_eq!(captured[0].headers["x-project-id"], "17");
         assert!(captured[0].headers["authorization"].is_sensitive());
         assert!(captured[0].headers["x-api-key"].is_sensitive());
     }

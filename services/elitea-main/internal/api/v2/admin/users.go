@@ -37,6 +37,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // adminRolePriority orders the administration-mode roles from most to least
@@ -97,7 +98,7 @@ func (h *Handler) AuthUsers(w http.ResponseWriter, r *http.Request) {
 		// A read failure is reported as one. The previous implementation
 		// swallowed every error into an empty page, which renders exactly like
 		// "this deployment has no users".
-		http.Error(w, `{"error":"failed to list users"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to list users")
 		return
 	}
 	writeJSON(w, http.StatusOK, listing)
@@ -250,21 +251,21 @@ type authUsersActionRequest struct {
 // `action` field of the body.
 func (h *Handler) AuthUsersAction(w http.ResponseWriter, r *http.Request) {
 	if !isAdministrationMode(r) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "not found")
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
 	var body authUsersActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if body.Action == "" {
-		http.Error(w, `{"error":"action not set"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "action not set")
 		return
 	}
 
@@ -284,13 +285,13 @@ func (h *Handler) AuthUsersAction(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) deleteUsers(w http.ResponseWriter, r *http.Request, body authUsersActionRequest) {
 	if len(body.Users) == 0 {
-		http.Error(w, `{"error":"users not set"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "users not set")
 		return
 	}
 	ids := make([]int, 0, len(body.Users))
 	for _, user := range body.Users {
 		if user.ID <= 0 {
-			http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+			apierr.WriteStatus(w, http.StatusBadRequest, "invalid user id")
 			return
 		}
 		ids = append(ids, user.ID)
@@ -303,7 +304,7 @@ func (h *Handler) deleteUsers(w http.ResponseWriter, r *http.Request, body authU
 	tag, err := h.pool.Exec(r.Context(),
 		`DELETE FROM public.auth_core__user WHERE id = ANY($1::int[])`, ids)
 	if err != nil {
-		http.Error(w, `{"error":"failed to delete users"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to delete users")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": tag.RowsAffected()})
@@ -312,7 +313,7 @@ func (h *Handler) deleteUsers(w http.ResponseWriter, r *http.Request, body authU
 func (h *Handler) setAdminRole(w http.ResponseWriter, r *http.Request, body authUsersActionRequest) {
 	ctx := r.Context()
 	if body.UserID == nil || *body.UserID <= 0 {
-		http.Error(w, `{"error":"user_id not set"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "user_id not set")
 		return
 	}
 	targetID := *body.UserID
@@ -333,10 +334,10 @@ func (h *Handler) setAdminRole(w http.ResponseWriter, r *http.Request, body auth
 	currentRole, err := h.currentAdminRole(ctx, targetID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+			apierr.WriteStatus(w, http.StatusNotFound, "user not found")
 			return
 		}
-		http.Error(w, `{"error":"failed to read current role"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to read current role")
 		return
 	}
 
@@ -348,14 +349,14 @@ func (h *Handler) setAdminRole(w http.ResponseWriter, r *http.Request, body auth
 	if roleName == "super_admin" || (currentRole == "super_admin" && roleName != "super_admin") {
 		allowed, err := h.callerHasPermission(ctx, r, permissionSuperAdmin)
 		if err != nil || !allowed {
-			http.Error(w, `{"error":"only super_admin can assign or revoke the super_admin role"}`, http.StatusForbidden)
+			apierr.WriteStatus(w, http.StatusForbidden, "only super_admin can assign or revoke the super_admin role")
 			return
 		}
 	}
 
 	transaction, err := h.pool.Begin(ctx)
 	if err != nil {
-		http.Error(w, `{"error":"failed to update role"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update role")
 		return
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
@@ -368,7 +369,7 @@ USING public.auth_core__role role
 WHERE role.id = assignment.role_id
   AND role.mode = 'administration'
   AND assignment.user_id = $1`, targetID); err != nil {
-		http.Error(w, `{"error":"failed to update role"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update role")
 		return
 	}
 
@@ -380,7 +381,7 @@ FROM public.auth_core__role role
 WHERE role.name = $2 AND role.mode = 'administration'
 ON CONFLICT (user_id, role_id) DO NOTHING`, targetID, roleName)
 		if err != nil {
-			http.Error(w, `{"error":"failed to update role"}`, http.StatusInternalServerError)
+			apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update role")
 			return
 		}
 		// No matching administration role row means the deployment does not
@@ -388,13 +389,13 @@ ON CONFLICT (user_id, role_id) DO NOTHING`, targetID, roleName)
 		// and grant nothing — the silent-data-loss shape this endpoint exists to
 		// avoid — so the transaction is rolled back instead.
 		if tag.RowsAffected() == 0 {
-			http.Error(w, `{"error":"administration role not found"}`, http.StatusBadRequest)
+			apierr.WriteStatus(w, http.StatusBadRequest, "administration role not found")
 			return
 		}
 	}
 
 	if err := transaction.Commit(ctx); err != nil {
-		http.Error(w, `{"error":"failed to update role"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update role")
 		return
 	}
 
@@ -410,17 +411,17 @@ ON CONFLICT (user_id, role_id) DO NOTHING`, targetID, roleName)
 // matches no user is a 404 rather than a 200 that changed nothing.
 func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
 	if !isAdministrationMode(r) {
-		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "not found")
 		return
 	}
 	if h.pool == nil {
-		http.Error(w, `{"error":"database unavailable"}`, http.StatusServiceUnavailable)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 
 	userID, err := strconv.Atoi(chi.URLParam(r, "userID"))
 	if err != nil || userID <= 0 {
-		http.Error(w, `{"error":"invalid user id"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid user id")
 		return
 	}
 
@@ -428,22 +429,22 @@ func (h *Handler) UserSuspend(w http.ResponseWriter, r *http.Request) {
 		Suspended *bool `json:"suspended"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	if body.Suspended == nil {
-		http.Error(w, `{"error":"suspended field is required"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "suspended field is required")
 		return
 	}
 
 	tag, err := h.pool.Exec(r.Context(),
 		`UPDATE public.auth_core__user SET suspended = $1 WHERE id = $2`, *body.Suspended, userID)
 	if err != nil {
-		http.Error(w, `{"error":"failed to update user"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to update user")
 		return
 	}
 	if tag.RowsAffected() == 0 {
-		http.Error(w, `{"error":"user not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "user not found")
 		return
 	}
 

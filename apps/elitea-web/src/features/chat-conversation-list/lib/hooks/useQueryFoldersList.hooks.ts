@@ -28,6 +28,7 @@ function toConversation(ref: FolderConversationRef, extra?: Partial<Conversation
     id: ref.id,
     name: ref.name ?? '',
     isPrivate: ref.isPrivate ?? true,
+    ...(ref.authorId !== undefined ? { authorId: ref.authorId } : {}),
     ...(ref.updatedAt !== undefined ? { updatedAt: ref.updatedAt } : {}),
     ...(ref.createdAt !== undefined ? { createdAt: ref.createdAt } : {}),
     ...(ref.isPlayback !== undefined ? { isPlayback: ref.isPlayback } : {}),

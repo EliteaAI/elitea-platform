@@ -24,6 +24,12 @@ const (
 	// artifactRetentionStaleChunkTTL matches legacy's cleanup_stale_chunks —
 	// see cleanupStaleAttachmentChunks's own doc comment.
 	artifactRetentionStaleChunkTTL = 12 * time.Hour
+	// artifactRetentionGrantGrace keeps the sweeper away from a grant that
+	// has only just expired. A commit that started before the deadline
+	// streams the whole object through a SHA-256 hasher, so it can still be
+	// running when expires_at passes. One sweep cadence of margin means the
+	// sweeper never claims a grant a live commit is working on.
+	artifactRetentionGrantGrace = 15 * time.Minute
 )
 
 var errArtifactRetentionSweepInvalidOccurrence = errors.New("invalid artifact retention sweep occurrence")
@@ -56,6 +62,14 @@ type artifactRetentionNotifier interface {
 	NotifyBucketExpiring(ctx context.Context, projectID, userID, bucketID int64, expiresAt time.Time) error
 }
 
+// artifactRetentionGrantsRepository is the transfer-grant dependency slice
+// (repos.ArtifactTransferGrantsRepository satisfies it). It is
+// constructor-required, not optional: a grant sweep that silently never runs
+// is the defect it exists to fix.
+type artifactRetentionGrantsRepository interface {
+	ClaimExpiredTransferGrants(ctx context.Context, olderThan time.Time, limit int32) ([]repos.ExpiredTransferGrantRow, error)
+}
+
 // artifactRetentionAttachmentChunksRepository is S20a's cleanup dependency
 // (repos.AttachmentChunksRepository satisfies it) — optional, unlike the
 // four constructor-required dependencies above: an installation with no
@@ -78,6 +92,7 @@ type artifactRetentionSweep struct {
 	objects          artifactRetentionObjectsRepository
 	buckets          artifactRetentionBucketsRepository
 	notifier         artifactRetentionNotifier
+	grants           artifactRetentionGrantsRepository
 	store            storage.ObjectStore
 	attachmentChunks artifactRetentionAttachmentChunksRepository
 }
@@ -86,12 +101,15 @@ func newArtifactRetentionSweep(
 	objects artifactRetentionObjectsRepository,
 	buckets artifactRetentionBucketsRepository,
 	notifier artifactRetentionNotifier,
+	grants artifactRetentionGrantsRepository,
 	store storage.ObjectStore,
 ) (*artifactRetentionSweep, error) {
-	if objects == nil || buckets == nil || notifier == nil || store == nil {
+	if objects == nil || buckets == nil || notifier == nil || grants == nil || store == nil {
 		return nil, errors.New("artifact retention sweep dependencies are required")
 	}
-	return &artifactRetentionSweep{objects: objects, buckets: buckets, notifier: notifier, store: store}, nil
+	return &artifactRetentionSweep{
+		objects: objects, buckets: buckets, notifier: notifier, grants: grants, store: store,
+	}, nil
 }
 
 // WithAttachmentChunks activates S20a's stale-chunk cleanup step. Optional:
@@ -111,7 +129,7 @@ func (s *artifactRetentionSweep) Execute(
 	ctx context.Context,
 	occurrence schedulingapp.Occurrence,
 ) (schedulingapp.Outcome, error) {
-	if s == nil || s.objects == nil || s.buckets == nil || s.notifier == nil || s.store == nil || ctx == nil ||
+	if s == nil || s.objects == nil || s.buckets == nil || s.notifier == nil || s.grants == nil || s.store == nil || ctx == nil ||
 		occurrence.InvocationID == "" ||
 		occurrence.JobID != artifactRetentionSweepCapability ||
 		occurrence.ScheduleRevision != artifactRetentionSweepRevision ||
@@ -121,6 +139,9 @@ func (s *artifactRetentionSweep) Execute(
 		return "", errArtifactRetentionSweepInvalidOccurrence
 	}
 	if err := s.sweepExpiredObjects(ctx); err != nil {
+		return "", err
+	}
+	if err := s.sweepExpiredGrants(ctx); err != nil {
 		return "", err
 	}
 	if err := s.notifyExpiringBuckets(ctx); err != nil {
@@ -145,6 +166,103 @@ func (s *artifactRetentionSweep) Execute(
 func (s *artifactRetentionSweep) cleanupStaleAttachmentChunks(ctx context.Context) error {
 	if _, err := s.attachmentChunks.DeleteStaleChunks(ctx, time.Now().Add(-artifactRetentionStaleChunkTTL)); err != nil {
 		return fmt.Errorf("delete stale attachment chunks: %w", err)
+	}
+	return nil
+}
+
+// sweepExpiredGrants reclaims the bytes behind an expired transfer grant
+// that was never committed.
+//
+// THE GAP THIS CLOSES. CreateTransferGrant issues a presigned PUT for a
+// server-derived key and writes only a transfer_grants row. The
+// elitea_storage.objects row is written by the commit and nowhere else. So a
+// caller who uploads to the signed URL and never commits leaves an object
+// that:
+//
+//   - no quota counts, because SumProjectBytes reads only the objects table;
+//   - no sweep finds, because ListExpiredObjects reads only the objects
+//     table;
+//   - nobody can name, because the caller never told the server it uploaded.
+//
+// S3 does not enforce the grant's max_bytes at the edge either: a SigV4
+// presigned PUT can sign an exact Content-Length only, and the server does
+// not know the size in advance. Commit-time TooLarge stays the enforcement
+// point, so reclamation is what bounds the damage. Repeating the loop
+// otherwise fills the storage account with unbilled, unreclaimable data.
+//
+// A GET grant reserves no bytes: its key is a grant id nothing was ever
+// written to. Claiming the row is the whole cleanup for one.
+//
+// One storage failure does not stop the tick. The remaining grants are
+// swept, and the first error is returned afterwards, so one unreachable
+// bucket cannot stall object retention behind it.
+func (s *artifactRetentionSweep) sweepExpiredGrants(ctx context.Context) error {
+	olderThan := time.Now().Add(-artifactRetentionGrantGrace)
+	bucketCache := map[int64]repos.BucketRow{}
+	var firstErr error
+	for i := 0; i < artifactRetentionSweepMaxBatchesPerTick; i++ {
+		claimed, err := s.grants.ClaimExpiredTransferGrants(ctx, olderThan, artifactRetentionSweepBatchSize)
+		if err != nil {
+			return fmt.Errorf("claim expired artifact transfer grants: %w", err)
+		}
+		if len(claimed) == 0 {
+			return firstErr
+		}
+		for _, grant := range claimed {
+			if err := s.reclaimGrantBytes(ctx, grant, bucketCache); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		if int32(len(claimed)) < artifactRetentionSweepBatchSize {
+			return firstErr
+		}
+	}
+	return firstErr
+}
+
+// reclaimGrantBytes deletes whatever the caller may have uploaded against
+// one claimed grant. An absent object is the common case — most grants are
+// simply never used — so storage.ErrNotFound counts as success.
+func (s *artifactRetentionSweep) reclaimGrantBytes(
+	ctx context.Context,
+	grant repos.ExpiredTransferGrantRow,
+	bucketCache map[int64]repos.BucketRow,
+) error {
+	if grant.Method != "PUT" {
+		return nil
+	}
+	bucket, ok := bucketCache[grant.BucketID]
+	if !ok {
+		var err error
+		bucket, err = s.buckets.GetBucketByID(ctx, grant.BucketID)
+		if errors.Is(err, storage.ErrNotFound) {
+			// The bucket is gone, so its objects went with it. The claim
+			// alone completes this grant.
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("get bucket %d for expired grant %s: %w", grant.BucketID, grant.ID, err)
+		}
+		bucketCache[grant.BucketID] = bucket
+	}
+
+	ref, err := storage.NewObjectRef(strconv.FormatInt(grant.ProjectID, 10), bucket.Name, grant.Key)
+	if err != nil {
+		return fmt.Errorf("build object ref for expired grant %s: %w", grant.ID, err)
+	}
+
+	if grant.UploadID != nil {
+		// A native multipart session holds uploaded parts that are billed
+		// and that no completed object references.
+		if err := s.store.AbortMultipart(ctx, ref, storage.UploadID(*grant.UploadID)); err != nil &&
+			!errors.Is(err, storage.ErrNotFound) {
+			return fmt.Errorf("abort multipart for expired grant %s: %w", grant.ID, err)
+		}
+		return nil
+	}
+
+	if err := s.store.Delete(ctx, ref); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return fmt.Errorf("delete bytes for expired grant %s: %w", grant.ID, err)
 	}
 	return nil
 }

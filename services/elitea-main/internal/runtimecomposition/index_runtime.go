@@ -69,7 +69,6 @@ func (c durableIndexMetaFrozenToolkitClaimer) ClaimFrozenToolkitConfiguration(
 func newCurrentIndexRuntime(
 	pool *pgxpool.Pool,
 	configurations *CurrentConfigurationsRuntime,
-	embeddingRuntime indexingapp.CurrentEmbeddingRuntimeReader,
 	config Config,
 	policy repos.IndexIngestDispatchPolicy,
 	indexMetaWriter indexingapp.CurrentIndexMetaWriter,
@@ -77,7 +76,6 @@ func newCurrentIndexRuntime(
 ) (*currentIndexRuntime, error) {
 	if pool == nil || configurations == nil || configurations.rows == nil || configurations.scope == nil ||
 		configurations.unsecreter == nil || configurations.expander == nil || configurations.models == nil || configurations.vaultLoader == nil ||
-		embeddingRuntime == nil ||
 		!config.IndexIngestDispatchEnabled || configurations.publicProjectID <= 0 ||
 		indexMetaWriter == nil || reportInitializationFailure == nil {
 		return nil, errors.New("current index runtime dependencies are required")
@@ -128,9 +126,14 @@ func newCurrentIndexRuntime(
 	if err != nil {
 		return nil, err
 	}
+	// The embedding binding is resolved entirely from the Configurations rows
+	// this graph already owns. It used to additionally require a LiteLLM
+	// administration client to ask whether a `{projectID}_{model}` group had
+	// been pushed into that proxy's registry; the Bifrost gateway pulls the same
+	// rows at request time, so the index plane no longer depends on any LLM
+	// facade being composed.
 	embeddings, err := indexingapp.NewCurrentEmbeddingBindingResolver(
 		configurations.rows,
-		embeddingRuntime,
 		configurations.publicProjectID,
 	)
 	if err != nil {

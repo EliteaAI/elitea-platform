@@ -2,13 +2,11 @@ import { useCallback, useRef, useState } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
-import {
-  getDeleteApplicationToolQueryOptions,
-  getUpdateApplicationRelationQueryOptions,
-} from '@/shared/api/generated/applications/applications';
+import { getUpdateApplicationRelationQueryOptions } from '@/shared/api/generated/applications/applications';
 import { t } from '@/shared/i18n';
 
 import { useSelectedProjectId } from '../../api/useSelectedProjectId';
+import { resolveToolkitId, setToolkitRelation } from '../toolRelation';
 import type { AgentToolAssociation } from '../types';
 import { useSetRefetchDetails } from './useRefetchAgentDetails.hooks';
 
@@ -20,21 +18,36 @@ import { useSetRefetchDetails } from './useRefetchAgentDetails.hooks';
  *
  *  1. `useToolkitAssociateMutation` (`@/api/toolkits`, `{projectId,
  *     toolkitId, entity_version_id, entity_id, entity_type: 'agent',
- *     has_relation: false}` relation-TOGGLE call) -> the real generated
- *     `useDeleteApplicationTool` (`shared/api/generated/applications/
- *     applications.ts`, `DELETE /elitea_core/tool/prompt_lib/{projectId}/
- *     {toolId}` — `internal/api/v2/toolkits/handler.go:673-681`, "Remove a
- *     tool (toolkit instance)"). **Not the backend gap the batch brief
- *     flagged** — that brief named `useToolkitAssociateMutation` as an A4
- *     forbidden-sideways dependency, but the real Go backend replaced the
- *     old relation-toggle model with a plain delete-by-id endpoint that
- *     needs no cross-feature toolkit-domain hook at all: `tool.id` (the
- *     version's own `tools[]` row id) is exactly `toolId`, resolvable
- *     entirely from `shared/`. Verified by reading `applications.ts`
- *     directly (grepping `shared/api/generated/toolkits/toolkits.ts` for an
- *     association endpoint turns up nothing — `useListToolkits`/
- *     `useListToolkitInstances` only — confirming the real endpoint lives
- *     under the `applications` tag, not `toolkits`).
+ *     has_relation: false}` relation-TOGGLE call) -> `../toolRelation.ts`'s
+ *     `setToolkitRelation({..., hasRelation: false})`, which is that same
+ *     `PATCH /elitea_core/tool/prompt_lib/{project_id}/{toolkit_id}` call —
+ *     the one the already-landed ATTACH path (`ui/ToolMenu.tsx`) uses with
+ *     `hasRelation: true`, now shared by both directions so they cannot
+ *     drift apart. No cross-feature toolkit-domain hook is needed for it
+ *     (no orval wrapper exists either; see `toolRelation.ts`).
+ *
+ *     **This replaces an earlier port of this branch that called the
+ *     generated `useDeleteApplicationTool` (`DELETE /elitea_core/tool/
+ *     prompt_lib/{projectId}/{toolId}`) with `tool.id`. That was wrong in
+ *     two independent ways, both verified by reading the Go source rather
+ *     than the endpoint's name:**
+ *       - That route is wired to `toolkits.Handler.Delete` ->
+ *         `pgRepo.DeleteToolkit` -> `DELETE FROM p_{id}.elitea_tools WHERE
+ *         id = $1` (`router.go:984`, `toolkits/handler.go:631,1067`). It
+ *         deletes the toolkit INSTANCE itself, project-wide, and
+ *         `entity_tool_mapping.tool_id` is `REFERENCES elitea_tools(id) ON
+ *         DELETE CASCADE` (`001_initial.sql:455`) — so it also detaches
+ *         that toolkit from every OTHER agent in the project. Detaching one
+ *         tool from one version is not what it does.
+ *       - `tool.id` is `entity_tool_mapping.id` (the mapping row's own
+ *         serial), while that route's path parameter is `elitea_tools.id`.
+ *         Both are `SERIAL` in the same schema, so the call does not fail
+ *         loudly — it deletes whichever unrelated toolkit instance happens
+ *         to carry that serial.
+ *     The relation PATCH is keyed on `elitea_tools.id` too, so the id sent
+ *     is `resolveToolkitId(tool)` (`tool.tool_id`), NOT `tool.id`. The
+ *     baseline sent `tool.id` here, which was correct against pylon's own
+ *     `tools[]` shape and is not against this backend's.
  *  2. `useUpdateApplicationRelationMutation` (`@/api/applications`) -> the
  *     real generated `useUpdateApplicationRelation`, same tag, real
  *     endpoint, no deviation beyond the RTK-Query-to-TanStack-Query call
@@ -323,12 +336,12 @@ export function useDisassociateToolkit(params: UseDisassociateToolkitParams): Us
 
   const onDisassociateTool = useCallback(
     async ({ tool, isAttachmentToolkit = false }: DisassociateToolArgs) => {
-      if (applicationId !== undefined && tool.id !== undefined && versionId !== undefined && projectId !== undefined) {
+      const toolkitId = resolveToolkitId(tool);
+      if (applicationId !== undefined && toolkitId !== undefined && versionId !== undefined && projectId !== undefined) {
         if (tool.type !== 'application') {
           try {
             setIsLoading(true);
-            const options = getDeleteApplicationToolQueryOptions(projectId, Number(tool.id));
-            await queryClient.fetchQuery(options);
+            await setToolkitRelation({ projectId, applicationId, versionId, toolkitId, hasRelation: false });
             await commitRemoval(tool, isAttachmentToolkit);
             if (isAttachmentToolkit) {
               onDeleteAttachmentTool?.();
@@ -347,7 +360,7 @@ export function useDisassociateToolkit(params: UseDisassociateToolkitParams): Us
         await handleApplicationRelationRemoval(tool);
       }
     },
-    [applicationId, versionId, projectId, queryClient, commitRemoval, onDeleteAttachmentTool, reset, handleApplicationRelationRemoval],
+    [applicationId, versionId, projectId, commitRemoval, onDeleteAttachmentTool, reset, handleApplicationRelationRemoval],
   );
 
   return { onDisassociateTool, isLoading, isDisassociateError, disassociateError };

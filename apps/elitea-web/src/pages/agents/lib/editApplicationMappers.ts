@@ -7,6 +7,8 @@ import type {
   VersionWriteRequest,
 } from '@/shared/api/generated/model';
 
+import type { EditApplicationVersionFields } from './useEditApplicationVersionFields';
+
 /**
  * Pure mapping helpers for `EditApplication.tsx` (this unit, A1g), split
  * into their own file purely to keep that page file under the §3.5 400-line
@@ -90,6 +92,14 @@ export function toVersionOptions(
  * why `conversationStarters` is threaded in from the live form here rather
  * than read off `version`.
  *
+ * #307: `edits` threads the OTHER live version fields in for exactly the
+ * same reason. While those fields were routed nowhere they could not
+ * diverge from the server's copy, so reading them off `version` was
+ * harmless; now that they are editable, a "Save As Version" taken after
+ * typing new instructions would have cloned the STORED instructions and
+ * dropped the edit without saying so. Optional, so a caller with no live
+ * editor state still gets the stored values.
+ *
  * Only the keys the Go `CreateVersion` handler actually reads are sent
  * (`agent_type`/`instructions`/`welcome_message`/`llm_settings`/
  * `conversation_starters`/`variables`, handler.go:723-747) — see
@@ -100,17 +110,57 @@ export function toVersionOptions(
 export function toVersionWriteBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
+  edits?: EditApplicationVersionFields,
 ): Omit<VersionWriteRequest, 'name'> {
   return {
     ...(version.agent_type === undefined ? {} : { agent_type: version.agent_type }),
-    instructions: version.instructions ?? '',
-    welcome_message: version.welcome_message ?? '',
+    instructions: edits?.instructions ?? version.instructions ?? '',
+    welcome_message: edits?.welcomeMessage ?? version.welcome_message ?? '',
     ...(version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings }),
     conversation_starters: [...conversationStarters],
-    variables: (version.variables ?? []).map((variable) => ({
+    variables: (edits?.variables ?? version.variables ?? []).map((variable) => ({
       name: variable.name ?? '',
       value: variable.value ?? '',
     })),
+  };
+}
+
+/**
+ * The body a normal Save PUT sends for the active version (#307). Shares
+ * `toVersionWriteBody`'s field selection so a Save and a Save-As-Version
+ * cannot drift apart, and adds the two keys only the UPDATE path carries:
+ * the version's own `name` (unchanged — `UpdateVersion` writes whatever
+ * `name` it is given, so omitting it is fine but sending the current one is
+ * closer to the baseline's whole-object PUT) and `meta`, which
+ * `toVersionWriteBody` deliberately omits because the CREATE handler
+ * discards it.
+ *
+ * `meta` is MERGED over the stored blob rather than replaced: the Go
+ * handler assigns the whole `meta` map it receives
+ * (`applications/handler.go:826-828`), so sending `{step_limit}` alone
+ * would drop `internal_tools` and every other key the version already
+ * carries.
+ */
+export function toVersionSaveBody(
+  version: ApplicationVersionDetail,
+  conversationStarters: readonly string[],
+  edits: EditApplicationVersionFields,
+): VersionWriteRequest {
+  const storedMeta: Record<string, unknown> = version.meta ?? {};
+  return {
+    name: version.name,
+    ...toVersionWriteBody(version, conversationStarters, edits),
+    /*
+     * #307 — `internal_tools` is the Tools panel's internal-tool switches.
+     * Always sent (not gated on being non-empty): turning the LAST one off
+     * has to reach the wire, and an `undefined`-when-empty guard would make
+     * exactly that one edit silently unsaveable.
+     */
+    meta: {
+      ...storedMeta,
+      ...(edits.stepLimit === undefined ? {} : { step_limit: edits.stepLimit }),
+      internal_tools: [...edits.internalTools],
+    },
   };
 }
 

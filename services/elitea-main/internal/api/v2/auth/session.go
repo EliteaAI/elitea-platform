@@ -1,12 +1,15 @@
 package auth
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,18 +17,31 @@ import (
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth/browserflow"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// sessionUsers is the one read Info makes. *pgxpool.Pool satisfies it. The
+// interface exists so a test can supply a store that fails. This handler must
+// not report that state as "you are not authenticated".
+type sessionUsers interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type SessionHandler struct {
-	pool          *pgxpool.Pool
+	users         sessionUsers
 	secretKey     string
 	secureCookies bool
 }
 
 func NewSessionHandler(pool *pgxpool.Pool, secretKey string) *SessionHandler {
-	secureCookies := os.Getenv("COOKIE_SECURE") != "false"
-	return &SessionHandler{pool: pool, secretKey: secretKey, secureCookies: secureCookies}
+	handler := &SessionHandler{secretKey: secretKey, secureCookies: os.Getenv("COOKIE_SECURE") != "false"}
+	// A nil *pgxpool.Pool in an interface field is not a nil interface, and
+	// every later nil test then passes while the call panics.
+	if pool != nil {
+		handler.users = pool
+	}
+	return handler
 }
 
 func (h *SessionHandler) Logout(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +64,15 @@ func (h *SessionHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
+// Info reports whether the browser holds a usable session.
+//
+// The answer has three outcomes, and they must stay apart. `authenticated:
+// false` is a statement about the CALLER: there is no session, or the session
+// is not usable. The web app acts on it by sending the user to the identity
+// provider. A database that cannot answer says nothing about the caller, so
+// reporting it as `authenticated: false` signs out a user who holds a valid,
+// unexpired cookie, and the identity provider bounces the browser straight
+// back. A 503 lets the app keep the session and retry.
 func (h *SessionHandler) Info(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("elitea_session")
 	if err != nil || cookie.Value == "" {
@@ -61,16 +86,34 @@ func (h *SessionHandler) Info(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	userID, ok := sessionClaimUserID(claims)
-	if !ok || h.pool == nil {
+	if !ok {
 		writeSessionJSON(w, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
+	if h.users == nil {
+		// Composition error, not an outage and not a missing session. The
+		// OIDC branch of main.go always passes a pool.
+		slog.Error("session info: the handler has no user store")
+		writeSessionJSON(w, http.StatusInternalServerError,
+			map[string]any{"error": "session service is not configured"})
+		return
+	}
+
 	var activeUserID int64
-	if err := h.pool.QueryRow(r.Context(),
+	if err := h.users.QueryRow(r.Context(),
 		`SELECT id FROM public.auth_core__user WHERE id = $1 AND suspended = false`,
 		userID,
 	).Scan(&activeUserID); err != nil {
-		writeSessionJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The user is absent or suspended. That IS an answer about the
+			// caller.
+			writeSessionJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+			return
+		}
+		slog.Error("session info: the user lookup failed", "err", err)
+		w.Header().Set("Retry-After", "5")
+		writeSessionJSON(w, http.StatusServiceUnavailable,
+			map[string]any{"error": "session store unavailable"})
 		return
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/pkg/ssewriter"
 )
 
@@ -42,6 +43,24 @@ type Handler struct {
 	// nano-USD. Post-completion only — admission passes no estimate (issue #10).
 	// Required when budgetGate is non-nil; ignored (and may be nil) otherwise.
 	costCalc CostEstimator
+
+	// policy supplies the authored governance DEFINITIONS from
+	// gateway.governance_config (policy_gate.go). nil disables every authored
+	// control — model allowlists, rate limits, MCP allowlists, routing rules
+	// and rate policy — and is the posture of a gateway with no database.
+	// It is a DIFFERENT plane from budgetGate: that one enforces spend against
+	// a counter, this one enforces what an operator wrote down.
+	policy PolicySource
+	// rateLimiter enforces the authored per-minute ceilings against the shared
+	// NATS counter. nil (or a limiter with no counter) disables rate limiting
+	// while leaving the other authored controls in force.
+	rateLimiter *policy.Limiter
+	// budgetUsage supplies the CEL `budget_used` variable to routing rules. nil
+	// resolves it to 0.
+	budgetUsage BudgetUsageReader
+	// routePick is the weighted-target draw for routing rules. nil selects a
+	// random source; a test sets it to make a weighted rule determinate.
+	routePick func(total float64) float64
 
 	// billingWg tracks in-flight async billing goroutines (Fix round-3 #2).
 	// DrainBilling() blocks until all goroutines complete. billingClosing is
@@ -77,7 +96,7 @@ type Handler struct {
 	// each drain holds a goroutine and an open provider socket for up to
 	// streamGrace. nil = unbounded (unit-test construction only); production
 	// wiring always sets a limit via WithStreamDrainLimit.
-	drainLimit *drainLimiter
+	drainLimit *slotLimiter
 
 	// drainWg tracks detached stream drains, SEPARATELY from billingWg. The two
 	// must be waited on in order: drains have to settle (and spawn their
@@ -112,6 +131,67 @@ type Handler struct {
 	// request?" assertion has no other observation point, because a blocked
 	// request never reaches the router.
 	streamCtxHook func(*schemas.BifrostContext)
+
+	// realtimeDialer opens the PROVIDER side of a /llm/v1/realtime session
+	// (realtime.go). nil disables the route: it then answers 501 rather than
+	// upgrading a socket it could never connect to anything.
+	realtimeDialer RealtimeDialer
+
+	// realtimeLimit bounds concurrent realtime sessions globally and per
+	// project. It is a SEPARATE pool from drainLimit — a live call must not
+	// compete for slots with abandoned SSE streams.
+	realtimeLimit *slotLimiter
+
+	// realtimeRecheck is how often a live session re-asks the budget gate. It is
+	// the MANDATORY bound on a session's spend: a socket the tenant holds open
+	// is not bounded by its own admission check (realtime.go, fact F3).
+	realtimeRecheck time.Duration
+
+	// realtimeKeepalive is the ping interval on a live session's two sockets.
+	// It is NOT operator configuration: the value is bounded by what proxies
+	// and load balancers do, not by anything a deployment chooses. It is a
+	// field rather than a bare constant so a test can drive the pinger without
+	// waiting 20 s for one tick.
+	realtimeKeepalive time.Duration
+
+	// realtimePingBound is how long ONE keepalive ping waits for its pong. It
+	// is NOT operator configuration and it is NOT shared between the two peers:
+	// each ping gets its own deadline, so a caller that is slow to pong cannot
+	// spend the provider's budget and make a live provider read as a dead one.
+	// It is a field rather than a bare constant so a test can drive a slow peer
+	// without waiting the production bound. See realtimeSession.pingPeers.
+	realtimePingBound time.Duration
+
+	// realtimeGateBound is how long a live session waits for ONE budget-gate
+	// answer before it reads the silence as an outage. It is NOT operator
+	// configuration: the value follows what admissionVerdict can legitimately
+	// take, not what a deployment chooses. It is a field rather than a bare
+	// constant so a test can drive a STALLED budget store without waiting the
+	// production bound for it. See realtimeSession.gateVerdict.
+	realtimeGateBound time.Duration
+
+	// realtimeOrigins is the accept-side Origin allowlist. Empty is the
+	// library's same-origin default, which is the secure one; it is never
+	// InsecureSkipVerify.
+	realtimeOrigins []string
+
+	// sessionWg tracks live realtime sessions, SEPARATELY from drainWg and
+	// billingWg. sessionMu/sessionWaiting are the same Add-after-Wait guard
+	// trackDrain uses, and sessionClosing is what tells a live session to end.
+	// CloseRealtimeSessions states why these are not the drain's.
+	sessionWg          sync.WaitGroup
+	sessionMu          sync.Mutex
+	sessionWaiting     bool
+	sessionClosing     chan struct{}
+	sessionClosingOnce sync.Once
+
+	// egressPolicy backs the /llm/v1/check_connection endpoint's SSRF gate
+	// (#319). It is the SAME operator-configured allowlist GetKeysForProvider
+	// applies to persisted credentials (*account.EliteaAccount implements
+	// this), so a not-yet-saved credential under test is refused on the exact
+	// terms a saved one would be (issue #13). nil makes CheckConnection refuse
+	// every request — fail closed rather than skip the check.
+	egressPolicy EgressPolicy
 }
 
 // HandlerOption customises Handler construction. It keeps NewHandler's core
@@ -123,6 +203,14 @@ type HandlerOption func(*Handler)
 // leaves the models surface reporting an empty set.
 func WithModelResolver(r *ModelResolver) HandlerOption {
 	return func(h *Handler) { h.models = r }
+}
+
+// WithEgressPolicy wires the operator's egress allowlist into the
+// /llm/v1/check_connection endpoint (#319). A nil policy is a no-op — the
+// endpoint then refuses every request, matching the fail-closed default the
+// rest of the gateway uses for an unconfigured Account.
+func WithEgressPolicy(p EgressPolicy) HandlerOption {
+	return func(h *Handler) { h.egressPolicy = p }
 }
 
 // WithBudgetGate wires the pre-LLM budget enforcement gate. When gate is nil
@@ -219,6 +307,40 @@ func WithStreamDrainLimit(n int) HandlerOption {
 	}
 }
 
+// WithRealtimeDialer wires the provider side of the /llm/v1/realtime route. A
+// nil dialer leaves the route answering 501: the alternative would be to accept
+// a caller's socket and then have nothing to connect it to.
+func WithRealtimeDialer(d RealtimeDialer) HandlerOption {
+	return func(h *Handler) { h.realtimeDialer = d }
+}
+
+// WithRealtimeSessionLimit bounds concurrent realtime sessions on this replica.
+// n <= 0 leaves the pool unbounded (test construction only); the composition
+// root always passes a positive limit, because nothing else bounds a session —
+// a hijacked connection has no server-side timeout (realtime.go, fact F6).
+func WithRealtimeSessionLimit(n int) HandlerOption {
+	return func(h *Handler) { h.realtimeLimit = realtimeSessionLimit(n) }
+}
+
+// WithRealtimeBudgetRecheck sets how often a live realtime session re-asks the
+// budget gate. A non-positive value leaves the default in place: a session with
+// no re-check is gated exactly once, for its whole life, which is the hole this
+// mechanism exists to close.
+func WithRealtimeBudgetRecheck(d time.Duration) HandlerOption {
+	return func(h *Handler) {
+		if d > 0 {
+			h.realtimeRecheck = d
+		}
+	}
+}
+
+// WithRealtimeOrigins sets the accept-side Origin allowlist for
+// /llm/v1/realtime. An empty list keeps the same-origin default; the values come
+// from the operator (LLM_REALTIME_ALLOWED_ORIGINS), never from a request.
+func WithRealtimeOrigins(origins []string) HandlerOption {
+	return func(h *Handler) { h.realtimeOrigins = origins }
+}
+
 // NewHandler builds a /llm Handler over the given router. logger may be nil
 // (a discarding logger is substituted). identitySecret may be empty to disable
 // HMAC verification of the forwarded identity headers. Optional features (the
@@ -238,6 +360,15 @@ func NewHandler(router LLMRouter, logger *slog.Logger, identitySecret []byte, op
 		streamGrace:  DefaultStreamGrace,
 		drainLimit:   newDrainLimiter(DefaultStreamDrainLimit),
 		drainClosing: make(chan struct{}),
+		// The realtime defaults are ON for the same reason the stream grace is:
+		// a Handler built without the options must still bound a session rather
+		// than gate it once and hold an unbounded socket.
+		realtimeLimit:     realtimeSessionLimit(DefaultRealtimeMaxSessions),
+		realtimeRecheck:   DefaultRealtimeBudgetRecheck,
+		realtimeKeepalive: realtimeKeepalivePeriod,
+		realtimePingBound: realtimeWriteTimeout,
+		realtimeGateBound: realtimeGateTimeout,
+		sessionClosing:    make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -394,6 +525,15 @@ func (h *Handler) buildContext(w http.ResponseWriter, r *http.Request, detach bo
 		if id.userID != "" {
 			ctx.SetValue(schemas.BifrostContextKeyUserID, id.userID)
 		}
+		// The tenant is the governance CEL `customer_id`. It has been forwarded
+		// by the edge since the identity path was written and, until the
+		// authored-governance plane landed, nothing read it — the same shape of
+		// gap as the user id before issue #321. A routing rule scoped to a
+		// customer needs it, so it goes on the context with the rest of the
+		// identity rather than being re-read from headers later.
+		if id.tenantID != "" {
+			ctx.SetValue(schemas.BifrostContextKeyGovernanceCustomerID, id.tenantID)
+		}
 	}
 	return ctx, sc, true
 }
@@ -428,7 +568,8 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	// "total gateway overhead".
 	t0 := time.Now()
 	var req openai.OpenAIChatRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -438,7 +579,19 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostChatRequest(ctx)
 
+	// Map the caller's model id onto the provider's own model name (issue #317)
+	// BEFORE the budget gate, so the gate and the provider see the same name.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	provider, model := providerModelFromChatReq(bifReq)
+	// The authored MCP allowlist judges the servers the caller named, before
+	// the budget gate: a refused request must not move a counter.
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// Pre-flight budget check (admission only; the cost is billed post-response).
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
@@ -466,7 +619,7 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromChatResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -482,6 +635,10 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostTextCompletionRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromTextReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -492,7 +649,7 @@ func (h *Handler) TextCompletion(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromTextCompletionResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -508,6 +665,10 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostEmbeddingRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #4: enforce the budget gate before calling the provider.
 	provider, model := providerModelFromEmbeddingReq(bifReq)
 	if !h.checkBudget(w, ctx, model) {
@@ -518,7 +679,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	h.writeUnary(w, resp, bErr)
 	if bErr == nil && resp != nil {
 		in, out := usageFromEmbeddingResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -526,7 +687,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 // when the body sets "stream": true.
 func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	var req openai.OpenAIResponsesRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -536,8 +698,18 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// FIX #3: enforce the budget gate before calling the provider (mirrors Messages).
 	provider, model := providerModelFromResponsesReq(bifReq)
+	// The authored MCP allowlist judges the tools[] entries of type "mcp".
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
 		return
@@ -556,7 +728,7 @@ func (h *Handler) Responses(w http.ResponseWriter, r *http.Request) {
 	// FIX #3: bill the unary response after writing to the client.
 	if bErr == nil && resp != nil {
 		in, out := usageFromResponsesResponse(resp)
-		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+		h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 	}
 }
 
@@ -572,6 +744,10 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostImageGenerationRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// FIX #26: enforce the budget gate before calling the image provider.
 	// Image generation can be expensive; an over-budget project must be
 	// blocked before any provider call incurs real cost.
@@ -591,9 +767,9 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 		//   - Usage == nil  →  in=out=0, imgCount = len(Data)  →  direct billing path.
 		in, out, imgCount := usageFromImageResponse(resp)
 		if in > 0 || out > 0 {
-			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+			h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 		} else if imgCount > 0 {
-			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), imgCount*perImageFallbackNano)
+			h.updateUsageDirect(ctx, identityProjectFromCtx(ctx), identityUserFromCtx(ctx), provider, model, imgCount*perImageFallbackNano)
 		}
 	}
 }
@@ -607,7 +783,8 @@ func (h *Handler) ImageGeneration(w http.ResponseWriter, r *http.Request) {
 // framing (design §6.2; corrects the stale "uses Chat" table).
 func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	var req anthropic.AnthropicMessageRequest
-	if !decodeJSON(w, r, &req) {
+	raw, ok0 := decodeJSONRaw(w, r, &req)
+	if !ok0 {
 		return
 	}
 	streaming := isStream(req.Stream)
@@ -617,7 +794,17 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
 
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	provider, model := providerModelFromResponsesReq(bifReq)
+	// The authored MCP allowlist judges the mcp_servers[] entries.
+	if !h.checkMCPAllowlist(w, ctx, raw, provider, model) {
+		sc.cancel() // rejected before dispatch: nothing owns the context
+		return
+	}
 	// Pre-flight budget check (see Chat handler comment).
 	if !h.checkBudget(w, ctx, model) {
 		sc.cancel() // blocked before dispatch: nothing owns the context
@@ -643,7 +830,7 @@ func (h *Handler) Messages(w http.ResponseWriter, r *http.Request) {
 	// Write the response first, then bill asynchronously (FIX #18).
 	writeJSON(w, http.StatusOK, anthropic.ToAnthropicResponsesResponse(ctx, resp))
 	in, out := usageFromResponsesResponse(resp)
-	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx))
+	h.updateUsage(ctx, provider, model, in, out, identityProjectFromCtx(ctx), identityUserFromCtx(ctx))
 }
 
 // CountTokens handles POST /llm/v1/messages/count_tokens — a synchronous
@@ -658,6 +845,10 @@ func (h *Handler) CountTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	bifReq := req.ToBifrostResponsesRequest(ctx)
+	// Issue #317: map the caller's model id before the gate and the provider.
+	if !h.mapModel(w, ctx, &bifReq.Provider, &bifReq.Model) {
+		return
+	}
 	// Budget gate BEFORE the provider — count_tokens is a provider call and must
 	// be admission-gated like every other /llm endpoint (uniform gating,
 	// DECISIONS.md). No updateUsage after: CountTokensResponse carries no billable

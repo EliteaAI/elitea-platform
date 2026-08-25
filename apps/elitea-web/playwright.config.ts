@@ -5,6 +5,11 @@
  *   setup         — global setup: OIDC login per persona → saves storageState
  *   chromium      — 30 journeys against the real stack, chromium
  *   webkit        — same 30 journeys, webkit (spec §6.2)
+ *   chat-stream   — the #284 chat journey, against the FULL standalone stack
+ *                   (runtime plane + worker + mock LLM); see that project's
+ *                   own note and `scripts/chat-stream-e2e.sh`
+ *   index-stream  — the #93 index journey, same stack plus `seed-index`;
+ *                   see `scripts/index-stream-e2e.sh`
  *
  * The `setup` project runs once before the browser projects; each browser
  * project depends on it so the storageState files are always fresh.
@@ -22,10 +27,66 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STORAGE_STATE = {
   member: path.join(__dirname, '.playwright-state', 'member.json'),
   admin: path.join(__dirname, '.playwright-state', 'admin.json'),
+  /**
+   * The #284 chat driver. A persona of its own because it OWNS a personal
+   * project, and the app selects the signed-in user's personal project over
+   * the one `auth.setup.ts` writes to storage — handing member/admin one moves
+   * every other journey off project 1 (measured, see the seeder's note).
+   */
+  chat: path.join(__dirname, '.playwright-state', 'chat.json'),
 };
+
+/**
+ * What `scripts/e2e-stack.sh seed` says it wrote into `centry.audit_events`:
+ * the row count, the first and last timestamps, and the local day they fall on
+ * (issue #214). Journey 29 freezes its browser clock to that day rather than
+ * reading the wall clock, so the page's `Today` window and the fixture cannot
+ * end up on opposite sides of a midnight.
+ *
+ * It lives beside the persona storageState because it is the same kind of
+ * thing: per-run provisioning output, written by the seed, read by the tests,
+ * gitignored, and inside the directory CI mounts into the Playwright container.
+ */
+export const AUDIT_FIXTURE_ANCHOR = path.join(__dirname, '.playwright-state', 'audit-fixture.json');
 
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
 export const BASE_URL = process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082';
+
+/**
+ * The IANA zone EVERY browser context runs in, and the SAME zone
+ * `scripts/e2e-stack.sh` computes its fixtures' start of day in (issue #214).
+ *
+ * Two clocks decide whether a seeded row falls inside a calendar-day filter,
+ * and until now nothing made them agree:
+ *
+ *  - the BROWSER's. The admin Audit Trail opens on a `Today` preset
+ *    (`src/pages/admin/auditFormat.ts`), whose `startOfDay` is
+ *    `setHours(0,0,0,0)` on a `new Date()` — local midnight, in whatever zone
+ *    the runner's OS happens to be in, sent to the server as an instant.
+ *  - the DATABASE's. The audit fixture anchors its rows on
+ *    `date_trunc('day', now())` so they land inside that window — in whatever
+ *    zone the postgres session happens to be in.
+ *
+ * The two coincided in CI only because both sides inherited UTC by accident. At
+ * 00:15 America/New_York they did not: three of the four fixture rows landed on
+ * yesterday, and journey 29 failed "element not found" on rows that were
+ * plainly in the table. Widening the filter or retrying would each have hidden
+ * that. Pinning ONE zone and deriving BOTH day boundaries from it makes them
+ * agree by construction, at every time of day.
+ *
+ * `E2E_TZ` overrides it, and must reach the seed and the browser TOGETHER —
+ * `webServer.command` below runs the seed, so one exported variable does both.
+ * Set it to a zone whose local time is a few minutes past midnight to run the
+ * suite as if it were midnight, without touching any clock:
+ *
+ *   # at 13:05 UTC, Pacific/Guadalcanal (UTC+11) is 00:05 the next day
+ *   E2E_TZ=Pacific/Guadalcanal npx playwright test --project=chromium
+ *
+ * UTC by default, so CI and every existing local invocation keep the day
+ * boundary they already had. The difference is that they now HAVE one, rather
+ * than borrowing whatever the runner and the database happened to be set to.
+ */
+export const E2E_TIMEZONE = process.env['E2E_TZ'] ?? 'UTC';
 
 /*
  * Chromium-only launch flags — applied per project, never in the shared `use:`.
@@ -58,6 +119,9 @@ export default defineConfig({
 
   use: {
     baseURL: BASE_URL,
+    // Shared, not per-project: every project drives the same seeded stack, so
+    // every project must read the same day boundary out of it. See E2E_TIMEZONE.
+    timezoneId: E2E_TIMEZONE,
     // Trace on retry so failures in CI have full context.
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
@@ -122,6 +186,70 @@ export default defineConfig({
       },
       dependencies: ['setup'],
       testMatch: /visual\/.+\.spec\.ts/,
+    },
+
+    /*
+     * ── chat-stream (#284) — the chat definition-of-done journey ───────────
+     *
+     * Its own project because it is the one journey that cannot run against
+     * `docker-compose.e2e-standalone.yml`: an agent turn needs the runtime
+     * plane, the worker and a model backend, none of which that stack has.
+     * `scripts/chat-stream-e2e.sh` brings up the FULL standalone stack and
+     * points this project at it, so it never runs by accident against a stack
+     * that would fail it for the wrong reason.
+     *
+     * Chromium only: this asserts a transport and a render, not a rasteriser,
+     * and a second engine would double the stack time for no new signal.
+     */
+    {
+      name: 'chat-stream',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      // Pinned to `chat.*` rather than all of `streaming/**`: this directory now
+      // holds two journeys with DIFFERENT seeding needs, and a broad match here
+      // would hand the index journey to a runner that never ran `seed-index`.
+      testMatch: /streaming\/chat\..+\.spec\.ts/,
+    },
+
+    /*
+     * ── index-stream (#93 Surface A) — the index definition-of-done journey ──
+     *
+     * Its own project for the same reason `chat-stream` is: it needs the FULL
+     * standalone stack (runtime plane + agent worker), plus the `seed-index`
+     * rows. `scripts/index-stream-e2e.sh` provisions both and points this
+     * project at the result, so it never runs by accident against a stack that
+     * would fail it for the wrong reason.
+     *
+     * Shares `STORAGE_STATE.chat`: that persona OWNS a personal project, and
+     * the index permissions — including `models.applications.index_meta.details`,
+     * which project 1 does NOT grant — are seeded there.
+     *
+     * Chromium only: this asserts a transport and a render, not a rasteriser.
+     */
+    {
+      name: 'index-stream',
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: STORAGE_STATE.chat,
+        launchOptions: CHROMIUM_LAUNCH_OPTIONS,
+      },
+      dependencies: ['setup'],
+      testMatch: /streaming\/index\..+\.spec\.ts/,
+      /*
+       * Serial, overriding the top-level `fullyParallel`. These two tests drive
+       * the SAME toolkit through the SAME single-consumer execution plane, so
+       * running them against each other measures the stack's concurrency, not
+       * the feature. Measured on the standalone stack: with the suite spread
+       * over three workers, elitea-main's pool saturated and
+       * `list project configurations` timed out, which surfaced as the start
+       * POST never being answered — a 40s `waitForResponse` timeout that reads
+       * exactly like "the Index button does nothing". Serially, 3x3 green.
+       */
+      fullyParallel: false,
     },
   ],
 

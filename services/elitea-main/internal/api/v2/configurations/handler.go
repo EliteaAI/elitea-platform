@@ -1,27 +1,40 @@
 package configurations
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
 	defaultConfigurationListLimit = 20
 	maxConfigurationListLimit     = 200
-	maxConfigurationModelRows     = 1000
-	maxConfigurationRequestBytes  = 1 << 20
+	// The three filter bounds the reviewed service applies
+	// (application/configurations/crud.go, MaxCurrentConfigurationFilterValues,
+	// MaxCurrentConfigurationFilterLength and MaxCurrentConfigurationQueryLength).
+	maxConfigurationFilterValues = 64
+	maxConfigurationFilterLength = 128
+	maxConfigurationQueryLength  = 1024
+	maxConfigurationModelRows    = 1000
+	maxConfigurationRequestBytes = 1 << 20
 )
 
 type Handler struct {
@@ -34,13 +47,62 @@ type Handler struct {
 	// (#131: that flag gates the *production* router, which this compatibility
 	// router is not, so no environment ever reached the real catalogue).
 	catalog *configurationapp.CurrentAvailableCatalog
+	// connectionChecker performs the real, minimal provider round trip
+	// CheckConnection/BatchCheckConnections need (#319, check_connection.go).
+	// nil means "not configured" — the handlers then report an honest
+	// "not available" failure rather than fabricating success.
+	connectionChecker ConnectionChecker
+	// providerAdmission decides the status_ok column for a written provider
+	// row (#457, provider_admission.go). nil keeps the column at its default.
+	providerAdmission ProviderAdmission
+	// secretSealer stores a schema-declared password value in the project
+	// vault (secret_sealing.go). nil REFUSES such a write; it never falls back
+	// to a plaintext row.
+	secretSealer SecretSealer
+	// publicProjectID names the project whose shared configurations the list
+	// response's `shared` block serves. Zero means "not configured", and the
+	// block is then empty — see sharedConfigurationSchema.
+	publicProjectID int
 }
 
 type Option func(*Handler)
 
+// WithPermissionResolver supplies the resolver EVERY project-scoped route in
+// Routes() is gated on. Without it those routes answer 403 — see require below,
+// which is fail-closed by construction, so a Handler built without a resolver
+// exposes nothing rather than everything.
 func WithPermissionResolver(resolver auth.PermissionResolver) Option {
 	return func(handler *Handler) {
 		handler.permissionResolver = resolver
+	}
+}
+
+// WithConnectionChecker wires the real provider-connection checker (#319).
+// Without this option CheckConnection/BatchCheckConnections report an honest
+// "not available" failure for every checkable type — never a fabricated
+// success.
+func WithConnectionChecker(checker ConnectionChecker) Option {
+	return func(handler *Handler) {
+		handler.connectionChecker = checker
+	}
+}
+
+// WithPublicProjectID names the PUBLIC project — the project whose shared
+// configurations every other project may use. The list response's `shared`
+// block reads that project's schema and no other.
+//
+// Without this option the block is empty. It must not fall back to the
+// caller's own schema: that answer looks like a public credential list and is
+// the caller's own rows.
+//
+// The value is ELITEA_AI_PROJECT_ID. Today the composition root parses it only
+// inside the ELITEA_CONFIGURATIONS_ENABLED branch. So this option has no caller
+// yet, and the block stays empty in a default install.
+func WithPublicProjectID(projectID int) Option {
+	return func(handler *Handler) {
+		if projectID > 0 {
+			handler.publicProjectID = projectID
+		}
 	}
 }
 
@@ -61,52 +123,145 @@ func NewHandler(pool *pgxpool.Pool, opts ...Option) *Handler {
 	return handler
 }
 
+// Routes is the broad current-main compatibility surface. It is the surface
+// EVERY shipped deployment serves for this plugin, not a prototype: #243 made
+// newProductionRouter the only build path, and router.go mounts this router at
+// /api/v2/configurations there.
+//
+// The comment that stood here said "Production composition uses ProductionRoutes
+// or the typed current handlers instead". Both halves were wrong, and the second
+// half was the dangerous one:
+//
+//   - ProductionRoutes had no caller outside this package's tests. It is deleted
+//     with this change rather than left as a second, differently-authorized
+//     registration of paths this router already owns.
+//   - The typed current handlers (read.go, mutation.go, models.go, types.go,
+//     available_route.go) replace only the MODE-LESS twins, and only when
+//     composed. Reads need ELITEA_CONFIGURATIONS_ENABLED; the writes need
+//     ELITEA_CONFIGURATIONS_MUTATION_ENABLED, which deploy/README.md records as
+//     off in BOTH profiles. So POST, PUT and DELETE on a project's
+//     configurations always land here, and every `{mode}` twin always lands
+//     here, whatever is composed.
+//
+// So this router carried no gate at all over the per-project CREDENTIAL store
+// (#496). GET /configurations/configurations/{mode}/{projectID} answered any
+// authenticated caller for any project id with the whole `configuration` table
+// of that project, `data` included. DELETE removed any project's row.
+//
+// The `data` column also held the provider api_key VERBATIM: Create and Update
+// marshalled the request body straight into it, with no store_secrets step, so
+// the row kept the literal key. A gate alone does not repair that, because
+// migrations/shared/0072 grants the read to the project VIEWER role as well.
+// Create and Update now seal every schema-declared password field into the
+// project vault and store the `{{secret.NAME}}` reference the reference
+// implementation writes (secret_sealing.go). A deployment with no vault
+// REFUSES such a write; it never falls back to a plaintext row.
+//
+// EVERY GATE BELOW IS THE ONE THE REVIEWED COPY OF THE SAME PATH ALREADY USES,
+// and the five strings are the ones the reference declares
+// (legacy/plugins/configurations/api/v2/{configurations,configuration}.py). They
+// are granted in DEFAULT mode by migrations/shared/0072, so no new migration is
+// needed and no route here answers 403 to every caller on a clean database —
+// the shape of #354, #359 and #402.
+//
+// THE `{mode}` TWINS ARE GATED IN THE DEFAULT MODE, WHATEVER THE SEGMENT SAYS.
+// The reference resolves an `administration`-mode URL against the caller's
+// CENTRAL roles, which would let an operator who is a member of no project read
+// every project's credentials. This router does not reproduce that: the mode
+// segment is decoration here (one handler serves both, unlike /secrets, whose
+// two modes address two different stores), no client in the workspace calls the
+// mode-ful form at all — apps/elitea-web, apps/elitea-ui, elitea-sdk and qa/ all
+// send the mode-LESS URL — and adding a cross-tenant read while closing a
+// cross-tenant read would be the wrong direction. An unknown mode segment stays
+// what it is today rather than becoming a 404: the gate does not read it, so no
+// mode value can change the answer.
+//
+// `/available/` is the ONE route with no gate, and it names no project: it
+// serves the pinned, credential-free registry snapshot. NewCurrentAvailableRoute
+// authenticates and does not authorize the same catalogue for the same reason.
 func (h *Handler) Routes() chi.Router {
-	// Routes is the broad current-main compatibility surface used by parity
-	// tests and the default-off prototype router. Production composition uses
-	// ProductionRoutes or the typed current handlers instead.
 	r := chi.NewRouter()
+	list := h.require(CurrentConfigurationListPermission)
+	details := h.require(CurrentConfigurationGetPermission)
+	create := h.require(CurrentConfigurationCreatePermission)
+	update := h.require(CurrentConfigurationUpdatePermission)
+	remove := h.require(CurrentConfigurationDeletePermission)
+
 	r.Get("/available/", h.Available)
-	r.Get("/configurations/{projectID}", h.List)
-	r.Get("/configurations/{mode}/{projectID}", h.List)
-	r.Post("/configurations/{projectID}", h.Create)
-	r.Post("/configurations/{mode}/{projectID}", h.Create)
-	r.Get("/configuration/{projectID}/{configID}", h.Get)
-	r.Get("/configuration/{mode}/{projectID}/{configID}", h.Get)
-	r.Put("/configuration/{projectID}/{configID}", h.Update)
-	r.Put("/configuration/{mode}/{projectID}/{configID}", h.Update)
-	r.Delete("/configuration/{projectID}/{configID}", h.Delete)
-	r.Delete("/configuration/{mode}/{projectID}/{configID}", h.Delete)
-	r.Post("/check_connection/{projectID}/{configType}", h.CheckConnection)
-	r.Post("/check_connection/{mode}/{projectID}/{configType}", h.CheckConnection)
-	r.Post("/check_connections/{projectID}", h.BatchCheckConnections)
-	r.Post("/check_connections/{mode}/{projectID}", h.BatchCheckConnections)
-	r.Get("/models/{projectID}", h.ListModels)
-	r.Get("/models/{mode}/{projectID}", h.ListModels)
-	r.Post("/models/{projectID}", h.SetDefaultModel)
-	r.Post("/models/{mode}/{projectID}", h.SetDefaultModel)
-	r.Get("/types/{projectID}", h.ListTypes)
-	r.Get("/types/{mode}/{projectID}", h.ListTypes)
-	r.Get("/tts_voices/{projectID}", h.TTSVoices)
-	r.Get("/tts_voices/{mode}/{projectID}", h.TTSVoices)
+	r.With(list).Get("/configurations/{projectID}", h.List)
+	r.With(list).Get("/configurations/{mode}/{projectID}", h.List)
+	r.With(create).Post("/configurations/{projectID}", h.Create)
+	r.With(create).Post("/configurations/{mode}/{projectID}", h.Create)
+	r.With(details).Get("/configuration/{projectID}/{configID}", h.Get)
+	r.With(details).Get("/configuration/{mode}/{projectID}/{configID}", h.Get)
+	r.With(update).Put("/configuration/{projectID}/{configID}", h.Update)
+	r.With(update).Put("/configuration/{mode}/{projectID}/{configID}", h.Update)
+	r.With(remove).Delete("/configuration/{projectID}/{configID}", h.Delete)
+	r.With(remove).Delete("/configuration/{mode}/{projectID}/{configID}", h.Delete)
+	// The connection checks take the CREATE string. The reference declares no
+	// permission on either route, so this is a proposal, and it is the narrowest
+	// one that costs no caller a control: the button they serve sits on the
+	// credential create form and on the edit form, and the legacy matrix gives
+	// `create` and `update` to exactly the same default-mode roles (admin and
+	// editor), so naming one of the two withholds nothing from the other's
+	// holders. It has to be a WRITE-tier string rather than `list`: the handler
+	// makes the platform dial a caller-supplied api_base, attributed to the
+	// {projectID} in the path through the signed identity header, and a viewer
+	// who may not save a credential has no use for a pre-save probe.
+	//
+	// THE TOOLKIT FORMS CALL THIS ROUTE TOO, and that was checked rather than
+	// assumed. apps/elitea-web features/toolkits and features/agents both post
+	// to /configurations/check_connection/{projectID}/{configType} for toolkit
+	// credential types (github, jira, sharepoint), so a caller who may create a
+	// TOOLKIT and not a CREDENTIAL would lose that button. The legacy matrix
+	// gives `models.applications.tools.create` and
+	// `configurations.configuration.create` to the SAME default-mode roles —
+	// admin and editor — so the two sets are identical and no role loses a
+	// control here.
+	r.With(create).Post("/check_connection/{projectID}/{configType}", h.CheckConnection)
+	r.With(create).Post("/check_connection/{mode}/{projectID}/{configType}", h.CheckConnection)
+	r.With(create).Post("/check_connections/{projectID}", h.BatchCheckConnections)
+	r.With(create).Post("/check_connections/{mode}/{projectID}", h.BatchCheckConnections)
+	// models.go and model_default.go gate the reviewed copies of these two on
+	// exactly these strings, over the same paths.
+	r.With(list).Get("/models/{projectID}", h.ListModels)
+	r.With(list).Get("/models/{mode}/{projectID}", h.ListModels)
+	r.With(update).Post("/models/{projectID}", h.SetDefaultModel)
+	r.With(update).Post("/models/{mode}/{projectID}", h.SetDefaultModel)
+	// types.go gates the reviewed copy on the list string, and states why:
+	// "listing stored type names is inventory access, not public schema
+	// discovery".
+	r.With(list).Get("/types/{projectID}", h.ListTypes)
+	r.With(list).Get("/types/{mode}/{projectID}", h.ListTypes)
+	// TTSVoices answers 501 for every project (see ttsVoicesUnavailable). It is
+	// still gated, and on the list string, because a gate must match what the
+	// route is for and not what its body does today: the reference reads the
+	// project's tts configuration row, which is the same inventory access every
+	// other read here takes. When #323 gives it a real body the gate is already
+	// the right one.
+	r.With(list).Get("/tts_voices/{projectID}", h.TTSVoices)
+	r.With(list).Get("/tts_voices/{mode}/{projectID}", h.TTSVoices)
 	return r
 }
 
-// ProductionRoutes is an unmounted cutover candidate containing only methods
-// with an audited exact legacy permission, mode, and project extractor. RBAC
-// parity alone is not business-logic parity; NewRouter must not mount this set
-// until the tenant repository, validation, secret, event, and DTO contracts are
-// complete. Routes() retains the wider prototype surface for parity work.
-func (h *Handler) ProductionRoutes() chi.Router {
-	r := chi.NewRouter()
-	r.With(h.require("configurations.configurations.list")).Get("/configurations/{projectID}", h.List)
-	r.With(h.require("configurations.configuration.create")).Post("/configurations/{projectID}", h.Create)
-	r.With(h.require("configurations.configuration.details")).Get("/configuration/{projectID}/{configID}", h.Get)
-	r.With(h.require("configurations.configuration.update")).Put("/configuration/{projectID}/{configID}", h.Update)
-	r.With(h.require("configurations.configuration.delete")).Delete("/configuration/{projectID}/{configID}", h.Delete)
-	return r
-}
-
+// require gates one route on the named legacy permission, resolved in DEFAULT
+// mode against the `{projectID}` path segment.
+//
+// It fails closed twice over, and both matter here.
+//
+//  1. RequireResolvedPermissionsForProject answers 403 when the resolver is nil,
+//     so a Handler built without WithPermissionResolver serves nothing.
+//  2. legacyrbac.PostgresResolver parses the project id with parsePositiveID in
+//     the default mode, so a project id that is not a positive integer is
+//     refused BEFORE any handler runs. That closes a second hazard on this
+//     surface: every handler below builds its tenant schema as
+//     fmt.Sprintf("p_%s", projectID) and interpolates it with %q, which is Go
+//     string quoting and not SQL identifier quoting (PostgreSQL escapes a quote
+//     inside an identifier by doubling it, never with a backslash). Measured on
+//     PostgreSQL 16, a crafted id does break out of the quoted identifier, and
+//     the breakout is not exploitable only because the backslash %q inserts
+//     lands INSIDE the identifier, so the schema it names cannot exist. That is
+//     an accident, not a defence. No caller reaches it now.
 func (h *Handler) require(permission string) func(http.Handler) http.Handler {
 	return middleware.RequireResolvedPermissions(
 		h.permissionResolver,
@@ -168,74 +323,193 @@ type SharedSection struct {
 	Limit  int             `json:"limit"`
 }
 
-func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	limit := 0
-	if rawLimit := r.URL.Query().Get("limit"); rawLimit != "" {
-		if parsed, err := strconv.Atoi(rawLimit); err == nil {
-			limit = parsed
-		}
+// configurationListQuery is one parsed GET /configurations/{projectID}
+// request.
+//
+// The handler read `limit`, `offset` and `section` only. The shipped clients
+// also send `type`, `query`, `sort_by`, `sort_order`, `include_shared`,
+// `shared_offset` and `shared_limit`. Every dropped parameter changed the
+// answer. The SharePoint credential control asks for `type=sharepoint`. It
+// received the newest rows of EVERY type instead. So in a project with more
+// than one page of configurations, the credential it needs is not in the
+// response. The control then renders as if no credential exists.
+//
+// The names, the defaults and the clamps are the ones the reviewed service
+// applies (application/configurations/crud.go,
+// normalizeCurrentConfigurationListRequest).
+type configurationListQuery struct {
+	sections      []string
+	types         []string
+	search        string
+	offset        int
+	limit         int
+	includeShared bool
+	sharedOffset  int
+	sharedLimit   int
+	sortBy        string
+	sortOrder     string
+}
+
+func parseConfigurationListQuery(values url.Values) configurationListQuery {
+	return configurationListQuery{
+		sections:      values["section"],
+		types:         values["type"],
+		search:        values.Get("query"),
+		offset:        configurationListOffset(values.Get("offset")),
+		limit:         configurationListLimit(values.Get("limit")),
+		includeShared: strings.EqualFold(values.Get("include_shared"), "true"),
+		sharedOffset:  configurationListOffset(values.Get("shared_offset")),
+		sharedLimit:   configurationListLimit(values.Get("shared_limit")),
+		sortBy:        configurationListSortBy(values.Get("sort_by")),
+		sortOrder:     configurationListSortOrder(values.Get("sort_order")),
 	}
-	offset := 0
-	if rawOffset := r.URL.Query().Get("offset"); rawOffset != "" {
-		if parsed, err := strconv.Atoi(rawOffset); err == nil {
-			offset = parsed
-		}
-	}
-	if limit <= 0 {
-		limit = defaultConfigurationListLimit
+}
+
+// configurationListLimit applies the default and the clamp to one page size.
+// A value that does not parse is the same as an absent one, which is what
+// Flask's `request.args.get(..., type=int)` does in the reference.
+func configurationListLimit(raw string) int {
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return defaultConfigurationListLimit
 	}
 	if limit > maxConfigurationListLimit {
-		limit = maxConfigurationListLimit
+		return maxConfigurationListLimit
 	}
-	if offset < 0 {
-		offset = 0
+	return limit
+}
+
+func configurationListOffset(raw string) int {
+	offset, err := strconv.Atoi(raw)
+	if err != nil || offset < 0 {
+		return 0
 	}
+	return offset
+}
 
-	schema := fmt.Sprintf("p_%s", projectID)
-	ctx := r.Context()
-
-	// The client always sends ?section= (it fires one request per section),
-	// and this handler ignored it: every section received the whole table, so
-	// one credential rendered under all seven headings — LLM, Embedding, TTS
-	// and the rest alike (#131, measured: 7 copies of a single row).
-	sections := r.URL.Query()["section"]
-	countFilter, countArgs := configurationSectionFilter(sections, 1)
-	listFilter, listArgs := configurationSectionFilter(sections, 3)
-
-	// Count
-	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = false%s`, schema, countFilter)
-	if err := h.pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
-		// Schema may not exist yet — return empty
-		writeJSON(w, http.StatusOK, ListResponse{
-			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
-			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: 20},
-		})
-		return
+// configurationListQueryInBounds reports whether the filters stay inside the
+// bounds of the reviewed service.
+//
+// A list request carries two repeated parameters and one search string. The
+// type list goes into `type = ANY($n)`, and the search string goes into a
+// leading-wildcard ILIKE over the tenant table. Both are unbounded work for
+// the database, so one request can hold thousands of values.
+//
+// The reviewed service refuses such a request
+// (application/configurations/crud.go, normalizeCurrentConfigurationListRequest).
+// This route refuses it with the same status and the same message.
+func configurationListQueryInBounds(request configurationListQuery) bool {
+	if len(request.search) > maxConfigurationQueryLength {
+		return false
 	}
+	return configurationFilterInBounds(request.sections) && configurationFilterInBounds(request.types)
+}
 
-	// Own configs
-	listQ := fmt.Sprintf(`
-		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
-			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
-			created_at, updated_at
-		FROM %q.configuration
-		WHERE shared = false%s
-		ORDER BY created_at DESC
-		LIMIT $1 OFFSET $2
-	`, schema, listFilter)
-
-	rows, err := h.pool.Query(ctx, listQ, append([]any{limit, offset}, listArgs...)...)
-	if err != nil {
-		writeJSON(w, http.StatusOK, ListResponse{
-			Items: []Configuration{}, Total: 0, Offset: offset, Limit: limit,
-			Shared: SharedSection{Items: []Configuration{}, Total: 0, Offset: 0, Limit: 20},
-		})
-		return
+// configurationFilterInBounds checks the length of one repeated parameter, and
+// the length of each of its values.
+func configurationFilterInBounds(values []string) bool {
+	if len(values) > maxConfigurationFilterValues {
+		return false
 	}
+	for _, value := range values {
+		if len(value) > maxConfigurationFilterLength {
+			return false
+		}
+	}
+	return true
+}
+
+// configurationSortColumns is the sort whitelist, and the map value reports
+// whether the column holds NULL.
+//
+// The sort column is INTERPOLATED into the ORDER BY, because a placeholder
+// there sorts by a constant. So a value outside this set must never reach SQL.
+// The set is the one internal/db/queries/configurations.sql accepts, and the
+// NULLS LAST flags are that query's.
+var configurationSortColumns = map[string]bool{
+	"id":           false,
+	"uuid":         false,
+	"project_id":   false,
+	"label":        true,
+	"elitea_title": false,
+	"type":         false,
+	"section":      false,
+	"data":         false,
+	"meta":         false,
+	"shared":       false,
+	"status_ok":    false,
+	"status_logs":  true,
+	"source":       false,
+	"author_id":    true,
+	"created_at":   false,
+	"updated_at":   true,
+}
+
+// configurationListSortBy resolves `sort_by` against the whitelist. An
+// unrecognised value falls back to created_at. It is not a 400: the reference
+// ignores an unknown sort key, and a 400 would break a client that sends one.
+func configurationListSortBy(raw string) string {
+	if _, ok := configurationSortColumns[raw]; ok {
+		return raw
+	}
+	return "created_at"
+}
+
+func configurationListSortOrder(raw string) string {
+	if strings.EqualFold(raw, "asc") {
+		return "asc"
+	}
+	return "desc"
+}
+
+// configurationOrderBy renders the ORDER BY for a whitelisted sort pair.
+// `id ASC` is the tiebreaker the reviewed query carries, so a page boundary
+// stays stable when two rows share the sort value.
+func configurationOrderBy(sortBy, sortOrder string) string {
+	direction := "DESC"
+	if sortOrder == "asc" {
+		direction = "ASC"
+	}
+	nulls := ""
+	if configurationSortColumns[sortBy] {
+		nulls = " NULLS LAST"
+	}
+	return fmt.Sprintf("ORDER BY %s %s%s, id ASC", sortBy, direction, nulls)
+}
+
+// configurationRowFilter builds the bound WHERE clause of one list request.
+// `placeholder` is the first free placeholder index. Every value is BOUND, so
+// no caller string reaches the statement text.
+func configurationRowFilter(request configurationListQuery, placeholder int) (string, []any) {
+	clause, args := configurationSectionFilter(request.sections, placeholder)
+	placeholder += len(args)
+	if len(request.types) > 0 {
+		clause += " AND type = ANY($" + strconv.Itoa(placeholder) + ")"
+		args = append(args, request.types)
+		placeholder++
+	}
+	if request.search != "" {
+		clause += " AND label ILIKE ('%' || $" + strconv.Itoa(placeholder) + " || '%')"
+		args = append(args, request.search)
+	}
+	return clause, args
+}
+
+// The two sentinels separate a row this handler could not READ from a row it
+// read and could not DECODE. Both are 500s, and they keep the two messages the
+// handler already answered.
+var (
+	errConfigurationRowUnreadable = errors.New("configuration row is unreadable")
+	errConfigurationRowInvalid    = errors.New("stored configuration is invalid")
+)
+
+// scanConfigurationRows reads one result set into the wire shape.
+//
+// The list and the shared list ran two copies of this loop. rows.Err() was
+// checked in neither, so a result set that failed part way through was served
+// as a short page with HTTP 200.
+func scanConfigurationRows(rows pgx.Rows) ([]Configuration, error) {
 	defer rows.Close()
-
 	items := make([]Configuration, 0)
 	for rows.Next() {
 		var c Configuration
@@ -246,16 +520,13 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 			&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
 			&createdAt, &updatedAt,
 		); err != nil {
-			http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("%w: %w", errConfigurationRowUnreadable, err)
 		}
 		if err := json.Unmarshal(data, &c.Data); err != nil {
-			http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("%w: %w", errConfigurationRowInvalid, err)
 		}
 		if err := json.Unmarshal(meta, &c.Meta); err != nil {
-			http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("%w: %w", errConfigurationRowInvalid, err)
 		}
 		if createdAt != nil {
 			c.CreatedAt = createdAt.Format(time.RFC3339)
@@ -265,71 +536,328 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", errConfigurationRowUnreadable, err)
+	}
+	return items, nil
+}
 
-	// Shared configs
-	var sharedTotal int
-	sharedCountQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE shared = true%s`, schema, countFilter)
-	if err := h.pool.QueryRow(ctx, sharedCountQ, countArgs...).Scan(&sharedTotal); err != nil {
-		http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
+// configurationSchemaMissing reports whether an error means the tenant schema,
+// or its table, does not exist yet.
+//
+// This is the ONLY error a list may answer with an empty page. Every other
+// error is a failure: a saturated pool, a lost connection, a statement
+// timeout, a lock error. An empty page reports such a failure as a project
+// that holds no credentials. The user then creates a credential that already exists, and
+// the operator receives no signal at all.
+func configurationSchemaMissing(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
+	}
+	// 3F000 invalid_schema_name, 42P01 undefined_table.
+	return postgresError.Code == "3F000" || postgresError.Code == "42P01"
+}
+
+// writeConfigurationQueryFailure logs one failed statement and answers 500.
+//
+// A cancelled request writes nothing and logs nothing: the caller has gone, so
+// the write lands on a dead connection and the log line is noise.
+func writeConfigurationQueryFailure(
+	ctx context.Context,
+	w http.ResponseWriter,
+	message string,
+	projectID string,
+	err error,
+) {
+	if ctx.Err() != nil {
+		return
+	}
+	slog.ErrorContext(ctx, message, "project_id", projectID, "err", err)
+	apierr.WriteStatus(w, http.StatusInternalServerError, "list failed")
+}
+
+// writeConfigurationRowFailure answers a row this handler could not read or
+// could not decode. It keeps the two messages apart, and it logs the cause,
+// which the two scan loops discarded.
+func writeConfigurationRowFailure(ctx context.Context, w http.ResponseWriter, projectID string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	slog.ErrorContext(ctx, "configuration row read failed", "project_id", projectID, "err", err)
+	if errors.Is(err, errConfigurationRowInvalid) {
+		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid stored configuration")
+		return
+	}
+	apierr.WriteStatus(w, http.StatusInternalServerError, "list failed")
+}
+
+// sharedConfigurationSchema names the schema the `shared` block reads, and
+// reports whether the block is served at all.
+//
+// It is the PUBLIC project's schema, never the caller's. The block used to read
+// `WHERE shared = true` in the CALLER's own schema. The main page used to read
+// `WHERE shared = false` in the same schema. So a credential left the
+// AI-Configuration page the moment the user shared it. The public credentials
+// the block exists for were unreachable from every project. The
+// reviewed service reads request.PublicProjectID for this page, and omits it
+// when the caller IS the public project (application/configurations/crud.go).
+//
+// Without WithPublicProjectID the block stays empty. An empty block is the
+// honest answer: the caller's own schema is a wrong answer, not a fallback.
+func (h *Handler) sharedConfigurationSchema(projectID string, request configurationListQuery) (string, bool) {
+	if !request.includeShared || h.publicProjectID <= 0 {
+		return "", false
+	}
+	callerID, err := strconv.Atoi(projectID)
+	if err != nil || callerID == h.publicProjectID {
+		return "", false
+	}
+	return fmt.Sprintf("p_%d", h.publicProjectID), true
+}
+
+// configurationSelectColumns is the row shape both list statements read. It is
+// a constant, never caller data.
+const configurationSelectColumns = `id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
+			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
+			created_at, updated_at`
+
+func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration store is not available")
+		return
+	}
+	projectID := chi.URLParam(r, "projectID")
+	// The client always sends ?section= (it fires one request per section),
+	// and this handler ignored it: every section received the whole table, so
+	// one credential rendered under all seven headings — LLM, Embedding, TTS
+	// and the rest alike (#131, measured: 7 copies of a single row).
+	request := parseConfigurationListQuery(r.URL.Query())
+	// An oversized filter never reaches the database. The message is the one
+	// the reviewed route gives for the same refusal (read.go).
+	if !configurationListQueryInBounds(request) {
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid configuration request")
+		return
+	}
+	schema := fmt.Sprintf("p_%s", projectID)
+	ctx := r.Context()
+
+	filter, filterArgs := configurationRowFilter(request, 1)
+
+	// The page carries every row the project OWNS, shared or not. The old
+	// `shared = false` predicate hid a shared credential from its own project.
+	var total int
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.configuration WHERE TRUE%s`, schema, filter)
+	if err := h.pool.QueryRow(ctx, countQ, filterArgs...).Scan(&total); err != nil {
+		if configurationSchemaMissing(err) {
+			writeJSON(w, http.StatusOK, emptyConfigurationList(request))
+			return
+		}
+		writeConfigurationQueryFailure(ctx, w, "configuration count failed", projectID, err)
 		return
 	}
 
-	sharedQ := fmt.Sprintf(`
-		SELECT id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
-			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id,
-			created_at, updated_at
+	listQ := fmt.Sprintf(`
+		SELECT %s
 		FROM %q.configuration
-		WHERE shared = true%s
-		ORDER BY created_at DESC
-		LIMIT 20
-	`, schema, countFilter)
+		WHERE TRUE%s
+		%s
+		LIMIT $%d OFFSET $%d
+	`, configurationSelectColumns, schema, filter, configurationOrderBy(request.sortBy, request.sortOrder),
+		len(filterArgs)+1, len(filterArgs)+2)
 
-	sharedItems := make([]Configuration, 0)
-	sharedRows, err := h.pool.Query(ctx, sharedQ, countArgs...)
-	if err == nil {
-		defer sharedRows.Close()
-		for sharedRows.Next() {
-			var c Configuration
-			var data, meta []byte
-			var createdAt, updatedAt *time.Time
-			if err := sharedRows.Scan(
-				&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
-				&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
-				&createdAt, &updatedAt,
-			); err != nil {
-				http.Error(w, `{"error":"list failed"}`, http.StatusInternalServerError)
-				return
-			}
-			if err := json.Unmarshal(data, &c.Data); err != nil {
-				http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-				return
-			}
-			if err := json.Unmarshal(meta, &c.Meta); err != nil {
-				http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-				return
-			}
-			if createdAt != nil {
-				c.CreatedAt = createdAt.Format(time.RFC3339)
-			}
-			if updatedAt != nil {
-				c.UpdatedAt = updatedAt.Format(time.RFC3339)
-			}
-			sharedItems = append(sharedItems, c)
-		}
+	// The count above proved the schema exists, so no error here is a missing
+	// schema. Every one of them is a failure, and the empty page this branch
+	// used to answer also discarded the `total` the previous statement read.
+	rows, err := h.pool.Query(ctx, listQ, append(append([]any{}, filterArgs...), request.limit, request.offset)...)
+	if err != nil {
+		writeConfigurationQueryFailure(ctx, w, "configuration list failed", projectID, err)
+		return
+	}
+	items, err := scanConfigurationRows(rows)
+	if err != nil {
+		writeConfigurationRowFailure(ctx, w, projectID, err)
+		return
 	}
 
-	writeJSON(w, http.StatusOK, ListResponse{
+	response := ListResponse{
 		Items:  items,
 		Total:  total,
-		Offset: offset,
-		Limit:  limit,
-		Shared: SharedSection{
-			Items:  sharedItems,
-			Total:  sharedTotal,
-			Offset: 0,
-			Limit:  20,
-		},
-	})
+		Offset: request.offset,
+		Limit:  request.limit,
+		Shared: emptySharedConfigurationSection(request),
+	}
+	sharedSchema, ok := h.sharedConfigurationSchema(projectID, request)
+	if !ok {
+		writeJSON(w, http.StatusOK, response)
+		return
+	}
+	if !h.appendSharedConfigurations(ctx, w, sharedSchema, projectID, request, &response) {
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// appendSharedConfigurations fills the `shared` block from the public project.
+// It reports whether the caller may still write the response.
+//
+// The block carries the type and section filters, as the reviewed service does,
+// and honours shared_offset and shared_limit. Both were hardcoded to 0 and 20.
+// The label search is NOT applied here: the reviewed service passes no
+// LabelQuery to the shared page.
+func (h *Handler) appendSharedConfigurations(
+	ctx context.Context,
+	w http.ResponseWriter,
+	sharedSchema string,
+	projectID string,
+	request configurationListQuery,
+	response *ListResponse,
+) bool {
+	sharedFilter, sharedArgs := configurationRowFilter(
+		configurationListQuery{sections: request.sections, types: request.types}, 1)
+
+	var sharedTotal int
+	sharedCountQ := fmt.Sprintf(
+		`SELECT COUNT(*) FROM %q.configuration WHERE shared = true%s`, sharedSchema, sharedFilter)
+	if err := h.pool.QueryRow(ctx, sharedCountQ, sharedArgs...).Scan(&sharedTotal); err != nil {
+		// This is the FIRST statement against the public project's schema, so
+		// a missing schema is answerable: the public project holds nothing to
+		// share. Any other error is a failure of the whole list.
+		if configurationSchemaMissing(err) {
+			return true
+		}
+		writeConfigurationQueryFailure(ctx, w, "shared configuration count failed", projectID, err)
+		return false
+	}
+
+	sharedQ := fmt.Sprintf(`
+		SELECT %s
+		FROM %q.configuration
+		WHERE shared = true%s
+		%s
+		LIMIT $%d OFFSET $%d
+	`, configurationSelectColumns, sharedSchema, sharedFilter,
+		configurationOrderBy(request.sortBy, request.sortOrder),
+		len(sharedArgs)+1, len(sharedArgs)+2)
+
+	// An error here used to leave an empty item list beside a non-zero
+	// sharedTotal, and said nothing.
+	sharedRows, err := h.pool.Query(
+		ctx, sharedQ, append(append([]any{}, sharedArgs...), request.sharedLimit, request.sharedOffset)...)
+	if err != nil {
+		writeConfigurationQueryFailure(ctx, w, "shared configuration list failed", projectID, err)
+		return false
+	}
+	sharedItems, err := scanConfigurationRows(sharedRows)
+	if err != nil {
+		writeConfigurationRowFailure(ctx, w, projectID, err)
+		return false
+	}
+	response.Shared.Items = sharedItems
+	response.Shared.Total = sharedTotal
+	return true
+}
+
+// emptySharedConfigurationSection echoes the REQUESTED shared page. The
+// response used to report `offset: 0, limit: 20` whatever the caller asked for,
+// so a client could not page the block at all.
+func emptySharedConfigurationSection(request configurationListQuery) SharedSection {
+	return SharedSection{
+		Items:  []Configuration{},
+		Total:  0,
+		Offset: request.sharedOffset,
+		Limit:  request.sharedLimit,
+	}
+}
+
+func emptyConfigurationList(request configurationListQuery) ListResponse {
+	return ListResponse{
+		Items:  []Configuration{},
+		Total:  0,
+		Offset: request.offset,
+		Limit:  request.limit,
+		Shared: emptySharedConfigurationSection(request),
+	}
+}
+
+// configurationTitleConflict reports whether a write failed on the UNIQUE
+// constraint over elitea_title.
+//
+// `elitea_title VARCHAR NOT NULL UNIQUE` (migrations/001_initial.sql) gives the
+// constraint the name `configuration_elitea_title_key`. The match is POSITIVE
+// on that column name.
+//
+// A negative match on the uuid constraint reads every other 23505 as a
+// duplicate title. The table also holds `id SERIAL PRIMARY KEY`. A sequence
+// behind the maximum id raises 23505 on `configuration_pkey`, and the user
+// then reads "Configuration already exists" for a server fault.
+func configurationTitleConflict(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) || postgresError.Code != "23505" {
+		return false
+	}
+	return strings.Contains(postgresError.ConstraintName, "elitea_title")
+}
+
+// writeConfigurationCreateFailure answers one failed INSERT.
+//
+// Every error, including the UNIQUE violation on elitea_title, answered 500
+// `{"error":"create failed"}`. A user who saves a second credential with a name
+// the project already holds makes a plain client mistake. The platform reported
+// it as a server fault. The platform also logged nothing. The reviewed twin answers
+// 400 "Configuration already exists" on field elitea_title (mutation.go), and
+// this route now emits the same body.
+func writeConfigurationCreateFailure(ctx context.Context, w http.ResponseWriter, projectID string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	if configurationTitleConflict(err) {
+		writeCurrentConfigurationMutationError(
+			w, http.StatusBadRequest, "Configuration already exists", "elitea_title")
+		return
+	}
+	if errors.Is(err, errConfigurationSecretStoreUnavailable) {
+		slog.ErrorContext(ctx, "configuration secret sealing failed", "project_id", projectID, "err", err)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration secret store is not available")
+		return
+	}
+	slog.ErrorContext(ctx, "configuration create failed", "project_id", projectID, "err", err)
+	apierr.WriteStatus(w, http.StatusInternalServerError, "create failed")
+}
+
+// writeConfigurationUpdateFailure answers one failed UPDATE.
+//
+// Three causes had one answer: 404 "configuration not found". A rename onto a
+// title the project already holds reported a missing row, and a database
+// failure reported a missing row as well. Only pgx.ErrNoRows is a 404 now.
+func writeConfigurationUpdateFailure(
+	ctx context.Context,
+	w http.ResponseWriter,
+	projectID string,
+	configID string,
+	err error,
+) {
+	if ctx.Err() != nil {
+		return
+	}
+	if configurationTitleConflict(err) {
+		writeCurrentConfigurationMutationError(
+			w, http.StatusBadRequest, "Configuration already exists", "elitea_title")
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
+		return
+	}
+	if errors.Is(err, errConfigurationSecretStoreUnavailable) {
+		slog.ErrorContext(ctx, "configuration secret sealing failed",
+			"project_id", projectID, "configuration_id", configID, "err", err)
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration secret store is not available")
+		return
+	}
+	slog.ErrorContext(ctx, "configuration update failed",
+		"project_id", projectID, "configuration_id", configID, "err", err)
+	apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
 }
 
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
@@ -354,15 +882,15 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
-		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
 		return
 	}
 	if err := json.Unmarshal(data, &c.Data); err != nil {
-		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid stored configuration")
 		return
 	}
 	if err := json.Unmarshal(meta, &c.Meta); err != nil {
-		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid stored configuration")
 		return
 	}
 	if createdAt != nil {
@@ -389,18 +917,42 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		dataMap = map[string]any{}
 	}
 	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	dataBytes, err := json.Marshal(dataMap)
-	if err != nil {
-		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusBadRequest)
+	if h.pool == nil {
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration store is not available")
 		return
 	}
-	metaBytes, err := json.Marshal(body["meta"])
+	configType := strVal(body, "type")
+	// The api_key the caller sends must never reach the row. It goes to the
+	// project vault, and the row keeps the {{secret.NAME}} reference.
+	sealedData, secretMutations, failure := h.sealConfigurationSecrets(ctx, configType, dataMap)
+	if failure != nil {
+		failure.write(w)
+		return
+	}
+
+	dataBytes, err := json.Marshal(sealedData)
 	if err != nil {
-		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid configuration data")
+		return
+	}
+	// `meta` follows the same rule the partial UPDATE applies: an absent key
+	// and a present JSON null both store `{}`.
+	//
+	// It used to be `json.Marshal(body["meta"])`, and the UI never sends the
+	// key. json.Marshal(nil) is the four bytes `null`, so every configuration
+	// created through this route stored `meta = 'null'::jsonb` — a value the
+	// column's own default (`'{}'`) exists to prevent, and one the typed
+	// reader refuses ("decode current configuration metadata: JSON object is
+	// required"). The create answered 201 and the list of that section then
+	// answered 500 for every member of the project, permanently: one row made
+	// the whole credentials screen unreachable.
+	metaBytes, metaReason := createdMetadataColumn(body)
+	if metaReason != "" {
+		apierr.WriteStatus(w, http.StatusBadRequest, metaReason)
 		return
 	}
 	shared, _ := body["shared"].(bool)
@@ -413,35 +965,44 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 
 	pID, err := strconv.Atoi(projectID)
 	if err != nil {
-		http.Error(w, `{"error":"invalid project"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid project")
 		return
 	}
 	var authorID any
+	var snapshotAuthorID *int
 	if user, ok := auth.UserFromContext(ctx); ok {
-		if owningUserID, safe := user.OwningUserID(); safe {
+		// author_id is an INTEGER column, so an id above math.MaxInt32 names
+		// no row. The sibling mutation service applies the same bound
+		// (application/configurations/mutation.go). Without the bound,
+		// `int(owningUserID)` truncates on a 32-bit build. The row is then
+		// stored against a different person's id.
+		if owningUserID, safe := user.OwningUserID(); safe && owningUserID > 0 && owningUserID <= math.MaxInt32 {
 			authorID = owningUserID
+			owner := int(owningUserID)
+			snapshotAuthorID = &owner
 		}
 	}
-	configType := strVal(body, "type")
 	title := firstStrVal(body, "elitea_title", "name")
 	section := h.sectionFor(configType, strVal(body, "section"))
 
 	var id int
 	var uuid string
 	var createdAt time.Time
-	err = h.pool.QueryRow(ctx, q,
-		pID,
-		strVal(body, "label"),
-		title,
-		configType,
-		section,
-		dataBytes,
-		metaBytes,
-		shared,
-		authorID,
-	).Scan(&id, &uuid, &createdAt)
+	err = h.withConfigurationSecretTx(ctx, pID, secretMutations, func(tx pgx.Tx) error {
+		return tx.QueryRow(ctx, q,
+			pID,
+			strVal(body, "label"),
+			title,
+			configType,
+			section,
+			dataBytes,
+			metaBytes,
+			shared,
+			authorID,
+		).Scan(&id, &uuid, &createdAt)
+	})
 	if err != nil {
-		http.Error(w, `{"error":"create failed"}`, http.StatusInternalServerError)
+		writeConfigurationCreateFailure(ctx, w, projectID, err)
 		return
 	}
 
@@ -457,12 +1018,21 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: createdAt.Format(time.RFC3339),
 	}
 	if err := json.Unmarshal(dataBytes, &c.Data); err != nil {
-		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid configuration data")
 		return
 	}
 	if err := json.Unmarshal(metaBytes, &c.Meta); err != nil {
-		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusInternalServerError)
+		apierr.WriteStatus(w, http.StatusInternalServerError, "invalid configuration metadata")
 		return
+	}
+	// The INSERT above stores the column default, false. A provider row that
+	// resolves must reach status_ok = true here, in this request, because the
+	// LLM gateway admits only status_ok = true and no other component in a
+	// shipped stack writes the column (#457).
+	if snapshot, ok := configurationAdmissionSnapshot(
+		id, uuid, pID, title, configType, section, c.Data, snapshotAuthorID,
+	); ok {
+		c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, snapshot)
 	}
 
 	writeJSON(w, http.StatusCreated, c)
@@ -486,6 +1056,31 @@ func (h *Handler) sectionFor(configType, requested string) string {
 	return entry.Section
 }
 
+// Update applies a PARTIAL change. Only the fields the body carries are
+// written, which is the contract this compatibility route exists to preserve:
+// the reference implementation dumps the parsed body with `exclude_unset=True`
+// and assigns the surviving keys one by one
+// (legacy/plugins/configurations/utils.py).
+//
+// Before this change the statement assigned `data`, `meta` and `shared`
+// unconditionally, from a body decoded into map[string]any. An absent `data`
+// key therefore became `{}`, an absent `meta` became JSON null, and an absent
+// `shared` became false. A caller that sent `{"shared":true}` — the documented
+// way to share a configuration — erased the row's provider credential. Nothing
+// keeps a copy of that column, so the value was unrecoverable. The Update then
+// re-ran provider admission over the emptied row and wrote status_ok = false,
+// which withdrew the credential from the LLM gateway as well. The four string
+// columns were already guarded with COALESCE, so the three columns that hold
+// the payload were the only ones that behaved this way.
+//
+// A present key that carries the wrong JSON type is now a 400 rather than a
+// silent default. `"data": "oops"` used to become `{}` and `"shared": 1` used
+// to become false, so a malformed body wiped the row just as an absent key did.
+//
+// Provider admission stays unconditional. Its snapshot comes from the RETURNING
+// row — the row as actually stored. So it is correct under a partial update. A
+// change of `type`, `section` or `elitea_title` alone still needs a fresh
+// decision (#457).
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	configID := chi.URLParam(r, "configID")
@@ -496,72 +1091,118 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if !decodeBoundedJSON(w, r, &body) {
 		return
 	}
-
-	dataMap, _ := body["data"].(map[string]any)
-	if dataMap == nil {
-		dataMap = map[string]any{}
+	// The self-referential guard answers before the transaction opens. It
+	// refuses a client mistake, so it must not depend on the database.
+	if failure := validateUpdatedConfigurationData(body); failure != nil {
+		failure.write(w)
+		return
 	}
-	if err := validateNotSelfReferential(dataMap, selfLLMOrigins()); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+	pID, convErr := strconv.Atoi(projectID)
+	if convErr != nil {
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid project")
+		return
+	}
+	if h.pool == nil {
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration store is not available")
 		return
 	}
 
-	dataBytes, err := json.Marshal(dataMap)
+	c, failure, err := h.applyConfigurationUpdate(ctx, body, pID, schema, configID)
+	if failure != nil {
+		failure.write(w)
+		return
+	}
 	if err != nil {
-		http.Error(w, `{"error":"invalid configuration data"}`, http.StatusBadRequest)
+		writeConfigurationUpdateFailure(ctx, w, projectID, configID, err)
 		return
 	}
-	metaBytes, err := json.Marshal(body["meta"])
-	if err != nil {
-		http.Error(w, `{"error":"invalid configuration metadata"}`, http.StatusBadRequest)
-		return
+	// An update carries new data, so the previous decision no longer describes
+	// the row. A row that stops resolving must drop back to status_ok = false:
+	// withdrawing the row from every reader is exactly this write (#457).
+	// The path project identifier is the one the schema was built from, so it
+	// is the project whose row was just written.
+	if snapshot, ok := configurationAdmissionSnapshot(
+		c.ID, c.UUID, pID, c.Name, c.Type, c.Section, c.Data, c.AuthorID,
+	); ok {
+		c.StatusOK = h.admitConfiguration(ctx, schema, c.StatusOK, snapshot)
 	}
-	shared, _ := body["shared"].(bool)
+	writeJSON(w, http.StatusOK, c)
+}
 
-	q := fmt.Sprintf(`
-		UPDATE %q.configuration SET
-			label = COALESCE($1, label),
-			elitea_title = COALESCE($2, elitea_title),
-			type = COALESCE($3, type),
-			section = COALESCE($4, section),
-			data = $5,
-			meta = $6,
-			shared = $7,
-			updated_at = now()
-		WHERE %s = $8
-		RETURNING id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
-			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id, created_at, updated_at
-	`, schema, configurationIDColumn(configID))
-
+// applyConfigurationUpdate runs the whole write in ONE transaction: it reads
+// the stored type, seals the submitted secrets, applies the partial update and
+// stores the sealed values.
+//
+// The stored type is read inside the transaction because the body may omit
+// `type`. The type names the schema that says which field is a password, so a
+// stale answer can store a credential in clear text.
+func (h *Handler) applyConfigurationUpdate(
+	ctx context.Context,
+	body map[string]any,
+	projectID int,
+	schema string,
+	configID string,
+) (Configuration, *configurationWriteFailure, error) {
 	var c Configuration
-	var data2, meta2 []byte
-	var createdAt, updatedAt *time.Time
-	updatedType := strVal(body, "type")
-	err = h.pool.QueryRow(ctx, q,
-		nullableStrVal(strVal(body, "label")),
-		nullableStrVal(firstStrVal(body, "elitea_title", "name")),
-		nullableStrVal(updatedType),
-		nullableStrVal(h.sectionFor(updatedType, strVal(body, "section"))),
-		dataBytes,
-		metaBytes,
-		shared,
-		configID,
-	).Scan(
-		&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
-		&data2, &meta2, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
-		&createdAt, &updatedAt,
-	)
+	tx, err := h.pool.Begin(ctx)
 	if err != nil {
-		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
-		return
+		return c, nil, err
 	}
-	if err := json.Unmarshal(data2, &c.Data); err != nil {
-		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-		return
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	configType, err := h.updatedConfigurationType(ctx, tx, body, schema, configID)
+	if err != nil {
+		return c, nil, err
 	}
-	if err := json.Unmarshal(meta2, &c.Meta); err != nil {
-		http.Error(w, `{"error":"invalid stored configuration"}`, http.StatusInternalServerError)
-		return
+	secretMutations, failure := h.sealConfigurationBodyData(ctx, body, configType)
+	if failure != nil {
+		return c, failure, nil
+	}
+
+	q, args, reason := h.buildConfigurationUpdate(body, schema, configID)
+	if reason != "" {
+		return c, &configurationWriteFailure{status: http.StatusBadRequest, message: reason}, nil
+	}
+	failure, err = h.scanUpdatedConfiguration(ctx, tx, q, args, &c)
+	if failure != nil || err != nil {
+		return c, failure, err
+	}
+	if err = h.sealTransactionSecrets(ctx, tx, projectID, secretMutations); err != nil {
+		return c, nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return c, nil, err
+	}
+	return c, nil, nil
+}
+
+// scanUpdatedConfiguration runs the partial UPDATE and decodes the row it
+// returns.
+//
+// The statement error travels through the second result, so pgx.ErrNoRows
+// still answers 404 and a title conflict still answers 400. A row this handler
+// cannot decode is the first result, because that is not a statement failure.
+func (h *Handler) scanUpdatedConfiguration(
+	ctx context.Context,
+	tx pgx.Tx,
+	query string,
+	args []any,
+	c *Configuration,
+) (*configurationWriteFailure, error) {
+	var data, meta []byte
+	var createdAt, updatedAt *time.Time
+	if err := tx.QueryRow(ctx, query, args...).Scan(
+		&c.ID, &c.UUID, &c.ProjectID, &c.Label, &c.Name, &c.Type, &c.Section,
+		&data, &meta, &c.Shared, &c.StatusOK, &c.StatusLogs, &c.Source, &c.AuthorID,
+		&createdAt, &updatedAt,
+	); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &c.Data); err != nil {
+		return invalidStoredConfiguration(), nil
+	}
+	if err := json.Unmarshal(meta, &c.Meta); err != nil {
+		return invalidStoredConfiguration(), nil
 	}
 	if createdAt != nil {
 		c.CreatedAt = createdAt.Format(time.RFC3339)
@@ -569,10 +1210,146 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	if updatedAt != nil {
 		c.UpdatedAt = updatedAt.Format(time.RFC3339)
 	}
-	writeJSON(w, http.StatusOK, c)
+	return nil, nil
 }
 
+// buildConfigurationUpdate returns the partial UPDATE for one request body, its
+// bound arguments, and an empty reason. A non-empty reason names a present
+// field that could not be decoded, and the caller answers 400 with it.
+//
+// The four string columns keep their COALESCE guard, so an omitted name still
+// keeps the stored one. `data`, `meta` and `shared` are assigned ONLY when the
+// body carries the key.
+func (h *Handler) buildConfigurationUpdate(
+	body map[string]any,
+	schema string,
+	configID string,
+) (query string, args []any, reason string) {
+	updatedType := strVal(body, "type")
+	assignments := []string{
+		"label = COALESCE($1, label)",
+		"elitea_title = COALESCE($2, elitea_title)",
+		"type = COALESCE($3, type)",
+		"section = COALESCE($4, section)",
+	}
+	args = []any{
+		nullableStrVal(strVal(body, "label")),
+		nullableStrVal(firstStrVal(body, "elitea_title", "name")),
+		nullableStrVal(updatedType),
+		nullableStrVal(h.sectionFor(updatedType, strVal(body, "section"))),
+	}
+
+	for _, column := range []string{"data", "meta"} {
+		encoded, present, objectReason := updatedObjectColumn(body, column)
+		if objectReason != "" {
+			return "", nil, objectReason
+		}
+		if !present {
+			continue
+		}
+		args = append(args, encoded)
+		assignments = append(assignments, fmt.Sprintf("%s = $%d", column, len(args)))
+	}
+
+	if raw, present := body["shared"]; present {
+		shared, isBool := raw.(bool)
+		if !isBool {
+			return "", nil, "invalid configuration sharing flag"
+		}
+		args = append(args, shared)
+		assignments = append(assignments, fmt.Sprintf("shared = $%d", len(args)))
+	}
+
+	assignments = append(assignments, "updated_at = now()")
+	args = append(args, configID)
+
+	query = fmt.Sprintf(`
+		UPDATE %q.configuration SET
+			%s
+		WHERE %s = $%d
+		RETURNING id, COALESCE(uuid::text, ''), project_id, COALESCE(label, ''), elitea_title, type, section,
+			data, meta, shared, status_ok, COALESCE(status_logs, ''), source, author_id, created_at, updated_at
+	`, schema, strings.Join(assignments, ",\n\t\t\t"), configurationIDColumn(configID), len(args))
+	return query, args, ""
+}
+
+// validateUpdatedConfigurationData runs the self-referential guard over a
+// present `data` object.
+//
+// The guard runs before the transaction opens. Its refusal is a client
+// mistake, so it must not depend on the database.
+func validateUpdatedConfigurationData(body map[string]any) *configurationWriteFailure {
+	object, isObject := body["data"].(map[string]any)
+	if !isObject {
+		return nil
+	}
+	if err := validateNotSelfReferential(object, selfLLMOrigins()); err != nil {
+		return &configurationWriteFailure{status: http.StatusBadRequest, message: err.Error()}
+	}
+	return nil
+}
+
+// createdMetadataColumn encodes the `meta` column of a CREATE, applying the
+// rule the partial UPDATE already applies: an absent key and a present JSON
+// null both store `{}`.
+//
+// The column holds a dictionary in the reference model and in every reader, so
+// a null there is off-contract and no reader accepts it.
+func createdMetadataColumn(body map[string]any) (encoded []byte, reason string) {
+	encoded, _, reason = updatedObjectColumn(map[string]any{"meta": body["meta"]}, "meta")
+	return encoded, reason
+}
+
+// updatedObjectColumn encodes one jsonb column of a partial UPDATE.
+//
+// Presence is read with the two-value map lookup, because absence and an empty
+// object are the same value after a type assertion. A present JSON null becomes
+// an empty object: the column holds a dictionary in the reference model and in
+// every reader, so a null there is off-contract.
+//
+// column is interpolated into the statement. Its caller passes a literal, never
+// caller data.
+func updatedObjectColumn(body map[string]any, column string) (encoded []byte, present bool, reason string) {
+	raw, present := body[column]
+	if !present {
+		return nil, false, ""
+	}
+	invalid := "invalid configuration data"
+	if column == "meta" {
+		invalid = "invalid configuration metadata"
+	}
+	object, isObject := raw.(map[string]any)
+	if !isObject && raw != nil {
+		return nil, false, invalid
+	}
+	if object == nil {
+		object = map[string]any{}
+	}
+	if column == "data" {
+		if err := validateNotSelfReferential(object, selfLLMOrigins()); err != nil {
+			return nil, false, err.Error()
+		}
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		return nil, false, invalid
+	}
+	return encoded, true, ""
+}
+
+// Delete removes one configuration row.
+//
+// A failed statement and an absent row answered the SAME 404. So a delete that
+// did not happen was reported as a row that was already gone. The row stayed,
+// nothing was logged, and a client that treats DELETE-404 as idempotent
+// success stopped retrying. Only RowsAffected() == 0 is a 404 now. Every
+// sibling in this service already splits the two (scheduling/schedules.go,
+// projects/groups.go, admin/projects.go).
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	if h.pool == nil {
+		apierr.WriteStatus(w, http.StatusServiceUnavailable, "the configuration store is not available")
+		return
+	}
 	projectID := chi.URLParam(r, "projectID")
 	configID := chi.URLParam(r, "configID")
 	schema := fmt.Sprintf("p_%s", projectID)
@@ -580,28 +1357,24 @@ func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	q := fmt.Sprintf(`DELETE FROM %q.configuration WHERE %s = $1`, schema, configurationIDColumn(configID))
 	ct, err := h.pool.Exec(ctx, q, configID)
-	if err != nil || ct.RowsAffected() == 0 {
-		http.Error(w, `{"error":"configuration not found"}`, http.StatusNotFound)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.ErrorContext(ctx, "configuration delete failed",
+				"project_id", projectID, "configuration_id", configID, "err", err)
+			apierr.WriteStatus(w, http.StatusInternalServerError, "internal server error")
+		}
+		return
+	}
+	if ct.RowsAffected() == 0 {
+		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) CheckConnection(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"success": true, "message": "Connection successful"})
-}
-
-func (h *Handler) BatchCheckConnections(w http.ResponseWriter, r *http.Request) {
-	var items []map[string]any
-	if !decodeBoundedJSON(w, r, &items) {
-		return
-	}
-	results := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		results = append(results, map[string]any{"id": item["id"], "success": true, "message": "Connection successful"})
-	}
-	writeJSON(w, http.StatusOK, results)
-}
+// CheckConnection and BatchCheckConnections are implemented in
+// check_connection.go (#319) — they used to be unconditional stubs here that
+// reported success for every payload without ever contacting the provider.
 
 type Model struct {
 	ID         int            `json:"id"`
@@ -641,9 +1414,16 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		LIMIT %d
 	`, schema, maxConfigurationModelRows)
 
+	// A project whose schema is not created yet holds no models. Any OTHER
+	// error is a failure, and an empty list reports it as a project with no
+	// models — the same swallow the list page carried.
 	rows, err := h.pool.Query(ctx, q, modelTypes)
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
+		if configurationSchemaMissing(err) {
+			writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
+			return
+		}
+		writeConfigurationQueryFailure(ctx, w, "configuration model list failed", projectID, err)
 		return
 	}
 	defer rows.Close()
@@ -662,7 +1442,7 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 		m.IsDefault = false
 		if dataBytes != nil {
 			if err := json.Unmarshal(dataBytes, &m.Data); err != nil {
-				http.Error(w, `{"error":"invalid stored model"}`, http.StatusInternalServerError)
+				apierr.WriteStatus(w, http.StatusInternalServerError, "invalid stored model")
 				return
 			}
 		}
@@ -672,12 +1452,42 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
+// modelDefaultUnavailable is what POST /configurations/models/{projectID}
+// answers when no writer is composed, and why.
+//
+// This route used to decode the body and answer 200 with an empty item list.
+// It wrote nothing — not the configuration row, not the project vault. An
+// administrator opened Settings > AI Configuration, chose a model, and got a
+// success. The default stayed what it was.
+//
+// The real writer is NewCurrentModelDefaultRoute (model_default.go). The
+// production router registers it only when the composition root supplies it,
+// and the composition root builds it only under ELITEA_CONFIGURATIONS_ENABLED.
+// The shipped chart sets that variable to "false", so a default install serves
+// this handler and nothing else. A refusal is the honest answer there, and it
+// names the variable that turns the capability on.
+//
+// This follows the TTSVoices decision (#466): a write route that reports
+// success and stores nothing is worse than one that refuses, because the caller
+// cannot tell the two apart.
+//
+// Both registrations stay. When the variable is on, the production router
+// registers the writer's static path on the root router. Chi prefers that path
+// over this mount. So only an unconfigured install reaches this body.
+const modelDefaultUnavailable = "the default model cannot be set in this deployment. The route that writes a " +
+	"project's default model is composed only when ELITEA_CONFIGURATIONS_ENABLED is true. This handler refuses " +
+	"rather than reporting a success it did not perform."
+
+// SetDefaultModel refuses. See modelDefaultUnavailable.
+//
+// The body is still decoded and bounded. So a malformed or oversized request is
+// still a 400. It also still cannot be used to read the whole stream.
 func (h *Handler) SetDefaultModel(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if !decodeBoundedJSON(w, r, &body) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": []Model{}, "total": 0})
+	apierr.WriteStatus(w, http.StatusServiceUnavailable, modelDefaultUnavailable)
 }
 
 func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
@@ -705,9 +1515,14 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := fmt.Sprintf(`SELECT DISTINCT type, section FROM %q.configuration ORDER BY type`, schema)
+	// Same rule as ListModels: only a missing schema is an empty list.
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {
-		writeJSON(w, http.StatusOK, []TypeDescriptor{})
+		if configurationSchemaMissing(err) {
+			writeJSON(w, http.StatusOK, []TypeDescriptor{})
+			return
+		}
+		writeConfigurationQueryFailure(ctx, w, "configuration type list failed", projectID, err)
 		return
 	}
 	defer rows.Close()
@@ -736,8 +1551,47 @@ func (h *Handler) ListTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, descriptors)
 }
 
+// ttsVoicesUnavailable is what GET /configurations/tts_voices/{projectID}
+// answers, and why (#466).
+//
+// The reference resolves a voice list from two sources, and both of them are
+// provider audio calls (legacy/plugins/configurations/api/v2/tts_voices.py,
+// `_resolve_voices`):
+//
+//   - `meta.voices` on the project's tts configuration row. The reference fills
+//     that cache with a provider round trip when the configuration is saved.
+//   - the provider itself, on `refresh=true`.
+//
+// This platform makes no audio call to any provider. The gateway serves no audio
+// route (#323), no code path writes `meta.voices`, and the create path stores
+// only the `meta` object the client sends. Both sources are therefore empty by
+// construction, for every project, forever.
+//
+// Reading the cache anyway would restore the same defect in a longer form: the
+// answer would still be an empty list, and the caller still could not tell an
+// empty cache from a route that does no work. So the route reports the missing
+// capability instead.
+//
+// Do not restore the 200 with an empty list. Issue #323 owns the audio data
+// plane; when a synthesis route exists, this handler serves the real voices and
+// this constant goes with the stub.
+const ttsVoicesUnavailable = "the TTS voice list is not available in this platform. The reference reads voices " +
+	"from the TTS provider, and caches them on the configuration row from the same provider call. This platform " +
+	"serves no audio route to any provider (issue #323), so neither source holds data. This route reports the " +
+	"missing capability rather than answering an empty list, which a caller cannot tell from a project that has " +
+	"no voices."
+
+// TTSVoices refuses. It answered 200 with `{"voices": []}` for every project
+// until #466 — see ttsVoicesUnavailable for why that answer was worse than a
+// refusal, and why a real list has nothing behind it today.
+//
+// Both web callers already treat a failed query as an empty option list
+// (apps/elitea-web features/chat-input/lib/hooks/useReadAloud.hooks.ts and
+// features/settings/ui/profile/voice-config/VoicePersonalizationSection.tsx), so
+// the page shows what it showed before. The difference is that the API now says
+// which of the two states it is in.
 func (h *Handler) TTSVoices(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"voices": []map[string]string{}})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": ttsVoicesUnavailable})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -754,16 +1608,16 @@ func decodeBoundedJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if err := decoder.Decode(dst); err != nil {
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			http.Error(w, `{"error":"request body too large"}`, http.StatusRequestEntityTooLarge)
+			apierr.WriteStatus(w, http.StatusRequestEntityTooLarge, "request body too large")
 			return false
 		}
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
 
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
 	return true

@@ -51,6 +51,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useSearch } from '@tanstack/react-router';
 
 import { t } from '@/shared/i18n';
+import { BannerMessage } from '@/shared/ui/BannerMessage';
 import { CategoryFilter } from '@/shared/ui/CategoryFilter';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
@@ -89,6 +90,7 @@ const AgentHub = memo(() => {
     totalCountsByTag,
     loadingTags,
     refreshingTags,
+    error,
     onRefresh,
   } = useAgentHubData(selectedTagNames);
 
@@ -153,6 +155,17 @@ const AgentHub = memo(() => {
     [visibleItemsByCategory],
   );
 
+  /*
+   * DEFECT this fixes: `useAgentHubData` reports a refused list through
+   * `error`. No component reads that value. A failed load shows the ordinary
+   * "No agents found" message. The user cannot tell a broken hub from an
+   * empty catalogue.
+   *
+   * The banner replaces the empty state on a failure. The banner stays above
+   * the list when some categories load. That list is incomplete.
+   */
+  const showNoResults = !hasAnyVisibleItems && error === null;
+
   const renderCategory = useCallback(
     (category: string, items: ApplicationData[]) => (
       <AgentCategorySection
@@ -195,14 +208,24 @@ const AgentHub = memo(() => {
         selectedCategories={selectedTagNames}
         onSelectCategory={handleSelectCategory}
       >
-        {hasAnyVisibleItems ? (
+        {error !== null && (
+          <BannerMessage
+            variant="error"
+            message={t(
+              'agentsHub.loadError',
+              'The agent list did not load. Reload the page to try again.',
+            )}
+          />
+        )}
+        {hasAnyVisibleItems && (
           <Box sx={styles.sections}>
             {visibleCategories.map(category => {
               const items = visibleItemsByCategory[category] || [];
               return items.length > 0 ? renderCategory(category, items) : null;
             })}
           </Box>
-        ) : (
+        )}
+        {showNoResults && (
           <NoResultsMessage
             title={t('agentsHub.noResults.title', 'No agents found')}
             description={t('agentsHub.noResults.description', 'Try adjusting your search terms')}

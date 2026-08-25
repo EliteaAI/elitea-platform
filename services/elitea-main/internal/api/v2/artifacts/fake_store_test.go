@@ -3,6 +3,7 @@ package artifacts_test
 import (
 	"bytes"
 	"context"
+	"crypto/md5" //nolint:gosec // ETag identity, not a security digest
 	"fmt"
 	"io"
 	"sort"
@@ -76,6 +77,14 @@ type fakeStore struct {
 	// request will itself call back into these same methods.
 	beforeCompleteMultipart func()
 	beforeAbortMultipart    func()
+
+	// failKeys names the object keys DeleteBatch must refuse. A real
+	// backend reports such a key in BatchResult.Failed. It still deletes
+	// the rest of the batch. S3 answers a per-key AccessDenied for an
+	// object under an object-lock, for example. The fake deleted every
+	// key unconditionally, so no test could reach DeleteBucket's
+	// partial-failure path at all.
+	failKeys map[string]bool
 }
 
 // firstReadRecorder wraps an io.Reader and calls onFirstRead exactly once,
@@ -129,8 +138,18 @@ func (s *fakeStore) objectCount() int {
 	return len(s.objects)
 }
 
-// seed adds an object directly, bypassing Put, for test fixture setup.
+// seed adds an object of the given size whose bytes are all zero, directly,
+// bypassing Put, for test fixture setup. Listing tests only ever read the
+// size; use seedContent when the bytes themselves matter.
 func (s *fakeStore) seed(projectID, bucket, key string, size int64) {
+	s.seedContent(projectID, bucket, key, make([]byte, size), "")
+}
+
+// seedContent is seed with real bytes and a content type. Download tests need
+// both: a fixture of zero bytes could not distinguish "served the object" from
+// "served an empty body", and a fixture with no content type could not
+// distinguish the stored type from the extension-derived fallback.
+func (s *fakeStore) seedContent(projectID, bucket, key string, data []byte, contentType string) {
 	ref, err := storage.NewObjectRef(projectID, bucket, key)
 	if err != nil {
 		panic(err)
@@ -138,8 +157,21 @@ func (s *fakeStore) seed(projectID, bucket, key string, size int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")
-	s.objects[storageKey] = storage.ObjectInfo{Key: key, Size: size, LastModified: time.Now()}
-	s.data[storageKey] = make([]byte, size)
+	s.objects[storageKey] = storage.ObjectInfo{
+		Key: key, Size: int64(len(data)), LastModified: time.Now(), ContentType: contentType,
+		ETag: contentETag(data),
+	}
+	s.data[storageKey] = data
+}
+
+// contentETag is the content-addressed ETag every real backend reports for a
+// single-shot write (S3, Azure and the local disk backend all derive it from
+// the bytes). This fake previously reported none at all, which left every
+// ETag assertion vacuous: a handler that dropped the header entirely, or
+// reported one object's ETag for another, looked identical to a correct one.
+// Quoted, as HTTP requires for an opaque validator.
+func contentETag(data []byte) string {
+	return fmt.Sprintf("%q", fmt.Sprintf("%x", md5.Sum(data))) //nolint:gosec // ETag identity, not a security digest
 }
 
 func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader, opts storage.PutOptions) (storage.ObjectInfo, error) {
@@ -152,7 +184,10 @@ func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader
 	if err != nil {
 		return storage.ObjectInfo{}, err
 	}
-	info := storage.ObjectInfo{Key: ref.Key(), Size: int64(len(data)), LastModified: time.Now(), ContentType: opts.ContentType}
+	info := storage.ObjectInfo{
+		Key: ref.Key(), Size: int64(len(data)), LastModified: time.Now(),
+		ContentType: opts.ContentType, ETag: contentETag(data),
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")
@@ -161,7 +196,11 @@ func (s *fakeStore) Put(_ context.Context, ref storage.ObjectRef, body io.Reader
 	return info, nil
 }
 
-func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, _ *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {
+// Get honours rng, like every real backend. An earlier version ignored it
+// and always returned the whole object with the whole object's Size, which
+// made the handler's 206 path untestable: a missing Content-Range and a
+// Content-Length that did not match the body both looked correct here.
+func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, rng *storage.ByteRange) (io.ReadCloser, storage.ObjectInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	storageKey := ref.StorageKey("")
@@ -169,7 +208,21 @@ func (s *fakeStore) Get(_ context.Context, ref storage.ObjectRef, _ *storage.Byt
 	if !ok {
 		return nil, storage.ObjectInfo{}, storage.ErrNotFound
 	}
-	return io.NopCloser(bytes.NewReader(s.data[storageKey])), info, nil
+	data := s.data[storageKey]
+	info.TotalSize = int64(len(data))
+	if rng != nil {
+		start := rng.Start
+		if start > int64(len(data)) {
+			start = int64(len(data))
+		}
+		end := int64(len(data))
+		if rng.End >= 0 && rng.End+1 < end {
+			end = rng.End + 1
+		}
+		data = data[start:end]
+		info.Size = int64(len(data))
+	}
+	return io.NopCloser(bytes.NewReader(data)), info, nil
 }
 
 func (s *fakeStore) Stat(_ context.Context, ref storage.ObjectRef) (storage.ObjectInfo, error) {
@@ -196,6 +249,12 @@ func (s *fakeStore) DeleteBatch(_ context.Context, refs []storage.ObjectRef) (st
 	defer s.mu.Unlock()
 	result := storage.BatchResult{}
 	for _, ref := range refs {
+		if s.failKeys[ref.Key()] {
+			result.Failed = append(result.Failed, storage.BatchError{
+				Key: ref.Key(), Err: fmt.Errorf("fakeStore: delete refused for %q", ref.Key()),
+			})
+			continue
+		}
 		storageKey := ref.StorageKey("")
 		delete(s.objects, storageKey)
 		delete(s.data, storageKey)
@@ -223,9 +282,34 @@ func (s *fakeStore) List(_ context.Context, q storage.ListQuery) (storage.ListPa
 	sort.Strings(keys)
 
 	page := storage.ListPage{Objects: make([]storage.ObjectInfo, 0, len(keys))}
+	// Delimiter rollup, S3 semantics: a key whose remainder after KeyPrefix
+	// still contains the delimiter is not listed as an object — it collapses
+	// into a common prefix covering everything under that first delimiter.
+	// An empty delimiter disables grouping entirely, which is exactly the
+	// recursive listing the SDK asks for by omitting the parameter.
+	//
+	// This was previously unimplemented (delimiter was accepted and
+	// ignored), which made every listing here implicitly recursive and left
+	// CommonPrefixes permanently empty. No existing test passed a delimiter,
+	// so honouring it changes no established expectation — but without it a
+	// test of folder grouping would pass against a fake that cannot group,
+	// proving nothing.
+	seenPrefixes := map[string]bool{}
 	for _, k := range keys {
+		if q.Delimiter != "" {
+			remainder := strings.TrimPrefix(k, q.KeyPrefix)
+			if idx := strings.Index(remainder, q.Delimiter); idx >= 0 {
+				group := q.KeyPrefix + remainder[:idx+len(q.Delimiter)]
+				if !seenPrefixes[group] {
+					seenPrefixes[group] = true
+					page.CommonPrefixes = append(page.CommonPrefixes, group)
+				}
+				continue
+			}
+		}
 		page.Objects = append(page.Objects, s.objects[basePrefix+k])
 	}
+	sort.Strings(page.CommonPrefixes)
 	return page, nil
 }
 

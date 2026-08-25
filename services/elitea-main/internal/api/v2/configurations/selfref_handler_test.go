@@ -56,9 +56,14 @@ func serveRecovering(r http.Handler, req *http.Request) (rec *httptest.ResponseR
 	return rec, false
 }
 
+// selfRefRouter carries an authenticated, entitled caller because since #496
+// every route it exercises is gated. The guard under test runs INSIDE the
+// handler, so the request has to pass the gate to reach it — and serveRecovering
+// below is what proves the guard, not the gate, produced the 400.
 func selfRefRouter() *chi.Mux {
-	h := handler.NewHandler(nil)
+	h := handler.NewHandler(nil, handler.WithPermissionResolver(entitledResolver()))
 	r := chi.NewRouter()
+	r.Use(withTestUser)
 	r.Mount("/api/v2", h.Routes())
 	return r
 }

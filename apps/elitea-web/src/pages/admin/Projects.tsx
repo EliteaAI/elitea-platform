@@ -73,14 +73,13 @@ import Typography from '@mui/material/Typography';
 
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
-import { drawerPage } from '@/features/settings';
+import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminProjectsTable } from './AdminProjectsTable';
 import { ProjectActivityDrawer } from './ProjectActivityDrawer';
 import { ProjectMemberDialog } from './ProjectMemberDialog';
 import { ADMIN_PROJECTS_PAGE_SIZE, useAdminProjectsPage } from './useAdminProjectsPage';
 
-const { DrawerPage } = drawerPage;
 
 /**
  * The one reason both provisioning controls carry. Written once so the page and

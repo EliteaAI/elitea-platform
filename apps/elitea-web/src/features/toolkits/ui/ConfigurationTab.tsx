@@ -9,6 +9,7 @@ import { ViewRunHistoryButton } from '@/shared/ui/ViewRunHistoryButton';
 
 import type { UseToolkitEditMutation } from '../api/toolkits';
 import type { SharepointAuthModalRenderers } from '../sharepoint/ui/SharepointOAuthStatus';
+import type { ToolBaseSlots } from './form/ToolBase/ToolBase.types';
 import { ToolkitForm, type ToolkitFormEditDetail } from './form/ToolkitForm/ToolkitForm';
 import type { SaveToolkitPayload } from './form/ToolkitForm/ToolkitsOperationButtons';
 
@@ -81,6 +82,20 @@ export interface ConfigurationTabSlots {
    * wired.
    */
   readonly sharepointAuth?: SharepointAuthModalRenderers;
+  /**
+   * #308 — the credential picker for a `configuration`-kind settings field.
+   *
+   * `features/toolkits` cannot import `features/credentials`
+   * (`no-sideways-features`), so the real `<CredentialsSelect>` comes from
+   * this component's `pages/`-layer caller — see
+   * `pages/toolkits/lib/credentialPicker.tsx`. Same seam and same reason as
+   * `sharepointAuth` above.
+   *
+   * Omitted, every `configuration` field renders as blank space with nothing
+   * to click, which is the defect #308 records. The three MODEL pickers do not
+   * depend on this slot: `useCredentialLikeFieldSlot` renders those itself.
+   */
+  readonly renderCredentialPicker?: ToolBaseSlots['renderCredentialPicker'];
 }
 
 /** @public */
@@ -143,7 +158,7 @@ export function ConfigurationTab({
   saveHandlers,
   slots,
 }: ConfigurationTabProps): ReactNode {
-  const { renderTestPane, renderRunHistory, sharepointAuth } = slots;
+  const { renderTestPane, renderRunHistory, sharepointAuth, renderCredentialPicker } = slots;
   const { editToolDetail, onChangeToolDetail, isToolDirty } = toolDetailState;
   const { saveToolkit, onSaveSuccess, onSaveError } = saveHandlers;
   const [showHistory, setShowHistory] = useState(false);
@@ -153,7 +168,13 @@ export function ConfigurationTab({
   // prop bag it lives in is rebuilt every render by design — see
   // `ToolkitForm.hooks.ts`'s own note — but a fresh object here would also
   // remount nothing, it would just churn; keep it cheap and stable).
-  const formSlots = useMemo(() => (sharepointAuth === undefined ? undefined : { sharepointAuthModals: sharepointAuth }), [sharepointAuth]);
+  const formSlots = useMemo<ToolBaseSlots | undefined>(() => {
+    if (sharepointAuth === undefined && renderCredentialPicker === undefined) return undefined;
+    return {
+      ...(sharepointAuth === undefined ? {} : { sharepointAuthModals: sharepointAuth }),
+      ...(renderCredentialPicker === undefined ? {} : { renderCredentialPicker }),
+    };
+  }, [sharepointAuth, renderCredentialPicker]);
 
   const handleShowHistory = useCallback(() => setShowHistory(true), []);
   const handleCloseHistory = useCallback(() => setShowHistory(false), []);

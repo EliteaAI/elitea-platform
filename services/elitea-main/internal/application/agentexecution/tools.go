@@ -5,17 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
 	executiondomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/execution"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/guardrails"
 )
 
 const (
 	currentAgentDefaultMaxTokens          = int64(4_000)
 	currentAgentReasoningDefaultMaxTokens = int64(16_000)
+	currentMaxNestedSkillApplications     = 25
+	currentMaxNestedSkills                = 512
+	currentMaxNestedSkillIconBytes        = 16 * 1024
+	currentNestedSkillRegistryField       = "nested_skill_registry"
 )
 
 // CurrentApplicationVersionFreezer converts the current saved application
@@ -67,20 +75,37 @@ type CurrentApplicationToolSnapshotService struct {
 	settings        CurrentAgentToolkitSettingsResolver
 	names           CurrentAgentToolkitNameResolver
 	models          CurrentAgentModelCatalog
+	guardrails      CurrentAgentGuardrailResolver
 	publicProjectID int32
+}
+
+// CurrentAgentGuardrailResolver supplies the live toolkit guardrails policy.
+//
+// It is a REQUIRED dependency, not an option, and the constructor refuses a nil
+// one. This is the freeze: the one point at which a blocked toolkit is removed
+// from an execution that a saved agent version still names. A service
+// constructed without a policy source would enforce nothing and look exactly
+// like one whose operator had configured nothing — the shape of defect this
+// codebase has shipped before with a nil principal validator at the composition
+// root (#301/#314/#370). Making it required means a composition root that forgot
+// it fails to build the service rather than silently running unguarded.
+type CurrentAgentGuardrailResolver interface {
+	ResolveCurrentAgentGuardrails(ctx context.Context) (guardrails.Policy, error)
 }
 
 func NewCurrentApplicationToolSnapshotService(
 	settings CurrentAgentToolkitSettingsResolver,
 	names CurrentAgentToolkitNameResolver,
 	models CurrentAgentModelCatalog,
+	guardrailPolicies CurrentAgentGuardrailResolver,
 	publicProjectID int32,
 ) (*CurrentApplicationToolSnapshotService, error) {
-	if settings == nil || names == nil || models == nil || publicProjectID <= 0 {
+	if settings == nil || names == nil || models == nil || guardrailPolicies == nil || publicProjectID <= 0 {
 		return nil, errors.New("current agent toolkit snapshot dependencies are required")
 	}
 	return &CurrentApplicationToolSnapshotService{
-		settings: settings, names: names, models: models, publicProjectID: publicProjectID,
+		settings: settings, names: names, models: models,
+		guardrails: guardrailPolicies, publicProjectID: publicProjectID,
 	}, nil
 }
 
@@ -93,10 +118,11 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 	request CurrentApplicationVersionFreezeRequest,
 ) (json.RawMessage, error) {
 	if service == nil || service.settings == nil || service.names == nil || service.models == nil ||
+		service.guardrails == nil ||
 		service.publicProjectID <= 0 || ctx == nil ||
 		request.ProjectID <= 0 || request.ActorUserID <= 0 ||
 		!validJSONObject(request.VersionDetails) {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("freeze dependencies or request identity are invalid")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -104,27 +130,49 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 
 	version, err := decodeCurrentApplicationVersion(request.VersionDetails)
 	if err != nil {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStartBecause("version details are not one decodable JSON object", err)
 	}
 	if err := service.resolveCurrentAgentModel(ctx, request.ProjectID, version); err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return nil, contextErr
 		}
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStartBecause("model resolution", err)
 	}
 	tools, ok := version["tools"].([]any)
 	if !ok {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version tools is not an array")
 	}
-	for index, value := range tools {
+
+	// The guardrails policy is resolved ONCE, before the walk, and a failed read
+	// fails the whole freeze.
+	//
+	// Every other reader of this policy degrades permissively, because refusing
+	// to render a catalogue over one unreadable row would take the product down
+	// to enforce a policy that is usually empty. This reader must not: it is the
+	// only place a blocked toolkit is removed from an execution that a saved
+	// agent version still names, so "we could not read the policy" and "there is
+	// no policy" have opposite consequences here. Running unguarded because a
+	// row would not load is how a blocked tool executes.
+	policy, err := service.guardrails.ResolveCurrentAgentGuardrails(ctx)
+	if err != nil {
+		if contextErr := ctx.Err(); contextErr != nil {
+			return nil, contextErr
+		}
+		return nil, unsupportedStartBecause("guardrails policy resolution", err)
+	}
+
+	// Rebuilt rather than index-assigned: a blocked toolkit is DROPPED, which
+	// changes the length.
+	frozenTools := make([]any, 0, len(tools))
+	for _, value := range tools {
 		tool, ok := value.(map[string]any)
 		if !ok {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry is not an object")
 		}
 		toolType, ok := tool["type"].(string)
 		if !ok || toolType == "" || len(toolType) > configurationapp.MaxCurrentToolkitSettingsIdentifier ||
 			strings.ContainsAny(toolType, "\x00\r\n") {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no usable type")
 		}
 		if toolType == "application" {
 			var frozen map[string]any
@@ -139,18 +187,34 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 				frozen, ok = freezeCurrentStoredApplicationReference(tool)
 			}
 			if !ok {
-				return nil, ErrUnsupportedCurrentAgentStart
+				return nil, unsupportedStart("an application tool reference could not be frozen")
 			}
-			tools[index] = frozen
+			// Not guardrail-filtered. An `application` entry is a nested AGENT
+			// reference, not a toolkit; its own tools are frozen by its own
+			// freeze when it runs. Matching a blocked toolkit TYPE against it
+			// would compare a policy about toolkits to an agent's name.
+			frozenTools = append(frozenTools, frozen)
+			continue
+		}
+
+		// A blocked toolkit type is dropped from the execution entirely.
+		//
+		// Dropped, not refused: an agent version saved before the block was
+		// configured still names the toolkit, and failing the run would make one
+		// administrator's guardrail break every agent that ever attached it.
+		// Removing the tool is what "blocked" means — the agent runs, without it.
+		if policy.ToolkitBlocked(toolType) {
+			slog.WarnContext(ctx, "guardrails: dropped a blocked toolkit from an agent execution",
+				"toolkit_type", toolType, "project_id", request.ProjectID)
 			continue
 		}
 		toolID, ok := positiveCurrentAgentJSONInteger(tool["id"])
 		if !ok {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no positive integer id")
 		}
 		settings, ok := tool["settings"].(map[string]any)
 		if !ok || settings == nil {
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStart("a tool entry has no settings object")
 		}
 		frozen, err := service.settings.Resolve(
 			ctx,
@@ -166,14 +230,14 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStartBecause("toolkit settings resolution", err)
 		}
 
 		var storedName *string
 		if name, exists := tool["name"]; exists && name != nil {
 			text, ok := name.(string)
 			if !ok {
-				return nil, ErrUnsupportedCurrentAgentStart
+				return nil, unsupportedStart("a tool entry name is not a string")
 			}
 			storedName = &text
 		}
@@ -188,18 +252,18 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
-			return nil, ErrUnsupportedCurrentAgentStart
+			return nil, unsupportedStartBecause("toolkit name resolution", err)
 		}
 		tool["id"] = toolID
-		tool["settings"] = frozen
+		tool["settings"] = withoutBlockedSelectedTools(ctx, policy, toolType, toolkitName, frozen)
 		tool["toolkit_name"] = toolkitName
-		tools[index] = tool
+		frozenTools = append(frozenTools, tool)
 	}
-	version["tools"] = tools
+	version["tools"] = frozenTools
 
 	encoded, err := json.Marshal(version)
 	if err != nil || !validJSONObject(encoded) || len(encoded) > executiondomain.MaxAgentExecutionInputBytes {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("the frozen version is unencodable or exceeds the admission size bound")
 	}
 	return encoded, nil
 }
@@ -232,6 +296,12 @@ func freezeCurrentStoredApplicationReference(tool map[string]any) (map[string]an
 	if !validApplicationID || !validVersionID {
 		return nil, false
 	}
+	nestedSkills, validNestedSkills := freezeCurrentNestedSkillRegistry(
+		tool[currentNestedSkillRegistryField],
+	)
+	if !validNestedSkills {
+		return nil, false
+	}
 
 	tool["id"] = toolID
 	tool["author_id"] = authorID
@@ -243,6 +313,11 @@ func freezeCurrentStoredApplicationReference(tool map[string]any) (map[string]an
 	tool["variables"] = variables
 	tool["agent_type"] = agentType
 	tool["created_at"] = createdAt
+	if nestedSkills == nil {
+		delete(tool, currentNestedSkillRegistryField)
+	} else {
+		tool[currentNestedSkillRegistryField] = nestedSkills
+	}
 	return tool, true
 }
 
@@ -256,7 +331,12 @@ func freezeCurrentAdhocApplicationReference(
 	actorUserID int32,
 ) (map[string]any, bool) {
 	toolID, hasToolID := tool["id"]
-	if len(tool) != 11 || !hasToolID || toolID != nil {
+	_, hasNestedSkills := tool[currentNestedSkillRegistryField]
+	expectedFields := 11
+	if hasNestedSkills {
+		expectedFields++
+	}
+	if len(tool) != expectedFields || !hasToolID || toolID != nil {
 		return nil, false
 	}
 	name, validName := boundedCurrentAgentReferenceString(tool["name"], false)
@@ -281,8 +361,14 @@ func freezeCurrentAdhocApplicationReference(
 	if !validApplicationID || !validVersionID {
 		return nil, false
 	}
+	nestedSkills, validNestedSkills := freezeCurrentNestedSkillRegistry(
+		tool[currentNestedSkillRegistryField],
+	)
+	if !validNestedSkills {
+		return nil, false
+	}
 
-	return map[string]any{
+	frozen := map[string]any{
 		"type":           "application",
 		"name":           name,
 		"description":    description,
@@ -299,7 +385,86 @@ func freezeCurrentAdhocApplicationReference(
 		"toolkit_name": toolkitName,
 		"agent_type":   agentType,
 		"created_at":   createdAt,
-	}, true
+	}
+	if nestedSkills != nil {
+		frozen[currentNestedSkillRegistryField] = nestedSkills
+	}
+	return frozen, true
+}
+
+func freezeCurrentNestedSkillRegistry(value any) ([]any, bool) {
+	if value == nil {
+		return nil, true
+	}
+	entries, ok := value.([]any)
+	if !ok || len(entries) == 0 || len(entries) > currentMaxNestedSkillApplications {
+		return nil, false
+	}
+	result := make([]any, 0, len(entries))
+	totalSkills := 0
+	seenApplications := make(map[string]struct{}, len(entries))
+	for _, rawEntry := range entries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok || len(entry) != 4 {
+			return nil, false
+		}
+		applicationID, validApplicationID := positiveCurrentAgentJSONInteger(entry["application_id"])
+		versionID, validVersionID := positiveCurrentAgentJSONInteger(entry["application_version_id"])
+		applicationName, validApplicationName := boundedCurrentAgentReferenceString(
+			entry["application_name"],
+			false,
+		)
+		skills, validSkills := entry["skills"].([]any)
+		identity := fmt.Sprintf("%d:%d", applicationID, versionID)
+		if !validApplicationID || !validVersionID || !validApplicationName ||
+			!validSkills || len(skills) == 0 {
+			return nil, false
+		}
+		if _, duplicate := seenApplications[identity]; duplicate {
+			return nil, false
+		}
+		seenApplications[identity] = struct{}{}
+		frozenSkills := make([]any, 0, len(skills))
+		seenSkills := make(map[int64]struct{}, len(skills))
+		for _, rawSkill := range skills {
+			totalSkills++
+			if totalSkills > currentMaxNestedSkills {
+				return nil, false
+			}
+			skill, ok := rawSkill.(map[string]any)
+			if !ok || len(skill) != 3 {
+				return nil, false
+			}
+			skillID, validSkillID := positiveCurrentAgentJSONInteger(skill["skill_id"])
+			name, validName := skill["name"].(string)
+			iconMeta := skill["icon_meta"]
+			if !validSkillID || !validName || name == "" || !utf8.ValidString(name) ||
+				utf8.RuneCountInString(name) > 256 || strings.ContainsAny(name, "\x00\r\n") {
+				return nil, false
+			}
+			if _, duplicate := seenSkills[skillID]; duplicate {
+				return nil, false
+			}
+			seenSkills[skillID] = struct{}{}
+			if iconMeta != nil {
+				if _, object := iconMeta.(map[string]any); !object {
+					return nil, false
+				}
+				encoded, err := json.Marshal(iconMeta)
+				if err != nil || len(encoded) > currentMaxNestedSkillIconBytes {
+					return nil, false
+				}
+			}
+			frozenSkills = append(frozenSkills, map[string]any{
+				"skill_id": skillID, "name": name, "icon_meta": iconMeta,
+			})
+		}
+		result = append(result, map[string]any{
+			"application_id": applicationID, "application_version_id": versionID,
+			"application_name": applicationName, "skills": frozenSkills,
+		})
+	}
+	return result, true
 }
 
 func boundedCurrentAgentReferenceString(value any, allowEmpty bool) (string, bool) {
@@ -330,7 +495,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 ) error {
 	settings, ok := version["llm_settings"].(map[string]any)
 	if !ok || settings == nil {
-		return ErrUnsupportedCurrentAgentStart
+		return unsupportedStart("the turn carries no llm_settings object")
 	}
 	// This is Configurations-owned metadata. A stored or caller-projected value
 	// must never select the SDK model client implementation.
@@ -351,7 +516,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	if !found {
 		if catalog.DefaultModelName == nil || catalog.DefaultModelProjectID == nil ||
 			*catalog.DefaultModelName == "" || *catalog.DefaultModelProjectID <= 0 {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("the requested model is not in the project's catalog and the catalog names no default")
 		}
 		modelName = *catalog.DefaultModelName
 		modelProjectID = int64(*catalog.DefaultModelProjectID)
@@ -359,7 +524,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 			catalog.Items, modelName, modelProjectID, true, projectID, service.publicProjectID,
 		)
 		if !found {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("the catalog's default model is not itself in the catalog")
 		}
 		settings["model_name"] = modelName
 		settings["model_project_id"] = modelProjectID
@@ -379,7 +544,7 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	if value, exists := settings["max_tokens"]; exists && value != nil {
 		maxTokens, valid := currentAgentJSONInteger(value)
 		if !valid || maxTokens == 0 || maxTokens < -1 || maxTokens > math.MaxInt32 {
-			return ErrUnsupportedCurrentAgentStart
+			return unsupportedStart("max_tokens is out of the admitted range")
 		}
 		if maxTokens == -1 {
 			maxTokens = currentAgentDefaultMaxTokens
@@ -452,11 +617,11 @@ func decodeCurrentApplicationVersion(source []byte) (map[string]any, error) {
 	decoder.UseNumber()
 	var value map[string]any
 	if err := decoder.Decode(&value); err != nil || value == nil {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version details are not a JSON object")
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, ErrUnsupportedCurrentAgentStart
+		return nil, unsupportedStart("version details carry trailing JSON")
 	}
 	return value, nil
 }
@@ -488,3 +653,56 @@ func currentAgentJSONInteger(value any) (int64, bool) {
 }
 
 var _ CurrentApplicationVersionFreezer = (*CurrentApplicationToolSnapshotService)(nil)
+
+// withoutBlockedSelectedTools removes blocked tool names from one toolkit's
+// frozen `selected_tools`.
+//
+// `selected_tools` is the per-agent restriction the SDK honours when it builds
+// the toolkit, so a name removed here is a tool the worker never constructs. The
+// toolkit's INSTANCE name is offered to the match alongside its type, because an
+// operator may have named either.
+//
+// The map is rebuilt only when something is actually removed. The common case is
+// an empty policy or a toolkit none of whose tools are blocked, and rebuilding
+// on every toolkit of every execution to change nothing is a cost paid for
+// nothing.
+func withoutBlockedSelectedTools(
+	ctx context.Context,
+	policy guardrails.Policy,
+	toolkitType string,
+	toolkitName string,
+	settings map[string]any,
+) map[string]any {
+	if policy.Empty() || settings == nil {
+		return settings
+	}
+	selected, ok := settings["selected_tools"].([]any)
+	if !ok || len(selected) == 0 {
+		return settings
+	}
+
+	kept := make([]any, 0, len(selected))
+	for _, entry := range selected {
+		name, ok := entry.(string)
+		if ok && policy.ToolBlocked(toolkitType, name) {
+			slog.WarnContext(ctx, "guardrails: dropped a blocked tool from an agent execution",
+				"toolkit_type", toolkitType, "toolkit_name", toolkitName, "tool", name)
+			continue
+		}
+		// A non-string entry is kept rather than dropped. This function enforces
+		// a guardrail; it is not the shape validator, and silently discarding an
+		// entry it did not understand would hide a malformed selection behind a
+		// security feature.
+		kept = append(kept, entry)
+	}
+	if len(kept) == len(selected) {
+		return settings
+	}
+
+	rebuilt := make(map[string]any, len(settings))
+	for key, value := range settings {
+		rebuilt[key] = value
+	}
+	rebuilt["selected_tools"] = kept
+	return rebuilt
+}

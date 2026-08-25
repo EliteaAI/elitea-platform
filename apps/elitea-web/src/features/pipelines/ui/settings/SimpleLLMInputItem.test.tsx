@@ -3,7 +3,8 @@ import type { ReactElement, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resetBackendCapabilitiesForTests, setBackendCapabilityForTests } from '@/shared/config/backendCapabilities';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithTheme } from '@/shared/ui/lib/testTheme';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
@@ -35,8 +36,16 @@ function renderItem(props: SimpleLLMInputItemProps): ReturnType<typeof renderWit
   );
 }
 
+beforeEach(() => {
+  // The AI Assistant POSTs `predict_llm`, which no router mounts, so the
+  // field renders as the plain input by default — see
+  // `shared/config/backendCapabilities`.
+  setBackendCapabilityForTests('aiGeneration', true);
+});
+
 afterEach(() => {
   resetGeneratedClient();
+  resetBackendCapabilitiesForTests();
 });
 
 describe('SimpleLLMInputItem', () => {

@@ -29,9 +29,11 @@
  * documented precedent for the identical trade-off.
  */
 import {
+  AGENT_CONTINUE_HITL_CONTRACT,
   AGENT_EXECUTE_ADHOC_CONTRACT,
   AGENT_EXECUTE_APPLICATION_CONTRACT,
   AGENT_REGENERATE_CONTRACT,
+  continueAgentExecution,
   conversationCreate,
   conversationDetails,
   conversationEdit,
@@ -134,7 +136,9 @@ export const conversationApi = {
     application: AGENT_EXECUTE_APPLICATION_CONTRACT,
     adhoc: AGENT_EXECUTE_ADHOC_CONTRACT,
     regenerate: AGENT_REGENERATE_CONTRACT,
+    continueHitl: AGENT_CONTINUE_HITL_CONTRACT,
   },
+  continueAgentExecution,
   stopTask: stopChatTask,
   messageList,
   deleteMessage: deleteMessageFromConversation,

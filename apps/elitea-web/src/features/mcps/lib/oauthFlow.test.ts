@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
+import { resetConfigForTests } from '@/shared/config/get-config';
 
 import { server } from '../../../test/setup';
 
@@ -65,9 +66,24 @@ function deliverAuthResult(result: { code?: string; error?: string; error_descri
   );
 }
 
+const globals = globalThis as unknown as Record<string, unknown>;
+
+/** Installs the shipped runtime config, whose `vite_base_uri` ends in a slash. */
+function setDeployedConfig(baseUri: string): void {
+  globals['elitea_ui_config'] = {
+    vite_server_url: '/api/v2',
+    vite_base_uri: baseUri,
+    vite_public_project_id: '1',
+  };
+  resetConfigForTests();
+}
+
 afterEach(() => {
   window.sessionStorage.clear();
   resetGeneratedClient();
+  delete globals['elitea_ui_config'];
+  resetConfigForTests();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -164,6 +180,51 @@ describe('startMcpAuthFlow', () => {
     await flowPromise;
     expect(exchangeBody).toMatchObject({ client_id: 'manual-client', client_secret: 'manual-secret' });
     expect(exchangeBody).not.toHaveProperty('code_verifier');
+  });
+
+  /*
+   * DEFECT: `getRedirectUri()` joined the origin, the configured basename and
+   * a leading-slash path literal with no normalization. The shipped basename
+   * is `/app/` (`docker-entrypoint.sh` default), so the OAuth `redirect_uri`
+   * carried an empty path segment: `https://host/app//mcp-auth-callback`.
+   *
+   * RFC 6749 3.1.2.3 makes the authorization server compare that URI as a
+   * simple string. An operator who registers `https://host/app/mcp-auth-callback`
+   * and pastes the `client_id` into the toolkit form therefore got
+   * `redirect_uri_mismatch` and the popup never returned a code. The same
+   * malformed value went to the token endpoint. This suite never asserted
+   * `redirect_uri` at all, which is why the defect survived.
+   */
+  it('sends a redirect_uri with no doubled slash when the deployment basename ends in one', async () => {
+    vi.stubEnv('DEV', false);
+    setDeployedConfig('/app/');
+    configureGeneratedClient({ baseUrl: '/api/v2' });
+    const { popup } = stubPopup();
+
+    let exchangeBody: Record<string, unknown> | undefined;
+    server.use(
+      http.post('*/api/v2/elitea_core/mcp_oauth_proxy/1', async ({ request }) => {
+        exchangeBody = (await request.json()) as Record<string, unknown>;
+        return HttpResponse.json({ access_token: 'redirect-uri-token' });
+      }),
+    );
+
+    const flowPromise = startMcpAuthFlow({
+      serverUrl: 'https://redirect.example.com',
+      clientId: 'manual-client',
+      resourceMetadata: {
+        oauth_authorization_server: { authorization_endpoint: 'https://as.example.com/authorize', token_endpoint: 'https://as.example.com/token' },
+      },
+    });
+
+    await vi.waitFor(() => expect(popup.location.href).toContain('https://as.example.com/authorize?'), { timeout: 3000 });
+    const expected = `${window.location.protocol}//${window.location.host}/app/mcp-auth-callback`;
+    expect(new URL(popup.location.href).searchParams.get('redirect_uri')).toBe(expected);
+
+    deliverAuthResult({ code: 'auth-code-redirect' }, stateFromPopupUrl(popup));
+    await flowPromise;
+
+    expect(exchangeBody?.['redirect_uri']).toBe(expected);
   });
 
   it('propagates a "no authorization code" rejection when the popup reports success with no code', async () => {

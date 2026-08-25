@@ -494,7 +494,15 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// unmounted) and false of the one it had not — `widgets/chat`'s
 		// VoiceButton, which `/chat` mounts through ChatBox's slot bundle. It
 		// is live now and is covered by the Features suite instead.
-		"guardrails", "mcp_servers", "observability", "litellm", "runtime",
+		//
+		// `guardrails` left this list the same way, and for a reason of the same
+		// shape: it was withheld as "Pylon plugin configuration nothing here
+		// reads", which was true of the mechanism and stopped being true of the
+		// claim once the toolkit surfaces, the write paths and the agent tool
+		// freeze started reading it. Its consumers are recorded in
+		// TestSchemaDeclaresAvailabilityForEverySection below, and its own
+		// round trip is asserted in guardrails_postgres_integration_test.go.
+		"mcp_servers", "observability", "llm_proxy", "runtime",
 		"admin_panel", "auth", "dedicated_banner", "support_assistant",
 		"maintenance",
 	} {
@@ -644,9 +652,19 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	voice_features    → eliteacore PlatformSettings (voice_features_enabled,
 	//	                    voice_features_temporarily_disabled), read by
 	//	                    widgets/chat's VoiceButton, which /chat mounts
+	//	guardrails        → four readers, all of them enforcing rather than
+	//	                    displaying: the toolkit TYPE surfaces
+	//	                    (api/v2/toolkits/guardrails.go) drop blocked types
+	//	                    and tools; the toolkit WRITE paths refuse a blocked
+	//	                    type with a 403; the agent tool freeze
+	//	                    (application/agentexecution/tools.go) strips them out
+	//	                    of the execution input; and eliteacore
+	//	                    PlatformSettings publishes blocked_toolkits so the
+	//	                    product UI can mark an existing toolkit blocked
 	want := map[string]bool{
 		"resources": true, "mcp_configuration": true,
 		"agent_publishing": true, "voice_features": true,
+		"guardrails": true,
 	}
 	for id := range want {
 		if !available[id] {
@@ -809,7 +827,11 @@ func newConfigPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// 120 s, not the old 20 s to 30 s. This DROP queues behind the
+		// CREATE DATABASE calls of every package that `go test ./...` runs at
+		// the same time, so the wait is server load and not a hang. Two full
+		// runs failed here with "drop isolated ... database: timeout" (#409).
+		dropCtx, dropCancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer dropCancel()
 		if _, err := adminPool.Exec(dropCtx, "DROP DATABASE "+quotedDatabase+" WITH (FORCE)"); err != nil {
 			t.Errorf("drop isolated PostgreSQL integration database: %v", err)

@@ -47,6 +47,54 @@ describe('AnalyticsTools', () => {
     expect(await findByText('web_search')).toBeInTheDocument();
   });
 
+  // ── The load-failure branch (issue #303) — see AnalyticsAgents.test.tsx's
+  // equivalent pair for the full rationale. The error text alone is not
+  // enough: a page rendering error text AND an empty table would pass it.
+  it('shows the load error and NO table when the list query fails', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_tools/prompt_lib/7`, () =>
+        HttpResponse.json({ detail: 'analytics: no data source' }, { status: 500 }),
+      ),
+    );
+    const { findByText, queryByText } = renderScreen(
+      <AnalyticsTools
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('Failed to load analytics data.')).toBeVisible();
+    expect(queryByText('Tool Details')).not.toBeInTheDocument();
+    expect(queryByText('0 tools')).not.toBeInTheDocument();
+    for (const header of ['Tool', 'Calls', 'Users', 'Avg Latency', 'Errors']) {
+      expect(queryByText(header)).not.toBeInTheDocument();
+    }
+  });
+
+  // Control: without it, an always-erroring component would look correct.
+  it('still renders the table with its headers and count when the list query succeeds', async () => {
+    server.use(
+      http.get(`${BASE}/elitea_core/analytics_tools/prompt_lib/7`, () =>
+        HttpResponse.json({
+          items: [{ toolkit_id: 'tk1', tool_name: 'web_search', run_count: 8, avg_duration_ms: 150, error_rate: 0 }],
+        }),
+      ),
+    );
+    const { findByText, getByText, queryByText } = renderScreen(
+      <AnalyticsTools
+        projectId="7"
+        dateFrom={RANGE.dateFrom}
+        dateTo={RANGE.dateTo}
+      />,
+    );
+    expect(await findByText('web_search')).toBeVisible();
+    expect(getByText('1 tools')).toBeVisible();
+    for (const header of ['Tool', 'Calls', 'Users', 'Avg Latency', 'Errors']) {
+      expect(getByText(header)).toBeVisible();
+    }
+    expect(queryByText('Failed to load analytics data.')).not.toBeInTheDocument();
+  });
+
   it('renders a real error_rate fraction scaled ×100 as a percentage, not the raw fraction (the 100x display defect fix)', async () => {
     server.use(
       http.get(`${BASE}/elitea_core/analytics_tools/prompt_lib/7`, () =>

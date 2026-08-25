@@ -83,6 +83,46 @@ env:
   # Ceiling on concurrently-detained streams; each holds a goroutine and an
   # open provider socket for up to LLM_STREAM_GRACE_MS.
   LLM_STREAM_DRAIN_MAX_INFLIGHT: "256"
+  # Realtime WebSocket sessions (/llm/v1/realtime).
+  #
+  # How often a LIVE session re-asks the budget gate. This is the ONLY thing
+  # that bounds a session's spend: an HTTP request is gated once because it
+  # ends, and a session does not end. bifrost reports a turn start for two
+  # events the pylon relay never sends, so a re-check armed on turn start alone
+  # would never fire at all. Lower it to cut the spend that can follow an
+  # exhausted budget; raise it to cut budget reads. A non-positive or
+  # unparsable value keeps the 15 s default.
+  LLM_REALTIME_BUDGET_RECHECK_SEC: "15"
+  # How often the gateway re-reads the authored governance definitions from
+  # gateway.governance_config (issue #218). It is the bound on how long an
+  # operator waits between saving a definition on /admin/gateway/governance and
+  # this gateway enforcing it.
+  #
+  # There is NO event-driven reload. The poll is the only path, on purpose: a
+  # replica that missed an event because it was starting, or because NATS was
+  # down, must still converge. Lower it to shorten the wait; raise it to cut one
+  # small SELECT per replica per interval. A non-positive or unparsable value
+  # keeps the 30 s default.
+  #
+  # GET /governance/status on the internal listener reports the snapshot's
+  # loaded_at, every row the gateway REJECTED, and every row that loaded but can
+  # match nothing. Read it before concluding a rule is not working.
+  LLM_GOVERNANCE_REFRESH_SEC: "30"
+  # Ceiling on concurrent realtime sessions per replica; the per-project cap is
+  # this divided by 8 (floor 1). Each session pins four goroutines and two open
+  # sockets for as long as the caller talks, and a hijacked connection has its
+  # deadlines cleared, so no server timeout can ever reap one.
+  LLM_REALTIME_MAX_SESSIONS: "128"
+  # Browser origins that may open /llm/v1/realtime, comma-separated
+  # (e.g. "https://dev.elitea.ai"). EMPTY IS THE SECURE DEFAULT and it is not
+  # "no policy": a WebSocket handshake is NOT subject to CORS, so without an
+  # origin check any page could open this route with the user's ambient
+  # credentials. Empty admits only a handshake whose Origin matches the
+  # gateway's own host, or one with no Origin at all — which is every
+  # non-browser client, including the pylon-indexer relay this route exists
+  # for. Name a browser origin only on purpose; the startup log states which
+  # mode is armed.
+  LLM_REALTIME_ALLOWED_ORIGINS: ""
   # scale-1 default; HA operators MUST override to the real replica count.
   LLM_BUDGET_EXPECTED_REPLICAS: "1"
   # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
@@ -125,6 +165,13 @@ env:
   # public and in-cluster origin that reaches the /llm surface; empty leaves
   # the request-time guard inert (the elitea-main upsert-time guard remains).
   # e.g. "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+  #
+  # ISSUE #467: this MUST be set. The chart refuses to render while it is empty
+  # (elitea-llm-gateway.validateGuards in templates/_helpers.tpl), because an
+  # empty value makes the guard admit every credential and the process then
+  # writes one warning line and serves anyway. There is no default: only the
+  # operator knows the origins, and a guessed origin would guard a name nobody
+  # uses while leaving the real one open.
   GATEWAY_SELF_LLM_ORIGINS: ""
 
   # Issue #13 — egress allowlist for TENANT-AUTHORED credential `api_base`
@@ -146,7 +193,38 @@ env:
   # tenant shipping its own vault secrets to an arbitrary PUBLIC host as a
   # Bearer token — leaving it empty accepts that risk.
   # e.g. "vllm.ml.svc.cluster.local:8000,ollama.ml.svc.cluster.local:11434"
+  #
+  # ISSUE #467: this key is governed by `egressPosture` at the bottom of this
+  # file. The chart refuses to render until that posture is stated, because the
+  # empty value is permissive and restrictive AT THE SAME TIME — it accepts any
+  # PUBLIC host and refuses every PRIVATE one — and an operator who did not
+  # choose it has almost certainly not understood which half applies to them.
   GATEWAY_EGRESS_ALLOWLIST: ""
+
+  # Issue #316 — the platform's SHARED ("public") project. Elitea has always had
+  # two sources of models for a project: the project's own configurations, and
+  # the public project's `shared = true` rows that the operator publishes for
+  # everyone. The gateway read the caller's project only, so every shared model
+  # was unreachable: the model picker offered it, and the request then found no
+  # credential. With ELITEA_ALLOW_PROJECT_OWN_LLMS=false — the mode where
+  # projects are meant to use platform models ONLY — that left no usable model.
+  #
+  # Set this to the SAME value as elitea-main's ELITEA_AI_PROJECT_ID, which is
+  # the identically named key in deploy/helm/elitea-main/values.yaml (issue
+  # #382 added it there). The two services must name the same project or the
+  # gateway will serve a different model set from the one the UI offers.
+  #
+  # Leaving THIS key empty while elitea-main names a project is the state that
+  # keeps issue #316 inert on Kubernetes: the UI offers the shared models and
+  # the gateway then finds no credential for them. Set both or neither.
+  #
+  # Empty (the default) keeps the old project-local behaviour: no shared models.
+  # It is empty rather than "1" on purpose — an id naming a schema that does not
+  # exist would make every credential read fail.
+  #
+  # The caller's own rows always win over a shared row of the same name, and the
+  # public project is read ONLY for rows flagged shared = true.
+  ELITEA_AI_PROJECT_ID: ""
 
   # Issue #12 — per-(project_id, model) AMPLIFICATION BACKSTOP. Shipped as
   # "circular-routing guard #2" (spec §2.6) at a hardcoded 5 requests / 1 s /
@@ -217,6 +295,39 @@ secrets:
 # collector live. Enable it only after filling in `egress` below — otherwise the
 # gateway loses its own dependencies. Requires a CNI that enforces
 # NetworkPolicy; on one that does not, the object renders but does nothing.
+# egressPosture — issue #467. Which egress policy this deployment runs.
+#
+# The chart REFUSES TO RENDER until this names one of the two values below.
+# That is deliberate. The alternative was the shipped default, an empty
+# GATEWAY_EGRESS_ALLOWLIST, which no operator had chosen and which behaves in
+# two opposite ways at once.
+#
+# Read internal/account/egress.go and internal/account/account.go. The gateway
+# sets AllowPrivateNetwork from whether the allowlist is configured, so:
+#
+#   "allowlist"            env.GATEWAY_EGRESS_ALLOWLIST names every host a
+#                          tenant may put in api_base. Private destinations
+#                          become reachable for the self-hosted provider
+#                          classes (vLLM, Ollama). This is the only posture in
+#                          which a self-hosted model on a private network
+#                          works. The host check runs BEFORE the Fernet vault
+#                          decrypts the api_key, so a host that is not on the
+#                          list never receives a resolved secret.
+#
+#   "public-unrestricted"  env.GATEWAY_EGRESS_ALLOWLIST stays empty. A tenant
+#                          may name ANY public host in api_base, and the
+#                          gateway then sends that tenant's credential to it.
+#                          bifrost's SSRF-safe dialer stays armed, so no tenant
+#                          can steer the gateway at a private address — and a
+#                          self-hosted vLLM or Ollama CANNOT WORK at all.
+#                          Choose this only when every model is a public
+#                          provider AND you accept that a tenant may ship its
+#                          own vault secret to an address of its choosing.
+#
+# There is deliberately no third mode in which a tenant reaches an arbitrary
+# private address.
+egressPosture: ""
+
 networkPolicy:
   enabled: false
   # allowPublicEgress opens 0.0.0.0/0 minus every private/link-local range, so
@@ -293,6 +404,10 @@ mtls:
   # ca.crt (mTLS require-and-verify).
   mountPath: /etc/gateway/tls
 
+# probes: with mtls.enabled (the default) the paths below are NOT used — the
+# listener requires a verified client certificate, which a kubelet probe cannot
+# present, so templates/deployment.yaml probes the socket instead. The paths
+# apply when mtls.enabled is false.
 probes:
   liveness:
     # Process liveness only (no dependency calls) — issue #242: a NATS blip
