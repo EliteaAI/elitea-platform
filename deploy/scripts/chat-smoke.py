@@ -9,11 +9,15 @@ Drives the loop the product depends on, without a browser:
 and asserts the streamed content is the deterministic echo of what it sent, so
 a passing run cannot be explained by a cached or misrouted response.
 
-Why this exists separately from the Playwright journey (#284 tasks 1-2): the web
-send path still emits into a no-op socket client — `createNoopSocketClient`'s
-`emit: () => false` — and the streaming reducer it would need was never ported
-(#93). A UI journey therefore cannot pass yet, while everything behind the UI
-can be proven today. This is that proof.
+Why this exists separately from the Playwright journey (#284 tasks 1-2): this
+proves the backend contract without a browser, so a UI failure and a backend
+failure can be told apart.
+
+It used to say the web send path "still emits into a no-op socket client … and
+the streaming reducer it would need was never ported (#93)". That stopped being
+true on 2026-08-18 (a113ad2b). The web path now POSTs first and subscribes to
+`events_url` (useChatStreamTransport.ts); the socket is only a fallback, and a
+no-op socket client is therefore expected, not a defect.
 
 It authenticates with a PAT minted from the deployment's own signing key rather
 than driving an OIDC login, because the whole point is to run without a browser.
@@ -38,6 +42,16 @@ import urllib.request
 import uuid as uuid_module
 
 ADHOC_CONTRACT = "agent.execute.adhoc.v1"
+
+# The offline mock (#283) echoes its prompt; every other provider answers for
+# real. `--model` decides which assertion set this run can honestly make.
+MOCK_MODEL_NAMES = frozenset({"vllm/E2E-MOCK-MODEL", "E2E-MOCK-MODEL"})
+
+
+def is_mock_model(model: str) -> bool:
+    """True when `model` is the deterministic echo mock, whose reply is predictable."""
+    return model in MOCK_MODEL_NAMES
+
 
 # `pipeline_finish` ends a healthy turn; `execution_failed`/`error` end a broken
 # one and must not be mistaken for completion.
@@ -283,11 +297,24 @@ def main() -> int:
             raise Fail(f"no streamed token chunk; events: {types}")
         if "pipeline_finish" not in types:
             raise Fail(f"no terminal pipeline_finish; events: {types}")
-        # The mock echoes the prompt, so finding it in the ASSEMBLED chunk
-        # content proves the tokens came from this turn's model call rather
-        # than from a replayed or cached stream.
-        if prompt not in content:
-            raise Fail(f"streamed content did not echo this run's prompt; got {content[:120]!r}")
+        # The echo assertion is the strong one — it proves the tokens came from
+        # THIS turn rather than from a replayed or cached stream — but only the
+        # deterministic mock echoes. A real model cannot satisfy it, so against
+        # one it is SUBSTITUTED, not silently dropped: the run says which
+        # assertion it gave up and what it kept in its place, because a check
+        # that quietly weakens itself reports the same green as one that did
+        # the full job.
+        if is_mock_model(args.model):
+            if prompt not in content:
+                raise Fail(f"streamed content did not echo this run's prompt; got {content[:120]!r}")
+            echo_note = "echoed the prompt"
+        else:
+            if not content.strip():
+                raise Fail("streamed chunks carried no content")
+            print(f"  · model {args.model!r} is not the deterministic mock, so the "
+                  f"echo assertion DID NOT RUN; kept in its place: non-empty streamed "
+                  f"content ({len(content)} chars) and the persistence assertion below")
+            echo_note = "streamed non-empty content (echo assertion substituted)"
         assert_persisted(client, args.project, conversation_id, prompt)
     except Blocked as blocked:
         print(f"  ! BLOCKED: {blocked}")
@@ -299,7 +326,7 @@ def main() -> int:
         print(f"  ✗ {failure}")
         return 1
 
-    print(f"  ✓ streamed {len(types)} node events, echoed the prompt, and persisted the reply")
+    print(f"  ✓ streamed {len(types)} node events, {echo_note}, and persisted the reply")
     return 0
 
 
