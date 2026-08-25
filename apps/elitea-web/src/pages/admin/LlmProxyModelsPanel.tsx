@@ -122,7 +122,8 @@ export function UnpricedModelsAlert({
                 requests: model.requests,
               })}
             </Typography>
-            <Button size="small" onClick={() => onPrice(model)}>
+            <Button
+            variant="elitea" color="tertiary" size="small" onClick={() => onPrice(model)}>
               {t('pages.admin.llmProxy.models.setPrice', 'Set a price')}
             </Button>
           </Box>
@@ -204,11 +205,13 @@ export function ModelCatalogueTable({
                 )}
               </TableCell>
               <TableCell align="right">
-                <Button size="small" onClick={() => onEdit(row)}>
+                <Button
+            variant="elitea" color="tertiary" size="small" onClick={() => onEdit(row)}>
                   {t('pages.admin.llmProxy.models.edit', 'Edit price')}
                 </Button>
                 {row.price_overridden ? (
-                  <Button size="small" color="warning" onClick={() => onClearOverride(row)}>
+                  <Button
+            variant="elitea" color="tertiary" size="small" onClick={() => onClearOverride(row)}>
                     {t('pages.admin.llmProxy.models.clear', 'Resume sync')}
                   </Button>
                 ) : null}

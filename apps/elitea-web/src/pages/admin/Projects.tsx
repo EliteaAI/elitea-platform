@@ -131,7 +131,7 @@ export function AdminProjects() {
           */}
           <Tooltip title={PROVISIONING_UNAVAILABLE}>
             <span>
-              <Button variant="contained" size="small" startIcon={<AddIcon />} disabled>
+              <Button variant="elitea" color="primary" size="small" startIcon={<AddIcon />} disabled>
                 {createLabel}
               </Button>
             </span>
@@ -214,10 +214,12 @@ export function AdminProjects() {
             <Typography variant="bodyMedium" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={state.onPreviousPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={state.onPreviousPage}>
               {t('pages.admin.projects.pagination.previous', 'Previous')}
             </Button>
-            <Button size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
               {t('pages.admin.projects.pagination.next', 'Next')}
             </Button>
           </Box>

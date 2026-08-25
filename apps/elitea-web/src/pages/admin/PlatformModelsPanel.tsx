@@ -110,10 +110,12 @@ function ModelRows({
                 )}
               </TableCell>
               <TableCell align="right">
-                <Button size="small" onClick={() => onEdit(row)}>
+                <Button
+            variant="elitea" color="tertiary" size="small" onClick={() => onEdit(row)}>
                   {t('pages.admin.platformModels.edit', 'Edit')}
                 </Button>
-                <Button size="small" color="error" onClick={() => onDelete(row)}>
+                <Button
+            variant="elitea" color="alarm" size="small" onClick={() => onDelete(row)}>
                   {t('pages.admin.platformModels.delete', 'Delete')}
                 </Button>
               </TableCell>
@@ -235,13 +237,14 @@ function ConfirmModelDelete({
       data-testid="platform-models-confirm-delete"
       action={
         <>
-          <Button size="small" onClick={onCancel}>
+          <Button
+            variant="elitea" color="tertiary" size="small" onClick={onCancel}>
             {t('pages.admin.platformModels.cancel', 'Cancel')}
           </Button>
           <Button
+            variant="elitea" color="alarm"
             size="small"
-            color="error"
-            data-testid="platform-models-confirm-delete-button"
+                        data-testid="platform-models-confirm-delete-button"
             onClick={() => onConfirm(model)}
           >
             {t('pages.admin.platformModels.delete', 'Delete')}
@@ -312,7 +315,7 @@ export function PlatformModelsPanel(): ReactNode {
 
       <Box>
         <Button
-          variant="outlined"
+          variant="elitea" color="primary"
           size="small"
           data-testid="platform-models-add"
           onClick={() => setEditor({ open: true, row: undefined })}

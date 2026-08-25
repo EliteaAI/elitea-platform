@@ -322,7 +322,7 @@ export function LlmProxyLogsPanel(): ReactNode {
         <Box>
           <Button
             size="small"
-            variant="outlined"
+            variant="secondary"
             data-testid="llm-logs-more"
             disabled={query.isFetchingNextPage}
             onClick={() => void query.fetchNextPage()}

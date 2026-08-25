@@ -27,7 +27,7 @@ describe('StyledAccordionSummary', () => {
     // accordion in the app ended up with a left-pointing chevron while the
     // source read `rotate(90deg)`. Asserting the emitted rule is what
     // discriminates — the render tests above pass either way.
-    const { container, getByRole } = renderWithTheme(
+    const { getByRole, getByTestId } = renderWithTheme(
       <Accordion>
         <StyledAccordionSummary expandIcon={<span data-testid="chevron" />}>Panel title</StyledAccordionSummary>
         <AccordionDetails>Body</AccordionDetails>
@@ -35,7 +35,9 @@ describe('StyledAccordionSummary', () => {
     );
     await userEvent.click(getByRole('button', { name: 'Panel title' }));
 
-    const wrapper = container.querySelector('.MuiAccordionSummary-expandIconWrapper');
+    // Reached through the icon rather than by an internal MUI class selector,
+    // which R-T6 reserves for `shared/brand/mui-overrides/`.
+    const wrapper = getByTestId('chevron').parentElement;
     expect(wrapper).not.toBeNull();
     expect(wrapper).toHaveClass('Mui-expanded');
 

@@ -99,6 +99,7 @@ export function ProviderTable({
               </TableCell>
               <TableCell align="right">
                 <Button
+            variant="elitea" color="tertiary"
                   size="small"
                   onClick={() => {
                     onEdit(provider);
@@ -108,9 +109,9 @@ export function ProviderTable({
                   {t('pages.admin.identityProviders.edit', 'Edit')}
                 </Button>
                 <Button
+            variant="elitea" color="alarm"
                   size="small"
-                  color="error"
-                  onClick={() => {
+                                    onClick={() => {
                     onRemove(provider);
                   }}
                   sx={{ textTransform: 'none' }}

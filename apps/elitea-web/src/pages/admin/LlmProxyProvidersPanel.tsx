@@ -127,7 +127,7 @@ export function LlmProxyProvidersPanel(): ReactNode {
 
       <Box sx={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <Button
-          variant="outlined"
+          variant="elitea" color="primary"
           size="small"
           data-testid="llm-providers-add"
           onClick={() => setEditor({ open: true, row: undefined })}

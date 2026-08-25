@@ -136,7 +136,7 @@ function FeaturesSectionBody({ state }: { readonly state: AdminConfigurationPage
       <Box sx={{ display: 'flex', gap: '0.5rem' }}>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onDiscard}
           sx={{ textTransform: 'none' }}
@@ -145,7 +145,7 @@ function FeaturesSectionBody({ state }: { readonly state: AdminConfigurationPage
         </Button>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onSave}
           sx={{ textTransform: 'none' }}

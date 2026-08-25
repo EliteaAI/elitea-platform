@@ -69,7 +69,7 @@ function RolesActions({ state }: { readonly state: AdminRolesPageState }) {
     <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
       {state.onApplyToProjects && !state.isDirty ? (
         <Button
-          variant="contained"
+          variant="elitea" color="primary"
           size="small"
           disabled={state.isSyncing || state.isSaving}
           onClick={state.onApplyToProjects}
@@ -79,10 +79,10 @@ function RolesActions({ state }: { readonly state: AdminRolesPageState }) {
       ) : null}
       {state.canEdit && state.isDirty ? (
         <>
-          <Button variant="outlined" size="small" disabled={state.isSaving} onClick={state.onDiscard}>
+          <Button variant="secondary" size="small" disabled={state.isSaving} onClick={state.onDiscard}>
             {t('pages.admin.roles.action.discard', 'Discard')}
           </Button>
-          <Button variant="contained" size="small" disabled={state.isSaving} onClick={state.onSave}>
+          <Button variant="elitea" color="primary" size="small" disabled={state.isSaving} onClick={state.onSave}>
             {t('pages.admin.roles.action.save', 'Save')}
           </Button>
         </>

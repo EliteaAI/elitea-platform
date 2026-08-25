@@ -169,7 +169,7 @@ export function ConfigurationListEditor({
       <Box>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={disabled}
           onClick={() => {
             onChange([...rows, '']);

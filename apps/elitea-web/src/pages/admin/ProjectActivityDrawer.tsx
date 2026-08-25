@@ -226,7 +226,7 @@ function ProjectActivityContent({
           />
         </LocalizationProvider>
 
-        <Button variant="contained" size="small" startIcon={<SearchOutlinedIcon />} onClick={state.onApply}>
+        <Button variant="elitea" color="primary" size="small" startIcon={<SearchOutlinedIcon />} onClick={state.onApply}>
           {t('pages.admin.audit.filter.apply', 'Apply')}
         </Button>
       </Box>
@@ -312,10 +312,12 @@ function ProjectActivityContent({
             <Typography variant="bodyMedium" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={() => state.onPageChange(page - 1)}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={() => state.onPageChange(page - 1)}>
               {t('pages.admin.audit.pagination.previous', 'Previous')}
             </Button>
-            <Button size="small" disabled={page >= lastPage} onClick={() => state.onPageChange(page + 1)}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page >= lastPage} onClick={() => state.onPageChange(page + 1)}>
               {t('pages.admin.audit.pagination.next', 'Next')}
             </Button>
           </Box>

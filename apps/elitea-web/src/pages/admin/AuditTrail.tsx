@@ -206,10 +206,12 @@ export function AdminAuditTrail() {
             <Typography variant="bodyMedium" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={() => state.onPageChange(page - 1)}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={() => state.onPageChange(page - 1)}>
               {t('pages.admin.audit.pagination.previous', 'Previous')}
             </Button>
             <Button
+            variant="elitea" color="tertiary"
               size="small"
               disabled={page >= lastPage}
               onClick={() => state.onPageChange(page + 1)}

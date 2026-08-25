@@ -307,7 +307,7 @@ function ModelsTab() {
           slotProps={{ htmlInput: { 'data-testid': 'llm-proxy-search' } }}
         />
         <Button
-          variant="outlined"
+          variant="elitea" color="primary"
           size="small"
           onClick={() => setEditor({ row: undefined, unpriced: undefined })}
           data-testid="llm-proxy-add-price"
