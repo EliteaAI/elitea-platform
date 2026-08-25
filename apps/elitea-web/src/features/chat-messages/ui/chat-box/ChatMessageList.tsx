@@ -36,6 +36,7 @@ import { ScrollableContainer } from '@/shared/ui/ScrollableContainer';
 import type { SimpleBarInstance } from '@/shared/ui/ScrollableContainer';
 
 import type { ChatMessage } from '../../lib/convertMessagesToChatHistory';
+import { t } from '@/shared/i18n';
 
 /** How close to the top (px) a scroll position must be to fire `onScrollToTop` — baseline: `ChatMessageList.jsx`'s own `scrollTop <= 20`. */
 const SCROLL_TOP_THRESHOLD = 20;
@@ -105,6 +106,14 @@ export interface ChatMessageListProps {
   readonly tts?: ChatMessageListTts;
   readonly continuation?: ChatMessageListContinuation;
   readonly pagination?: ChatMessageListPagination;
+  /**
+   * What to render instead of the transcript when `chatHistory` is empty.
+   * The caller owns this because the empty branch is not just different
+   * copy — `ChatBox` centres the greeting and the composer together as one
+   * block (see `ChatBox.layout.ts`), and only the caller knows the user's
+   * name to greet. Omitted, the plain fallback line below is used.
+   */
+  readonly emptyState?: ReactNode;
 }
 
 /** Baseline `ChatMessageWrapper.jsx`'s `canDeleteThisAIMessage` — whether `userId` authored the question this AI answer replies to. */
@@ -134,6 +143,7 @@ export function ChatMessageList({
     hideHitlActions = false,
   } = {},
   pagination: { isLoadingMore = false, onScrollToTop } = {},
+  emptyState,
 }: ChatMessageListProps): ReactNode {
   const scrollRef = useRef<SimpleBarInstance | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -197,7 +207,7 @@ export function ChatMessageList({
           color: 'text.secondary',
         }}
       >
-        No messages yet
+        {emptyState ?? t('features.chatMessages.noMessages', 'No messages yet')}
       </Box>
     );
   }

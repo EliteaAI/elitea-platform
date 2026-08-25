@@ -13,6 +13,7 @@ import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 import { ChatConversationSidebar } from './ChatConversationSidebar';
 import { rejectToolkitWrite, toCreatedResult } from './ChatWithEditors.helpers';
+import { usePlusMenuEntities } from '../model/usePlusMenuEntities';
 import { useChatWithEditors } from './ChatWithEditors.hooks';
 import { renderAgentEditorShell, renderPipelineEditorShell, renderToolkitEditorShell } from './EditorShell';
 import { useCreateChatReset } from './useCreateChatReset';
@@ -91,6 +92,11 @@ export function ChatWithEditors(): ReactNode {
   }, [editAgent, editPipeline, editToolkit]);
   const resetToken = useCreateChatReset(closeEditors);
 
+  // The composer "+" menu's agent/pipeline/toolkit/MCP lists. This is the
+  // lowest layer allowed to fetch them (`widgets/` may not import
+  // `processes/`), so they are resolved here and handed down as a prop.
+  const plusMenu = usePlusMenuEntities();
+
   return (
     <>
       {/*
@@ -100,12 +106,20 @@ export function ChatWithEditors(): ReactNode {
         * doc for why the mount belongs at this layer. Baseline shape:
         * `NewChat.jsx:1360-1412` renders `<Conversations>` in the left Grid
         * column of the same row as the conversation pane.
+        *
+        * The row padding is that layout's own container padding
+        * (`NewChat.jsx:1736-1743`, desktop `1rem 0rem 1rem 1.5rem`): the
+        * chat surface is inset from the nav rail and the window edges, not
+        * flush against them. There is deliberately no right padding — the
+        * conversation column supplies the gutter on its side, and the chat
+        * column runs to the edge so the participants rail can dock there.
         */}
-      <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
+      <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%', boxSizing: 'border-box', py: 2, pl: 3 }}>
         <ChatConversationSidebar />
         <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
           <ChatPage
             key={`chat-${String(resetToken)}`}
+            entitySubmenus={{ ...plusMenu.entities, onOpen: plusMenu.onOpen }}
             editorCallbacks={{
               onShowAgentEditor: handleShowAgentEditor,
               onShowPipelineEditor: handleShowPipelineEditor,

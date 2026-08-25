@@ -39,6 +39,7 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { conversationNavigation, useChatSessionStore } from '@/entities/conversation';
 import type { Participant } from '@/entities/participant';
 import { useLocalActiveParticipant } from '@/features/chat-participants';
+import type { ChatBoxProps } from '@/widgets/chat-box';
 import { ChatBox } from '@/widgets/chat-box';
 
 import { useChatPageData } from './useChatPageData';
@@ -114,9 +115,16 @@ export interface ChatEditorCallbacks {
 /** @public */
 export interface ChatPageProps {
   readonly editorCallbacks?: ChatEditorCallbacks;
+  /**
+   * Real entity lists for the composer's "+" menu, forwarded straight to
+   * `ChatBox`. Supplied by `processes/chat/ui/ChatWithEditors.tsx`, which is
+   * the only layer allowed to call `useChatEntityBrowser` — see `ChatBox`'s
+   * own prop doc for why the data cannot be fetched further down.
+   */
+  readonly entitySubmenus?: ChatBoxProps['entitySubmenus'];
 }
 
-const ChatPage = memo(({ editorCallbacks }: ChatPageProps) => {
+const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
   const { conversationId: routeConversationId } = useParams({ strict: false }) as { conversationId?: string };
   const { conversationId, messageId } = useDeepLinkedConversationId(routeConversationId);
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
@@ -153,6 +161,7 @@ const ChatPage = memo(({ editorCallbacks }: ChatPageProps) => {
       participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
       isLoadingConversation={isLoadingConversation}
       {...(editorCallbacks ? { editorCallbacks } : {})}
+      {...(entitySubmenus ? { entitySubmenus } : {})}
     />
   );
 });
