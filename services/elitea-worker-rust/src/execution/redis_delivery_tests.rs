@@ -443,7 +443,6 @@ async fn ownership_capacity_is_retained_until_the_delivery_owner_drops() {
     connection.push_read(Ok(vec![delivery("1-0"), delivery("2-0")]));
     connection.push_read(Ok(vec![delivery("3-0")]));
     let intake = intake(connection, config(1, 1));
-    let intake = intake;
     let first = intake.next_batch().await.expect("capacity-filling batch");
     assert_eq!(first.len(), 2);
 
