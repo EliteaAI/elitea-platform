@@ -68,7 +68,9 @@ export const MuiIconButton: EliteaComponents['MuiIconButton'] = {
         background: 'transparent',
         minWidth: '1.75rem',
         height: '1.75rem',
-        borderRadius: theme.vars.shape.radiusMd,
+        // Baseline `IconButton.jsx:66,122` is `16px` on a 28px-tall box — a
+        // full pill. `radiusMd` (8px) rendered these as rounded rectangles.
+        borderRadius: theme.vars.shape.radiusPill,
         padding: theme.spacing(0.75),
         '& .MuiSvgIcon-root path': { fill: theme.vars.palette.icon.fill.default },
         '&:hover': {
@@ -95,7 +97,9 @@ export const MuiIconButton: EliteaComponents['MuiIconButton'] = {
         background: theme.vars.palette.background.button.alarm.default,
         minWidth: '1.75rem',
         height: '1.75rem',
-        borderRadius: theme.vars.shape.radiusMd,
+        // Baseline `IconButton.jsx:66,122` is `16px` on a 28px-tall box — a
+        // full pill. `radiusMd` (8px) rendered these as rounded rectangles.
+        borderRadius: theme.vars.shape.radiusPill,
         padding: theme.spacing(0.75),
         gap: theme.spacing(1.25),
         '&:hover': { background: theme.vars.palette.background.button.alarm.hover },

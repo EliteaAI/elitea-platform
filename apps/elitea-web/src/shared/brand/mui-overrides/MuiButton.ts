@@ -1,4 +1,5 @@
 import type { EliteaComponents } from '../theme-types';
+import { MuiButtonDefaultProps, MuiButtonStyleOverrides } from './MuiButton.root';
 
 /**
  * `MuiButton` (R-T12: one file per MUI key, styleOverrides live only here).
@@ -35,6 +36,8 @@ import type { EliteaComponents } from '../theme-types';
  * `positive`) would hide those tokens from the gate that protects them.
  */
 export const MuiButton: EliteaComponents['MuiButton'] = {
+  defaultProps: MuiButtonDefaultProps,
+  styleOverrides: MuiButtonStyleOverrides,
   variants: [
     {
       // BaseBtn.jsx:50-65 — was: mode ? 'rgba(106,232,250,…)' : 'rgba(245,81,249,…)'

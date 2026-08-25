@@ -12,6 +12,11 @@ export const MuiInput: EliteaComponents['MuiInput'] = {
   styleOverrides: {
     root: ({ theme }) => ({
       '& input': {
+        // Baseline `textFieldVariants.js:6-16` spreads `bodyMedium` here
+        // (0.875rem/400/1.5rem). Without it the input inherited MUI's stock
+        // 1rem body font while its label and helper text used the brand
+        // scale, so every standard input sat a step too large.
+        ...theme.typography.bodyMedium,
         color: theme.vars.palette.text.secondary,
       },
     }),

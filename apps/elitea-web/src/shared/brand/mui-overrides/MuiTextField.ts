@@ -59,6 +59,12 @@ export const MuiTextField: EliteaComponents['MuiTextField'] = {
           color: theme.vars.palette.text.warningText,
         },
         '& input, & textarea': {
+          // Baseline `textFieldVariants.js:196-207`. Without the typography
+          // spread the input kept MUI's stock 1rem body font while its label
+          // used the brand scale, so the control sat a step too large.
+          ...theme.typography.labelMedium,
+          boxSizing: 'border-box',
+          marginBottom: theme.spacing(1),
           color: theme.vars.palette.text.secondary,
         },
         '& input.Mui-disabled, & textarea.Mui-disabled': {
@@ -90,6 +96,72 @@ export const MuiTextField: EliteaComponents['MuiTextField'] = {
         },
         '&:has(.MuiInputBase-root.Mui-disabled), & .MuiInputBase-root.Mui-disabled': {
           cursor: 'not-allowed',
+        },
+        // Baseline `textFieldVariants.js:130-209` — number fields keep the
+        // native spinners without these, which the baseline hides.
+        '& input': { height: '1.5rem' },
+        '& input[type=number]': { MozAppearance: 'textfield' },
+        '& input[type=number]::-webkit-outer-spin-button, & input[type=number]::-webkit-inner-spin-button': {
+          WebkitAppearance: 'none',
+          margin: 0,
+        },
+        '& textarea::-webkit-scrollbar': { display: 'none' },
+        '& .MuiInput-underline': { padding: `${theme.spacing(0.5)} ${theme.spacing(1.5)} 0` },
+      }),
+    },
+    {
+      /**
+       * `outlined` — the baseline's `eliteaTextFieldOutlinedStyle()`
+       * (`textFieldVariants.js:212-257`, registered at `:356-440`).
+       *
+       * THE WHOLE VARIANT WAS MISSING. MUI's default `outlined` therefore
+       * applied: a 4px radius, a notched outline with a cut-out legend for
+       * the floating label, and stock padding — visibly a different control
+       * from the product's. The baseline hides the legend and lifts the
+       * outline to the top of the box instead, which is why its outlined
+       * fields read as plain rounded boxes.
+       *
+       * Focus is `primary.pressed`, NOT `primary.main` — the baseline
+       * distinguishes an input's focus ring from a button's accent.
+       *
+       * SUBSTITUTION, disclosed: the baseline's hover role is
+       * `border.inputHover`, which does not exist in this pack's token
+       * vocabulary (`tokens/default.pack.json` has no such id). `border.hover`
+       * is used instead — the same role the `standard` variant above already
+       * uses for its hover underline, so outlined and standard fields at
+       * least agree with each other. If a pack ever states `border.inputHover`,
+       * this is the line to revisit.
+       */
+      props: { variant: 'outlined' },
+      style: ({ theme }) => ({
+        padding: 0,
+        '& .MuiOutlinedInput-root': {
+          padding: 0,
+          borderRadius: theme.vars.shape.radiusMd,
+          '& fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.border.lines },
+          '&:hover fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.border.hover },
+          '&.Mui-focused fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.primary.pressed },
+          '&.Mui-disabled fieldset': { borderColor: theme.vars.palette.border.lines },
+          '&.Mui-error fieldset': { borderColor: theme.vars.palette.icon.fill.error },
+        },
+        '& .MuiOutlinedInput-input': {
+          padding: `${theme.spacing(1)} ${theme.spacing(2)}`,
+          '&.MuiInputBase-inputMultiline': {
+            padding: `${theme.spacing(1)} ${theme.spacing(2)}`,
+            maxHeight: '25rem',
+            minHeight: '8.25rem',
+            overflow: 'auto',
+          },
+        },
+        // The baseline lifts the outline to the top of the box and hides the
+        // notch legend, so the label sits ON the border rather than in a gap.
+        '& .MuiOutlinedInput-notchedOutline': { top: 0, '& legend': { display: 'none' } },
+        '& input, & textarea': { ...theme.typography.labelMedium, boxSizing: 'border-box' },
+        '& textarea::-webkit-scrollbar': { display: 'none' },
+        '& label.Mui-focused': { color: theme.vars.palette.primary.pressed },
+        '& .MuiFormHelperText-root.Mui-error': {
+          color: theme.vars.palette.text.warningText,
+          paddingLeft: theme.spacing(1.5),
         },
       }),
     },
