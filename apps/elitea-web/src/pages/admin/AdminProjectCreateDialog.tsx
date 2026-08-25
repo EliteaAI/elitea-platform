@@ -41,15 +41,19 @@ import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 
-import type { CreateProjectInput, ProvisioningStep } from './api/adminProjectProvisioningApi';
+import type {
+  CreateProjectInput,
+  ProvisioningFailure,
+  ProvisioningStep,
+} from './api/adminProjectProvisioningApi';
 
 export interface AdminProjectCreateDialogProps {
   readonly open: boolean;
   readonly isSaving: boolean;
   /** The server's own words when the last attempt was refused. */
   readonly serverError: string | undefined;
-  /** The steps that failed or were never started, if the last attempt got that far. */
-  readonly failedSteps: readonly ProvisioningStep[];
+  /** The failed forward steps and the failed rollback steps, kept apart. */
+  readonly failure: ProvisioningFailure;
   readonly onClose: () => void;
   readonly onSubmit: (input: CreateProjectInput) => void;
 }
@@ -68,6 +72,35 @@ export interface AdminProjectCreateDialogProps {
  */
 const EMPTY_OPTIONS: readonly string[] = [];
 
+/**
+ * One labelled group of failed steps, or nothing when the group is empty.
+ *
+ * The key is the step's POSITION, not its name. The same step name legitimately
+ * appears in both lists — `compensate` undoes every attempted step including
+ * the one that failed — so a name key collides the moment a rollback fails too,
+ * which is exactly the failure this report exists for.
+ */
+function StepList({ steps, heading }: { steps: readonly ProvisioningStep[]; heading: string }) {
+  if (steps.length === 0) return null;
+  return (
+    <Box sx={{ marginTop: '0.5rem' }}>
+      <Typography variant="bodySmall" sx={{ display: 'block', fontWeight: 600 }}>
+        {heading}
+      </Typography>
+      <Box component="ul" sx={{ margin: '0.25rem 0 0', paddingLeft: '1.25rem' }}>
+        {steps.map((step, index) => (
+          <Typography key={`${index}-${step.step}`} component="li" variant="bodySmall">
+            {step.msg ||
+              t('pages.admin.projects.step.notRun', 'step {{step}} did not run', {
+                step: step.step,
+              })}
+          </Typography>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
 function looksLikeEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -76,7 +109,7 @@ export function AdminProjectCreateDialog({
   open,
   isSaving,
   serverError,
-  failedSteps,
+  failure,
   onClose,
   onSubmit,
 }: AdminProjectCreateDialogProps) {
@@ -128,18 +161,23 @@ export function AdminProjectCreateDialog({
         {message ? (
           <Alert severity="error" sx={{ marginBottom: '1rem' }}>
             {message}
-            {failedSteps.length > 0 ? (
-              <Box component="ul" sx={{ margin: '0.5rem 0 0', paddingLeft: '1.25rem' }}>
-                {failedSteps.map((step) => (
-                  <Typography key={step.step} component="li" variant="bodySmall">
-                    {step.msg ||
-                      t('pages.admin.projects.step.notRun', 'step {{step}} did not run', {
-                        step: step.step,
-                      })}
-                  </Typography>
-                ))}
-              </Box>
-            ) : null}
+            <StepList
+              steps={failure.steps}
+              heading={t('pages.admin.projects.step.forwardHeading', 'Provisioning stopped at:')}
+            />
+            {/*
+              Reported separately, and never merged into the list above. A
+              forward failure has already been compensated; a ROLLBACK failure
+              is infrastructure left behind that an operator has to clean up by
+              hand. Two headings is the whole difference between those.
+            */}
+            <StepList
+              steps={failure.rollback}
+              heading={t(
+                'pages.admin.projects.step.rollbackHeading',
+                'Cleanup did not finish — these may need attention:',
+              )}
+            />
           </Alert>
         ) : null}
 

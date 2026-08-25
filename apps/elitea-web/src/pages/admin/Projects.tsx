@@ -261,7 +261,7 @@ export function AdminProjects() {
         open={provisioning.isCreateOpen}
         isSaving={provisioning.isCreating}
         serverError={provisioning.createError}
-        failedSteps={provisioning.createFailedSteps}
+        failure={provisioning.createFailure}
         onClose={provisioning.onCloseCreate}
         onSubmit={provisioning.onCreate}
       />

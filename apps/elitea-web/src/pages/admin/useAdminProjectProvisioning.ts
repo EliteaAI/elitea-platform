@@ -25,7 +25,9 @@
  * firing five at once buys nothing an operator can perceive and makes a partial
  * failure harder to attribute.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+
+import { useQueryClient } from '@tanstack/react-query';
 
 import { t } from '@/shared/i18n';
 
@@ -36,10 +38,11 @@ import {
   provisioningStepsFromError,
   useCreateAdminProject,
   useDeleteAdminProject,
+  NO_PROVISIONING_FAILURE,
   type CreateProjectInput,
-  type ProvisioningStep,
+  type ProvisioningFailure,
 } from './api/adminProjectProvisioningApi';
-import type { AdminProjectRow } from './api/adminProjectsApi';
+import { adminProjectsKeys, type AdminProjectRow } from './api/adminProjectsApi';
 
 /**
  * The two permissions the provisioning routes are gated on, server-side.
@@ -68,7 +71,8 @@ export interface AdminProjectProvisioningState {
   readonly isCreateOpen: boolean;
   readonly isCreating: boolean;
   readonly createError: string | undefined;
-  readonly createFailedSteps: readonly ProvisioningStep[];
+  /** The failed forward steps and the failed rollback steps, kept apart. */
+  readonly createFailure: ProvisioningFailure;
   readonly onCloseCreate: () => void;
   readonly onCreate: (input: CreateProjectInput) => void;
 
@@ -92,7 +96,7 @@ export function useAdminProjectProvisioning(
   const [isCreateOpen, setCreateOpen] = useState(false);
   const [isDeleteOpen, setDeleteOpen] = useState(false);
   const [createError, setCreateError] = useState<string | undefined>(undefined);
-  const [createFailedSteps, setCreateFailedSteps] = useState<readonly ProvisioningStep[]>([]);
+  const [createFailure, setCreateFailure] = useState<ProvisioningFailure>(NO_PROVISIONING_FAILURE);
   const [deleteFailures, setDeleteFailures] = useState<readonly ProjectDeleteFailure[]>([]);
   const [isDeleting, setDeleting] = useState(false);
 
@@ -101,6 +105,7 @@ export function useAdminProjectProvisioning(
 
   const createProject = useCreateAdminProject();
   const deleteProject = useDeleteAdminProject();
+  const queryClient = useQueryClient();
 
   /**
    * The rows behind the selected ids, in listing order.
@@ -118,6 +123,24 @@ export function useAdminProjectProvisioning(
   const clearSelection = useCallback(() => setSelectedIds([]), []);
 
   /*
+   * An empty selection CLOSES the delete dialog, rather than merely hiding it.
+   *
+   * The dialog's open flag lives here while the dialog itself is mounted by the
+   * page only when something is selected. Without this reset the two can
+   * disagree: a background refetch (`refetchOnWindowFocus` is on, with a 30s
+   * stale time) that drops the selected rows — because another operator deleted
+   * or displaced them — unmounts the dialog and leaves the flag set. The next
+   * checkbox the operator ticks would then pop the destructive confirmation
+   * open by itself, listing a project they never asked to delete.
+   *
+   * Resetting the STATE is the fix; masking the flag on the way out would leave
+   * it armed to fire again on the next selection.
+   */
+  useEffect(() => {
+    if (selectedProjects.length === 0) setDeleteOpen(false);
+  }, [selectedProjects.length]);
+
+  /*
    * The three handlers whose identity reaches a memoized child, or a dependency
    * array, are stabilised here rather than written inline at the return. An
    * inline arrow is a new identity every render, which defeats
@@ -127,7 +150,7 @@ export function useAdminProjectProvisioning(
 
   const onOpenCreate = useCallback(() => {
     setCreateError(undefined);
-    setCreateFailedSteps([]);
+    setCreateFailure(NO_PROVISIONING_FAILURE);
     setCreateOpen(true);
   }, []);
 
@@ -139,13 +162,13 @@ export function useAdminProjectProvisioning(
   const onCloseCreate = useCallback(() => {
     setCreateOpen(false);
     setCreateError(undefined);
-    setCreateFailedSteps([]);
+    setCreateFailure(NO_PROVISIONING_FAILURE);
   }, []);
 
   const onCreate = useCallback(
     (input: CreateProjectInput) => {
       setCreateError(undefined);
-      setCreateFailedSteps([]);
+      setCreateFailure(NO_PROVISIONING_FAILURE);
       createProject.mutate(input, {
         onSuccess: () => {
           setCreateOpen(false);
@@ -160,7 +183,7 @@ export function useAdminProjectProvisioning(
           // The steps come off the REJECTED response's body, which is the only
           // place they exist — the dialog reports the position in the pipeline,
           // not just that something went wrong.
-          setCreateFailedSteps(failedProvisioningSteps(provisioningStepsFromError(error)));
+          setCreateFailure(failedProvisioningSteps(provisioningStepsFromError(error)));
         },
       });
     },
@@ -202,13 +225,17 @@ export function useAdminProjectProvisioning(
           });
         }
       }
+      // ONE invalidation for the whole loop. Doing it per mutation would make
+      // each iteration await a full listing refetch before the next DELETE went
+      // out; see `useDeleteAdminProject`.
+      await queryClient.invalidateQueries({ queryKey: adminProjectsKeys.all });
       setDeleting(false);
       setDeleteFailures(failures);
       const stillSelected = new Set(failures.map((failure) => failure.projectId));
       setSelectedIds((previous) => previous.filter((id) => stillSelected.has(id)));
       if (failures.length === 0) setDeleteOpen(false);
     })();
-  }, [selectedProjects, deleteProject]);
+  }, [selectedProjects, deleteProject, queryClient]);
 
   return {
     selectedIds,
@@ -220,7 +247,7 @@ export function useAdminProjectProvisioning(
     isCreateOpen,
     isCreating: createProject.isPending,
     createError,
-    createFailedSteps,
+    createFailure,
     onCloseCreate,
     onCreate,
 

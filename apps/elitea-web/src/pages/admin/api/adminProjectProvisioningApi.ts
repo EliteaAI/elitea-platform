@@ -60,6 +60,27 @@ export interface CreateProjectInput {
 }
 
 /**
+ * A failed pipeline run, with the two lists KEPT APART.
+ *
+ * They are not interchangeable and must not be concatenated. `steps` is how far
+ * the pipeline got going forward; `rollback` is what the compensation managed
+ * to undo. A forward failure is the expected, already-cleaned-up case. A
+ * ROLLBACK failure is the one that leaves orphaned infrastructure behind — a
+ * tenant schema the server refused to drop because the project row survived,
+ * for instance. The server distinguishes them by message text
+ * (`safeStepMessage` vs `heldBackStepMessage`); flattening the two arrays
+ * throws away the structural half of that distinction and leaves an operator
+ * reading two identical-looking bullet lines that call for opposite actions.
+ */
+export interface ProvisioningFailure {
+  readonly steps: readonly ProvisioningStep[];
+  readonly rollback: readonly ProvisioningStep[];
+}
+
+/** Nothing failed, or the error carried no pipeline detail at all. */
+export const NO_PROVISIONING_FAILURE: ProvisioningFailure = { steps: [], rollback: [] };
+
+/**
  * The step lists the server returns WITH a failure.
  *
  * Both create and delete answer their error status with a body describing how
@@ -68,15 +89,17 @@ export interface CreateProjectInput {
  * "the tenant schema was kept because the project row is still there" to a bare
  * 500 — which is the one failure an operator has to act on differently.
  */
-export function provisioningStepsFromError(error: unknown): readonly ProvisioningStep[] {
-  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') return [];
+export function provisioningStepsFromError(error: unknown): ProvisioningFailure {
+  if (!(error instanceof EliteaApiError) || error.failure.kind !== 'http') {
+    return NO_PROVISIONING_FAILURE;
+  }
   const body = unwrapBody(error.failure.body);
-  if (typeof body !== 'object' || body === null) return [];
+  if (typeof body !== 'object' || body === null) return NO_PROVISIONING_FAILURE;
   const { steps, rollback_steps: rollback } = body as {
     steps?: unknown;
     rollback_steps?: unknown;
   };
-  return [...readSteps(steps), ...readSteps(rollback)];
+  return { steps: readSteps(steps), rollback: readSteps(rollback) };
 }
 
 function readSteps(value: unknown): readonly ProvisioningStep[] {
@@ -94,10 +117,11 @@ function readSteps(value: unknown): readonly ProvisioningStep[] {
  * A step with `ok === true` is noise in a failure report, and there are nine of
  * them. `ok === null` is NOT noise — that is the held-back tenant schema.
  */
-export function failedProvisioningSteps(
-  steps: readonly ProvisioningStep[],
-): readonly ProvisioningStep[] {
-  return steps.filter((entry) => entry.ok !== true);
+export function failedProvisioningSteps(failure: ProvisioningFailure): ProvisioningFailure {
+  return {
+    steps: failure.steps.filter((entry) => entry.ok !== true),
+    rollback: failure.rollback.filter((entry) => entry.ok !== true),
+  };
 }
 
 /**
@@ -151,15 +175,22 @@ export function useCreateAdminProject(): UseMutationResult<
  * the server has no batch route and because a partial failure has to be
  * reported per project — "three of five were deleted" is the answer an operator
  * needs, and a single aggregate rejection cannot give it.
+ *
+ * THIS MUTATION DOES NOT INVALIDATE, and that is deliberate. react-query AWAITS
+ * a promise returned from `onSuccess` before settling `mutateAsync`, so an
+ * invalidation here would make every iteration of that loop wait for a full
+ * listing refetch before issuing the next DELETE — N round trips of dead time
+ * on top of N schema drops, with the dialog's "will be destroyed" list visibly
+ * shrinking an entry at a time as the operator watches. The caller invalidates
+ * ONCE, after the loop; see `../useAdminProjectProvisioning.ts`. Any new caller
+ * must do the same.
  */
 export function useDeleteAdminProject(): UseMutationResult<void, Error, { projectId: number }> {
-  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ projectId }) => {
       await eliteaFetch<unknown>(`/projects/project/${ADMIN_MODE}/${projectId}`, {
         method: 'DELETE',
       });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: adminProjectsKeys.all }),
   });
 }

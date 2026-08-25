@@ -341,6 +341,52 @@ describe('Admin › Projects', () => {
       // one red one.
       expect(screen.queryByText(/project_model/)).not.toBeInTheDocument();
     });
+
+    it('separates a failed ROLLBACK from a failed forward step', async () => {
+      server.use(
+        http.post('*/projects/project/administration', () =>
+          HttpResponse.json(
+            {
+              // The SAME step name in both lists, which is what the server
+              // really emits: compensate() undoes every attempted step,
+              // including the one that failed.
+              steps: [
+                {
+                  step: 'project_schema',
+                  initialized: true,
+                  ok: false,
+                  msg: 'step project_schema did not complete',
+                },
+              ],
+              rollback_steps: [
+                {
+                  step: 'project_schema',
+                  initialized: true,
+                  ok: false,
+                  msg: 'step project_schema was not started, because the project row is still there',
+                },
+              ],
+            },
+            { status: 500 },
+          ),
+        ),
+      );
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await user.click(screen.getByRole('button', { name: 'Create project' }));
+      await user.type(await screen.findByRole('textbox', { name: 'Project name' }), 'cygnus');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+
+      // Two headings, because the two call for opposite operator actions: a
+      // forward failure is already cleaned up, a rollback failure is
+      // infrastructure left behind. Flattening them into one list loses that.
+      expect(await screen.findByText(/Provisioning stopped at/)).toBeInTheDocument();
+      expect(screen.getByText(/Cleanup did not finish/)).toBeInTheDocument();
+      expect(screen.getByText(/did not complete/)).toBeInTheDocument();
+      expect(screen.getByText(/was not started/)).toBeInTheDocument();
+    });
   });
 
   describe('delete', () => {

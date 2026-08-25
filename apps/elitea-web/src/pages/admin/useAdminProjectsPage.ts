@@ -143,9 +143,9 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
   /*
    * Every control below that changes WHICH rows are listed also drops the
    * selection. Keeping it would arm the delete dialog with ids whose rows are no
-   * longer on screen — see `./useAdminProjectProvisioning`. Sorting is the one
-   * exception on purpose: it reorders the same page, so the ticked rows are
-   * still there.
+   * longer on screen — see `./useAdminProjectProvisioning`. Sorting is included:
+   * it is SERVER-side and resets to page 0, so it replaces which twenty rows are
+   * listed rather than merely reordering the ones on screen.
    */
   const onTabChange = useCallback(
     (_event: unknown, next: number) => {
@@ -167,11 +167,15 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
     [clearSelection],
   );
 
-  const onSort = useCallback((field: string, direction: 'asc' | 'desc') => {
-    setSortField(field);
-    setSortDirection(direction);
-    setPage(0);
-  }, []);
+  const onSort = useCallback(
+    (field: string, direction: 'asc' | 'desc') => {
+      setSortField(field);
+      setSortDirection(direction);
+      setPage(0);
+      clearSelection();
+    },
+    [clearSelection],
+  );
 
   /**
    * A rejected write must SAY so. The reference page swallows every failure
