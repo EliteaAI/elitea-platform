@@ -241,6 +241,84 @@ def test_serve_loop_does_not_run_reclaimed_duplicate_concurrently() -> None:
     asyncio.run(run())
 
 
+def test_serve_loop_quarantines_a_non_retryable_delivery_instead_of_respinning() -> None:
+    """A delivery that cannot succeed is executed ONCE, however often it returns.
+
+    The entry is never ACKed on the WorkerError path — correctly, since the
+    output it owes was never delivered — so XAUTOCLAIM keeps handing it back.
+    `retryable` was printed and ignored, so the same doomed command ran again on
+    every reclaim turn. Measured on the standalone stack: one undeliverable
+    output rejected every 15-45s for 13 minutes.
+
+    FakeConsumer.reclaim_page returns the same entry on every call, so
+    `reclaim_calls >= 4` proves the entry really was offered repeatedly. Pairing
+    that with `calls == 1` is what discriminates the fix from the defect: before
+    it, the two numbers rose together.
+    """
+
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        stop = asyncio.Event()
+        calls = 0
+        events: list[tuple[str, object]] = []
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            nonlocal calls
+            calls += 1
+            raise AuthorizationFailure(
+                "The durable output spool uses a different claim fence; "
+                "server-side recovery is required."
+            )
+
+        async def stop_after_repeated_offers() -> None:
+            while consumer.reclaim_calls < 4:
+                await asyncio.sleep(0)
+            stop.set()
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+            event_sink=lambda event, error: events.append((event, error)),
+        )
+        watcher = asyncio.create_task(stop_after_repeated_offers())
+        try:
+            await asyncio.wait_for(runtime.run(stop), timeout=1.0)
+        finally:
+            watcher.cancel()
+
+        assert consumer.reclaim_calls >= 4, "the entry was not offered repeatedly"
+        assert calls == 1, f"the doomed delivery ran {calls} times, not once"
+
+        quarantined = [event for event in events if event[0] == "delivery_quarantined"]
+        assert len(quarantined) == 1, "the quarantine must be announced exactly once"
+
+        # Actionable, not just distinct: the operator gets the entry and the
+        # remedy, because the underlying refusal names neither.
+        notice = quarantined[0][1]
+        assert notice is not None
+        assert notice.code == "AUTHORIZATION_FAILED"
+        assert "1-0" in notice.safe_message
+        assert "commands.v1" in notice.safe_message
+        assert "PENDING" in notice.safe_message
+
+        assert not any(event[0] == "delivery_quarantine_full" for event in events)
+        # The original rejection is still reported; quarantine adds to it.
+        assert any(event[0] == "delivery_rejected" for event in events)
+
+    asyncio.run(run())
+
+
 def test_serve_loop_heartbeats_queued_and_active_entries_in_bounded_batches() -> None:
     async def run() -> None:
         deliveries = tuple(

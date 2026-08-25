@@ -168,6 +168,15 @@ class WorkerServeLoop:
         self._dependency_retry = dependency_retry_millis / 1000
         self._shutdown_timeout = shutdown_timeout_millis / 1000
         self._owned_entry_ids: set[tuple[str, str]] = set()
+        # Entries this process refuses to re-lease, because re-running them
+        # cannot change the outcome. See `_worker`'s non-retryable branch.
+        #
+        # Bounded like every other buffer here: an unbounded set would turn a
+        # broken dependency into a memory leak. The cap is the same order as the
+        # ownership window, so it can hold every entry this worker could have
+        # in flight, and one more round of them.
+        self._quarantined: set[tuple[str, str]] = set()
+        self._quarantine_cap = 2 * (queue_capacity + max_concurrency)
         # One token covers each fetched, queued, or actively processed PEL entry.
         self._ownership_slots: asyncio.Queue[None] = asyncio.Queue(
             queue_capacity + max_concurrency
@@ -360,6 +369,18 @@ class WorkerServeLoop:
             if key in self._owned_entry_ids:
                 self._release_delivery_capacity(1)
                 continue
+            # A quarantined entry is dropped BEFORE it can be handed to a
+            # worker. XAUTOCLAIM keeps returning it — it is still in the PEL,
+            # and deliberately so (see `_worker`) — but re-executing it would
+            # only reproduce the same refusal, which is what made one
+            # undeliverable output spin every reclaim turn indefinitely.
+            #
+            # Silent on purpose: the quarantine decision is announced ONCE, by
+            # the worker that made it. Re-announcing it on every reclaim page is
+            # the log flood this replaces.
+            if key in self._quarantined:
+                self._release_delivery_capacity(1)
+                continue
             self._owned_entry_ids.add(key)
             accepted.append(delivery)
         self._release_delivery_capacity(reserved - len(deliveries))
@@ -391,6 +412,38 @@ class WorkerServeLoop:
                 raise
             except WorkerError as exc:
                 self._event_sink("delivery_rejected", exc)
+                # `retryable` used to be printed and then ignored. The entry is
+                # never ACKed on this path — correctly, because the output it
+                # owes was never delivered and ACKing would discard the command
+                # — so it stayed in the PEL and XAUTOCLAIM handed it back every
+                # reclaim turn, forever. Measured: one undeliverable output
+                # rejected every 15-45s for 13 minutes, with `retryable: false`
+                # in every line.
+                #
+                # Re-running it cannot change the answer, so this process stops
+                # taking it. The entry is left PENDING rather than ACKed: that
+                # keeps the command recoverable by the server-side repair the
+                # refusal asks for, and losing a command is worse than leaving
+                # one parked.
+                #
+                # LIMITS, stated because they are not obvious. This is
+                # process-local: a second worker, or this one after a restart,
+                # will pick the entry up again and refuse it again. Durable
+                # dead-lettering needs the control plane to own the decision,
+                # which is the same missing "server-side recovery" the message
+                # names. What this does fix is the spin, and the silence.
+                if not exc.retryable:
+                    if len(self._quarantined) < self._quarantine_cap:
+                        self._quarantined.add(key)
+                        self._event_sink(
+                            "delivery_quarantined",
+                            _quarantine_notice(exc, key),
+                        )
+                    else:
+                        # Announced rather than silently widened: past the cap
+                        # the old spin resumes, and an operator must know that
+                        # is what they are now looking at.
+                        self._event_sink("delivery_quarantine_full", exc)
             except Exception as exc:
                 _emit_unexpected_delivery_failure(exc)
                 self._event_sink("delivery_unavailable", DependencyUnavailable())
@@ -399,6 +452,37 @@ class WorkerServeLoop:
                     self._owned_entry_ids.remove(key)
                     self._release_delivery_capacity(1)
                 self._queue.task_done()
+
+
+def _quarantine_notice(
+    error: WorkerError,
+    key: tuple[str, str],
+) -> WorkerError:
+    """The one-shot, operator-facing statement that an entry was parked.
+
+    It keeps the original `code` and `retryable` so the event still classifies
+    the same way, and names the entry plus the remedy — because the underlying
+    refusal ("server-side recovery is required") says what must happen without
+    saying to WHAT, and nothing in this process performs that recovery.
+
+    The stream name and Redis entry id are infrastructure identifiers, not
+    execution content, so they are safe to print under the same rules as the
+    rest of `safe_message`.
+    """
+    stream, entry_id = key
+    return WorkerError(
+        code=error.code,
+        safe_message=(
+            f"{error.safe_message} "
+            f"Entry {entry_id} on stream {stream} is left PENDING and will not "
+            f"be retried by this worker; re-running it cannot change the "
+            f"outcome. The execution's own output is lost — a caller waiting on "
+            f"it sees no answer. Clearing the pending entry requires the "
+            f"server-side recovery named above."
+        ),
+        exit_code=error.exit_code,
+        retryable=error.retryable,
+    )
 
 
 def _emit_unexpected_delivery_failure(error: Exception) -> None:
