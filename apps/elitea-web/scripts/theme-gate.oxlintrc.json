@@ -36,6 +36,23 @@
       "rules": { "elitea/no-mui-internal-selector": "off" }
     },
     {
+      // `support-assistant/vendor/**` is the PORTED SOURCE of
+      // `@eliteaai/elitea-assistant`, brought in because the published package
+      // streams over socket.io and this platform serves SSE.
+      //
+      // UNLIKE THE ENTRIES BELOW, THIS ONE IS NOT TEMPORARY and is not "code
+      // that predates R-T1". The widget owns its colour system by design: it
+      // computes a set of CSS custom properties from a light/dark theme and an
+      // optional palette override (`vendor/theme/colors.theme.ts`), which is
+      // what lets the same overlay sit on any host page. Rewriting it onto
+      // `theme.vars.palette.*` would make the floating assistant a component of
+      // this app's MUI theme — a redesign of the widget, not a token refactor.
+      //
+      // The same override, with the same reasoning, is in `.oxlintrc.json`.
+      "files": ["**/widgets/support-assistant/vendor/**"],
+      "rules": { "elitea/no-raw-color": "off" }
+    },
+    {
       // TEMPORARY (Wave 2 — remove when token refactoring lands):
       // These units predate the R-T1 fence and contain raw colour literals.
       "files": [

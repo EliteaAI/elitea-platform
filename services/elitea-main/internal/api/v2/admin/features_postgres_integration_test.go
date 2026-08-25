@@ -282,9 +282,15 @@ func TestFeaturesSectionsWithNoConsumerRefuseBothVerbs(t *testing.T) {
 
 	cases := map[string]string{
 		// No skill publish endpoint, no skill catalog, no categories surface.
+		//
+		// `support_assistant` USED TO BE HERE, withheld because the widget at
+		// the other end of its wire had no render site. It is live now: the
+		// widget is mounted in apps/elitea-web's AppShell and
+		// internal/api/v2/supportassistant serves the whole surface. Its
+		// availability is asserted in
+		// TestSchemaDeclaresAvailabilityForEverySection, next to the consumer
+		// that justifies it.
 		"skill_publishing": "skill publishing is not implemented",
-		// The wire exists; the widget at the other end has no render site.
-		"support_assistant": "not mounted in this application",
 	}
 	for section, fragment := range cases {
 		t.Run(section, func(t *testing.T) {

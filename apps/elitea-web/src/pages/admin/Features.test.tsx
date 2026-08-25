@@ -46,7 +46,14 @@ const VALIDATION_REASON =
   'publish validation in this service is deterministic (name collisions, sub-agent cycles and depth); ' +
   'there is no AI evaluator for custom criteria to reach.';
 const SKILL_REASON = 'skill publishing is not implemented in this service';
-const WIDGET_REASON = 'the in-app support assistant is not mounted in this application';
+/*
+ * `WIDGET_REASON` USED TO STAND HERE, and `support_assistant` used to be this
+ * file's second unavailable exemplar. It is LIVE now: the widget is mounted in
+ * `widgets/app-shell` and `internal/api/v2/supportassistant` serves the whole
+ * surface, so the server no longer sends a reason for it and this fixture no
+ * longer invents one. `skill_publishing` is the remaining unavailable section
+ * and carries the assertions that used to be split across both.
+ */
 
 /** The server's own section list, trimmed to what these tests exercise. */
 const SECTIONS = [
@@ -124,8 +131,12 @@ const SECTIONS = [
     id: 'support_assistant',
     page: 'features',
     title: 'Support Assistant',
-    unavailable_reason: WIDGET_REASON,
-    fields: [{ key: 'vite_elitea_assistant', type: 'string', title: 'Assistant Enabled' }],
+    fields: [
+      // A BOOLEAN, matching the server. The reference's `vite_elitea_assistant`
+      // was a Vite build-time string of "0"/"1"; nothing here is built at build
+      // time, so the switch is a switch.
+      { key: 'support_assistant_enabled', type: 'boolean', title: 'Assistant Enabled', default: false },
+    ],
   },
   {
     id: 'voice_features',
@@ -278,8 +289,9 @@ describe('AdminFeatures — which section opens', () => {
   it('marks the unavailable sections in the sidebar before they are opened', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    // Skill Publishing and Support Assistant.
-    expect(screen.getAllByText('Not available here')).toHaveLength(2);
+    // Skill Publishing, alone: `support_assistant` became available when the
+    // widget acquired a render site and a backend.
+    expect(screen.getAllByText('Not available here')).toHaveLength(1);
   });
 });
 
@@ -289,12 +301,12 @@ describe('AdminFeatures — a section with no consumer', () => {
   it("shows the SERVER's reason and no control at all", async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Support Assistant');
+    await openSection('Skill Publishing');
 
     const notice = await screen.findByTestId('admin-features-unavailable');
-    expect(notice).toHaveTextContent('not mounted in this application');
-    // A DISABLED switch would still read as "configurable, just not now".
-    expect(screen.queryByRole('switch', { name: 'Assistant Enabled' })).not.toBeInTheDocument();
+    expect(notice).toHaveTextContent('skill publishing is not implemented');
+    // A DISABLED control would still read as "configurable, just not now".
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
   });

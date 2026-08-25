@@ -520,7 +520,7 @@ func TestUnavailableSectionsRefuseWithAReason(t *testing.T) {
 		// so there was never going to be a consumer; a section withheld forever
 		// is a promise that cannot be kept.
 		"mcp_servers", "observability", "llm_proxy", "runtime",
-		"admin_panel", "auth", "support_assistant",
+		"admin_panel", "auth",
 	} {
 		target := "/admin/plugin_config_values/administration/" + section
 		read := configDo(t, router, http.MethodGet, target, nil)
@@ -685,11 +685,18 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	                    every caller without runtime.plugins) and published
 	//	                    on PlatformSettings so the SPA paints the splash
 	//	                    rather than a wall of failed requests
+	//	support_assistant → platformconfig.LoadSupportAssistant, read by
+	//	                    internal/api/v2/supportassistant on every request it
+	//	                    serves — the switch and the agent decide whether the
+	//	                    widget renders at all, and the three display strings
+	//	                    are echoed to it by GET /support_assistant/config.
+	//	                    Rendered by apps/elitea-web widgets/support-assistant,
+	//	                    which widgets/app-shell mounts
 	want := map[string]bool{
 		"resources": true, "mcp_configuration": true,
 		"agent_publishing": true, "voice_features": true,
 		"guardrails": true, "dedicated_banner": true,
-		"maintenance": true,
+		"maintenance": true, "support_assistant": true,
 	}
 	for id := range want {
 		if !available[id] {

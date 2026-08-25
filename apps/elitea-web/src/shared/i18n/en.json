@@ -2618,5 +2618,21 @@
   "shared.ui.entityRail.author.toolkits": "Toolkits",
   "shared.ui.entityRail.trendingAuthors.empty": "No authors to display.",
   "shared.ui.entityRail.trendingAuthors.loadError": "Failed to load.",
-  "shared.ui.entityRail.trendingAuthors.title": "Trending Authors"
+  "shared.ui.entityRail.trendingAuthors.title": "Trending Authors",
+  "widgets.supportAssistant.close": "Close chat",
+  "widgets.supportAssistant.closePopup": "Close popup",
+  "widgets.supportAssistant.collapse": "Collapse",
+  "widgets.supportAssistant.collapseAssistant": "Collapse the assistant",
+  "widgets.supportAssistant.conversationsHistory": "Conversations history",
+  "widgets.supportAssistant.copy": "Copy to clipboard",
+  "widgets.supportAssistant.empty": "Send a message to start a conversation",
+  "widgets.supportAssistant.expand": "Expand chat",
+  "widgets.supportAssistant.expandLabel": "Expand",
+  "widgets.supportAssistant.history": "Chat history",
+  "widgets.supportAssistant.newChat": "New chat",
+  "widgets.supportAssistant.newConversation": "New conversation",
+  "widgets.supportAssistant.open": "Support Assistant",
+  "widgets.supportAssistant.send": "Send message",
+  "widgets.supportAssistant.showFullAnswer": "Show the full answer",
+  "widgets.supportAssistant.userAvatar": "User avatar"
 }

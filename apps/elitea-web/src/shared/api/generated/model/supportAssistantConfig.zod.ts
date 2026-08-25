@@ -40,13 +40,28 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { SupportAssistantUser } from "./supportAssistantUser.zod";
 
 export const SupportAssistantConfig = zod
   .object({
-    enabled: zod.boolean(),
+    enabled: zod
+      .boolean()
+      .describe(
+        "Whether the widget should render AT ALL. It is `true` only when the operator enabled the section, a hidden support project exists, and a support agent has been chosen — an assistant that cannot answer is reported as disabled rather than as enabled-and-broken.\n",
+      ),
+    title: zod.string().optional(),
+    welcome_message: zod.string().optional(),
+    placeholder: zod.string().optional(),
+    support_project_id: zod
+      .int()
+      .optional()
+      .describe(
+        "The hidden project support conversations live in. It is an OUTPUT only, echoed so the widget can build the project-scoped execution event-stream URL; no support route accepts a project from a client.\n",
+      ),
+    user: SupportAssistantUser.optional(),
   })
   .describe(
-    "NOTE(W2): static stub, internal\/api\/v2\/eliteacore\/handler.go:2944-2946.\n",
+    'Only `enabled` is required. A disabled deployment answers `{\"enabled\": false}` and NOTHING ELSE — no project id, no operator strings, no identity — so a feature that is off is not also a disclosure channel.\n',
   );
 
 export type SupportAssistantConfig = zod.input<typeof SupportAssistantConfig>;

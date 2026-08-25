@@ -55,7 +55,6 @@ import type {
   PlatformSettings,
   PublishedAgentsListing,
   Role,
-  SupportAssistantConfig,
   UserInviteResult,
   UserListResponse,
   UserProjectPermissionsResult,
@@ -276,13 +275,6 @@ export const getGetPlatformSettingsResponseMock = (
     ).map(() => faker.string.alpha({ length: { min: 10, max: 20 } })),
     undefined,
   ]),
-  ...overrideResponse,
-});
-
-export const getGetSupportAssistantConfigResponseMock = (
-  overrideResponse: Partial<Extract<SupportAssistantConfig, object>> = {},
-): SupportAssistantConfig => ({
-  enabled: faker.datatype.boolean(),
   ...overrideResponse,
 });
 
@@ -693,32 +685,6 @@ export const getGetPlatformSettingsMockHandler = (
   );
 };
 
-export const getGetSupportAssistantConfigMockHandler = (
-  overrideResponse?:
-    | SupportAssistantConfig
-    | ((
-        info: Parameters<Parameters<typeof http.get>[1]>[0],
-      ) => Promise<SupportAssistantConfig> | SupportAssistantConfig),
-  options?: RequestHandlerOptions,
-) => {
-  return http.get(
-    "*/support_assistant/config",
-    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getGetSupportAssistantConfigResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
 export const getListAdminPublishedAgentsMockHandler = (
   overrideResponse?:
     | PublishedAgentsListing
@@ -759,6 +725,5 @@ export const getAdminMock = () => [
   getModerationStatusMockHandler(),
   getCreateModerationRequestMockHandler(),
   getGetPlatformSettingsMockHandler(),
-  getGetSupportAssistantConfigMockHandler(),
   getListAdminPublishedAgentsMockHandler(),
 ];

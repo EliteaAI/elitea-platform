@@ -101,18 +101,22 @@ const (
 		"endpoint, no skill catalog and no skill categories surface for these settings to govern. The controls are " +
 		"withheld rather than shown governing nothing."
 
-	// supportAssistantWidgetUnavailable replaces the generic extra_ui_config
-	// reason with the specific one. The switch would be read by
-	// `GET /support_assistant/config`, whose only client is
-	// `widgets/support-assistant/ui/SupportAssistantWidget.tsx` — and that
-	// widget is not mounted anywhere (`grep -rn SupportAssistantWidget src/`
-	// finds one doc-comment mention and no JSX site), renders no floating
-	// assistant, and documents in its own body that `@eliteaai/elitea-assistant`
-	// is not a dependency of this app. Turning the switch on would change one
-	// boolean in an unmounted component.
-	supportAssistantWidgetUnavailable = "the in-app support assistant is not mounted in this application: the " +
-		"@eliteaai/elitea-assistant package is not a dependency and SupportAssistantWidget has no render site, so " +
-		"enabling it would change a flag no rendered surface reads."
+	// The support assistant section USED TO carry an `unavailable_reason` here,
+	// saying that the switch had a wire (`GET /support_assistant/config`) and no
+	// rendered consumer: `SupportAssistantWidget` had no render site and
+	// `@eliteaai/elitea-assistant` was not a dependency, so enabling it "would
+	// change a flag no rendered surface reads".
+	//
+	// Both halves are now false, which is why the constant is DELETED rather
+	// than kept for reuse. The widget is mounted in `AppShell`, ported into
+	// `apps/elitea-web/src/widgets/support-assistant/` rather than taken as a
+	// dependency (the published package streams over socket.io, which this
+	// service does not serve), and the switch is read by
+	// `internal/api/v2/supportassistant`, which serves the whole surface —
+	// config, conversations, attachments and one agent turn per question.
+	//
+	// Deleting the constant is deliberate: the next section that wants to be
+	// withheld has to state what reads it before it can be written.
 
 	// authProvidersElsewhereUnavailable — the Authentication section is now a
 	// pointer to a real surface, in the same way `mcp_servers` is.
@@ -1228,30 +1232,43 @@ func dedicatedBannerSection() map[string]any {
 
 func supportAssistantSection() map[string]any {
 	return map[string]any{
-		"id":   "support_assistant",
-		"page": configPageFeatures,
-		// The reason is narrowed from the generic extra_ui_config one: this
-		// section's switch DOES have a wire (`GET /support_assistant/config`),
-		// and the wire is not what is missing. What is missing is a rendered
-		// consumer at the other end. Saying "nothing reads this yet" would have
-		// been true but pointed at the wrong thing to fix.
-		"unavailable_reason": supportAssistantWidgetUnavailable,
-		"title":              "Support Assistant",
-		"description":        "Enable the in-app support assistant widget for all users.",
-		"order":              14,
-		"icon":               "support_agent",
-		"always_visible":     true,
+		// LIVE. Every field below is read on the next request by
+		// `internal/platformconfig.LoadSupportAssistant`, and this page is the
+		// ONLY writer of those rows — the reference's
+		// `PUT /support_assistant/config` is deliberately not ported, so the
+		// form and the server cannot disagree about field names or defaults.
+		"id":             "support_assistant",
+		"page":           configPageFeatures,
+		"title":          "Support Assistant",
+		"description":    "Enable the in-app support assistant widget for all users.",
+		"order":          14,
+		"icon":           "support_agent",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
-				"key":         "vite_elitea_assistant",
-				"type":        "string",
+				// A BOOLEAN, replacing the reference's `vite_elitea_assistant`
+				// string of "0"/"1".
+				//
+				// That field was a Vite build-time variable injected into the
+				// legacy SPA's page, so it could only ever be a string, and the
+				// admin form rendered a text box in which "false", "no" and "0"
+				// meant three different things to nobody. Nothing here is built
+				// at build time, so the switch is the type it always was.
+				"key":         "support_assistant_enabled",
+				"type":        "boolean",
 				"title":       "Assistant Enabled",
-				"description": "When enabled, the support assistant widget is available to all users environment-wide.",
-				"path":        "extra_ui_config.vite_elitea_assistant",
+				"description": "When enabled, the support assistant widget is available to all users environment-wide. The assistant only appears once an agent is selected below.",
+				"path":        "support_assistant_enabled",
 				"section":     "support_assistant",
-				"default":     "0",
+				"default":     false,
 			},
 			{
+				// WRITTEN BACK BY THE SERVER as well as read. Left empty on an
+				// enabled deployment, the first support request provisions the
+				// hidden project and records its id here, so an operator can see
+				// which project the transcripts landed in. Clearing the field
+				// does not orphan it: the bootstrap adopts an existing
+				// "Support Assistant" project by name before creating one.
 				"key":         "support_project_id",
 				"type":        "integer",
 				"title":       "Support Project ID",
@@ -1264,8 +1281,8 @@ func supportAssistantSection() map[string]any {
 				"key":         "support_agent_project_id",
 				"type":        "integer",
 				"title":       "Agent Project ID",
-				"description": "Project ID where the support agent is located.",
-				"path":        "agent_project_id",
+				"description": "Project ID where the support agent is located. Leave empty to use the support project itself.",
+				"path":        "support_agent_project_id",
 				"section":     "support_assistant",
 				"default":     nil,
 			},
@@ -1273,8 +1290,8 @@ func supportAssistantSection() map[string]any {
 				"key":         "support_agent_id",
 				"type":        "integer",
 				"title":       "Agent ID",
-				"description": "Application ID of the support agent.",
-				"path":        "agent_id",
+				"description": "Application ID of the support agent. Until this is set the assistant stays hidden, because it has nothing to answer with.",
+				"path":        "support_agent_id",
 				"section":     "support_assistant",
 				"default":     nil,
 			},
@@ -1283,7 +1300,7 @@ func supportAssistantSection() map[string]any {
 				"type":        "string",
 				"title":       "Welcome Message",
 				"description": "Initial greeting message shown in the support widget.",
-				"path":        "welcome_message",
+				"path":        "support_welcome_message",
 				"section":     "support_assistant",
 				"default":     "Hello! How can I help you today?",
 			},
@@ -1292,9 +1309,24 @@ func supportAssistantSection() map[string]any {
 				"type":        "string",
 				"title":       "Assistant Name",
 				"description": "Display name for the support assistant.",
-				"path":        "assistant_name",
+				"path":        "support_assistant_name",
 				"section":     "support_assistant",
 				"default":     "ELITEA Support",
+			},
+			{
+				// The reference has no admin field for this — `config.py` reads
+				// `config.get('placeholder', ...)` from a key its own
+				// admin_schema.json never declares, so no operator could ever
+				// set it. Declaring it is the smaller change; leaving the read
+				// pointed at a field nobody can write is the defect this page
+				// exists to remove.
+				"key":         "support_placeholder",
+				"type":        "string",
+				"title":       "Input Placeholder",
+				"description": "Placeholder text shown in the assistant's message box.",
+				"path":        "support_placeholder",
+				"section":     "support_assistant",
+				"default":     "Type a message...",
 			},
 		},
 	}

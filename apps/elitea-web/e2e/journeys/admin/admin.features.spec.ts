@@ -657,20 +657,23 @@ adminTest(
   async ({ page }) => {
     await openFeatures(page);
 
-    for (const section of ['Skill Publishing', 'Support Assistant']) {
+    // `Support Assistant` USED TO BE IN THIS LIST, withheld because the widget
+    // at the other end of its wire had no render site. It is live now — the
+    // widget is mounted in `widgets/app-shell` and
+    // `internal/api/v2/supportassistant` serves the whole surface — so it is
+    // exercised as an editable section by J36a-h instead.
+    for (const section of ['Skill Publishing']) {
       await openSection(page, section);
       const notice = page.getByTestId('admin-features-unavailable');
       await expect(notice).toBeVisible();
-      // The reason names the actual obstacle — a missing subsystem, or a widget
-      // with no render site — so an operator can tell "this platform cannot do
-      // that" from "that is switched off".
-      await expect(notice).toContainText(
-        /not implemented in this service|not mounted in this application/,
-      );
+      // The reason names the actual obstacle — here, a subsystem this service
+      // does not have — so an operator can tell "this platform cannot do that"
+      // from "that is switched off".
+      await expect(notice).toContainText(/not implemented in this service/);
       await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
     }
 
-    for (const section of ['skill_publishing', 'support_assistant']) {
+    for (const section of ['skill_publishing']) {
       const refused = await putValues(page, section, { anything: true });
       expect(refused.status, `${section} must refuse its write, not accept and discard it`).toBe(
         501,

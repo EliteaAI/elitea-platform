@@ -1,0 +1,169 @@
+/* ── Header ── */
+
+.elitea-assistant-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 3.25rem;
+  padding: 0 1rem;
+  background: var(--elitea-assistant-header-bg);
+  color: var(--elitea-assistant-header-text);
+  flex-shrink: 0;
+  border-bottom: 0.0625rem solid var(--elitea-assistant-window-border);
+}
+
+.elitea-assistant-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.elitea-assistant-header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.elitea-assistant-header-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.elitea-assistant-header-action {
+  border: 0.0625rem solid transparent;
+  color: var(--elitea-assistant-header-text);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  width: 1.75rem;
+  height: 1.75rem;
+  min-width: auto;
+  box-shadow: none;
+  background: var(--elitea-assistant-header-action-bg);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.elitea-assistant-header-close-action {
+  border: none;
+  color: var(--elitea-assistant-header-close-icon);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  width: 1.75rem;
+  height: 1.75rem;
+  min-width: auto;
+  background: var(--elitea-assistant-header-close-bg);
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.elitea-assistant-header-close-action:hover {
+  background: var(--elitea-assistant-header-close-hover-bg);
+  color: var(--elitea-assistant-header-close-hover-color);
+}
+
+.elitea-assistant-header-close-action:active {
+  background: var(--elitea-assistant-header-close-active-bg);
+  color: var(--elitea-assistant-header-close-active-color);
+}
+
+.elitea-assistant-header-close-action:disabled {
+  background: var(--elitea-assistant-header-close-disabled-bg);
+  color: var(--elitea-assistant-header-close-disabled-color);
+  cursor: not-allowed;
+}
+
+.elitea-assistant-header-action:hover {
+  background: var(--elitea-assistant-header-action-hover-bg);
+}
+
+.elitea-assistant-header-action:active {
+  background: var(--elitea-assistant-header-action-active-bg);
+  color: var(--elitea-assistant-header-action-active-color);
+  border-color: var(--elitea-assistant-header-action-active-border);
+}
+
+.elitea-assistant-header-action svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+.elitea-assistant-header-close-action svg {
+  width: 1.3rem;
+  height: 1.3rem;
+  fill: currentColor;
+}
+
+.elitea-assistant-history-wrapper {
+  position: relative;
+}
+
+.elitea-assistant-header-action:disabled {
+  background: var(--elitea-assistant-header-action-disabled-bg);
+  color: var(--elitea-assistant-header-action-disabled-color);
+  cursor: not-allowed;
+}
+
+.elitea-assistant-header-action:disabled:hover {
+  background: var(--elitea-assistant-header-action-disabled-bg);
+}
+
+.elitea-assistant-history-dropdown {
+  position: absolute;
+  top: calc(100% + 0.55rem);
+  right: -2.65rem;
+  width: 19.125rem;
+  max-height: 21.875rem;
+  background: var(--elitea-assistant-chat-bg);
+  border: 0.0625rem solid var(--elitea-assistant-history-dropdown-border);
+  border-radius: 0.5rem;
+  box-shadow: var(--elitea-assistant-history-dropdown-shadow);
+  z-index: 100;
+  padding: 0.5rem 0;
+}
+
+.elitea-assistant-history-dropdown-scroll {
+  max-height: calc(21.875rem - 1rem);
+  overflow-y: auto;
+}
+
+.elitea-assistant-history-item {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--elitea-assistant-header-text);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.elitea-assistant-history-item:hover {
+  background: var(--elitea-assistant-history-dropdown-hover-bg);
+}
+
+.elitea-assistant-history-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+  background: none;
+}

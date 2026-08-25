@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	v2skillpublish "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skillpublish"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
@@ -228,18 +230,25 @@ type RouterConfig struct {
 	CurrentConfigurationMutation  http.Handler
 	CurrentIndexStart             http.Handler
 	CurrentAgentStart             http.Handler
-	CurrentAgentCancel            http.Handler
-	CurrentIndexCancel            http.Handler
-	CurrentIndexMeta              http.Handler
-	CurrentIndexMetaDelete        http.Handler
-	CurrentIndexScheduleUpdate    http.Handler
-	CurrentIndexScheduleDelete    http.Handler
-	CurrentNotifications          http.Handler
-	CurrentNotificationEvents     http.Handler
-	CurrentModelCatalog           http.Handler
-	CurrentModelDefault           http.Handler
-	LLMProxy                      http.Handler
-	LLMProjectResolver            apimw.PersonalProjectResolver
+	// SupportAssistantStart is the agent-execution use case the support
+	// assistant's predict route delegates to — the SAME use case
+	// CurrentAgentStart's route drives, not a second one. Left nil, the predict
+	// route answers 503 and the rest of the support surface still works
+	// (history stays readable), which is the honest degrade for a deployment
+	// that runs no agent execution.
+	SupportAssistantStart      v2support.StartUseCase
+	CurrentAgentCancel         http.Handler
+	CurrentIndexCancel         http.Handler
+	CurrentIndexMeta           http.Handler
+	CurrentIndexMetaDelete     http.Handler
+	CurrentIndexScheduleUpdate http.Handler
+	CurrentIndexScheduleDelete http.Handler
+	CurrentNotifications       http.Handler
+	CurrentNotificationEvents  http.Handler
+	CurrentModelCatalog        http.Handler
+	CurrentModelDefault        http.Handler
+	LLMProxy                   http.Handler
+	LLMProjectResolver         apimw.PersonalProjectResolver
 	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
 	// (BF0.9c). When non-nil, it is mounted at /llm with Auth+Project middleware
 	// in the production router.
@@ -319,6 +328,37 @@ func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 type bucketBootstrapRepoAdapter struct {
 	*dbrepos.ArtifactBucketsRepository
 	*dbrepos.ArtifactObjectsRepository
+}
+
+// supportProjectProvisioner adapts the project-create pipeline to the narrow
+// interface internal/api/v2/supportassistant declares.
+//
+// The narrowing is the point: the support assistant may create ONE project,
+// named by a constant, owned by the platform system identity, with default
+// limits. It cannot choose plugins, quotas or admin roles, because nothing about
+// bootstrapping a support project should be able to.
+type supportProjectProvisioner struct {
+	provisioner *projectprovisioning.Provisioner
+}
+
+func (p supportProjectProvisioner) Provision(
+	ctx context.Context, request v2support.ProvisionRequest,
+) (int64, error) {
+	result, err := p.provisioner.Provision(ctx, projectprovisioning.Request{
+		Name:    request.Name,
+		OwnerID: request.OwnerID,
+		// `elitea_core` is what the reference asks for
+		// (`projects_create_project(plugins=['elitea_core'])`), and it is the
+		// plugin list every chat-bearing project carries.
+		Plugins:     []string{"elitea_core"},
+		AdminEmails: []string{request.AdminEmail},
+		AdminRoles:  []string{"admin"},
+		Limits:      projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ProjectID, nil
 }
 
 // newProjectProvisioner builds the project-create pipeline (#333).
@@ -1590,6 +1630,25 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
 			})
 
+			// The chat conversation handler, declared HERE and built inside the
+			// /elitea_core group below, because it is used twice: by the
+			// /conversations routes, and by the support assistant's attachment
+			// route, which lives outside that group and delegates to this
+			// handler's multipart path with server-resolved identifiers (see
+			// v2support.Handler.UploadAttachments).
+			//
+			// ONE CONSTRUCTION, for the same reason the configurations handler
+			// is built once: a second NewHandler is how one surface acquires an
+			// object store, a pool or an attachment store the other lacks, and a
+			// support upload would then silently take a different code path —
+			// different size limits, different retention, different storage —
+			// from the chat upload it is supposed to BE.
+			//
+			// It stays nil when cfg.ConvsRepo is nil, and the support assistant
+			// then omits its attachment route's dependency and answers 503
+			// there rather than accepting bytes with nowhere to put them.
+			var convHandler *v2convs.Handler
+
 			// === elitea_core plugin routes ===
 			r.Route("/elitea_core", func(r chi.Router) {
 				// projectScoped closes the cross-project hole measured in #302.
@@ -1918,12 +1977,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 
 				// Conversations
 				if cfg.ConvsRepo != nil {
-					// S20a: chat attachment byte path — WithPool/WithObjectStore/
-					// WithAttachmentStore are no-ops (nil) when cfg.Pool/
-					// cfg.ObjectStore are unset, so AddAttachments' JSON-metadata
-					// branch keeps working exactly as before wherever storage isn't
-					// wired (matching newArtifactHandler's own degrade convention).
-					convHandler := v2convs.NewHandler(cfg.ConvsRepo).
+					convHandler = v2convs.NewHandler(cfg.ConvsRepo).
 						WithPool(cfg.Pool).
 						WithObjectStore(cfg.ObjectStore).
 						WithAttachmentStore(newAttachmentStore(cfg.Pool))
@@ -2633,10 +2687,53 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Support Assistant ===
-			r.Route("/support_assistant", func(r chi.Router) {
-				r.Get("/config/", coreHandler.SupportConfig)
-				r.Get("/config", coreHandler.SupportConfig)
-			})
+			//
+			// The in-app support widget: config, the caller's own support
+			// conversations, and one turn against the operator-chosen agent.
+			// See internal/api/v2/supportassistant for why no route here takes a
+			// {projectID} — the hidden support project is resolved from
+			// centry.platform_config and never from the request — and why the
+			// gates name `models.chat.*` rather than the reference's
+			// `models.support_assistant.*` strings, which this catalogue has
+			// never seeded.
+			//
+			// The subrouter carries its OWN gates (Handler.Routes), because the
+			// project they resolve against is one the router does not know: it
+			// comes out of the section this handler reads.
+			{
+				// Mounted UNCONDITIONALLY, including without a pool.
+				//
+				// The widget asks `GET /support_assistant/config` on every page
+				// load and treats a non-answer as a failure, so the route has to
+				// exist on every deployment. With no pool the handler reads no
+				// configuration, resolves the assistant as disabled, and answers
+				// that question truthfully — the same degrade the branch that
+				// used to sit here achieved with a hardcoded stub, minus the
+				// second implementation of one boolean.
+				supportOptions := []v2support.Option{
+					v2support.WithPermissionResolver(coreResolver),
+				}
+				if cfg.ConvsRepo != nil {
+					supportOptions = append(supportOptions, v2support.WithChatStore(cfg.ConvsRepo))
+				}
+				if convHandler != nil {
+					supportOptions = append(supportOptions, v2support.WithAttachmentRoute(convHandler))
+				}
+				if cfg.SupportAssistantStart != nil {
+					supportOptions = append(supportOptions, v2support.WithStartUseCase(cfg.SupportAssistantStart))
+				}
+				// The SAME provisioner the project-create route uses. The
+				// hidden support project is provisioned by the pipeline every
+				// other project goes through — tenant schema, RBAC roles,
+				// secrets vault, buckets — because a project assembled by a
+				// second, simpler path is exactly the half-provisioned project
+				// the support routes would then 500 against.
+				if provisioner, ok := newProjectProvisioner(cfg); ok {
+					supportOptions = append(supportOptions,
+						v2support.WithProvisioner(supportProjectProvisioner{provisioner}))
+				}
+				r.Mount("/support_assistant", v2support.NewHandler(cfg.Pool, supportOptions...).Routes())
+			}
 
 			// === Webhooks ===
 			//

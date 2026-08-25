@@ -36,6 +36,7 @@ import (
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -935,6 +936,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler
+	// The support assistant's half of the agent-execution wiring. It is
+	// assigned ONLY inside the `publicRoutes.AgentStart != nil` guard below:
+	// assigning a nil concrete value to an interface variable yields a
+	// non-nil interface holding a nil pointer, and the router's `!= nil` check
+	// would then wire a use case whose first call panics — the typed-nil trap
+	// this service has already been bitten by on /healthz.
+	var supportAssistantStart v2support.StartUseCase
 	var currentAgentCancel http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
@@ -1056,6 +1064,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			}
 		}
 		if publicRoutes.AgentStart != nil {
+			supportAssistantStart = publicRoutes.AgentStart
 			currentAgentStart, err = agentexecutionapi.NewCurrentApplicationStartRoute(
 				publicRoutes.AgentStart,
 				apimw.AuthConfig{
@@ -1390,23 +1399,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
 		CurrentAgentStart:             currentAgentStart,
-		CurrentAgentCancel:            currentAgentCancel,
-		CurrentIndexCancel:            currentIndexCancel,
-		CurrentIndexMeta:              currentIndexMeta,
-		CurrentIndexMetaDelete:        currentIndexMetaDelete,
-		CurrentIndexScheduleUpdate:    currentIndexScheduleUpdate,
-		CurrentIndexScheduleDelete:    currentIndexScheduleDelete,
-		CurrentNotifications:          currentNotifications,
-		CurrentNotificationEvents:     currentNotificationEvents,
-		CurrentModelCatalog:           currentModelCatalog,
-		CurrentModelDefault:           currentModelDefault,
-		GatewayProxy:                  gatewayProxy,
-		GatewayProjectResolver:        gatewayProjectResolver,
-		ConfigConnectionChecker:       configConnectionChecker,
-		GatewayStatus:                 gatewayStatus,
-		ConfigProviderAdmission:       configProviderAdmission,
-		ObjectStore:                   objectStore,
-		ProjectVectorStore:            projectVectorStore,
+		// The support assistant's predict route delegates to the SAME
+		// agent-execution use case CurrentAgentStart's HTTP route drives — not a
+		// second pipeline. A support turn is an ordinary agent run in a hidden
+		// project, and giving it its own executor is how the two would drift
+		// apart on tracing, budgets and cancellation.
+		SupportAssistantStart:      supportAssistantStart,
+		CurrentAgentCancel:         currentAgentCancel,
+		CurrentIndexCancel:         currentIndexCancel,
+		CurrentIndexMeta:           currentIndexMeta,
+		CurrentIndexMetaDelete:     currentIndexMetaDelete,
+		CurrentIndexScheduleUpdate: currentIndexScheduleUpdate,
+		CurrentIndexScheduleDelete: currentIndexScheduleDelete,
+		CurrentNotifications:       currentNotifications,
+		CurrentNotificationEvents:  currentNotificationEvents,
+		CurrentModelCatalog:        currentModelCatalog,
+		CurrentModelDefault:        currentModelDefault,
+		GatewayProxy:               gatewayProxy,
+		GatewayProjectResolver:     gatewayProjectResolver,
+		ConfigConnectionChecker:    configConnectionChecker,
+		GatewayStatus:              gatewayStatus,
+		ConfigProviderAdmission:    configProviderAdmission,
+		ObjectStore:                objectStore,
+		ProjectVectorStore:         projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
 		// route, and creating an agent from the UI 404s (#115).

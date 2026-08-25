@@ -44,7 +44,201 @@ import { faker } from "@faker-js/faker";
 import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
-import type { MessageTraceListing, MessageTraceStepDetail } from "../model";
+import type {
+  ClearSupportConversationMessages200,
+  DeleteSupportConversation200,
+  MessageTraceListing,
+  MessageTraceStepDetail,
+  SupportAssistantConfig,
+  SupportConversation,
+  SupportConversationDetails,
+  SupportConversationList,
+  SupportPredictResponse,
+  UploadSupportAttachments200,
+} from "../model";
+
+export const getGetSupportAssistantConfigResponseMock = (
+  overrideResponse: Partial<Extract<SupportAssistantConfig, object>> = {},
+): SupportAssistantConfig => ({
+  enabled: faker.datatype.boolean(),
+  title: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  welcome_message: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  placeholder: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  support_project_id: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  user: faker.helpers.arrayElement([
+    {
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+      avatar: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getListSupportConversationsResponseMock = (
+  overrideResponse: Partial<Extract<SupportConversationList, object>> = {},
+): SupportConversationList => ({
+  items: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.number.int(),
+    uuid: faker.string.uuid(),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    is_private: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
+      undefined,
+    ]),
+    author_id: faker.number.int(),
+    source: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    meta: faker.helpers.arrayElement([{}, undefined]),
+    created_at: faker.helpers.arrayElement([
+      faker.date.past().toISOString().slice(0, 19) + "Z",
+      undefined,
+    ]),
+    updated_at: faker.helpers.arrayElement([
+      faker.date.past().toISOString().slice(0, 19) + "Z",
+      undefined,
+    ]),
+    message_groups_count: faker.helpers.arrayElement([
+      faker.number.int(),
+      undefined,
+    ]),
+  })),
+  total: faker.number.int(),
+  limit: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  offset: faker.helpers.arrayElement([faker.number.int(), undefined]),
+  has_more: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
+
+export const getCreateSupportConversationResponseMock = (
+  overrideResponse: Partial<Extract<SupportConversation, object>> = {},
+): SupportConversation => ({
+  id: faker.number.int(),
+  uuid: faker.string.uuid(),
+  name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  is_private: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  author_id: faker.number.int(),
+  source: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  meta: faker.helpers.arrayElement([{}, undefined]),
+  created_at: faker.helpers.arrayElement([
+    faker.date.past().toISOString().slice(0, 19) + "Z",
+    undefined,
+  ]),
+  updated_at: faker.helpers.arrayElement([
+    faker.date.past().toISOString().slice(0, 19) + "Z",
+    undefined,
+  ]),
+  message_groups_count: faker.helpers.arrayElement([
+    faker.number.int(),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetSupportConversationResponseMock =
+  (): SupportConversationDetails => ({
+    ...{
+      id: faker.number.int(),
+      uuid: faker.string.uuid(),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      is_private: faker.helpers.arrayElement([
+        faker.datatype.boolean(),
+        undefined,
+      ]),
+      author_id: faker.number.int(),
+      source: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      meta: faker.helpers.arrayElement([{}, undefined]),
+      created_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      updated_at: faker.helpers.arrayElement([
+        faker.date.past().toISOString().slice(0, 19) + "Z",
+        undefined,
+      ]),
+      message_groups_count: faker.helpers.arrayElement([
+        faker.number.int(),
+        undefined,
+      ]),
+    },
+    ...{
+      message_groups: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({})),
+        undefined,
+      ]),
+      participants: faker.helpers.arrayElement([
+        Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({})),
+        undefined,
+      ]),
+    },
+  });
+
+export const getDeleteSupportConversationResponseMock = (
+  overrideResponse: Partial<Extract<DeleteSupportConversation200, object>> = {},
+): DeleteSupportConversation200 => ({
+  success: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
+
+export const getClearSupportConversationMessagesResponseMock = (
+  overrideResponse: Partial<
+    Extract<ClearSupportConversationMessages200, object>
+  > = {},
+): ClearSupportConversationMessages200 => ({
+  success: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
+
+export const getUploadSupportAttachmentsResponseMock =
+  (): UploadSupportAttachments200 => ({});
+
+export const getStartSupportTurnResponseMock = (
+  overrideResponse: Partial<Extract<SupportPredictResponse, object>> = {},
+): SupportPredictResponse => ({
+  task_id: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  execution_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  command_id: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  response_message_id: faker.helpers.arrayElement([
+    faker.string.alpha({ length: { min: 10, max: 20 } }),
+    undefined,
+  ]),
+  events_url: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  created: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+  ...overrideResponse,
+});
 
 export const getListMessageTracesResponseMock = (
   overrideResponse: Partial<Extract<MessageTraceListing, object>> = {},
@@ -218,6 +412,217 @@ export const getGetMessageTraceResponseMock = (): MessageTraceStepDetail => ({
   },
 });
 
+export const getGetSupportAssistantConfigMockHandler = (
+  overrideResponse?:
+    | SupportAssistantConfig
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<SupportAssistantConfig> | SupportAssistantConfig),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/support_assistant/config",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSupportAssistantConfigResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSupportConversationsMockHandler = (
+  overrideResponse?:
+    | SupportConversationList
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<SupportConversationList> | SupportConversationList),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/support_assistant/conversations/",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSupportConversationsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateSupportConversationMockHandler = (
+  overrideResponse?:
+    | SupportConversation
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<SupportConversation> | SupportConversation),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/support_assistant/conversations/",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateSupportConversationResponseMock(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetSupportConversationMockHandler = (
+  overrideResponse?:
+    | SupportConversationDetails
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<SupportConversationDetails> | SupportConversationDetails),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/support_assistant/conversation/:conversationUUID",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetSupportConversationResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getDeleteSupportConversationMockHandler = (
+  overrideResponse?:
+    | DeleteSupportConversation200
+    | ((
+        info: Parameters<Parameters<typeof http.delete>[1]>[0],
+      ) =>
+        Promise<DeleteSupportConversation200> | DeleteSupportConversation200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete(
+    "*/support_assistant/conversation/:conversationUUID",
+    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getDeleteSupportConversationResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getClearSupportConversationMessagesMockHandler = (
+  overrideResponse?:
+    | ClearSupportConversationMessages200
+    | ((
+        info: Parameters<Parameters<typeof http.delete>[1]>[0],
+      ) =>
+        | Promise<ClearSupportConversationMessages200>
+        | ClearSupportConversationMessages200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete(
+    "*/support_assistant/messages/:conversationUUID",
+    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getClearSupportConversationMessagesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getUploadSupportAttachmentsMockHandler = (
+  overrideResponse?:
+    | UploadSupportAttachments200
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<UploadSupportAttachments200> | UploadSupportAttachments200),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/support_assistant/attachments/:conversationUUID",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getUploadSupportAttachmentsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStartSupportTurnMockHandler = (
+  overrideResponse?:
+    | SupportPredictResponse
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<SupportPredictResponse> | SupportPredictResponse),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/support_assistant/predict/:conversationUUID",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStartSupportTurnResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getListMessageTracesMockHandler = (
   overrideResponse?:
     | MessageTraceListing
@@ -270,6 +675,14 @@ export const getGetMessageTraceMockHandler = (
   );
 };
 export const getChatMock = () => [
+  getGetSupportAssistantConfigMockHandler(),
+  getListSupportConversationsMockHandler(),
+  getCreateSupportConversationMockHandler(),
+  getGetSupportConversationMockHandler(),
+  getDeleteSupportConversationMockHandler(),
+  getClearSupportConversationMessagesMockHandler(),
+  getUploadSupportAttachmentsMockHandler(),
+  getStartSupportTurnMockHandler(),
   getListMessageTracesMockHandler(),
   getGetMessageTraceMockHandler(),
 ];

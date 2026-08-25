@@ -51,16 +51,21 @@
  *   - **Skill Publishing** — unavailable. There is no skill publish endpoint, no
  *     skill catalog and no skill categories surface in this service for the
  *     settings to govern.
- *   - **Support Assistant** — unavailable. Its switch has a wire
- *     (`GET /support_assistant/config`); what it does not have is a rendered
- *     consumer. `SupportAssistantWidget` has no render site anywhere in this app
- *     and documents that `@eliteaai/elitea-assistant` is not a dependency.
+ *   - **Support Assistant** — live, and it is the section whose reason this
+ *     unit's own doc comment used to hold up as the purest example of a flag
+ *     nothing reads. Both halves of that reason are now false:
+ *     `internal/api/v2/supportassistant` serves config, conversations,
+ *     attachments and one agent turn per question off these very rows, and
+ *     `widgets/app-shell` mounts `SupportAssistantWidget`, whose source is
+ *     ported under `widgets/support-assistant/vendor/` rather than taken as a
+ *     dependency — the published package streams over socket.io and this
+ *     platform serves SSE.
  *   - **Voice Features** — unavailable, same shape: `VoiceControlButton` and
  *     `VoiceMiniPlayer` are exported from `features/chat-input` and imported by
  *     nothing, and the button hardcodes both flags as module constants.
  *
- * Rendering those last three as live switches is the failure this unit exists to
- * remove. A feature flag nothing reads is its purest form: unlike an empty
+ * Rendering the remaining two as live switches is the failure this unit exists
+ * to remove. A feature flag nothing reads is its purest form: unlike an empty
  * table, it leaves the operator believing a platform-wide switch was thrown.
  *
  * ## Authorisation

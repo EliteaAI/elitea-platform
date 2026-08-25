@@ -1,0 +1,291 @@
+/* ── Message List ── */
+
+.elitea-assistant-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.elitea-assistant-message-wrapper {
+  display: flex;
+  flex-direction: column;
+  max-width: 80%;
+}
+
+.elitea-assistant-message-wrapper--user {
+  align-self: flex-end;
+}
+
+.elitea-assistant-message-wrapper--assistant {
+  align-self: flex-start;
+}
+
+.elitea-assistant-message-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.375rem;
+}
+
+.elitea-assistant-message-meta--assistant {
+  justify-content: flex-start;
+}
+
+.elitea-assistant-message-meta--user {
+  justify-content: flex-end;
+}
+
+.elitea-assistant-message-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.elitea-assistant-message-avatar--assistant {
+  background: var(--elitea-assistant-button-bg);
+  color: var(--elitea-assistant-button-icon);
+}
+
+.elitea-assistant-message-avatar--user {
+  background: var(--elitea-assistant-user-avatar-bg);
+  color: var(--elitea-assistant-user-avatar-icon);
+}
+
+.elitea-assistant-message-avatar svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  fill: currentColor;
+}
+
+.elitea-assistant-message-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.elitea-assistant-message-time {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  color: var(--elitea-assistant-bot-msg-text);
+}
+
+.elitea-assistant-message {
+  padding: 0.625rem 0.875rem;
+  border-radius: 0.75rem;
+  word-wrap: break-word;
+  font-weight: 400;
+  font-style: Regular;
+  font-size: 0.875rem;
+  line-height: 1.5rem;
+  letter-spacing: 0%;
+}
+
+.elitea-assistant-message--user {
+  white-space: pre-wrap;
+  background: var(--elitea-assistant-user-msg-bg);
+  color: var(--elitea-assistant-user-msg-text);
+  border-radius: 1rem 0rem 1rem 1rem;
+}
+
+.elitea-assistant-message--assistant {
+  background: var(--elitea-assistant-bot-msg-bg);
+  color: var(--elitea-assistant-bot-msg-text);
+  border-radius: 0 1rem 1rem 1rem;
+  position: relative;
+  padding-bottom: 1.5rem;
+}
+
+.elitea-assistant-message--assistant > .elitea-assistant-tooltip-trigger {
+  position: absolute;
+  bottom: 0.375rem;
+  right: 0.375rem;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.elitea-assistant-message--assistant:hover > .elitea-assistant-tooltip-trigger {
+  opacity: 1;
+}
+
+.elitea-assistant-message--error {
+  border: 1px solid #e53e3e;
+  opacity: 0.9;
+}
+
+/* ── Typing Indicator ── */
+
+@keyframes elitea-assistant-typing-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.25;
+  }
+  30% {
+    transform: translateY(-0.25rem);
+    opacity: 0.5;
+  }
+}
+
+.elitea-assistant-typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.125rem 0;
+}
+
+.elitea-assistant-typing-dot {
+  width: 0.25rem;
+  height: 0.25rem;
+  border-radius: 50%;
+  background: var(--elitea-assistant-bot-msg-text);
+  opacity: 0.25;
+  animation: elitea-assistant-typing-bounce 1.2s ease-in-out infinite;
+}
+
+.elitea-assistant-typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.elitea-assistant-typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* ── Loading Skeleton ── */
+
+@keyframes elitea-assistant-shimmer {
+  0% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+  100% {
+    opacity: 0.4;
+  }
+}
+
+.elitea-assistant-skeleton-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  max-width: 70%;
+}
+
+.elitea-assistant-skeleton-row--left {
+  align-self: flex-start;
+}
+
+.elitea-assistant-skeleton-row--right {
+  align-self: flex-end;
+}
+
+.elitea-assistant-skeleton-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.elitea-assistant-skeleton-row--right .elitea-assistant-skeleton-meta {
+  justify-content: flex-end;
+}
+
+.elitea-assistant-skeleton {
+  background: var(--elitea-assistant-bot-msg-bg);
+  border-radius: 0.5rem;
+  animation: elitea-assistant-shimmer 1.4s ease-in-out infinite;
+}
+
+.elitea-assistant-skeleton--avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.elitea-assistant-skeleton--time {
+  width: 2.5rem;
+  height: 0.75rem;
+  border-radius: 0.25rem;
+}
+
+.elitea-assistant-skeleton--bubble {
+  width: 10rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+}
+
+.elitea-assistant-skeleton-row--right .elitea-assistant-skeleton--bubble {
+  width: 8rem;
+}
+
+/* ── Empty State ── */
+
+.elitea-assistant-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--elitea-assistant-bot-msg-text);
+  opacity: 0.5;
+  font-size: 0.8125rem;
+  text-align: center;
+  padding: 1.25rem;
+}
+
+/* ── Status Message (Wave Animation) ── */
+
+@keyframes elitea-assistant-wave {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.elitea-assistant-status-message {
+  margin-bottom: 0.375rem;
+  font-weight: 400;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--elitea-assistant-bot-msg-text);
+  opacity: 0.7;
+}
+
+.elitea-assistant-status-message-char {
+  display: inline-block;
+  animation: elitea-assistant-wave 2s ease-in-out infinite;
+}
+
+/*
+ * The skip-the-typewriter control.
+ *
+ * `AnimatedMessage` renders a real <button> while an answer is typing, so it can
+ * be activated from the keyboard. These rules strip the button chrome the
+ * browser would otherwise paint over the message bubble — the affordance is the
+ * pointer cursor and the text itself, exactly as in the reference, which used a
+ * bare div. The focus ring is deliberately KEPT: it is the only visible sign a
+ * keyboard user has that the answer is skippable.
+ */
+.elitea-assistant-skip-animation {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+  margin: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
