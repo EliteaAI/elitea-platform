@@ -139,6 +139,11 @@ test('J30: brand pack loads logo, primary colour, and product name without rebui
   // discriminating, because with no token stated every id must be derived
   // from `brand.hue`.
   const shellPack = {
+    // REQUIRED, and a `z.literal` — a pack without it fails `safeParse`,
+    // `parseBrandPack` degrades to the compiled-in pack, and the only symptom
+    // is assertion 3 below reporting the compiled cyan. Omitting it is exactly
+    // how this literal was wrong on its first run.
+    $schema: 'https://elitea.ai/schemas/brand-pack/1.json',
     id: 'autotest-shell',
     version: '1.0.0',
     product: { name: 'Elitea-shell', shortName: 'Elitea-shell' },
@@ -187,6 +192,11 @@ test('J30: brand pack loads logo, primary colour, and product name without rebui
     getComputedStyle(document.documentElement).getPropertyValue('--el-palette-primary-main').trim(),
   );
   expect(primary).not.toBe('');
+  // `#6ae8fa` here is the compiled-in dark primary, i.e. channel C did not
+  // drive the palette. The usual cause is not a broken channel but a REJECTED
+  // pack: `parseBrandPack` degrades silently to channel A (logging a warn) on
+  // any schema violation in `shellPack` above. With this pack the derived
+  // value is `#fa6aca` — the reference cyan rotated onto `brand.hue`.
   expect(primary.toLowerCase()).not.toBe('#6ae8fa');
 
   // 4. ...and drive the product name in the document title
