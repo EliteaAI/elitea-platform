@@ -314,3 +314,6 @@ Maintained Rust runtime ownership registry:
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are
 repository-relative to `services/elitea-worker-rust/`.
+
+The repository-level `.github/workflows/ci-rust.yml` gate covers this registry.
+It runs locked quality, release, and PostgreSQL-backed test commands.

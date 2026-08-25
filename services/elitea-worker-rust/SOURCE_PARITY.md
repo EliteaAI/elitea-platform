@@ -146,6 +146,11 @@ Prompts, arguments, results, URLs, credentials, tokens and provider bodies are
 never trace or log fields. Backend retention, sampling, metrics and Kubernetes
 activation remain deployment gates.
 
+Current CI checkpoint: `.github/workflows/ci-rust.yml` uses the pinned Rust
+toolchain for formatting, Clippy, rustdoc, tests, and a release build.
+PostgreSQL 18 activates both durable state component tests. The workflow needs
+no provider credentials and does not report a synthetic race-testing claim.
+
 This checkpoint supersedes older broad table wording below that lists
 parallel/nested authorization or pipeline-Agent authorization as a generic
 open gate. The remaining authorization gates are independent partial sibling

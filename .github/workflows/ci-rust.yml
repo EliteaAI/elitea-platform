@@ -1,0 +1,93 @@
+name: CI — Rust worker
+
+on:
+  pull_request:
+    paths:
+      - "services/elitea-worker-rust/**"
+      - "services/elitea-main/migrations/agentstate/**"
+      - "libs/proto/**"
+      - ".github/workflows/ci-rust.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "services/elitea-worker-rust/**"
+      - "services/elitea-main/migrations/agentstate/**"
+      - "libs/proto/**"
+      - ".github/workflows/ci-rust.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: Format, Clippy, docs, and release
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: services/elitea-worker-rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --locked --no-deps --all-features
+
+      - name: Build the release binary
+        run: cargo build --locked --release
+
+  test:
+    name: Test with PostgreSQL 18
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+    defaults:
+      run:
+        working-directory: services/elitea-worker-rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Show pinned toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Run all targets and features
+        env:
+          ELITEA_TEST_DATABASE_URL: "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+        run: cargo test --locked --all-targets --all-features
