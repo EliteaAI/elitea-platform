@@ -71,6 +71,7 @@ Redis/runtime activation work. Indexer-backed nodes remain last.
 | `transition`, standalone `decision` and router condition selection | Unconditional or runtime successor selection, including `END` | `src/agents/graph/{compiler,router,decision}.rs` | ADK edges and atomic `goto` | State-modifier transitions, HITL action routes, standalone active Router/Decision nodes and `END` are implemented and validated before graph construction. Historical embedded `decision`/`condition` edge blocks remain a deprecated compatibility gate. |
 | `interrupt_before`, `interrupt_after`, printer successor analysis | Pause/resume at the current node or successor without false crash classification | `src/agents/graph/{compiler,agent,printer,resume}.rs`, `src/agents/events.rs` | ADK static interrupts/checkpoints | Compiler-owned Printer `interrupt_after` is implemented with exact private checkpoint identity and ordinary-chat continuation. User-authored arbitrary static interrupts remain explicitly rejected until each public projection and resume contract is defined. |
 | `type: parallel` (absent in Python) | Run frozen Agent nodes concurrently, wait for all, retain declared result order, aggregate nested pauses, and reuse durable child outcomes after process loss | `docs/parallel-pipeline-node-design.md`, then `src/agents/graph/{compiler,parallel}.rs` and `src/state/postgres_checkpointer/parallel_children.rs` | Custom ADK `Node`; one separately checkpointed child `CompiledGraph` per owned Agent branch | Proposed redesign. The disconnected core remains capability-disabled. V1 owns two to sixteen Agent branches, limits concurrency to eight, uses standard checkpoints, and requires one exact complete interrupt decision set. It adds no interrupt table and does not use `PARKED_CHILDREN`. Other branch types and `wait: one`/`many` remain closed. |
+| Future `type: map` | Read one state list, dispatch each item through one owned worker definition, and reduce typed outputs in input order | `docs/map-reduce-pipeline-node-design.md`, then a compiler-owned map node and the parallel child runtime | Custom ADK `Node`; one separately checkpointed child graph per item; approved ADK state reducers | Proposed and separate from fixed parallel topology. `LoopAgent` is sequential. `ParallelAgent` owns a fixed unbounded subagent list and fresh process-local shared state. The inspected ADK graph has no LangGraph `Send` equivalent. Activation requires bounded item dispatch, state reducer descriptors, structured output selection, child replay, aggregate HITL, and live UI proof. |
 
 ## ADK action reuse boundary
 
@@ -306,7 +307,7 @@ to sixteen branches and at most eight active branches.
 
 V1 declares exactly one output channel. Branch identifiers are stable and
 unique. Results are arrays in declared order with `branch_id`, `node`, and
-`result`.
+typed `outputs`.
 
 ADK action `WaitAll` is not invoked directly because it treats every current
 `branch:*` state key as complete and iterates hash-map order. `WaitAny` and
@@ -329,3 +330,6 @@ graph interrupt aggregates all paused branches in declared order.
 
 Resume requires one exact complete decision set. Standard child and parent
 checkpoints recreate a lost aggregate pause without a separate interrupt table.
+
+This node does not implement dynamic map fan-out. The separate map design reads
+one list and repeats one owned worker with item-local state.

@@ -415,6 +415,24 @@ fail before dispatch.
 External side effects remain at-least-once between an effect and the following
 child checkpoint. Tool and effect fencing remains mandatory.
 
+## Future data-driven map-node decision
+
+Keep list-driven map fan-out separate from the fixed pipeline `parallel` node.
+
+ADK `LoopAgent` repeats fixed subagents sequentially. ADK `ParallelAgent` runs
+a fixed subagent list without bounded per-item admission.
+
+The inspected ADK graph API has no LangGraph `Send` equivalent. Elitea must own
+one bounded map scheduler and one item checkpoint per invocation.
+
+The owned worker keeps its existing input mapping and structured output
+projection. The collector sorts by input ordinal before applying a reducer.
+
+Declare approved reducers on state channels. Do not accept executable custom
+reducers from stored YAML.
+
+See `docs/map-reduce-pipeline-node-design.md` for the proposed contract.
+
 ## Performance and operations
 
 The scaling foundation is bounded asynchronous admission, shared pools,

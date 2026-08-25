@@ -13,6 +13,9 @@ execution and it is not ADK `ParallelAgent`.
 The first enabled form runs owned Agent nodes. An Agent node can select a saved
 direct agent or a saved pipeline.
 
+Each owned Agent node keeps its existing input mapping and declared outputs.
+The parallel node evaluates all mappings from one parent-state snapshot.
+
 Each branch runs as a small ADK `CompiledGraph`. Each child graph uses one
 claim-fenced descendant checkpoint thread.
 
@@ -46,6 +49,23 @@ The two capabilities share these runtime owners:
 
 They do not share a scheduling contract. Keep their admission and replay logic
 separate.
+
+## Two parallel processing concepts
+
+Keep fixed topology and data-driven fan-out as separate node types.
+
+| Concept | Branch source | Input owner | Output owner |
+| --- | --- | --- | --- |
+| `parallel` | A fixed YAML branch list | Each owned node mapping | One declared-order collector |
+| future `map` | Items from one state list | One item dispatcher | One reducer-backed collector |
+
+The `parallel` node does not copy one input across every branch. Each owned node
+maps its own task from the same parent-state snapshot.
+
+The future `map` node repeats one owned worker definition for each list item.
+It does not require one stored agent or pipeline for each item.
+
+The future map contract is in `map-reduce-pipeline-node-design.md`.
 
 ## V1 YAML contract
 
@@ -131,10 +151,18 @@ Include these values in the pipeline definition digest:
 Reject ownership conflicts before model, credential, MCP, or state authority is
 created.
 
-## State projection and output
+## Fixed branch input dispatch and output collection
 
-Project only the owned Agent node inputs into each child graph. Do not copy the
-complete parent state by default.
+Freeze one parent-state snapshot when the parallel node starts.
+
+Evaluate every owned Agent node mapping against that snapshot. Preserve the
+current `fixed`, `variable`, and `fstring` task mapping behavior.
+
+Project only the mapping dependencies into each child graph. Add the required
+session, resume, event-scope, and checkpoint control channels.
+
+Do not copy the complete parent state by default. Do not expose one branch
+result to another branch.
 
 Keep resume controls separate from business input. A HITL decision must not
 change the child checkpoint lineage.
@@ -158,13 +186,43 @@ Exclude these transient controls from the business-input digest:
 - `ask_user` answers;
 - browser progress metadata.
 
+Capture each branch node's declared data outputs after type validation. Keep
+structured output fields as a keyed object.
+
+V1 Agent branches copy their final response into their declared data outputs.
+Direct LLM branches remain closed in V1.
+
+The keyed collector shape permits later LLM structured outputs without changing
+the parallel node output contract.
+
 Return one array in declared branch order. Each entry has `branch_id`, `node`,
-and `result`.
+and `outputs`.
+
+```json
+[
+  {
+    "branch_id": "olivia",
+    "node": "resolve_olivia",
+    "outputs": {"output": "Olivia result"}
+  },
+  {
+    "branch_id": "sasha",
+    "node": "resolve_sasha",
+    "outputs": {"output": "Sasha result"}
+  }
+]
+```
+
+The current disconnected prototype uses one untyped `result` value. Replace
+that shape before compiler activation.
 
 Limit one branch result to 512 KiB. Limit the joined result to 8 MiB.
 
 Do not merge arbitrary branch state into the parent. A later state-modifier node
-can select or transform joined results.
+can select or transform collected outputs.
+
+This node performs a wait-all collection. It does not apply a reducer across
+different branch output keys.
 
 ## Durable branch outcomes
 
@@ -317,6 +375,9 @@ profile aborts on panic, so process supervision owns unexpected panic recovery.
 Add focused unit and component tests for these behaviors:
 
 - strict YAML bounds and owned-node validation;
+- one immutable parent-state snapshot for every branch mapping;
+- different fixed, variable, and template mappings across sibling branches;
+- structured branch outputs retained under their declared keys;
 - declared result order under reverse completion;
 - the eight-branch concurrency ceiling;
 - deterministic failure selection after drain;

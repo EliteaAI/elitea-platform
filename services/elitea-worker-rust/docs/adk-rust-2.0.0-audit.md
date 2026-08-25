@@ -65,8 +65,8 @@ PostgreSQL, Redis, HITL, MCP, artifact, restart or load behavior.
 | Agent runtime | `Runner`, `RunnerConfig`, `Agent`, `LlmAgent` | Wrap behind admitted Elitea request/result types; Runner is not the durable worker lifecycle |
 | Fixed sequential/loop workflows | `SequentialAgent`, `LoopAgent` | Use when current pipeline semantics match; retain Elitea YAML and policy adapter |
 | Fixed parallel agents | `ParallelAgent` | Add an outer capacity policy; it has no maximum-concurrency argument and is not fail-fast |
-| Static graph fork/join | `StateGraph`, multiple outgoing edges, deferred fan-in, `CompiledGraph::with_max_concurrency` | Preferred true pipeline parallel-node implementation |
-| Dynamic parallel collection | Custom `Node`, `NodeContext::run_node_with`, stable `RunNodeOptions::with_run_id` | Bound with `buffer_unordered(N)` or a semaphore and sort results before state reduction |
+| Static graph fork/join | `StateGraph`, multiple outgoing edges, deferred fan-in, `CompiledGraph::with_max_concurrency` | Use for fixed replay-safe topology. Do not use deferred fan-in for the durable Elitea parallel node. |
+| Dynamic parallel collection | Custom `Node`, child `CompiledGraph` values, `FuturesUnordered` | Bound admission, checkpoint every child, and sort results before state reduction. Do not use `NodeContext::run_node_with` for this contract. |
 | Tools | `Tool`, `Toolset`, `BasicToolset`, typed `#[tool]` | Prefer typed tool macro; `FunctionTool` raw JSON is not automatic schema validation. Elitea still owns tool identity, grants, policy and result projection |
 | Conversation state | `SessionService`, `Session` | Implement or wrap storage to meet Elitea ordering, metadata and concurrency requirements |
 | Graph checkpoints | `Checkpointer`, `SqliteCheckpointer` as behavioral reference | Implement PostgreSQL for new Rust lineages; add Elitea scoping/fencing outside the trait |
@@ -144,6 +144,17 @@ then recreates the same aggregate pause without a separate interrupt table.
 External effect idempotency and fencing remain required for the smaller
 effect-to-child-checkpoint crash window. See
 `parallel-pipeline-node-design.md` for the complete activation contract.
+
+Dynamic map fan-out is a separate capability. `LoopAgent` runs its fixed
+subagents sequentially inside each iteration.
+
+`ParallelAgent` runs one fixed subagent list concurrently. It does not provide
+bounded per-item dispatch or durable item checkpoints.
+
+The inspected graph API has no LangGraph `Send` equivalent. The proposed map
+node therefore owns item dispatch, item checkpoints, and deterministic reduce.
+
+See `map-reduce-pipeline-node-design.md` for that capability boundary.
 
 ## PostgreSQL checkpointer implementation
 
