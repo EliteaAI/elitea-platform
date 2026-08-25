@@ -168,18 +168,18 @@ const styles: Record<string, SxProps<Theme>> = {
     display: 'flex',
     height: '100%',
   },
-  drawer: ({ palette }) => ({
+  drawer: (theme) => ({
     width: SETTINGS_LAYOUT.DRAWER_WIDTH,
     flexShrink: 0,
     height: '100%',
-    backgroundColor: palette.background.secondary,
-    borderRight: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
+    backgroundColor: theme.vars.palette.background.secondary,
+    borderRight: `0.0625rem solid ${theme.vars.palette.border.table ?? 'transparent'}`,
     boxSizing: 'border-box',
   }),
-  mainContent: ({ palette }) => ({
+  mainContent: (theme) => ({
     flexGrow: 1,
     height: '100%',
-    background: palette.background.settingsPage,
+    background: theme.vars.palette.background.settingsPage,
     maxWidth: `calc(100% - ${SETTINGS_LAYOUT.DRAWER_WIDTH})`,
     overflow: 'auto',
   }),

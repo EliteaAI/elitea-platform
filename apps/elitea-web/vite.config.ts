@@ -113,5 +113,53 @@ export default defineConfig(({ mode }): UserConfig => {
       emptyOutDir: true,
       sourcemap: false,
     },
+    server: devServerProxy(),
   };
 });
+
+/**
+ * `npm run dev` against a real backend, with HMR.
+ *
+ * The SPA is normally served BY elitea-main, so it has no API of its own to
+ * talk to in dev. This forwards every server-owned path to a running stack —
+ * by default the standalone one (`deploy/scripts/standalone-stack.sh up`) at
+ * :8084 — so `npm run dev` gives hot reload against real data instead of a
+ * blank screen.
+ *
+ * Point it elsewhere with `ELITEA_DEV_BACKEND=http://host:port npm run dev`.
+ *
+ * The four proxied prefixes are not arbitrary:
+ *
+ *  - `/api/v2`      the whole REST surface, AND `branding/bootstrap.js`, which
+ *                   `index.html` loads with a ROOT-ABSOLUTE src. Without this
+ *                   the brand pack 404s and the app silently falls back to the
+ *                   compiled-in default (channel A) — it would look almost
+ *                   right, which is worse than looking broken.
+ *  - `/config.js`   `index.html` asks for `./config.js`, which at the dev
+ *                   server's root resolves to `/config.js`. The stack serves
+ *                   the same file at `/app/config.js`, hence the rewrite. It
+ *                   carries `vite_server_url`, `vite_public_project_id` and
+ *                   the socket settings; with it missing the app boots with an
+ *                   undefined config rather than an error.
+ *  - `/forward-auth`, `/auth`  the sign-in redirect chain.
+ *  - `/socket.io`   upgraded, not just forwarded (`ws: true`).
+ *
+ * Cookies work across the port change because a cookie's origin is its DOMAIN,
+ * not its port: a session minted at localhost:8084 is sent to localhost:5173
+ * too. That is why this needs no cookie rewriting and why signing in on either
+ * port signs you in on both.
+ */
+function devServerProxy(): NonNullable<UserConfig['server']> {
+  const target = process.env['ELITEA_DEV_BACKEND'] ?? 'http://localhost:8084';
+  const forward = { target, changeOrigin: true } as const;
+  return {
+    proxy: {
+      '/api/v2': forward,
+      '/llm': forward,
+      '/forward-auth': forward,
+      '/auth': forward,
+      '/socket.io': { ...forward, ws: true },
+      '/config.js': { ...forward, rewrite: () => '/app/config.js' },
+    },
+  };
+}

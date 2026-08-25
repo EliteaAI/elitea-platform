@@ -6,6 +6,7 @@ import IconButton from '@mui/material/IconButton';
 import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
 import { t } from '@/shared/i18n';
 
+import { NotificationButton } from './NotificationButton';
 import { SidebarConnectionDot } from './SidebarConnectionDot';
 
 export interface SidebarHeaderProps {
@@ -53,6 +54,16 @@ export function SidebarHeader({ collapsed, onToggleCollapsed }: SidebarHeaderPro
         <LogoMarkIcon style={{ width: '2.25rem', height: '2.25rem' }} />
         <SidebarConnectionDot />
       </IconButton>
+      {/*
+        * The notification bell belongs in THIS row, to the right of the logo
+        * — `SidebarBody.jsx:233` in the old app. It was mounted at the bottom
+        * of the rail instead, just above the footer, because the unit that
+        * added it did not own this file (see `SidebarBody.tsx`'s own note).
+        * The `justifyContent: space-between` above is what puts it at the far
+        * end; hidden while collapsed, since the rail is then too narrow for a
+        * second control.
+        */}
+      {!collapsed && <NotificationButton />}
     </Box>
   );
 }

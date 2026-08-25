@@ -2593,5 +2593,8 @@
   "widgets.sidebar.projectSwitcher.label": "Project:",
   "widgets.sidebar.projectSwitcher.none": "No projects",
   "widgets.sidebar.settings": "Settings",
-  "widgets.sidebar.toggle": "Toggle sidebar"
+  "widgets.sidebar.toggle": "Toggle sidebar",
+  "routes.settings.aipersonality.title": "AI Personality",
+  "routes.settings.memory.title": "Memory",
+  "routes.settings.preferences.title": "Preferences"
 }

@@ -141,11 +141,11 @@ const getStyles = (): {
 } => ({
   container:
     (showBorder: boolean): SxProps<Theme> =>
-    ({ palette }) => ({
+    (theme) => ({
       height: '3.8rem',
       minHeight: '3.8rem',
       width: '100%',
-      borderBottom: showBorder ? `0.0625rem solid ${palette.border.table}` : undefined,
+      borderBottom: showBorder ? `0.0625rem solid ${theme.vars.palette.border.table}` : undefined,
       boxSizing: 'border-box',
       display: 'flex',
       justifyContent: 'space-between',
@@ -168,10 +168,10 @@ const getStyles = (): {
     gap: '1rem',
   },
 
-  iconButton: ({ palette }) => ({
+  iconButton: (theme) => ({
     margin: '0',
     '&:hover svg path': {
-      fill: palette.icon.fill.secondary,
+      fill: theme.vars.palette.icon.fill.secondary,
     },
   }),
 });

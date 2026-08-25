@@ -281,14 +281,14 @@ const getStyles = (): {
     minHeight: 0,
     minWidth: '18.75rem',
   },
-  header: ({ palette }) => ({
+  header: (theme) => ({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '0.5rem',
     padding: '0.5rem 0.75rem',
-    backgroundColor: palette.background.tabPanel,
-    borderBottom: `0.0625rem solid ${palette.border.lines}`,
+    backgroundColor: theme.vars.palette.background.tabPanel,
+    borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
     minHeight: '3.75rem',
     flexShrink: 0,
   }),
@@ -309,11 +309,11 @@ const getStyles = (): {
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  content: ({ palette }) => ({
+  content: (theme) => ({
     flex: 1,
     overflow: 'hidden',
     position: 'relative',
-    backgroundColor: palette.background.paper,
+    backgroundColor: theme.vars.palette.background.paper,
     minHeight: 0,
   }),
 });

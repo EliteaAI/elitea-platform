@@ -175,16 +175,16 @@ const styles = (): Record<string, SxProps<Theme>> => ({
     height: '3.5rem',
     minWidth: '3.5rem',
   },
-  editButton: ({ palette }) => ({
+  editButton: (theme) => ({
     position: 'absolute',
     bottom: '-0.25rem',
     right: '-0.25rem',
     width: '1.5rem',
     height: '1.5rem',
-    backgroundColor: palette.background.secondary,
-    border: `.125rem solid ${palette.background.default}`,
+    backgroundColor: theme.vars.palette.background.secondary,
+    border: `.125rem solid ${theme.vars.palette.background.default}`,
     '&:hover': {
-      backgroundColor: palette.background.dataGrid.main,
+      backgroundColor: theme.vars.palette.background.dataGrid.main,
     },
   }),
   editIcon: ({ typography }) => ({

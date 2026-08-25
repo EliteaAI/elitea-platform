@@ -285,7 +285,7 @@ const configContainerSx: SxProps<Theme> = {
   minHeight: '25rem',
 };
 
-const scrollableSectionSx: SxProps<Theme> = ({ palette, vars }) => ({
+const scrollableSectionSx: SxProps<Theme> = (theme) => ({
   flex: 1,
   overflowY: 'auto',
   overflowX: 'hidden',
@@ -293,15 +293,15 @@ const scrollableSectionSx: SxProps<Theme> = ({ palette, vars }) => ({
   marginRight: '-.5rem',
   '&::-webkit-scrollbar': { width: '.375rem' },
   '&::-webkit-scrollbar-track': { background: 'transparent' },
-  '&::-webkit-scrollbar-thumb': { background: palette.divider, borderRadius: vars.shape.radiusSm },
-  '&::-webkit-scrollbar-thumb:hover': { background: palette.action.hover },
+  '&::-webkit-scrollbar-thumb': { background: theme.vars.palette.divider, borderRadius: theme.vars.shape.radiusSm },
+  '&::-webkit-scrollbar-thumb:hover': { background: theme.vars.palette.action.hover },
 });
 
-const runToolBtnSx: SxProps<Theme> = ({ palette }) => ({
+const runToolBtnSx: SxProps<Theme> = (theme) => ({
   marginTop: '1rem',
   paddingRight: '0.5rem',
   paddingTop: '1rem',
-  borderTop: `.0625rem solid ${palette.divider}`,
+  borderTop: `.0625rem solid ${theme.vars.palette.divider}`,
   position: 'sticky',
   bottom: 0,
   zIndex: 1,

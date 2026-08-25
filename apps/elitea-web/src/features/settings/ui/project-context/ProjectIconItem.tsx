@@ -28,20 +28,20 @@ export function ProjectIconItem({
 }
 
 function containerSx(isSelected: boolean): SxProps<Theme> {
-  return ({ palette }) => ({
+  return (theme) => ({
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     height: '3.5rem',
     width: '3.5rem',
     borderRadius: 'var(--el-shape-radiusSm, 4px)',
-    border: `${isSelected ? 1 : 0}px solid ${palette.primary.main}`,
+    border: `${isSelected ? 1 : 0}px solid ${theme.vars.palette.primary.main}`,
     background: isSelected
-      ? palette.background.icon?.default ?? palette.background.secondary
+      ? theme.vars.palette.background.icon.default ?? theme.vars.palette.background.secondary
       : 'transparent',
     '&:hover': {
-      border: `1px solid ${palette.border.flowNode}`,
-      background: palette.background.icon?.default ?? palette.background.secondary,
+      border: `1px solid ${theme.vars.palette.border.flowNode}`,
+      background: theme.vars.palette.background.icon.default ?? theme.vars.palette.background.secondary,
     },
     cursor: 'pointer',
   });

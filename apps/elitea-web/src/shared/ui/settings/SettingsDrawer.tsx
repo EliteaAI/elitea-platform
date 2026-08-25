@@ -67,7 +67,7 @@ const getIconComponent = (tabId: string): React.ComponentType => {
 
 const menuItemSx =
   (isActive: boolean): SxProps<Theme> =>
-  ({ palette }) => ({
+  (theme) => ({
     // The item renders as a real <button> (see the render below). The four
     // properties here reset the user-agent button styling. That styling
     // would otherwise override the ported look: a grey background, a
@@ -84,27 +84,27 @@ const menuItemSx =
     maxWidth: 'calc(100% - 2rem)',
     height: '2rem',
     background: isActive
-      ? palette.background?.userInputBackgroundActive
-      : palette.background?.conversation?.normal,
+      ? theme.vars.palette.background.userInputBackgroundActive
+      : theme.vars.palette.background.conversation.normal,
     // oxlint-disable-next-line elitea/ad-hoc-radius — ported from baseline
     borderRadius: '0.375rem',
     cursor: 'pointer',
     transition: 'all 0.2s ease-in-out',
     boxSizing: 'border-box',
     '&:hover': {
-      backgroundColor: palette.background?.conversation?.hover,
+      backgroundColor: theme.vars.palette.background.conversation.hover,
     },
   });
 
 const iconWrapperSx =
   (isActive: boolean): SxProps<Theme> =>
-  ({ palette }) => ({
+  (theme) => ({
     display: 'flex',
     alignItems: 'center',
     minWidth: '0.875rem',
-    color: isActive ? palette.text?.secondary : palette.icon?.fill?.stateButtonHover,
+    color: isActive ? theme.vars.palette.text.secondary : theme.vars.palette.icon.fill.stateButtonHover,
     '& svg': {
-      fill: isActive ? palette.text?.secondary : palette.icon?.fill?.stateButtonHover,
+      fill: isActive ? theme.vars.palette.text.secondary : theme.vars.palette.icon.fill.stateButtonHover,
       width: '0.875rem',
       height: '0.875rem',
     },
@@ -112,14 +112,14 @@ const iconWrapperSx =
 
 const menuItemTextSx =
   (isActive: boolean): SxProps<Theme> =>
-  ({ palette }) => ({
+  (theme) => ({
     fontFamily: 'Montserrat, sans-serif',
     fontWeight: 500,
     // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
     fontSize: '0.75rem',
     lineHeight: '1rem',
     letterSpacing: 0,
-    color: isActive ? palette.text?.secondary : palette.text?.metrics,
+    color: isActive ? theme.vars.palette.text.secondary : theme.vars.palette.text.metrics,
   });
 
 /**
@@ -228,25 +228,25 @@ export const SettingsDrawer = memo(function SettingsDrawer({ sections, onItemCli
 });
 
 /** @type {MuiSx} */
-const drawerSx: SxProps<Theme> = ({ palette }) => ({
+const drawerSx: SxProps<Theme> = (theme) => ({
   width: SETTINGS_LAYOUT.DRAWER_WIDTH,
   minWidth: SETTINGS_LAYOUT.DRAWER_WIDTH,
   maxWidth: SETTINGS_LAYOUT.DRAWER_WIDTH,
-  borderRight: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
-  backgroundColor: palette.background?.tabPanel,
+  borderRight: `0.0625rem solid ${theme.vars.palette.border.table ?? 'transparent'}`,
+  backgroundColor: theme.vars.palette.background.tabPanel,
   display: 'flex',
   flexDirection: 'column',
   height: '100%',
   boxSizing: 'border-box',
 });
 
-const headerSx: SxProps<Theme> = ({ palette }) => ({
+const headerSx: SxProps<Theme> = (theme) => ({
   padding: '1rem 1rem 1.1875rem 1.5rem',
-  borderBottom: `0.0625rem solid ${palette.border?.table ?? 'transparent'}`,
+  borderBottom: `0.0625rem solid ${theme.vars.palette.border.table ?? 'transparent'}`,
 });
 
-const headerTextSx: SxProps<Theme> = ({ palette }) => ({
-  color: palette.text?.secondary,
+const headerTextSx: SxProps<Theme> = (theme) => ({
+  color: theme.vars.palette.text.secondary,
   // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
   fontSize: '1rem',
   fontWeight: 500,
@@ -266,9 +266,9 @@ const sectionGroupSx: SxProps<Theme> = {
   gap: '0.5rem',
 };
 
-const sectionHeaderSx: SxProps<Theme> = ({ palette }) => ({
+const sectionHeaderSx: SxProps<Theme> = (theme) => ({
   display: 'block',
-  color: palette.text?.metrics,
+  color: theme.vars.palette.text.metrics,
   fontFamily: 'Montserrat, sans-serif',
   fontWeight: 500,
   // oxlint-disable-next-line elitea/ad-hoc-font-size — ported from baseline
@@ -279,7 +279,7 @@ const sectionHeaderSx: SxProps<Theme> = ({ palette }) => ({
   padding: '1rem',
 });
 
-const sectionDividerSx: SxProps<Theme> = ({ palette }) => ({
-  borderColor: palette.border?.table,
+const sectionDividerSx: SxProps<Theme> = (theme) => ({
+  borderColor: theme.vars.palette.border.table,
   margin: 0,
 });
