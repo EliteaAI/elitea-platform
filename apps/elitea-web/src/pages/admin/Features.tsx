@@ -48,9 +48,18 @@
  *     The Help Center's own read is unaffected — it calls a separate public
  *     route that has no notion of which admin page authored the row — and a Go
  *     test proves that rather than asserting it.
- *   - **Skill Publishing** — unavailable. There is no skill publish endpoint, no
- *     skill catalog and no skill categories surface in this service for the
- *     settings to govern.
+ *   - **Skill Publishing** — live, and the last of the three to become so. It was
+ *     unavailable because the subsystem was absent: no publish endpoint, no
+ *     catalog, no categories route. `internal/api/v2/skillpublish` built all
+ *     three, and this section is the half that was still missing — the skill
+ *     guardrail was being enforced against the AGENT section's switch for want
+ *     of anywhere to author its own, and the catalog's category list was nine
+ *     hardcoded defaults. The block switch and whitelist are enforced in
+ *     `publish_skill`/`publish_skill_validate`; the categories are merged into
+ *     `GET /elitea_core/skill_categories/…`, which the publish dialog and the
+ *     public-catalog filter both read. One field inside it,
+ *     `skill_publish_validation_rules`, carries its own reason, exactly as the
+ *     agent section's does and for the same cause.
  *   - **Support Assistant** — unavailable. Its switch has a wire
  *     (`GET /support_assistant/config`); what it does not have is a rendered
  *     consumer. `SupportAssistantWidget` has no render site anywhere in this app

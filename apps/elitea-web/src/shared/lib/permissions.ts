@@ -41,6 +41,17 @@ export const PERMISSIONS = {
     fork: 'models.applications.fork.post',
     delete: 'models.applications.application.delete',
   },
+  /**
+   * `skills.publish` is the string
+   * `internal/api/router.go` mounts the four project-scoped skill-publishing
+   * routes behind. The other skill verbs the legacy catalogue carries
+   * (`list`/`create`/`update`/`delete`) are not declared here because nothing
+   * in this app gates on them yet, and a constant with no reader is what the
+   * dead-code gate exists to catch.
+   */
+  skills: {
+    publish: 'models.applications.skills.publish',
+  },
   users: {
     view: 'configuration.users.users.view',
     edit: 'configuration.users.users.edit',

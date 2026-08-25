@@ -22,8 +22,10 @@
  *  - **create project** and **delete project** — real, and the last two to
  *    become so. See below.
  *
- * The reference's Excel export is still rendered disabled with its reason: it
- * builds an .xlsx through a spreadsheet library this app does not depend on.
+ * The reference's export IS real here, and is the one place this port
+ * deliberately differs in FORMAT: it writes CSV, not .xlsx, because this app
+ * carries no spreadsheet dependency (see `./adminCsv`). The control says
+ * "Export to CSV" so it never promises a file type it does not produce.
  *
  * Nothing here is a button that no-ops.
  *
@@ -72,6 +74,7 @@ import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
@@ -101,6 +104,7 @@ export function AdminProjects() {
 
   const createLabel = t('pages.admin.projects.action.create', 'Create project');
   const deleteLabel = t('pages.admin.projects.action.delete', 'Delete projects');
+  const exportLabel = t('pages.admin.projects.action.export', 'Export to CSV');
 
   return (
     <DrawerPage sx={{ padding: '1rem 1.5rem', gap: '0.75rem' }}>
@@ -116,13 +120,31 @@ export function AdminProjects() {
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           {t('pages.admin.projects.title', 'Projects')}
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <SimpleSearchBar
-            value={state.search}
-            onChange={state.onSearchChange}
-            placeholder={t('pages.admin.projects.search', 'Search by name, ID or owner')}
-            data-testid="admin-projects-search"
-          />
+        {/*
+          The search box is the ONLY item allowed to shrink here. With every
+          child shrinkable, a narrow viewport takes the width out of the
+          buttons instead — their labels wrap to two lines inside a control
+          whose height is a fixed 1.75rem (MuiButton.root), and the text spills
+          out of the pill. The Users page shipped exactly that.
+        */}
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            flex: '1 1 auto',
+            justifyContent: 'flex-end',
+            minWidth: 0,
+          }}
+        >
+          <Box sx={{ flex: '1 1 12rem', minWidth: '8rem', maxWidth: '20rem' }}>
+            <SimpleSearchBar
+              value={state.search}
+              onChange={state.onSearchChange}
+              placeholder={t('pages.admin.projects.search', 'Search by name, ID or owner')}
+              data-testid="admin-projects-search"
+            />
+          </Box>
 
           {/*
             Create and delete. Absent — not disabled — for an operator whose
@@ -140,8 +162,13 @@ export function AdminProjects() {
               variant="elitea"
               color="primary"
               size="small"
-              startIcon={<AddIcon />}
+              startIcon={<AddIcon fontSize="small" />}
               onClick={provisioning.onOpenCreate}
+              // flexShrink/nowrap from #587: every child of this row used to be
+              // shrinkable, so a narrow viewport took the width out of the
+              // button and wrapped its label out of a fixed-height pill. The
+              // search box is the only thing that may shrink.
+              sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
             >
               {createLabel}
             </Button>
@@ -150,10 +177,7 @@ export function AdminProjects() {
             <Tooltip
               title={
                 selectedCount === 0
-                  ? t(
-                      'pages.admin.projects.action.deleteHint',
-                      'Select the projects to delete',
-                    )
+                  ? t('pages.admin.projects.action.deleteHint', 'Select the projects to delete')
                   : deleteLabel
               }
             >
@@ -163,6 +187,7 @@ export function AdminProjects() {
                   color="error"
                   disabled={selectedCount === 0}
                   onClick={provisioning.onOpenDelete}
+                  sx={{ flexShrink: 0 }}
                 >
                   <DeleteIcon fontSize="small" />
                 </IconButton>
@@ -170,23 +195,21 @@ export function AdminProjects() {
             </Tooltip>
           ) : null}
 
-          {/*
-            Export. admin_ui builds an .xlsx through a spreadsheet library that
-            elitea-web does not depend on, so there is nothing behind this
-            control yet — the same call the Users port made.
-          */}
-          <Tooltip
-            title={t(
-              'pages.admin.projects.action.exportUnavailable',
-              'Export is unavailable: the spreadsheet export has not been ported yet',
-            )}
-          >
+          <Tooltip title={exportLabel}>
+            {/* `span`: a disabled button fires no events, so the tooltip needs
+                a wrapper to hang its listeners on while the export runs. */}
             <span>
               <IconButton
-                disabled
-                aria-label={t('pages.admin.projects.action.export', 'Export to Excel')}
+                onClick={state.onExport}
+                disabled={state.isExporting}
+                aria-label={exportLabel}
+                sx={{ flexShrink: 0 }}
               >
-                <FileDownloadOutlinedIcon fontSize="small" />
+                {state.isExporting ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <FileDownloadOutlinedIcon fontSize="small" />
+                )}
               </IconButton>
             </span>
           </Tooltip>

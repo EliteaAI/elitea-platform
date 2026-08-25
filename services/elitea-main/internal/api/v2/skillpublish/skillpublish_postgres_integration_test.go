@@ -414,13 +414,21 @@ func TestPublishRefusesWhenTheGuardrailBlocksTheProject(t *testing.T) {
 		t.Fatalf("publish answered 403 with the guardrail OFF (body %s)", recorder.Body.String())
 	}
 
+	// The AGENT switch must not govern skills. Both sections exist on the admin
+	// Features page now, and an operator who froze agent publishing did not
+	// thereby ask for skill publishing to stop.
 	setFlag(t, pool, "agent_publishing", "is_publish_blocked", true)
+	if recorder := do(t, router, http.MethodPost, target, map[string]any{"version_name": "v1.0-agent"}); recorder.Code == http.StatusForbidden {
+		t.Fatalf("the AGENT guardrail blocked a SKILL publish (body %s)", recorder.Body.String())
+	}
+
+	setFlag(t, pool, "skill_publishing", "is_skill_publish_blocked", true)
 	blocked := do(t, router, http.MethodPost, target, map[string]any{"version_name": "v1.0-b"})
 	if blocked.Code != http.StatusForbidden {
 		t.Fatalf("publish status with the guardrail ON = %d, want 403 (body %s)", blocked.Code, blocked.Body.String())
 	}
 
-	setFlag(t, pool, "agent_publishing", "publish_whitelist_project_ids", []int{2})
+	setFlag(t, pool, "skill_publishing", "skill_publish_whitelist_project_ids", []int{2})
 	allowed := do(t, router, http.MethodPost, target, map[string]any{"version_name": "v1.0-c"})
 	if allowed.Code != http.StatusOK {
 		t.Fatalf("publish status for a whitelisted project = %d, want 200 (body %s)", allowed.Code, allowed.Body.String())

@@ -154,6 +154,32 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	defaults["voice_features_enabled"] = voice.enabled
 	defaults["voice_features_temporarily_disabled"] = voice.temporarilyDisabled
 
+	// The two publishing guardrails, so the product UI can gate its Publish
+	// controls on the same answer the publish handlers enforce.
+	//
+	// Both pairs, because the reference publishes both here
+	// (legacy/plugins/elitea_core/api/v2/platform_settings.py) and because the
+	// pair a client is missing is the pair whose button it renders enabled into
+	// a 403. `is_skill_publish_blocked` is the SKILL switch and is independent
+	// of the agent one: `internal/api/v2/skillpublish` enforces the skill
+	// section, `Publish` here enforces the agent section.
+	//
+	// The whitelists are published rather than a resolved boolean because the
+	// UI needs them for the project it is IN, and this endpoint is already
+	// per-project — a client that has both can also explain to a user why the
+	// button is off, which "blocked: true" cannot.
+	//
+	// Added rather than overlaid, like the MCP and voice pairs above and under
+	// the same `additionalProperties: true` permission: a project's own
+	// `environment_settings` row must not be able to unblock a platform freeze
+	// for itself.
+	agentGuard := h.publishGuardrail(r.Context())
+	defaults["is_publish_blocked"] = agentGuard.blocked
+	defaults["publish_whitelist_project_ids"] = projectIDList(agentGuard.whitelist)
+	skillGuard := h.skillPublishGuardrail(r.Context())
+	defaults["is_skill_publish_blocked"] = skillGuard.blocked
+	defaults["skill_publish_whitelist_project_ids"] = projectIDList(skillGuard.whitelist)
+
 	// The guardrails blocklist, for the product UI to mark a toolkit blocked.
 	//
 	// This is the counterpart of a decision taken on the server: the toolkit

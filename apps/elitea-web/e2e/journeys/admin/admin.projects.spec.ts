@@ -167,12 +167,15 @@ adminTest('J31e: delete cannot fire without the typed confirmation', async ({ pa
 
   // Both provisioning controls are now REAL — this persona's administration
   // role carries `projects.projects.project.create` and `.delete` (shared
-  // migration 0069). Export is still disabled with its own, different reason.
+  // migration 0069). So is the export (CSV, #587). Nothing on this toolbar is
+  // disabled-with-a-reason any more, which is why each is asserted ENABLED: a
+  // journey that stopped checking would quietly go on describing controls that
+  // are no longer unavailable.
   await expect(page.getByRole('button', { name: 'Create project' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'Export to Excel' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Export to CSV' })).toBeEnabled();
 
-  // Delete is disabled until a row is selected, which is a different kind of
-  // unavailable from the export's and reads as one.
+  // Delete alone is disabled until a row is selected. That is a state, not a
+  // missing feature, and the tooltip says what to do about it.
   const deleteButton = page.getByRole('button', { name: 'Delete projects' });
   await expect(deleteButton).toBeDisabled();
 
@@ -268,6 +271,10 @@ adminTest('J31f: the activity drawer reads the audit trail scoped to one project
  *    persona; `TestProjectSuspendIsRefusedWithoutTheEditPermission` and
  *    `TestProjectsListingIsRefusedWithoutTheViewPermission` cover both
  *    directions against a real database.
- *  - Excel export — rendered DISABLED with its reason (no spreadsheet
- *    dependency in this app). J31e asserts the disabled state.
+ *  - the export's CONTENTS. The control is real (CSV, not the reference's
+ *    .xlsx — see `src/pages/admin/adminCsv.ts`), and J31e asserts it is
+ *    enabled, but the bytes are asserted where they can be read:
+ *    `Projects.test.tsx` reads the downloaded Blob, and `adminCsv.test.ts`
+ *    covers quoting and formula-injection neutralisation. A browser download
+ *    in Playwright would re-assert the same file through a much slower path.
  */

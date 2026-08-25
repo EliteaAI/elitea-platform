@@ -680,6 +680,16 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	dedicated_banner  → platformconfig.LoadBanner, marshalled by eliteacore
 	//	                    PlatformSettings as `dedicated_banner` and rendered
 	//	                    by apps/elitea-web widgets/app-shell's PlatformBanner
+	//	skill_publishing  → skillpublish's publishBlocked (the guardrail, on both
+	//	                    publish_skill and publish_skill_validate) and
+	//	                    activeCategories, which merges the operator's extras
+	//	                    into GET /skill_categories AND into the list publish
+	//	                    validates `category` against; eliteacore
+	//	                    PlatformSettings publishes the pair as
+	//	                    is_skill_publish_blocked /
+	//	                    skill_publish_whitelist_project_ids, which
+	//	                    apps/elitea-web's skill editor gates its Publish
+	//	                    control on
 	//	maintenance       → platformconfig.LoadMaintenance, ENFORCED by
 	//	                    internal/api/middleware's Maintenance gate (503 for
 	//	                    every caller without runtime.plugins) and published
@@ -687,8 +697,9 @@ func TestSchemaDeclaresAvailabilityForEverySection(t *testing.T) {
 	//	                    rather than a wall of failed requests
 	want := map[string]bool{
 		"resources": true, "mcp_configuration": true,
-		"agent_publishing": true, "voice_features": true,
-		"guardrails": true, "dedicated_banner": true,
+		"agent_publishing": true, "skill_publishing": true,
+		"voice_features": true,
+		"guardrails":     true, "dedicated_banner": true,
 		"maintenance": true,
 	}
 	for id := range want {

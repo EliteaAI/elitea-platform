@@ -16,7 +16,10 @@ import { useCallback, useMemo, useState } from 'react';
 import { t } from '@/shared/i18n';
 
 import { adminUiShowsControlFor } from './adminUiConfig';
+import { downloadCsv, fetchAllPages } from './adminCsv';
+import { buildAdminProjectsCsv } from './adminProjectsCsv';
 import {
+  fetchAdminProjectsPage,
   useAdminProjects,
   useSuspendAdminProject,
   type AdminProjectRow,
@@ -55,6 +58,7 @@ export interface AdminProjectsPageState {
   readonly counts: { readonly team: number; readonly personal: number };
   readonly isFetching: boolean;
   readonly isError: boolean;
+  readonly isExporting: boolean;
   readonly pendingIds: ReadonlySet<number>;
 
   /** The project whose member dialog is open, or `null`. */
@@ -71,6 +75,8 @@ export interface AdminProjectsPageState {
   readonly onOpenActivity: (project: AdminProjectRow) => void;
   readonly onCloseActivity: () => void;
   readonly onCloseMembers: () => void;
+  /** Downloads every row the current tab + search select, as CSV. */
+  readonly onExport: () => void;
 
   /** `undefined` ⇒ the control is not rendered for this user. */
   readonly onToggleSuspended: ((project: AdminProjectRow) => void) | undefined;
@@ -108,6 +114,7 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
   const [errorMessage, setErrorMessage] = useState('');
   const [memberProject, setMemberProject] = useState<AdminProjectRow | null>(null);
   const [activityProject, setActivityProject] = useState<AdminProjectRow | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const projectType = PROJECT_TYPES[activeTab] ?? 'team';
   const showsProjectWrites = adminUiShowsControlFor(PERMISSION_PROJECTS_EDIT);
@@ -204,6 +211,53 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
     [suspendProject],
   );
 
+  /**
+   * Export. CSV rather than the reference's .xlsx — see `./adminCsv` for why
+   * the format differs. A failure is REPORTED through the same Alert the
+   * suspend path uses: the reference catches and discards it, so a 403 there
+   * looks like a click that did nothing.
+   */
+  const onExport = useCallback(() => {
+    setErrorMessage('');
+    setIsExporting(true);
+    void (async () => {
+      try {
+        const { rows, truncated } = await fetchAllPages((limit, offset) =>
+          fetchAdminProjectsPage({
+            limit,
+            offset,
+            search: search || undefined,
+            projectType,
+            sortBy: sortField,
+            sortOrder: sortDirection,
+          }),
+        );
+        downloadCsv(`projects-${projectType}.csv`, buildAdminProjectsCsv(rows));
+        // A capped walk still downloads — but silently, a short file is
+        // indistinguishable from a complete one, so it has to SAY so.
+        if (truncated) {
+          setErrorMessage(
+            // `rows`, not `count`: i18next reads `count` as a plural selector
+            // and would look for `_one`/`_other` keys this bundle has not got.
+            t(
+              'pages.admin.projects.export.truncated',
+              'The export was capped: the file holds the first {{rows}} projects, not the whole list.',
+              { rows: rows.length },
+            ),
+          );
+        }
+      } catch (error) {
+        setErrorMessage(
+          error instanceof Error && error.message
+            ? error.message
+            : t('pages.admin.projects.error.export', 'Failed to export the project list.'),
+        );
+      } finally {
+        setIsExporting(false);
+      }
+    })();
+  }, [search, projectType, sortField, sortDirection]);
+
   return {
     activeTab,
     projectType,
@@ -218,6 +272,7 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
     counts: listing.counts,
     isFetching: listQuery.isFetching,
     isError: listQuery.isError,
+    isExporting,
     pendingIds,
 
     memberProject,
@@ -238,6 +293,7 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
     onOpenActivity: useCallback((project: AdminProjectRow) => setActivityProject(project), []),
     onCloseActivity: useCallback(() => setActivityProject(null), []),
     onCloseMembers: useCallback(() => setMemberProject(null), []),
+    onExport,
 
     onToggleSuspended: showsProjectWrites ? handleToggleSuspended : undefined,
     onOpenMembers: showsProjectWrites ? setMemberProject : undefined,

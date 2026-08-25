@@ -151,17 +151,29 @@ function readCounts(response: unknown): AdminProjectsPage['counts'] {
   };
 }
 
+/**
+ * One page of `GET /admin/projects/administration`, without a hook.
+ *
+ * Exported because the export control (see `useAdminProjectsPage`) has to walk
+ * EVERY page imperatively on click; going through `useQuery` there would mean
+ * either a second always-mounted query for data nobody renders, or a
+ * `limit: total` request whose size no server bound checks.
+ */
+export async function fetchAdminProjectsPage(
+  params: AdminProjectsQueryParams,
+): Promise<AdminProjectsPage> {
+  const response = await eliteaFetch<unknown>(buildListUrl(params));
+  const { rows, total } = unwrapListPage<AdminProjectRow>(response, 'adminProjects');
+  return { rows, total, counts: readCounts(response) };
+}
+
 /** `GET /admin/projects/administration` — one page of the project list. */
 export function useAdminProjects(
   params: AdminProjectsQueryParams,
 ): UseQueryResult<AdminProjectsPage, Error> {
   return useQuery({
     queryKey: adminProjectsKeys.list(params),
-    queryFn: async (): Promise<AdminProjectsPage> => {
-      const response = await eliteaFetch<unknown>(buildListUrl(params));
-      const { rows, total } = unwrapListPage<AdminProjectRow>(response, 'adminProjects');
-      return { rows, total, counts: readCounts(response) };
-    },
+    queryFn: () => fetchAdminProjectsPage(params),
   });
 }
 

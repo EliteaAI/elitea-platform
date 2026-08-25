@@ -42,7 +42,8 @@ import { memo, useMemo } from 'react';
 
 import { t } from '@/shared/i18n';
 
-import type { AdminProjectRow, ProjectStatus } from './api/adminProjectsApi';
+import { PROJECT_STATUS_COLOUR, projectStatusLabel } from './adminProjectsStatus';
+import type { AdminProjectRow } from './api/adminProjectsApi';
 
 export interface AdminProjectsTableProps {
   projects: readonly AdminProjectRow[];
@@ -61,28 +62,6 @@ export interface AdminProjectsTableProps {
   selectedIds: readonly number[];
   /** Absent ⇒ no checkbox column at all (this user may not delete). */
   onSelectionChange: ((ids: number[]) => void) | undefined;
-}
-
-/**
- * The chip colour per status. `status` is a real server field derived from
- * `suspended` and `create_success` — unlike the admin Users reference page's
- * `status`, which no response has ever carried.
- */
-const STATUS_COLOUR: Record<ProjectStatus, 'success' | 'warning' | 'error'> = {
-  active: 'success',
-  suspended: 'warning',
-  failed: 'error',
-};
-
-function statusLabel(status: ProjectStatus): string {
-  switch (status) {
-    case 'suspended':
-      return t('pages.admin.projects.status.suspended', 'Suspended');
-    case 'failed':
-      return t('pages.admin.projects.status.failed', 'Failed');
-    case 'active':
-      return t('pages.admin.projects.status.active', 'Active');
-  }
 }
 
 /** The admin list is joined for display; the tooltip carries the whole set. */
@@ -177,8 +156,8 @@ export const AdminProjectsTable = memo(function AdminProjectsTable({
           <Chip
             size="small"
             variant="outlined"
-            color={STATUS_COLOUR[params.row.status]}
-            label={statusLabel(params.row.status)}
+            color={PROJECT_STATUS_COLOUR[params.row.status]}
+            label={projectStatusLabel(params.row.status)}
           />
         ),
       },
