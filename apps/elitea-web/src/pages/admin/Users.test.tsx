@@ -76,6 +76,28 @@ function useAdminUserHandlers(): void {
       recorded.push({ method: 'PUT', url: request.url, body: await request.json() });
       return HttpResponse.json({ id: 11, suspended: true });
     }),
+    // The activity drawer's four reads. Empty, because what this file asserts
+    // about the drawer is that it OPENS for the right row — the rows it then
+    // shows are `UserActivityDrawer.test.tsx`'s subject. They are registered
+    // even for the tests that never open it: `onUnhandledRequest: 'error'`
+    // (R-M5) turns an unmocked audit call into a failure of whatever test
+    // happened to trigger it.
+    http.get('*/elitea_core/audit_traces/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ rows: [], total: 0 });
+    }),
+    http.get('*/elitea_core/audit/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ rows: [], total: 0 });
+    }),
+    http.get('*/elitea_core/audit_trace_heatmap/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ data: [], metadata: null });
+    }),
+    http.get('*/elitea_core/audit_heatmap/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ data: [], metadata: null });
+    }),
   );
 }
 
@@ -232,24 +254,34 @@ describe('Admin › Users', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 
-  it('renders the two unbacked controls as disabled, each stating why', async () => {
+  it('renders the one unbacked control as disabled, stating why', async () => {
     renderAdminRoute(<AdminUsers />);
     await screen.findByText('Ada Admin');
 
-    // Export: no spreadsheet dependency in this app.
+    // Export: no spreadsheet dependency in this app. It is now the ONLY
+    // disabled control here — activity used to sit beside it and is live.
     const exportButton = screen.getByRole('button', { name: 'Export to Excel' });
     expect(exportButton).toBeDisabled();
     expect(exportButton.closest('span')).toHaveAttribute(
       'aria-label',
       expect.stringContaining('Export is unavailable'),
     );
+  });
 
-    // Activity: the per-user activity view has no server. (The audit-trail API
-    // its original reason cited now exists — see pages/admin/AuditTrail.tsx —
-    // so that reason was corrected rather than left to go quietly stale.)
+  it('opens the activity drawer for the row it was clicked on', async () => {
+    const user = userEvent.setup();
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
     const activityButtons = screen.getAllByRole('button', { name: 'User activity' });
     expect(activityButtons).toHaveLength(2);
-    activityButtons.forEach((button) => expect(button).toBeDisabled());
+    activityButtons.forEach((button) => expect(button).toBeEnabled());
+
+    await user.click(activityButtons[1] as HTMLElement);
+
+    // The SECOND row's user, not the first: a drawer wired to `rows[0]` looks
+    // right until the operator opens it from any other row.
+    expect(await screen.findByText('Bo Blocked (ID: 12)')).toBeInTheDocument();
   });
 
   it('renders no write control at all when the served config advertises none', async () => {

@@ -45,6 +45,8 @@ export interface AdminUsersPageState {
   readonly selectedIds: number[];
   readonly deleteIds: number[];
   readonly errorMessage: string;
+  /** The user whose activity drawer is open, or `null` when it is closed. */
+  readonly activityUser: AdminUserRow | null;
 
   readonly rows: readonly AdminUserRow[];
   readonly total: number;
@@ -66,6 +68,13 @@ export interface AdminUsersPageState {
   readonly onRequestDelete: (ids: number[]) => void;
   readonly onCancelDelete: () => void;
   readonly onConfirmDelete: () => void;
+  /**
+   * Activity is a READ over the audit endpoints, so it is not part of the
+   * `undefined`-means-absent set below: it exists on both tabs and whatever the
+   * admin-panel config advertises. The server authorises the read itself.
+   */
+  readonly onOpenActivity: (user: AdminUserRow) => void;
+  readonly onCloseActivity: () => void;
 
   /** `undefined` ⇒ the control is not rendered on this tab / for this user. */
   readonly onSelectionChange: ((ids: number[]) => void) | undefined;
@@ -123,6 +132,7 @@ export function useAdminUsersPage(): AdminUsersPageState {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteIds, setDeleteIds] = useState<number[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
+  const [activityUser, setActivityUser] = useState<AdminUserRow | null>(null);
 
   const isSystemTab = activeTab === 1;
   const userType = USER_TYPES[activeTab] ?? 'platform';
@@ -264,6 +274,7 @@ export function useAdminUsersPage(): AdminUsersPageState {
     selectedIds: isSystemTab ? [] : selectedIds,
     deleteIds,
     errorMessage,
+    activityUser,
 
     rows: listing.rows,
     total: listing.total,
@@ -284,6 +295,8 @@ export function useAdminUsersPage(): AdminUsersPageState {
     onRequestDelete: useCallback((ids: number[]) => setDeleteIds(ids), []),
     onCancelDelete: useCallback(() => setDeleteIds([]), []),
     onConfirmDelete,
+    onOpenActivity: useCallback((user: AdminUserRow) => setActivityUser(user), []),
+    onCloseActivity: useCallback(() => setActivityUser(null), []),
 
     onSelectionChange: writable ? setSelectedIds : undefined,
     onSetAdminRole: writable ? handleSetAdminRole : undefined,

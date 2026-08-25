@@ -16,11 +16,10 @@
  *  - **delete**, **set admin role**, **suspend/unsuspend** — implemented for
  *    real in `services/elitea-main/internal/api/v2/admin/users.go`, covered by
  *    write-then-re-read tests. Live controls.
- *  - **user activity** — still has no server. A14's Audit Trail page since gave
- *    elitea-main a real audit API, so the ORIGINAL reason ("no audit-trail
- *    API") stopped being true and has been corrected; what is missing now is
- *    the per-user activity VIEW, not the data. Still rendered DISABLED, with
- *    the accurate reason in its tooltip (see `AdminUsersTable`).
+ *  - **user activity** — live, as of the per-user activity port. A14's Audit
+ *    Trail page gave elitea-main a real audit API whose four endpoints all take
+ *    `user_id`; this page's row control opens `./UserActivityDrawer` over it.
+ *    It shipped disabled only because the VIEW was missing, never the data.
  *  - **export to Excel** — the reference writes an .xlsx via a spreadsheet
  *    library this app does not depend on. Rendered DISABLED with the reason,
  *    rather than silently dropped or quietly changed to another format.
@@ -50,6 +49,7 @@ import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminUsersTable } from './AdminUsersTable';
+import { UserActivityDrawer } from './UserActivityDrawer';
 import { ADMIN_USERS_PAGE_SIZE, useAdminUsersPage } from './useAdminUsersPage';
 
 
@@ -150,6 +150,7 @@ export function AdminUsers() {
             onSetAdminRole={state.onSetAdminRole}
             onToggleSuspended={state.onToggleSuspended}
             onDelete={state.onDeleteRow}
+            onOpenActivity={state.onOpenActivity}
             canAssignSuperAdmin={state.canAssignSuperAdmin}
             pendingIds={state.pendingIds}
           />
@@ -186,6 +187,8 @@ export function AdminUsers() {
         name={deleteTargetName}
         copy={{ title: t('pages.admin.users.deleteModal.title', 'Delete confirmation') }}
       />
+
+      <UserActivityDrawer user={state.activityUser} onClose={state.onCloseActivity} />
     </DrawerPage>
   );
 }
