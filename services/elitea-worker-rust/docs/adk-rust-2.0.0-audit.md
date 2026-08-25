@@ -66,7 +66,7 @@ PostgreSQL, Redis, HITL, MCP, artifact, restart or load behavior.
 | Fixed sequential/loop workflows | `SequentialAgent`, `LoopAgent` | Use when current pipeline semantics match; retain Elitea YAML and policy adapter |
 | Fixed parallel agents | `ParallelAgent` | Add an outer capacity policy; it has no maximum-concurrency argument and is not fail-fast |
 | Static graph fork/join | `StateGraph`, multiple outgoing edges, deferred fan-in, `CompiledGraph::with_max_concurrency` | Use for fixed replay-safe topology. Do not use deferred fan-in for the durable Elitea parallel node. |
-| Dynamic parallel collection | Custom `Node`, child `CompiledGraph` values, `FuturesUnordered` | Bound admission, checkpoint every child, and sort results before state reduction. Do not use `NodeContext::run_node_with` for this contract. |
+| Dynamic `Send`-style collection | Custom `Node`, child `CompiledGraph` values, `FuturesUnordered` | Bound admission, checkpoint every child, and sort results before state reduction. Do not use `NodeContext::run_node_with` for this contract. |
 | Tools | `Tool`, `Toolset`, `BasicToolset`, typed `#[tool]` | Prefer typed tool macro; `FunctionTool` raw JSON is not automatic schema validation. Elitea still owns tool identity, grants, policy and result projection |
 | Conversation state | `SessionService`, `Session` | Implement or wrap storage to meet Elitea ordering, metadata and concurrency requirements |
 | Graph checkpoints | `Checkpointer`, `SqliteCheckpointer` as behavioral reference | Implement PostgreSQL for new Rust lineages; add Elitea scoping/fencing outside the trait |

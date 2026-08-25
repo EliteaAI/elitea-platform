@@ -9,6 +9,9 @@ list. It is separate from the fixed `parallel` node.
 
 Add a future `map` node for dynamic per-item fan-out.
 
+The contract mirrors LangGraph `Send`. One activation creates item-local node
+invocations, waits for them, and reduces their updates.
+
 The node reads one bounded list from parent state. It repeats one owned worker
 definition for every item.
 
@@ -48,18 +51,37 @@ one small child graph.
 
 ## Proposed YAML contract
 
+This example converts one chat request into repeated calls to one saved
+participant. The planner output becomes durable before the map activation.
+
 ```yaml
 state:
+  input: str
   work_items: list
-  processed_item: dict
+  item_result: str
   processed_items:
     type: list
     value: []
     reducer: append
+  final_answer: str
 
-entry_point: process_items
+entry_point: plan_work
 
 nodes:
+  - id: plan_work
+    type: llm
+    input: [input]
+    input_mapping:
+      system:
+        type: fixed
+        value: Split the request into independent full-name tasks.
+      task:
+        type: variable
+        value: input
+    structured_output: true
+    output: [work_items]
+    transition: process_items
+
   - id: process_items
     type: map
     source:
@@ -69,21 +91,37 @@ nodes:
     index: work_index
     worker: process_item
     collect:
-      from: [processed_item]
+      from: [item_result]
       into: processed_items
     max_concurrency: 4
-    transition: END
+    transition: summarize_results
 
   - id: process_item
-    type: llm
+    type: agent
+    tool: full_name_resolver
     input: [work_item, work_index]
     input_mapping:
       task:
         type: fstring
-        value: "Process item {work_index}: {work_item}"
-    structured_output: true
-    output: [processed_item]
+        value: "Resolve name {work_index}: {work_item}"
+    output: [item_result]
+
+  - id: summarize_results
+    type: llm
+    input: [processed_items]
+    input_mapping:
+      task:
+        type: fstring
+        value: "Combine these ordered results: {processed_items}"
+    output: [final_answer]
+    transition: END
 ```
+
+For the sample chat request, the planner returns two `work_items`. The map node
+creates two child invocations of `full_name_resolver`.
+
+The model does not run inside the map scheduler. A retry reuses the checkpointed
+task list and does not silently replan admitted items.
 
 The map node owns the worker node. Do not register that worker in the parent
 graph frontier.
@@ -140,8 +178,8 @@ and selected worker outputs.
 
 ```json
 [
-  {"index": 0, "outputs": {"processed_item": {"value": "A"}}},
-  {"index": 1, "outputs": {"processed_item": {"value": "B"}}}
+  {"index": 0, "outputs": {"item_result": "Olivia result"}},
+  {"index": 1, "outputs": {"item_result": "Sasha result"}}
 ]
 ```
 
@@ -248,11 +286,12 @@ for reclaim tests.
 
 1. Extend state descriptors with approved reducer names.
 2. Add compiler ownership for one reusable worker definition.
-3. Add bounded item dispatch and deterministic collection.
-4. Add structured output selection and reducer folding.
-5. Add item checkpoint, process-loss, and reclaim proofs.
-6. Add aggregate item HITL and authorization.
-7. Add UI progress grouping and live chat proof.
+3. Add upstream planner-to-list compiler fixtures.
+4. Add bounded item dispatch and deterministic collection.
+5. Add structured output selection and reducer folding.
+6. Add item checkpoint, process-loss, and reclaim proofs.
+7. Add aggregate item HITL and authorization.
+8. Add UI progress grouping and live chat proof.
 
 Implement the fixed `parallel` node first. Reuse its durable child runner,
 interrupt aggregation, hierarchy projection, and observability in this node.

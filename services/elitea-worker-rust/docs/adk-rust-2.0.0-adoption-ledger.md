@@ -419,11 +419,17 @@ child checkpoint. Tool and effect fencing remains mandatory.
 
 Keep list-driven map fan-out separate from the fixed pipeline `parallel` node.
 
+Model-driven Application fan-out is a third contract. The current ad-hoc root
+`LlmAgent` already creates repeated calls from one chat request.
+
+A pipeline planner LLM can create the source list before map execution. Do not
+put implicit model planning inside either scheduler.
+
 ADK `LoopAgent` repeats fixed subagents sequentially. ADK `ParallelAgent` runs
 a fixed subagent list without bounded per-item admission.
 
 The inspected ADK graph API has no LangGraph `Send` equivalent. Elitea must own
-one bounded map scheduler and one item checkpoint per invocation.
+an equivalent bounded scheduler and one item checkpoint per invocation.
 
 The owned worker keeps its existing input mapping and structured output
 projection. The collector sorts by input ordinal before applying a reducer.

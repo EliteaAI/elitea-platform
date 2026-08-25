@@ -36,6 +36,9 @@ The provider selects the calls and their order.
 The pipeline node is author-selected graph topology. Its branch set is frozen
 before execution.
 
+A raw chat prompt does not prepare branch tasks. The static node does not call
+a model to infer those tasks.
+
 The two capabilities share these runtime owners:
 
 - saved Application resolution;
@@ -50,14 +53,23 @@ The two capabilities share these runtime owners:
 They do not share a scheduling contract. Keep their admission and replay logic
 separate.
 
-## Two parallel processing concepts
+## Three parallel processing modes
 
-Keep fixed topology and data-driven fan-out as separate node types.
+Keep model planning, fixed topology, and data-driven fan-out as separate
+runtime contracts.
 
-| Concept | Branch source | Input owner | Output owner |
+| Mode | Work source | Input owner | Output owner |
 | --- | --- | --- | --- |
+| Model-selected calls | One `LlmAgent` turn | Each provider tool call | The parent model loop |
 | `parallel` | A fixed YAML branch list | Each owned node mapping | One declared-order collector |
-| future `map` | Items from one state list | One item dispatcher | One reducer-backed collector |
+| Future `map` | Items from one state list | One item dispatcher | One reducer-backed collector |
+
+The current ad-hoc runtime supports model-selected calls. The root model can
+call one Application participant more than once in the same turn.
+
+For example, the model can send separate Olivia and Sasha tasks to one saved
+`full_name_resolver`. The runtime executes that pure Application batch with a
+bounded parallel dispatcher.
 
 The `parallel` node does not copy one input across every branch. Each owned node
 maps its own task from the same parent-state snapshot.
@@ -66,6 +78,26 @@ The future `map` node repeats one owned worker definition for each list item.
 It does not require one stored agent or pipeline for each item.
 
 The future map contract is in `map-reduce-pipeline-node-design.md`.
+
+## Chat-derived branch tasks
+
+Use an explicit planner when a stored pipeline receives one unstructured chat
+request.
+
+For a fixed branch count, let an upstream LLM node produce named task fields.
+Map each fixed branch from its named field.
+
+For a dynamic branch count, let the planner produce one structured task list.
+Pass that list to the future `map` node.
+
+Do not hide an LLM inside the `parallel` scheduler. Keep model selection, cost,
+retry, schema, checkpoint, and observability explicit.
+
+The UI can later show a composite planned-parallel control. The compiler must
+still expand it into an LLM planner and a map node.
+
+Pipeline LLM nodes currently reject Application participants. Therefore, direct
+LLM-to-Application fan-out inside a stored pipeline remains an activation gate.
 
 ## V1 YAML contract
 

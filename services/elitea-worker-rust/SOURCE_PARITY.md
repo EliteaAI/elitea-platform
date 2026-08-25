@@ -161,12 +161,16 @@ nodes with at most eight active branches. Each branch uses the existing saved
 Application runtime and one claim-fenced child graph checkpoint. Paused branches
 aggregate through the standard outer graph interrupt and require one complete
 decision set. The design adds no interrupt table, does not use
-`PARKED_CHILDREN`, and keeps model-selected Application fan-out separate. UI,
+`PARKED_CHILDREN`, and does not infer tasks from raw chat. Model-selected
+Application fan-out remains a separate current ad-hoc runtime contract. UI,
 compiler, PostgreSQL crash, reclaim, tool-call, sensitive-tool, authorization,
 and live chat proofs remain activation gates.
 
 Data-driven map/reduce is a separate proposed node. It reads one state list,
 repeats one owned worker, and reduces typed outputs in input order.
+
+The map contract mirrors LangGraph `Send`. An explicit upstream LLM can produce
+the list from one chat request before item admission starts.
 
 `docs/map-reduce-pipeline-node-design.md` defines the item dispatcher, state
 reducer ownership, item checkpoints, aggregate interrupts, bounds, and gates.

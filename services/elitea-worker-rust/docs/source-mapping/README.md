@@ -50,9 +50,9 @@ Detailed ledgers:
 - `pipeline-nodes.md` maps every current Python pipeline node/edge branch and
   the capability-closed future explicit pipeline `parallel` node core.
 - `../parallel-pipeline-node-design.md` defines the proposed Agent-only V1
-  parallel node, durability, nested interrupts, UI metadata, and test gates.
+  parallel node, chat-planner boundary, durability, interrupts, and test gates.
 - `../map-reduce-pipeline-node-design.md` defines the separate data-driven map
-  node, item dispatch, reducer ownership, durability, and test gates.
+  node, LangGraph `Send` semantics, reducers, durability, and test gates.
 - `configuration-toolsets.md` maps saved configuration and toolkit families.
 - `indexing.md` maps indexing behavior and its later Rust capability.
 
