@@ -82,6 +82,52 @@ VALUES ($1, $2, $3, '/llm/v1/chat/completions', 'POST', 200, 120, $4, $5, false,
 	}
 }
 
+// plantFailure writes a request that FAILED: a status the error predicate
+// matches, an error code the gateway assigned, and a duration.
+//
+// A separate helper from plantRequest because the health reads exist for
+// exactly these rows, and every other table in this platform is blind to them
+// — the billing ledger is written from a delta that rides only a BILLED
+// request, so nothing there records a refusal or an upstream failure.
+func plantFailure(
+	t *testing.T, pool *pgxpool.Pool,
+	projectID, userID int, at time.Time, model, provider string,
+	status int, errorCode string, durationMS int, streaming bool,
+) {
+	t.Helper()
+	var user any
+	if userID != 0 {
+		user = userID
+	}
+	_, err := pool.Exec(context.Background(), `
+INSERT INTO gateway.llm_request_logs
+    (project_id, user_id, occurred_at, route, method, status,
+     duration_ms, provider, model, streaming, error_code, prompt_tokens, completion_tokens)
+VALUES ($1, $2, $3, '/llm/v1/chat/completions', 'POST', $4, $5, $6, $7, $8, $9, 0, 0)`,
+		projectID, user, at, status, durationMS, provider, model, streaming, errorCode)
+	if err != nil {
+		t.Fatalf("plant failed request: %v", err)
+	}
+}
+
+// plantLatency writes a SUCCESSFUL request with a chosen duration and response
+// kind, for the latency assertions.
+func plantLatency(
+	t *testing.T, pool *pgxpool.Pool,
+	projectID int, at time.Time, model, provider string, durationMS int, streaming bool,
+) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(), `
+INSERT INTO gateway.llm_request_logs
+    (project_id, user_id, occurred_at, route, method, status,
+     duration_ms, provider, model, streaming, prompt_tokens, completion_tokens)
+VALUES ($1, 7, $2, '/llm/v1/chat/completions', 'POST', 200, $3, $4, $5, $6, 1, 1)`,
+		projectID, at, durationMS, provider, model, streaming)
+	if err != nil {
+		t.Fatalf("plant latency row: %v", err)
+	}
+}
+
 // plantMembership creates the identity tables this service does not own and
 // grants a role, so the adoption denominator has something to count.
 func plantMembership(t *testing.T, pool *pgxpool.Pool, projectID int, grants map[int][]string) {
@@ -456,4 +502,241 @@ func TestMalformedProjectIDIsABadRequest(t *testing.T) {
 			t.Errorf("%s carries code %v, want bad_project_id", target, body["code"])
 		}
 	}
+}
+
+/* ── health ────────────────────────────────────────────────────────────── */
+
+// healthBlock pulls the health object out of a usage response.
+func healthBlock(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	health, ok := body["health"].(map[string]any)
+	if !ok {
+		t.Fatalf("no health block in %v", body)
+	}
+	return health
+}
+
+// The Health tab's whole reason for existing: it reports the requests that
+// FAILED. Nothing else in this platform records them — the billing ledger is
+// written from a delta that rides only a billed request, so a call refused by a
+// budget or failed upstream is absent from it entirely.
+//
+// The out-of-window and other-project rows are failures too, so a query that
+// dropped either predicate reports a larger, entirely plausible error count
+// rather than an error.
+func TestHealthCountsTheFailuresNothingElseRecords(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	at := usageNow.Add(-2 * time.Hour)
+	plantRequest(t, pool, usageProjectID, 7, at, "gpt-4o", "openai", 10, 10)
+	plantRequest(t, pool, usageProjectID, 7, at, "gpt-4o", "openai", 10, 10)
+	plantFailure(t, pool, usageProjectID, 7, at, "gpt-4o", "openai", 429, "budget_exceeded", 12, false)
+	plantFailure(t, pool, usageProjectID, 7, at, "gpt-4o", "openai", 502, "upstream_error", 900, false)
+
+	// Neither of these may be counted.
+	plantFailure(t, pool, usageOtherID, 7, at, "gpt-4o", "openai", 500, "upstream_error", 5, false)
+	plantFailure(t, pool, usageProjectID, 7, usageNow.Add(-40*24*time.Hour), "gpt-4o", "openai", 500, "upstream_error", 5, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	wantNumber(t, health, "requests", "4")
+	wantNumber(t, health, "errors", "2")
+	wantNumber(t, health, "error_rate", "50")
+
+	// The gateway's own classification, most frequent first. Two distinct codes
+	// with one row each, so the tie breaks alphabetically.
+	codes, ok := health["by_error_code"].([]any)
+	if !ok || len(codes) != 2 {
+		t.Fatalf("by_error_code = %#v, want 2 rows", health["by_error_code"])
+	}
+	first, _ := codes[0].(map[string]any)
+	if first["error_code"] != "budget_exceeded" {
+		t.Fatalf("first error code = %v, want budget_exceeded", first["error_code"])
+	}
+
+	// The breakdown must account for every failure the headline counted.
+	var sum int64
+	for _, row := range codes {
+		entry, _ := row.(map[string]any)
+		n, _ := entry["requests"].(json.Number)
+		parsed, _ := n.Int64()
+		sum += parsed
+	}
+	if sum != 2 {
+		t.Fatalf("by_error_code sums to %d, but the headline says 2 errors", sum)
+	}
+}
+
+// A failure the gateway returned WITHOUT classifying is still a failure.
+// Dropping those rows would make the breakdown disagree with the headline count
+// — an operator reconciling the two would find errors that belong to no code.
+func TestUnclassifiedFailuresAreReportedNotDropped(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	at := usageNow.Add(-time.Hour)
+	plantFailure(t, pool, usageProjectID, 7, at, "gpt-4o", "openai", 404, "", 3, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	wantNumber(t, health, "errors", "1")
+	codes, _ := health["by_error_code"].([]any)
+	if len(codes) != 1 {
+		t.Fatalf("by_error_code = %#v, want the unclassified row", health["by_error_code"])
+	}
+	row, _ := codes[0].(map[string]any)
+	if row["error_code"] != "unclassified" {
+		t.Fatalf("error_code = %v, want unclassified", row["error_code"])
+	}
+}
+
+// STREAMED AND BUFFERED MUST NOT BE AVERAGED TOGETHER.
+//
+// 0099's own header says so: a streamed duration is the whole stream, seconds
+// where a buffered call is milliseconds, and one mean over both describes
+// neither. It would also move whenever the mix moved rather than when the
+// service did.
+//
+// The figures are chosen so a merged row would be arithmetically obvious: two
+// buffered at 100/200 ms and two streamed at 5000/9000 ms. Merged, the mean is
+// 3575; kept apart, 150 and 7000.
+func TestHealthKeepsStreamedAndBufferedLatencyApart(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	at := usageNow.Add(-time.Hour)
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 100, false)
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 200, false)
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 5000, true)
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 9000, true)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	models, ok := health["by_model"].([]any)
+	if !ok || len(models) != 2 {
+		t.Fatalf("by_model = %#v, want one row per response kind", health["by_model"])
+	}
+
+	byStreaming := map[bool]map[string]any{}
+	for _, row := range models {
+		entry, _ := row.(map[string]any)
+		streaming, _ := entry["streaming"].(bool)
+		byStreaming[streaming] = entry
+	}
+	buffered, streamed := byStreaming[false], byStreaming[true]
+	if buffered == nil || streamed == nil {
+		t.Fatalf("by_model does not carry both response kinds: %#v", models)
+	}
+	wantNumber(t, buffered, "avg_duration_ms", "150")
+	wantNumber(t, streamed, "avg_duration_ms", "7000")
+	// The merged mean, which must appear nowhere.
+	for _, row := range []map[string]any{buffered, streamed} {
+		if n, ok := row["avg_duration_ms"].(json.Number); ok && n.String() == "3575" {
+			t.Fatalf("streamed and buffered were averaged together: %v", row)
+		}
+	}
+}
+
+// The p95 is reported as well as the mean, because the mean is what hides the
+// tail. Nine fast requests and one slow one: the mean is dragged only slightly,
+// the p95 lands in the tail.
+func TestHealthReportsTheLatencyTailNotJustTheMean(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	at := usageNow.Add(-time.Hour)
+	for range 9 {
+		plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 100, false)
+	}
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 10_000, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+	models, _ := health["by_model"].([]any)
+	row, _ := models[0].(map[string]any)
+
+	// mean = (9*100 + 10000) / 10 = 1090 — the slow request is nearly invisible.
+	wantNumber(t, row, "avg_duration_ms", "1090")
+	// p95 with percentile_cont over [100 x9, 10000] interpolates into the tail,
+	// which is the number an operator investigating "chat feels slow" wants.
+	p95, ok := row["p95_duration_ms"].(json.Number)
+	if !ok {
+		t.Fatalf("p95_duration_ms = %#v, want a number", row["p95_duration_ms"])
+	}
+	value, _ := p95.Float64()
+	if value <= 1090 {
+		t.Fatalf("p95 = %v, which is at or below the mean — the tail is not being reported", value)
+	}
+}
+
+// A request that never resolved a model is real traffic and is counted in the
+// totals, but it is not a model's health — a nameless row is not actionable.
+// This is the one place the totals and the per-model rows disagree on purpose.
+func TestHealthTotalsIncludeRequestsTheModelBreakdownCannot(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	at := usageNow.Add(-time.Hour)
+	plantLatency(t, pool, usageProjectID, at, "gpt-4o", "openai", 100, false)
+	plantFailure(t, pool, usageProjectID, 7, at, "", "", 401, "unauthorized", 2, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	wantNumber(t, health, "requests", "2")
+	wantNumber(t, health, "errors", "1")
+	models, _ := health["by_model"].([]any)
+	if len(models) != 1 {
+		t.Fatalf("by_model = %#v, want only the resolved model", health["by_model"])
+	}
+	// And the unclassifiable request is still in the failure breakdown, which is
+	// keyed by code rather than by model.
+	codes, _ := health["by_error_code"].([]any)
+	if len(codes) != 1 {
+		t.Fatalf("by_error_code = %#v, want the unauthorized row", health["by_error_code"])
+	}
+}
+
+// A project with no traffic has a health block with zero totals — a true
+// statement, and a different one from "we could not look", which is what an
+// absent block means.
+func TestHealthIsPresentAndZeroForAnIdleProject(t *testing.T) {
+	_, router := newUsageEnvironment(t)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	wantNumber(t, health, "requests", "0")
+	wantNumber(t, health, "errors", "0")
+	// Not NaN, and not absent: nothing failed.
+	wantNumber(t, health, "error_rate", "0")
+	for _, key := range []string{"by_error_code", "by_model", "daily"} {
+		if _, ok := health[key].([]any); !ok {
+			t.Errorf("health.%s = %#v, want an empty array", key, health[key])
+		}
+	}
+}
+
+// The trend chart's series, one point per UTC day that had traffic.
+func TestHealthDailyTrendBucketsByUTCDay(t *testing.T) {
+	pool, router := newUsageEnvironment(t)
+
+	day1 := time.Date(2026, 8, 18, 23, 30, 0, 0, time.UTC)
+	day2 := time.Date(2026, 8, 19, 0, 30, 0, 0, time.UTC)
+	plantLatency(t, pool, usageProjectID, day1, "gpt-4o", "openai", 100, false)
+	plantFailure(t, pool, usageProjectID, 7, day2, "gpt-4o", "openai", 500, "upstream_error", 50, false)
+
+	_, body := usageGet(t, router, fmt.Sprintf("/analytics/prompt_lib/%d", usageProjectID))
+	health := healthBlock(t, body)
+
+	daily, ok := health["daily"].([]any)
+	if !ok || len(daily) != 2 {
+		t.Fatalf("daily = %#v, want two UTC days (the rows are an hour apart across midnight)", health["daily"])
+	}
+	first, _ := daily[0].(map[string]any)
+	second, _ := daily[1].(map[string]any)
+	if first["date"] != "2026-08-18" || second["date"] != "2026-08-19" {
+		t.Fatalf("daily buckets = %v / %v, want 2026-08-18 and 2026-08-19", first["date"], second["date"])
+	}
+	wantNumber(t, first, "errors", "0")
+	wantNumber(t, second, "errors", "1")
 }

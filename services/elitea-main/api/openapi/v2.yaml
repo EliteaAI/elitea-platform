@@ -2050,6 +2050,107 @@ components:
         excluded here; a nameless bar on the chart is not something an operator
         can act on.
 
+    AnalyticsHealth:
+      type: object
+      required: [requests, errors, error_rate, by_error_code, by_model, daily]
+      properties:
+        requests:
+          type: integer
+          description: Requests the gateway served in the window, whatever happened to them.
+        errors:
+          type: integer
+          description: >
+            Requests that failed — status >= 400, the same predicate shared
+            migration 0099's partial index idx_llm_request_logs_errors is built
+            on. NOTHING ELSE IN THIS PLATFORM RECORDS THEM: the billing ledger
+            (gateway.llm_usage_events) is written from a billing delta, and a
+            delta rides only a BILLED request, so a call refused by a budget,
+            rejected by a policy, addressed to an unresolvable model or failed
+            upstream is absent from it entirely.
+        error_rate:
+          type: number
+          description: >
+            errors / requests, as a percentage to one decimal. 0 for a window
+            with no traffic — nothing failed — rather than absent or NaN.
+        by_error_code:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsErrorCodeCount' }
+        by_model:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsModelHealth' }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsDailyHealth' }
+      description: >
+        The Health tab's block, from gateway.llm_request_logs. Travels on the
+        usage response because AnalyticsContainer fetches /analytics for the
+        Overview and Health tabs alike. ABSENT — not empty — when the repository
+        could not build it: a block with zero totals is the true report of an
+        idle project, and reusing that shape for "we could not look" would make
+        the two indistinguishable.
+
+    AnalyticsErrorCodeCount:
+      type: object
+      required: [error_code, requests]
+      properties:
+        error_code:
+          type: string
+          description: >
+            The gateway's OWN classification, never an upstream string — 0099
+            has no column a provider's error text can reach, which is structural
+            rather than a policy: upstream errors routinely quote the offending
+            fragment of the request back, and a request is user-authored free
+            text. `unclassified` covers a failure the gateway returned without
+            assigning a code; those rows are reported rather than dropped, or
+            the breakdown would not account for every error the headline counts.
+        requests: { type: integer }
+
+    AnalyticsModelHealth:
+      type: object
+      required: [provider, model, streaming, requests, errors, error_rate, avg_duration_ms, p95_duration_ms]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        streaming:
+          type: boolean
+          description: >
+            PART OF THE KEY, not a column. 0099's own header records that a
+            streamed and a buffered request of the same model have very
+            different latency profiles and that averaging them makes both
+            unreadable — a streamed duration is the whole stream, seconds where
+            a buffered call is milliseconds. One row per model would report a
+            number describing neither, moving whenever the mix moved rather than
+            when the service did.
+        requests: { type: integer }
+        errors: { type: integer }
+        error_rate: { type: number }
+        avg_duration_ms:
+          type: number
+          description: Wall-clock milliseconds, handler start to response complete.
+        p95_duration_ms:
+          type: number
+          description: >
+            Reported alongside the mean because the mean is what hides the tail
+            an operator investigating "chat feels slow" came to look at.
+            percentile_cont, so a small group interpolates rather than jumping
+            to its slowest member.
+      description: >
+        One (provider, model, streaming) triple's reliability and latency.
+        Requests that never resolved a model are counted in the health totals
+        and excluded here — real traffic, but not a model's, and a nameless row
+        is not something an operator can act on.
+
+    AnalyticsDailyHealth:
+      type: object
+      required: [date, requests, errors]
+      properties:
+        date: { type: string, description: 'UTC day, YYYY-MM-DD.' }
+        requests: { type: integer }
+        errors: { type: integer }
+      description: >
+        One UTC day of the window. Days with no traffic are absent rather than
+        zero-filled, for the reason AnalyticsDailyPoint gives.
+
     AnalyticsDailyPoint:
       type: object
       required: [date, llm_calls, total_tokens, active_users]
@@ -2079,8 +2180,11 @@ components:
         models:
           type: array
           items: { $ref: '#/components/schemas/ModelUsage' }
+        health:
+          $ref: '#/components/schemas/AnalyticsHealth'
       description: >
-        The Overview tab's response. Answers 501 with
+        The Overview tab's response, and the Health tab's — one fetch serves
+        both. Answers 501 with
         `{error, code: no_data_source, detail}` on a deployment whose gateway
         request log is absent — a FINAL status, not a 500, so a client that
         retries transient failures does not ask twice for an answer the server

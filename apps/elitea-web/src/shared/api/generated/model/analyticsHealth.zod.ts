@@ -40,25 +40,34 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { AnalyticsDailyPoint } from "./analyticsDailyPoint.zod";
-import { AnalyticsHealth } from "./analyticsHealth.zod";
-import { AnalyticsKpis } from "./analyticsKpis.zod";
-import { ModelUsage } from "./modelUsage.zod";
-import { UserActivity } from "./userActivity.zod";
+import { AnalyticsDailyHealth } from "./analyticsDailyHealth.zod";
+import { AnalyticsErrorCodeCount } from "./analyticsErrorCodeCount.zod";
+import { AnalyticsModelHealth } from "./analyticsModelHealth.zod";
 
-export const ProjectAnalytics = zod
+export const AnalyticsHealth = zod
   .object({
-    kpis: AnalyticsKpis,
-    top_ai_users: zod
-      .array(UserActivity)
-      .describe("The leaderboard, most calls first, capped at 10 rows."),
-    daily_activity: zod.array(AnalyticsDailyPoint),
-    models: zod.array(ModelUsage),
-    health: AnalyticsHealth.optional(),
+    requests: zod
+      .int()
+      .describe(
+        "Requests the gateway served in the window, whatever happened to them.",
+      ),
+    errors: zod
+      .int()
+      .describe(
+        "Requests that failed — status >= 400, the same predicate shared migration 0099's partial index idx_llm_request_logs_errors is built on. NOTHING ELSE IN THIS PLATFORM RECORDS THEM: the billing ledger (gateway.llm_usage_events) is written from a billing delta, and a delta rides only a BILLED request, so a call refused by a budget, rejected by a policy, addressed to an unresolvable model or failed upstream is absent from it entirely.\n",
+      ),
+    error_rate: zod
+      .number()
+      .describe(
+        "errors \/ requests, as a percentage to one decimal. 0 for a window with no traffic — nothing failed — rather than absent or NaN.\n",
+      ),
+    by_error_code: zod.array(AnalyticsErrorCodeCount),
+    by_model: zod.array(AnalyticsModelHealth),
+    daily: zod.array(AnalyticsDailyHealth),
   })
   .describe(
-    "The Overview tab's response, and the Health tab's — one fetch serves both. Answers 501 with `{error, code: no_data_source, detail}` on a deployment whose gateway request log is absent — a FINAL status, not a 500, so a client that retries transient failures does not ask twice for an answer the server has already refused.\n",
+    'The Health tab\'s block, from gateway.llm_request_logs. Travels on the usage response because AnalyticsContainer fetches \/analytics for the Overview and Health tabs alike. ABSENT — not empty — when the repository could not build it: a block with zero totals is the true report of an idle project, and reusing that shape for \"we could not look\" would make the two indistinguishable.\n',
   );
 
-export type ProjectAnalytics = zod.input<typeof ProjectAnalytics>;
-export type ProjectAnalyticsOutput = zod.output<typeof ProjectAnalytics>;
+export type AnalyticsHealth = zod.input<typeof AnalyticsHealth>;
+export type AnalyticsHealthOutput = zod.output<typeof AnalyticsHealth>;

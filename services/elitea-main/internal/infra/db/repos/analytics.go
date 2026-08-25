@@ -68,6 +68,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -106,7 +107,24 @@ const (
 	topUsersLimit  = 10
 	userRowsLimit  = 500
 	modelRowsLimit = 100
+	// healthModelRowsLimit caps the health table. Higher than modelRowsLimit
+	// because its rows are keyed by (provider, model, STREAMING), so a
+	// deployment serving both response kinds produces two rows per model.
+	healthModelRowsLimit = 200
+	// errorCodeRowsLimit caps the failure breakdown. The gateway assigns error
+	// codes from its own finite taxonomy, so this is a backstop against a
+	// future taxonomy rather than a real cardinality bound.
+	errorCodeRowsLimit = 50
 )
+
+// errorPredicate is what counts as a failure, everywhere in this file.
+//
+// status >= 400, which is the predicate 0099's partial index
+// idx_llm_request_logs_errors is built on — so the health reads are served by
+// it rather than scanning. Written once because a health table whose totals and
+// whose per-model rows disagreed about what an error is would be worse than no
+// health table.
+const errorPredicate = `status >= 400`
 
 // AnalyticsRepo answers the analytics reads from the gateway's request log.
 type AnalyticsRepo struct {
@@ -210,6 +228,12 @@ FROM gateway.llm_request_logs` + requestLogWindow
 	if summary.TopUsers, err = userActivity(ctx, tx, id, params, topUsersLimit); err != nil {
 		return analytics.UsageSummary{}, err
 	}
+	health, err := projectHealth(ctx, tx, id, params)
+	if err != nil {
+		return analytics.UsageSummary{}, err
+	}
+	summary.Health = health
+
 	members, activeMembers, ok, err := projectAdoption(ctx, tx, id, params)
 	if err != nil {
 		return analytics.UsageSummary{}, err
@@ -556,4 +580,192 @@ func checkRelations(ctx context.Context, q analyticsQuerier, names ...string) bo
 		return false
 	}
 	return present
+}
+
+/* ── health ────────────────────────────────────────────────────────────── */
+
+// projectHealth is the Health tab: what failed, how often, and how slowly.
+//
+// # Why this is answerable here and nowhere else
+//
+// `gateway.llm_request_logs` is the only table in this platform that records a
+// request that FAILED. `gateway.llm_usage_events` is written from a billing
+// delta and a billing delta rides only a BILLED request, so a call refused by a
+// budget, rejected by a policy, addressed to an unresolvable model or failed
+// upstream leaves no trace in it — a health view built over the ledger would
+// list successes and no failures.
+//
+// It runs on the caller's snapshot, so the totals, the breakdown and the trend
+// are three views of one row set rather than three reads of a table the gateway
+// is committing into continuously.
+func projectHealth(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) (*analytics.Health, error) {
+	health := &analytics.Health{
+		ByErrorCode: []analytics.ErrorCodeCount{},
+		ByModel:     []analytics.ModelHealth{},
+		Daily:       []analytics.DailyHealth{},
+	}
+
+	const totalsQuery = `
+SELECT count(*)::bigint,
+       count(*) FILTER (WHERE ` + errorPredicate + `)::bigint
+FROM gateway.llm_request_logs` + requestLogWindow
+
+	if err := q.QueryRow(ctx, totalsQuery, id, params.From, params.To).
+		Scan(&health.Requests, &health.Errors); err != nil {
+		if missingRelation(err) {
+			return nil, analytics.NoSourceError("health",
+				"gateway.llm_request_logs is absent — shared migration 0099 has not run on this database")
+		}
+		return nil, fmt.Errorf("analytics: health totals: %w", err)
+	}
+	health.ErrorRate = ratePercent(health.Errors, health.Requests)
+
+	var err error
+	if health.ByErrorCode, err = healthByErrorCode(ctx, q, id, params); err != nil {
+		return nil, err
+	}
+	if health.ByModel, err = healthByModel(ctx, q, id, params); err != nil {
+		return nil, err
+	}
+	if health.Daily, err = healthDaily(ctx, q, id, params); err != nil {
+		return nil, err
+	}
+	return health, nil
+}
+
+// ratePercent is the one place a count becomes a percentage, to one decimal.
+//
+// A zero denominator yields 0 rather than NaN: a window with no requests had
+// nothing fail in it, and NaN would serialise to a JSON the client cannot read.
+func ratePercent(part, whole int64) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return math.Round(float64(part)/float64(whole)*1000) / 10
+}
+
+// healthByErrorCode is the failure breakdown.
+//
+// FAILURES ONLY, and never an upstream string. `error_code` is a classification
+// the gateway assigns from its own taxonomy; 0099 has no column a provider's
+// error text could reach, because upstream errors routinely quote the offending
+// fragment of the request back and a request is user-authored free text.
+//
+// A failed request with an EMPTY error_code is reported under a placeholder
+// rather than dropped: it means the gateway returned a 4xx/5xx without
+// classifying it, which is itself worth seeing, and dropping those rows would
+// make the breakdown's total disagree with the headline error count.
+func healthByErrorCode(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ErrorCodeCount, error) {
+	const query = `
+SELECT CASE WHEN error_code = '' THEN 'unclassified' ELSE error_code END,
+       count(*)::bigint
+FROM gateway.llm_request_logs` + requestLogWindow + `
+  AND ` + errorPredicate + `
+GROUP BY 1
+ORDER BY count(*) DESC, 1 ASC
+LIMIT $4`
+
+	rows, err := q.Query(ctx, query, id, params.From, params.To, errorCodeRowsLimit)
+	if err != nil {
+		return nil, fmt.Errorf("analytics: health by error code: %w", err)
+	}
+	defer rows.Close()
+
+	codes := make([]analytics.ErrorCodeCount, 0)
+	for rows.Next() {
+		var code analytics.ErrorCodeCount
+		if err := rows.Scan(&code.ErrorCode, &code.Requests); err != nil {
+			return nil, fmt.Errorf("analytics: health by error code scan: %w", err)
+		}
+		codes = append(codes, code)
+	}
+	return codes, rows.Err()
+}
+
+// healthByModel is reliability and latency per (provider, model, streaming).
+//
+// STREAMING IS IN THE GROUP BY. 0099's header states that a streamed and a
+// buffered request of the same model have very different latency profiles and
+// that averaging them makes both unreadable — a streamed duration is the whole
+// stream, seconds where a buffered call is milliseconds. One row per model
+// would report a number describing neither, and it would move whenever the mix
+// did rather than when the service did.
+//
+// P95 as well as the mean, because the mean is what hides the tail an operator
+// investigating "chat feels slow" came to look at. `percentile_cont` rather
+// than `percentile_disc`: it interpolates, so a group of two requests reports a
+// p95 between them instead of jumping to the slower one.
+//
+// Rows with no resolved model are excluded for the reason modelUsage gives —
+// they are real traffic but not a model's, and a nameless row is not something
+// an operator can act on. The headline totals still count them.
+func healthByModel(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.ModelHealth, error) {
+	const query = `
+SELECT provider,
+       model,
+       streaming,
+       count(*)::bigint,
+       count(*) FILTER (WHERE ` + errorPredicate + `)::bigint,
+       coalesce(avg(duration_ms), 0)::float8,
+       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms), 0)::float8
+FROM gateway.llm_request_logs` + requestLogWindow + `
+  AND model <> ''
+GROUP BY provider, model, streaming
+ORDER BY count(*) DESC, model ASC, streaming ASC
+LIMIT $4`
+
+	rows, err := q.Query(ctx, query, id, params.From, params.To, healthModelRowsLimit)
+	if err != nil {
+		return nil, fmt.Errorf("analytics: health by model: %w", err)
+	}
+	defer rows.Close()
+
+	models := make([]analytics.ModelHealth, 0)
+	for rows.Next() {
+		var m analytics.ModelHealth
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Streaming, &m.Requests, &m.Errors,
+			&m.AvgDurationMS, &m.P95DurationMS); err != nil {
+			return nil, fmt.Errorf("analytics: health by model scan: %w", err)
+		}
+		m.ErrorRate = ratePercent(m.Errors, m.Requests)
+		// Rounded here rather than in SQL so the two latency figures and the
+		// rate all go through one rule.
+		m.AvgDurationMS = math.Round(m.AvgDurationMS*10) / 10
+		m.P95DurationMS = math.Round(m.P95DurationMS*10) / 10
+		models = append(models, m)
+	}
+	return models, rows.Err()
+}
+
+// healthDaily is the requests-and-errors trend, one point per UTC day that had
+// traffic.
+//
+// `AT TIME ZONE 'UTC'` for the reason dailyActivity gives: without it the
+// bucket follows the connection's inherited TimeZone, and the same window
+// bucketed on a differently-configured server shifts the chart by a column with
+// nothing to show for it.
+func healthDaily(ctx context.Context, q analyticsQuerier, id int64, params analytics.QueryParams) ([]analytics.DailyHealth, error) {
+	const query = `
+SELECT to_char(date_trunc('day', occurred_at AT TIME ZONE 'UTC'), 'YYYY-MM-DD'),
+       count(*)::bigint,
+       count(*) FILTER (WHERE ` + errorPredicate + `)::bigint
+FROM gateway.llm_request_logs` + requestLogWindow + `
+GROUP BY 1
+ORDER BY 1`
+
+	rows, err := q.Query(ctx, query, id, params.From, params.To)
+	if err != nil {
+		return nil, fmt.Errorf("analytics: health daily: %w", err)
+	}
+	defer rows.Close()
+
+	daily := make([]analytics.DailyHealth, 0)
+	for rows.Next() {
+		var point analytics.DailyHealth
+		if err := rows.Scan(&point.Date, &point.Requests, &point.Errors); err != nil {
+			return nil, fmt.Errorf("analytics: health daily scan: %w", err)
+		}
+		daily = append(daily, point)
+	}
+	return daily, rows.Err()
 }

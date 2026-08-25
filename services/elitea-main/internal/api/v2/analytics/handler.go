@@ -138,6 +138,8 @@ func writeRepoFailure(w http.ResponseWriter, err error) {
 //	                    value as llm_calls, which is not a smaller claim than
 //	                    zero: it asserted that every LLM call is an agent run.
 //	total_cost          ABSENT — it HAS a producer, and /analytics_costs is it.
+//	                    (The `health` block beside `kpis` carries the failure
+//	                    and latency view; see the repository's projectHealth.)
 //	                    Reading the same accumulator a second way here would be
 //	                    a second view of the same money that could disagree
 //	                    with the first, and only one of the two carries the
@@ -172,12 +174,24 @@ func (h *Handler) Usage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"kpis":           kpis,
 		"top_ai_users":   nonNil(summary.TopUsers),
 		"daily_activity": nonNil(summary.DailyActivity),
 		"models":         nonNil(summary.ByModel),
-	})
+	}
+	// The Health tab renders from this same response — AnalyticsContainer
+	// fetches /analytics for tab 0 and tab 4 alike — so the block travels with
+	// it rather than on an endpoint of its own.
+	//
+	// Absent rather than empty when the repository could not build it, for the
+	// reason every other figure here is: a Health object with zero totals is
+	// the true report of a project with no traffic, and using the same shape to
+	// mean "we could not look" would make the two indistinguishable.
+	if summary.Health != nil {
+		body["health"] = summary.Health
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // Agents and Tools have no data source. They go through the repository like

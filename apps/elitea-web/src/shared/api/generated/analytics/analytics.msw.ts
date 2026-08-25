@@ -135,6 +135,42 @@ export const getGetProjectAnalyticsResponseMock = (
     completion_tokens: faker.number.int(),
     run_count: faker.number.int(),
   })),
+  health: faker.helpers.arrayElement([
+    {
+      requests: faker.number.int(),
+      errors: faker.number.int(),
+      error_rate: faker.number.float({ fractionDigits: 2 }),
+      by_error_code: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        error_code: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        requests: faker.number.int(),
+      })),
+      by_model: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        provider: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        model: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        streaming: faker.datatype.boolean(),
+        requests: faker.number.int(),
+        errors: faker.number.int(),
+        error_rate: faker.number.float({ fractionDigits: 2 }),
+        avg_duration_ms: faker.number.float({ fractionDigits: 2 }),
+        p95_duration_ms: faker.number.float({ fractionDigits: 2 }),
+      })),
+      daily: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        date: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        requests: faker.number.int(),
+        errors: faker.number.int(),
+      })),
+    },
+    undefined,
+  ]),
   ...overrideResponse,
 });
 

@@ -254,6 +254,56 @@ test('J24a: the tabs with no data source refuse finally, and the UI says which',
 });
 
 /* ────────────────────────────────────────────────────────────────────────
+ * J24f — the Health tab, which could never render anything at all.
+ *
+ * Two defects made its whole body unreachable for the life of the component,
+ * and each hid the other: `AnalyticsTabContent` never passed the `health` prop
+ * it branches on (there was nothing to pass — `ProjectAnalytics` had no such
+ * field), and the trend chart read `errors`/`events` off daily points that have
+ * never carried either, so every point would have been 0 even had the chart
+ * been reachable. A flat line at zero reads as "nothing failed".
+ *
+ * The gateway request log is what makes it answerable: it is the only table in
+ * this platform that records a request that FAILED, because the billing ledger
+ * is written from a delta and a delta rides only a BILLED request.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J24f: the Health tab renders the failure and latency view the backend returned', async ({ page }) => {
+  const usage = page.waitForResponse(
+    (r) => USAGE_RE.test(r.url()) && r.request().method() === 'GET',
+    { timeout: 20_000 },
+  );
+
+  await page.goto(BASE_URL + '/app/settings/analytics');
+  const payload = (await (await usage).json()) as {
+    health?: { requests: number; errors: number; error_rate: number };
+  };
+
+  // The block must be on the wire. Absent means the repository could not build
+  // it; a project with no traffic gets zeros, which is a different claim.
+  expect(payload.health, 'the usage response must carry a health block').toBeDefined();
+  const health = payload.health;
+  if (health === undefined) return;
+  expect(typeof health.requests).toBe('number');
+  expect(typeof health.errors).toBe('number');
+
+  await page.getByRole('tab', { name: 'Health', exact: true }).click();
+
+  // The state this tab was stuck in for its whole life. Reaching anything else
+  // is the assertion.
+  await expect(page.getByText('No health data available.', { exact: true })).toHaveCount(0);
+
+  // The totals, read back out of the response the app itself received.
+  await expect(page.getByText('REQUESTS', { exact: true })).toBeVisible();
+  await expect(page.getByText('ERRORS', { exact: true })).toBeVisible();
+  await expect(page.getByText('ERROR RATE', { exact: true })).toBeVisible();
+  await expect(
+    page.getByText('ERROR RATE', { exact: true }).locator('..'),
+  ).toContainText(`${health.error_rate.toFixed(1)}%`);
+
+  await checkA11y(page);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
  * J24b — the rendering branches a real journey run cannot reach.
  *
  * The live stack answers this endpoint now (J24 above), but a journey run

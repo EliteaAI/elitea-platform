@@ -40,25 +40,33 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { AnalyticsDailyPoint } from "./analyticsDailyPoint.zod";
-import { AnalyticsHealth } from "./analyticsHealth.zod";
-import { AnalyticsKpis } from "./analyticsKpis.zod";
-import { ModelUsage } from "./modelUsage.zod";
-import { UserActivity } from "./userActivity.zod";
 
-export const ProjectAnalytics = zod
+export const AnalyticsModelHealth = zod
   .object({
-    kpis: AnalyticsKpis,
-    top_ai_users: zod
-      .array(UserActivity)
-      .describe("The leaderboard, most calls first, capped at 10 rows."),
-    daily_activity: zod.array(AnalyticsDailyPoint),
-    models: zod.array(ModelUsage),
-    health: AnalyticsHealth.optional(),
+    provider: zod.string(),
+    model: zod.string(),
+    streaming: zod
+      .boolean()
+      .describe(
+        "PART OF THE KEY, not a column. 0099's own header records that a streamed and a buffered request of the same model have very different latency profiles and that averaging them makes both unreadable — a streamed duration is the whole stream, seconds where a buffered call is milliseconds. One row per model would report a number describing neither, moving whenever the mix moved rather than when the service did.\n",
+      ),
+    requests: zod.int(),
+    errors: zod.int(),
+    error_rate: zod.number(),
+    avg_duration_ms: zod
+      .number()
+      .describe("Wall-clock milliseconds, handler start to response complete."),
+    p95_duration_ms: zod
+      .number()
+      .describe(
+        'Reported alongside the mean because the mean is what hides the tail an operator investigating \"chat feels slow\" came to look at. percentile_cont, so a small group interpolates rather than jumping to its slowest member.\n',
+      ),
   })
   .describe(
-    "The Overview tab's response, and the Health tab's — one fetch serves both. Answers 501 with `{error, code: no_data_source, detail}` on a deployment whose gateway request log is absent — a FINAL status, not a 500, so a client that retries transient failures does not ask twice for an answer the server has already refused.\n",
+    "One (provider, model, streaming) triple's reliability and latency. Requests that never resolved a model are counted in the health totals and excluded here — real traffic, but not a model's, and a nameless row is not something an operator can act on.\n",
   );
 
-export type ProjectAnalytics = zod.input<typeof ProjectAnalytics>;
-export type ProjectAnalyticsOutput = zod.output<typeof ProjectAnalytics>;
+export type AnalyticsModelHealth = zod.input<typeof AnalyticsModelHealth>;
+export type AnalyticsModelHealthOutput = zod.output<
+  typeof AnalyticsModelHealth
+>;

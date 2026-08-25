@@ -47,6 +47,82 @@ type UsageSummary struct {
 
 	// TopUsers is the leaderboard, most calls first, capped at TopUsersLimit.
 	TopUsers []UserActivity `json:"top_users,omitempty"`
+
+	// Health is what went WRONG, and how slowly. Nil only when the read failed;
+	// a project with no traffic has a Health with zero totals and empty
+	// breakdowns, which is a different and true statement.
+	Health *Health `json:"health,omitempty"`
+}
+
+// Health is the reliability and latency view of the same window.
+//
+// It exists because the gateway's per-request log records the requests that
+// FAILED, and no other table in this platform does: the billing ledger is
+// written from a billing delta, and a billing delta rides only a billed
+// request, so a call refused by a budget, rejected by a policy, addressed to an
+// unresolvable model or failed upstream never reaches it. A health view built
+// over the ledger would list successes and no failures — the opposite of what
+// an operator opens one for.
+type Health struct {
+	// Requests and Errors are the window's totals. An error is status >= 400,
+	// the same predicate 0099's partial index is built on.
+	Requests int64 `json:"requests"`
+	Errors   int64 `json:"errors"`
+	// ErrorRate is Errors over Requests, as a percentage to one decimal. Zero
+	// for a window with no traffic, which is honest: nothing failed.
+	ErrorRate float64 `json:"error_rate"`
+
+	// ByErrorCode is the failure breakdown, most frequent first.
+	//
+	// The gateway's own CLASSIFICATION, never an upstream string — 0099 has no
+	// column a provider's error text can reach, and that is structural rather
+	// than a policy somebody has to remember: upstream errors routinely quote
+	// the offending fragment of the request back, and a request is user-authored
+	// free text.
+	ByErrorCode []ErrorCodeCount `json:"by_error_code"`
+
+	// ByModel is per (provider, model, streaming). Empty for a window whose
+	// requests never resolved a model.
+	ByModel []ModelHealth `json:"by_model"`
+
+	// Daily is one point per UTC day that had traffic, for the trend chart.
+	Daily []DailyHealth `json:"daily"`
+}
+
+// ErrorCodeCount is one failure classification's share of the window.
+type ErrorCodeCount struct {
+	ErrorCode string `json:"error_code"`
+	Requests  int64  `json:"requests"`
+}
+
+// ModelHealth is one (provider, model, streaming) triple's reliability.
+//
+// STREAMING IS PART OF THE KEY, not a column. 0099's own header says a streamed
+// and a buffered request of the same model have very different latency
+// profiles and that averaging them together makes both unreadable — a streamed
+// response's duration is the whole stream, which is seconds where a buffered
+// call is milliseconds. Folding them into one row would produce a number that
+// describes neither, and would move whenever the streamed/buffered mix did.
+type ModelHealth struct {
+	Provider  string  `json:"provider"`
+	Model     string  `json:"model"`
+	Streaming bool    `json:"streaming"`
+	Requests  int64   `json:"requests"`
+	Errors    int64   `json:"errors"`
+	ErrorRate float64 `json:"error_rate"`
+	// AvgDurationMS and P95DurationMS are wall-clock milliseconds from the start
+	// of the handler to the response being complete. Both are reported because
+	// they answer different questions and an average alone hides the tail an
+	// operator investigating "chat feels slow" is looking for.
+	AvgDurationMS float64 `json:"avg_duration_ms"`
+	P95DurationMS float64 `json:"p95_duration_ms"`
+}
+
+// DailyHealth is one UTC day: how much was served and how much of it failed.
+type DailyHealth struct {
+	Date     string `json:"date"`
+	Requests int64  `json:"requests"`
+	Errors   int64  `json:"errors"`
 }
 
 // ModelUsage is one (provider, model) pair's share of the window.

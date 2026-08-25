@@ -104,7 +104,11 @@ function renderTabBody({
         />
       );
     case 4:
-      return data === undefined ? null : <AnalyticsHealth dailyActivity={data.daily_activity} />;
+      // `data.health`, not `data.daily_activity`. This used to pass the daily
+      // series and NOT the `health` prop the component branches on, so the tab
+      // returned its empty state for the whole life of the component — and the
+      // series it did pass carried neither of the two fields the chart read.
+      return data === undefined ? null : <AnalyticsHealth health={data.health} />;
     case 5:
       return <AnalyticsGuide />;
     default:

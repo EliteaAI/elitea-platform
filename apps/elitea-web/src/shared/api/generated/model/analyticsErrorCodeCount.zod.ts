@@ -40,25 +40,17 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { AnalyticsDailyPoint } from "./analyticsDailyPoint.zod";
-import { AnalyticsHealth } from "./analyticsHealth.zod";
-import { AnalyticsKpis } from "./analyticsKpis.zod";
-import { ModelUsage } from "./modelUsage.zod";
-import { UserActivity } from "./userActivity.zod";
 
-export const ProjectAnalytics = zod
-  .object({
-    kpis: AnalyticsKpis,
-    top_ai_users: zod
-      .array(UserActivity)
-      .describe("The leaderboard, most calls first, capped at 10 rows."),
-    daily_activity: zod.array(AnalyticsDailyPoint),
-    models: zod.array(ModelUsage),
-    health: AnalyticsHealth.optional(),
-  })
-  .describe(
-    "The Overview tab's response, and the Health tab's — one fetch serves both. Answers 501 with `{error, code: no_data_source, detail}` on a deployment whose gateway request log is absent — a FINAL status, not a 500, so a client that retries transient failures does not ask twice for an answer the server has already refused.\n",
-  );
+export const AnalyticsErrorCodeCount = zod.object({
+  error_code: zod
+    .string()
+    .describe(
+      "The gateway's OWN classification, never an upstream string — 0099 has no column a provider's error text can reach, which is structural rather than a policy: upstream errors routinely quote the offending fragment of the request back, and a request is user-authored free text. `unclassified` covers a failure the gateway returned without assigning a code; those rows are reported rather than dropped, or the breakdown would not account for every error the headline counts.\n",
+    ),
+  requests: zod.int(),
+});
 
-export type ProjectAnalytics = zod.input<typeof ProjectAnalytics>;
-export type ProjectAnalyticsOutput = zod.output<typeof ProjectAnalytics>;
+export type AnalyticsErrorCodeCount = zod.input<typeof AnalyticsErrorCodeCount>;
+export type AnalyticsErrorCodeCountOutput = zod.output<
+  typeof AnalyticsErrorCodeCount
+>;
