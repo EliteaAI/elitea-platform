@@ -28,15 +28,27 @@ import { DEFAULT_BRAND_PACK, DEFAULT_COLOR_SCHEME, buildEliteaTheme } from '@/sh
  * location.pathname` alone, e.g. "clicking a row navigates to the detail
  * route", never needs a distinct probe component at the destination).
  */
-function buildTestRouter(initialPath: string, content: ReactElement, projectId: string | undefined): AnyRouter {
+/** The router-context `auth.getUser()` shape the app installs (`src/app/router-context.ts`'s `AuthUser`), narrowed to the two fields the right-hand rail reads. */
+export interface TestRouterUser {
+  readonly id?: string;
+  readonly personal_project_id?: string;
+}
+
+function buildTestRouter(initialPath: string, content: ReactElement, projectId: string | undefined, user: TestRouterUser | undefined): AnyRouter {
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
 
   const tabRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/agents/$tab',
+    // `tags[]`/`author_id` are shell-wide in the real tree
+    // (`src/routes/-search/common.ts`, mounted on `_shell/route.tsx`), so a
+    // fixture that omitted them would silently DROP whatever the right-hand
+    // rail writes and make a passing tag-selection test meaningless.
     validateSearch: (search: Record<string, unknown>) => ({
       sort_by: typeof search.sort_by === 'string' ? search.sort_by : undefined,
       sort_order: typeof search.sort_order === 'string' ? search.sort_order : undefined,
+      author_id: typeof search.author_id === 'string' ? search.author_id : undefined,
+      'tags[]': Array.isArray(search['tags[]']) ? (search['tags[]'] as string[]) : undefined,
     }),
     component: () => content,
   });
@@ -75,7 +87,7 @@ function buildTestRouter(initialPath: string, content: ReactElement, projectId: 
   return createRouter({
     routeTree,
     history: createMemoryHistory({ initialEntries: [initialPath] }),
-    context: { auth: { getSelectedProjectId: () => projectId } },
+    context: { auth: { getSelectedProjectId: () => projectId, getUser: () => user } },
   });
 }
 
@@ -98,10 +110,10 @@ export interface RenderAgentsRouteResult extends RenderResult {
 export function renderAgentsRoute(
   content: ReactElement,
   initialPath = '/agents/latest',
-  options: { queryClient?: QueryClient; projectId?: string } = {},
+  options: { queryClient?: QueryClient; projectId?: string; user?: TestRouterUser } = {},
 ): RenderAgentsRouteResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
-  const router = buildTestRouter(initialPath, content, options.projectId);
+  const router = buildTestRouter(initialPath, content, options.projectId, options.user);
 
   const view = render(
     <QueryClientProvider client={queryClient}>

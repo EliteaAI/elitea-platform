@@ -2,12 +2,15 @@ import type { ReactNode } from 'react';
 import { useMemo } from 'react';
 
 import Box from '@mui/material/Box';
+import type { SxProps, Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
 import { MyLibraryStatusOptions, CollectionStatus } from '@/shared/lib/sort-status';
 import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
+import { EntityListRail, RAIL_CONTENT_WIDTH, useEntityRailVisible, type RailStatKind } from '@/shared/ui/EntityRail';
 import { SingleSelect } from '@/shared/ui/SingleSelect';
+import { useSidebarCollapsedStore } from '@/widgets/sidebar';
 
 import { useCurrentUserPermissions, useIsPublicProject, useSelectedProjectId } from '../api/useRouterAuth';
 import { computeDisplayedTabs } from '../lib/displayed-tabs';
@@ -35,8 +38,18 @@ import { UnavailablePanel } from './UnavailablePanel';
  * Public-viewMode branch's author narrowing (the public endpoint's response
  * carries no author field), free-text search (`state.search.query` — no
  * search-state primitive exists in Wave 1's output for this page to read),
- * and tag filtering (`tags[]` is wired through `lib/merge-and-sort.ts` but
- * this page does not yet expose a tag-picker control).
+ * and tag filtering — `tags[]` is wired through `lib/merge-and-sort.ts`, and
+ * this page NOW exposes the tag picker (the rail's `RailTagsPanel`, writing
+ * the same `tags[]` search param), but the selection is deliberately not
+ * threaded into the panels: elitea-main's applications repo neither returns
+ * per-row `tags` on a list response nor honours the `tags` request param
+ * (`internal/infra/db/repos/applications.go` mentions neither;
+ * `internal/api/v2/applications/handler.go:108` reads the param into
+ * `ListRequest.Tags`, which nothing consumes). Applying an AND filter over
+ * rows that always carry NO tags would empty the list on the first chip
+ * click — a worse lie than an unfiltered list. `mergeSortAndFilterByTags`'s
+ * `selectedTagIds` argument stays the seam for the day the server sends
+ * them.
  */
 export interface UserPublicPageProps {
   readonly tab: UserPublicTabValue;
@@ -45,6 +58,28 @@ export interface UserPublicPageProps {
   readonly onStatusesChange: (statuses: readonly string[]) => void;
   readonly authorId: string;
   readonly authorName: string;
+}
+
+/**
+ * `/user-public/:tab` matches none of `railStatForPath`'s four prefixes, but
+ * its TAB names the entity the author card should count — so the statistic
+ * line is keyed off the tab instead (`RailAuthorCard`'s `statKind` prop).
+ * `all`/`MCPs` have no counterpart in the baseline's `ROUTE_STATISTIC_MAP`
+ * and therefore show the author with no statistic row, exactly as the
+ * baseline does on this route.
+ */
+const TAB_STAT_KIND = {
+  agents: 'agents',
+  pipelines: 'pipelines',
+  toolkits: 'toolkits',
+} as const;
+
+/** `CARD_LIST_WIDTH` (`apps/elitea-ui/src/common/constants.js:511`) — split out of the component body for the same §3.5 complexity reason as `railStatKindForTab` below. */
+const contentWidthSx = (railVisible: boolean): SxProps<Theme> => ({ width: railVisible ? RAIL_CONTENT_WIDTH : '100%' });
+
+/** Split out of the component body to keep its cyclomatic complexity inside the §3.5 budget. */
+export function railStatKindForTab(tab: UserPublicTabValue): RailStatKind | undefined {
+  return tab === 'agents' || tab === 'pipelines' || tab === 'toolkits' ? TAB_STAT_KIND[tab] : undefined;
 }
 
 export function UserPublicPage({
@@ -58,6 +93,10 @@ export function UserPublicPage({
   const projectId = useSelectedProjectId() ?? '';
   const permissions = useCurrentUserPermissions();
   const isPublicProject = useIsPublicProject(projectId === '' ? undefined : projectId);
+
+  const navRailCollapsed = useSidebarCollapsedStore((state) => state.collapsed);
+  const railVisible = useEntityRailVisible(navRailCollapsed);
+  const statKind = railStatKindForTab(tab);
 
   const displayedTabs = computeDisplayedTabs(permissions, isPublicProject);
   const visibleTabs = useMemo(() => UserPublicTabs.filter((candidate) => displayedTabs[candidate]), [displayedTabs]);
@@ -111,7 +150,7 @@ export function UserPublicPage({
   );
 
   return (
-    <Box>
+    <Box sx={contentWidthSx(railVisible)}>
       <BaseTabs
         value={activeIndex}
         onChange={(_event, nextIndex: number) => {
@@ -170,6 +209,12 @@ export function UserPublicPage({
       )}
       {activeTab === 'toolkits' && <UnavailablePanel reason={toolkitsUnavailableReason} />}
       {activeTab === 'MCPs' && <UnavailablePanel reason={mcpsUnavailableReason} />}
+      <EntityListRail
+        projectId={projectId === '' ? undefined : projectId}
+        navRailCollapsed={navRailCollapsed}
+        authorIdFromUrl={authorId}
+        {...(statKind === undefined ? {} : { statKind })}
+      />
     </Box>
   );
 }

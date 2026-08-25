@@ -19,6 +19,7 @@ import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
+import { ToolkitsAuthorCard } from './ui/ToolkitsAuthorCard';
 
 const PAGE_SIZE = 20;
 
@@ -307,8 +308,8 @@ function ToolkitCard({ item, onOpen }: ToolkitCardProps): ReactNode {
  *    added (`query` stays `undefined`).
  *  - **`tagList`** is derived from loaded rows' raw `type` strings, not the
  *    baseline's per-type schema-derived label (see `toTagList`'s own doc).
- *  - **No `TeamMates`/`AuthorInformation`** (`rightPanelExtra`) — neither has
- *    a port anywhere, same gap `ToolkitsList.tsx`'s own doc comment covers.
+ *  - **`AuthorInformation` gap CLOSED** — `rightPanelExtra` carries the real
+ *    author card; see `./ui/ToolkitsAuthorCard.tsx`.
  */
 export function Toolkits({ isMCP = false }: ToolkitsProps): ReactNode {
   const title = isMCP ? t('pages.toolkits.toolkits.titleMcp', 'MCPs') : t('pages.toolkits.toolkits.title', 'Toolkits');
@@ -389,6 +390,8 @@ export function Toolkits({ isMCP = false }: ToolkitsProps): ReactNode {
             }}
             isMCP={isMCP}
             emptyStateConfig={{ title: emptyTitle, description: emptyDescription, onCreateClick: handleCreateClick }}
+            // Single-line element (not this file's usual one-prop-per-line style): it sits 1 line under the §3.5 400-line budget.
+            rightPanelExtra={<ToolkitsAuthorCard projectId={projectId} isMCP={isMCP} />}
           />
         </Box>
       </Box>

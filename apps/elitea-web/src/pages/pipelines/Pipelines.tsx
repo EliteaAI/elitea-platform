@@ -8,6 +8,8 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import { t } from '@/shared/i18n';
 import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
+import { EntityListRail, RAIL_CONTENT_WIDTH, useEntityRailVisible } from '@/shared/ui/EntityRail';
+import { useSidebarCollapsedStore } from '@/widgets/sidebar';
 
 import { isPublicPipelinesProject } from './lib/isPublicPipelinesProject';
 import { useHasAdminPermission } from './lib/useHasAdminPermission';
@@ -33,6 +35,12 @@ const tabPanelSx: SxProps<Theme> = {
   minHeight: 0,
   overflowY: 'auto',
 };
+
+/** `CARD_LIST_WIDTH` (`apps/elitea-ui/src/common/constants.js:511`) — see `pages/agents/Applications.tsx` for the shared rationale. */
+const contentWidthSx = (railVisible: boolean): SxProps<Theme> => ({ width: railVisible ? RAIL_CONTENT_WIDTH : '100%' });
+
+/** The public feeds plus the Admin tab pin the rail to "Trending Authors" (`pages/Applications/PrivateAgentsList.jsx:141-151`, the same component the pipelines domain reuses). */
+const TRENDING_AUTHOR_TABS: readonly string[] = ['latest', 'my-liked', 'trending', 'admin'];
 
 interface PipelinesRouteParams {
   readonly tab?: string;
@@ -64,6 +72,20 @@ interface PipelinesRouteParams {
  *    comment: the backing `trend_start_period` filter has no server-side
  *    support at all, so there is nothing for a working date picker to
  *    control.
+ *
+ * **The rail is real; the tag FILTER on this page is not — disclosed.** The
+ * "Tags" panel lists this project's real tags and writes the selection into
+ * the shell-wide `tags[]` search param (linkable, restored on reload), but
+ * no application list narrows by it, because elitea-main cannot support it
+ * at either end: the applications repo never populates a row's `tags` on a
+ * list response (`internal/infra/db/repos/applications.go` — the field is
+ * absent, and the version maps hardcode `"tags": []any{}`), and the `tags`
+ * request param the handler does read into `ListRequest.Tags`
+ * (`internal/api/v2/applications/handler.go:108`) is consumed by nothing.
+ * Filtering client-side over rows that carry no tags would empty the list on
+ * the first chip click — a worse lie than an unfiltered one. `pages/skills`
+ * DOES filter for real (skills rows carry their tags), which is what this
+ * looks like once the server catches up.
  */
 export function Pipelines(): ReactNode {
   const navigate = useNavigate();
@@ -71,6 +93,7 @@ export function Pipelines(): ReactNode {
   const projectId = useSelectedProjectId();
   const isPublicProject = isPublicPipelinesProject(projectId);
   const hasAdminPermission = useHasAdminPermission(isPublicProject ? projectId : undefined);
+  const navRailCollapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const totals = usePipelinesData(projectId, hasAdminPermission);
   const tabs = usePipelineTabs(isPublicProject, totals, hasAdminPermission);
 
@@ -89,6 +112,8 @@ export function Pipelines(): ReactNode {
     if (nextTab === undefined) return;
     void navigate({ to: '/pipelines/$tab', params: { tab: nextTab.value } });
   };
+
+  const railVisible = useEntityRailVisible(navRailCollapsed);
 
   return (
     <Box sx={pageSx}>
@@ -111,8 +136,13 @@ export function Pipelines(): ReactNode {
         sx={tabPanelSx}
         role="tabpanel"
       >
-        {selectedIndex !== -1 ? visibleTabs[selectedIndex]?.content : null}
+        <Box sx={contentWidthSx(railVisible)}>{selectedIndex !== -1 ? visibleTabs[selectedIndex]?.content : null}</Box>
       </Box>
+      <EntityListRail
+        projectId={projectId}
+        navRailCollapsed={navRailCollapsed}
+        preferTrendingAuthors={TRENDING_AUTHOR_TABS.includes(params.tab ?? '')}
+      />
     </Box>
   );
 }
