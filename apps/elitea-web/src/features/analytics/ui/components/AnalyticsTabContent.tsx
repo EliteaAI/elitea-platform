@@ -27,7 +27,15 @@ export interface AnalyticsTabContentProps {
   readonly needsOverview: boolean;
   readonly isFetching: boolean;
   readonly isError: boolean;
+  /**
+   * The overview query's rejection, threaded through so the error branch can
+   * tell an absent data source (501) from a failed query (500). `isError`
+   * alone cannot: it is the same `true` for both.
+   */
+  readonly error?: unknown;
   readonly data: ProjectAnalytics | undefined;
+  /** Formatted project spend for the window, from `/analytics_costs`. */
+  readonly totalCost?: string | undefined;
   readonly projectId: string | undefined;
   readonly dateFrom: string;
   readonly dateTo: string;
@@ -47,11 +55,12 @@ const centeredSx: SxProps<Theme> = {
   transform: 'translate(-50%, -50%)',
 };
 
-type TabBodyProps = Omit<AnalyticsTabContentProps, 'needsOverview' | 'isFetching' | 'isError'>;
+type TabBodyProps = Omit<AnalyticsTabContentProps, 'needsOverview' | 'isFetching' | 'isError' | 'error'>;
 
 function renderTabBody({
   activeTab,
   data,
+  totalCost,
   projectId,
   dateFrom,
   dateTo,
@@ -65,6 +74,7 @@ function renderTabBody({
         <AnalyticsOverview
           data={data}
           onUserClick={onUserClick}
+          totalCost={totalCost}
         />
       );
     case 1:
@@ -94,7 +104,11 @@ function renderTabBody({
         />
       );
     case 4:
-      return data === undefined ? null : <AnalyticsHealth dailyActivity={data.daily_activity} />;
+      // `data.health`, not `data.daily_activity`. This used to pass the daily
+      // series and NOT the `health` prop the component branches on, so the tab
+      // returned its empty state for the whole life of the component — and the
+      // series it did pass carried neither of the two fields the chart read.
+      return data === undefined ? null : <AnalyticsHealth health={data.health} />;
     case 5:
       return <AnalyticsGuide />;
     default:
@@ -103,7 +117,7 @@ function renderTabBody({
 }
 
 export function AnalyticsTabContent(props: AnalyticsTabContentProps): ReactNode {
-  const { needsOverview, isFetching, isError } = props;
+  const { needsOverview, isFetching, isError, error } = props;
 
   if (needsOverview && isFetching) {
     return (
@@ -118,7 +132,7 @@ export function AnalyticsTabContent(props: AnalyticsTabContentProps): ReactNode 
   // each own a separate query, so they render their own `AnalyticsLoadError`
   // — see each tab's `isError` guard.
   if (needsOverview && isError) {
-    return <AnalyticsLoadError />;
+    return <AnalyticsLoadError error={error} />;
   }
 
   return renderTabBody(props);

@@ -62,6 +62,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -181,7 +182,7 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 			map[string]any{"error": "project id must be a positive integer"})
 		return
 	}
-	from, to := h.dateWindow(r)
+	from, to := dateWindow(r.URL.Query(), h.clock)
 	ctx := r.Context()
 
 	// ONE snapshot for both reads.
@@ -247,21 +248,26 @@ func (h *CostsHandler) Costs(w http.ResponseWriter, r *http.Request) {
 // bound falls back, a window given by neither bound is the last
 // defaultDateRangeDays, and a span wider than maxDateRangeDays is clamped from
 // the far end.
-func (h *CostsHandler) dateWindow(r *http.Request) (from, to time.Time) {
-	query := r.URL.Query()
+//
+// SHARED with the /analytics_* handlers next door (handler.go's parseParams),
+// not because the code is worth reusing but because the RULES are: the
+// Overview tab paints volume from one endpoint and cost from this one, side by
+// side, and two windows that default or clamp differently put two numbers about
+// two different weeks on one screen with nothing saying so.
+func dateWindow(query url.Values, clock func() time.Time) (from, to time.Time) {
 	parsedFrom, hasFrom := parseDate(query.Get("date_from"))
 	parsedTo, hasTo := parseDate(query.Get("date_to"))
 
 	switch {
 	case !hasFrom && !hasTo:
-		to = h.clock()
+		to = clock()
 		from = to.AddDate(0, 0, -defaultDateRangeDays)
 	case !hasFrom:
 		to = parsedTo
 		from = to.AddDate(0, 0, -defaultDateRangeDays)
 	case !hasTo:
 		from = parsedFrom
-		to = h.clock()
+		to = clock()
 	default:
 		from, to = parsedFrom, parsedTo
 	}

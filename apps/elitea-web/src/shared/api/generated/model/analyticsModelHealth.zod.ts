@@ -41,17 +41,32 @@
  */
 import { z as zod } from "zod";
 
-export const ModelUsage = zod
+export const AnalyticsModelHealth = zod
   .object({
-    model: zod.string(),
     provider: zod.string(),
-    prompt_tokens: zod.int(),
-    completion_tokens: zod.int(),
-    run_count: zod.int(),
+    model: zod.string(),
+    streaming: zod
+      .boolean()
+      .describe(
+        "PART OF THE KEY, not a column. 0099's own header records that a streamed and a buffered request of the same model have very different latency profiles and that averaging them makes both unreadable — a streamed duration is the whole stream, seconds where a buffered call is milliseconds. One row per model would report a number describing neither, moving whenever the mix moved rather than when the service did.\n",
+      ),
+    requests: zod.int(),
+    errors: zod.int(),
+    error_rate: zod.number(),
+    avg_duration_ms: zod
+      .number()
+      .describe("Wall-clock milliseconds, handler start to response complete."),
+    p95_duration_ms: zod
+      .number()
+      .describe(
+        'Reported alongside the mean because the mean is what hides the tail an operator investigating \"chat feels slow\" came to look at. percentile_cont, so a small group interpolates rather than jumping to its slowest member.\n',
+      ),
   })
   .describe(
-    'One (provider, model) pair\'s share of the window, from gateway.llm_request_logs. There is NO total_cost: the accumulator that holds money is keyed by (scope, scope_id, period) and carries no model dimension, so a per-model cost cannot be derived from anything this platform writes — and a zero would read as \"this model was free\". Requests that never resolved a model are counted in kpis.llm_calls and excluded here; a nameless bar on the chart is not something an operator can act on.\n',
+    "One (provider, model, streaming) triple's reliability and latency. Requests that never resolved a model are counted in the health totals and excluded here — real traffic, but not a model's, and a nameless row is not something an operator can act on.\n",
   );
 
-export type ModelUsage = zod.input<typeof ModelUsage>;
-export type ModelUsageOutput = zod.output<typeof ModelUsage>;
+export type AnalyticsModelHealth = zod.input<typeof AnalyticsModelHealth>;
+export type AnalyticsModelHealthOutput = zod.output<
+  typeof AnalyticsModelHealth
+>;

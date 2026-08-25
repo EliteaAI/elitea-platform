@@ -44,11 +44,19 @@ import { z as zod } from "zod";
 export const UserActivity = zod
   .object({
     user_id: zod.string(),
-    email: zod.string(),
+    email: zod
+      .string()
+      .describe(
+        'EMPTY when the identity tables are absent. The row is still reported: \"user 41 made 900 calls\" is useful without a display name, and dropping it because a decoration could not be joined would silently shrink the leaderboard.\n',
+      ),
+    name: zod.string().optional(),
     run_count: zod.int(),
+    total_tokens: zod.int(),
     last_active_at: zod.iso.datetime({ offset: true }),
   })
-  .describe("NOTE(W2) internal\/domain\/analytics\/types.go:39-44.");
+  .describe(
+    "One member's LLM usage in the window, from gateway.llm_request_logs grouped by user_id. Rows whose user_id is NULL — requests that resolved no member — are excluded.\n",
+  );
 
 export type UserActivity = zod.input<typeof UserActivity>;
 export type UserActivityOutput = zod.output<typeof UserActivity>;

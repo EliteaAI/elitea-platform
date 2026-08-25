@@ -16,18 +16,16 @@ const BASE = '/api/v2';
 
 const DATA: ProjectAnalytics = {
   kpis: {
-    unique_users: 1,
     total_project_users: 2,
     ai_active_users: 1,
     adoption_rate: 50,
     llm_calls: 1,
-    tool_runs: 1,
-    chat_msgs: 1,
-    agent_runs: 1,
+    total_tokens: 33,
   },
   top_ai_users: [],
   daily_activity: [],
   models: [],
+  models_truncated: false,
 };
 
 function renderScreen(ui: ReactElement): RenderResult {
@@ -119,7 +117,7 @@ describe('AnalyticsTabContent', () => {
         onBackToSource={NOOP}
       />,
     );
-    expect(getByText('TEAM')).toBeInTheDocument();
+    expect(getByText('AI ACTIVE')).toBeInTheDocument();
   });
 
   it('renders AnalyticsAgents for tab 1', async () => {

@@ -1,5 +1,5 @@
 {
-  "recordedAt": "2026-07-26",
+  "recordedAt": "2026-08-25",
   "synthetic": true,
   "note": "Synthetic (unit F4): stand-in HTML for the forward-auth login page a session-expiry redirect lands on (spec §5.4 behaviour 2, secondary redirect-sniff signal; old eliteaApi.js:21-49).",
   "body": "<html><body>forward-auth login page</body></html>"

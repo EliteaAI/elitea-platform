@@ -1,5 +1,5 @@
 {
-    "$comment": "endpoints.manifest.json \u2014 the R-A5 contract (spec \u00a73.4/\u00a75.3, unit S4). Every network call the app makes must have an entry here; scripts/check-endpoint-manifest.mjs enforces it in CI. Seeded 2026-07-27 from the 78 operations orval's react-query generator produced (npx orval, src/shared/api/generated/**). APPEND CONVENTION for later Wave-2 units: add one object to `endpoints`, id unique (`<domain>.<action>`), source:'handwritten', operationId:null, responseSchema names the hand-authored zod export, fixture points at its Channel-B recording once M1's recorder has run, usedBy lists the consuming feature slice(s) \u2014 keep it current. Append only; never remove or renumber another unit's entries. See scripts/check-endpoint-manifest.mjs's header for the full convention.",
+    "$comment": "endpoints.manifest.json — the R-A5 contract (spec §3.4/§5.3, unit S4). Every network call the app makes must have an entry here; scripts/check-endpoint-manifest.mjs enforces it in CI. Seeded 2026-07-27 from the 78 operations orval's react-query generator produced (npx orval, src/shared/api/generated/**). APPEND CONVENTION for later Wave-2 units: add one object to `endpoints`, id unique (`<domain>.<action>`), source:'handwritten', operationId:null, responseSchema names the hand-authored zod export, fixture points at its Channel-B recording once M1's recorder has run, usedBy lists the consuming feature slice(s) — keep it current. Append only; never remove or renumber another unit's entries. See scripts/check-endpoint-manifest.mjs's header for the full convention.",
     "version": 1,
     "generatedFrom": {
         "spec": "services/elitea-main/api/openapi/v2.yaml",
@@ -126,6 +126,18 @@
             "responseSchema": null,
             "fixture": null,
             "usedBy": []
+        },
+        {
+            "id": "analytics.getAnalyticsCosts",
+            "method": "GET",
+            "path": "/elitea_core/analytics_costs/prompt_lib/{project_id}",
+            "operationId": "getAnalyticsCosts",
+            "source": "generated",
+            "responseSchema": "AnalyticsCostBreakdown",
+            "fixture": null,
+            "usedBy": [
+                "features/analytics"
+            ]
         },
         {
             "id": "analytics.getProjectAnalytics",
@@ -1016,7 +1028,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 \u2014 SSE dispatch for an index_data run. Body is the Go `currentStartBody` contract (toolkit_config + tool_name index_data + tool_params), query `await_response=false&execution_contract=index.ingest.v1`; the response's `task_id` names the execution whose stream is `runtime.executionEvents` below. A `task_id` does NOT prove the Go runtime answered (legacy pylon returns one too), so the caller also treats a stream that fails to open as the socket.io fallback signal.",
+            "$comment": "Issue #93 — SSE dispatch for an index_data run. Body is the Go `currentStartBody` contract (toolkit_config + tool_name index_data + tool_params), query `await_response=false&execution_contract=index.ingest.v1`; the response's `task_id` names the execution whose stream is `runtime.executionEvents` below. A `task_id` does NOT prove the Go runtime answered (legacy pylon returns one too), so the caller also treats a stream that fails to open as the socket.io fallback signal.",
             "id": "toolkits.startIndexExecution",
             "method": "POST",
             "path": "/elitea_core/test_toolkit_tool/prompt_lib/{projectId}",
@@ -1029,7 +1041,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 \u2014 SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id \u2014 a caller must build that body, not reuse the socket predict payload.",
+            "$comment": "Issue #93 — SSE dispatch for a chat message. `execution_contract` is agent.execute.application.v1 or agent.execute.adhoc.v1 (services/elitea-main/internal/api/v2/agentexecution/route.go). The response's `events_url` is the stream to follow. REST LAYER ONLY, NO UI CALL SITE YET: the chat surface has no consumer for the streamed execution.node_event envelope (the chat_predict streaming reducer was never ported), so widgets/chat-box deliberately still sends over socket.io. Note the Go route wants the prompt at payload.user_input with a numeric project_id — a caller must build that body, not reuse the socket predict payload.",
             "id": "conversation.startAgentExecution",
             "method": "POST",
             "path": "/elitea_core/messages/prompt_lib/{projectId}/{conversationUuid}",
@@ -1042,7 +1054,7 @@
             ]
         },
         {
-            "$comment": "Issue #93 \u2014 the durable execution-replay SSE stream shared by every long-running execution (index ingest, agent chat, agent regeneration). text/event-stream; event names are the durable replay event types: execution.node_event, index.ingest.completed, execution.failed. Opened with EventSource, so it carries the session cookie and no Authorization header.",
+            "$comment": "Issue #93 — the durable execution-replay SSE stream shared by every long-running execution (index ingest, agent chat, agent regeneration). text/event-stream; event names are the durable replay event types: execution.node_event, index.ingest.completed, execution.failed. Opened with EventSource, so it carries the session cookie and no Authorization header.",
             "id": "runtime.executionEvents",
             "method": "GET",
             "path": "/executions/{projectId}/{executionId}/events",
@@ -1055,7 +1067,7 @@
             ]
         },
         {
-            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name \u2014 the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
+            "$comment": "Server-Sent Events stream, not a request/response call (issue #92): opened with EventSource via features/notifications' useNotificationsSSE, served by services/elitea-main/internal/api/v2/notifications/events.go. It replaces the notifications_notify socket.io push. Events: notifications_ready (cursor handshake / oversized-payload substitute) and notifications_notify (one new notification). No response body schema exists to name — the payload is a text/event-stream, and the durable list endpoint above stays authoritative for content.",
             "id": "notifications.eventStream",
             "method": "GET",
             "path": "/notifications/events/prompt_lib/{projectId}",

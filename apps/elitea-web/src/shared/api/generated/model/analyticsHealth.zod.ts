@@ -40,18 +40,39 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { AnalyticsDailyHealth } from "./analyticsDailyHealth.zod";
+import { AnalyticsErrorCodeCount } from "./analyticsErrorCodeCount.zod";
+import { AnalyticsModelHealth } from "./analyticsModelHealth.zod";
 
-export const ModelUsage = zod
+export const AnalyticsHealth = zod
   .object({
-    model: zod.string(),
-    provider: zod.string(),
-    prompt_tokens: zod.int(),
-    completion_tokens: zod.int(),
-    run_count: zod.int(),
+    requests: zod
+      .int()
+      .describe(
+        "Requests the gateway served in the window, whatever happened to them.",
+      ),
+    errors: zod
+      .int()
+      .describe(
+        "Requests that failed — status >= 400, the same predicate shared migration 0099's partial index idx_llm_request_logs_errors is built on. NOTHING ELSE IN THIS PLATFORM RECORDS THEM: the billing ledger (gateway.llm_usage_events) is written from a billing delta, and a delta rides only a BILLED request, so a call refused by a budget, rejected by a policy, addressed to an unresolvable model or failed upstream is absent from it entirely.\n",
+      ),
+    error_rate: zod
+      .number()
+      .describe(
+        "errors \/ requests, as a percentage to one decimal. 0 for a window with no traffic — nothing failed — rather than absent or NaN.\n",
+      ),
+    by_error_code: zod.array(AnalyticsErrorCodeCount),
+    error_codes_truncated: zod
+      .boolean()
+      .describe(
+        "True when `by_error_code` was cut. It sits beside an UNCAPPED `errors` total, so a silent cut leaves an operator reconciling the two with failures belonging to no listed classification.\n",
+      ),
+    by_model: zod.array(AnalyticsModelHealth),
+    daily: zod.array(AnalyticsDailyHealth),
   })
   .describe(
-    'One (provider, model) pair\'s share of the window, from gateway.llm_request_logs. There is NO total_cost: the accumulator that holds money is keyed by (scope, scope_id, period) and carries no model dimension, so a per-model cost cannot be derived from anything this platform writes — and a zero would read as \"this model was free\". Requests that never resolved a model are counted in kpis.llm_calls and excluded here; a nameless bar on the chart is not something an operator can act on.\n',
+    'The Health tab\'s block, from gateway.llm_request_logs. Travels on the usage response because AnalyticsContainer fetches \/analytics for the Overview and Health tabs alike. ABSENT — not empty — when the repository could not build it: a block with zero totals is the true report of an idle project, and reusing that shape for \"we could not look\" would make the two indistinguishable.\n',
   );
 
-export type ModelUsage = zod.input<typeof ModelUsage>;
-export type ModelUsageOutput = zod.output<typeof ModelUsage>;
+export type AnalyticsHealth = zod.input<typeof AnalyticsHealth>;
+export type AnalyticsHealthOutput = zod.output<typeof AnalyticsHealth>;

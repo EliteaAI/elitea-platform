@@ -45,8 +45,15 @@ import { UserActivity } from "./userActivity.zod";
 export const AnalyticsUsersList = zod
   .object({
     items: zod.array(UserActivity),
+    truncated: zod
+      .boolean()
+      .describe(
+        "True when the list was cut to the busiest N callers. Stated rather than implied, the way \/analytics_costs states periods_truncated: the client paginates and searches CLIENT-SIDE over this array, so a silent cut would present the busiest N as the whole membership, complete with a count label and a working pagination footer, and nothing on either side could tell the difference.\n",
+      ),
   })
-  .describe("NOTE(W2) internal\/api\/v2\/analytics\/handler.go:139.");
+  .describe(
+    "The Users tab's list. Source — internal\/api\/v2\/analytics\/handler.go's Users.\n",
+  );
 
 export type AnalyticsUsersList = zod.input<typeof AnalyticsUsersList>;
 export type AnalyticsUsersListOutput = zod.output<typeof AnalyticsUsersList>;

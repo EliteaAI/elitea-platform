@@ -9,7 +9,7 @@ import type { UserActivity } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
 
 import { useAnalyticsUsersListQuery } from '../api/useAnalytics';
-import { fmtNum, UNAVAILABLE_METRIC } from '../lib/format';
+import { fmtNum, fmtTimestamp } from '../lib/format';
 import { AnalyticsUserDetailed } from './AnalyticsUserDetailed';
 import { AnalyticsLoadError } from './components/DetailStatus';
 import { PaginatedEntityTable } from './components/PaginatedEntityTable';
@@ -19,12 +19,20 @@ import type { EntityTableColumn } from './components/PaginatedEntityTable';
  * Ported from
  * `apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsUsers.jsx`. See
  * `AnalyticsAgents.tsx`'s header for the general field-mapping rationale.
- * `UserActivity` (`user_id`, `email`, `run_count`, `last_active_at`) has
- * only two of the baseline's eight columns' worth of real data — `User`
- * (`email`) and `Events` (`run_count`). The other six (`Days`/`LLM`/
- * `Tool`/`Agent`/`Chat Msg`/`Errors`) have no per-type-breakdown or
- * active-day field anywhere on this type; their headers are kept (COPY
- * parity) with `UNAVAILABLE_METRIC` values rather than fabricated numbers.
+ * ── THE SIX DASH COLUMNS ARE GONE ──
+ *
+ * `Days`/`LLM`/`Tool`/`Agent`/`Chat Msg`/`Errors` were baseline headers kept
+ * for copy parity over cells that rendered `UNAVAILABLE_METRIC` in every row,
+ * forever: `UserActivity` carried no per-type breakdown and no active-day
+ * count, and the gateway request log this table now reads carries neither
+ * either — a request knows its model, not the agent or tool that composed it.
+ * Six columns of dashes take three quarters of the table's width to say
+ * nothing, and invite every reader to wonder what is broken.
+ *
+ * What replaced them are two figures the same rows already carry: `Tokens`
+ * (prompt + completion) and `Last active`. The remaining columns — `User`
+ * (name, or email, or the id), and `LLM calls` (`run_count`) — are unchanged
+ * apart from the header, which said `Events` while counting gateway requests.
  *
  * `dateFrom`/`dateTo` are applied client-side against each row's
  * `last_active_at` (see `isWithinDateRange` below) — the server itself
@@ -76,30 +84,52 @@ const cellSx = (theme: Theme) => ({
   whiteSpace: 'nowrap',
 });
 
+/**
+ * A table cell's value as a string, and '' for anything that is not one.
+ *
+ * `EntityTableColumn.render` receives an untyped row, so `String(row[k])` would
+ * happily stringify an object as `[object Object]` — the lint rule that flagged
+ * it is right that a display cell should never do that silently.
+ */
+function strCell(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * Matches on everything the User column can DISPLAY, not just on the email.
+ *
+ * The column renders `name || email || #id`. Searching the email alone made a
+ * member whose identity row carries a display name and no email visible in the
+ * table and unfindable by typing what the table shows them — the worst kind of
+ * search result, because it looks like the row does not exist.
+ */
 function matchesSearch(row: UserActivity, query: string): boolean {
-  return row.email.toLowerCase().includes(query.toLowerCase());
+  const needle = query.toLowerCase();
+  return [row.name ?? '', row.email, row.user_id].some((field) => field.toLowerCase().includes(needle));
 }
 
 /**
  * `true` when `lastActiveAt` (a row's `last_active_at`, ISO 8601 with
  * offset — `UserActivity`'s zod schema) falls within `[from, to]` (also
  * ISO 8601 — `model/dateRange.ts`'s `toIsoRange` is what produces the
- * `dateFrom`/`dateTo` props this component receives). Local to this file
- * rather than imported from `../model/dateRange`: this cluster's file scope
- * is `ui/AnalyticsUsers.tsx` only, and the comparison itself is too small
- * to justify reaching outside it.
+ * `dateFrom`/`dateTo` props this component receives).
  *
- * Unlike the Agents/Tools tabs (see the doc comments on
- * `AnalyticsAgents.tsx`/`AnalyticsTools.tsx`'s own list-query call sites),
- * the Users tab CAN be fixed entirely client-side: `UserActivity` genuinely
- * carries a per-row timestamp the list response already returns, so
- * filtering the already-fetched rows down to the picker's range is a real
- * fix for "the date-range picker has no effect on this tab" — it needs no
- * backend change. (`useAnalyticsUsersListQuery` still sends `date_from`/
- * `date_to` on the wire too, for parity with the other list calls, but per
- * `api/useAnalytics.ts`'s header the server itself ignores it and always
- * returns the full set — this filter is what actually makes the range
- * effective.)
+ * ── THIS IS A BACKSTOP NOW, NOT THE FIX ──
+ *
+ * It was written when the server ignored `date_from`/`date_to` on this endpoint
+ * and returned the full unfiltered set, which made the date picker inert on
+ * this tab; filtering the already-fetched rows was the whole of the fix.
+ *
+ * That is no longer true. `parseParams` resolves the window and the repository
+ * applies it in SQL, so every row that arrives is inside the range by
+ * construction — `last_active_at` is a `max(occurred_at)` taken over the window
+ * itself. The filter cannot change the result today.
+ *
+ * It stays because it is a CHEAP INVARIANT rather than dead weight: it costs one
+ * comparison per row and it is what keeps the picker honest if the server's
+ * window handling ever regresses. What it must NOT do is go on claiming to be
+ * the mechanism — a comment that describes a fix the server has since taken
+ * over is how the next reader concludes the server still ignores the range.
  */
 function isWithinDateRange(lastActiveAt: string, from: string, to: string): boolean {
   const time = new Date(lastActiveAt).getTime();
@@ -120,10 +150,10 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
   // the local in-tab selection.
   const [cameFromExternal] = useState(() => initialUserId != null);
 
-  const { data, isFetching, isError } = useAnalyticsUsersListQuery(projectId, { dateFrom, dateTo });
-  // See `isWithinDateRange`'s doc comment: the server ignores `date_from`/
-  // `date_to` for this list endpoint, so this filter is what makes the
-  // date-range picker actually take effect on this tab.
+  const { data, isFetching, isError, error } = useAnalyticsUsersListQuery(projectId, { dateFrom, dateTo });
+  // A backstop, not the mechanism — see `isWithinDateRange`'s doc comment. The
+  // server applies the window in SQL now, so this cannot change the result
+  // today.
   const items = useMemo(
     () => (data?.items ?? []).filter((row) => isWithinDateRange(row.last_active_at, dateFrom, dateTo)),
     [data, dateFrom, dateTo],
@@ -160,7 +190,7 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
   // looking at. The detail screen runs its own query and surfaces its own
   // failure.
   if (isError) {
-    return <AnalyticsLoadError />;
+    return <AnalyticsLoadError error={error} />;
   }
 
   const columns: readonly EntityTableColumn[] = [
@@ -168,51 +198,42 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
       header: t('analytics.users.columnUser', 'User'),
       flex: 3,
       render: (row) => {
-        const email = String(row['email']);
+        // `||`, not `??`: the server sends an EMPTY STRING for a member whose
+        // identity it could not resolve (the identity tables belong to another
+        // corpus and can be absent), never null — so `??` would pick the empty
+        // string and render a blank cell where the id belongs.
+        const label = strCell(row['name']) || strCell(row['email']);
         return (
           <Typography
             noWrap
             sx={cellSx}
           >
-            {email || t('analytics.users.unnamedUser', 'User {{id}}', { id: String(row['user_id']) })}
+            {label || t('analytics.users.unnamedUser', 'User {{id}}', { id: String(row['user_id']) })}
           </Typography>
         );
       },
     },
     {
-      header: t('analytics.users.columnEvents', 'Events'),
+      header: t('analytics.users.columnEvents', 'LLM calls'),
       flex: 1,
       render: (row) => <Typography sx={cellSx}>{fmtNum(row['run_count'] as number)}</Typography>,
     },
     {
-      header: t('analytics.users.columnDays', 'Days'),
+      header: t('analytics.users.columnTokens', 'Tokens'),
       flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
+      render: (row) => <Typography sx={cellSx}>{fmtNum(row['total_tokens'] as number)}</Typography>,
     },
     {
-      header: t('analytics.users.columnLlm', 'LLM'),
-      flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
-    },
-    {
-      header: t('analytics.users.columnTool', 'Tool'),
-      flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
-    },
-    {
-      header: t('analytics.users.columnAgent', 'Agent'),
-      flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
-    },
-    {
-      header: t('analytics.users.columnChatMsg', 'Chat Msg'),
-      flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
-    },
-    {
-      header: t('analytics.users.columnErrors', 'Errors'),
-      flex: 1,
-      render: () => <Typography sx={cellSx}>{UNAVAILABLE_METRIC}</Typography>,
+      header: t('analytics.users.columnLastActive', 'Last active'),
+      flex: 2,
+      render: (row) => (
+        <Typography
+          noWrap
+          sx={cellSx}
+        >
+          {fmtTimestamp(row['last_active_at'])}
+        </Typography>
+      ),
     },
   ];
 
@@ -229,14 +250,23 @@ function AnalyticsUsersImpl({ projectId, dateFrom, dateTo, initialUserId, onBack
           variant="bodySmall"
           sx={subtitleSx}
         >
-          {t('analytics.users.tableSubtitle', '{{count}} users', { count: items.length })}
+          {data?.truncated === true
+            ? // A CUT LIST MUST NOT READ AS THE WHOLE ONE. The count and the
+              // pagination footer below are computed from `items`, which is
+              // what arrived rather than what exists; without this the busiest
+              // N callers would be presented as the entire membership, and
+              // nothing on screen would suggest otherwise.
+              t('analytics.users.tableSubtitleTruncated', 'Top {{count}} users by LLM calls', {
+                count: items.length,
+              })
+            : t('analytics.users.tableSubtitle', '{{count}} users', { count: items.length })}
         </Typography>
         <PaginatedEntityTable
           rows={items}
           isFetching={isFetching}
           columns={columns}
           rowKey={(row, index) => `${String(row['user_id'])}-${index}`}
-          searchPlaceholder={t('analytics.users.searchPlaceholder', 'Search by email')}
+          searchPlaceholder={t('analytics.users.searchPlaceholder', 'Search users')}
           searchFilter={(row, query) => matchesSearch(row as unknown as UserActivity, query)}
           onRowClick={(row) => setSelectedUser({ userId: String(row['user_id']), email: String(row['email']) })}
         />

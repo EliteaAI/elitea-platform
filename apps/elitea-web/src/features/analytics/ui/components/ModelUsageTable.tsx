@@ -10,7 +10,7 @@ import { t } from '@/shared/i18n';
 import { combineSx } from '@/shared/ui/lib/combineSx';
 
 import { pickChartColor } from '../../lib/constants';
-import { fmtNum, UNAVAILABLE_METRIC } from '../../lib/format';
+import { fmtNum } from '../../lib/format';
 
 /**
  * Ported from
@@ -18,13 +18,27 @@ import { fmtNum, UNAVAILABLE_METRIC } from '../../lib/format';
  *
  * Field mapping vs. the baseline (see this unit's final report): the real
  * `ModelUsage` type (`src/shared/api/generated/model/modelUsage.zod.ts`,
- * `internal/domain/analytics/types.go:14-20`) is
- * `{model, prompt_tokens, completion_tokens, total_cost, run_count}` — the
+ * `internal/domain/analytics/types.go`) is
+ * `{model, provider, prompt_tokens, completion_tokens, run_count}` — the
  * baseline read `.calls`/`.users`/`.display_name`/`.model_name`, none of
  * which exist on this type. `run_count` substitutes for `.calls` and
- * `model` for the display name; there is no per-model user count in this
- * domain at all, so the "Users" column (header kept for parity) renders
- * `UNAVAILABLE_METRIC` rather than a fabricated number.
+ * `model` for the display name.
+ *
+ * ── THE "USERS" COLUMN IS GONE, NOT EMPTY ──
+ *
+ * It was a header kept for parity over a cell that always rendered
+ * `UNAVAILABLE_METRIC`: a column of dashes, once per model, forever. There is
+ * no per-model user count anywhere in this domain — the gateway request log
+ * groups by model or by user, never both in one row here — so the column was a
+ * question this table can never answer, taking up a fifth of its width and
+ * inviting the reader to wonder what was broken. TOKENS replaces it, which is a
+ * figure the same row already carries.
+ *
+ * There is no COST column either, for a different reason: money is keyed by
+ * (scope, scope_id, period) in the budget accumulator and has no model
+ * dimension at all, so a per-model cost cannot be derived from anything this
+ * platform writes. The schema dropped `total_cost` from `ModelUsage` rather
+ * than let a zero read as "this model was free".
  */
 export interface ModelUsageTableProps {
   readonly models: readonly ModelUsage[];
@@ -84,6 +98,12 @@ const cellValueSx = (theme: Theme) => ({
   whiteSpace: 'nowrap',
 });
 
+const providerSx = (theme: Theme) => ({
+  color: theme.vars.palette.text.metrics,
+  fontSize: theme.typography.labelSmall.fontSize,
+  flexShrink: 0,
+});
+
 const shareBarBgSx = (theme: Theme) => ({
   flex: 1,
   height: 8,
@@ -132,7 +152,7 @@ function ModelUsageTableImpl({ models, totalCalls }: ModelUsageTableProps): Reac
             {t('analytics.overview.modelUsage.columnCalls', 'Calls')}
           </Typography>
           <Typography sx={combineSx(headerCellSx, { flex: 1, textAlign: 'right' })}>
-            {t('analytics.overview.modelUsage.columnUsers', 'Users')}
+            {t('analytics.overview.modelUsage.columnTokens', 'Tokens')}
           </Typography>
           <Typography sx={combineSx(headerCellSx, { flex: 2 })}>
             {t('analytics.overview.modelUsage.columnShare', 'Share')}
@@ -144,7 +164,7 @@ function ModelUsageTableImpl({ models, totalCalls }: ModelUsageTableProps): Reac
 
           return (
             <Box
-              key={`${model.model}-${index}`}
+              key={`${model.provider}/${model.model}-${index}`}
               sx={rowSx}
             >
               <Typography sx={combineSx(cellValueSx, { flex: '0 0 2rem', color: (theme: Theme) => theme.vars.palette.text.metrics })}>
@@ -160,12 +180,25 @@ function ModelUsageTableImpl({ models, totalCalls }: ModelUsageTableProps): Reac
                 >
                   {model.model}
                 </Typography>
+                {model.provider !== '' && (
+                  // The same model name can arrive through two providers (an
+                  // OpenAI model served directly and through Azure, say), and
+                  // the rows are grouped by the PAIR — so without this they
+                  // read as a duplicate row rather than as two routes.
+                  <Typography
+                    variant="bodySmall"
+                    noWrap
+                    sx={providerSx}
+                  >
+                    {model.provider}
+                  </Typography>
+                )}
               </Box>
               <Typography sx={combineSx(cellValueSx, { flex: 1, textAlign: 'right' })}>
                 {fmtNum(model.run_count)}
               </Typography>
               <Typography sx={combineSx(cellValueSx, { flex: 1, textAlign: 'right' })}>
-                {UNAVAILABLE_METRIC}
+                {fmtNum(model.prompt_tokens + model.completion_tokens)}
               </Typography>
               <Box sx={{ flex: 2, display: 'flex', alignItems: 'center', gap: 1, paddingLeft: 1 }}>
                 <Box sx={shareBarBgSx}>

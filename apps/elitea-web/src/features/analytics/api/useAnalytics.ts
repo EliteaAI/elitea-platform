@@ -77,6 +77,7 @@ import type { UseQueryResult } from '@tanstack/react-query';
 
 import {
   getAnalyticsAgentDetail,
+  getAnalyticsCosts,
   getAnalyticsToolDetail,
   getAnalyticsUserDetail,
   getProjectAnalytics,
@@ -86,6 +87,7 @@ import {
 } from '@/shared/api/generated/analytics/analytics';
 import type {
   AnalyticsAgentsList,
+  AnalyticsCostBreakdown,
   AnalyticsDetailEnvelope,
   AnalyticsToolsList,
   AnalyticsUsersList,
@@ -116,21 +118,31 @@ function unwrapSuccess<TResponse extends { readonly status: number; readonly dat
 const QUERY_ROOT = ['analytics'] as const;
 
 /**
- * The backend ignores `limit`/`offset`/`sort_by`/`sort_order` entirely for
- * the three list endpoints (`parseParams()`,
- * `internal/api/v2/analytics/handler.go:142-157`, reads only
- * `project_id`/`start_date`/`end_date`/`period` — confirmed by the
- * generated params' own `NOTE(W2)` comment: "accepted for old-SPA parity
- * but not read by the handler") and always returns the FULL unfiltered,
- * unsorted, unpaginated set. Every list query below therefore requests the
- * schema's declared maximum once and paginates/searches CLIENT-SIDE over
- * the complete result (`ui/AnalyticsAgents.tsx` et al.) — genuinely
- * functional pagination and search, in place of the baseline's UI controls
- * that looked functional but were wired to parameters the server silently
- * dropped. `limit`/`sort_by`/`sort_order` are still SENT, matching the
- * baseline SPA's parameter names and defaults, for wire-shape parity with
- * `API-009`/`API-011`/`API-013`'s "same parameters … as the baseline"
- * acceptance text — they simply have no observable effect server-side today.
+ * The backend ignores `limit`/`offset`/`sort_by`/`sort_order` for the three
+ * list endpoints. `parseParams` (`internal/api/v2/analytics/handler.go`) reads
+ * `project_id`, the date window and `period`, and nothing else — confirmed by
+ * the generated params' own `NOTE(W2)` comment: "accepted for old-SPA parity
+ * but not read by the handler". So every list query below requests the schema's
+ * declared maximum once and paginates/searches CLIENT-SIDE over the result, in
+ * place of the baseline's UI controls that looked functional but were wired to
+ * parameters the server silently dropped. They are still SENT, matching the
+ * baseline's parameter names and defaults for wire-shape parity with
+ * `API-009`/`API-011`/`API-013`.
+ *
+ * ── THE DATE WINDOW IS *NOT* IGNORED, AND THE SET IS *NOT* ALWAYS COMPLETE ──
+ *
+ * Both were true when this comment was written and both have since changed;
+ * they are called out because the client's client-side pagination depends on
+ * them and would be quietly wrong either way.
+ *
+ *  - `date_from`/`date_to` ARE read now, and applied in SQL. The rows that
+ *    arrive are already inside the window.
+ *  - The users list is CAPPED, and says so: `AnalyticsUsersList.truncated` is
+ *    true when the server cut the list to the busiest N callers. A client that
+ *    paginated over a cut array without reading that flag would present the
+ *    busiest N as the whole membership, with a count label and a working
+ *    pagination footer and no way for anyone to notice. `AnalyticsUsers.tsx`
+ *    surfaces it.
  */
 const LIST_ALL_PARAMS = { limit: 1000, offset: 0 } as const;
 
@@ -305,5 +317,53 @@ export function useAnalyticsAgentDetailQuery(
       return data as AnalyticsDetailEnvelope;
     },
     enabled: Boolean(projectId) && Boolean(applicationId),
+  });
+}
+
+/* ── API-015: GET /elitea_core/analytics_costs/prompt_lib/{projectId} ───── */
+
+/**
+ * The project's LLM spend for the same window the Overview tab is showing.
+ *
+ * ── WHY THIS IS A SECOND QUERY AND NOT A FIELD ON THE FIRST ──
+ *
+ * Money has exactly one producer — `gateway.llm_budget_accumulators`, fed by
+ * the scheduler's write-back consumer draining the gateway's billing deltas —
+ * and `/analytics_costs` is the one read of it. That read carries rules the
+ * figure is wrong without: it sums PROJECT-scope rows only, because since #321
+ * the gateway also bills a USER scope for the same request and a user-scope row
+ * is a SUBSET of its project's spend rather than an addition to it. Summing
+ * every row double-counts.
+ *
+ * `/analytics` could have reported cost too, and used to publish it as a
+ * hardcoded `0`. Making it real there would mean a second view of the same
+ * dollars, computed by different code, able to disagree with the first — and
+ * only one of the two would carry the scope rule. So the server omits cost from
+ * the usage response entirely and the client asks the owner of the number.
+ *
+ * ── THIS ENDPOINT HAD NO CALLER AT ALL ──
+ *
+ * It shipped with issue 253, is the only /analytics_* route backed by a real
+ * table, and until now nothing in this app called it: it was absent from
+ * `endpoints.manifest.json` and unreferenced outside generated code. The
+ * Analytics page showed a cost KPI of `0` — from the usage endpoint's hardcoded
+ * literal — while the endpoint holding the real figure sat unread.
+ */
+export function useProjectCostsQuery(
+  projectId: string | undefined,
+  range: DateRangeParams,
+  enabled: boolean,
+): UseQueryResult<AnalyticsCostBreakdown> {
+  return useQuery({
+    queryKey: [...QUERY_ROOT, 'costs', projectId, range.dateFrom, range.dateTo],
+    queryFn: async ({ signal }) =>
+      unwrapSuccess(
+        await getAnalyticsCosts(
+          projectId ?? '',
+          { date_from: range.dateFrom, date_to: range.dateTo },
+          { signal },
+        ),
+      ),
+    enabled: Boolean(projectId) && enabled,
   });
 }

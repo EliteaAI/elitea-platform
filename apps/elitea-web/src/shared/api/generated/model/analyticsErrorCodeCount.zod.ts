@@ -41,17 +41,16 @@
  */
 import { z as zod } from "zod";
 
-export const ModelUsage = zod
-  .object({
-    model: zod.string(),
-    provider: zod.string(),
-    prompt_tokens: zod.int(),
-    completion_tokens: zod.int(),
-    run_count: zod.int(),
-  })
-  .describe(
-    'One (provider, model) pair\'s share of the window, from gateway.llm_request_logs. There is NO total_cost: the accumulator that holds money is keyed by (scope, scope_id, period) and carries no model dimension, so a per-model cost cannot be derived from anything this platform writes — and a zero would read as \"this model was free\". Requests that never resolved a model are counted in kpis.llm_calls and excluded here; a nameless bar on the chart is not something an operator can act on.\n',
-  );
+export const AnalyticsErrorCodeCount = zod.object({
+  error_code: zod
+    .string()
+    .describe(
+      "The gateway's OWN classification, never an upstream string — 0099 has no column a provider's error text can reach, which is structural rather than a policy: upstream errors routinely quote the offending fragment of the request back, and a request is user-authored free text. `unclassified` covers a failure the gateway returned without assigning a code; those rows are reported rather than dropped, or the breakdown would not account for every error the headline counts.\n",
+    ),
+  requests: zod.int(),
+});
 
-export type ModelUsage = zod.input<typeof ModelUsage>;
-export type ModelUsageOutput = zod.output<typeof ModelUsage>;
+export type AnalyticsErrorCodeCount = zod.input<typeof AnalyticsErrorCodeCount>;
+export type AnalyticsErrorCodeCountOutput = zod.output<
+  typeof AnalyticsErrorCodeCount
+>;
