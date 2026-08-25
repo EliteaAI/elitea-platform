@@ -45,7 +45,10 @@ from elitea_worker.execution.delivery import (
     IndexIngestDeliveryProcessor,
 )
 from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput, WorkerError
-from elitea_worker.execution.quarantine import FileQuarantineStore
+from elitea_worker.execution.quarantine import (
+    CompositeQuarantineStore,
+    FileQuarantineStore,
+)
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.indexing_runtime_capabilities import (
@@ -67,6 +70,7 @@ from elitea_worker.transport.input_content import (
 from elitea_worker.transport.output_grpc import OutputGrpcSession, secure_output_channel
 from elitea_worker.transport.output_spool import EncryptedOutputSpool
 from elitea_worker.transport.redis_asyncio import RedisAsyncioControlClient
+from elitea_worker.transport.redis_quarantine import SharedQuarantineStore
 from elitea_worker.transport.redis_commands import (
     RedisCommandConsumer,
     RedisCommandDelivery,
@@ -415,6 +419,26 @@ class WorkerServeLoop:
             self._event_sink(
                 "quarantine_record_damaged",
                 InvalidInput("The quarantine record contains unreadable lines."),
+            )
+        # Which TIER degraded, not merely that something did: a shared-tier
+        # failure means the decision stops crossing replicas, a local-tier
+        # failure means it stops surviving a restart. Same event class, very
+        # different operator response.
+        if getattr(self._quarantine_store, "shared_failed", False):
+            self._event_sink(
+                "quarantine_shared_unavailable",
+                DependencyUnavailable(
+                    "The shared quarantine is unreadable; the decision is local "
+                    "to this worker until it returns."
+                ),
+            )
+        if getattr(self._quarantine_store, "local_failed", False):
+            self._event_sink(
+                "quarantine_local_unavailable",
+                DependencyUnavailable(
+                    "The local quarantine record is unreadable; the decision "
+                    "may not survive a restart."
+                ),
             )
 
     async def _heartbeat_loop(self) -> None:
@@ -886,12 +910,17 @@ async def _serve_deployment_inner(
             read_count=limits.redis_read_batch,
             block_ms=limits.redis_block_millis,
         )
-        # The spool root, not Redis: the runtime ACL grants this worker no write
-        # primitive and no key pattern of its own, so recording anything there
-        # would mean widening it. The spool is already private to this worker
-        # and already survives a restart. See execution/quarantine.py.
-        quarantine_store = FileQuarantineStore(
-            config.spool_root / "quarantine.v1"
+        # Two tiers, because they fail independently. The Redis hash is scoped to
+        # this (stream, group) and is what makes the decision cross replicas; the
+        # spool file is what still works when Redis does not. See
+        # execution/quarantine.py's CompositeQuarantineStore.
+        quarantine_store = CompositeQuarantineStore(
+            shared=SharedQuarantineStore(
+                redis_client,
+                stream=config.redis_stream,
+                group=config.redis_group,
+            ),
+            local=FileQuarantineStore(config.spool_root / "quarantine.v1"),
         )
         metadata = (
             ("x-elitea-workload-session", config.workload_session_id),

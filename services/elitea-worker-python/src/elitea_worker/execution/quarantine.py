@@ -7,31 +7,18 @@ Refusing it in process memory alone stops the spin only until the process ends:
 the next start re-runs the command once and parks it again, which is the same
 defect at a slower cadence.
 
-WHY A FILE, AND NOT REDIS. Redis holds the entry, so it looks like the obvious
-home for a note about the entry. It is not available to this component. The
-runtime ACL grants the `worker` user, verbatim:
+WHAT THIS TIER IS FOR, now that there is a shared one beside it. The group's
+shared record lives in Redis (`transport/redis_quarantine.py`) and is the tier
+that makes the decision cross replicas. This file-backed tier is the one that
+keeps working when Redis does not: a store outage would otherwise return the
+worker to re-running a parked command on every restart, and the spool is already
+exclusively the worker's (0700, its own uid, checked by
+`validate_private_directory`) and already a persistent volume.
 
-    -@all +@connection +ping +eval +evalsha +xreadgroup +xclaim +xautoclaim
-    +xrange +xpending +xack +xdel +hget +hdel
-    ~commands.v1.<...>  ~commands.v1.<...>:delivery-index.v1
-
-There is no write primitive in that set the worker could use for its own record
-— no `hset`, no `set`, no `xadd` — and the key patterns admit only the command
-stream and its delivery index. Recording anything in Redis therefore means
-widening a deliberately minimal ACL, in generated material, to give the worker a
-general write capability it has never had. That is a larger and more dangerous
-change than the defect warrants.
-
-The output spool is the opposite: the worker already owns it exclusively (0700,
-its own uid, checked by `validate_private_directory` at startup) and it is a
-persistent volume, so it already survives exactly the restart this must survive.
-
-THE LIMIT, STATED PLAINLY. This is per worker filesystem, not per consumer
-group. A second replica on another host refuses the entry once and records it in
-its own file. That is strictly better than re-running it on every reclaim turn
-forever, and it is not the same thing as a shared decision. A shared one belongs
-to the control plane, together with the "server-side recovery" the refusal names
-and nothing currently performs.
+Kept deliberately, rather than deleted once the shared tier existed: the two
+fail independently, and the composite in `CompositeQuarantineStore` treats a
+record in EITHER as a refusal. A local-only record is still correct — it just is
+not shared.
 """
 
 from __future__ import annotations
@@ -39,7 +26,11 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from elitea_worker.execution.errors import InvalidInput, ResourceExhausted
+from elitea_worker.execution.errors import (
+    DependencyUnavailable,
+    InvalidInput,
+    ResourceExhausted,
+)
 
 
 _MAX_ENTRY_ID_BYTES = 128
@@ -138,15 +129,111 @@ class FileQuarantineStore:
     malformed_lines: int = 0
 
 
+class CompositeQuarantineStore:
+    """The shared record and the local one, read as a union and written to both.
+
+    WHY BOTH. They fail independently and neither alone is sufficient:
+
+      * shared only — a Redis outage returns the worker to re-running a parked
+        command on every restart, which is the defect this whole change exists
+        to remove.
+      * local only — the decision never crosses a replica boundary.
+
+    So a record in EITHER is a refusal, and a write goes to both. A write that
+    only one tier accepts is still a success: the entry is recorded somewhere
+    that outlives the process, which is the guarantee. Which tier failed is
+    reported by the caller, because "not shared" and "not durable" need
+    different responses.
+
+    ORDER MATTERS on load. The shared tier is read first and its failure must
+    not discard the local one — otherwise an unreachable Redis would silently
+    cost the durability that already worked.
+    """
+
+    def __init__(
+        self,
+        *,
+        shared: object,
+        local: FileQuarantineStore,
+    ) -> None:
+        self._shared = shared
+        self._local = local
+        self.shared_failed = False
+        self.local_failed = False
+
+    @property
+    def cap(self) -> int:
+        # The tighter of the two: a cap either tier would refuse is the real one.
+        shared_cap = getattr(self._shared, "cap", None)
+        if isinstance(shared_cap, int) and shared_cap > 0:
+            return min(shared_cap, self._local.cap)
+        return self._local.cap
+
+    @property
+    def malformed_lines(self) -> int:
+        """Damaged rows in EITHER tier — one event covers both, because the
+        response is the same: those entries each run once more before being
+        parked again."""
+        return self._local.malformed_lines + int(
+            getattr(self._shared, "malformed_entries", 0)
+        )
+
+    async def load(self) -> frozenset[str]:
+        recorded: set[str] = set()
+        self.shared_failed = False
+        self.local_failed = False
+        try:
+            recorded.update(await self._shared.load())  # type: ignore[attr-defined]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.shared_failed = True
+        try:
+            recorded.update(await self._local.load())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.local_failed = True
+        if self.shared_failed and self.local_failed:
+            raise DependencyUnavailable("No quarantine record could be read.")
+        return frozenset(recorded)
+
+    async def add(self, entry_id: str, *, reason_code: str) -> bool:
+        shared_stored = False
+        local_stored = False
+        self.shared_failed = False
+        self.local_failed = False
+        try:
+            shared_stored = await self._shared.add(  # type: ignore[attr-defined]
+                entry_id,
+                reason_code=reason_code,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.shared_failed = True
+        try:
+            local_stored = await self._local.add(entry_id, reason_code=reason_code)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.local_failed = True
+        return shared_stored or local_stored
+
+
 def _validate_entry_id(entry_id: str) -> None:
     if (
         not entry_id
         or len(entry_id.encode("utf-8")) > _MAX_ENTRY_ID_BYTES
         or not entry_id.isascii()
         or not entry_id.isprintable()
+        # No whitespace. A Redis stream id never contains any, and accepting it
+        # let a shell that did not word-split a list of ids record all four as
+        # ONE entry — silently, because every character was printable ASCII.
+        or any(character.isspace() for character in entry_id)
         or _FIELD_SEPARATOR in entry_id
     ):
         raise InvalidInput("The quarantine entry ID is malformed.")
 
 
-__all__ = ["FileQuarantineStore"]
+__all__ = ["CompositeQuarantineStore", "FileQuarantineStore"]

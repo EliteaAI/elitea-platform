@@ -262,6 +262,18 @@ PY
 CONFIGURATION_STREAM='commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0'
 AGENT_STREAM='commands.v1.agent.execute.agent.shared.1.0'
 REPLAY_WAKE_CHANNEL='elitea:runtime:execution-replay:wake:v1'
+# The consumer group's shared record of command entries that must not be run
+# again (see services/elitea-worker-python/src/elitea_worker/execution/
+# quarantine.py). One hash per (stream, group).
+#
+# The GROUP is a wildcard and the STREAM is pinned. Pinning both would be
+# tighter by one segment and would add a sixth place that has to agree with
+# `deploy/runtime/worker-runtime.json`'s `redis_group`; when those drift the
+# grant stops matching, the shared store answers NOPERM, and the worker silently
+# falls back to its per-filesystem record — a downgrade with no failing gate.
+# The namespace holds nothing but these records, so the wildcard grants no
+# access the pinned form would have withheld.
+QUARANTINE_KEY_PREFIX="elitea:runtime:v1:quarantine:${AGENT_STREAM}"
 
 producer_password="$(<"$RUNTIME_DIR/redis-producer-password")"
 worker_password="$(<"$RUNTIME_DIR/redis-worker-password")"
@@ -273,8 +285,19 @@ auth_password="$(<"$RUNTIME_DIR/redis-auth-password")"
   printf 'user producer on >%s -@all +@connection +ping +eval +evalsha +xlen +xadd +xrange +xpending +hget +hset +hdel +hlen +publish +subscribe +unsubscribe ~%s ~%s:delivery-index.v1 ~%s ~%s:delivery-index.v1 &%s\n' \
     "$producer_password" "$CONFIGURATION_STREAM" "$CONFIGURATION_STREAM" \
     "$AGENT_STREAM" "$AGENT_STREAM" "$REPLAY_WAKE_CHANNEL"
-  printf 'user worker on >%s -@all +@connection +ping +eval +evalsha +xreadgroup +xclaim +xautoclaim +xrange +xpending +xack +xdel +hget +hdel ~%s ~%s:delivery-index.v1\n' \
-    "$worker_password" "$AGENT_STREAM" "$AGENT_STREAM"
+  # `+hset +hkeys +hlen +expire` and the quarantine key are the ONLY widening of
+  # this user, and they are confined to that one key pattern: nothing here adds
+  # any capability against the command streams themselves. The worker previously
+  # held no write primitive of its own at all (`+xack +xdel +hget +hdel` mutate
+  # only the stream it consumes and that stream's delivery index), which is why
+  # the quarantine record could not be shared between replicas before.
+  #
+  # `+hlen` and `+hexists` are required because the cap is enforced INSIDE the
+  # Lua script rather than by the client, and `eval` runs under this user's own
+  # permissions — a command missing here fails the script at runtime with
+  # "ACL failure in script", which no fake client can reproduce.
+  printf 'user worker on >%s -@all +@connection +ping +eval +evalsha +xreadgroup +xclaim +xautoclaim +xrange +xpending +xack +xdel +hget +hdel +hset +hkeys +hlen +hexists +expire ~%s ~%s:delivery-index.v1 ~%s:*\n' \
+    "$worker_password" "$AGENT_STREAM" "$AGENT_STREAM" "$QUARANTINE_KEY_PREFIX"
   printf 'user bootstrap on >%s -@all +@connection +ping +xgroup +xinfo +xlen ~%s ~%s\n' \
     "$bootstrap_password" "$AGENT_STREAM" "$CONFIGURATION_STREAM"
   printf 'user auth on >%s -@all +@connection +@string +@hash +@keyspace +@scripting +@transaction ~elitea-standalone-auth:*\n' \
