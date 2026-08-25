@@ -22,7 +22,17 @@ function roleLabel(row: AdminUserRow): string {
   return labels[row.admin_role];
 }
 
-/** `rows` → a CSV document, header included. Same readings as the table. */
+/**
+ * `rows` → a CSV document, header included.
+ *
+ * `Status` and `Admin Role` are the readings the table makes. `Last login` is
+ * NOT: the table renders `new Date(value).toLocaleString()` in the viewer's
+ * timezone (`AdminUsersTable.formatLastLogin`), while this writes the server's
+ * own string unchanged. That is deliberate — a spreadsheet column wants a
+ * sortable, unambiguous timestamp rather than one already rewritten into
+ * whichever locale happened to click the button — but it does mean the file
+ * and the screen show that one column differently.
+ */
 export function buildAdminUsersCsv(rows: readonly AdminUserRow[]): string {
   const header = [
     t('pages.admin.users.column.name', 'Name'),

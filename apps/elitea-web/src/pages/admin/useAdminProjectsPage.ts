@@ -193,7 +193,7 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
     setIsExporting(true);
     void (async () => {
       try {
-        const rows = await fetchAllPages((limit, offset) =>
+        const { rows, truncated } = await fetchAllPages((limit, offset) =>
           fetchAdminProjectsPage({
             limit,
             offset,
@@ -204,6 +204,19 @@ export function useAdminProjectsPage(): AdminProjectsPageState {
           }),
         );
         downloadCsv(`projects-${projectType}.csv`, buildAdminProjectsCsv(rows));
+        // A capped walk still downloads — but silently, a short file is
+        // indistinguishable from a complete one, so it has to SAY so.
+        if (truncated) {
+          setErrorMessage(
+            // `rows`, not `count`: i18next reads `count` as a plural selector
+            // and would look for `_one`/`_other` keys this bundle has not got.
+            t(
+              'pages.admin.projects.export.truncated',
+              'The export was capped: the file holds the first {{rows}} projects, not the whole list.',
+              { rows: rows.length },
+            ),
+          );
+        }
       } catch (error) {
         setErrorMessage(
           error instanceof Error && error.message

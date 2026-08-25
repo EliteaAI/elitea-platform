@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { toCsvField } from './adminCsv';
+import { fetchAllPages, toCsvField } from './adminCsv';
 import { buildAdminProjectsCsv } from './adminProjectsCsv';
 import { buildAdminUsersCsv } from './adminUsersCsv';
 import type { AdminProjectRow } from './api/adminProjectsApi';
@@ -94,5 +94,50 @@ describe('buildAdminUsersCsv', () => {
 
   it('is the header alone when nothing matches the filter', () => {
     expect(buildAdminUsersCsv([])).toBe('Name,Email,Last login,Status,Admin Role');
+  });
+});
+
+describe('fetchAllPages', () => {
+  /**
+   * The regression this exists for: the walk used to request 500 rows and stop
+   * on any page shorter than that. The admin handler ignores a `limit` over
+   * 100 and serves its default 20, so the first page WAS short and the export
+   * silently truncated to 20 rows. A fake that serves fewer rows than asked
+   * reproduces exactly that; the MSW page handlers cannot, because they return
+   * the whole fixture whatever `limit` says.
+   */
+  it('keeps walking when the server serves fewer rows than requested', async () => {
+    const all = Array.from({ length: 57 }, (_, i) => i);
+    const asked: Array<{ limit: number; offset: number }> = [];
+    const result = await fetchAllPages((limit, offset) => {
+      asked.push({ limit, offset });
+      // The clamp: 20 rows however many were requested.
+      return Promise.resolve({ rows: all.slice(offset, offset + 20), total: all.length });
+    });
+
+    expect(result.rows).toEqual(all);
+    expect(result.truncated).toBe(false);
+    // Offsets advance by what was RETURNED (20), not by what was requested.
+    expect(asked.map((a) => a.offset)).toEqual([0, 20, 40]);
+    expect(asked.every((a) => a.limit <= 100)).toBe(true);
+  });
+
+  it('stops on an empty page even when `total` is overstated', async () => {
+    const result = await fetchAllPages((_limit, offset) =>
+      Promise.resolve({ rows: offset === 0 ? [1, 2, 3] : [], total: 9_999 }),
+    );
+
+    expect(result.rows).toEqual([1, 2, 3]);
+    expect(result.truncated).toBe(false);
+  });
+
+  it('reports truncation when a server that ignores `offset` hits the ceiling', async () => {
+    const page = Array.from({ length: 100 }, (_, i) => i);
+    const result = await fetchAllPages(() => Promise.resolve({ rows: page, total: 1_000_000 }));
+
+    // Capped rather than looping forever — and the caller is TOLD, so the page
+    // can say so instead of handing over a short file that looks complete.
+    expect(result.truncated).toBe(true);
+    expect(result.rows).toHaveLength(100_000);
   });
 });

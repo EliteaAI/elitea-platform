@@ -45,30 +45,49 @@ export function downloadCsv(filename: string, csv: string): void {
 }
 
 /**
- * Page size for an export walk. Larger than an on-screen page (the export is
- * not paginated for a human) but still a BOUNDED request: the reference pages
- * ask for `limit: total` in one shot, which on a deployment with tens of
- * thousands of rows is a request neither side bounds.
+ * Page size for an export walk.
+ *
+ * 100 is not a taste choice: `paginationParams`
+ * (services/elitea-main/internal/api/v2/admin/handler.go) honours a supplied
+ * `limit` only when `0 < v <= 100`, and SILENTLY falls back to its default of
+ * 20 otherwise. A larger number here does not fetch more — it fetches 20 and
+ * makes the walk below mistake that for the last page.
  */
-const CSV_EXPORT_PAGE_SIZE = 500;
+const CSV_EXPORT_PAGE_SIZE = 100;
 
 /** Stops a pathological response (a server that ignores `offset`) from looping forever. */
 const CSV_EXPORT_MAX_ROWS = 100_000;
 
+export interface AllPagesResult<T> {
+  readonly rows: readonly T[];
+  /**
+   * True when the walk stopped at `CSV_EXPORT_MAX_ROWS` with rows still
+   * unread. The caller MUST surface this: a truncated export is a short file
+   * that looks exactly like a complete one.
+   */
+  readonly truncated: boolean;
+}
+
 /**
  * Every row a filter selects, walked page by page through `fetchPage`.
  *
- * The walk stops on a short page as well as on `total`, so a server that
- * reports a stale count still terminates.
+ * `offset` advances by the number of rows actually RETURNED, never by the
+ * requested page size, and the walk ends on an empty page rather than on a
+ * short one. Both matter because a server may serve fewer rows than asked:
+ * advancing by the request would skip the difference, and treating a short
+ * page as the end would stop the walk on the first one.
  */
 export async function fetchAllPages<T>(
   fetchPage: (limit: number, offset: number) => Promise<{ readonly rows: readonly T[]; readonly total: number }>,
-): Promise<readonly T[]> {
+): Promise<AllPagesResult<T>> {
   const collected: T[] = [];
-  for (let offset = 0; offset < CSV_EXPORT_MAX_ROWS; offset += CSV_EXPORT_PAGE_SIZE) {
+  let offset = 0;
+  for (;;) {
     const page = await fetchPage(CSV_EXPORT_PAGE_SIZE, offset);
+    if (page.rows.length === 0) return { rows: collected, truncated: false };
     collected.push(...page.rows);
-    if (page.rows.length < CSV_EXPORT_PAGE_SIZE || collected.length >= page.total) break;
+    offset += page.rows.length;
+    if (collected.length >= page.total) return { rows: collected, truncated: false };
+    if (collected.length >= CSV_EXPORT_MAX_ROWS) return { rows: collected, truncated: true };
   }
-  return collected;
 }

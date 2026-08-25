@@ -286,7 +286,9 @@ describe('Admin › Users', () => {
     // The export walks the LIST endpoint, filtered by the active tab.
     const exportRead = recorded.filter((entry) => entry.method === 'GET').at(-1)!;
     expect(exportRead.url).toContain('user_type=platform');
-    expect(exportRead.url).toContain('limit=500');
+    // 100, not a bigger number: the admin handler ignores a `limit` above 100
+    // and silently serves 20, which the walk would read as the last page.
+    expect(exportRead.url).toContain('limit=100');
   });
 
   it('reports a refused export instead of downloading an empty file', async () => {

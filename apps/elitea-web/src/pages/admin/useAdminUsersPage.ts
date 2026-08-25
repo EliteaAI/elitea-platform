@@ -267,7 +267,7 @@ export function useAdminUsersPage(): AdminUsersPageState {
     setIsExporting(true);
     void (async () => {
       try {
-        const rows = await fetchAllPages((limit, offset) =>
+        const { rows, truncated } = await fetchAllPages((limit, offset) =>
           fetchAdminUsersPage({
             limit,
             offset,
@@ -278,6 +278,19 @@ export function useAdminUsersPage(): AdminUsersPageState {
           }),
         );
         downloadCsv(`users-${userType}.csv`, buildAdminUsersCsv(rows));
+        // A capped walk still downloads — but silently, a short file is
+        // indistinguishable from a complete one, so it has to SAY so.
+        if (truncated) {
+          setErrorMessage(
+            // `rows`, not `count`: i18next reads `count` as a plural selector
+            // and would look for `_one`/`_other` keys this bundle has not got.
+            t(
+              'pages.admin.users.export.truncated',
+              'The export was capped: the file holds the first {{rows}} users, not the whole list.',
+              { rows: rows.length },
+            ),
+          );
+        }
       } catch (error) {
         reportFailure(t('pages.admin.users.error.export', 'Failed to export the user list.'), error);
       } finally {
