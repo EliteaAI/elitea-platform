@@ -66,7 +66,7 @@ type validationResult struct {
 // whether the requested version name is already used on the skill; it is passed
 // in rather than queried here so the checks stay a pure function of their
 // inputs and can be tested without a database.
-func runDeterministicChecks(row skillVersionRow, versionName, category string, nameTaken bool) validationResult {
+func runDeterministicChecks(row skillVersionRow, versionName, category string, activeCategories []string, nameTaken bool) validationResult {
 	var critical, warnings []issue
 	var recs []recommendation
 
@@ -127,7 +127,7 @@ func runDeterministicChecks(row skillVersionRow, versionName, category string, n
 	}
 
 	// Category
-	if strings.TrimSpace(category) != "" && resolveCategory(category) == "" {
+	if strings.TrimSpace(category) != "" && resolveCategory(activeCategories, category) == "" {
 		addCritical("category",
 			fmt.Sprintf("Category '%s' is not a recognised category", strings.TrimSpace(category)),
 			"Select a valid skill category from the list")
@@ -222,8 +222,13 @@ func (h *Handler) versionNameTaken(ctx context.Context, schema string, skillID i
 }
 
 // validate runs the gate and mints a token when it passes.
-func (h *Handler) validate(ctx context.Context, schema string, row skillVersionRow, versionName, category string) validationResult {
-	result := runDeterministicChecks(row, versionName, category,
+// It takes the active category list rather than reading it, so one request
+// cannot judge the same `category` against two separately-loaded lists: the
+// publish path already resolved it before deciding the category was valid, and
+// an administrator saving Skill Categories between the two reads would
+// otherwise make the gate refuse a category the same request had just accepted.
+func (h *Handler) validate(ctx context.Context, schema string, row skillVersionRow, versionName, category string, activeCategories []string) validationResult {
+	result := runDeterministicChecks(row, versionName, category, activeCategories,
 		h.versionNameTaken(ctx, schema, row.SkillID, versionName))
 	if result.Status != "FAIL" {
 		result.ValidationToken = h.issueValidationToken(
@@ -272,7 +277,7 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := h.validate(ctx, schema, row, body.VersionName, body.Category)
+	result := h.validate(ctx, schema, row, body.VersionName, body.Category, h.activeCategories(ctx))
 	status := http.StatusOK
 	if result.Status == "FAIL" {
 		status = http.StatusUnprocessableEntity
