@@ -13,7 +13,7 @@ import type { Theme } from '@mui/material/styles';
 
 import { t } from '@/shared/i18n';
 import ThemeModeToggle from '@/shared/ui/ThemeModeToggle';
-import { LogoIcon } from '@/shared/ui/icons/logo-icon';
+import { LogoMarkIcon } from '@/shared/ui/icons/logo-mark-icon';
 
 import { focusRing } from './AdminNavChrome';
 
@@ -70,7 +70,12 @@ export function AdminNavHeader({ collapsed, onToggle }: AdminNavHeaderProps): Re
             ...focusRing(theme),
           })}
         >
-          <LogoIcon style={{ width: '1.75rem', height: '1.75rem' }} />
+          {/*
+            * The MARK, not the wordmark. `LogoIcon` is `0 0 99 20`; forcing it
+            * into a 1.75rem square rendered as a clipped "El…" in the admin
+            * header — the same defect the main app's `SidebarHeader` had.
+            */}
+          <LogoMarkIcon style={{ width: '1.75rem', height: '1.75rem' }} />
         </Box>
         {!collapsed && (
           <Typography

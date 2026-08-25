@@ -12,12 +12,21 @@ import type { EliteaComponents } from '../theme-types';
  * shaped button. `variant="outlined"` (21 call sites) got no brand styling
  * at all, since `variants` has no `outlined` entry to repaint it.
  *
- * `height`/`border`/`gap`/`boxShadow` come from the baseline's
- * `baseVariantStyle` (`BaseBtn.jsx:199-238`), which it spreads into ten of
- * its fourteen variants. Hoisting them to `root` is the same result for
- * those ten and a no-op for the four that set their own geometry (`maxi`,
- * `icon`, `iconLabel`, `iconCounter` all restate radius/padding in
- * `MuiButton.ts` and so still win).
+ * `height`/`gap` come from the baseline's `baseVariantStyle`
+ * (`BaseBtn.jsx:199-238`), which it spreads into ten of its fourteen
+ * variants. Hoisting those two to `root` is the same result for those ten
+ * and a no-op for the four that set their own geometry (`maxi`, `icon`,
+ * `iconLabel`, `iconCounter` all restate radius/padding in `MuiButton.ts`
+ * and so still win).
+ *
+ * `border` and `boxShadow` are deliberately NOT hoisted, though
+ * `baseVariantStyle` carries them. They are variant-level in the baseline
+ * for a reason this port learned the hard way: `border: 1px solid
+ * transparent` in `root` overrides MUI's OWN `outlined` border, and the
+ * rewrite has 21 `variant="outlined"` call sites the baseline does not —
+ * admin's "Add entry" buttons rendered as bare text with no box. A property
+ * that the baseline only ever applies to its own variants must not be
+ * hoisted to a root that MUI's built-in variants also sit on.
  *
  * Its own file purely for `MuiButton.ts`'s `max-lines` budget — R-T12 wants
  * one MUI key per file, and this is still that key.
@@ -47,8 +56,6 @@ export const MuiButtonStyleOverrides: NonNullable<EliteaComponents['MuiButton']>
     ...theme.typography.labelSmall,
     borderRadius: theme.vars.shape.radiusPill,
     gap: theme.spacing(1),
-    border: '0.0625rem solid transparent',
-    boxShadow: 'none',
     height: '1.75rem',
     padding: theme.spacing(0.75, 2),
     minWidth: '3rem',

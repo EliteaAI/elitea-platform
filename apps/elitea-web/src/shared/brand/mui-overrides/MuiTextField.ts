@@ -109,61 +109,29 @@ export const MuiTextField: EliteaComponents['MuiTextField'] = {
         '& .MuiInput-underline': { padding: `${theme.spacing(0.5)} ${theme.spacing(1.5)} 0` },
       }),
     },
-    {
-      /**
-       * `outlined` — the baseline's `eliteaTextFieldOutlinedStyle()`
-       * (`textFieldVariants.js:212-257`, registered at `:356-440`).
-       *
-       * THE WHOLE VARIANT WAS MISSING. MUI's default `outlined` therefore
-       * applied: a 4px radius, a notched outline with a cut-out legend for
-       * the floating label, and stock padding — visibly a different control
-       * from the product's. The baseline hides the legend and lifts the
-       * outline to the top of the box instead, which is why its outlined
-       * fields read as plain rounded boxes.
-       *
-       * Focus is `primary.pressed`, NOT `primary.main` — the baseline
-       * distinguishes an input's focus ring from a button's accent.
-       *
-       * SUBSTITUTION, disclosed: the baseline's hover role is
-       * `border.inputHover`, which does not exist in this pack's token
-       * vocabulary (`tokens/default.pack.json` has no such id). `border.hover`
-       * is used instead — the same role the `standard` variant above already
-       * uses for its hover underline, so outlined and standard fields at
-       * least agree with each other. If a pack ever states `border.inputHover`,
-       * this is the line to revisit.
-       */
-      props: { variant: 'outlined' },
-      style: ({ theme }) => ({
-        padding: 0,
-        '& .MuiOutlinedInput-root': {
-          padding: 0,
-          borderRadius: theme.vars.shape.radiusMd,
-          '& fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.border.lines },
-          '&:hover fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.border.hover },
-          '&.Mui-focused fieldset': { borderWidth: '0.0625rem', borderColor: theme.vars.palette.primary.pressed },
-          '&.Mui-disabled fieldset': { borderColor: theme.vars.palette.border.lines },
-          '&.Mui-error fieldset': { borderColor: theme.vars.palette.icon.fill.error },
-        },
-        '& .MuiOutlinedInput-input': {
-          padding: `${theme.spacing(1)} ${theme.spacing(2)}`,
-          '&.MuiInputBase-inputMultiline': {
-            padding: `${theme.spacing(1)} ${theme.spacing(2)}`,
-            maxHeight: '25rem',
-            minHeight: '8.25rem',
-            overflow: 'auto',
-          },
-        },
-        // The baseline lifts the outline to the top of the box and hides the
-        // notch legend, so the label sits ON the border rather than in a gap.
-        '& .MuiOutlinedInput-notchedOutline': { top: 0, '& legend': { display: 'none' } },
-        '& input, & textarea': { ...theme.typography.labelMedium, boxSizing: 'border-box' },
-        '& textarea::-webkit-scrollbar': { display: 'none' },
-        '& label.Mui-focused': { color: theme.vars.palette.primary.pressed },
-        '& .MuiFormHelperText-root.Mui-error': {
-          color: theme.vars.palette.text.warningText,
-          paddingLeft: theme.spacing(1.5),
-        },
-      }),
-    },
+    // `outlined` — NOT ported, and that is now a measured decision rather
+    // than an omission.
+    //
+    // The baseline has an `outlined` variant
+    // (`textFieldVariants.js:212-257`) that hides the notch legend and lifts
+    // the outline to `top: 0`, so its label sits ON the border rather than in
+    // a gap. Porting it verbatim BROKE every outlined field in this app: the
+    // admin Configuration page's "Company Name for Policy Message" and
+    // "Authorization Message Template" collapsed, with label and helper text
+    // overlapping a flattened box (caught by regenerating
+    // `admin-configuration-visual` and diffing it against the committed
+    // baseline, not by reading the diff of the two stylesheets).
+    //
+    // The reason is that the baseline's rule is only coherent alongside the
+    // rest of its outlined stack — its own label positioning, and `MuiFormLabel`
+    // behaviour this app does not reproduce. This app already has a working
+    // outlined treatment via `MuiOutlinedInput.tsx`, which the before-shot
+    // shows rendering correctly. Adding a second, partial one on top is what
+    // did the damage.
+    //
+    // If outlined fields ever need to match the baseline more closely, the
+    // unit of work is the label positioning + `MuiOutlinedInput` TOGETHER,
+    // verified against a regenerated `admin-configuration-visual` — not this
+    // variant on its own.
   ],
 };
