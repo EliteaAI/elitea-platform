@@ -219,10 +219,15 @@ adminTest.describe('member persona', () => {
  *    every other journey in this suite;
  *    `TestAuthUsersDeleteRemovesTheUser` covers it, re-reading through the
  *    product's own GET handler.
- *  - user activity and Excel export — both are rendered DISABLED with a stated
- *    reason (the per-user activity view is unported; no spreadsheet
- *    dependency). See `src/pages/admin/Users.test.tsx`, which asserts the
- *    disabled state.
+ *  - user activity — rendered DISABLED with a stated reason (the per-user
+ *    activity view is unported). See `src/pages/admin/Users.test.tsx`, which
+ *    asserts the disabled state.
+ *  - export. It is REAL now (CSV, not the reference's .xlsx — see
+ *    `src/pages/admin/adminUsersCsv.ts`), but the bytes it produces are
+ *    asserted where they can be read: `Users.test.tsx` reads the downloaded
+ *    Blob, and `adminUsersCsv.test.ts` covers quoting and formula-injection
+ *    neutralisation. A browser download in Playwright would re-assert the
+ *    same file through a much slower path.
  *  - the nine other admin sections (Projects, Secrets, Roles, …). Not ported
  *    yet — issue #200 lists them. Audit Trail HAS since landed; journey 29
  *    (`admin.audit-trail.spec.ts`) covers it.
