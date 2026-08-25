@@ -1,6 +1,8 @@
 {
-  "recordedAt": "2026-07-26",
+  "recordedAt": "2026-08-25",
   "synthetic": true,
-  "note": "Synthetic (unit F4): byte-shape of the genuine 401 the Go auth middleware writes (services/elitea-main/internal/api/middleware/auth.go:155) — the body the old base query never handled (spec §5.4 behaviour 2).",
-  "body": { "error": "missing authorization header" }
+  "note": "Synthetic (unit F4): a 401 body for the §5.4 behaviour-2 path. RE-READ 2026-08-25 (R-M4): this note used to claim the body was the byte-shape of the genuine 401 the Go auth middleware writes, and that is NO LONGER TRUE — internal/api/middleware/auth.go:129 writes a NESTED object via writeJSONError ({\"error\":{\"message\",\"type\",\"code\"}}, pinned by auth_test.go:60), not this flat {\"error\": string}. The body is left flat on purpose: these fixtures drive /__transport__/ paths no real endpoint serves, http.ts stores a failure body as `unknown` and never parses its shape, and the colocated errorBody schema in handlers/transport.ts is shared with the 403 and 404 fixtures. What was wrong here was the CLAIM, not the value.",
+  "body": {
+    "error": "missing authorization header"
+  }
 }

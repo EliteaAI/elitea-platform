@@ -201,9 +201,16 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * existed since internal/api/v2/secrets/admin.go's AdminCreate; only the spec
  * was missing it, which is why the admin Secrets page had to hand-roll its
  * client. No new UI ships with it, so MANIFEST_ENTRY_COUNT is unchanged.
+ *
+ * 179 -> 180: `analytics.getAnalyticsCosts`. The operation was generated all
+ * along and had NO manifest entry and no caller anywhere outside generated code
+ * — the only /analytics_* route backed by a real table, unread, while the
+ * Analytics page displayed a cost KPI of 0 from the usage endpoint's hardcoded
+ * literal. GENERATED_OPERATION_COUNT is unchanged because the operation is not
+ * new; only its registration is.
  */
 const GENERATED_OPERATION_COUNT = 153;
-const MANIFEST_ENTRY_COUNT = 179;
+const MANIFEST_ENTRY_COUNT = 180;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {

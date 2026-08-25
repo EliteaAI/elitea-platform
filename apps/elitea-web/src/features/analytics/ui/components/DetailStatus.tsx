@@ -7,7 +7,6 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
-import { combineSx } from '@/shared/ui/lib/combineSx';
 
 import { noDataSourceOf } from '../../lib/noDataSource';
 
@@ -56,16 +55,31 @@ const emptyTextSx = (theme: Theme) => ({ color: theme.vars.palette.text.metrics 
  */
 const unavailableSx: SxProps<Theme> = {
   position: 'absolute',
-  // `inset` alone, and no `top`/`left: auto` beside it. Those two used to be
-  // here and were load-bearing only by accident: MUI merges the combineSx array
-  // into one object, `top`/`left` keep centeredSx's key positions, and the box
-  // filled its parent purely because `inset` happened to serialise after them.
-  // Reordering this object — something a formatter or a refactor could do —
-  // would have made `auto` win, shrunk the box back to its content, and
-  // reintroduced the overflow that failed axe's scrollable-region-focusable on
-  // both engines. `inset: 0` overrides all four offsets on its own.
-  inset: 0,
-  transform: 'none',
+  // The four offsets, written out, and NOT merged with centeredSx.
+  //
+  // This state is two lines rather than one — the second is the server's own
+  // reason, technical prose carrying unbreakable tokens like
+  // `p_<id>.chat_message_trace_step`. centeredSx positions a block at its
+  // parent's midpoint and pulls it back by half its own size, which works only
+  // while the block is smaller than the parent; with padding on both sides this
+  // one outgrew the tab body, the body's `overflow: auto` became a real scroll
+  // region, and axe failed the page on `scrollable-region-focusable` (WCAG
+  // 2.1.1 / 2.1.3, serious) — a scroll region with no focusable content cannot
+  // be reached from the keyboard at all. Journey J24a catches it on both
+  // engines; J24c passes beside it because the generic one-line error fits.
+  //
+  // Filling the parent instead means this box can never be the thing that
+  // overflows. It is a STANDALONE object rather than an override layered onto
+  // centeredSx, and that is the load-bearing part: expressed as a merge, which
+  // offsets win depends on the key order of the merged result, and a shorthand
+  // (`inset`) layered over centeredSx's `top`/`left` resolved the wrong way
+  // round — the box kept the 50% offsets with the translate removed, pushed
+  // itself past the bottom-right corner, and the violation came straight back.
+  // Nothing but the E2E axe run reports that.
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
@@ -148,7 +162,7 @@ function AnalyticsLoadErrorImpl({ error }: AnalyticsLoadErrorProps): ReactNode {
   }
 
   return (
-    <Box sx={combineSx(centeredSx, unavailableSx)}>
+    <Box sx={unavailableSx}>
       <Typography
         variant="bodyMedium"
         sx={emptyTextSx}

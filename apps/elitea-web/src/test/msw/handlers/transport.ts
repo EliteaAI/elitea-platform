@@ -34,7 +34,7 @@ export const AUTHOR_PATH = '/api/v2/social/author/';
 /* Colocated minimal schemas (R-M3). */
 const probeBody = z.object({ message: z.string() });
 const errorBody = z.object({ error: z.string() });
-// Mirrors the Go wire struct AuthorResponse (social/handler.go:41-49): every
+// Mirrors the Go wire struct AuthorResponse (social/handler.go:51-58): every
 // field is a string with no omitempty EXCEPT personalization (`any`,
 // omitempty). `id` is a string — intToStr'd server-side, never a number.
 const authorBody = z.object({

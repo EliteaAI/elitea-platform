@@ -26,22 +26,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// failingRow is a pgx.Row whose Scan always reports the given error, standing
-// in for a connection that dropped between statements.
-type failingRow struct{ err error }
-
-func (r failingRow) Scan(...any) error { return r.err }
-
-// probeStub answers QueryRow with a failure and is never asked anything else.
+// probeStub is an analyticsQuerier whose QueryRow always fails, standing in for
+// a connection that dropped between statements. It is its own pgx.Row too — one
+// type rather than two identically-shaped ones, which staticcheck rightly reads
+// as a missing conversion (S1016).
 type probeStub struct{ err error }
 
 func (s probeStub) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	panic("checkRelations must not call Query")
 }
 
-func (s probeStub) QueryRow(context.Context, string, ...any) pgx.Row {
-	return failingRow{err: s.err}
-}
+func (s probeStub) QueryRow(context.Context, string, ...any) pgx.Row { return s }
+
+func (s probeStub) Scan(...any) error { return s.err }
 
 func TestCheckRelationsReportsAProbeFailureInsteadOfAnswerFalse(t *testing.T) {
 	t.Parallel()
