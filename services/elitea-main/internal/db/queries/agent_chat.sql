@@ -423,21 +423,6 @@ LEFT JOIN LATERAL (
               '[]'::jsonb,
               '["ask_user"]'::jsonb
           )
-          AND (
-              LOWER(application_version.agent_type) = 'pipeline'
-              OR NOT EXISTS (
-                  SELECT 1
-                  FROM entity_tool_mapping AS child_mapping
-                  JOIN elitea_tools AS child_tool
-                    ON child_tool.id = child_mapping.tool_id
-                  WHERE child_mapping.entity_version_id = application_version.id
-                    AND child_mapping.entity_type = 'agent'
-                    AND (
-                        child_tool.type = 'mcp'
-                        OR child_tool.meta ->> 'mcp' = 'true'
-                    )
-              )
-          )
     ) AS current_tool
 ) AS current_tools ON TRUE
 LEFT JOIN LATERAL (
@@ -551,21 +536,6 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
                 '[]'::jsonb,
                 '["ask_user"]'::jsonb
-            )
-            OR (
-                LOWER(invalid_application_version.agent_type) <> 'pipeline'
-                AND EXISTS (
-                    SELECT 1
-                    FROM entity_tool_mapping AS unsupported_child_mapping
-                    JOIN elitea_tools AS unsupported_child_tool
-                      ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                    WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                      AND unsupported_child_mapping.entity_type = 'agent'
-                      AND (
-                          unsupported_child_tool.type = 'mcp'
-                          OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                      )
-                )
             )
         )
   )
@@ -1501,21 +1471,6 @@ WITH resolved AS MATERIALIZED (
                 OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
                     '[]'::jsonb,
                     '["ask_user"]'::jsonb
-                )
-                OR (
-                    LOWER(invalid_application_version.agent_type) <> 'pipeline'
-                    AND EXISTS (
-                        SELECT 1
-                        FROM entity_tool_mapping AS unsupported_child_mapping
-                        JOIN elitea_tools AS unsupported_child_tool
-                          ON unsupported_child_tool.id = unsupported_child_mapping.tool_id
-                        WHERE unsupported_child_mapping.entity_version_id = invalid_application_version.id
-                          AND unsupported_child_mapping.entity_type = 'agent'
-                          AND (
-                              unsupported_child_tool.type = 'mcp'
-                              OR unsupported_child_tool.meta ->> 'mcp' = 'true'
-                          )
-                    )
                 )
             )
       )
