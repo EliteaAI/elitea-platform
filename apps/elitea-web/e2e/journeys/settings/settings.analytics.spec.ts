@@ -59,32 +59,68 @@ function kpi(page: Page, label: string): Locator {
   return page.getByText(label, { exact: true }).locator('..');
 }
 
+/**
+ * The KPI block, as the server sends it.
+ *
+ * EVERY FIELD IS OPTIONAL, and that is the contract rather than convenience.
+ * The endpoint publishes a figure only when something in the deployment
+ * produces it: `llm_calls`/`total_tokens`/`ai_active_users` come from the
+ * gateway request log (shared migration 0099), `total_project_users` and
+ * `adoption_rate` need the identity tables this service does not own, and
+ * `tool_runs`/`chat_msgs`/`agent_runs`/`unique_users` have no producer at all
+ * and are never sent. A required field here would let this journey assert a
+ * number the server does not claim to have measured, which is exactly the
+ * defect (#303) that made the previous revision of this file pass against a
+ * dashboard of fabricated zeros.
+ */
 interface Kpis {
-  readonly unique_users: number;
-  readonly total_project_users: number;
-  readonly ai_active_users: number;
-  readonly adoption_rate: number;
-  readonly llm_calls: number;
-  readonly tool_runs: number;
-  readonly chat_msgs: number;
-  readonly agent_runs: number;
+  readonly total_project_users?: number;
+  readonly active_project_members?: number;
+  readonly ai_active_users?: number;
+  readonly adoption_rate?: number;
+  readonly llm_calls?: number;
+  readonly total_tokens?: number;
 }
 
-/** Asserts the full six-tile KPI row against one `kpis` object. */
+/** Every tile label the row can render, for absence checks. */
+const ALL_KPI_LABELS = ['AI ACTIVE', 'LLM CALLS', 'TOKENS', 'COST', 'TOOL RUNS', 'CHAT MSG', 'AGENT RUNS'] as const;
+
+/**
+ * Asserts the KPI row against one `kpis` object: a tile per figure the server
+ * sent, and NO tile for a figure it did not.
+ *
+ * The second half is the load-bearing one. A row that printed 0 for an absent
+ * figure would satisfy any "the dashboard rendered" check while asserting a
+ * count nothing measured — which is the same defect one layer up from the
+ * handler that used to hardcode those zeros.
+ */
 async function expectKpiRow(page: Page, k: Kpis): Promise<void> {
-  const team = kpi(page, 'TEAM');
-  await expect(team.getByText(fmtNum(k.unique_users), { exact: true })).toBeVisible();
-  await expect(team.getByText(`of ${fmtNum(k.total_project_users)}`, { exact: true })).toBeVisible();
-  await expect(team.getByText('active members', { exact: true })).toBeVisible();
-
   const aiActive = kpi(page, 'AI ACTIVE');
-  await expect(aiActive.getByText(fmtNum(k.ai_active_users), { exact: true })).toBeVisible();
-  await expect(aiActive.getByText(`${k.adoption_rate}% adoption`, { exact: true })).toBeVisible();
+  if (k.ai_active_users !== undefined) {
+    await expect(aiActive.getByText(fmtNum(k.ai_active_users), { exact: true })).toBeVisible();
+  }
+  if (k.total_project_users !== undefined) {
+    await expect(aiActive.getByText(`of ${fmtNum(k.total_project_users)}`, { exact: true })).toBeVisible();
+  }
+  if (k.adoption_rate !== undefined && k.adoption_rate > 0) {
+    await expect(aiActive.getByText(`${k.adoption_rate}% adoption`, { exact: true })).toBeVisible();
+    // The numerator is a SUBSET of the denominator by construction — members
+    // who called, over members — so the rate cannot exceed 100. The earlier
+    // form divided every CALLER by the member count, and callers include
+    // identities the membership table does not contain; a project with one
+    // member and three non-member callers reported 300.
+    expect(k.adoption_rate, 'adoption_rate is a percentage of a subset').toBeLessThanOrEqual(100);
+  }
+  if (k.llm_calls !== undefined) {
+    await expect(kpi(page, 'LLM CALLS').getByText(fmtNum(k.llm_calls), { exact: true })).toBeVisible();
+  }
+  if (k.total_tokens !== undefined) {
+    await expect(kpi(page, 'TOKENS').getByText(fmtNum(k.total_tokens), { exact: true })).toBeVisible();
+  }
 
-  await expect(kpi(page, 'LLM CALLS').getByText(fmtNum(k.llm_calls), { exact: true })).toBeVisible();
-  await expect(kpi(page, 'TOOL RUNS').getByText(fmtNum(k.tool_runs), { exact: true })).toBeVisible();
-  await expect(kpi(page, 'CHAT MSG').getByText(fmtNum(k.chat_msgs), { exact: true })).toBeVisible();
-  await expect(kpi(page, 'AGENT RUNS').getByText(fmtNum(k.agent_runs), { exact: true })).toBeVisible();
+  for (const label of ['TOOL RUNS', 'CHAT MSG', 'AGENT RUNS', 'TEAM'] as const) {
+    await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+  }
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -93,7 +129,7 @@ async function expectKpiRow(page: Page, k: Kpis): Promise<void> {
  * received, captured off the wire; the assertion is that every one of the
  * six KPI tiles displays that response's corresponding field.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J24: settings: analytics reports that the live backend has no usage source', async ({ page }) => {
+test('J24: settings: analytics renders the live backend\'s own usage figures', async ({ page }) => {
   const usage = page.waitForResponse(
     (r) => USAGE_RE.test(r.url()) && r.request().method() === 'GET',
     { timeout: 20_000 },
@@ -123,87 +159,170 @@ test('J24: settings: analytics reports that the live backend has no usage source
     await expect(page.getByRole('tab', { name: tab, exact: true })).toBeVisible();
   }
 
-  // ── The acceptance clause, second half: "loading failures show an error
-  //    state instead of empty charts."
+  // ── The acceptance clause, first half: "the dashboards render with project
+  //    data."
   //
-  // This assertion used to be `expectKpiRow(page, payload.kpis)` against a 200.
-  // It passed, and what it proved was that six tiles displayed six numbers the
-  // backend had never computed: `Usage()` hardcoded `unique_users: 0`,
-  // `tool_runs: 0`, `chat_msgs: 0`, `adoption_rate: 0` and discarded the error
-  // from a repository whose every query named a table no migration creates
-  // (issue #303). The oracle was the response body, so a response of pure
-  // fabrication satisfied it exactly as well as real data would have.
+  // THIS ASSERTION HAS BEEN WRONG IN BOTH DIRECTIONS, and the history is the
+  // reason it is written the way it is now.
   //
-  // With the fabrication removed the live endpoint answers 500 and says why, so
-  // that is what this journey now pins. It is a STRICTER claim than the one it
-  // replaces: an all-zero dashboard is producible by a stub, by a broken query
-  // and by a genuinely idle project alike, whereas a 500 carrying a no-source
-  // detail is producible only by the handler actually consulting its repository
-  // and reporting what came back.
+  // It began as `expectKpiRow(page, payload.kpis)` against a 200. It passed,
+  // and what it proved was that six tiles displayed six numbers the backend had
+  // never computed: `Usage()` hardcoded `unique_users: 0`, `tool_runs: 0`,
+  // `chat_msgs: 0`, `adoption_rate: 0` and discarded the error from a
+  // repository whose every query named a table no migration creates (#303). The
+  // oracle was the response body, so a body of pure fabrication satisfied it
+  // exactly as well as real data would have.
   //
-  // The populated-dashboard rendering — tiles, leaderboard, K/M formatter,
-  // model table — is not lost: J24b below drives it with a crafted payload, and
-  // did so before this change too, precisely because every real value was 0.
-  expect(response.status()).toBe(500);
-  const failure = (await response.json()) as { error?: string; detail?: string };
-  expect(failure.detail ?? '').toContain('analytics: no data source');
+  // It then became `expect(response.status()).toBe(500)`, pinning the refusal
+  // that replaced the fabrication. That was true when written and is no longer:
+  // the gateway request log (shared migration 0099) gives this endpoint a real
+  // producer, and the live stack runs that migration.
+  //
+  // So what it pins now is the property that survives both: EVERY FIGURE THE
+  // RESPONSE CARRIES IS ON THE SCREEN, AND NO FIGURE IT OMITS IS. A journey
+  // against a stack with no gateway traffic sees `llm_calls: 0` — a real,
+  // measured zero — and that is a different claim from the hardcoded one, which
+  // is why `expectKpiRow` checks the absences too.
+  expect(response.status()).toBe(200);
+  const payload = (await response.json()) as {
+    kpis: Kpis;
+    models: readonly unknown[];
+    daily_activity: readonly unknown[];
+    top_ai_users: readonly unknown[];
+  };
 
-  // The UI's error branch (AnalyticsTabContent.tsx:119-130), not a blank panel
-  // and not zero tiles.
-  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
-  for (const label of ['TEAM', 'AI ACTIVE', 'LLM CALLS', 'TOOL RUNS', 'CHAT MSG', 'AGENT RUNS']) {
-    await expect(page.getByText(label, { exact: true })).toHaveCount(0);
+  // The figures with no producer must not appear even here, where a real
+  // response is on the wire.
+  for (const absent of ['unique_users', 'tool_runs', 'chat_msgs', 'agent_runs', 'total_cost'] as const) {
+    expect(
+      (payload.kpis as Record<string, unknown>)[absent],
+      `kpis.${absent} has no producer and must be absent, not zero`,
+    ).toBeUndefined();
   }
-  await expect(page.locator('.recharts-surface')).toHaveCount(0);
+  // The counts the request log always produces, whatever the traffic was.
+  expect(typeof payload.kpis.llm_calls).toBe('number');
+  expect(typeof payload.kpis.total_tokens).toBe('number');
+
+  await expectKpiRow(page, payload.kpis);
 
   await checkA11y(page);
 });
 
 /* ────────────────────────────────────────────────────────────────────────
- * The live backend cannot populate this dashboard: `usage_records` and
- * `tool_usage_records` do not exist in the migration corpus (proven by
- * services/elitea-main/migrations/analytics_tables_postgres_integration_test.go),
- * and the figures those queries claimed to report have no producer anywhere
- * in the platform — see the header of
- * services/elitea-main/internal/infra/db/repos/analytics.go for which, and
- * why repointing them is a product decision rather than a rewrite. So
- * `Usage()` now answers 500 and J24 above pins that.
+ * J24a — the two tabs that still have NO data source must say so, and must
+ * say it in a way a client can act on.
  *
- * The populated-dashboard branches — the leaderboard rows, the `fmtNum` K/M
- * abbreviation, the adoption badge, the model table — are therefore reachable
- * only from a crafted response, which is what this test serves. That was
- * already true before the handler stopped fabricating: every real value was 0,
- * so J24 could never tell a payload-bound tile from a hardcoded one, and this
- * test is what proves the binding.
+ * `analytics_agents` and `analytics_tools` have no producer: the gateway
+ * request log carries no agent or toolkit dimension, and the alternatives
+ * (elitea_runtime.execution_jobs, p_<id>.chat_message_trace_step) each carry a
+ * modelling fork documented in
+ * services/elitea-main/internal/infra/db/repos/analytics.go's header.
+ *
+ * The STATUS is the point. Answered 500, a permanent refusal is
+ * indistinguishable from a blip to every client that retries 5xx — and this
+ * app's TanStack Query default does, so each tab asked twice for an answer the
+ * server had already finished giving. 501 is final.
+ * ──────────────────────────────────────────────────────────────────────── */
+test('J24a: the tabs with no data source refuse finally, and the UI says which', async ({ page }) => {
+  await page.goto(BASE_URL + '/app/settings/analytics');
+  await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
+
+  for (const tab of ['Agents', 'Tools'] as const) {
+    const path = `${API_BASE}/elitea_core/analytics_${tab.toLowerCase()}/prompt_lib/${DEFAULT_PROJECT_ID}`;
+    const resp = await page.request.get(path);
+    expect(resp.status(), `${path} must refuse with a FINAL status`).toBe(501);
+    const failure = (await resp.json()) as { code?: string; detail?: string };
+    // Machine-readable, so the client is not parsing prose to decide what to
+    // render or whether to retry.
+    expect(failure.code, `${path} must carry a machine-readable code`).toBe('no_data_source');
+    expect(failure.detail ?? '', `${path} must name the absent producer`).toContain(
+      'analytics: no data source',
+    );
+
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+
+    // The UI must distinguish the two failures too. "Failed to load analytics
+    // data." on a tab whose figures nothing produces sends the reader to file a
+    // bug or reload forever; this says what is actually true.
+    await expect(page.getByText('Not available on this deployment', { exact: true })).toBeVisible();
+    await expect(page.getByText('Failed to load analytics data.', { exact: true })).toHaveCount(0);
+    // The server's own reason, rendered rather than discarded.
+    await expect(page.getByText(/analytics: no data source/)).toBeVisible();
+  }
+
+  await checkA11y(page);
+});
+
+/* ────────────────────────────────────────────────────────────────────────
+ * J24b — the rendering branches a real journey run cannot reach.
+ *
+ * The live stack answers this endpoint now (J24 above), but a journey run
+ * generates no gateway traffic of its own, so every figure it returns is a real
+ * zero and every collection is empty. The populated branches — the leaderboard
+ * rows, the `fmtNum` K/M abbreviation, the adoption badge, the model table, the
+ * chart's two axes — are therefore reachable only from a crafted response,
+ * which is what this test serves.
+ *
+ * That division of labour is deliberate rather than a workaround. J24 proves
+ * the numbers on screen came from the wire; this proves the components can
+ * render numbers that are not zero. Neither claim implies the other, and the
+ * revision of this file that had only the first passed for months against a
+ * dashboard of six hardcoded zeros (#303).
  * ──────────────────────────────────────────────────────────────────────── */
 test('J24b: analytics tiles, leaderboard and model table are bound to the response payload', async ({ page }) => {
   const kpis: Kpis = {
-    unique_users: 3,
     total_project_users: 9,
+    active_project_members: 4,
     ai_active_users: 2,
     adoption_rate: 42,
     llm_calls: 1234,
-    tool_runs: 56,
-    chat_msgs: 7,
-    agent_runs: 89,
+    total_tokens: 5678,
   };
   const body = {
     kpis,
     top_ai_users: [
-      { user_id: 'u-ana-1', user_email: 'first-ana@example.com', llm_calls: 10, tool_runs: 5, agent_runs: 2, ai_events: 17 },
-      { user_id: 'u-ana-2', user_email: 'second-ana@example.com', llm_calls: 1, tool_runs: 1, agent_runs: 1, ai_events: 3 },
+      {
+        user_id: 'u-ana-1',
+        email: 'first-ana@example.com',
+        run_count: 17,
+        total_tokens: 900,
+        last_active_at: '2026-08-02T09:00:00Z',
+      },
+      {
+        user_id: 'u-ana-2',
+        email: 'second-ana@example.com',
+        run_count: 3,
+        total_tokens: 120,
+        last_active_at: '2026-08-01T09:00:00Z',
+      },
     ],
     daily_activity: [
-      { date: '2026-08-01', events: 12, users: 3 },
-      { date: '2026-08-02', events: 4, users: 1 },
+      { date: '2026-08-01', llm_calls: 12, total_tokens: 400, active_users: 3 },
+      { date: '2026-08-02', llm_calls: 4, total_tokens: 100, active_users: 1 },
     ],
     models: [
-      { model: 'model-alpha-ana', prompt_tokens: 100, completion_tokens: 50, total_cost: 1.5, run_count: 40 },
+      { model: 'model-alpha-ana', provider: 'provider-ana', prompt_tokens: 100, completion_tokens: 50, run_count: 40 },
     ],
+  };
+  // The cost tile comes from a DIFFERENT endpoint — /analytics_costs owns the
+  // money, and /analytics does not publish it — so a payload-bound cost has to
+  // be stubbed separately. That separation is the assertion: a COST tile
+  // appearing from the usage stub alone would mean the two views of the same
+  // dollars had been re-merged.
+  const costBody = {
+    kpis: { total_cost: 12.5, currency: 'USD', periods: 1, spend_available: true, window_days: 1 },
+    periods: [],
+    by_scope: [],
+    periods_truncated: false,
+    date_from: '2026-08-01T00:00:00Z',
+    date_to: '2026-08-02T00:00:00Z',
   };
 
   await page.route(USAGE_GLOB, (route) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }),
+  );
+  await page.route('**/api/v2/elitea_core/analytics_costs/prompt_lib/*', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(costBody) }),
   );
 
   await page.goto(BASE_URL + '/app/settings/analytics');
@@ -212,23 +331,29 @@ test('J24b: analytics tiles, leaderboard and model table are bound to the respon
   // 1234 → "1.2K": the tile shows the FORMATTER'S output, so neither the raw
   // number nor a hardcoded zero satisfies this.
   await expect(kpi(page, 'LLM CALLS').getByText('1.2K', { exact: true })).toBeVisible();
-  // The badge only renders when adoption_rate > 0 (AnalyticsKpiRow.tsx:60-62).
+  // The badge only renders when adoption_rate > 0.
   await expect(kpi(page, 'AI ACTIVE').getByText('↑42%', { exact: true })).toBeVisible();
+  // Cost, bound to the SEPARATE endpoint's figure.
+  await expect(kpi(page, 'COST').getByText('$12.50', { exact: true })).toBeVisible();
 
   // Leaderboard: populated rows replace the "No AI activity data." branch.
   await expect(page.getByText('No AI activity data.', { exact: true })).toHaveCount(0);
   await expect(page.getByText('first-ana@example.com', { exact: true })).toBeVisible();
-  await expect(page.getByText('10 LLM · 5 Tool · 2 Agent', { exact: true })).toBeVisible();
+  await expect(page.getByText('900 tokens', { exact: true })).toBeVisible();
   await expect(page.getByText('second-ana@example.com', { exact: true })).toBeVisible();
-  await expect(page.getByText('1 LLM · 1 Tool · 1 Agent', { exact: true })).toBeVisible();
+  await expect(page.getByText('120 tokens', { exact: true })).toBeVisible();
 
-  // Model usage table: rendered only because `models` is non-empty.
+  // Model usage table: rendered only because `models` is non-empty. The
+  // PROVIDER is asserted alongside the model because the rows are grouped by
+  // the pair — two routes to the same model name would otherwise read as one
+  // duplicated row.
   await expect(page.getByText('Model Usage Breakdown', { exact: true })).toBeVisible();
   await expect(page.getByText('model-alpha-ana', { exact: true })).toBeVisible();
+  await expect(page.getByText('provider-ana', { exact: true })).toBeVisible();
 
   // Daily-activity series: two points ⇒ two x-axis ticks, labelled by
-  // `value.slice(5)` (AnalyticsOverview.tsx:176), and a y-axis whose domain
-  // is computed from the series maximum (`events: 12`).
+  // `value.slice(5)`, and a y-axis whose domain is computed from the series
+  // maximum (`llm_calls: 12`).
   const xTicks = page.locator('.recharts-xAxis-tick-labels .recharts-cartesian-axis-tick-value');
   await expect(xTicks).toHaveCount(2);
   await expect(xTicks.nth(0)).toHaveText('08-01');
@@ -256,13 +381,19 @@ test('J24c: a failing analytics load shows the error state instead of empty char
     timeout: 20_000,
   });
 
+  // A 500 is a TRANSIENT failure — the data exists and this attempt did not
+  // reach it — so the generic, retryable wording is the right one and the
+  // "not available on this deployment" wording would be a false claim about
+  // the platform.
+  await expect(page.getByText('Not available on this deployment', { exact: true })).toHaveCount(0);
+
   // "instead of empty charts": no KPI tiles, no recharts surface, no
   // leaderboard — the error branch returns EARLY, before renderTabBody.
-  for (const label of ['TEAM', 'AI ACTIVE', 'LLM CALLS', 'TOOL RUNS', 'CHAT MSG', 'AGENT RUNS']) {
+  for (const label of ALL_KPI_LABELS) {
     await expect(page.getByText(label, { exact: true })).toHaveCount(0);
   }
   await expect(page.locator('.recharts-surface')).toHaveCount(0);
-  await expect(page.getByText('Top 5 AI Adopters', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Top AI Adopters', { exact: true })).toHaveCount(0);
 
   // The rest of the screen is still alive — the failure is scoped to the tab body.
   await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
@@ -276,58 +407,49 @@ test('J24c: a failing analytics load shows the error state instead of empty char
  * the UI reports is checked against the row count the backend actually
  * returned for the same project.
  * ──────────────────────────────────────────────────────────────────────── */
-test('J24d: the Agents/Tools/Users tabs report the missing source, not an empty table', async ({ page }) => {
+test('J24d: the Users tab renders the rows the backend returned, not a stub table', async ({ page }) => {
   await page.goto(BASE_URL + '/app/settings/analytics');
   await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
 
-  // This test used to assert each tab rendered a table SIZED BY the endpoint:
-  // status 200, then `items.length` echoed in the count label and the pagination
-  // footer. That oracle was the response body, and the body was fabricated —
-  // the three detail branches answered before consulting the repository at all,
-  // and the tables they described were built from queries naming tables no
-  // migration creates (issue #303).
+  // This test used to assert three tabs all refused with a 500 — and before
+  // that, that all three rendered a table SIZED BY the endpoint (status 200,
+  // `items.length` echoed in the count label). The first oracle was a
+  // fabrication: the routes answered before consulting the repository at all,
+  // over queries naming tables no migration creates (#303). The second was
+  // accurate until the gateway request log gave the Users read a real producer.
   //
-  // With the fabrication removed those routes answer 500 and say why, so the
-  // claim inverts: a tab must SURFACE the missing source rather than render a
-  // convincing empty table. That is the stricter half — "0 agents" with five
-  // column headers is producible by a stub, by a broken query and by a genuinely
-  // idle project alike, whereas a 500 naming the absent producer is producible
-  // only by the handler actually asking its repository.
-  //
-  // The populated-table rendering is not lost: J24b drives it with a crafted
-  // payload, as it did before this change.
-  const tabs = [
-    { tab: 'Agents', path: `${API_BASE}/elitea_core/analytics_agents/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Agent Activity', count: '0 agents' },
-    { tab: 'Tools', path: `${API_BASE}/elitea_core/analytics_tools/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'Tool Details', count: '0 tools' },
-    { tab: 'Users', path: `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`, title: 'User Activity', count: '0 users' },
-  ] as const;
+  // Agents and Tools still have none, and J24a above pins their refusal. What
+  // is left here is the tab that now ANSWERS, and the claim is the same shape
+  // as J24's: the count the UI reports is the count the endpoint returned.
+  const path = `${API_BASE}/elitea_core/analytics_users/prompt_lib/${DEFAULT_PROJECT_ID}`;
+  const resp = await page.request.get(path);
+  expect(resp.status(), `${path} has a data source and must answer`).toBe(200);
+  const { items, truncated } = (await resp.json()) as {
+    items: readonly { user_id: string }[];
+    truncated: boolean;
+  };
+  // The completeness signal must be on the wire, not inferred. The client
+  // paginates and searches client-side over `items`, so a cut list without this
+  // flag would be presented as the whole membership.
+  expect(typeof truncated, 'the users list must state whether it was cut').toBe('boolean');
 
-  for (const spec of tabs) {
-    // The oracle: the same endpoint the tab reads, called directly with the
-    // browser context's own session.
-    const resp = await page.request.get(spec.path);
-    expect(resp.status(), `${spec.path} must report its missing source`).toBe(500);
-    const failure = (await resp.json()) as { detail?: string };
-    expect(failure.detail ?? '', `${spec.path} must name the absent producer`).toContain(
-      'analytics: no data source',
-    );
+  await page.getByRole('tab', { name: 'Users', exact: true }).click();
 
-    await page.getByRole('tab', { name: spec.tab, exact: true }).click();
+  // A table, not the error branch.
+  await expect(page.getByText('User Activity', { exact: true })).toBeVisible();
+  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Not available on this deployment', { exact: true })).toHaveCount(0);
 
-    // The error branch, and NOT a table. Asserting only the error text would
-    // still pass against a page that rendered both, which is the failure this
-    // half exists to catch.
-    await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
-    // The card TITLE and the count label, not the raw column names. The
-    // original J24d scoped its column assertions to the card for a reason its
-    // comment spelled out: a bare `getByText('Users')` also matches the Users
-    // TAB and the settings-sidebar link, so an unscoped absence check can never
-    // reach 0 — it counted 2 when this was first written the naive way. The
-    // title and the count are unique to the table's own card, so their absence
-    // is the honest way to say "no table rendered".
-    await expect(page.getByText(spec.title, { exact: true })).toHaveCount(0);
-    await expect(page.getByText(spec.count, { exact: true })).toHaveCount(0);
-  }
+  // The count label, against the row count the endpoint actually returned. A
+  // journey run has no gateway traffic of its own, so this is normally 0 — but
+  // it is a MEASURED zero read back off the wire, which a stub cannot fake and
+  // a broken query cannot survive: a 500 would have failed the status check
+  // above, and a fabricated table would report a count the response does not
+  // carry.
+  const label = truncated
+    ? `Top ${items.length} users by LLM calls`
+    : `${items.length} users`;
+  await expect(page.getByText(label, { exact: true })).toBeVisible();
 
   await checkA11y(page);
 });
@@ -354,13 +476,15 @@ test('J24e: a date preset re-queries the backend with the selected range', async
   expect(spanDays(sevenDayUrl)).toBeLessThan(7.1);
 
   // The re-query lands and the page is still alive after the range change.
-  // This used to wait on a KPI tile, which the live stack no longer renders:
-  // the usage endpoint reports its missing data source (issue #303), so the
-  // error branch is what a real range change settles into. The claim this
-  // journey makes is about the REQUEST — the two assertions above, on the
-  // second URL's span — so the tile was only ever a liveness check, and the
-  // error branch serves that purpose without asserting a fabricated number.
-  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toBeVisible();
+  //
+  // The liveness check has moved twice with the backend: a KPI tile first (when
+  // every value was a hardcoded zero), then the error branch (when the endpoint
+  // refused), and now a tile again — because the endpoint answers, and the tile
+  // it renders carries a figure the request log measured rather than a literal.
+  // The claim this journey makes is about the REQUEST, in the two span
+  // assertions above; this is the liveness half.
+  await expect(kpi(page, 'LLM CALLS')).toBeVisible();
+  await expect(page.getByText('Failed to load analytics data.', { exact: true })).toHaveCount(0);
 
   await checkA11y(page);
 });

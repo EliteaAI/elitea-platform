@@ -54,6 +54,16 @@ describe('QUERY_DEFAULT_OPTIONS', () => {
       expect(shouldRetry(1, httpError(503))).toBe(false);
     });
 
+    // 501 is the one 5xx that is a statement about the DEPLOYMENT rather than
+    // about this attempt: the functionality does not exist here, so the next
+    // identical request gets the same answer. `/elitea_core/analytics*` returns
+    // it with `{code: "no_data_source"}` where a figure has no producer, and a
+    // HAR of one Analytics page load held eight requests — four of them
+    // retries of an answer the server had already finished giving.
+    it('does not retry a 501', () => {
+      expect(shouldRetry(0, httpError(501))).toBe(false);
+    });
+
     it('still retries a network failure once', () => {
       const offline = new EliteaApiError({
         kind: 'network',

@@ -41,17 +41,16 @@
  */
 import { z as zod } from "zod";
 
-export const ModelUsage = zod
+export const AnalyticsDailyPoint = zod
   .object({
-    model: zod.string(),
-    provider: zod.string(),
-    prompt_tokens: zod.int(),
-    completion_tokens: zod.int(),
-    run_count: zod.int(),
+    date: zod.string().describe("UTC day, YYYY-MM-DD."),
+    llm_calls: zod.int(),
+    total_tokens: zod.int(),
+    active_users: zod.int(),
   })
   .describe(
-    'One (provider, model) pair\'s share of the window, from gateway.llm_request_logs. There is NO total_cost: the accumulator that holds money is keyed by (scope, scope_id, period) and carries no model dimension, so a per-model cost cannot be derived from anything this platform writes — and a zero would read as \"this model was free\". Requests that never resolved a model are counted in kpis.llm_calls and excluded here; a nameless bar on the chart is not something an operator can act on.\n',
+    "One UTC day of the window. Days with no traffic are ABSENT rather than zero-filled — the client knows the window it asked for and can draw the gap itself, whereas a zero-filled day is indistinguishable from a day the server failed to read.\n",
   );
 
-export type ModelUsage = zod.input<typeof ModelUsage>;
-export type ModelUsageOutput = zod.output<typeof ModelUsage>;
+export type AnalyticsDailyPoint = zod.input<typeof AnalyticsDailyPoint>;
+export type AnalyticsDailyPointOutput = zod.output<typeof AnalyticsDailyPoint>;

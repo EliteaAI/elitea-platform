@@ -13,7 +13,7 @@ import { BaseTabs } from '@/shared/ui/BaseTabs';
 import { BriefcaseIcon } from '@/shared/ui/icons/briefcase-icon';
 import { TabGroupButton } from '@/shared/ui/TabGroupButton';
 
-import { useProjectAnalyticsQuery } from '../api/useAnalytics';
+import { useProjectAnalyticsQuery, useProjectCostsQuery } from '../api/useAnalytics';
 import { DATE_FILTER_PRESETS } from '../lib/constants';
 import { presetToDateRange, toIsoRange } from '../model/dateRange';
 import { AnalyticsTabContent } from './components/AnalyticsTabContent';
@@ -116,6 +116,18 @@ const contentAreaSx: SxProps<Theme> = {
   position: 'relative',
 };
 
+/**
+ * Two fraction digits, not the accumulator's full NUMERIC precision. The stored
+ * figure is exact to the nano-USD (a real total is `2.00000001`), and a KPI tile
+ * is not the place a reader needs the ninth decimal — /analytics_costs' own
+ * response carries it for anyone who does.
+ */
+const currencyFormat = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 2,
+});
+
 export function AnalyticsContainer({ projectId, projectName }: AnalyticsContainerProps): ReactNode {
   const [selectedPreset, setSelectedPreset] = useState<string>('1');
   const [dateFrom, setDateFrom] = useState<Date>(() => presetToDateRange(1, new Date()).from);
@@ -130,7 +142,43 @@ export function AnalyticsContainer({ projectId, projectName }: AnalyticsContaine
   // Overview and Health both render from the same `projectAnalytics` fetch
   // (baseline: `needsOverview = activeTab === 0 || activeTab === 4`).
   const needsOverview = activeTab === 0 || activeTab === 4;
-  const { data, isFetching, isError } = useProjectAnalyticsQuery(projectId, range, needsOverview);
+  const { data, isFetching, isError, error } = useProjectAnalyticsQuery(projectId, range, needsOverview);
+
+  // Cost is a SEPARATE endpoint on purpose. `gateway.llm_budget_accumulators`
+  // has one reader (/analytics_costs) and that reader carries the rule the
+  // figure is wrong without — it sums PROJECT-scope rows only, because the
+  // gateway also bills a user scope for the same request and a user-scope row
+  // is a subset of its project's spend, not an addition to it. A second view of
+  // the same dollars computed by /analytics could disagree with this one, so
+  // /analytics does not publish cost at all.
+  //
+  // This endpoint had NO caller in this app until now: it was missing from
+  // endpoints.manifest.json and unreferenced outside generated code, while the
+  // Analytics page showed a cost KPI of 0 from the usage endpoint's hardcoded
+  // literal.
+  //
+  // Its failure is deliberately NOT surfaced. It is one tile of a dashboard the
+  // rest of which renders fine, and taking down the whole Overview because the
+  // money read failed would trade a missing tile for a blank screen — the cost
+  // tile is simply absent, which is the same thing it does for a figure the
+  // deployment cannot produce.
+  const costs = useProjectCostsQuery(projectId, range, needsOverview);
+  const totalCost = useMemo(() => {
+    const kpis = costs.data?.kpis;
+    // GATED ON `spend_available`, not on the presence of `total_cost`.
+    //
+    // /analytics_costs ALWAYS emits `total_cost` — it is `0.00000000` when the
+    // write-back path has persisted nothing — and publishes `spend_available`
+    // for exactly this reason, in its own schema's words: so that "no spend
+    // yet" stays distinguishable from "no data". Reading only the number
+    // renders a COST / $0.00 / billed spend tile for a project whose spend has
+    // never been measured, which is the fabricated-zero claim the rest of this
+    // screen goes to some length to avoid: the KPI row omits a tile rather than
+    // print a zero for an unmeasured figure, and this one would have done the
+    // opposite.
+    if (kpis === undefined || !kpis.spend_available) return undefined;
+    return currencyFormat.format(kpis.total_cost);
+  }, [costs.data]);
 
   const handlePresetChange = useCallback((value: string) => {
     const preset = DATE_FILTER_PRESETS.find((candidate) => candidate.value === value);
@@ -224,6 +272,8 @@ export function AnalyticsContainer({ projectId, projectName }: AnalyticsContaine
             needsOverview={needsOverview}
             isFetching={isFetching}
             isError={isError}
+            error={error}
+            totalCost={totalCost}
             data={data}
             projectId={projectId}
             dateFrom={range.dateFrom}

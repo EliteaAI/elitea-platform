@@ -106,7 +106,7 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
   // this file's header) — only pre-aggregated `run_count`/`avg_duration_ms`/
   // `total_tokens`/`error_rate` — so there is nothing on the already-fetched
   // rows to filter by.
-  const { data, isFetching, isError } = useAnalyticsAgentsListQuery(projectId, { dateFrom, dateTo });
+  const { data, isFetching, isError, error } = useAnalyticsAgentsListQuery(projectId, { dateFrom, dateTo });
   const items = useMemo(() => data?.items ?? [], [data]);
 
   const chartData = useMemo(
@@ -143,7 +143,7 @@ function AnalyticsAgentsImpl({ projectId, dateFrom, dateTo }: AnalyticsAgentsPro
   // so a failing LIST query never replaces a detail screen the user is
   // already inside (that screen owns its own query and its own Back button).
   if (isError) {
-    return <AnalyticsLoadError />;
+    return <AnalyticsLoadError error={error} />;
   }
 
   const columns: readonly EntityTableColumn[] = [

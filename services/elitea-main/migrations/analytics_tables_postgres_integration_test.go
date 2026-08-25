@@ -40,10 +40,11 @@ func TestAnalyticsTablesAreAbsentFromTheCorpus(t *testing.T) {
 			t.Fatalf("to_regclass(%s): %v", table, err)
 		}
 		if regclass != nil {
-			t.Fatalf("%s now exists as %s. internal/infra/db/repos/analytics.go was emptied "+
-				"because nothing created it (issue #303) — wire the repository back up to this "+
-				"table and delete this assertion, or the analytics routes will keep answering 500 "+
-				"over a table that is being populated.", table, *regclass)
+			t.Fatalf("%s now exists as %s. internal/infra/db/repos/analytics.go's queries against "+
+				"it were deleted because nothing created it (issue #303), and the repository was "+
+				"later rebuilt over gateway.llm_request_logs instead — decide which of the two is "+
+				"the source and wire it up, or this table will be populated with no reader.",
+				table, *regclass)
 		}
 	}
 
@@ -57,5 +58,56 @@ func TestAnalyticsTablesAreAbsentFromTheCorpus(t *testing.T) {
 	}
 	if control == nil {
 		t.Fatal("centry.schedule not found either — the existence probe resolves nothing, so this test proves nothing")
+	}
+}
+
+// The positive counterpart, and the reason the repository could be rebuilt at
+// all: gateway.llm_request_logs, created by shared migration 0099, is the
+// producer behind llm_calls, total_tokens, the per-model split, the daily
+// series and the user leaderboard.
+//
+// It is asserted HERE, beside the absence check, because the two are one
+// statement about the corpus: the figures this endpoint reports come from that
+// table and from nowhere else. Drop 0099 from the ledgered set — or from
+// db.GatewayMigrationSQL's concatenation, which is how a test database gets it
+// — and the analytics reads fall back to refusing on a deployment that has
+// every other gateway table. That failure is recoverable but obscure; this
+// makes it a migration-level red instead.
+func TestGatewayRequestLogIsInTheCorpus(t *testing.T) {
+	pool := newMigratedPool(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	var regclass *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('gateway.llm_request_logs')::text").Scan(&regclass); err != nil {
+		t.Fatalf("to_regclass(gateway.llm_request_logs): %v", err)
+	}
+	if regclass == nil {
+		t.Fatal("gateway.llm_request_logs is absent. internal/infra/db/repos/analytics.go reads it " +
+			"for every figure the Overview and Users tabs report, and internal/api/gateway/" +
+			"llm_proxy_logs.go reads it for the admin request log — both refuse without it.")
+	}
+
+	// The columns the analytics queries actually group and sum by. A rename
+	// here type-checks nothing on the Go side (the queries are string literals),
+	// so without this the first sign would be a 500 in production.
+	for _, column := range []string{
+		"project_id", "user_id", "occurred_at", "model", "provider",
+		"prompt_tokens", "completion_tokens",
+	} {
+		var exists bool
+		const query = `
+SELECT EXISTS (
+  SELECT 1 FROM information_schema.columns
+  WHERE table_schema = 'gateway' AND table_name = 'llm_request_logs' AND column_name = $1
+)`
+		if err := pool.QueryRow(ctx, query, column).Scan(&exists); err != nil {
+			t.Fatalf("column probe %s: %v", column, err)
+		}
+		if !exists {
+			t.Errorf("gateway.llm_request_logs has no %s column — the analytics queries name it "+
+				"in a string literal, so nothing else would catch this before production.", column)
+		}
 	}
 }

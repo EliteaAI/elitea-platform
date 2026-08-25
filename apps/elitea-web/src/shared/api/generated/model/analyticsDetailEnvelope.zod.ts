@@ -45,7 +45,7 @@ import { AnalyticsKpis } from "./analyticsKpis.zod";
 export const AnalyticsDetailEnvelope = zod
   .object({
     entity_name: zod.string(),
-    kpis: AnalyticsKpis,
+    kpis: AnalyticsKpis.optional(),
     users: zod.array(zod.looseObject({})).optional(),
     agents: zod.array(zod.looseObject({})).optional(),
     tools: zod.array(zod.looseObject({})).optional(),

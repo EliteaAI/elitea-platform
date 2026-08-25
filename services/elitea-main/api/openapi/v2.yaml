@@ -1944,39 +1944,125 @@ components:
     # ---- Analytics -------------------------------------------------------------
     AnalyticsKpis:
       type: object
-      required: [unique_users, total_project_users, ai_active_users,
-                 adoption_rate, llm_calls, tool_runs, chat_msgs, agent_runs]
+      # NOTHING IS REQUIRED. Which figures a deployment can report depends on
+      # what its corpus produces, and the whole point of the analytics rework
+      # (issue #303, and the 0099 request log that made half of it answerable)
+      # is that a figure with no producer is ABSENT rather than present and
+      # zero. A required list here would force the server to publish a zero for
+      # every gap, which is the defect the endpoint was rebuilt to stop making.
+      # A client renders an absent key as "no data", never as 0.
       properties:
-        unique_users: { type: number }
-        total_project_users: { type: number }
-        ai_active_users: { type: number }
-        adoption_rate: { type: number }
-        llm_calls: { type: number }
-        tool_runs: { type: number }
-        chat_msgs: { type: number }
-        agent_runs: { type: number }
+        ai_active_users:
+          type: number
+          description: >
+            Distinct identities that called a model in the window, from
+            gateway.llm_request_logs (shared migration 0099). CALLERS, not
+            members: it includes a removed member, a global administrator and a
+            service token, all of which are real usage and none of which appear
+            in total_project_users. It is therefore NOT the numerator of
+            adoption_rate — see active_project_members.
+        active_project_members:
+          type: number
+          description: >
+            The intersection of ai_active_users and the project's membership,
+            and the numerator of adoption_rate. Absent whenever
+            total_project_users is: the two are measured in one statement,
+            because a numerator and a denominator taken from two snapshots can
+            disagree.
+        total_project_users:
+          type: number
+          description: >
+            The project's distinct membership. ABSENT when the identity tables
+            (public.auth_core__user_role / auth_core__project_role) are not
+            present — they belong to another corpus, and an adoption rate over
+            an invented denominator is a percentage of nothing.
+        adoption_rate:
+          type: number
+          description: >
+            active_project_members / total_project_users, as a percentage to one
+            decimal. Absent whenever its denominator is, and for a project whose
+            membership is zero. It cannot exceed 100 — its numerator is a subset
+            of its denominator by construction, which the earlier
+            ai_active_users / total_project_users form was not (a project with
+            one member and three non-member callers reported 300).
+        llm_calls:
+          type: number
+          description: >
+            Requests the gateway served in the window. A real per-call count —
+            NOT the budget accumulator's count of billing periods, which
+            /analytics_costs is careful to publish as `rows`.
         total_tokens:
           type: number
-          description: Present only in the project-usage kpis block.
+          description: Prompt plus completion tokens, summed over the window.
+        unique_users:
+          type: number
+          description: >
+            NO PRODUCER. "Active in the project by any means" needs a source of
+            non-LLM activity, and centry.audit_events — the table that had one —
+            is READ-ONLY from this service. Never emitted today.
+        tool_runs:
+          type: number
+          description: >
+            NO PRODUCER. p_<id>.chat_message_trace_step records a tool_name but
+            no toolkit_id and covers chat turns only, so a count built from it
+            would silently exclude every tool call made outside a chat. Never
+            emitted today.
+        chat_msgs:
+          type: number
+          description: NO PRODUCER. Never emitted today.
+        agent_runs:
+          type: number
+          description: >
+            NO PRODUCER. It used to be emitted as a copy of llm_calls, which is
+            a LARGER claim than zero: it asserts that every LLM call is an agent
+            run. elitea_runtime.execution_jobs is project-scoped by two
+            different columns and records no token or duration figures. Never
+            emitted today.
         total_cost:
           type: number
-          description: Present only in the project-usage kpis block.
+          description: >
+            NOT EMITTED BY THIS ENDPOINT. Money has one producer
+            (gateway.llm_budget_accumulators) and one view of it
+            (/analytics_costs), which carries the scope rules that stop it
+            double-counting a user-scope row into its own project's total. A
+            second view here could disagree with the first.
       description: >
-        NOTE(W2): internal/api/v2/analytics/handler.go:48-59 (usage, includes
-        total_tokens/total_cost) and :78-82, 103-107, 128-132 (detail views,
-        8-key variant). Most values are hardwired 0 today.
+        The overview KPI block. Every key present is a figure the server
+        measured; every key absent is one nothing in this platform produces.
+        Source: internal/api/v2/analytics/handler.go's Usage.
 
     ModelUsage:
       type: object
-      required: [model, prompt_tokens, completion_tokens, total_cost, run_count]
+      required: [model, provider, prompt_tokens, completion_tokens, run_count]
       properties:
         model: { type: string }
+        provider: { type: string }
         prompt_tokens: { type: integer }
         completion_tokens: { type: integer }
-        total_cost: { type: number }
         run_count: { type: integer }
       description: >
-        NOTE(W2): internal/domain/analytics/types.go:14-20.
+        One (provider, model) pair's share of the window, from
+        gateway.llm_request_logs. There is NO total_cost: the accumulator that
+        holds money is keyed by (scope, scope_id, period) and carries no model
+        dimension, so a per-model cost cannot be derived from anything this
+        platform writes — and a zero would read as "this model was free".
+        Requests that never resolved a model are counted in kpis.llm_calls and
+        excluded here; a nameless bar on the chart is not something an operator
+        can act on.
+
+    AnalyticsDailyPoint:
+      type: object
+      required: [date, llm_calls, total_tokens, active_users]
+      properties:
+        date: { type: string, description: 'UTC day, YYYY-MM-DD.' }
+        llm_calls: { type: integer }
+        total_tokens: { type: integer }
+        active_users: { type: integer }
+      description: >
+        One UTC day of the window. Days with no traffic are ABSENT rather than
+        zero-filled — the client knows the window it asked for and can draw the
+        gap itself, whereas a zero-filled day is indistinguishable from a day
+        the server failed to read.
 
     ProjectAnalytics:
       type: object
@@ -1985,26 +2071,20 @@ components:
         kpis: { $ref: '#/components/schemas/AnalyticsKpis' }
         top_ai_users:
           type: array
-          items:
-            type: object
-            x-elitea-passthrough: >-
-              NOTE(W2): always the empty array in the current handler
-              (internal/api/v2/analytics/handler.go:60) — element shape not
-              yet defined by the Go side. Channel-B fixture required before
-              the UI consumes elements (M1).
+          items: { $ref: '#/components/schemas/UserActivity' }
+          description: The leaderboard, most calls first, capped at 10 rows.
         daily_activity:
           type: array
-          items:
-            type: object
-            x-elitea-passthrough: >-
-              NOTE(W2): always the empty array
-              (internal/api/v2/analytics/handler.go:61) — see top_ai_users.
+          items: { $ref: '#/components/schemas/AnalyticsDailyPoint' }
         models:
           type: array
           items: { $ref: '#/components/schemas/ModelUsage' }
       description: >
-        NOTE(W2): Usage response map,
-        internal/api/v2/analytics/handler.go:47-63.
+        The Overview tab's response. Answers 501 with
+        `{error, code: no_data_source, detail}` on a deployment whose gateway
+        request log is absent — a FINAL status, not a 500, so a client that
+        retries transient failures does not ask twice for an answer the server
+        has already refused.
 
     AgentAnalytics:
       type: object
@@ -2031,13 +2111,24 @@ components:
 
     UserActivity:
       type: object
-      required: [user_id, email, run_count, last_active_at]
+      required: [user_id, email, run_count, total_tokens, last_active_at]
       properties:
         user_id: { type: string }
-        email: { type: string }
+        email:
+          type: string
+          description: >
+            EMPTY when the identity tables are absent. The row is still
+            reported: "user 41 made 900 calls" is useful without a display name,
+            and dropping it because a decoration could not be joined would
+            silently shrink the leaderboard.
+        name: { type: string }
         run_count: { type: integer }
+        total_tokens: { type: integer }
         last_active_at: { type: string, format: date-time }
-      description: NOTE(W2) internal/domain/analytics/types.go:39-44.
+      description: >
+        One member's LLM usage in the window, from gateway.llm_request_logs
+        grouped by user_id. Rows whose user_id is NULL — requests that resolved
+        no member — are excluded.
 
     AnalyticsAgentsList:
       type: object
@@ -2059,16 +2150,32 @@ components:
 
     AnalyticsUsersList:
       type: object
-      required: [items]
+      required: [items, truncated]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/UserActivity' }
-      description: NOTE(W2) internal/api/v2/analytics/handler.go:139.
+        truncated:
+          type: boolean
+          description: >
+            True when the list was cut to the busiest N callers. Stated rather
+            than implied, the way /analytics_costs states periods_truncated: the
+            client paginates and searches CLIENT-SIDE over this array, so a
+            silent cut would present the busiest N as the whole membership,
+            complete with a count label and a working pagination footer, and
+            nothing on either side could tell the difference.
+      description: >
+        The Users tab's list. Source — internal/api/v2/analytics/handler.go's
+        Users.
 
     AnalyticsDetailEnvelope:
       type: object
-      required: [entity_name, kpis, daily_usage]
+      # `kpis` is NOT required, and never was emitted: all three detail branches
+      # (analytics/handler.go's Agents/Tools/Users) answer without it, because
+      # the per-entity split they would need is the one dimension the request
+      # log does not carry. The spec declared it required anyway, so the
+      # contract asserted a block no server has ever sent.
+      required: [entity_name, daily_usage]
       properties:
         entity_name: { type: string }
         kpis: { $ref: '#/components/schemas/AnalyticsKpis' }

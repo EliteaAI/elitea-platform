@@ -50,6 +50,7 @@ export * from "./agentCategoriesResponse.zod";
 export * from "./analyticsAgentsList.zod";
 export * from "./analyticsCostBreakdown.zod";
 export * from "./analyticsCostPeriod.zod";
+export * from "./analyticsDailyPoint.zod";
 export * from "./analyticsDetailEnvelope.zod";
 export * from "./analyticsKpis.zod";
 export * from "./analyticsToolsList.zod";

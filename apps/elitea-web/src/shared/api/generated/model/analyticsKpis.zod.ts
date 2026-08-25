@@ -43,25 +43,71 @@ import { z as zod } from "zod";
 
 export const AnalyticsKpis = zod
   .object({
-    unique_users: zod.number(),
-    total_project_users: zod.number(),
-    ai_active_users: zod.number(),
-    adoption_rate: zod.number(),
-    llm_calls: zod.number(),
-    tool_runs: zod.number(),
-    chat_msgs: zod.number(),
-    agent_runs: zod.number(),
+    ai_active_users: zod
+      .number()
+      .optional()
+      .describe(
+        "Distinct identities that called a model in the window, from gateway.llm_request_logs (shared migration 0099). CALLERS, not members: it includes a removed member, a global administrator and a service token, all of which are real usage and none of which appear in total_project_users. It is therefore NOT the numerator of adoption_rate — see active_project_members.\n",
+      ),
+    active_project_members: zod
+      .number()
+      .optional()
+      .describe(
+        "The intersection of ai_active_users and the project's membership, and the numerator of adoption_rate. Absent whenever total_project_users is: the two are measured in one statement, because a numerator and a denominator taken from two snapshots can disagree.\n",
+      ),
+    total_project_users: zod
+      .number()
+      .optional()
+      .describe(
+        "The project's distinct membership. ABSENT when the identity tables (public.auth_core__user_role \/ auth_core__project_role) are not present — they belong to another corpus, and an adoption rate over an invented denominator is a percentage of nothing.\n",
+      ),
+    adoption_rate: zod
+      .number()
+      .optional()
+      .describe(
+        "active_project_members \/ total_project_users, as a percentage to one decimal. Absent whenever its denominator is, and for a project whose membership is zero. It cannot exceed 100 — its numerator is a subset of its denominator by construction, which the earlier ai_active_users \/ total_project_users form was not (a project with one member and three non-member callers reported 300).\n",
+      ),
+    llm_calls: zod
+      .number()
+      .optional()
+      .describe(
+        "Requests the gateway served in the window. A real per-call count — NOT the budget accumulator's count of billing periods, which \/analytics_costs is careful to publish as `rows`.\n",
+      ),
     total_tokens: zod
       .number()
       .optional()
-      .describe("Present only in the project-usage kpis block."),
+      .describe("Prompt plus completion tokens, summed over the window."),
+    unique_users: zod
+      .number()
+      .optional()
+      .describe(
+        'NO PRODUCER. \"Active in the project by any means\" needs a source of non-LLM activity, and centry.audit_events — the table that had one — is READ-ONLY from this service. Never emitted today.\n',
+      ),
+    tool_runs: zod
+      .number()
+      .optional()
+      .describe(
+        "NO PRODUCER. p_<id>.chat_message_trace_step records a tool_name but no toolkit_id and covers chat turns only, so a count built from it would silently exclude every tool call made outside a chat. Never emitted today.\n",
+      ),
+    chat_msgs: zod
+      .number()
+      .optional()
+      .describe("NO PRODUCER. Never emitted today."),
+    agent_runs: zod
+      .number()
+      .optional()
+      .describe(
+        "NO PRODUCER. It used to be emitted as a copy of llm_calls, which is a LARGER claim than zero: it asserts that every LLM call is an agent run. elitea_runtime.execution_jobs is project-scoped by two different columns and records no token or duration figures. Never emitted today.\n",
+      ),
     total_cost: zod
       .number()
       .optional()
-      .describe("Present only in the project-usage kpis block."),
+      .describe(
+        "NOT EMITTED BY THIS ENDPOINT. Money has one producer (gateway.llm_budget_accumulators) and one view of it (\/analytics_costs), which carries the scope rules that stop it double-counting a user-scope row into its own project's total. A second view here could disagree with the first.\n",
+      ),
   })
   .describe(
-    "NOTE(W2): internal\/api\/v2\/analytics\/handler.go:48-59 (usage, includes total_tokens\/total_cost) and :78-82, 103-107, 128-132 (detail views, 8-key variant). Most values are hardwired 0 today.\n",
+    "The overview KPI block. Every key present is a figure the server measured; every key absent is one nothing in this platform produces. Source: internal\/api\/v2\/analytics\/handler.go's Usage.\n",
   );
 
 export type AnalyticsKpis = zod.input<typeof AnalyticsKpis>;

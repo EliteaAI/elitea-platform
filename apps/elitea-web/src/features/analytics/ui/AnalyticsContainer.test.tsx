@@ -32,19 +32,41 @@ function renderScreen(ui: ReactElement): RenderResult {
 function usageResponse(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     kpis: {
-      unique_users: 5,
       total_project_users: 10,
       ai_active_users: 3,
       adoption_rate: 30,
       llm_calls: 4321,
-      tool_runs: 7,
-      chat_msgs: 100,
-      agent_runs: 9,
+      total_tokens: 8765,
     },
     top_ai_users: [],
     daily_activity: [],
     models: [],
     ...overrides,
+  };
+}
+
+const COSTS_URL = `${BASE}/elitea_core/analytics_costs/prompt_lib/7`;
+
+/**
+ * A cost breakdown. `spendAvailable` is the point: /analytics_costs ALWAYS
+ * emits `total_cost` — `0.00000000` when the write-back path has persisted
+ * nothing — and publishes `spend_available` so that "no spend yet" stays
+ * distinguishable from "no data".
+ */
+function costsResponse(totalCost: number, spendAvailable: boolean): Record<string, unknown> {
+  return {
+    kpis: {
+      total_cost: totalCost,
+      currency: 'USD',
+      periods: spendAvailable ? 1 : 0,
+      spend_available: spendAvailable,
+      window_days: 1,
+    },
+    periods: [],
+    by_scope: [],
+    periods_truncated: false,
+    date_from: '2026-08-01T00:00:00Z',
+    date_to: '2026-08-02T00:00:00Z',
   };
 }
 
@@ -57,6 +79,53 @@ afterEach(() => {
 });
 
 describe('AnalyticsContainer', () => {
+  describe('the cost tile', () => {
+    it('renders the spend when the write-back path has persisted some', async () => {
+      server.use(
+        http.get(USAGE_URL, () => HttpResponse.json(usageResponse())),
+        http.get(COSTS_URL, () => HttpResponse.json(costsResponse(12.5, true))),
+      );
+      const { findByText } = renderScreen(<AnalyticsContainer projectId="7" />);
+      expect(await findByText('COST')).toBeInTheDocument();
+      expect(await findByText('$12.50')).toBeInTheDocument();
+    });
+
+    /**
+     * The fabricated-zero claim, one tile wide. `total_cost` is present and
+     * `0` for a project whose spend has never been measured, so reading the
+     * number alone renders "COST / $0.00 / billed spend" — a measurement,
+     * where the KPI row beside it goes to some length to omit a tile rather
+     * than print a zero for a figure nothing produced.
+     */
+    it('omits the tile entirely when no spend has been measured', async () => {
+      server.use(
+        http.get(USAGE_URL, () => HttpResponse.json(usageResponse())),
+        http.get(COSTS_URL, () => HttpResponse.json(costsResponse(0, false))),
+      );
+      const { findByText, queryByText } = renderScreen(<AnalyticsContainer projectId="7" />);
+      // Wait for the row to paint before asserting an absence.
+      await findByText('LLM CALLS');
+      expect(queryByText('COST')).not.toBeInTheDocument();
+      expect(queryByText('$0.00')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The money read is one tile of a dashboard the rest of which is fine.
+     * Taking the whole Overview down because it failed would trade a missing
+     * tile for a blank screen.
+     */
+    it('leaves the rest of the overview alone when the cost read fails', async () => {
+      server.use(
+        http.get(USAGE_URL, () => HttpResponse.json(usageResponse())),
+        http.get(COSTS_URL, () => HttpResponse.json({ error: 'boom' }, { status: 500 })),
+      );
+      const { findByText, queryByText } = renderScreen(<AnalyticsContainer projectId="7" />);
+      expect(await findByText('4.3K')).toBeInTheDocument();
+      expect(queryByText('Failed to load analytics data.')).not.toBeInTheDocument();
+      expect(queryByText('COST')).not.toBeInTheDocument();
+    });
+  });
+
   it('renders the header title', () => {
     server.use(http.get(USAGE_URL, () => HttpResponse.json(usageResponse())));
     const { getByText } = renderScreen(<AnalyticsContainer projectId="7" />);
@@ -124,14 +193,25 @@ describe('AnalyticsContainer', () => {
       http.get(USAGE_URL, () =>
         HttpResponse.json(
           usageResponse({
-            top_ai_users: [{ user_id: 'u1', user_email: 'alice@example.com', llm_calls: 1, tool_runs: 1, agent_runs: 1, ai_events: 3 }],
+            top_ai_users: [
+              {
+                user_id: 'u1',
+                email: 'alice@example.com',
+                run_count: 3,
+                total_tokens: 12,
+                last_active_at: '2026-08-20T10:00:00Z',
+              },
+            ],
           }),
         ),
       ),
       http.get(`${BASE}/elitea_core/analytics_users/prompt_lib/7`, () => HttpResponse.json({ items: [] })),
       http.get(`${BASE}/elitea_core/analytics_user_detail/prompt_lib/7`, ({ request }) => {
         expect(new URL(request.url).searchParams.get('user_id')).toBe('u1');
-        return HttpResponse.json({ entity_name: 'alice@example.com', kpis: usageResponse().kpis, agents: [], tools: [], daily_usage: [] });
+        // The detail branch answers WITHOUT a kpis block — the per-entity
+        // split it would need is the one dimension the request log does not
+        // carry — so the fixture omits it rather than echoing the usage one.
+        return HttpResponse.json({ entity_name: 'alice@example.com', agents: [], tools: [], daily_usage: [] });
       }),
     );
     const user = userEvent.setup();

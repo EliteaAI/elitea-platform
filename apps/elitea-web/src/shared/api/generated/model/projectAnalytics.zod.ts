@@ -40,18 +40,22 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { AnalyticsDailyPoint } from "./analyticsDailyPoint.zod";
 import { AnalyticsKpis } from "./analyticsKpis.zod";
 import { ModelUsage } from "./modelUsage.zod";
+import { UserActivity } from "./userActivity.zod";
 
 export const ProjectAnalytics = zod
   .object({
     kpis: AnalyticsKpis,
-    top_ai_users: zod.array(zod.looseObject({})),
-    daily_activity: zod.array(zod.looseObject({})),
+    top_ai_users: zod
+      .array(UserActivity)
+      .describe("The leaderboard, most calls first, capped at 10 rows."),
+    daily_activity: zod.array(AnalyticsDailyPoint),
     models: zod.array(ModelUsage),
   })
   .describe(
-    "NOTE(W2): Usage response map, internal\/api\/v2\/analytics\/handler.go:47-63.\n",
+    "The Overview tab's response. Answers 501 with `{error, code: no_data_source, detail}` on a deployment whose gateway request log is absent — a FINAL status, not a 500, so a client that retries transient failures does not ask twice for an answer the server has already refused.\n",
   );
 
 export type ProjectAnalytics = zod.input<typeof ProjectAnalytics>;
