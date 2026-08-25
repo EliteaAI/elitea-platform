@@ -65,6 +65,26 @@ export function SettingsLayout() {
           id: 'personalization',
           label: 'Personalization',
         },
+        // Baseline order (`[fsd]/pages/settings/index.jsx:112-141`):
+        // Profile, Preferences, AI Personality, Memory, Personal Tokens,
+        // Notifications. Preferences/AI Personality/Memory had no counterpart
+        // here at all — the pages existed in production and simply were not
+        // ported. `Profile` is still absent; its identity rows (full name,
+        // email, user id, last login) and the Log out button that lived with
+        // them have no home yet, which is why Log out is a nav item below
+        // rather than a control on a page.
+        {
+          id: 'preferences',
+          label: 'Preferences',
+        },
+        {
+          id: 'ai-personality',
+          label: 'AI Personality',
+        },
+        {
+          id: 'memory',
+          label: 'Memory',
+        },
         {
           id: 'tokens',
           label: 'Personal Tokens',

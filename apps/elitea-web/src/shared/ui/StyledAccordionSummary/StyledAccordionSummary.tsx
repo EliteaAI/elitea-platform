@@ -72,9 +72,9 @@ export function StyledAccordionSummary({
         // value computed from `ownerState.expanded`.
         //
         // The computed form looked correct and rendered wrong. MUI ships its
-        // own `.MuiAccordionSummary-expandIconWrapper.Mui-expanded { transform:
-        // rotate(180deg) }` — two classes, specificity (0,2,0). A value
-        // returned from this callback lands in a single generated class,
+        // own rule for this slot's expanded state, qualified by TWO classes
+        // (the slot class plus the expanded class) — specificity (0,2,0). A
+        // value returned from this callback lands in a single generated class,
         // (0,1,0), so MUI's rule won every time and expanded sections rotated
         // 180 degrees instead of 90: the chevron pointed LEFT rather than
         // down, on every accordion in the app. Matching the class selector

@@ -279,6 +279,7 @@ export const ParticipantsWrapper = memo(
             resolveToolkitIcon={resolveToolkitIcon}
             isMcpVisible={isMcpVisible}
             renderContextBudget={contextSlot}
+            {...(activeConversation?.id !== undefined ? { conversationId: activeConversation.id } : {})}
             maxVisibleUsers={maxVisibleUsers}
             isSmallWindow={isSmallWindow}
             selectedManager={selectedManager}

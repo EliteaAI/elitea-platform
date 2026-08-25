@@ -33,16 +33,25 @@
  * landed) keeps compiling unchanged. See `ChatWithEditors.tsx`'s own module
  * doc comment for who actually supplies real (non-no-op) callbacks here.
  */
+import type { ComponentProps } from 'react';
 import { memo, useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 
+import Box from '@mui/material/Box';
+
 import { conversationNavigation, useChatSessionStore } from '@/entities/conversation';
 import type { Participant } from '@/entities/participant';
-import { useLocalActiveParticipant } from '@/features/chat-participants';
+import { ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
 import type { ChatBoxProps } from '@/widgets/chat-box';
 import { ChatBox } from '@/widgets/chat-box';
 
 import { useChatPageData } from './useChatPageData';
+
+/**
+ * Baseline `rightPanelWidth` (`NewChat.jsx:187`). `ParticipantsWrapper`'s own
+ * default is 320, which is not the production width.
+ */
+const PARTICIPANTS_PANEL_WIDTH = 276;
 
 /** The two deep-link search params a notification href carries — `src/features/notifications/lib/routes.ts`'s `chatHref`. */
 interface ChatDeepLinkSearch {
@@ -132,6 +141,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
   useMessageIdToView(messageId, conversationIdOf(activeConversation));
 
   const [activeParticipant, setActiveParticipant] = useState<unknown>(undefined);
+  // Baseline default: collapsed (`NewChat.jsx:166`).
+  const [participantsCollapsed, setParticipantsCollapsed] = useState(true);
 
   // Restore the conversation's last-active participant once its real
   // participant list has loaded (baseline: `ChatWrapper.jsx`'s own
@@ -154,15 +165,51 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
   };
 
   return (
-    <ChatBox
-      {...(activeConversation ? { activeConversation } : {})}
-      {...(projectId !== undefined ? { projectId } : {})}
-      {...(user ? { user } : {})}
-      participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
-      isLoadingConversation={isLoadingConversation}
-      {...(editorCallbacks ? { editorCallbacks } : {})}
-      {...(entitySubmenus ? { entitySubmenus } : {})}
-    />
+    <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
+      <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
+        <ChatBox
+          {...(activeConversation ? { activeConversation } : {})}
+          {...(projectId !== undefined ? { projectId } : {})}
+          {...(user ? { user } : {})}
+          participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
+          isLoadingConversation={isLoadingConversation}
+          {...(editorCallbacks ? { editorCallbacks } : {})}
+          {...(entitySubmenus ? { entitySubmenus } : {})}
+        />
+      </Box>
+      {/*
+        * The participants rail. `features/chat-participants` was complete —
+        * wrapper, layout, expanded list, collapsed strip, collapsed dropdown,
+        * the collapse chevron, all tested — and had ZERO call sites, so `/chat`
+        * rendered the conversation rail and the chat box and nothing on the
+        * right. `ChatWithEditors`'s own comment already said the chat column
+        * runs to the edge "so the participants rail can dock there"; nothing
+        * docked.
+        *
+        * Mounted HERE rather than in `ChatWithEditors` because the rail needs
+        * `activeConversation` and `activeParticipant`, and this is the
+        * component that owns both. Mounting a layer up would mean lifting that
+        * state out of the page for no other reason.
+        *
+        * Default COLLAPSED, matching the baseline (`NewChat.jsx:166`
+        * `collapsedParticipants` starts `true`) — which is why production shows
+        * the `»` chevron at the top right on load rather than an open panel.
+        */}
+      <ParticipantsWrapper
+        collapsed={participantsCollapsed}
+        onCollapsed={() => setParticipantsCollapsed((prev) => !prev)}
+        panelWidth={PARTICIPANTS_PANEL_WIDTH}
+        {...(activeConversation
+          // `ChatBoxActiveConversation` types `participants` as `unknown[]`,
+          // the rail's own prop as `Record<string, unknown>[]`. Same rows, two
+          // slices of the app describing them at different precision; the cast
+          // is the boundary, not a claim about the data.
+          ? { activeConversation: activeConversation as NonNullable<ComponentProps<typeof ParticipantsWrapper>['activeConversation']> }
+          : {})}
+        {...(activeParticipant ? { activeParticipant: activeParticipant as Record<string, unknown> } : {})}
+        onSelectParticipant={handleChangeParticipant}
+      />
+    </Box>
   );
 });
 

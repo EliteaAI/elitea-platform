@@ -6,7 +6,12 @@
  * SettingsPreview.jsx`.
  *
  * Deviations:
- *  - No CodeMirror (not ported to new-app) — renders raw `<pre>` content
+ *  - Content renders through the shared read-only `CodeMirrorEditor`
+ *    (`@/shared/ui/CodeMirrorEditor`), with `@codemirror/lang-json`
+ *    highlighting for the VSCode branch; the JetBrains branch is XML, for
+ *    which this app installs no CodeMirror language package, so it renders
+ *    unhighlighted (same disclosed gap `features/toolkits`'
+ *    `codeLanguageExtensions.ts` records).
  *  - Uses `@/shared/i18n` for i18n
  *  - Simpler copy/download UX — direct clipboard/file ops (no toast in shared/ui)
  *  - Uses `openEyeIcon` and `RemoveIcon` (existing in shared/ui/icons)
@@ -21,6 +26,10 @@
  */
 import { memo, useCallback, useMemo, useState } from 'react';
 
+import { json } from '@codemirror/lang-json';
+import type { Extension } from '@codemirror/state';
+import { EditorView } from '@codemirror/view';
+
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Menu from '@mui/material/Menu';
@@ -31,6 +40,7 @@ import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
 import type { SxProps, Theme } from '@mui/material/styles';
 
+import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { RemoveIcon } from '@/shared/ui/icons/remove-icon';
 import { OpenEyeIcon } from '@/shared/ui/icons/open-eye-icon';
 import { t } from '@/shared/i18n';
@@ -134,6 +144,12 @@ export const SettingsPreview = memo(function SettingsPreview({
     return generateJetBrainsSettings(model, projectId ?? '', serverUrl);
   }, [selectedIDE, token, model, projectId, serverUrl]);
 
+  /** Only `@codemirror/lang-json` is installed in this app — the JetBrains XML branch gets a plain, unhighlighted editor. */
+  const editorExtensions = useMemo<Extension[]>(
+    () => (selectedIDE === 'vscode' ? [json(), EditorView.lineWrapping] : [EditorView.lineWrapping]),
+    [selectedIDE],
+  );
+
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(settingsContent);
@@ -235,20 +251,14 @@ export const SettingsPreview = memo(function SettingsPreview({
         </Box>
       </Box>
       <Box sx={styles.content}>
-        <pre
-          style={{
-            margin: 0,
-            padding: '1rem',
-            fontSize: theme.typography.headingSmall.fontSize,
-            fontFamily: 'monospace',
-            overflow: 'auto',
-            height: '100%',
-            background: theme.vars.palette.background.paper,
-            color: theme.vars.palette.text.primary,
-          }}
-        >
-          {settingsContent}
-        </pre>
+        <CodeMirrorEditor
+          value={settingsContent}
+          readOnly
+          extensions={editorExtensions}
+          height="100%"
+          minHeight="100%"
+          aria-label={t('entities.token.preview.editorAriaLabel', 'IDE settings content')}
+        />
       </Box>
     </Box>
   );

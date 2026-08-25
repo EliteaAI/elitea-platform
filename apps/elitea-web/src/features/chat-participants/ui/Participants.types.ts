@@ -74,6 +74,12 @@ export interface ParticipantsProps {
    * This slot is the mechanism for rendering `@/[fsd]/widgets/context-budget`
    * without importing the `widgets/` layer (no-upward-from-features).
    */
+  /**
+   * The conversation the `renderContextBudget` slot is for. `ParticipantsLayout`
+   * used to hand that slot a literal `undefined`, so the budget could never
+   * fetch — see that file's own note.
+   */
+  readonly conversationId?: string | number | undefined;
   readonly renderContextBudget?: (props: {
     conversationId: string | number | undefined;
     contextStrategy?: Record<string, unknown>;

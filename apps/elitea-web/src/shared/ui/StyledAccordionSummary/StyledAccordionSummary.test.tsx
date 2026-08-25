@@ -20,9 +20,9 @@ describe('StyledAccordionSummary', () => {
 
   it('rotates the expand icon 90 degrees when expanded, not MUI\'s default 180', async () => {
     // The base icon is a RIGHT chevron, so 90deg points it DOWN and 180deg
-    // points it LEFT. MUI ships
-    // `.MuiAccordionSummary-expandIconWrapper.Mui-expanded { rotate(180deg) }`
-    // at specificity (0,2,0); a rotation computed from `ownerState` lands in a
+    // points it LEFT. MUI's own rule for the expanded icon slot is qualified
+    // by two classes — specificity (0,2,0) — and rotates it 180deg; a rotation
+    // computed from `ownerState` lands in a
     // single generated class at (0,1,0) and LOSES, which is how every
     // accordion in the app ended up with a left-pointing chevron while the
     // source read `rotate(90deg)`. Asserting the emitted rule is what

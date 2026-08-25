@@ -33,6 +33,8 @@
 #   deploy/scripts/standalone-stack.sh seed-runtime
 #   deploy/scripts/standalone-stack.sh seed-llm            # offline mock
 #   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # real provider
+#   LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 LLM_MODEL=Qwen/Qwen3-8B \
+#     deploy/scripts/standalone-stack.sh seed-llm                       # self-hosted
 #   deploy/scripts/standalone-stack.sh seed-index          # index plane (#93)
 set -euo pipefail
 
@@ -111,6 +113,10 @@ resolve_embedding_model() {
   local provider="$1" name
   case "$provider" in
     mock)    name="${LLM_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}" ;;
+    # A self-hosted chat server usually serves no embeddings model, and naming
+    # one that does not exist is worse than naming none: `seed-index` would
+    # write a row the gateway cannot resolve. Opt in with LLM_EMBEDDING_MODEL.
+    vllm)    name="${LLM_EMBEDDING_MODEL:-}" ;;
     open_ai) name="${LLM_EMBEDDING_MODEL:-text-embedding-3-small}" ;;
     # Anthropic serves no embeddings API, so there is no default to seed. Set
     # LLM_EMBEDDING_MODEL to name a model some other provider serves.
@@ -119,7 +125,7 @@ resolve_embedding_model() {
     # `seed-index` calls this function first, so the same refusal must live
     # here too. Without it a typed LLM_PROVIDER makes `seed-index` seed no
     # name at all, and the operator sees only a missing row.
-    *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$provider')." >&2
+    *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$provider')." >&2
        exit 1 ;;
   esac
   # The mock wire name must carry the provider prefix, for the same reason as
@@ -309,9 +315,38 @@ SQL
         API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
         API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
         ;;
+      vllm)
+        # A REAL self-hosted OpenAI-compatible server (vLLM, Ollama, LM Studio,
+        # TGI…) at an address on the operator's own network. Same credential
+        # class as `mock` and for the same load-bearing reason — bifrost lifts
+        # its SSRF guard only for the self-hosted classes (account.go:235), so a
+        # private address MUST be seeded as `vllm`; an `open_ai` credential
+        # pointing at 192.168.x.x is refused by the dialer whatever the
+        # allowlist says.
+        #
+        # LLM_API_BASE carries NO /v1 — bifrost appends /v1/chat/completions
+        # itself. Passing the /v1 the server's own docs show produces
+        # /v1/v1/chat/completions and a 404 that looks like a routing bug.
+        #
+        # LLM_API_KEY is optional because most self-hosted servers ignore it,
+        # but it cannot be EMPTY: the guard below treats an empty key as
+        # "operator forgot to pass one" and refuses.
+        API_KEY="${LLM_API_KEY:-not-used-by-self-hosted}"; KEY_VAR="LLM_API_KEY"
+        MODEL="${LLM_MODEL:-}"; API_BASE="${LLM_API_BASE:-}"; CRED_TYPE="vllm"
+        if [ -z "$API_BASE" ] || [ -z "$MODEL" ]; then
+          echo "ERROR: LLM_PROVIDER=vllm needs LLM_API_BASE and LLM_MODEL." >&2
+          echo "       e.g. LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 \\" >&2
+          echo "            LLM_MODEL=Qwen/Qwen3-8B $0 seed-llm" >&2
+          echo "       LLM_API_BASE must NOT end in /v1 — bifrost appends it." >&2
+          exit 1
+        fi
+        case "$API_BASE" in
+          */v1|*/v1/) echo "ERROR: strip the trailing /v1 from LLM_API_BASE ('$API_BASE')." >&2; exit 1 ;;
+        esac
+        ;;
       open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
       anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
-      *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
+      *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
     esac
     # One resolver, shared with `seed-index`. Read the block above the `case`.
     EMBEDDING_MODEL="$(resolve_embedding_model "$PROVIDER")"
@@ -319,7 +354,7 @@ SQL
       echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
       exit 1
     fi
-    if [ "$PROVIDER" = "mock" ]; then
+    if [ "$PROVIDER" = "mock" ] || [ "$PROVIDER" = "vllm" ]; then
       # The wire name must carry the provider prefix. bifrost resolves the
       # provider from the model string alone (ParseModelString) with an EMPTY
       # default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
