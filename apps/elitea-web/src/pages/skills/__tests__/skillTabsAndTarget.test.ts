@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { publishTargetOf, versionStatusOf } from '../EditSkill';
+import { publishTargetOf, versionStatusOf } from '@/features/skills/lib/publishTarget';
 import { SKILL_TABS, resolveSkillTab } from '../Skills';
 
 const skill = {
