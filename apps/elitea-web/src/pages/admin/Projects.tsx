@@ -19,41 +19,48 @@
  *    `POST`/`PUT /admin/users/administration/{projectID}`, which answered 501
  *    before this unit because the handler treated `administration` as a
  *    project-less scope; the project id is in that path, so it is not.
- *  - **create project** and **delete project** — NOT implemented, and rendered
- *    unavailable with the reason on the page. See below.
+ *  - **create project** and **delete project** — real, and the last two to
+ *    become so. See below.
  *
- * The reference's Excel export is also rendered disabled with its reason: it
+ * The reference's Excel export is still rendered disabled with its reason: it
  * builds an .xlsx through a spreadsheet library this app does not depend on.
  *
  * Nothing here is a button that no-ops.
  *
- * ## Why create and delete are unavailable rather than built
+ * ## Create and delete, and what changed
  *
- * Neither is one endpoint. `legacy/plugins/projects/utils/project_steps.py`
- * runs NINE steps to create a project — the row and its quota and statistics,
- * the object-storage buckets, the `p_<id>` tenant schema, the permission set,
- * a system user, that user's token, the vault secrets, a RabbitMQ vhost and
- * user, the InfluxDB databases — and deletion runs the same nine in reverse,
- * including `DROP SCHEMA p_<id> CASCADE`.
+ * Neither is one endpoint, and that is why both were withheld when this page
+ * was first ported. `legacy/plugins/projects/utils/project_steps.py` runs NINE
+ * steps to create a project — the row and its quota and statistics, the
+ * `p_<id>` tenant schema, the permission set, a system user, that user's token,
+ * the vault secrets, the object-storage buckets, the vector store — and
+ * deletion runs the same steps in reverse, ending in
+ * `DROP SCHEMA p_<id> CASCADE`. Half of that pipeline leaves orphaned
+ * infrastructure around irreversibly destroyed tenant data.
  *
- * So the question the issue asks — what should deleting a project do about the
- * tenant schema and data? — has a definite answer, and it is the reason not to
- * implement it here: dropping `p_<id>` is irreversible, and doing it from a Go
- * handler that does not also tear down the vault entry, the RabbitMQ vhost, the
- * Influx databases, the buckets and the system token would destroy the tenant's
- * data while leaving the infrastructure around it orphaned. Creation has the
- * mirror problem: a project row without its schema, secrets and system user is
- * a project every subsequent request fails against.
+ * That pipeline now exists, ported in full:
+ * `services/elitea-main/internal/application/projectprovisioning`. It runs the
+ * ordered steps, records one status per step, and COMPENSATES every attempted
+ * step in reverse when one fails — including the step that failed, because a
+ * step can fail halfway through its own work. Two of the legacy nine are
+ * deliberately not reproduced: the RabbitMQ vhost (AGENTS.md forbids the
+ * Arbiter transport) and the InfluxDB databases. Both are drops with reasons
+ * recorded in `steps.go`, not gaps.
  *
- * Provisioning is its own unit of work, not a side effect of porting a table.
- * Until it exists, both controls are rendered DISABLED with that reason in
- * their tooltip — visible on the page, not only in the tracker.
+ * So the question the issue asked — what should deleting a project do about the
+ * tenant schema and data? — is answered by the server, and this page's job is
+ * to make the answer legible before the fact: `./AdminProjectDeleteDialog.tsx`
+ * lists what is about to be destroyed, and reports which STEP failed when one
+ * does. A provisioning failure is a position in a pipeline, not a status code.
  *
  * ## Authorisation
  *
  * `window.admin_ui_config.permissions` is presentation state and never a gate —
- * see `./adminUiConfig`, and note that the Go handler injecting it HARDCODES
- * the list for every session. The listing is gated server-side on
+ * see `./adminUiConfig`. It does now carry the caller's REAL
+ * administration-mode permissions (the handler injecting it used to write a
+ * fixed 37-permission list for every session), which is what makes hiding the
+ * create and delete controls per operator meaningful rather than decorative.
+ * Meaningful, still not load-bearing. The listing is gated server-side on
  * `projects.projects.projects.view` and every write on its own permission,
  * resolved from `auth_core__user_role` per request. Projects are a tenancy
  * boundary: hiding a control here changes what an operator SEES, and a crafted
@@ -75,25 +82,19 @@ import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import { AdminProjectCreateDialog } from './AdminProjectCreateDialog';
+import { AdminProjectDeleteDialog } from './AdminProjectDeleteDialog';
 import { AdminProjectsTable } from './AdminProjectsTable';
 import { ProjectActivityDrawer } from './ProjectActivityDrawer';
 import { ProjectMemberDialog } from './ProjectMemberDialog';
 import { ADMIN_PROJECTS_PAGE_SIZE, useAdminProjectsPage } from './useAdminProjectsPage';
 
 
-/**
- * The one reason both provisioning controls carry. Written once so the page and
- * its tests cannot drift into two different explanations of the same gap.
- */
-const PROVISIONING_UNAVAILABLE = t(
-  'pages.admin.projects.provisioningUnavailable',
-  'Unavailable: creating or deleting a project provisions and tears down the tenant schema, object storage, vault secrets, the message-broker vhost and a system account. That pipeline has not been ported, and doing half of it would leave orphaned infrastructure or destroy tenant data.',
-);
-
 export function AdminProjects() {
   const state = useAdminProjectsPage();
 
-  const { total, page } = state;
+  const { total, page, provisioning } = state;
+  const selectedCount = provisioning.selectedProjects.length;
   const lastPage = total === 0 ? 0 : Math.ceil(total / ADMIN_PROJECTS_PAGE_SIZE) - 1;
   const firstShown = total === 0 ? 0 : page * ADMIN_PROJECTS_PAGE_SIZE + 1;
   const lastShown = Math.min((page + 1) * ADMIN_PROJECTS_PAGE_SIZE, total);
@@ -124,25 +125,50 @@ export function AdminProjects() {
           />
 
           {/*
-            Create and delete. Both are DISABLED with the reason rather than
-            omitted, so the gap is visible where an operator looks for the
-            control — and never as a button that reports success. See this
-            file's header for what each would have to do.
+            Create and delete. Absent — not disabled — for an operator whose
+            resolved permissions do not carry them, which is the convention the
+            rest of this page already follows for the suspend and member
+            controls: "this user may not" and "this deployment cannot" render
+            identically, so the two can never disagree.
+
+            Delete is additionally disabled while nothing is selected. That is a
+            different kind of unavailable and it reads as one: the tooltip says
+            what to do about it.
           */}
-          <Tooltip title={PROVISIONING_UNAVAILABLE}>
-            <span>
-              <Button variant="elitea" color="primary" size="small" startIcon={<AddIcon />} disabled>
-                {createLabel}
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title={PROVISIONING_UNAVAILABLE}>
-            <span>
-              <IconButton disabled aria-label={deleteLabel}>
-                <DeleteIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
+          {provisioning.onOpenCreate ? (
+            <Button
+              variant="elitea"
+              color="primary"
+              size="small"
+              startIcon={<AddIcon />}
+              onClick={provisioning.onOpenCreate}
+            >
+              {createLabel}
+            </Button>
+          ) : null}
+          {provisioning.onOpenDelete ? (
+            <Tooltip
+              title={
+                selectedCount === 0
+                  ? t(
+                      'pages.admin.projects.action.deleteHint',
+                      'Select the projects to delete',
+                    )
+                  : deleteLabel
+              }
+            >
+              <span>
+                <IconButton
+                  aria-label={deleteLabel}
+                  color="error"
+                  disabled={selectedCount === 0}
+                  onClick={provisioning.onOpenDelete}
+                >
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
 
           {/*
             Export. admin_ui builds an .xlsx through a spreadsheet library that
@@ -200,6 +226,8 @@ export function AdminProjects() {
             onOpenMembers={state.onOpenMembers}
             onOpenActivity={state.onOpenActivity}
             pendingIds={state.pendingIds}
+            selectedIds={provisioning.selectedIds}
+            onSelectionChange={provisioning.onSelectionChange}
           />
 
           <Box
@@ -228,6 +256,31 @@ export function AdminProjects() {
 
       <ProjectMemberDialog project={state.memberProject} onClose={state.onCloseMembers} />
       <ProjectActivityDrawer project={state.activityProject} onClose={state.onCloseActivity} />
+
+      <AdminProjectCreateDialog
+        open={provisioning.isCreateOpen}
+        isSaving={provisioning.isCreating}
+        serverError={provisioning.createError}
+        failedSteps={provisioning.createFailedSteps}
+        onClose={provisioning.onCloseCreate}
+        onSubmit={provisioning.onCreate}
+      />
+      {/*
+        Mounted only when something is selected. An empty confirmation dialog
+        would be a dialog whose "Delete permanently" button destroys nothing —
+        harmless, and exactly the kind of control that teaches an operator the
+        button is safe to press.
+      */}
+      {selectedCount > 0 ? (
+        <AdminProjectDeleteDialog
+          open={provisioning.isDeleteOpen}
+          projects={provisioning.selectedProjects}
+          isDeleting={provisioning.isDeleting}
+          failures={provisioning.deleteFailures}
+          onClose={provisioning.onCloseDelete}
+          onConfirm={provisioning.onConfirmDelete}
+        />
+      ) : null}
     </DrawerPage>
   );
 }
