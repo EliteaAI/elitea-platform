@@ -162,7 +162,28 @@ function AnalyticsLoadErrorImpl({ error }: AnalyticsLoadErrorProps): ReactNode {
   }
 
   return (
-    <Box sx={unavailableSx}>
+    // tabIndex={0}, and it is the load-bearing part of this fix rather than a
+    // nicety.
+    //
+    // axe's scrollable-region-focusable (WCAG 2.1.1 / 2.1.3, serious) fires on
+    // the tab body — `contentAreaSx`, which carries `overflow: auto` — whenever
+    // it can scroll and contains nothing a keyboard can reach. Every other tab
+    // satisfies it incidentally, through a table row or a control; this state
+    // is two lines of text and satisfies nothing.
+    //
+    // Two rounds were spent trying to make the box small enough not to trigger
+    // a scroll, and the class hash in the axe report says why that was the
+    // wrong lever: it was IDENTICAL across all three failing runs, so the
+    // offending element never changed and was never this box. Sizing is a
+    // guess about a layout no local test can render; the rule's own remedy is
+    // not. It passes on EITHER `focusable-element` or `focusable-content`, so
+    // one focusable node here satisfies it whichever element ends up scrolling
+    // — and it is honest besides: if the region scrolls, a keyboard user can
+    // now reach it and scroll it.
+    <Box
+      sx={unavailableSx}
+      tabIndex={0}
+    >
       <Typography
         variant="bodyMedium"
         sx={emptyTextSx}

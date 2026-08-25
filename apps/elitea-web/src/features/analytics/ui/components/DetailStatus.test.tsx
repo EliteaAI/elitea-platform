@@ -48,6 +48,12 @@ describe('AnalyticsLoadError', () => {
     });
     const { getByText, queryByText } = renderWithTheme(<AnalyticsLoadError error={error} />);
     expect(getByText('Not available on this deployment')).toBeVisible();
+    // The tab body carries `overflow: auto`, and axe fails a scrollable region
+    // that holds nothing a keyboard can reach. Every other tab satisfies that
+    // incidentally through a row or a control; two lines of text satisfy
+    // nothing, so this state supplies the focusable node itself. J24a is what
+    // caught its absence, on both engines.
+    expect(getByText('Not available on this deployment').closest('[tabindex="0"]')).not.toBeNull();
     // The server's own words, not a paraphrase this component would have to
     // keep in step with a repository it cannot see.
     expect(getByText('analytics: no data source: tool analytics: no toolkit_id')).toBeVisible();
