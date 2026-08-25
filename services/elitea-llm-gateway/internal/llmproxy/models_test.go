@@ -100,12 +100,13 @@ type fakeModelDB struct {
 }
 
 // fakeCredentialRow is one ai_credentials row as the model resolver reads it:
-// an id, a type and a title. It holds no secret, because credentialRefsSQL
-// selects none.
+// an id, a type, a title and a non-secret api_base. It holds no secret because
+// credentialRefsSQL selects none.
 type fakeCredentialRow struct {
-	id    string
-	typ   string
-	title string
+	id      string
+	typ     string
+	title   string
+	apiBase string
 	// shared is the row's `shared` column, used by the public-scope read.
 	shared bool
 }
@@ -256,16 +257,17 @@ func (it *fakeCredentialRowsIter) Next() bool {
 	return true
 }
 
-// Scan fills (id string, type string, title string) — the column order
+// Scan fills (id string, type string, title string, api_base string) — the column order
 // credentialRefs() expects.
 func (it *fakeCredentialRowsIter) Scan(dest ...any) error {
-	if len(dest) != 3 {
+	if len(dest) != 4 {
 		return errors.New("unexpected credential scan arity")
 	}
 	row := it.rows[it.i-1]
 	*dest[0].(*string) = row.id
 	*dest[1].(*string) = row.typ
 	*dest[2].(*string) = row.title
+	*dest[3].(*string) = row.apiBase
 	return nil
 }
 

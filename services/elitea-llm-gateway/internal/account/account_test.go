@@ -565,8 +565,8 @@ func TestProjectIDFromContext(t *testing.T) {
 	}
 }
 
-// TestBuildKey_VLLM asserts a vllm credential's api_base is threaded into
-// VLLMKeyConfig.URL (bifrost requires it) with no key-level model filter.
+// TestBuildKey_VLLM asserts that the adapter removes the /v1 suffix that
+// Bifrost adds itself and leaves the key-level model filter empty.
 func TestBuildKey_VLLM(t *testing.T) {
 	k, err := buildKey(schemas.VLLM, credential{
 		configID: "c1", name: "local-vllm", apiBase: "http://192.168.0.1:8000/v1",
@@ -577,11 +577,26 @@ func TestBuildKey_VLLM(t *testing.T) {
 	if k.VLLMKeyConfig == nil {
 		t.Fatal("VLLMKeyConfig = nil, want URL set from api_base")
 	}
-	if got := k.VLLMKeyConfig.URL.GetValue(); got != "http://192.168.0.1:8000/v1" {
-		t.Errorf("VLLMKeyConfig.URL = %q, want api_base", got)
+	if got := k.VLLMKeyConfig.URL.GetValue(); got != "http://192.168.0.1:8000" {
+		t.Errorf("VLLMKeyConfig.URL = %q, want normalized api_base", got)
 	}
 	if k.VLLMKeyConfig.ModelName != "" {
 		t.Errorf("ModelName = %q, want empty (no key-level filter)", k.VLLMKeyConfig.ModelName)
+	}
+}
+
+func TestBifrostVLLMBaseURL(t *testing.T) {
+	tests := map[string]string{
+		"http://vllm:8000":               "http://vllm:8000",
+		"http://vllm:8000/":              "http://vllm:8000",
+		"http://vllm:8000/v1":            "http://vllm:8000",
+		"http://gateway:8080/llm/v1/":    "http://gateway:8080/llm",
+		"http://gateway:8080/service/v2": "http://gateway:8080/service/v2",
+	}
+	for input, want := range tests {
+		if got := bifrostVLLMBaseURL(input); got != want {
+			t.Errorf("bifrostVLLMBaseURL(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 

@@ -196,6 +196,55 @@ func TestEveryCredentialTypeGivesItsProvider(t *testing.T) {
 	}
 }
 
+// TestOpenAICompatibleCredentialBaseUsesVLLMProvider proves that the existing
+// open_ai credential can keep a tenant-specific api_base after the Bifrost
+// migration. The model flag selects the worker dialect; the credential base
+// selects the gateway provider that can carry that endpoint per key.
+func TestOpenAICompatibleCredentialBaseUsesVLLMProvider(t *testing.T) {
+	h, spy := newLinkHandler(t,
+		[]fakeModelRow{stagingShapedRow(
+			"Sonnet compatible", "eu.anthropic.claude-sonnet-4-6", "ai-creds",
+		)},
+		[]fakeCredentialRow{{
+			id: "c1", typ: "open_ai", title: "ai-creds",
+			apiBase: "https://proxy.example/llm/v1",
+		}})
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Sonnet compatible","messages":[{"role":"user","content":"hi"}]}`)
+
+	got, ok := spy.last()
+	if !ok {
+		t.Fatal("the router was never called")
+	}
+	if got.provider != "vllm" {
+		t.Fatalf("provider = %q, want %q", got.provider, "vllm")
+	}
+	if got.model != "eu.anthropic.claude-sonnet-4-6" {
+		t.Fatalf("model = %q, want Sonnet wire name", got.model)
+	}
+}
+
+func TestOfficialOpenAICredentialBaseKeepsOpenAIProvider(t *testing.T) {
+	h, spy := newLinkHandler(t,
+		[]fakeModelRow{stagingShapedRow("GPT", "gpt-5.4-mini", "ai-creds")},
+		[]fakeCredentialRow{{
+			id: "c1", typ: "open_ai", title: "ai-creds",
+			apiBase: "https://api.openai.com/v1",
+		}})
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	got, ok := spy.last()
+	if !ok {
+		t.Fatal("the router was never called")
+	}
+	if got.provider != "openai" {
+		t.Fatalf("provider = %q, want %q", got.provider, "openai")
+	}
+}
+
 // TestCredentialTypesOfTheStagingDumpAreAllServed names the four types the
 // staging dump actually holds on a model link, so a change that dropped one of
 // them from the table would fail here rather than in production.
@@ -503,9 +552,9 @@ func TestOwnCredentialWinsOverAPublishedOneOfTheSameTitle(t *testing.T) {
 // ── the credential read itself ────────────────────────────────────────────────
 
 // TestCredentialReadSelectsNoSecret proves the model resolver's new statement
-// cannot carry secret material. It reads three identifier columns and nothing
-// else; the secret stays in the account package, which resolves it per request
-// through the Fernet vault.
+// cannot carry secret material. It reads three identifier columns and the
+// non-secret api_base only; the key stays in the account package, which
+// resolves it per request through the Fernet vault.
 func TestCredentialReadSelectsNoSecret(t *testing.T) {
 	db := &fakeModelDB{rows: []fakeModelRow{{title: "gpt-4o"}}}
 	NewModelResolver(ModelResolverConfig{DB: db}).List(t.Context(), mapProjectID)
@@ -514,7 +563,11 @@ func TestCredentialReadSelectsNoSecret(t *testing.T) {
 	if len(creds) != 1 {
 		t.Fatalf("got %d credential statements, want 1", len(creds))
 	}
-	for _, forbidden := range []string{"data", "api_key", "api_token"} {
+	if strings.Count(creds[0], "c.data") != 1 ||
+		!strings.Contains(creds[0], "c.data->>'api_base'") {
+		t.Fatalf("the credential statement reads more than the allowed api_base:\n%s", creds[0])
+	}
+	for _, forbidden := range []string{"api_key", "api_token"} {
 		if strings.Contains(creds[0], forbidden) {
 			t.Fatalf("the credential statement names %q:\n%s", forbidden, creds[0])
 		}

@@ -172,3 +172,19 @@ func ProviderForCredentialType(credentialType string) (schemas.ModelProvider, bo
 	}
 	return "", false
 }
+
+// ProviderForCredential maps one stored credential onto the Bifrost provider
+// that can honour both its type and its endpoint. The platform's open_ai
+// credential is also the generic OpenAI-compatible credential: when api_base
+// names a non-OpenAI origin, Bifrost must use its vLLM provider because only
+// that provider carries a per-key base URL.
+func ProviderForCredential(credentialType, apiBase string) (schemas.ModelProvider, bool) {
+	provider, ok := ProviderForCredentialType(credentialType)
+	if !ok {
+		return "", false
+	}
+	if provider == schemas.OpenAI && apiBase != "" && !isOpenAIOrigin(apiBase) {
+		return schemas.VLLM, true
+	}
+	return provider, true
+}

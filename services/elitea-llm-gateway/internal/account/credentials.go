@@ -203,6 +203,16 @@ func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, p
 	if !ok || len(types) == 0 {
 		return nil, nil
 	}
+	// A linked open_ai credential can name a tenant-specific OpenAI-compatible
+	// endpoint. The model resolver routes that exact link through Bifrost's vLLM
+	// provider so the per-key api_base is preserved. Widen the type query only
+	// when a credential is pinned; selectLinkedCredential below then admits that
+	// one row and cannot substitute another OpenAI credential.
+	if provider == schemas.VLLM {
+		if _, linked := linkedCredentialFromContext(ctx); linked {
+			types = append(append([]string(nil), types...), "open_ai")
+		}
+	}
 
 	// projectID and the derived schema name come from a signed, server-resolved
 	// header (never raw client input) and are validated numeric before use, so

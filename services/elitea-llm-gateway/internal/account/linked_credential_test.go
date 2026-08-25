@@ -68,6 +68,39 @@ func TestLinkedCredentialSelectsTheNamedRow(t *testing.T) {
 	}
 }
 
+// TestLinkedOpenAICompatibleCredentialBuildsVLLMKey preserves the platform's
+// generic open_ai credential contract. A custom api_base is per credential, so
+// Bifrost's vLLM provider must receive that exact endpoint and key.
+func TestLinkedOpenAICompatibleCredentialBuildsVLLMKey(t *testing.T) {
+	const base = "https://proxy.example/llm/v1"
+	a := newSharedAccount(t, &fakeDB{rows: [][]any{credentialRow(
+		"cred-compatible", "team-compatible", map[string]any{
+			"api_base": base,
+			"api_key":  "KEY-COMPATIBLE",
+		},
+	)}}, &fakeVault{})
+
+	ctx := ctxWithLink(callerProject, LinkedCredential{
+		ProjectID: callerProject, ConfigID: "cred-compatible", Title: "team-compatible",
+	})
+	keys, err := a.GetKeysForProvider(ctx, schemas.VLLM)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("got %d keys, want 1", len(keys))
+	}
+	if got := keys[0].Value.Val; got != "KEY-COMPATIBLE" {
+		t.Fatalf("resolved secret = %q, want KEY-COMPATIBLE", got)
+	}
+	if keys[0].VLLMKeyConfig == nil {
+		t.Fatal("VLLMKeyConfig is nil")
+	}
+	if got := keys[0].VLLMKeyConfig.URL.Val; got != "https://proxy.example/llm" {
+		t.Fatalf("VLLM base URL = %q, want %q", got, "https://proxy.example/llm")
+	}
+}
+
 // TestWithoutALinkEveryCredentialIsStillOffered is the control. It measures the
 // defect: the SAME two credentials, with no link on the context, both reach
 // bifrost/core, and core alone decides which one calls the provider.

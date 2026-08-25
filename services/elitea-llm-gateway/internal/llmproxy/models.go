@@ -182,9 +182,13 @@ type credentialRef struct {
 	// row's uuid when it has one and its numeric id otherwise. The two SELECT
 	// expressions MUST stay identical or the pin will never match.
 	configID string
-	// typ is the row's `type` column, e.g. "azure_open_ai". It selects the
-	// provider through account.ProviderForCredentialType.
+	// typ is the row's `type` column, e.g. "azure_open_ai". Together with
+	// apiBase, it selects the provider through account.ProviderForCredential.
 	typ string
+	// apiBase is the non-secret endpoint selector. It distinguishes native
+	// OpenAI credentials from the same platform type pointed at an
+	// OpenAI-compatible endpoint.
+	apiBase string
 	// ownerProjectID is the project whose schema holds the row.
 	ownerProjectID string
 }
@@ -358,9 +362,10 @@ const sharedModelPredicate = " AND c.shared = true"
 // modelRowQuerier match on it to tell the two statements apart.
 const credentialSection = "section = 'ai_credentials'"
 
-// credentialRefsSQL reads the id, type and title of every credential row in one
-// project scope. It reads NO credential data: the secret stays in the account
-// package, which resolves it per request through the Fernet vault.
+// credentialRefsSQL reads the id, type, title and non-secret api_base of every
+// credential row in one project scope. It never reads api_key or any vault
+// value: secret resolution stays in the account package and happens per
+// request.
 //
 // The id expression MUST match credentialsSQL in the account package
 // (COALESCE(uuid::text, id::text)). The model resolver pins a credential by the
@@ -368,7 +373,7 @@ const credentialSection = "section = 'ai_credentials'"
 // two different expressions would make every pin miss.
 //
 // %q is the schema name. %s is the scope predicate, exactly as in modelsSQL.
-const credentialRefsSQL = `SELECT COALESCE(c.uuid::text, c.id::text), COALESCE(c.type, ''), COALESCE(c.elitea_title, '')
+const credentialRefsSQL = `SELECT COALESCE(c.uuid::text, c.id::text), COALESCE(c.type, ''), COALESCE(c.elitea_title, ''), COALESCE(c.data->>'api_base', '')
 	FROM %q.configuration AS c
 	WHERE c.` + credentialSection + ` AND c.status_ok = true%s
 	ORDER BY c.id`
@@ -399,8 +404,8 @@ func (m *ModelResolver) credentialRefs(
 
 	refs := make(map[string]credentialRef)
 	for rows.Next() {
-		var id, typ, title string
-		if err := rows.Scan(&id, &typ, &title); err != nil {
+		var id, typ, title, apiBase string
+		if err := rows.Scan(&id, &typ, &title, &apiBase); err != nil {
 			return nil, fmt.Errorf("scan credential row: %w", err)
 		}
 		if title == "" {
@@ -411,7 +416,9 @@ func (m *ModelResolver) credentialRefs(
 		if _, dup := refs[title]; dup {
 			continue
 		}
-		refs[title] = credentialRef{configID: id, typ: typ, ownerProjectID: scopeProjectID}
+		refs[title] = credentialRef{
+			configID: id, typ: typ, apiBase: apiBase, ownerProjectID: scopeProjectID,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate credential rows: %w", err)
@@ -665,10 +672,10 @@ func (m *ModelResolver) applyCredentialLink(
 	configID := link.ConfigurationUUID
 	ownerProject := link.ConfigurationProjectID.String()
 	title := link.title()
+	ref, refFound := lookupCredentialRef(creds, title)
 
 	if credentialType == "" {
-		ref, ok := lookupCredentialRef(creds, title)
-		if !ok {
+		if !refFound {
 			m.logger.WarnContext(ctx, "model links to a credential that is not in scope; keeping the model-name prefix",
 				"project_id", scopeProjectID, "model", mo.ID, "credential_title", title)
 			return
@@ -676,7 +683,11 @@ func (m *ModelResolver) applyCredentialLink(
 		credentialType, configID, ownerProject = ref.typ, ref.configID, ref.ownerProjectID
 	}
 
-	provider, ok := account.ProviderForCredentialType(credentialType)
+	apiBase := ""
+	if refFound {
+		apiBase = ref.apiBase
+	}
+	provider, ok := account.ProviderForCredential(credentialType, apiBase)
 	if !ok {
 		m.logger.WarnContext(ctx, "model links to a credential type this gateway cannot serve; keeping the model-name prefix",
 			"project_id", scopeProjectID, "model", mo.ID, "credential_type", credentialType)
