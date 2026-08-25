@@ -608,6 +608,31 @@ SQL
       echo "   The gateway reports the name AFTER it splits the provider prefix,"
       echo "   so a 404 for '${EMBEDDING_MODEL#*/}' names this same row."
     else
+      # A self-hosted provider points the credential at a PRIVATE host, and the
+      # gateway refuses private egress unless that exact host:port is on its
+      # allowlist (SSRF guard). Nothing downstream says so: the turn runs, the
+      # agent starts, the model call comes back a bare
+      # `500 … EGRESS_HOST_NOT_ALLOWED`, and the UI shows an empty answer. The
+      # allowlist lives on the GATEWAY's environment, so seeding cannot set it —
+      # but it can say which value is now required, and whether it is missing.
+      if [ "$PROVIDER" = "vllm" ] || [ "$PROVIDER" = "ollama" ]; then
+        EGRESS_NEEDED="$(printf '%s' "$LLM_API_BASE" | sed -E 's#^https?://##; s#/.*$##')"
+        # `ENGINE` is only set inside `check`; derive it the same way here
+        # (the container engine is the first word of the compose command).
+        EGRESS_HAVE="$("${COMPOSE_BIN%% *}" inspect "${PROJECT}-elitea-llm-gateway-1" \
+            --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+            | sed -n 's/^GATEWAY_EGRESS_ALLOWLIST=//p')"
+        case ",${EGRESS_HAVE}," in
+          *",${EGRESS_NEEDED},"*)
+            echo "→ gateway egress already allows '${EGRESS_NEEDED}'." ;;
+          *)
+            echo "   ! the gateway does NOT allow egress to '${EGRESS_NEEDED}' (allowlist: '${EGRESS_HAVE:-<unset>}')."
+            echo "     Every turn will reach the model and come back 500 EGRESS_HOST_NOT_ALLOWED."
+            echo "     Restart the gateway with it allowed:"
+            echo "       GATEWAY_EGRESS_ALLOWLIST=\"${EGRESS_HAVE:-llm-mock:8090},${EGRESS_NEEDED}\" \\"
+            echo "         $0 up          # or: compose up -d --force-recreate elitea-llm-gateway" ;;
+        esac
+      fi
       echo "→ NO embedding model seeded: provider '$PROVIDER' serves no embeddings API."
       echo "   The embedding hop will answer 404 and '$0 check' will FAIL."
       echo "   Set LLM_EMBEDDING_MODEL to a model some provider serves, then"

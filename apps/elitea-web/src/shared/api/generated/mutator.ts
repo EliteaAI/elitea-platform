@@ -156,7 +156,17 @@ function describeFailure(failure: HttpFailure): string {
  * `status`/`data`/the real `headers` (threaded through from the raw
  * `Response` in `http.ts`'s `toResult`) for precisely this.
  */
-export async function eliteaFetch<T>(url: string, options: RequestInit = {}): Promise<T> {
+export async function eliteaFetch<T>(
+  url: string,
+  options: RequestInit = {},
+  /**
+   * Transport-level flags that have no `RequestInit` equivalent. `background`
+   * marks a peripheral poll whose 401 must not escalate into a re-auth — see
+   * `HttpRequestOptions.background` in `shared/api/http.ts` for why that
+   * distinction exists.
+   */
+  transport: { readonly background?: boolean } = {},
+): Promise<T> {
   const client = requireClient();
   const method = toHttpMethod(options.method);
   const headers = toHeaderRecord(options.headers);
@@ -169,6 +179,7 @@ export async function eliteaFetch<T>(url: string, options: RequestInit = {}): Pr
     ...(options.signal ? { signal: options.signal } : {}),
     ...(headers !== undefined ? { headers } : {}),
     ...(body !== undefined ? { body } : {}),
+    ...(transport.background === true ? { background: true } : {}),
   });
   if (result.ok) {
     return { data: result.data, status: result.status, headers: result.headers } as T;
