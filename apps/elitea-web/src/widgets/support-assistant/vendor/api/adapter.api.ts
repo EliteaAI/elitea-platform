@@ -22,7 +22,6 @@
 import { eliteaFetch } from '@/shared/api/generated/mutator';
 
 import type {
-  TAssistantConfig,
   TChatAPI,
   TConversationListItem,
   TConversationsResponse,
@@ -71,21 +70,9 @@ export interface TSupportTurnRequest {
 /** The adapter, widened with the two calls the socket transport used to cover. */
 export type TSupportApi = TChatAPI & {
   startTurn: (conversationUuid: string, request: TSupportTurnRequest) => Promise<TSupportTurnStarted>;
-  clearMessages: (conversationUuid: string) => Promise<void>;
 };
 
 export const createSupportApi = (): TSupportApi => ({
-  /**
-   * `background: true` — the config read is a PERIPHERAL POLL.
-   *
-   * It runs from the app shell on every page load, including before a session is
-   * established. Without this flag its failure would be indistinguishable from a
-   * session expiry and would drive the app's re-auth path, which is the
-   * notification bell's 401 logout loop with a different widget attached. The
-   * server answers 200/`enabled:false` rather than 401 for exactly this reason;
-   * the flag is the client's half of the same decision.
-   */
-  getConfig: () => unwrap<TAssistantConfig>(`${BASE}/config/`, {}, { background: true }),
 
   getConversations: () => unwrap<TConversationsResponse>(`${BASE}/conversations/`),
 
@@ -99,17 +86,7 @@ export const createSupportApi = (): TSupportApi => ({
       headers: { 'Content-Type': 'application/json' },
     }),
 
-  deleteConversation: async (conversationId: string) => {
-    await unwrap<unknown>(`${BASE}/conversation/${encodeURIComponent(conversationId)}`, {
-      method: 'DELETE',
-    });
-  },
 
-  clearMessages: async (conversationUuid: string) => {
-    await unwrap<unknown>(`${BASE}/messages/${encodeURIComponent(conversationUuid)}`, {
-      method: 'DELETE',
-    });
-  },
 
   /**
    * Start one turn. This is the REST call that replaces the widget's

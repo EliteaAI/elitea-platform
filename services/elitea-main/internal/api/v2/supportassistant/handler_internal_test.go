@@ -3,6 +3,7 @@ package supportassistant
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,9 +163,6 @@ func TestGatedRoutesRefuseWhenNotConfigured(t *testing.T) {
 		{http.MethodGet, "/conversations/"},
 		{http.MethodPost, "/conversations/"},
 		{http.MethodGet, "/conversation/" + sampleUUID},
-		{http.MethodDelete, "/conversation/" + sampleUUID},
-		{http.MethodDelete, "/messages/" + sampleUUID},
-		{http.MethodPost, "/attachments/" + sampleUUID},
 		{http.MethodPost, "/predict/" + sampleUUID},
 	} {
 		t.Run(testCase.method+" "+testCase.path, func(t *testing.T) {
@@ -199,4 +197,77 @@ func (stubResolver) ResolvePermissions(
 	context.Context, auth.User, string, string,
 ) (auth.PermissionResolution, error) {
 	return auth.PermissionResolution{}, nil
+}
+
+/* ── input bounds ──────────────────────────────────────────────────────── */
+
+// A MESSAGE THE RUN WOULD REFUSE IS REFUSED HERE, as the client's problem.
+//
+// The use case caps UserInput at 256KB and answers one undifferentiated error
+// for nine distinct causes, which the route can only render as a 502 — "the
+// support agent is broken" — for what is really "your message is too long".
+// This is the check that keeps that decision on the client's side of the line.
+func TestOversizedMessageIsTheClientsProblem(t *testing.T) {
+	if maxAgentUserInput >= int(maxPredictBody) {
+		t.Fatalf("maxAgentUserInput (%d) is not below maxPredictBody (%d); the gap this "+
+			"check exists to cover has closed and the check is meaningless",
+			maxAgentUserInput, maxPredictBody)
+	}
+}
+
+// THE APPENDED CONTEXT COUNTS TOWARDS THE CAP.
+//
+// The page context is added to the message after the user stops typing, so a
+// message that fits can stop fitting on bytes the user never saw. Measuring the
+// COMPOSED string is what makes the refusal correspond to something they can act
+// on, and this pins that the composition really does grow the input.
+func TestPageContextCountsTowardsTheInputCap(t *testing.T) {
+	handler := NewHandler(nil)
+	bare := handler.composeUserInput(PredictRequest{Content: "why?"})
+	withContext := handler.composeUserInput(PredictRequest{
+		Content: "why?",
+		Context: &AssistantContext{CurrentPage: "/agents", ProjectName: "Acme"},
+	})
+	if len(withContext) <= len(bare) {
+		t.Fatalf("composed input did not grow: %d vs %d", len(withContext), len(bare))
+	}
+}
+
+/* ── search ────────────────────────────────────────────────────────────── */
+
+// `%` AND `_` ARE THE USER'S CHARACTERS, not LIKE's.
+func TestSearchTermWildcardsAreEscaped(t *testing.T) {
+	for term, want := range map[string]string{
+		"50% CPU":    `50\% CPU`,
+		"a_b":        `a\_b`,
+		`back\slash`: `back\\slash`,
+		"plain":      "plain",
+		"":           "",
+	} {
+		if got := escapeLikePattern(term); got != want {
+			t.Errorf("escapeLikePattern(%q) = %q, want %q", term, got, want)
+		}
+	}
+}
+
+/* ── bootstrap cooldown ────────────────────────────────────────────────── */
+
+// A FAILED BOOTSTRAP IS NOT RETRIED ON THE NEXT REQUEST.
+//
+// Without the gate, a deployment whose provisioning fails re-runs the whole
+// pipeline for every page load of every user, serialised on one advisory lock.
+func TestFailedBootstrapIsNotRetriedImmediately(t *testing.T) {
+	s := &store{logger: slog.Default()}
+	if !s.claimBootstrapAttempt() {
+		t.Fatal("the first attempt was refused")
+	}
+	if s.claimBootstrapAttempt() {
+		t.Fatal("a second attempt was allowed immediately; a failing deployment would retry per request")
+	}
+	// A bootstrap that PRODUCED a project id clears the gate, so the next call
+	// is not delayed by a cooldown started for an attempt that then succeeded.
+	s.releaseBootstrapCooldown()
+	if !s.claimBootstrapAttempt() {
+		t.Fatal("the gate stayed closed after a success")
+	}
 }

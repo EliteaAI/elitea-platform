@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -47,7 +49,25 @@ type store struct {
 	pool        *pgxpool.Pool
 	provisioner Provisioner
 	logger      *slog.Logger
+
+	// bootstrapGate rate-limits FAILED bootstrap attempts.
+	//
+	// Without it a deployment whose provisioning fails retries the entire
+	// pipeline — tenant schema, migrations, RBAC, vault — on EVERY request,
+	// under one process-wide advisory lock. `GET /support_assistant/config` is
+	// ungated and the widget calls it from the app shell on every page load, so
+	// every user's every navigation would queue behind a multi-second failing
+	// operation. One attempt per bootstrapRetryAfter turns a self-inflicted
+	// outage back into a feature that is merely off.
+	bootstrapGate      sync.Mutex
+	bootstrapNotBefore time.Time
 }
+
+// bootstrapRetryAfter is how long a failed bootstrap is left alone. It is long
+// enough that a failing deployment is not hammered, and short enough that an
+// operator who fixes the cause (attaches an object store, repairs the vault)
+// sees the assistant come up without a restart.
+const bootstrapRetryAfter = 5 * time.Minute
 
 // ---------------------------------------------------------------------------
 // settings and bootstrap
@@ -82,6 +102,20 @@ func (s *store) bootstrapProject(ctx context.Context) (int64, error) {
 	if s.provisioner == nil {
 		return 0, ErrNoProvisioner
 	}
+	if !s.claimBootstrapAttempt() {
+		return 0, errBootstrapCoolingDown
+	}
+
+	// PROVISIONING IS NOT CANCELLED BY THE CALLER GOING AWAY.
+	//
+	// The pipeline is many statements across several connections, and the
+	// request that happens to trigger it is a widget poll from a page the user
+	// may navigate away from at any moment. Cancelling mid-pipeline aborts
+	// whichever step is in flight and leaves the compensating rollback to run
+	// against a context that is already dead. The work belongs to the
+	// deployment, not to the request that noticed it was needed.
+	ctx = context.WithoutCancel(ctx)
+
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("support assistant: acquire connection: %w", err)
@@ -109,6 +143,7 @@ func (s *store) bootstrapProject(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	if existing, ok := values.Int(platformconfig.KeySupportProjectID); ok && existing > 0 {
+		s.releaseBootstrapCooldown()
 		return existing, nil
 	}
 
@@ -122,6 +157,7 @@ func (s *store) bootstrapProject(ctx context.Context) (int64, error) {
 		if err := s.recordProjectID(ctx, adopted); err != nil {
 			return 0, err
 		}
+		s.releaseBootstrapCooldown()
 		return adopted, nil
 	}
 
@@ -144,9 +180,37 @@ func (s *store) bootstrapProject(ctx context.Context) (int64, error) {
 		// the deployment if it ever happens.
 		return 0, err
 	}
+	s.releaseBootstrapCooldown()
 	s.logger.Info("support assistant: hidden project created", "project_id", projectID)
 	return projectID, nil
 }
+
+// claimBootstrapAttempt reports whether this caller may attempt a bootstrap now,
+// and starts the cooldown if so. The cooldown is cleared on success, so a
+// deployment that provisions cleanly is never delayed.
+func (s *store) claimBootstrapAttempt() bool {
+	s.bootstrapGate.Lock()
+	defer s.bootstrapGate.Unlock()
+	if time.Now().Before(s.bootstrapNotBefore) {
+		return false
+	}
+	s.bootstrapNotBefore = time.Now().Add(bootstrapRetryAfter)
+	return true
+}
+
+// releaseBootstrapCooldown clears the gate after a bootstrap that produced a
+// project id, so the adopt-by-name path on a later call is not delayed by a
+// cooldown started for an attempt that then succeeded.
+func (s *store) releaseBootstrapCooldown() {
+	s.bootstrapGate.Lock()
+	defer s.bootstrapGate.Unlock()
+	s.bootstrapNotBefore = time.Time{}
+}
+
+// errBootstrapCoolingDown is returned while a failed attempt is in its cooldown.
+// It is not surfaced to a caller — settings() reports the assistant as not
+// ready, which renders as no widget.
+var errBootstrapCoolingDown = errors.New("support assistant: bootstrap is cooling down after a failure")
 
 func (s *store) projectByName(ctx context.Context, name string) (int64, error) {
 	var projectID int64
@@ -282,8 +346,9 @@ func (s *store) listConversations(
 	var total int
 	countStatement := fmt.Sprintf(`
 SELECT COUNT(*) FROM %q.chat_conversations c
-WHERE c.author_id = $1 AND c.source = $2 AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%')`, schema)
-	if err := s.pool.QueryRow(ctx, countStatement, userID, supportSource, query).Scan(&total); err != nil {
+WHERE c.author_id = $1 AND c.source = $2
+  AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%' ESCAPE '\')`, schema)
+	if err := s.pool.QueryRow(ctx, countStatement, userID, supportSource, escapeLikePattern(query)).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("support assistant: count conversations: %w", err)
 	}
 
@@ -292,11 +357,12 @@ SELECT c.id, c.uuid::text, c.name, c.is_private, c.author_id, c.source, c.meta,
        c.created_at, COALESCE(c.updated_at, c.created_at),
        (SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
 FROM %q.chat_conversations c
-WHERE c.author_id = $1 AND c.source = $2 AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%')
+WHERE c.author_id = $1 AND c.source = $2
+  AND ($3 = '' OR c.name ILIKE '%%' || $3 || '%%' ESCAPE '\')
 ORDER BY COALESCE(c.updated_at, c.created_at) DESC, c.id DESC
 LIMIT $4 OFFSET $5`, schema, schema)
 
-	rows, err := s.pool.Query(ctx, statement, userID, supportSource, query, limit, offset)
+	rows, err := s.pool.Query(ctx, statement, userID, supportSource, escapeLikePattern(query), limit, offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("support assistant: list conversations: %w", err)
 	}
@@ -410,4 +476,24 @@ SELECT c.id, c.uuid::text, c.name, c.is_private, c.author_id, c.source, c.meta,
        (SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
 FROM %q.chat_conversations c WHERE c.id = $1`, schema, schema)
 	return scanConversation(s.pool.QueryRow(ctx, statement, conversationID))
+}
+
+// escapeLikePattern makes a user's search term a LITERAL inside an ILIKE
+// pattern.
+//
+// `%` and `_` are wildcards to LIKE, so an unescaped term does not mean what the
+// user typed: searching for "50% CPU" matched "50 percent of the CPU budget",
+// and a bare "_" matched every single-character position. Binding the value as a
+// parameter prevents SQL injection but has never had anything to say about
+// pattern metacharacters.
+//
+// The backslash is escaped FIRST, so that a term containing one does not turn
+// the escape character introduced for `%` into a literal.
+func escapeLikePattern(term string) string {
+	if term == "" {
+		return ""
+	}
+	replaced := strings.ReplaceAll(term, `\`, `\\`)
+	replaced = strings.ReplaceAll(replaced, "%", `\%`)
+	return strings.ReplaceAll(replaced, "_", `\_`)
 }

@@ -33,29 +33,14 @@ import (
 // change to the message model.
 type ChatStore interface {
 	ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	Delete(ctx context.Context, projectID, conversationID string) error
-	DeleteMessages(ctx context.Context, projectID, conversationID string) error
 	AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	ListParticipants(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
-}
-
-// AttachmentRoute is the chat handler's multipart attachment endpoint, reused
-// verbatim — see UploadAttachments for how the identifiers reach it.
-type AttachmentRoute interface {
-	AddAttachments(http.ResponseWriter, *http.Request)
 }
 
 // WithChatStore supplies the reused chat repository. Without it the routes that
 // need it answer 503 rather than panicking on a nil interface.
 func WithChatStore(chat ChatStore) Option {
 	return func(h *Handler) { h.chat = chat }
-}
-
-// WithAttachmentRoute supplies the chat attachment endpoint. Without it the
-// support attachment route answers 503: a deployment with no object store
-// cannot accept a file, and saying so beats accepting bytes that go nowhere.
-func WithAttachmentRoute(route AttachmentRoute) Option {
-	return func(h *Handler) { h.attachments = route }
 }
 
 // defaultConversationName is `conversations.py`'s `"New conversation"`.
@@ -228,90 +213,41 @@ func (h *Handler) GetConversation(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteConversation removes one of the caller's support conversations.
-func (h *Handler) DeleteConversation(w http.ResponseWriter, r *http.Request) {
-	projectID, userID, ok := h.requestContext(w, r)
-	if !ok {
-		return
-	}
-	conversationUUID := chi.URLParam(r, "conversationUUID")
-	conversationID, err := h.store.conversationOwnedByCaller(r.Context(), projectID, userID, conversationUUID)
-	if err != nil {
-		h.writeConversationError(w, err, "resolve conversation")
-		return
-	}
-	if h.chat == nil {
-		apierr.WriteStatus(w, http.StatusServiceUnavailable, unavailableMessage)
-		return
-	}
-	if err := h.chat.Delete(r.Context(),
-		strconv.FormatInt(projectID, 10), strconv.FormatInt(conversationID, 10)); err != nil {
-		h.logger.Error("support assistant: delete conversation", "err", err)
-		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to delete conversation")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
-}
-
-// ClearMessages empties a conversation without deleting it — `messages.py`'s
-// DELETE, which the widget's "clear chat" control calls.
-func (h *Handler) ClearMessages(w http.ResponseWriter, r *http.Request) {
-	projectID, userID, ok := h.requestContext(w, r)
-	if !ok {
-		return
-	}
-	conversationUUID := chi.URLParam(r, "conversationUUID")
-	conversationID, err := h.store.conversationOwnedByCaller(r.Context(), projectID, userID, conversationUUID)
-	if err != nil {
-		h.writeConversationError(w, err, "resolve conversation")
-		return
-	}
-	if h.chat == nil {
-		apierr.WriteStatus(w, http.StatusServiceUnavailable, unavailableMessage)
-		return
-	}
-	if err := h.chat.DeleteMessages(r.Context(),
-		strconv.FormatInt(projectID, 10), strconv.FormatInt(conversationID, 10)); err != nil {
-		h.logger.Error("support assistant: clear messages", "err", err)
-		apierr.WriteStatus(w, http.StatusInternalServerError, "failed to clear messages")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"success": true})
-}
-
-// UploadAttachments delegates to the chat surface's own multipart handler.
-//
-// THE DELEGATION IS THE SECURITY PROPERTY, not a shortcut. That handler reads
-// its project and conversation from the chi route parameters, so this route
-// resolves both server-side — the project from configuration, the conversation
-// through the ownership predicate — and REWRITES the route parameters with the
-// resolved values before calling it. The delegate therefore cannot see anything
-// the caller sent, and every size limit, MIME check, filename sanitiser,
-// chunked-upload path and retention rule in `conversations/attachments.go`
-// applies to a support upload without being restated here, where it would
-// eventually drift.
-func (h *Handler) UploadAttachments(w http.ResponseWriter, r *http.Request) {
-	projectID, userID, ok := h.requestContext(w, r)
-	if !ok {
-		return
-	}
-	conversationUUID := chi.URLParam(r, "conversationUUID")
-	conversationID, err := h.store.conversationOwnedByCaller(r.Context(), projectID, userID, conversationUUID)
-	if err != nil {
-		h.writeConversationError(w, err, "resolve conversation")
-		return
-	}
-	if h.attachments == nil {
-		apierr.WriteStatus(w, http.StatusServiceUnavailable, unavailableMessage)
-		return
-	}
-
-	routeContext := chi.NewRouteContext()
-	routeContext.URLParams.Add("projectID", strconv.FormatInt(projectID, 10))
-	routeContext.URLParams.Add("conversationID", strconv.FormatInt(conversationID, 10))
-	h.attachments.AddAttachments(w, r.WithContext(
-		context.WithValue(r.Context(), chi.RouteCtxKey, routeContext)))
-}
+/*
+ * DELETE /conversation/{uuid}, DELETE /messages/{uuid} AND POST
+ * /attachments/{uuid} USED TO STAND HERE, and are removed rather than repaired.
+ *
+ * All three were unreachable — nothing in the widget called any of them — and
+ * two could not have worked if it had:
+ *
+ *   - `ClearMessages` delegated to `ConversationsRepo.DeleteMessages`, which
+ *     deletes from `chat_messages`. NO MIGRATION CREATES THAT TABLE: the
+ *     transcript lives in chat_message_group / chat_message_items /
+ *     chat_messages_text (migrations/tenant/0123), and neither 0123 nor
+ *     001_initial's create_tenant_schema declares `chat_messages`. Every call
+ *     would have answered 500 on SQLSTATE 42P01.
+ *   - `DeleteConversation` delegated to `ConversationsRepo.Delete`, which drops
+ *     chat_message_group rows while chat_message_items still references them
+ *     (0123:117 declares that foreign key with NO ON DELETE action, unlike its
+ *     siblings). Any conversation with a single message would have failed with
+ *     a foreign-key violation; only empty ones could be deleted.
+ *
+ * Both root causes are in the SHARED chat repository, which the chat surface's
+ * own routes hit too. Repairing them there is a real fix worth making, and it
+ * is not this feature's to make: it changes behaviour for a surface this PR
+ * does not touch, on routes the support widget does not call. Deleting the
+ * support wrappers is the honest half — it removes three endpoints that
+ * promised something they could not deliver, to a client that never asked.
+ *
+ * This is the same judgement the attachment tree got in this same change (see
+ * ../../../../apps/elitea-web/src/widgets/support-assistant/vendor/components/chat/MessageInput.tsx):
+ * a surface that cannot work is worse than an absent one. The three sibling
+ * routes were left behind by oversight; this corrects that.
+ *
+ * When the widget grows a delete or clear affordance, the repository fix comes
+ * first and the route comes back with a test that exercises its success path —
+ * which is what would have caught this.
+ */
 
 // writeConversationError maps a store error to a status. "Not yours" and "does
 // not exist" are ONE answer — see conversationOwnedByCaller.

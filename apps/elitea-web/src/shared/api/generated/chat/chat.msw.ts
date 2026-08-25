@@ -45,8 +45,6 @@ import { HttpResponse, delay, http } from "msw";
 import type { RequestHandlerOptions } from "msw";
 
 import type {
-  ClearSupportConversationMessages200,
-  DeleteSupportConversation200,
   MessageTraceListing,
   MessageTraceStepDetail,
   SupportAssistantConfig,
@@ -54,7 +52,6 @@ import type {
   SupportConversationDetails,
   SupportConversationList,
   SupportPredictResponse,
-  UploadSupportAttachments200,
 } from "../model";
 
 export const getGetSupportAssistantConfigResponseMock = (
@@ -199,25 +196,6 @@ export const getGetSupportConversationResponseMock =
       ]),
     },
   });
-
-export const getDeleteSupportConversationResponseMock = (
-  overrideResponse: Partial<Extract<DeleteSupportConversation200, object>> = {},
-): DeleteSupportConversation200 => ({
-  success: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
-  ...overrideResponse,
-});
-
-export const getClearSupportConversationMessagesResponseMock = (
-  overrideResponse: Partial<
-    Extract<ClearSupportConversationMessages200, object>
-  > = {},
-): ClearSupportConversationMessages200 => ({
-  success: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
-  ...overrideResponse,
-});
-
-export const getUploadSupportAttachmentsResponseMock =
-  (): UploadSupportAttachments200 => ({});
 
 export const getStartSupportTurnResponseMock = (
   overrideResponse: Partial<Extract<SupportPredictResponse, object>> = {},
@@ -516,87 +494,6 @@ export const getGetSupportConversationMockHandler = (
   );
 };
 
-export const getDeleteSupportConversationMockHandler = (
-  overrideResponse?:
-    | DeleteSupportConversation200
-    | ((
-        info: Parameters<Parameters<typeof http.delete>[1]>[0],
-      ) =>
-        Promise<DeleteSupportConversation200> | DeleteSupportConversation200),
-  options?: RequestHandlerOptions,
-) => {
-  return http.delete(
-    "*/support_assistant/conversation/:conversationUUID",
-    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getDeleteSupportConversationResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
-export const getClearSupportConversationMessagesMockHandler = (
-  overrideResponse?:
-    | ClearSupportConversationMessages200
-    | ((
-        info: Parameters<Parameters<typeof http.delete>[1]>[0],
-      ) =>
-        | Promise<ClearSupportConversationMessages200>
-        | ClearSupportConversationMessages200),
-  options?: RequestHandlerOptions,
-) => {
-  return http.delete(
-    "*/support_assistant/messages/:conversationUUID",
-    async (info: Parameters<Parameters<typeof http.delete>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getClearSupportConversationMessagesResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
-export const getUploadSupportAttachmentsMockHandler = (
-  overrideResponse?:
-    | UploadSupportAttachments200
-    | ((
-        info: Parameters<Parameters<typeof http.post>[1]>[0],
-      ) => Promise<UploadSupportAttachments200> | UploadSupportAttachments200),
-  options?: RequestHandlerOptions,
-) => {
-  return http.post(
-    "*/support_assistant/attachments/:conversationUUID",
-    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
-      await delay(0);
-
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getUploadSupportAttachmentsResponseMock(),
-        { status: 200 },
-      );
-    },
-    options,
-  );
-};
-
 export const getStartSupportTurnMockHandler = (
   overrideResponse?:
     | SupportPredictResponse
@@ -679,9 +576,6 @@ export const getChatMock = () => [
   getListSupportConversationsMockHandler(),
   getCreateSupportConversationMockHandler(),
   getGetSupportConversationMockHandler(),
-  getDeleteSupportConversationMockHandler(),
-  getClearSupportConversationMessagesMockHandler(),
-  getUploadSupportAttachmentsMockHandler(),
   getStartSupportTurnMockHandler(),
   getListMessageTracesMockHandler(),
   getGetMessageTraceMockHandler(),

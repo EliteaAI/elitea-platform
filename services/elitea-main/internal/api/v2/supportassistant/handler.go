@@ -96,11 +96,8 @@ const unavailableMessage = "support assistant is not available"
 const (
 	PermissionConversationsList   = "models.chat.conversations.list"
 	PermissionConversationsCreate = "models.chat.conversations.create"
-	PermissionConversationsDelete = "models.chat.conversations.delete"
 	PermissionConversationRead    = "models.chat.conversation.details"
-	PermissionMessagesDelete      = "models.chat.messages.delete"
 	PermissionMessagesCreate      = "models.chat.messages.create"
-	PermissionAttachmentsCreate   = "models.chat.attachments.create"
 )
 
 // StartUseCase is the agent-execution entry point the predict route delegates
@@ -117,12 +114,11 @@ type StartUseCase interface {
 
 // Handler serves the support assistant surface.
 type Handler struct {
-	store       *store
-	resolver    auth.PermissionResolver
-	startCase   StartUseCase
-	chat        ChatStore
-	attachments AttachmentRoute
-	logger      *slog.Logger
+	store     *store
+	resolver  auth.PermissionResolver
+	startCase StartUseCase
+	chat      ChatStore
+	logger    *slog.Logger
 }
 
 // Option configures a Handler at construction.
@@ -208,10 +204,6 @@ func (h *Handler) Routes() chi.Router {
 	r.Method(http.MethodPost, "/conversations/", gated(PermissionConversationsCreate, h.CreateConversation))
 
 	r.Method(http.MethodGet, "/conversation/{conversationUUID}", gated(PermissionConversationRead, h.GetConversation))
-	r.Method(http.MethodDelete, "/conversation/{conversationUUID}", gated(PermissionConversationsDelete, h.DeleteConversation))
-
-	r.Method(http.MethodDelete, "/messages/{conversationUUID}", gated(PermissionMessagesDelete, h.ClearMessages))
-	r.Method(http.MethodPost, "/attachments/{conversationUUID}", gated(PermissionAttachmentsCreate, h.UploadAttachments))
 	r.Method(http.MethodPost, "/predict/{conversationUUID}", gated(PermissionMessagesCreate, h.Predict))
 
 	return r

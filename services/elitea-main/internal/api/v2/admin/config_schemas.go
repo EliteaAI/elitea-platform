@@ -1269,13 +1269,29 @@ func supportAssistantSection() map[string]any {
 				// which project the transcripts landed in. Clearing the field
 				// does not orphan it: the bootstrap adopts an existing
 				// "Support Assistant" project by name before creating one.
-				"key":         "support_project_id",
-				"type":        "integer",
-				"title":       "Support Project ID",
-				"description": "Project ID used by the support assistant for conversations. Auto-created if left empty.",
-				"path":        "support_project_id",
-				"section":     "support_assistant",
-				"default":     nil,
+				//
+				// THE DESCRIPTION NAMES THE CONSEQUENCE, and that is the point
+				// of it. Support conversations live in a project shared by
+				// everyone, so the assistant enrols each caller into this
+				// project as `viewer` on first use
+				// (internal/api/v2/supportassistant/store.go's ensureEnrolled).
+				// Naming an EXISTING project here therefore grants the entire
+				// user base the default-mode viewer rights migration 0068 seeds
+				// — conversation and application reads included — and correcting
+				// the id afterwards does not withdraw the memberships already
+				// written. An operator cannot weigh that from "auto-created if
+				// left empty", which is all this field used to say.
+				"key":   "support_project_id",
+				"type":  "integer",
+				"title": "Support Project ID",
+				"description": "Project ID used by the support assistant for conversations. Leave empty to have a " +
+					"dedicated hidden project created automatically — that is the recommended setting. WARNING: " +
+					"naming an existing project here enrols EVERY user on the platform into it as a viewer, " +
+					"giving them read access to that project's conversations and agents. Memberships already " +
+					"granted are not removed if you change this value.",
+				"path":    "support_project_id",
+				"section": "support_assistant",
+				"default": nil,
 			},
 			{
 				"key":         "support_agent_project_id",

@@ -29,10 +29,13 @@ package supportassistant
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -42,9 +45,31 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
-// maxPredictBody matches the agent-execution route's own ceiling, so a body this
-// route accepts is one the use case behind it will accept too.
+// maxPredictBody bounds the REQUEST BODY. It is the agent-execution route's own
+// body ceiling.
+//
+// IT IS NOT THE INPUT CEILING, and an earlier version of this comment claimed
+// it was. The use case behind this route caps `UserInput` at
+// maxAgentUserInput, half this size, so a body inside this limit can still
+// carry a message the run will refuse — see maxAgentUserInput.
 const maxPredictBody = int64(512 * 1024)
+
+// maxAgentUserInput mirrors agentexecution's unexported
+// `maxCurrentAgentUserInputBytes` (internal/application/agentexecution/start.go).
+//
+// It is restated rather than imported because the constant is package-private,
+// and it is checked HERE rather than left to the use case because the use case
+// answers one undifferentiated `ErrInvalidCurrentAgentStart` for nine distinct
+// problems. Mapping that to a status makes every one of them a 502 — "the
+// support agent is broken" — when the true answer for this one is 400, "your
+// message is too long".
+//
+// THE CHECK IS AGAINST THE COMPOSED INPUT, not against `content`. The page
+// context is appended before the run starts, so a message comfortably under the
+// cap can cross it on bytes the user cannot see and did not type. Counting the
+// composed string is what makes the refusal correspond to something the user
+// can act on.
+const maxAgentUserInput = 256 * 1024
 
 // applicationEntityName is the `chat_participants.entity_name` an agent
 // participant carries, matching what the chat surface writes.
@@ -125,8 +150,18 @@ func (h *Handler) Predict(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body PredictRequest
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxPredictBody))
+	// MaxBytesReader, not a bare LimitReader: a LimitReader TRUNCATES silently,
+	// so an oversized body arrives as malformed JSON and is reported as
+	// "invalid request body" — the client is told it sent nonsense when it sent
+	// too much.
+	r.Body = http.MaxBytesReader(w, r.Body, maxPredictBody)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			apierr.WriteStatus(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		apierr.WriteStatus(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -141,6 +176,19 @@ func (h *Handler) Predict(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validTurnUUID(body.QuestionID) {
 		apierr.WriteStatus(w, http.StatusBadRequest, "question_id must be a lowercase UUID")
+		return
+	}
+
+	// The same three rules `validCurrentAgentText` applies, applied where they
+	// can still be reported as the client's problem. Without this they surface
+	// as the 502 below, which reads as a server fault.
+	userInput := h.composeUserInput(body)
+	if len(userInput) > maxAgentUserInput {
+		apierr.WriteStatus(w, http.StatusRequestEntityTooLarge, "message is too long")
+		return
+	}
+	if !utf8.ValidString(userInput) || strings.ContainsRune(userInput, '\x00') {
+		apierr.WriteStatus(w, http.StatusBadRequest, "message must be valid UTF-8 text")
 		return
 	}
 
@@ -166,7 +214,7 @@ func (h *Handler) Predict(w http.ResponseWriter, r *http.Request) {
 			ConversationUUID:    conversationUUID,
 			TargetParticipantID: participantID,
 			QuestionID:          body.QuestionID,
-			UserInput:           h.composeUserInput(body),
+			UserInput:           userInput,
 		})
 	if err != nil {
 		h.logger.Error("support assistant: start turn", "err", err)

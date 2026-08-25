@@ -1630,25 +1630,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 					Put("/notifications/prompt_lib/{projectID}", coreHandler.UpdateNotification)
 			})
 
-			// The chat conversation handler, declared HERE and built inside the
-			// /elitea_core group below, because it is used twice: by the
-			// /conversations routes, and by the support assistant's attachment
-			// route, which lives outside that group and delegates to this
-			// handler's multipart path with server-resolved identifiers (see
-			// v2support.Handler.UploadAttachments).
-			//
-			// ONE CONSTRUCTION, for the same reason the configurations handler
-			// is built once: a second NewHandler is how one surface acquires an
-			// object store, a pool or an attachment store the other lacks, and a
-			// support upload would then silently take a different code path —
-			// different size limits, different retention, different storage —
-			// from the chat upload it is supposed to BE.
-			//
-			// It stays nil when cfg.ConvsRepo is nil, and the support assistant
-			// then omits its attachment route's dependency and answers 503
-			// there rather than accepting bytes with nowhere to put them.
-			var convHandler *v2convs.Handler
-
 			// === elitea_core plugin routes ===
 			r.Route("/elitea_core", func(r chi.Router) {
 				// projectScoped closes the cross-project hole measured in #302.
@@ -1977,7 +1958,12 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 
 				// Conversations
 				if cfg.ConvsRepo != nil {
-					convHandler = v2convs.NewHandler(cfg.ConvsRepo).
+					// S20a: chat attachment byte path — WithPool/WithObjectStore/
+					// WithAttachmentStore are no-ops (nil) when cfg.Pool/
+					// cfg.ObjectStore are unset, so AddAttachments' JSON-metadata
+					// branch keeps working exactly as before wherever storage isn't
+					// wired (matching newArtifactHandler's own degrade convention).
+					convHandler := v2convs.NewHandler(cfg.ConvsRepo).
 						WithPool(cfg.Pool).
 						WithObjectStore(cfg.ObjectStore).
 						WithAttachmentStore(newAttachmentStore(cfg.Pool))
@@ -2715,9 +2701,6 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				}
 				if cfg.ConvsRepo != nil {
 					supportOptions = append(supportOptions, v2support.WithChatStore(cfg.ConvsRepo))
-				}
-				if convHandler != nil {
-					supportOptions = append(supportOptions, v2support.WithAttachmentRoute(convHandler))
 				}
 				if cfg.SupportAssistantStart != nil {
 					supportOptions = append(supportOptions, v2support.WithStartUseCase(cfg.SupportAssistantStart))

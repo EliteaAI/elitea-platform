@@ -2083,42 +2083,6 @@
             ]
         },
         {
-            "id": "support.deleteConversation",
-            "method": "DELETE",
-            "path": "/support_assistant/conversation/{conversationUUID}",
-            "operationId": "deleteSupportConversation",
-            "source": "generated",
-            "responseSchema": "DeleteSupportConversation200",
-            "fixture": null,
-            "usedBy": [
-                "widgets/support-assistant"
-            ]
-        },
-        {
-            "id": "support.clearMessages",
-            "method": "DELETE",
-            "path": "/support_assistant/messages/{conversationUUID}",
-            "operationId": "clearSupportConversationMessages",
-            "source": "generated",
-            "responseSchema": "ClearSupportConversationMessages200",
-            "fixture": null,
-            "usedBy": [
-                "widgets/support-assistant"
-            ]
-        },
-        {
-            "id": "support.uploadAttachments",
-            "method": "POST",
-            "path": "/support_assistant/attachments/{conversationUUID}",
-            "operationId": "uploadSupportAttachments",
-            "source": "generated",
-            "responseSchema": "UploadSupportAttachments200",
-            "fixture": null,
-            "usedBy": [
-                "widgets/support-assistant"
-            ]
-        },
-        {
             "id": "support.startTurn",
             "method": "POST",
             "path": "/support_assistant/predict/{conversationUUID}",
