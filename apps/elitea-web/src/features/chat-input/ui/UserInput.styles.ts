@@ -10,21 +10,35 @@ import type { Theme } from '@mui/material/styles';
 export const stopIconStyle = { width: '1rem', height: '1rem' };
 
 /**
- * `getInputBackground`'s baseline (`UserInput.jsx`) branched on
- * `palette.mode === 'light'` to pick the *focused* background — banned
- * outright here (R-T2: no `palette.mode` branching) and unnecessary: the
- * brand tokens already carry a matched, scheme-independent
- * `userInputBackground`/`userInputBackgroundActive` pair purpose-built for
- * exactly this component (`palette.augment.d.ts`), so the not-focused/
- * focused-or-recording split reduces to picking between those two tokens —
- * no JS mode branch, no `background.card.default` mismatch with the
- * baseline's own two-tier (default vs light/dark-focused) shape.
+ * `getInputBackground` reproduces `UserInput.jsx`'s two-tier background exactly:
+ *
+ *   not focused / not recording -> palette.background.card.default
+ *   focused or recording        -> palette.mode === 'light'
+ *                                    ? palette.background.secondary
+ *                                    : palette.background.onboardingBody
+ *
+ * This used to read `userInputBackground` / `userInputBackgroundActive`
+ * instead, on the reasoning that those tokens are "purpose-built for exactly
+ * this component". Their NAMES say so; the baseline does not. `UserInput.jsx`
+ * never reads either one — they are a 5%/10% translucent overlay pair
+ * (`dark5`/`dark10`, `white5`/`white10`) that the baseline spends on other
+ * surfaces (MemoryContextManagement, UsageDailyChart, SettingsDrawer), and our
+ * pack carries the same values. So the composer rendered as a 5-10% wash over
+ * the page rather than a filled surface, and a focused composer in particular
+ * read as unfilled — reported from a side-by-side screenshot.
+ *
+ * The mode branch is still not reproduced (R-T2 bans `palette.mode`), and does
+ * not need to be: `background.card.hover` already carries the baseline's two
+ * focused colours, one per scheme — light `#FFFFFF` (the baseline's
+ * `background.secondary` there) and dark `rgba(12, 17, 25, 1)` (its
+ * `background.onboardingBody`). It is chosen for those VALUES, which match the
+ * baseline pair exactly in both schemes, not for its name.
  */
 export function userInputStyles(isFocused: boolean, isDragOver: boolean, isRecording: boolean) {
   const getInputBackground = (theme: Theme): string =>
     isFocused || isRecording
-      ? theme.vars.palette.background.userInputBackgroundActive
-      : theme.vars.palette.background.userInputBackground;
+      ? theme.vars.palette.background.card.hover
+      : theme.vars.palette.background.card.default;
 
   const getInputBorder = (theme: Theme): string => {
     if (isRecording) return theme.vars.palette.primary.main;
