@@ -13,7 +13,7 @@
  *     A control that renders but sends nothing is exactly the class #130/#180
  *     shipped; asserting only that a button exists would not catch it.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -120,6 +120,9 @@ beforeEach(() => {
 afterEach(() => {
   resetGeneratedClient();
   delete window.admin_ui_config;
+  // The export tests stub URL.createObjectURL and anchor clicks; leaking those
+  // into a later file would make its downloads silently no-op.
+  vi.restoreAllMocks();
 });
 
 describe('Admin › Users', () => {
@@ -254,20 +257,9 @@ describe('Admin › Users', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 
-  it('renders the one unbacked control as disabled, stating why', async () => {
-    renderAdminRoute(<AdminUsers />);
-    await screen.findByText('Ada Admin');
-
-    // Export: no spreadsheet dependency in this app. It is now the ONLY
-    // disabled control here — activity used to sit beside it and is live.
-    const exportButton = screen.getByRole('button', { name: 'Export to Excel' });
-    expect(exportButton).toBeDisabled();
-    expect(exportButton.closest('span')).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('Export is unavailable'),
-    );
-  });
-
+  // No "renders the unbacked controls as disabled" test survives here: this
+  // page has none left. Export became a real CSV download, and activity is a
+  // real drawer — the assertions below are what each of them replaced.
   it('opens the activity drawer for the row it was clicked on', async () => {
     const user = userEvent.setup();
     renderAdminRoute(<AdminUsers />);
@@ -282,6 +274,68 @@ describe('Admin › Users', () => {
     // The SECOND row's user, not the first: a drawer wired to `rows[0]` looks
     // right until the operator opens it from any other row.
     expect(await screen.findByText('Bo Blocked (ID: 12)')).toBeInTheDocument();
+  });
+
+  /**
+   * The export used to be a disabled button; asserting only that it is now
+   * ENABLED would pass against a control that downloads an empty file. These
+   * two assert the file's actual bytes and that the request carried the
+   * on-screen filter — the "renders but sends nothing" class this file exists
+   * to fence.
+   */
+  it('exports every row the current filter selects, as CSV', async () => {
+    const user = userEvent.setup();
+    let exported: Blob | undefined;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+      exported = blob as Blob;
+      return 'blob:mock-url';
+    });
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+
+    // The UTF-8 BOM is what makes Excel decode the file as UTF-8, so it is
+    // asserted on the BYTES: `Blob.text()` strips a leading BOM per spec, and
+    // an assertion on the decoded string would pass without it.
+    const bytes = new Uint8Array(await exported!.arrayBuffer());
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+
+    const lines = (await exported!.text()).split('\r\n');
+    expect(lines[0]).toBe('Name,Email,Last login,Status,Admin Role');
+    expect(lines[1]).toBe('Ada Admin,ada@example.com,2026-08-01T10:00:00,Active,Admin');
+    // `suspended` again, and a null last_login as "Never" — same readings the
+    // table makes, so the file cannot disagree with the screen.
+    expect(lines[2]).toBe('Bo Blocked,bo@example.com,Never,Suspended,None');
+
+    // The export walks the LIST endpoint, filtered by the active tab.
+    const exportRead = recorded.filter((entry) => entry.method === 'GET').at(-1)!;
+    expect(exportRead.url).toContain('user_type=platform');
+    // 100, not a bigger number: the admin handler ignores a `limit` above 100
+    // and silently serves 20, which the walk would read as the last page.
+    expect(exportRead.url).toContain('limit=100');
+  });
+
+  it('reports a refused export instead of downloading an empty file', async () => {
+    const user = userEvent.setup();
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderAdminRoute(<AdminUsers />);
+    await screen.findByText('Ada Admin');
+
+    server.use(
+      http.get('*/admin/auth_users/administration', () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(clickSpy).not.toHaveBeenCalled();
   });
 
   it('renders no write control at all when the served config advertises none', async () => {

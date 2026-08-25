@@ -45,7 +45,9 @@ let recorded: RecordedRequest[] = [];
 const VALIDATION_REASON =
   'publish validation in this service is deterministic (name collisions, sub-agent cycles and depth); ' +
   'there is no AI evaluator for custom criteria to reach.';
-const SKILL_REASON = 'skill publishing is not implemented in this service';
+const SKILL_VALIDATION_REASON =
+  'publish validation for skills in this service is deterministic (version name collisions, empty ' +
+  'instructions, publish status); there is no AI evaluator for custom criteria to reach.';
 const WIDGET_REASON = 'the in-app support assistant is not mounted in this application';
 
 /** The server's own section list, trimmed to what these tests exercise. */
@@ -109,8 +111,37 @@ const SECTIONS = [
     id: 'skill_publishing',
     page: 'features',
     title: 'Skill Publishing',
-    unavailable_reason: SKILL_REASON,
-    fields: [],
+    fields: [
+      {
+        key: 'is_skill_publish_blocked',
+        type: 'boolean',
+        title: 'Block Skill Publishing',
+        default: false,
+      },
+      {
+        key: 'skill_publish_whitelist_project_ids',
+        type: 'array',
+        items: { type: 'integer' },
+        title: 'Skill Publishing Allowed Projects',
+        default: [],
+        visible_when: { field: 'is_skill_publish_blocked', value: true },
+      },
+      {
+        key: 'skill_categories',
+        type: 'array',
+        items: { type: 'string' },
+        title: 'Skill Categories',
+        default: [],
+      },
+      {
+        key: 'skill_publish_validation_rules',
+        type: 'string',
+        format: 'textarea',
+        title: 'Skill Publish Validation Rules',
+        default: '',
+        unavailable_reason: SKILL_VALIDATION_REASON,
+      },
+    ],
   },
   {
     id: 'resources',
@@ -266,11 +297,11 @@ describe('AdminFeatures — which section opens', () => {
   it('never fetches values for a section the server declared unavailable', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Skill Publishing');
+    await openSection('Support Assistant');
 
     await screen.findByTestId('admin-features-unavailable');
     const reads = recorded.filter(
-      (entry) => entry.method === 'GET-values' && entry.url.includes('/skill_publishing'),
+      (entry) => entry.method === 'GET-values' && entry.url.includes('/support_assistant'),
     );
     expect(reads).toHaveLength(0);
   });
@@ -278,8 +309,25 @@ describe('AdminFeatures — which section opens', () => {
   it('marks the unavailable sections in the sidebar before they are opened', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    // Skill Publishing and Support Assistant.
-    expect(screen.getAllByText('Not available here')).toHaveLength(2);
+    // Support Assistant. Skill Publishing used to be the second: it is live now
+    // (services/elitea-main/internal/api/v2/skillpublish), which is why this
+    // count went from two to one.
+    expect(screen.getAllByText('Not available here')).toHaveLength(1);
+  });
+
+  it('renders the live Skill Publishing form, with its one unavailable field disclosed', async () => {
+    renderAdminRoute(<AdminFeatures />);
+    await waitForMcpSection();
+    await openSection('Skill Publishing');
+
+    expect(screen.queryByTestId('admin-features-unavailable')).toBeNull();
+    expect(await screen.findByLabelText('Block Skill Publishing')).toBeInTheDocument();
+    expect(screen.getByText('Skill Categories')).toBeInTheDocument();
+    // The whitelist is hidden until the block switch is on — the same
+    // `visible_when` rule the agent section uses.
+    expect(screen.queryByText('Skill Publishing Allowed Projects')).toBeNull();
+    // The AI-rules field states the server's reason instead of taking input.
+    expect(screen.getByText(SKILL_VALIDATION_REASON)).toBeInTheDocument();
   });
 });
 

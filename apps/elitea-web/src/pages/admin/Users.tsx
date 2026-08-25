@@ -10,8 +10,8 @@
  *
  * ## What is real and what is not
  *
- * Three of the reference page's four row actions had NO server before this
- * unit. Each was resolved deliberately:
+ * Three of the reference page's four row actions had NO server when this unit
+ * started. All four are now live; each was resolved deliberately:
  *
  *  - **delete**, **set admin role**, **suspend/unsuspend** — implemented for
  *    real in `services/elitea-main/internal/api/v2/admin/users.go`, covered by
@@ -20,9 +20,11 @@
  *    Trail page gave elitea-main a real audit API whose four endpoints all take
  *    `user_id`; this page's row control opens `./UserActivityDrawer` over it.
  *    It shipped disabled only because the VIEW was missing, never the data.
- *  - **export to Excel** — the reference writes an .xlsx via a spreadsheet
- *    library this app does not depend on. Rendered DISABLED with the reason,
- *    rather than silently dropped or quietly changed to another format.
+ *  - **export** — real, and the one place this port deliberately differs in
+ *    FORMAT from the reference: it writes CSV, not .xlsx, because this app
+ *    carries no spreadsheet dependency (see `./adminUsersCsv`). The control
+ *    says "Export to CSV" so the button never promises a file type it does
+ *    not produce.
  *
  * Nothing here is a button that no-ops.
  *
@@ -37,6 +39,7 @@ import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
@@ -80,38 +83,58 @@ export function AdminUsers() {
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           {t('pages.admin.users.title', 'Users')}
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <SimpleSearchBar
-            value={state.search}
-            onChange={state.onSearchChange}
-            placeholder={t('pages.admin.users.search', 'Search by name or email')}
-            data-testid="admin-users-search"
-          />
+        {/*
+          The search box is the ONLY item allowed to shrink here. Before this,
+          every child was shrinkable, so at a narrow viewport the browser took
+          the width out of the Delete button instead — its label wrapped to two
+          lines inside a control whose height is a fixed 1.75rem (MuiButton.root),
+          and the text spilled out of the pill.
+        */}
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            flex: '1 1 auto',
+            justifyContent: 'flex-end',
+            minWidth: 0,
+          }}
+        >
+          <Box sx={{ flex: '1 1 12rem', minWidth: '8rem', maxWidth: '20rem' }}>
+            <SimpleSearchBar
+              value={state.search}
+              onChange={state.onSearchChange}
+              placeholder={t('pages.admin.users.search', 'Search by name or email')}
+              data-testid="admin-users-search"
+            />
+          </Box>
           {state.onSelectionChange && state.selectedIds.length > 0 ? (
             <Button
-              variant="elitea" color="alarm"
-                            size="small"
-              startIcon={<DeleteIcon />}
+              variant="elitea"
+              color="alarm"
+              size="small"
+              startIcon={<DeleteIcon fontSize="small" />}
               onClick={() => state.onRequestDelete(state.selectedIds)}
+              sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
             >
               {`${t('pages.admin.users.action.deleteSelected', 'Delete')} (${state.selectedIds.length})`}
             </Button>
           ) : null}
-          {/*
-            Export. admin_ui builds an .xlsx through a spreadsheet library that
-            elitea-web does not depend on, so there is nothing behind this
-            control yet. Disabled WITH the reason — a button that silently did
-            nothing is the defect this port exists to avoid.
-          */}
-          <Tooltip
-            title={t(
-              'pages.admin.users.action.exportUnavailable',
-              'Export is unavailable: the spreadsheet export has not been ported yet',
-            )}
-          >
+          <Tooltip title={t('pages.admin.users.action.export', 'Export to CSV')}>
+            {/* `span`: a disabled button fires no events, so the tooltip needs
+                a wrapper to hang its listeners on while the export runs. */}
             <span>
-              <IconButton disabled aria-label={t('pages.admin.users.action.export', 'Export to Excel')}>
-                <FileDownloadOutlinedIcon fontSize="small" />
+              <IconButton
+                onClick={state.onExport}
+                disabled={state.isExporting}
+                sx={{ flexShrink: 0 }}
+                aria-label={t('pages.admin.users.action.export', 'Export to CSV')}
+              >
+                {state.isExporting ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <FileDownloadOutlinedIcon fontSize="small" />
+                )}
               </IconButton>
             </span>
           </Tooltip>

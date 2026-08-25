@@ -161,18 +161,41 @@ adminTest('J31d: suspending a project reaches the server and survives a full rel
   ).toBeVisible({ timeout: 15_000 });
 });
 
-adminTest('J31e: create and delete are rendered unavailable, not wired to nothing', async ({ page }) => {
+adminTest('J31e: delete cannot fire without the typed confirmation', async ({ page }) => {
   await page.goto(BASE_URL + '/admin/app/projects', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText(SEEDED_TEAM_ACTIVE)).toBeVisible({ timeout: 20_000 });
 
-  // Both provisioning controls are DISABLED with a stated reason rather than
-  // omitted or, worse, wired to an endpoint that would half-provision a tenant.
-  await expect(page.getByRole('button', { name: 'Create project' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Delete projects' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'Export to Excel' })).toBeDisabled();
+  // Both provisioning controls are now REAL — this persona's administration
+  // role carries `projects.projects.project.create` and `.delete` (shared
+  // migration 0069). So is the export (CSV, #587). Nothing on this toolbar is
+  // disabled-with-a-reason any more, which is why each is asserted ENABLED: a
+  // journey that stopped checking would quietly go on describing controls that
+  // are no longer unavailable.
+  await expect(page.getByRole('button', { name: 'Create project' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Export to CSV' })).toBeEnabled();
 
-  // And the project count is unchanged by their presence: nothing on this page
-  // can create or destroy a tenant.
+  // Delete alone is disabled until a row is selected. That is a state, not a
+  // missing feature, and the tooltip says what to do about it.
+  const deleteButton = page.getByRole('button', { name: 'Delete projects' });
+  await expect(deleteButton).toBeDisabled();
+
+  const row = page.getByRole('row').filter({ hasText: SEEDED_TEAM_ACTIVE });
+  await row.getByRole('checkbox').check();
+  await expect(deleteButton).toBeEnabled();
+
+  // THE PROPERTY THIS JOURNEY EXISTS FOR. Opening the dialog must not be enough
+  // to destroy a tenant: the confirm button stays inert until the word is
+  // typed, and the dialog says by name what it would destroy. Asserted against
+  // the real server rather than a mock, because it is the last thing standing
+  // between a mis-click and `DROP SCHEMA p_<id> CASCADE`.
+  await deleteButton.click();
+  await expect(page.getByTestId('admin-projects-delete-list')).toContainText(SEEDED_TEAM_ACTIVE);
+  await expect(page.getByRole('button', { name: 'Delete permanently' })).toBeDisabled();
+
+  // Backing out leaves the project exactly where it was. Nothing in this
+  // journey deletes anything — see the NOT COVERED note at the foot of the file
+  // for where the destructive round trip IS exercised.
+  await page.getByRole('button', { name: 'Cancel' }).click();
   await expect(page.getByRole('row').filter({ hasText: SEEDED_TEAM_ACTIVE })).toHaveCount(1);
 });
 
@@ -224,11 +247,17 @@ adminTest('J31f: the activity drawer reads the audit trail scoped to one project
 /*
  * NOT COVERED here — deliberately, and each covered elsewhere or stated:
  *
- *  - project CREATE and DELETE. Neither is implemented: provisioning a project
- *    runs nine steps across the tenant schema, object storage, vault, RabbitMQ,
- *    InfluxDB and a system account, and deleting one runs them in reverse
- *    including `DROP SCHEMA p_<id> CASCADE`. J31e asserts that both controls
- *    are unavailable, which is the whole of what this port claims about them.
+ *  - the provisioning ROUND TRIPS. Both are implemented and both are exercised
+ *    against a real database — by `TestCreateProjectRouteBuildsTheReferenceTenant`
+ *    and `TestCreateThenDeleteLeavesTheDeploymentMigratable` in
+ *    services/elitea-main/internal/api/v2/projects, which assert the tenant
+ *    schema, the vault, the system account and the migration ledger directly.
+ *    They are deliberately NOT re-run here: this stack's seeded projects are
+ *    load-bearing for J31's `admin_names`, `counts` and pagination assertions,
+ *    so a journey that provisioned a tenth project or dropped a seeded one
+ *    would change what its siblings assert. J31e covers the part that is only
+ *    observable in a browser — that the irreversible control cannot fire on a
+ *    click alone.
  *  - the member dialog's WRITES. They reach real handlers
  *    (`POST`/`PUT /admin/users/administration/{projectID}`) and are covered by
  *    `TestUsersWriteVerbsPersistProjectMembership` in
@@ -242,6 +271,10 @@ adminTest('J31f: the activity drawer reads the audit trail scoped to one project
  *    persona; `TestProjectSuspendIsRefusedWithoutTheEditPermission` and
  *    `TestProjectsListingIsRefusedWithoutTheViewPermission` cover both
  *    directions against a real database.
- *  - Excel export — rendered DISABLED with its reason (no spreadsheet
- *    dependency in this app). J31e asserts the disabled state.
+ *  - the export's CONTENTS. The control is real (CSV, not the reference's
+ *    .xlsx — see `src/pages/admin/adminCsv.ts`), and J31e asserts it is
+ *    enabled, but the bytes are asserted where they can be read:
+ *    `Projects.test.tsx` reads the downloaded Blob, and `adminCsv.test.ts`
+ *    covers quoting and formula-injection neutralisation. A browser download
+ *    in Playwright would re-assert the same file through a much slower path.
  */
