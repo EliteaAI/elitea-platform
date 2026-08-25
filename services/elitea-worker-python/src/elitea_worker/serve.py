@@ -44,7 +44,8 @@ from elitea_worker.execution.delivery import (
     IndexClientContextFactory,
     IndexIngestDeliveryProcessor,
 )
-from elitea_worker.execution.errors import DependencyUnavailable, WorkerError
+from elitea_worker.execution.errors import DependencyUnavailable, InvalidInput, WorkerError
+from elitea_worker.execution.quarantine import FileQuarantineStore
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.indexing_runtime_capabilities import (
@@ -128,6 +129,23 @@ class _ShutdownBudget:
         return max(0.0, deadline - asyncio.get_running_loop().time())
 
 
+class QuarantineStore(Protocol):
+    """The durable half of the quarantine.
+
+    Narrow by design, like the command consumer beside it: record one entry,
+    read them all back, and nothing else. `clear` is deliberately absent from
+    what the serve loop can reach — a worker that decided an entry is hopeless
+    is not the component that may decide it is repaired.
+    """
+
+    @property
+    def cap(self) -> int: ...
+
+    async def load(self) -> frozenset[str]: ...
+
+    async def add(self, entry_id: str, *, reason_code: str) -> bool: ...
+
+
 class WorkerServeLoop:
     """Bounded read/reclaim queue with no data-plane publication surface."""
 
@@ -143,6 +161,7 @@ class WorkerServeLoop:
         dependency_retry_millis: int,
         shutdown_timeout_millis: int,
         event_sink: Callable[[str, WorkerError | None], None] | None = None,
+        quarantine_store: QuarantineStore | None = None,
     ) -> None:
         if (
             min(
@@ -175,8 +194,18 @@ class WorkerServeLoop:
         # broken dependency into a memory leak. The cap is the same order as the
         # ownership window, so it can hold every entry this worker could have
         # in flight, and one more round of them.
-        self._quarantined: set[tuple[str, str]] = set()
+        # Entry ids, not (stream, entry_id) like `_owned_entry_ids`: runtime v1
+        # binds ONE stream to this consumer group, and this loop drives exactly
+        # one consumer, so the stream is a constant here. Keying on it too would
+        # mean deriving the name a second way for the durable load, and a
+        # mismatch there would silently un-quarantine everything.
+        self._quarantined: set[str] = set()
         self._quarantine_cap = 2 * (queue_capacity + max_concurrency)
+        # Optional on purpose. Without a store the quarantine still stops the
+        # spin for the life of this process, which is the whole of the defect
+        # for a single-worker deployment; with one it also survives a restart
+        # and is shared with every other worker in the group.
+        self._quarantine_store = quarantine_store
         # One token covers each fetched, queued, or actively processed PEL entry.
         self._ownership_slots: asyncio.Queue[None] = asyncio.Queue(
             queue_capacity + max_concurrency
@@ -188,6 +217,7 @@ class WorkerServeLoop:
     async def run(self, stop: asyncio.Event) -> None:
         if stop.is_set():
             return
+        await self._load_durable_quarantine()
         intake = asyncio.create_task(
             self._intake_loop(stop),
             name="elitea-redis-intake",
@@ -312,6 +342,81 @@ class WorkerServeLoop:
                     next_reclaim = loop.time() + self._reclaim_interval
                 self._release_delivery_capacity(reserved)
 
+    async def _persist_quarantine(
+        self,
+        delivery: RedisCommandDelivery,
+        error: WorkerError,
+    ) -> None:
+        """Make the refusal outlive this process.
+
+        In-memory alone, a restart re-runs the parked command once and parks it
+        again — the spin returns, just slower and once per process. Recording it
+        is what makes the decision survive, and what shares it with every other
+        worker in the group.
+
+        Never fatal, and never allowed to undo the in-memory decision: the entry
+        is already quarantined here whatever the store says, so a store outage
+        degrades to the process-local behaviour rather than resuming the spin.
+        The two failure shapes are announced separately because they need
+        different operator responses — a refusal is a bound that was reached, an
+        unavailability is a dependency to fix.
+        """
+        if self._quarantine_store is None:
+            return
+        try:
+            stored = await self._quarantine_store.add(
+                delivery.entry_id,
+                reason_code=error.code,
+            )
+        except asyncio.CancelledError:
+            raise
+        except WorkerError as exc:
+            self._event_sink("quarantine_write_rejected", exc)
+            return
+        except Exception:
+            self._event_sink("quarantine_write_unavailable", DependencyUnavailable())
+            return
+        if not stored:
+            # The DURABLE cap refused it, which is a different bound from this
+            # process's own cap and has to be said separately: this entry will
+            # be re-run once by the next worker that starts.
+            self._event_sink("quarantine_store_full", error)
+
+    async def _load_durable_quarantine(self) -> None:
+        """Adopt this group's existing refusals before reading any command.
+
+        Ordering is the point: seeding AFTER intake starts would leave a window
+        in which the very entry a previous process parked is executed once more,
+        which is the behaviour this exists to remove.
+
+        A failure to read is NOT fatal. Refusing to start would turn a
+        degraded-but-working worker into an outage; the cost of continuing is
+        that a parked entry runs once more and is parked again. Announced either
+        way, because the two states are operationally different.
+        """
+        if self._quarantine_store is None:
+            return
+        try:
+            recorded = await self._quarantine_store.load()
+        except asyncio.CancelledError:
+            raise
+        except WorkerError as exc:
+            self._event_sink("quarantine_load_rejected", exc)
+            return
+        except Exception:
+            self._event_sink("quarantine_load_unavailable", DependencyUnavailable())
+            return
+        self._quarantined.update(recorded)
+        if recorded:
+            self._event_sink("quarantine_loaded", None)
+        # A record that lost lines is still usable, but the entries it lost will
+        # each run once more before being parked again — so it is reported.
+        if getattr(self._quarantine_store, "malformed_lines", 0):
+            self._event_sink(
+                "quarantine_record_damaged",
+                InvalidInput("The quarantine record contains unreadable lines."),
+            )
+
     async def _heartbeat_loop(self) -> None:
         while True:
             await asyncio.sleep(self._reclaim_interval)
@@ -378,7 +483,7 @@ class WorkerServeLoop:
             # Silent on purpose: the quarantine decision is announced ONCE, by
             # the worker that made it. Re-announcing it on every reclaim page is
             # the log flood this replaces.
-            if key in self._quarantined:
+            if delivery.entry_id in self._quarantined:
                 self._release_delivery_capacity(1)
                 continue
             self._owned_entry_ids.add(key)
@@ -434,11 +539,12 @@ class WorkerServeLoop:
                 # names. What this does fix is the spin, and the silence.
                 if not exc.retryable:
                     if len(self._quarantined) < self._quarantine_cap:
-                        self._quarantined.add(key)
+                        self._quarantined.add(delivery.entry_id)
                         self._event_sink(
                             "delivery_quarantined",
                             _quarantine_notice(exc, key),
                         )
+                        await self._persist_quarantine(delivery, exc)
                     else:
                         # Announced rather than silently widened: past the cap
                         # the old spin resumes, and an operator must know that
@@ -780,6 +886,13 @@ async def _serve_deployment_inner(
             read_count=limits.redis_read_batch,
             block_ms=limits.redis_block_millis,
         )
+        # The spool root, not Redis: the runtime ACL grants this worker no write
+        # primitive and no key pattern of its own, so recording anything there
+        # would mean widening it. The spool is already private to this worker
+        # and already survives a restart. See execution/quarantine.py.
+        quarantine_store = FileQuarantineStore(
+            config.spool_root / "quarantine.v1"
+        )
         metadata = (
             ("x-elitea-workload-session", config.workload_session_id),
             ("x-elitea-producer-id", config.producer_id),
@@ -870,6 +983,7 @@ async def _serve_deployment_inner(
             dependency_retry_millis=limits.dependency_retry_millis,
             shutdown_timeout_millis=limits.shutdown_timeout_millis,
             event_sink=_emit_runtime_event,
+            quarantine_store=quarantine_store,
         )
         await _run_with_shutdown_budget(runtime, stop, shutdown_budget)
     finally:
