@@ -225,6 +225,19 @@ function AdminNavLink({ item, active, collapsed }: AdminNavLinkProps): ReactNode
         sx={(theme: Theme) => ({
           padding: '0.5rem',
           height: '2rem',
+          // MUI's own ListItemButton root sets `flex-grow: 1` — it is built for
+          // a row inside a List. Here the items sit in a COLUMN whose first
+          // group is `flex: 1` (so the second group bottom-aligns), and on the
+          // column's main axis that grow makes every item absorb a share of the
+          // leftover height. `height: '2rem'` above then never holds: flex-grow
+          // resolves the main size and the declared height is only a basis, so
+          // the rail rendered as evenly-spread items with large gaps between
+          // them rather than a compact 2rem list.
+          //
+          // Pinned here rather than in the container: the container's `flex: 1`
+          // is deliberate and load-bearing for the bottom-aligned group.
+          flexGrow: 0,
+          flexShrink: 0,
           borderRadius: theme.vars.shape.radiusMd,
           boxSizing: 'border-box',
           justifyContent: collapsed ? 'center' : 'flex-start',

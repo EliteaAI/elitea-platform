@@ -44,6 +44,14 @@ export function SidebarNavItem({ label, icon, to, selected, showLabel }: Sidebar
           padding: '0.5rem',
           borderRadius: theme.vars.shape.radiusMd,
           height: '2rem',
+          // See the same pair on `pages/admin/AdminNav.tsx`'s AdminNavLink.
+          // MUI's ListItemButton root sets `flex-grow: 1` for use as a row in a
+          // List; these items sit in a COLUMN (`SidebarBody.tsx:142`, `flex: 1`),
+          // where that grow makes each one absorb leftover height and the
+          // declared `height: '2rem'` stops holding. Only visible when the items
+          // do not already fill the rail, which is why it survived here.
+          flexGrow: 0,
+          flexShrink: 0,
           boxSizing: 'border-box',
           justifyContent: showLabel ? undefined : 'center',
           '&:hover': { background: theme.vars.palette.background.button.drawerMenu.hover },

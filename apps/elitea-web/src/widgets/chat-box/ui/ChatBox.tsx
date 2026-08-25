@@ -84,10 +84,13 @@ export interface ChatBoxProps {
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly onDelete?: { readonly answer?: (messageId: string) => void; readonly all?: () => void };
-  /** Agent/pipeline editor open/close callbacks — see `ChatBox.helpers.ts`'s `buildAgentEditorProps`. Optional; falls back to the pre-existing no-ops. */
-  readonly editorCallbacks?: ChatBoxEditorCallbacks;
-  /** Real lists for the composer's "+" menu — see `processes/chat/model/usePlusMenuEntities.ts`, which is the only layer allowed to fetch them. */
-  readonly entitySubmenus?: PlusChatButtonEntitySubmenus;
+  /** Host-supplied composer extension points, bundled to stay under the §3.5 component-props budget (one slot instead of two, as `onDelete` above); both pass straight through. */
+  readonly extensions?: {
+    /** Agent/pipeline editor open/close callbacks — see `ChatBox.helpers.ts`'s `buildAgentEditorProps`. Optional; falls back to the pre-existing no-ops. */
+    readonly editorCallbacks?: ChatBoxEditorCallbacks;
+    /** Real lists for the composer's "+" menu — see `processes/chat/model/usePlusMenuEntities.ts`, which is the only layer allowed to fetch them. */
+    readonly entitySubmenus?: PlusChatButtonEntitySubmenus;
+  };
 }
 
 export type { ChatBoxHandle };
@@ -108,9 +111,9 @@ const ChatBoxInner = memo(function ChatBox({
   isLoadingConversation,
   llm,
   onDelete,
-  editorCallbacks,
-  entitySubmenus,
+  extensions,
 }: ChatBoxProps) {
+  const { editorCallbacks, entitySubmenus } = extensions ?? {};
   const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);

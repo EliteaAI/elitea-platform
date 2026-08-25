@@ -131,7 +131,7 @@ export interface ChatPageProps {
    * the only layer allowed to call `useChatEntityBrowser` — see `ChatBox`'s
    * own prop doc for why the data cannot be fetched further down.
    */
-  readonly entitySubmenus?: ChatBoxProps['entitySubmenus'];
+  readonly entitySubmenus?: NonNullable<ChatBoxProps['extensions']>['entitySubmenus'];
 }
 
 const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
@@ -174,8 +174,14 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
           {...(user ? { user } : {})}
           participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
           isLoadingConversation={isLoadingConversation}
-          {...(editorCallbacks ? { editorCallbacks } : {})}
-          {...(entitySubmenus ? { entitySubmenus } : {})}
+          {...(editorCallbacks || entitySubmenus
+            ? {
+                extensions: {
+                  ...(editorCallbacks ? { editorCallbacks } : {}),
+                  ...(entitySubmenus ? { entitySubmenus } : {}),
+                },
+              }
+            : {})}
         />
       </Box>
       {/*
