@@ -110,27 +110,53 @@ test('J30: brand pack loads logo, primary colour, and product name without rebui
   // pack is what makes the assertion discriminating.
 
   // The endpoint itself is real — assert its contract before overriding it.
+  //
+  // This stack configures no BRAND_PACK_PATH, so the contract is that the
+  // endpoint publishes NOTHING and the UI keeps its own compiled-in pack.
+  // It used to serve elitea-main's built-in `DefaultPack()` here, which was a
+  // whole-app visual regression rather than a harmless floor: channel C wins
+  // over channel A whenever the global is set, and that pack states zero
+  // scheme tokens, so `resolveScheme` derived all 362 ids per scheme by
+  // rotating the reference ramp onto its placeholder `brand.hue` — every
+  // surface in the app repainted from one colour nobody chose. Asserting the
+  // global is ABSENT here is what keeps that from coming back silently.
   const brandResp = await page.request.get(BASE_URL + '/api/v2/branding/bootstrap.js', {
     failOnStatusCode: false,
   });
   expect(brandResp.status()).toBe(200);
   const body = await brandResp.text();
-  expect(body).toContain('window.elitea_brand');
+  expect(body).not.toContain('window.elitea_brand');
 
-  const servedPack = JSON.parse(body.slice(body.indexOf('{'), body.lastIndexOf('}') + 1)) as {
-    product: { name: string; shortName: string };
-    brand: { hue: string };
-    assets: { logoFull: string };
-  };
-  expect(servedPack.brand.hue).toMatch(/^#[0-9a-fA-F]{6}$/);
-
-  // Serve a DIFFERENT pack — same endpoint, no rebuild. This is the whole
+  // Serve a pack over the same endpoint, with no rebuild. This is the whole
   // point of JRNY-030: a tenant pack swap must reach the running app.
+  //
+  // Stated in full rather than derived from what the endpoint served, since
+  // it now serves no pack to derive from. Mirrors
+  // `src/shared/brand/tokens/default.pack.json`'s shape (the `BrandPack` zod
+  // schema is `.strict()`, so every required key must be present and no extra
+  // key may be) — same hand-mirroring convention as SCHEME_ATTRIBUTE above.
+  // `schemes` are left EMPTY on purpose: that is what makes assertion 3 below
+  // discriminating, because with no token stated every id must be derived
+  // from `brand.hue`.
   const shellPack = {
-    ...servedPack,
     id: 'autotest-shell',
+    version: '1.0.0',
     product: { name: 'Elitea-shell', shortName: 'Elitea-shell' },
+    assets: {
+      logoFull: '/app/brand/logo-full.svg',
+      logoMark: '/app/brand/logo-mark.svg',
+      favicon: '/app/brand/favicon.svg',
+    },
+    typography: {
+      fontFamily: '"Montserrat", Roboto, Arial, sans-serif',
+      fontFamilyMono: '"Roboto Mono", Consolas, "Courier New", monospace',
+      baseSize: 14,
+      scale: 1.2,
+    },
+    shape: { radiusSm: 4, radiusMd: 8, radiusLg: 16, radiusPill: 9999, density: 'comfortable' },
+    locale: { default: 'en-GB', dateLocale: 'en-GB' },
     brand: { hue: '#FF00AA' },
+    schemes: { light: {}, dark: {} },
   };
   let bootstrapRequested = false;
   await page.route('**/api/v2/branding/bootstrap.js', async (route) => {

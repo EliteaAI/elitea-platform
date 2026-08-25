@@ -10,6 +10,14 @@
  * turn exists. `ChatBox` owns that switch; this component is what it puts
  * above the composer while the switch is in the empty position.
  *
+ * Both lines render as `<p>`, not as headings. `variant="h6"` sets the
+ * TYPOGRAPHY; without an explicit `component` MUI also emits an `<h6>`
+ * ELEMENT, and on a page whose heading run starts at `<h1>` that is an
+ * `heading-order` violation ("heading levels should only increase by one") —
+ * which is exactly what axe reported on the `/chat` cold-load journey. A
+ * greeting is display text, not a section heading for navigable content, so
+ * the right fix is to drop the heading semantics rather than to renumber.
+ *
  * The greeting uses the first name only. `user.name` is a full display name
  * ("Alexander Kharkevich"), and the baseline greets by first name; falling
  * back to the whole string when there is no space keeps a single-word name
@@ -53,6 +61,7 @@ export function ChatEmptyGreeting({ userName }: ChatEmptyGreetingProps): ReactNo
       <LogoMarkIcon style={{ width: '3.5rem', height: '3.5rem' }} />
       {name !== undefined && (
         <Typography
+          component="p"
           variant="h6"
           sx={{ color: 'primary.main', fontWeight: 600, textAlign: 'center' }}
         >
@@ -60,6 +69,7 @@ export function ChatEmptyGreeting({ userName }: ChatEmptyGreetingProps): ReactNo
         </Typography>
       )}
       <Typography
+        component="p"
         variant="h6"
         sx={{ color: 'text.secondary', fontWeight: 700, textAlign: 'center' }}
       >

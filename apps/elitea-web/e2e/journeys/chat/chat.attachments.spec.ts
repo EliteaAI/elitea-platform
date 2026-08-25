@@ -16,8 +16,11 @@
  * PRODUCT GAPS deliberately NOT asserted around (verified 2026-08-08):
  *  - There is no pre-send attachment preview: ChatBox never passes
  *    `slots.attachmentList`, so `normalizeUserInputProps` renders null.
- *    The only pre-send signals the product emits are the attach button's
- *    tooltip counter and its disabled state — this file asserts those.
+ *    The only pre-send signals the product emits are the attach row's
+ *    remaining-capacity counter and its disabled state — this file asserts
+ *    those. (The counter used to live in a hover tooltip on a bare paperclip
+ *    button; on the chat surface that control is now the first row of the
+ *    "+" menu and the count is visible text on it.)
  *  - Upload PROGRESS PERCENT is dead in the chat page. `UserInputFooter`
  *    renders `<UploadProgressIndicator progress={isUploading ? uploadProgress
  *    : undefined}>`, but ChatBox.tsx never passes an `attachments` prop to
@@ -52,7 +55,7 @@ import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
 import { API_BASE, DEFAULT_PROJECT_ID, deleteConversation } from '../../fixtures/api';
 
-/** Exact accessible name of the attach control (AttachmentButton.tsx:147 + en.json:759). */
+/** Exact accessible name of the attach control (`AttachmentButton.tsx`'s `ariaLabel` + en.json). */
 const ATTACH_NAME = 'attach files';
 /** MAX_ATTACHMENTS (src/shared/lib/attachments.ts). */
 const MAX_ATTACHMENTS = 10;
@@ -62,13 +65,36 @@ const CHUNK_SIZE = 5 * 1024 * 1024;
 const uploadUrlRe = new RegExp(`/elitea_core/attachments/prompt_lib/${DEFAULT_PROJECT_ID}/(\\d+)$`);
 
 /**
- * The AttachmentButton's OWN hidden input — scoped to the button's own
- * container (button < Tooltip span < the footer div that also holds the
- * input), not to any file input that happens to exist on the shell.
+ * Opens the composer's "+" menu and returns the attach row inside it.
+ *
+ * On the chat surface the attach control is NOT a bare button in the footer
+ * any more — it is the first row of the "+" menu, which is what the product
+ * shows (`PlusChatButton`; baseline `NewChatInput.jsx`'s `fromTheChat`
+ * branch). It is a `menuitem`, not a `button`, because it sits inside a
+ * `role="menu"`, and it carries its remaining capacity as VISIBLE text
+ * rather than in a hover tooltip — so the capacity assertions below read the
+ * row instead of `getByRole('tooltip')`.
+ *
+ * The menu is left open: the hidden file input only exists while it is
+ * rendered, and nothing here closes it.
+ */
+async function openAttachRow(page: import('@playwright/test').Page) {
+  const plus = page.getByTestId('plus-menu-button');
+  await expect(plus).toBeEnabled({ timeout: 20_000 });
+  await plus.click();
+  const row = page.getByTestId('plus-menu-attachments');
+  await expect(row).toBeVisible();
+  return row;
+}
+
+/**
+ * The AttachmentButton's OWN hidden input — scoped to the attach row's own
+ * container (the row and the input are siblings in the component's fragment),
+ * not to any file input that happens to exist on the shell.
  */
 function attachInput(page: import('@playwright/test').Page) {
   return page
-    .getByRole('button', { name: ATTACH_NAME, exact: true })
+    .getByTestId('plus-menu-attachments')
     .locator('xpath=ancestor::div[1]')
     .locator('input[type="file"]');
 }
@@ -97,27 +123,25 @@ test('J12: attach a small file to a chat message', async ({ page }) => {
   try {
     await page.goto(BASE_URL + '/app/chat');
 
-    // The attach control, by its one stable handle: its accessible name.
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
-
     await checkA11y(page);
+
+    const attach = await openAttachRow(page);
+    await expect(attach).toHaveAttribute('aria-label', ATTACH_NAME);
 
     // Capacity counter BEFORE attaching — computed by
     // getRemainingAttachmentCapacity from the component's own state.
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS} files left`);
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS} left`);
 
-    // The hidden input is the button's own sibling inside the chat input.
+    // The hidden input is the attach row's own sibling inside the menu.
     const input = attachInput(page);
     await expect(input).toHaveCount(1);
     await input.setInputFiles(tmpFile);
 
     // The file really entered attachment state: remaining capacity drops by one.
-    // A build that swallowed the picked file keeps reporting 10.
-    await page.mouse.move(2, 2);
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS - 1} files left`);
+    // A build that swallowed the picked file keeps reporting 10. No hover
+    // choreography any more — the counter is visible text on the row, so it
+    // is readable without provoking a tooltip.
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS - 1} left`);
 
     // Arm the upload watcher BEFORE sending: the send creates the conversation
     // over REST first, then uploads into it (resolveConversationForSend →
@@ -204,17 +228,16 @@ test('J12b: attaching MAX_ATTACHMENTS files disables further attachment', async 
 
   try {
     await page.goto(BASE_URL + '/app/chat');
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
+    const attach = await openAttachRow(page);
 
     await attachInput(page).setInputFiles(files);
 
-    // isAtMaxCapacity → both the button and its input go disabled, and the
-    // tooltip switches to the max-attachments string.
-    await expect(attach).toBeDisabled();
+    // isAtMaxCapacity → the row goes disabled, its input with it, and the
+    // counter reads zero. `aria-disabled` rather than `toBeDisabled()`: a
+    // `menuitem` is a div, so there is no `disabled` DOM property to read.
+    await expect(attach).toHaveAttribute('aria-disabled', 'true');
     await expect(attachInput(page)).toBeDisabled();
-    await attach.hover({ force: true });
-    await expect(page.getByRole('tooltip')).toHaveText(`Max ${MAX_ATTACHMENTS} attachments`);
+    await expect(attach).toContainText('0 left');
 
     await checkA11y(page);
   } finally {
@@ -238,14 +261,12 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
     });
 
     await page.goto(BASE_URL + '/app/chat');
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
-
     await checkA11y(page);
 
+    const attach = await openAttachRow(page);
+
     await attachInput(page).setInputFiles(tmpFile);
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS - 1} files left`);
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS - 1} left`);
 
     await send(page, 'autotest_attach large file journey');
 
