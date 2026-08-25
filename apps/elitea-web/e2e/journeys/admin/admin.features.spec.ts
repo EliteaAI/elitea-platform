@@ -653,29 +653,40 @@ adminTest(
 /* ── the sections with no consumer ─────────────────────────────────────── */
 
 adminTest(
-  'J36i: a section with no consumer states its reason and refuses its write',
+  'J36i: a section with no consumer states its reason and refuses its write; a live one saves',
   async ({ page }) => {
     await openFeatures(page);
 
-    for (const section of ['Skill Publishing', 'Support Assistant']) {
+    for (const section of ['Support Assistant']) {
       await openSection(page, section);
       const notice = page.getByTestId('admin-features-unavailable');
       await expect(notice).toBeVisible();
-      // The reason names the actual obstacle — a missing subsystem, or a widget
-      // with no render site — so an operator can tell "this platform cannot do
-      // that" from "that is switched off".
-      await expect(notice).toContainText(
-        /not implemented in this service|not mounted in this application/,
-      );
+      // The reason names the actual obstacle — a widget with no render site —
+      // so an operator can tell "this platform cannot do that" from "that is
+      // switched off".
+      await expect(notice).toContainText(/not mounted in this application/);
       await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
     }
 
-    for (const section of ['skill_publishing', 'support_assistant']) {
+    for (const section of ['support_assistant']) {
       const refused = await putValues(page, section, { anything: true });
       expect(refused.status, `${section} must refuse its write, not accept and discard it`).toBe(
         501,
       );
     }
+
+    // Skill Publishing used to be in both lists above. It is LIVE now — the
+    // publish endpoint, the public catalog and the categories route all exist
+    // (services/elitea-main/internal/api/v2/skillpublish) — so the assertion
+    // that matters is the opposite one: the section renders a form, and its
+    // write is accepted rather than refused.
+    await openSection(page, 'Skill Publishing');
+    await expect(page.getByTestId('admin-features-unavailable')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+    const accepted = await putValues(page, 'skill_publishing', {
+      is_skill_publish_blocked: false,
+    });
+    expect(accepted.status, 'skill_publishing is implemented and must accept its write').toBe(200);
 
     await checkA11y(page);
   },

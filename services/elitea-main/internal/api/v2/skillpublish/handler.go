@@ -45,10 +45,14 @@
 //   - `my_liked` / `trend_*` filters on the public listing, and the
 //     likes/is_liked/authors decoration on its rows. Those come from the social
 //     plugin's like store, which is a separate surface.
-//   - admin-configurable extra skill categories
-//     (`skill_publishing_guardrail.skill_categories`). The Go admin config
-//     schema has no such section, and reading a key no page can write is the
-//     lookup-that-can-only-miss defect `AgentCategories` already documents.
+//
+// Admin-configurable extra skill categories
+// (`skill_publishing_guardrail.skill_categories`) WERE on that list, for the
+// reason that the Go admin config schema had no section to author them in and
+// reading a key no page can write is the lookup-that-can-only-miss defect
+// `AgentCategories` documents. The `skill_publishing` section exists now, so
+// they are read (categories.go) and the guardrail is the skill one
+// (`publishBlocked`).
 package skillpublish
 
 import (
@@ -160,29 +164,38 @@ func actingUserID(ctx context.Context, fallback int) int {
 // publishBlocked reports whether platform policy forbids publishing from a
 // project.
 //
-// This reads the SAME `agent_publishing` guardrail the application publish path
-// enforces. The reference keeps a second, skill-specific
-// `skill_publishing_guardrail` section, but this platform's admin Features page
-// declares exactly one publishing section, so a skill-only switch would be a
-// control no operator can reach. One guardrail governing both entity types is
-// the honest reading of the switch that exists; if the admin page ever grows a
-// skill-specific section, this is the single call site to repoint.
+// This reads the SKILL guardrail — `skill_publishing.is_skill_publish_blocked`
+// and its whitelist — and no longer the agent one.
+//
+// It used to read `agent_publishing`, and that was the right answer while it
+// was true: the admin Features page declared exactly one publishing section, so
+// a skill-only switch would have been a control no operator could reach, and
+// this comment named itself as "the single call site to repoint" if a
+// skill-specific section ever arrived. It has (`skillPublishingSection` in
+// internal/api/v2/admin/config_schemas.go), so this is that repoint.
+//
+// The consequence is deliberate and worth stating: a deployment that had
+// blocked AGENT publishing was, until now, also refusing skill publishes. After
+// this it is not — the skill switch defaults to off, and an operator who wants
+// both frozen throws both. That is the reference's behaviour
+// (`is_skill_publish_blocked` is a separate flag in its platform_settings
+// payload) and the one the admin page's two independent switches now promise.
 func (h *Handler) publishBlocked(ctx context.Context, projectID string) bool {
-	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionAgentPublishing)
+	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionSkillPublishing)
 	if err != nil {
 		// Permissive on an unreadable store, for the reason
 		// eliteacore/platform_flags.go documents: a database hiccup must not
 		// present itself as a platform-wide publishing freeze.
 		return false
 	}
-	if !values.Bool(platformconfig.KeyPublishBlocked, false) {
+	if !values.Bool(platformconfig.KeySkillPublishBlocked, false) {
 		return false
 	}
 	parsed, err := strconv.ParseInt(projectID, 10, 64)
 	if err != nil {
 		return true
 	}
-	for _, allowed := range values.Ints(platformconfig.KeyPublishWhitelistProjectIDs) {
+	for _, allowed := range values.Ints(platformconfig.KeySkillPublishWhitelistProjectIDs) {
 		if allowed == parsed {
 			return false
 		}

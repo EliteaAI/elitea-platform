@@ -19,7 +19,7 @@ func passingRow() skillVersionRow {
 }
 
 func TestDeterministicChecksPassAGoodSkill(t *testing.T) {
-	result := runDeterministicChecks(passingRow(), "v1.0-initial", "Development", false)
+	result := runDeterministicChecks(passingRow(), "v1.0-initial", "Development", defaultSkillCategories, false)
 	if result.Status != "PASS" {
 		t.Fatalf("status = %s, want PASS (critical %v, warnings %v)", result.Status, result.CriticalIssues, result.Warnings)
 	}
@@ -52,7 +52,7 @@ func TestDeterministicChecksFailOnBlockingContent(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			row := passingRow()
 			testCase.mutate(&row)
-			result := runDeterministicChecks(row, testCase.versionName, testCase.category, testCase.nameTaken)
+			result := runDeterministicChecks(row, testCase.versionName, testCase.category, defaultSkillCategories, testCase.nameTaken)
 			if result.Status != "FAIL" {
 				t.Fatalf("status = %s, want FAIL", result.Status)
 			}
@@ -77,7 +77,7 @@ func TestDeterministicChecksFailOnBlockingContent(t *testing.T) {
 func TestSecretInInstructionsWarns(t *testing.T) {
 	row := passingRow()
 	row.Instructions += " Use api_key: sk-abcdefghijklmnopqrstuvwxyz012345 when calling the service."
-	result := runDeterministicChecks(row, "v1.0-initial", "", false)
+	result := runDeterministicChecks(row, "v1.0-initial", "", defaultSkillCategories, false)
 	if result.Status != "WARN" {
 		t.Fatalf("status = %s, want WARN (critical %v)", result.Status, result.CriticalIssues)
 	}
@@ -124,7 +124,7 @@ func TestApplyCategoryToTags(t *testing.T) {
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
-			got := applyCategoryToTags(testCase.tags, testCase.category)
+			got := applyCategoryToTags(defaultSkillCategories, testCase.tags, testCase.category)
 			if len(got) != len(testCase.want) {
 				t.Fatalf("got %v, want %v", got, testCase.want)
 			}
@@ -145,5 +145,75 @@ func TestProjectSchemaRejectsNonNumericSegments(t *testing.T) {
 	}
 	if schema, ok := projectSchema("42"); !ok || schema != "p_42" {
 		t.Errorf("projectSchema(\"42\") = %q, %v; want p_42, true", schema, ok)
+	}
+}
+
+// The category list an operator's additions produce. The merge rule is where a
+// tenth category either reaches the publish dialog or silently does not, and it
+// has three edges the reference states explicitly and this stack now shares.
+func TestMergeCategoriesFoldsExtrasWithoutDisplacingTheFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		defaults []string
+		extras   []string
+		want     []string
+	}{
+		{
+			"no extras leaves the defaults alone",
+			[]string{"Development", "Other"},
+			nil,
+			[]string{"Development", "Other"},
+		},
+		{
+			"an extra is appended before the fallback",
+			[]string{"Development", "Other"},
+			[]string{"Security"},
+			[]string{"Development", "Security", "Other"},
+		},
+		{
+			"a re-typed default does not create a second bucket",
+			[]string{"Development", "Other"},
+			[]string{"development"},
+			[]string{"Development", "Other"},
+		},
+		{
+			"re-adding the fallback does not move it out of last place",
+			[]string{"Development", "Other"},
+			[]string{"other", "Security"},
+			[]string{"Development", "Security", "Other"},
+		},
+		{
+			"blank and whitespace-only extras are dropped",
+			[]string{"Development", "Other"},
+			[]string{"", "   ", " Security "},
+			[]string{"Development", "Security", "Other"},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := mergeCategories(testCase.defaults, testCase.extras)
+			if len(got) != len(testCase.want) {
+				t.Fatalf("got %v, want %v", got, testCase.want)
+			}
+			for index := range got {
+				if got[index] != testCase.want[index] {
+					t.Fatalf("got %v, want %v", got, testCase.want)
+				}
+			}
+		})
+	}
+}
+
+// An operator-added category must be publishable, not merely listed: the
+// publish and validate paths both judge `category` against the SAME active
+// list, so a name that appears in the dialog and is then refused by the publish
+// is the defect this asserts against.
+func TestResolveCategoryAcceptsAnOperatorAddition(t *testing.T) {
+	active := mergeCategories(defaultSkillCategories, []string{"Security"})
+	if got := resolveCategory(active, "security"); got != "Security" {
+		t.Errorf("resolveCategory(%q) = %q, want the canonical %q", "security", got, "Security")
+	}
+	if got := resolveCategory(defaultSkillCategories, "Security"); got != "" {
+		t.Errorf("resolveCategory over the built-ins alone accepted %q", got)
 	}
 }

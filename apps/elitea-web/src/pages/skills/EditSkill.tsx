@@ -14,15 +14,20 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import {
   exportSkill,
   isSkillValid,
+  PublishSkillModal,
   SkillEditorToolbar,
   SkillForm,
   useSkill,
   useSkillMutations,
+  useSkillPublishing,
+  type SkillPublishingState,
+  type SkillPublishTarget,
   type SkillRecord,
   type SkillVersion,
   type SkillWriteInput,
 } from '@/features/skills';
 import { hasBackendCapability } from '@/shared/config';
+import { usePermissionSet } from '@/widgets/sidebar';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { BaseModal } from '@/shared/ui/BaseModal';
@@ -45,6 +50,50 @@ export function toSkillForm(skill: SkillRecord | undefined): SkillWriteInput {
     description: skill.description ?? '',
     instructions: version?.instructions ?? '',
     tags: version?.tags ?? [],
+  };
+}
+
+/**
+ * The status of the version the editor is showing.
+ *
+ * A skill version carries `status` ('draft' or 'published') since the
+ * skill-publishing migration; a record from an older deployment carries none,
+ * and that reads as 'draft' — the value the column defaults to — rather than as
+ * "unknown", so the Publish control appears instead of silently vanishing.
+ */
+export function versionStatusOf(
+  skill: SkillRecord | undefined,
+  versionId: string | undefined,
+): string | undefined {
+  if (!skill) return undefined;
+  const selected =
+    versionId === undefined
+      ? skill.version_details
+      : skill.versions?.find((version) => String(version.id) === versionId);
+  const status = (selected as { readonly status?: unknown } | undefined)?.status;
+  return typeof status === 'string' && status ? status : 'draft';
+}
+
+/**
+ * The (skill, version) a publish would act on.
+ *
+ * `params.version` is what the URL selects; when the route carries none the
+ * editor is showing `version_details`, and that is the row the server would
+ * publish too. Falling back to the FIRST version instead would publish
+ * something other than what is on screen whenever the default version is not
+ * first in the list.
+ */
+export function publishTargetOf(
+  skill: SkillRecord | undefined,
+  skillId: string | undefined,
+  versionId: string | undefined,
+): SkillPublishTarget {
+  const resolved = Number(versionId ?? skill?.version_details?.id ?? Number.NaN);
+  return {
+    skillId: skillId === undefined ? undefined : Number(skillId),
+    versionId: Number.isNaN(resolved) ? undefined : resolved,
+    versionStatus: versionStatusOf(skill, versionId),
+    versionNames: (skill?.versions ?? []).map((version) => version.name),
   };
 }
 
@@ -75,6 +124,7 @@ interface SkillEditorHeaderProps {
   readonly onDiscard: () => void;
   readonly onDelete: () => void;
   readonly onExport: () => void;
+  readonly publishing: SkillPublishingState;
 }
 
 function SkillEditorHeader(props: SkillEditorHeaderProps): ReactNode {
@@ -125,6 +175,12 @@ function SkillEditorHeader(props: SkillEditorHeaderProps): ReactNode {
         onDiscard={props.onDiscard}
         onDelete={props.onDelete}
         onExport={props.onExport}
+        canShowPublish={props.publishing.canShowPublish}
+        canPublish={props.publishing.canPublish}
+        canUnpublish={props.publishing.canUnpublish}
+        isUnpublishing={props.publishing.isUnpublishing}
+        onPublish={props.publishing.open}
+        onUnpublish={() => void props.publishing.unpublish()}
       />
     </Box>
   );
@@ -143,8 +199,16 @@ export function EditSkill(): ReactNode {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionName, setVersionName] = useState('');
   const [error, setError] = useState<string>();
+  const permissions = usePermissionSet(projectId);
 
   useEffect(() => setValue(initialValue), [initialValue]);
+
+  const publishing = useSkillPublishing(
+    projectId,
+    publishTargetOf(detail.data, params.skillId, params.version),
+    permissions,
+    () => void detail.refetch(),
+  );
 
   // The test run POSTs `predict_llm`, which no router mounts, so the pane
   // stays hidden — see `shared/config/backendCapabilities`.
@@ -207,6 +271,7 @@ export function EditSkill(): ReactNode {
         onDiscard={() => setValue(initialValue)}
         onDelete={() => setDeleteOpen(true)}
         onExport={() => void doExport()}
+        publishing={publishing}
       />
       {error && <Typography role="alert">{error}</Typography>}
       <Box sx={contentSx}>
@@ -228,6 +293,7 @@ export function EditSkill(): ReactNode {
           </Box>
         )}
       </Box>
+      <PublishSkillModal state={publishing} />
       <DeleteEntityModal
         open={deleteOpen}
         name={detail.data.name}

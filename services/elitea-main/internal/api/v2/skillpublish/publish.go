@@ -91,7 +91,8 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if body.Category != "" && resolveCategory(body.Category) == "" {
+	activeCategories := h.activeCategories(ctx)
+	if body.Category != "" && resolveCategory(activeCategories, body.Category) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": "invalid_category",
 			"msg":   fmt.Sprintf("Category '%s' is not a valid skill category.", body.Category),
@@ -126,10 +127,10 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 
 	userID := actingUserID(ctx, row.AuthorID)
 	if isAdminPublish {
-		h.adminPublish(ctx, w, schema, row, body, userID)
+		h.adminPublish(ctx, w, schema, row, body, activeCategories, userID)
 		return
 	}
-	h.userPublish(ctx, w, projectID, schema, publicID, row, body, userID)
+	h.userPublish(ctx, w, projectID, schema, publicID, row, body, activeCategories, userID)
 }
 
 // publishedVersionCount counts what the catalog already carries for a skill —
@@ -215,7 +216,7 @@ func setDefaultVersionIfUnset(ctx context.Context, tx queryExecer, schema string
 }
 
 // adminPublish publishes in place, inside the public project.
-func (h *Handler) adminPublish(ctx context.Context, w http.ResponseWriter, schema string, row skillVersionRow, body publishRequest, userID int) {
+func (h *Handler) adminPublish(ctx context.Context, w http.ResponseWriter, schema string, row skillVersionRow, body publishRequest, activeCategories []string, userID int) {
 	if !h.guardAdditionalPublish(ctx, w, schema, row.SkillID, body.VersionName) {
 		return
 	}
@@ -230,7 +231,7 @@ func (h *Handler) adminPublish(ctx context.Context, w http.ResponseWriter, schem
 	projectID := strings.TrimPrefix(schema, "p_")
 	publishedID, err := insertVersion(ctx, tx, schema, row.SkillID, body.VersionName, row.Instructions,
 		userID, "published", publishedMeta(projectID, row, userID),
-		applyCategoryToTags(row.Tags, body.Category))
+		applyCategoryToTags(activeCategories, row.Tags, body.Category))
 	if err != nil {
 		if isUniqueViolation(err) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -262,7 +263,7 @@ func (h *Handler) adminPublish(ctx context.Context, w http.ResponseWriter, schem
 
 // userPublish snapshots the source version and copies it into the public
 // project's schema.
-func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projectID, schema, publicID string, row skillVersionRow, body publishRequest, userID int) {
+func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projectID, schema, publicID string, row skillVersionRow, body publishRequest, activeCategories []string, userID int) {
 	publicSchema := "p_" + publicID
 
 	twinID, twinExists := h.findPublicTwin(ctx, publicSchema, projectID, row.SkillID)
@@ -286,7 +287,7 @@ func (h *Handler) userPublish(ctx context.Context, w http.ResponseWriter, projec
 	// list, which is not something they chose. The reference draws the same
 	// line: it clones the version first and applies the category to the
 	// published snapshot afterwards.
-	snapshotTags := applyCategoryToTags(row.Tags, body.Category)
+	snapshotTags := applyCategoryToTags(activeCategories, row.Tags, body.Category)
 	sourceVersionID, err := insertVersion(ctx, tx, schema, row.SkillID, body.VersionName, row.Instructions,
 		userID, "published", map[string]any{"published_by": userID}, row.Tags)
 	if err != nil {

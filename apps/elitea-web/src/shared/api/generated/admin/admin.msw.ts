@@ -269,6 +269,28 @@ export const getGetPlatformSettingsResponseMock = (
     faker.datatype.boolean(),
     undefined,
   ]),
+  is_publish_blocked: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  publish_whitelist_project_ids: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int()),
+    undefined,
+  ]),
+  is_skill_publish_blocked: faker.helpers.arrayElement([
+    faker.datatype.boolean(),
+    undefined,
+  ]),
+  skill_publish_whitelist_project_ids: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int()),
+    undefined,
+  ]),
   blocked_toolkits: faker.helpers.arrayElement([
     Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
