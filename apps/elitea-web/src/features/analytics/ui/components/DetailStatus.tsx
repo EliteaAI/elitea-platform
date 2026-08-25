@@ -31,16 +31,52 @@ const centeredSx: SxProps<Theme> = {
 
 const emptyTextSx = (theme: Theme) => ({ color: theme.vars.palette.text.metrics });
 
+/**
+ * The unavailable state fills its parent instead of being centred by
+ * `translate(-50%, -50%)`, and that is an ACCESSIBILITY fix rather than a
+ * layout preference.
+ *
+ * `centeredSx` positions a block at the parent's midpoint and pulls it back by
+ * half its own size, which works only while the block is smaller than the
+ * parent. This branch is two lines rather than one — the second is the server's
+ * own reason, technical prose containing unbreakable tokens like
+ * `p_<id>.chat_message_trace_step` — so with `padding: spacing(8)` on both
+ * sides it outgrew the tab body, the body's `overflow: auto` turned into a real
+ * scroll region, and axe failed the page on `scrollable-region-focusable`
+ * (WCAG 2.1.1 / 2.1.3, serious): a scrollable region with no focusable content
+ * cannot be reached or scrolled from the keyboard at all. Journey J24a caught
+ * it on both engines; J24c passed beside it, because the generic one-line error
+ * still fitted.
+ *
+ * `inset: 0` makes the box exactly the parent's size, so it can never be the
+ * thing that overflows, and the flex centring inside it does the same visual
+ * job. `overflowWrap: anywhere` is the other half: a long unbreakable token is
+ * what would otherwise force horizontal overflow of the text itself, whatever
+ * the box does.
+ */
 const unavailableSx: SxProps<Theme> = {
+  position: 'absolute',
+  inset: 0,
+  transform: 'none',
+  top: 'auto',
+  left: 'auto',
+  display: 'flex',
   flexDirection: 'column',
+  alignItems: 'center',
+  justifyContent: 'center',
   gap: (theme: Theme) => theme.spacing(1),
-  maxWidth: '32rem',
+  padding: (theme: Theme) => theme.spacing(4),
   textAlign: 'center',
 };
 
 const detailSx = (theme: Theme) => ({
   color: theme.vars.palette.text.metrics,
   opacity: 0.8,
+  maxWidth: '32rem',
+  // The reason string is server-authored and carries table and column names
+  // with no break opportunities in them. Without this it sets one long line and
+  // overflows horizontally however wide the container is.
+  overflowWrap: 'anywhere',
 });
 
 export interface AnalyticsLoadErrorProps {
