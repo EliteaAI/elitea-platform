@@ -141,6 +141,7 @@ export function AdminScimGroupBindingTable({
               </TableCell>
               <TableCell align="right">
                 <Button
+            variant="elitea" color="tertiary"
                   size="small"
                   onClick={() => {
                     onEdit(binding);
@@ -150,9 +151,9 @@ export function AdminScimGroupBindingTable({
                   {t("pages.admin.scimGroups.table.edit", "Edit")}
                 </Button>
                 <Button
+            variant="elitea" color="alarm"
                   size="small"
-                  color="error"
-                  onClick={() => {
+                                    onClick={() => {
                     onRemove(binding);
                   }}
                   sx={{ textTransform: "none" }}
@@ -180,6 +181,7 @@ export function AdminScimGroupBindingTable({
             )}
           </Typography>
           <Button
+            variant="elitea" color="tertiary"
             size="small"
             disabled={offset === 0 || busy}
             onClick={() => {
@@ -191,6 +193,7 @@ export function AdminScimGroupBindingTable({
             {t("pages.admin.scimGroups.paging.previous", "Previous")}
           </Button>
           <Button
+            variant="elitea" color="tertiary"
             size="small"
             disabled={!hasMore || busy}
             onClick={() => {

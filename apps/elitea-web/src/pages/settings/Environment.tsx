@@ -366,18 +366,18 @@ export const Environment = memo(function Environment() {
 /* ── styles ───────────────────────────────────────────────────────────── */
 
 const styles: Record<string, SxProps<Theme>> = {
-  content: ({ palette, spacing }) => ({
+  content: (theme) => ({
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    padding: `${spacing(2.75)}rem`,
-    gap: spacing(3),
-    backgroundColor: palette.background.tabPanel,
+    padding: `${theme.spacing(2.75)}rem`,
+    gap: theme.spacing(3),
+    backgroundColor: theme.vars.palette.background.tabPanel,
     height: '100%',
     overflowY: 'auto',
   }),
-  loadError: ({ palette }) => ({
-    color: palette.error.main,
+  loadError: (theme) => ({
+    color: theme.vars.palette.error.main,
     alignSelf: 'stretch',
   }),
 };

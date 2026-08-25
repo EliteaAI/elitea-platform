@@ -44,11 +44,11 @@ type Handler struct {
 // body. It never fails: every degradation path lands on the built-in
 // default pack and is logged.
 func NewHandler(cfg Config) *Handler {
-	pack := DefaultPack()
+	var pack *Pack
 	if cfg.PackPath == "" {
-		slog.Info("branding: BRAND_PACK_PATH not set; serving built-in default brand pack")
+		slog.Info("branding: BRAND_PACK_PATH not set; publishing no pack so the UI renders its compiled-in default")
 	} else if loaded, err := LoadPack(cfg.PackPath); err != nil {
-		slog.Warn("branding: degrading to built-in default brand pack",
+		slog.Warn("branding: degrading to the UI's compiled-in default brand pack",
 			"path", cfg.PackPath, "reason", err.Error())
 	} else {
 		pack = loaded
@@ -66,16 +66,41 @@ func NewHandler(cfg Config) *Handler {
 	}
 }
 
-// renderBootstrapJS serialises the pack as `window.elitea_brand = {...};`.
+// noPackBody is what the endpoint serves when this deployment has no brand
+// pack of its own. It deliberately leaves `window.elitea_brand` UNSET.
+//
+// The alternative — serving DefaultPack() — is what this endpoint used to do,
+// and it was a whole-app visual regression rather than a harmless floor.
+// Channel C WINS over the UI's compiled-in pack whenever the global is set
+// (`shared/brand/channelC.ts`), and DefaultPack states zero scheme tokens, so
+// `resolveScheme` derives all 362 ids per scheme by rotating the reference
+// ramp onto `brand.hue`. With the placeholder hue (#C428DD) that rotated the
+// dark scheme's cyan accent and navy surfaces ~105 degrees into magenta and
+// purple-black, and swapped Montserrat for Roboto, on EVERY screen — the
+// running app never looked like the product default it was supposed to fall
+// back to. DefaultPack() is kept as the schema/validation reference and for
+// the tests that pin its shape; it is just no longer published.
+//
+// A 200 with an inert body rather than a 404: `index.html` loads this as a
+// blocking classic script, and an unset global is the documented
+// "channel C absent" path, so this degrades exactly as intended without
+// putting a network error in every user's console.
+const noPackBody = "/* elitea: no deployment brand pack configured */\n"
+
+// renderBootstrapJS serialises the pack as `window.elitea_brand = {...};`,
+// or the inert body above when there is no pack to publish.
 // json.Marshal HTML-escapes <, >, & (and escapes U+2028/U+2029), so the JSON
 // is safe to embed in a <script> element and is a valid JS expression.
 func renderBootstrapJS(p *Pack) []byte {
+	if p == nil {
+		return []byte(noPackBody)
+	}
 	data, err := json.Marshal(p)
 	if err != nil {
 		// Unreachable for Pack (plain data, no cycles, no custom marshalers);
-		// if it ever happens, degrade to the built-in default rather than
-		// letting the branding path fail.
-		data, _ = json.Marshal(DefaultPack())
+		// if it ever happens, publish nothing rather than letting the
+		// branding path fail — the UI then renders its own default pack.
+		return []byte(noPackBody)
 	}
 	return append(append([]byte("window.elitea_brand = "), data...), ';')
 }

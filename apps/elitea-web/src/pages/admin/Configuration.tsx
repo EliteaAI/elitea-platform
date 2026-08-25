@@ -233,7 +233,7 @@ function SectionForm({ state }: { readonly state: AdminConfigurationPageState })
       <Box sx={{ display: 'flex', gap: '0.5rem' }}>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onDiscard}
           sx={{ textTransform: 'none' }}
@@ -242,7 +242,7 @@ function SectionForm({ state }: { readonly state: AdminConfigurationPageState })
         </Button>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onSave}
           sx={{ textTransform: 'none' }}

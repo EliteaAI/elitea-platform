@@ -186,22 +186,22 @@ const styles: Record<string, SxProps<Theme>> = {
   },
   textField: {
     '& input:-webkit-autofill, & input:-webkit-autofill:hover, & input:-webkit-autofill:focus, & input:-webkit-autofill:active':
-      ({ palette }) => ({
-        WebkitBoxShadow: `0 0 0 62.5rem ${palette.background.tabPanel} inset`,
-        WebkitTextFillColor: palette.text.secondary,
-        caretColor: palette.text.secondary,
+      (theme) => ({
+        WebkitBoxShadow: `0 0 0 62.5rem ${theme.vars.palette.background.tabPanel} inset`,
+        WebkitTextFillColor: theme.vars.palette.text.secondary,
+        caretColor: theme.vars.palette.text.secondary,
         transition: 'background-color 5000s ease-in-out 0s',
       }),
-    '& input:-webkit-autofill::first-line': ({ palette }) => ({
-      color: palette.text.secondary,
+    '& input:-webkit-autofill::first-line': (theme) => ({
+      color: theme.vars.palette.text.secondary,
     }),
   },
   restoreButtonWrapper: {
     mt: '0.5rem',
   },
-  restoreButton: ({ palette }) => ({
+  restoreButton: (theme) => ({
     '&:hover svg': {
-      fill: palette.icon.fill.secondary,
+      fill: theme.vars.palette.icon.fill.secondary,
     },
   }),
 };

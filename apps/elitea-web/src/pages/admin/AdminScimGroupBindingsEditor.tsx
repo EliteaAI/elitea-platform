@@ -161,7 +161,7 @@ export function AdminScimGroupBindingsEditor() {
       <Box>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           onClick={() => {
             setEditing(undefined);
             setSaveError(undefined);
@@ -248,8 +248,7 @@ export function AdminScimGroupBindingsEditor() {
             {t("pages.admin.scimGroups.delete.cancel", "Cancel")}
           </Button>
           <Button
-            color="error"
-            variant="contained"
+            variant="elitea" color="alarm"
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
             sx={{ textTransform: "none" }}

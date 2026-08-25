@@ -50,6 +50,50 @@ export interface ChatBoxPopupsProps {
   readonly skill: ChatBoxPopupsSkill;
 }
 
+/**
+ * Builds this component's four prop bundles from the one `ChatBoxState` they
+ * all read, plus the three callbacks that are not part of it.
+ *
+ * Lives here rather than inline at the call site because `ChatBox.tsx` is at
+ * its §3.5 `max-lines` ceiling and this literal was ~25 of them — and because
+ * every field below is a mechanical projection of `state`, which is exactly
+ * the kind of thing that belongs next to the props it feeds.
+ */
+export function buildChatBoxPopupsProps(input: {
+  readonly state: ChatBoxState;
+  readonly onChangeParticipant: ((participant: unknown) => void) | undefined;
+  readonly existingParticipants: readonly unknown[];
+  readonly projectId: string | undefined;
+  readonly onSelectUser: ChatBoxPopupsUserMentions['onSelectUser'];
+  readonly onSelectTool: ChatBoxPopupsSkill['onSelectTool'];
+}): ChatBoxPopupsProps {
+  const { state, onChangeParticipant, existingParticipants, projectId, onSelectUser, onSelectTool } = input;
+  return {
+    recommendations: {
+      show: state.showRecommendationList,
+      onSelectParticipant: (p) => { onChangeParticipant?.(p); state.setShowRecommendationList(false); },
+      onClose: () => state.setShowRecommendationList(false),
+      existingParticipants,
+      projectId,
+    },
+    userMentions: {
+      isProcessingAtSymbol: state.keyDown.isProcessingAtSymbol,
+      hasOtherUsers: state.hasOtherUsers,
+      users: state.users,
+      atQuery: state.keyDown.atQuery,
+      onSelectUser,
+      onClose: state.keyDown.stopProcessingAtSymbol,
+    },
+    slash: state.slash,
+    skill: {
+      isActive: state.isSkillPhaseActive,
+      filteredItems: state.skill.filteredItems,
+      highlightedIndex: state.skill.highlightedIndex,
+      onSelectTool,
+    },
+  };
+}
+
 export function ChatBoxPopups({ recommendations, userMentions, slash, skill }: ChatBoxPopupsProps): ReactNode {
   return (
     <>

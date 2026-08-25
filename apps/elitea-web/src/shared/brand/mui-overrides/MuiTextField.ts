@@ -59,6 +59,12 @@ export const MuiTextField: EliteaComponents['MuiTextField'] = {
           color: theme.vars.palette.text.warningText,
         },
         '& input, & textarea': {
+          // Baseline `textFieldVariants.js:196-207`. Without the typography
+          // spread the input kept MUI's stock 1rem body font while its label
+          // used the brand scale, so the control sat a step too large.
+          ...theme.typography.labelMedium,
+          boxSizing: 'border-box',
+          marginBottom: theme.spacing(1),
           color: theme.vars.palette.text.secondary,
         },
         '& input.Mui-disabled, & textarea.Mui-disabled': {
@@ -91,7 +97,41 @@ export const MuiTextField: EliteaComponents['MuiTextField'] = {
         '&:has(.MuiInputBase-root.Mui-disabled), & .MuiInputBase-root.Mui-disabled': {
           cursor: 'not-allowed',
         },
+        // Baseline `textFieldVariants.js:130-209` — number fields keep the
+        // native spinners without these, which the baseline hides.
+        '& input': { height: '1.5rem' },
+        '& input[type=number]': { MozAppearance: 'textfield' },
+        '& input[type=number]::-webkit-outer-spin-button, & input[type=number]::-webkit-inner-spin-button': {
+          WebkitAppearance: 'none',
+          margin: 0,
+        },
+        '& textarea::-webkit-scrollbar': { display: 'none' },
+        '& .MuiInput-underline': { padding: `${theme.spacing(0.5)} ${theme.spacing(1.5)} 0` },
       }),
     },
+    // `outlined` — NOT ported, and that is now a measured decision rather
+    // than an omission.
+    //
+    // The baseline has an `outlined` variant
+    // (`textFieldVariants.js:212-257`) that hides the notch legend and lifts
+    // the outline to `top: 0`, so its label sits ON the border rather than in
+    // a gap. Porting it verbatim BROKE every outlined field in this app: the
+    // admin Configuration page's "Company Name for Policy Message" and
+    // "Authorization Message Template" collapsed, with label and helper text
+    // overlapping a flattened box (caught by regenerating
+    // `admin-configuration-visual` and diffing it against the committed
+    // baseline, not by reading the diff of the two stylesheets).
+    //
+    // The reason is that the baseline's rule is only coherent alongside the
+    // rest of its outlined stack — its own label positioning, and `MuiFormLabel`
+    // behaviour this app does not reproduce. This app already has a working
+    // outlined treatment via `MuiOutlinedInput.tsx`, which the before-shot
+    // shows rendering correctly. Adding a second, partial one on top is what
+    // did the damage.
+    //
+    // If outlined fields ever need to match the baseline more closely, the
+    // unit of work is the label positioning + `MuiOutlinedInput` TOGETHER,
+    // verified against a regenerated `admin-configuration-visual` — not this
+    // variant on its own.
   ],
 };

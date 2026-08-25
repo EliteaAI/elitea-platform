@@ -23,7 +23,7 @@
 import type { ReactNode } from 'react';
 
 import { Outlet, RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
-import { render, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -124,5 +124,52 @@ describe('ChatPage deep links', () => {
     });
     expect(router.state.location.pathname).toBe('/chat');
     expect(detailRequests).toHaveLength(0);
+  });
+});
+
+/**
+ * `ParticipantsWrapper` has always accepted a `renderContextBudget` slot and
+ * has always threaded a real `conversationId` into it; nothing supplied the
+ * slot, so the foot of the participants rail was empty. These cases assert the
+ * page fills it — and that it does NOT for a conversation that has no server
+ * state to report on.
+ */
+describe('ChatPage context budget slot', () => {
+  const CONTEXT_STATUS_URL = `${BASE}/elitea_core/context_analytics/prompt_lib/${PROJECT}/${CONVERSATION}`;
+
+  it('renders the context-budget panel for a real conversation', async () => {
+    server.use(
+      http.get(CONTEXT_STATUS_URL, () =>
+        HttpResponse.json({
+          current_tokens: 12000,
+          max_tokens: 128000,
+          message_groups_in_context: 4,
+          strategy_name: 'sliding_window',
+          context_analytics: { summaries_generated: 1 },
+        }),
+      ),
+    );
+
+    renderAt(`/chat/${CONVERSATION}`);
+
+    await waitFor(() => expect(screen.getByTestId('context-budget-panel')).toBeTruthy(), { timeout: 5000 });
+    expect(screen.getByTestId('context-budget-tokens').textContent).toBe('12\u00a0000 / 128\u00a0000 tokens');
+    expect(screen.getByTestId('context-budget-stat-summaries').textContent).toBe('Summaries:1');
+  });
+
+  it('renders no panel on a plain /chat URL, where there is no conversation yet', async () => {
+    const statusRequests: string[] = [];
+    server.use(
+      http.get(`${BASE}/elitea_core/context_analytics/prompt_lib/*`, ({ request }) => {
+        statusRequests.push(request.url);
+        return HttpResponse.json({});
+      }),
+    );
+
+    renderAt('/chat');
+
+    await waitFor(() => expect(screen.queryByTestId('participants-container')).toBeTruthy(), { timeout: 5000 });
+    expect(screen.queryByTestId('context-budget-panel')).toBeNull();
+    expect(statusRequests).toHaveLength(0);
   });
 });

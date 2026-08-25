@@ -37,6 +37,10 @@ import {
 import { readPersistedAdminNavCollapsed, useAdminNavCollapsedStore } from './adminNavCollapsed';
 import { adminApiBaseUrl } from './adminUiConfig';
 import { createAdminRouter } from './router';
+import {
+  COLLAPSED_SIDE_BAR_WIDTH_REM,
+  SIDE_BAR_WIDTH_REM,
+} from '@/shared/ui/layout/sidebarWidth';
 
 installWebStorageShim();
 
@@ -415,12 +419,18 @@ describe('collapsed state', () => {
     // Mutation testing found this: swapping the two widths changed nothing any
     // test could see, so the nav could have "collapsed" to full width — labels
     // gone, rail unchanged — and every other test here would still have passed.
+    //
+    // Asserted against the SHARED constants, not literals. The literals were
+    // `13.75rem`/`3.75rem` — this rail's own numbers, which disagreed with the
+    // main app's rail. Restating them here is what let the two drift apart
+    // while both files' tests stayed green, so the assertion now fails if the
+    // rails stop sharing one definition rather than if a number changes.
     await mountAdmin();
     const nav = screen.getByTestId('admin-nav');
-    expect(getComputedStyle(nav).width).toBe('13.75rem');
+    expect(getComputedStyle(nav).width).toBe(SIDE_BAR_WIDTH_REM);
 
     await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
-    expect(getComputedStyle(nav).width).toBe('3.75rem');
+    expect(getComputedStyle(nav).width).toBe(COLLAPSED_SIDE_BAR_WIDTH_REM);
   });
 
   it('points the chevron at what the click will do', async () => {

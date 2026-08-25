@@ -49,13 +49,13 @@ export function EnableToggleCard({
 
 function cardStyles(): Record<string, SxProps<Theme>> {
   return {
-    card: ({ palette }) => ({
+    card: (theme) => ({
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
       padding: '1rem 1.5rem',
       borderRadius: 'var(--el-shape-radiusMd, 8px)',
-      backgroundColor: palette.background.userInputBackground,
+      backgroundColor: theme.vars.palette.background.userInputBackground,
       gap: '1rem',
     }),
     text: {

@@ -225,7 +225,7 @@ export function AdminIdentityProvidersEditor() {
       <Box>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           onClick={openCreate}
           sx={{ textTransform: "none" }}
           data-testid="admin-identity-providers-add"
@@ -315,8 +315,7 @@ export function AdminIdentityProvidersEditor() {
             {t("pages.admin.identityProviders.delete.cancel", "Cancel")}
           </Button>
           <Button
-            color="error"
-            variant="contained"
+            variant="elitea" color="alarm"
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
             sx={{ textTransform: "none" }}

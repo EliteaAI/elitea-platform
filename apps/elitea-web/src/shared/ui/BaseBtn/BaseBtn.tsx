@@ -6,21 +6,19 @@ import MuiButton, { type ButtonProps } from '@mui/material/Button';
  * The button variant vocabulary (`theme.augment.d.ts`'s
  * `ButtonPropsVariantOverrides`, declared in full by unit T1).
  *
- * **Parity gap, flagged for follow-up:** only six of these —
- * `special`/`contained`/`secondary`/`iconCounter`/`auxiliary`/`maxi` — have
- * a `styleOverrides`/`variants` entry in
- * `shared/brand/mui-overrides/MuiButton.ts` (T1's OWNERSHIP.md scopes its
- * wiring to exactly those six, "the six variants that carried the §4.1
- * Blocker-1 hard-coded accents"). The baseline's single most-used variant,
- * `elitea` (always paired with a `color` prop — `primary`/`secondary`/
- * `tertiary`/`alarm`), plus `alarm`/`text`/`icon`/`iconLabel`/`tertiary`/
- * `neutral`/`positive`, type-check (the names are declared) but render with
- * **no custom styling** — MuiButton.ts is one of the two files S1 was told
- * not to touch. Every `shared/ui` component in this unit therefore uses
- * only the six wired variants (or MUI's built-in `text`/`outlined`), never
- * `elitea`/`alarm`/etc. This needs a decision: either T1 extends
- * `MuiButton.ts` with the remaining variants, or S1 gets explicit sign-off
- * to add them in a follow-up change.
+ * **All fourteen are wired.** This comment used to say only six were, and
+ * told authors to avoid the rest — including `elitea`, the baseline's
+ * single most-used variant. That stopped being true once unit S1 (Part B)
+ * added the remaining eight; the advice outlived the gap and was steering
+ * call sites onto MUI's built-ins instead of the brand vocabulary.
+ *
+ * What WAS still missing until recently is subtler and affected all
+ * fourteen equally: `MuiButton` had no `styleOverrides.root`, so MUI's
+ * stock shape showed through underneath every variant — uppercase text, a
+ * 4px radius, the wrong font and padding. See
+ * `shared/brand/mui-overrides/MuiButton.root.ts`. `variant="outlined"` is
+ * the one value with no `variants` entry of its own; it now at least
+ * inherits the correct root geometry.
  *
  * @public Documents the full vocabulary declared in `theme.augment.d.ts`,
  * for consumers built in a later unit — not referenced by name inside this

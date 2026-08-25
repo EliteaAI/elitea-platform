@@ -101,9 +101,24 @@
 #       to PYLON — Go's equivalent is a different path and answers 501 by
 #       design. Same for nested application references and the artifact toolkit.
 #       A plain adhoc turn touches none of them.
-#     * the web chat surface still emits chat_predict into a noop socket.io
-#       client (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.ts:116)
-#       instead of POSTing and subscribing to {events_url} — that port is #93.
+#
+# ── What this list USED to say, and no longer should ─────────────────────────
+#   It claimed the web chat surface "still emits chat_predict into a noop
+#   socket.io client … instead of POSTING and subscribing to {events_url} —
+#   that port is #93", citing useChatBoxHandlers.ts:116. That stopped being
+#   true on 2026-08-18 (a113ad2b, "chat end to end"), and the cited line is now
+#   blank. The real chain today:
+#     ChatBox.tsx:180        takes `startStreamedExecution` from useChatBoxSend
+#     useChatBoxSend.ts:277  builds it on `useChatStreamTransport`
+#     useChatStreamTransport POSTs, reads `events_url`, opens an EventSource
+#     useChatBoxHandlers     `deliverTurn` tries REST FIRST and only falls back
+#                            to `chat_predict` when the transport reports no
+#                            route — and never after a `rejected`, because a
+#                            started run is already live server-side and a
+#                            second start would run the agent twice.
+#   Left as a note rather than deleted: a stale "what does not work" entry is
+#   worse than none, because it is read as current and sends the next person
+#   to re-port something that is already there.
 #
 # ── Ports ────────────────────────────────────────────────────────────────────
 #   8084  traefik (entry point)     STANDALONE_PORT

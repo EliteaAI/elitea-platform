@@ -285,6 +285,33 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		principalValidator = authsvc.NewPrincipalValidator(pool)
 		forwardedIdentityVerifier = formGraph.ForwardedIdentityVerifier()
+		// The browser's `elitea_session` cookie, accepted on the notification
+		// routes composed below.
+		//
+		// Those routes carry a ForwardedIdentityVerifier and no SessionSecret, so
+		// apimw.Auth's cookie branch is inert on them and a browser has NO
+		// credential they accept. Composing them here also makes them non-nil,
+		// which SKIPS the OIDC-only arm further down that would have supplied the
+		// cookie — so a deployment configured with BOTH a form config and OIDC
+		// (this is the standalone stack) ends up strictly worse off than an
+		// OIDC-only one, on routes only a browser ever calls.
+		//
+		// The edge is what makes it unreachable rather than merely awkward:
+		// deploy/traefik/dynamic.yml STRIPS every inbound X-Auth-* header and runs
+		// no forwardAuth ("elitea-main authenticates the session cookie itself"),
+		// so forwarded identity never arrives and cannot be made to.
+		//
+		// Measured: GET /api/v2/notifications/notifications/prompt_lib/{id}
+		// answered `401 missing authorization header` to a browser holding a valid
+		// session, while the same request with a PAT answered 200.
+		//
+		// This is NOT a new trust decision. It is the same cookie, verified with
+		// the same APPLICATION_SECRET_KEY and the same PrincipalValidator that
+		// oidcSessionAuthConfig already applies to these exact routes; it only
+		// stops the form config from taking that credential away. Adding a
+		// credential cannot widen a route's authorization either — the
+		// per-project permission gate in front of each handler is unchanged.
+		formSessionSecret := os.Getenv("APPLICATION_SECRET_KEY")
 		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
 			apimw.AuthConfig{
@@ -344,6 +371,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             formSessionSecret,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)
@@ -361,6 +389,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             formSessionSecret,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)

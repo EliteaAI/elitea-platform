@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from elitea_worker import _PRIVATE_PLANE_SSL_CONTEXT_BASE
+from elitea_worker.transport.redis_quarantine import QUARANTINE_ENTRY_SCRIPT
 
 
 _RETIRE_DELIVERY_SCRIPT = """
@@ -196,6 +197,42 @@ class RedisAsyncioControlClient:
             group,
             consumer,
         )
+
+    async def quarantine_entry(
+        self,
+        *,
+        key: str,
+        entry_id: str,
+        cap: int,
+        ttl_seconds: int,
+        recorded_reason: str,
+    ) -> Any:
+        """Record one entry as not-to-be-retried, under an atomic cap."""
+
+        return await self._client.eval(
+            QUARANTINE_ENTRY_SCRIPT,
+            1,
+            key,
+            entry_id,
+            cap,
+            ttl_seconds,
+            recorded_reason,
+        )
+
+    async def quarantined_entries(self, *, key: str) -> Any:
+        """The recorded entry ids.
+
+        HKEYS rather than HGETALL: the reason is written for whoever opens the
+        key, and the loader needs only the ids — so the narrower grant is the
+        one the ACL has to give.
+        """
+
+        return await self._client.hkeys(key)
+
+    async def clear_quarantined_entry(self, *, key: str, entry_id: str) -> Any:
+        """Forget one entry, so a repaired command becomes runnable again."""
+
+        return await self._client.hdel(key, entry_id)
 
     async def aclose(self) -> None:
         try:

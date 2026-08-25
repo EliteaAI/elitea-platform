@@ -5,30 +5,70 @@
  * codebase.
  */
 import { t } from '@/shared/i18n';
+import { ApplicationsIcon } from '@/shared/ui/icons/applications-icon';
+import { FlowIcon } from '@/shared/ui/icons/flow-icon';
+import { McpIcon } from '@/shared/ui/icons/mcp-icon';
+import type { SvgIconComponent } from '@/shared/ui/icons/svg-icon.types';
+import { ToolIcon } from '@/shared/ui/icons/tool-icon';
+import { ValueIcon } from '@/shared/ui/icons/value-icon';
 
 export interface PlusChatButtonEntitySubmenus {
   readonly pipelines?: readonly unknown[];
   readonly toolkits?: readonly unknown[];
   readonly mcps?: readonly unknown[];
   readonly onSelectParticipant?: (participant: unknown) => void;
+  /**
+   * Fired the first time the menu is opened, so the composition root can
+   * defer its four participant queries until someone actually looks. Carried
+   * in this bundle rather than as its own `PlusChatButton` prop because the
+   * bundle is already threaded through every layer between `processes/chat`
+   * and this widget, and the two travel together by definition.
+   */
+  readonly onOpen?: () => void;
 }
 
+/**
+ * `attachments` is NOT a submenu key any more — see `MENU_ITEMS`. It stays in
+ * the union because `resolveActiveSubmenuView`'s exhaustive switch and the
+ * component's `activeSubmenu` state are both still typed by it, and a caller
+ * may still open the attachments panel directly.
+ */
 export type SubmenuKey = 'agents' | 'pipelines' | 'toolkits' | 'mcps' | 'attachments' | 'tools';
 
 export interface MenuItemDef {
   key: string;
   label: string;
-  icon: string;
+  /** The ported icon component rendered at the start of the row. */
+  Icon: SvgIconComponent;
   submenu?: SubmenuKey;
 }
 
+/**
+ * The expandable rows, in the baseline's own order and wording
+ * (`PlusChatButton.jsx:42-48`'s `EXPANDABLE_ITEMS`).
+ *
+ * Three corrections against what this file used to state:
+ *
+ *  - **"Modules", not "Tools".** The internal-tools toggles (Image creation,
+ *    Data Analysis, Planner, Python Sandbox, Swarm Mode, …) are labelled
+ *    `Modules` in the product. "Tools" reads as the toolkits below it.
+ *  - **Modules comes FIRST**, before the four entity categories.
+ *  - **Attachments is not in this list.** The baseline renders the
+ *    attachment control as its own row above these — a direct action with a
+ *    remaining-file count, not a category that opens a submenu. Burying it
+ *    one level down made attaching a file a two-click operation that the
+ *    reference does in one.
+ *
+ * `icon` was an emoji string. Emoji render in the OS's own colour and metrics
+ * and sit outside the icon set entirely; these are the ported assets the rest
+ * of the app uses.
+ */
 export const MENU_ITEMS: MenuItemDef[] = [
-  { key: 'agents', label: t('widgets.chat.plusChatButton.menuAgents', 'Agents'), icon: '🤖', submenu: 'agents' },
-  { key: 'pipelines', label: t('widgets.chat.plusChatButton.menuPipelines', 'Pipelines'), icon: '📊', submenu: 'pipelines' },
-  { key: 'toolkits', label: t('widgets.chat.plusChatButton.menuToolkits', 'Toolkits'), icon: '🧰', submenu: 'toolkits' },
-  { key: 'mcps', label: t('widgets.chat.plusChatButton.menuMcps', 'MCPs'), icon: '🔌', submenu: 'mcps' },
-  { key: 'attachments', label: t('widgets.chat.plusChatButton.menuAttachments', 'Attachments'), icon: '📎', submenu: 'attachments' },
-  { key: 'tools', label: t('widgets.chat.plusChatButton.menuTools', 'Tools'), icon: '⚙️', submenu: 'tools' },
+  { key: 'tools', label: t('widgets.chat.plusChatButton.menuModules', 'Modules'), Icon: ValueIcon, submenu: 'tools' },
+  { key: 'agents', label: t('widgets.chat.plusChatButton.menuAgents', 'Agents'), Icon: ApplicationsIcon, submenu: 'agents' },
+  { key: 'pipelines', label: t('widgets.chat.plusChatButton.menuPipelines', 'Pipelines'), Icon: FlowIcon, submenu: 'pipelines' },
+  { key: 'toolkits', label: t('widgets.chat.plusChatButton.menuToolkits', 'Toolkits'), Icon: ToolIcon, submenu: 'toolkits' },
+  { key: 'mcps', label: t('widgets.chat.plusChatButton.menuMcps', 'MCPs'), Icon: McpIcon, submenu: 'mcps' },
 ];
 
 interface SubmenuItem {
@@ -93,13 +133,21 @@ interface SubmenuCreateConfig {
 
 const CREATABLE_SUBMENUS = new Set<SubmenuKey>(['agents', 'pipelines', 'toolkits', 'mcps']);
 
-/** One lookup instead of an OR-chain plus a 4-way ternary inlined in JSX. */
+/**
+ * One lookup instead of an OR-chain plus a 4-way ternary inlined in JSX.
+ *
+ * `showCreateNew` requires an actual handler, not just a creatable category.
+ * It used to be `CREATABLE_SUBMENUS.has(...)` alone, so a composition root
+ * that supplied entity lists but no `onCreateAgent`/`onCreatePipeline`/
+ * `onCreateToolkit` still rendered a "Create new" row that did nothing when
+ * clicked. A row that cannot act is worse than an absent one.
+ */
 function resolveSubmenuCreateConfig(
   activeSubmenu: SubmenuKey,
-  onCreate: Readonly<Record<'agents' | 'pipelines' | 'toolkits' | 'mcps', () => void>>,
+  onCreate: Readonly<Partial<Record<'agents' | 'pipelines' | 'toolkits' | 'mcps', () => void>>>,
 ): SubmenuCreateConfig {
   const onCreateNew = activeSubmenu === 'attachments' || activeSubmenu === 'tools' ? undefined : onCreate[activeSubmenu];
-  return { showCreateNew: CREATABLE_SUBMENUS.has(activeSubmenu), onCreateNew };
+  return { showCreateNew: CREATABLE_SUBMENUS.has(activeSubmenu) && onCreateNew !== undefined, onCreateNew };
 }
 
 interface ActiveSubmenuView {
@@ -123,7 +171,7 @@ export function resolveActiveSubmenuView(
     readonly enabledToolNames: readonly string[] | undefined;
     readonly onInternalToolsConfigChange?: ((config: { key: string; value: boolean }) => void) | undefined;
     readonly onSelect: (participant: unknown) => void;
-    readonly onCreate: Readonly<Record<'agents' | 'pipelines' | 'toolkits' | 'mcps', () => void>>;
+    readonly onCreate: Readonly<Partial<Record<'agents' | 'pipelines' | 'toolkits' | 'mcps', () => void>>>;
   },
 ): ActiveSubmenuView {
   if (!activeSubmenu) return { items: [], createConfig: undefined };

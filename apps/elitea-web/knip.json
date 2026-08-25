@@ -315,11 +315,6 @@
     // intentionally not a dependency of this app (spec §2.2/P1: "the file
     // tree is hand-rolled"). See the file's own header comment.
     "src/shared/brand/mui-overrides/MuiTreeItem.ts",
-    // unit S1: same "deliberately NOT wired into mui-overrides/index.ts"
-    // gap — `MuiInputBase` overrides MUI's InputBase component so the
-    // theme token system applies to all text inputs, but the barrel file
-    // hasn't re-exported it yet. See `src/shared/brand/mui-overrides/`.
-    "src/shared/brand/mui-overrides/MuiInputBase.ts",
     // Wave-2 sub-unit C4 (chat-messages): 25 files, not wired into any
     // app consumer yet — `all:true` in vitest counts their 0% as dead
     // weight. Same rationale as the vitest coverage exclude. REMOVE when

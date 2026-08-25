@@ -241,6 +241,275 @@ def test_serve_loop_does_not_run_reclaimed_duplicate_concurrently() -> None:
     asyncio.run(run())
 
 
+def test_serve_loop_quarantines_a_non_retryable_delivery_instead_of_respinning() -> None:
+    """A delivery that cannot succeed is executed ONCE, however often it returns.
+
+    The entry is never ACKed on the WorkerError path — correctly, since the
+    output it owes was never delivered — so XAUTOCLAIM keeps handing it back.
+    `retryable` was printed and ignored, so the same doomed command ran again on
+    every reclaim turn. Measured on the standalone stack: one undeliverable
+    output rejected every 15-45s for 13 minutes.
+
+    FakeConsumer.reclaim_page returns the same entry on every call, so
+    `reclaim_calls >= 4` proves the entry really was offered repeatedly. Pairing
+    that with `calls == 1` is what discriminates the fix from the defect: before
+    it, the two numbers rose together.
+    """
+
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        stop = asyncio.Event()
+        calls = 0
+        events: list[tuple[str, object]] = []
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            nonlocal calls
+            calls += 1
+            raise AuthorizationFailure(
+                "The durable output spool uses a different claim fence; "
+                "server-side recovery is required."
+            )
+
+        async def stop_after_repeated_offers() -> None:
+            while consumer.reclaim_calls < 4:
+                await asyncio.sleep(0)
+            stop.set()
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+            event_sink=lambda event, error: events.append((event, error)),
+        )
+        watcher = asyncio.create_task(stop_after_repeated_offers())
+        try:
+            await asyncio.wait_for(runtime.run(stop), timeout=1.0)
+        finally:
+            watcher.cancel()
+
+        assert consumer.reclaim_calls >= 4, "the entry was not offered repeatedly"
+        assert calls == 1, f"the doomed delivery ran {calls} times, not once"
+
+        quarantined = [event for event in events if event[0] == "delivery_quarantined"]
+        assert len(quarantined) == 1, "the quarantine must be announced exactly once"
+
+        # Actionable, not just distinct: the operator gets the entry and the
+        # remedy, because the underlying refusal names neither.
+        notice = quarantined[0][1]
+        assert notice is not None
+        assert notice.code == "AUTHORIZATION_FAILED"
+        assert "1-0" in notice.safe_message
+        assert "commands.v1" in notice.safe_message
+        assert "PENDING" in notice.safe_message
+
+        assert not any(event[0] == "delivery_quarantine_full" for event in events)
+        # The original rejection is still reported; quarantine adds to it.
+        assert any(event[0] == "delivery_rejected" for event in events)
+
+    asyncio.run(run())
+
+
+class FakeQuarantineStore:
+    """In-memory stand-in for the durable record, with the same contract."""
+
+    def __init__(self, recorded: frozenset[str] = frozenset(), *, cap: int = 8) -> None:
+        self.recorded = set(recorded)
+        self.added: list[tuple[str, str]] = []
+        self.load_calls = 0
+        self._cap = cap
+        self.load_error: Exception | None = None
+
+    @property
+    def cap(self) -> int:
+        return self._cap
+
+    async def load(self) -> frozenset[str]:
+        self.load_calls += 1
+        if self.load_error is not None:
+            raise self.load_error
+        return frozenset(self.recorded)
+
+    async def add(self, entry_id: str, *, reason_code: str) -> bool:
+        self.added.append((entry_id, reason_code))
+        if len(self.recorded) >= self._cap:
+            return False
+        self.recorded.add(entry_id)
+        return True
+
+
+def test_serve_loop_never_runs_a_durably_quarantined_delivery() -> None:
+    """A restart must not re-run what a previous process already parked.
+
+    This is the half that in-memory quarantine cannot do. Before the durable
+    record, every worker start re-ran each parked command exactly once and
+    parked it again — the spin, once per process rather than once per reclaim.
+
+    `calls == 0` is the assertion that matters: the entry is offered (read AND
+    reclaim both return it) and never executed.
+    """
+
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "1-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        store = FakeQuarantineStore(frozenset({"1-0"}))
+        stop = asyncio.Event()
+        calls = 0
+        events: list[tuple[str, object]] = []
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            nonlocal calls
+            calls += 1
+            return DeliveryResult(DeliveryDisposition.EXECUTED_SETTLED_ACKED)
+
+        async def stop_after_repeated_offers() -> None:
+            while consumer.reclaim_calls < 3:
+                await asyncio.sleep(0)
+            stop.set()
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+            event_sink=lambda event, error: events.append((event, error)),
+            quarantine_store=store,
+        )
+        watcher = asyncio.create_task(stop_after_repeated_offers())
+        try:
+            await asyncio.wait_for(runtime.run(stop), timeout=1.0)
+        finally:
+            watcher.cancel()
+
+        assert store.load_calls == 1, "the durable record is read exactly once"
+        assert consumer.reclaim_calls >= 3, "the entry was not offered repeatedly"
+        assert calls == 0, f"a parked delivery ran {calls} times"
+        assert any(event[0] == "quarantine_loaded" for event in events)
+
+    asyncio.run(run())
+
+
+def test_serve_loop_records_a_quarantine_durably() -> None:
+    """The refusal is written through, with the code that caused it."""
+
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "7-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        store = FakeQuarantineStore()
+        stop = asyncio.Event()
+        events: list[tuple[str, object]] = []
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            raise AuthorizationFailure(
+                "The durable output spool uses a different claim fence; "
+                "server-side recovery is required."
+            )
+
+        async def stop_after_write() -> None:
+            while not store.added:
+                await asyncio.sleep(0)
+            stop.set()
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+            event_sink=lambda event, error: events.append((event, error)),
+            quarantine_store=store,
+        )
+        watcher = asyncio.create_task(stop_after_write())
+        try:
+            await asyncio.wait_for(runtime.run(stop), timeout=1.0)
+        finally:
+            watcher.cancel()
+
+        assert store.added == [("7-0", "AUTHORIZATION_FAILED")]
+        assert "7-0" in store.recorded
+        assert not any(event[0] == "quarantine_store_full" for event in events)
+
+    asyncio.run(run())
+
+
+def test_serve_loop_still_quarantines_when_the_durable_load_fails() -> None:
+    """A store outage must degrade, not resume the spin or refuse to start.
+
+    Announced and then ignored: the process-local quarantine still holds, so the
+    doomed delivery runs ONCE rather than on every reclaim turn.
+    """
+
+    async def run() -> None:
+        delivery = RedisCommandDelivery(
+            "commands.v1",
+            "9-0",
+            {"signed_envelope": b"reference"},
+        )
+        consumer = FakeConsumer((delivery,))
+        store = FakeQuarantineStore()
+        store.load_error = RuntimeError("redis is gone")
+        stop = asyncio.Event()
+        calls = 0
+        events: list[tuple[str, object]] = []
+
+        async def process(_: RedisCommandDelivery) -> DeliveryResult:
+            nonlocal calls
+            calls += 1
+            raise AuthorizationFailure("fence moved")
+
+        async def stop_after_repeated_offers() -> None:
+            while consumer.reclaim_calls < 4:
+                await asyncio.sleep(0)
+            stop.set()
+
+        runtime = WorkerServeLoop(
+            consumer=consumer,
+            process_delivery=process,
+            max_concurrency=1,
+            queue_capacity=1,
+            reclaim_idle_millis=1,
+            reclaim_interval_millis=1,
+            dependency_retry_millis=1,
+            shutdown_timeout_millis=1000,
+            event_sink=lambda event, error: events.append((event, error)),
+            quarantine_store=store,
+        )
+        watcher = asyncio.create_task(stop_after_repeated_offers())
+        try:
+            await asyncio.wait_for(runtime.run(stop), timeout=1.0)
+        finally:
+            watcher.cancel()
+
+        assert any(event[0] == "quarantine_load_unavailable" for event in events)
+        assert calls == 1, f"the doomed delivery ran {calls} times, not once"
+
+    asyncio.run(run())
+
+
 def test_serve_loop_heartbeats_queued_and_active_entries_in_bounded_batches() -> None:
     async def run() -> None:
         deliveries = tuple(

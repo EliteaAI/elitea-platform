@@ -89,9 +89,8 @@ export function AdminUsers() {
           />
           {state.onSelectionChange && state.selectedIds.length > 0 ? (
             <Button
-              variant="outlined"
-              color="error"
-              size="small"
+              variant="elitea" color="alarm"
+                            size="small"
               startIcon={<DeleteIcon />}
               onClick={() => state.onRequestDelete(state.selectedIds)}
             >
@@ -167,10 +166,12 @@ export function AdminUsers() {
             <Typography variant="bodyMedium" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={state.onPreviousPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={state.onPreviousPage}>
               {t('pages.admin.users.pagination.previous', 'Previous')}
             </Button>
-            <Button size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
               {t('pages.admin.users.pagination.next', 'Next')}
             </Button>
           </Box>

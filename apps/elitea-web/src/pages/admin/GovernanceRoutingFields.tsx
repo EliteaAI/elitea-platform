@@ -67,7 +67,7 @@ export function RoutingFields({
       <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={draft.cel.trim() === '' || validate.isPending}
           onClick={() => validate.mutate(draft.cel)}
           data-testid="governance-validate-cel"

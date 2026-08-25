@@ -218,15 +218,29 @@ const styles = {
     minWidth: 0,
     flexShrink: 1,
   },
+  // `ButtonGroup` is a flex row, and THIS is its flex item — the Tooltip's
+  // required span wrapper, not the Button. Without `flexShrink` it keeps its
+  // intrinsic width no matter what the Button inside says, so a long model
+  // name (an `-mini`/`-preview` suffix, or a deployment's own long id)
+  // widened the whole group past the composer's action row and the name
+  // painted over the settings/mic/send buttons beside it. `minWidth: 0` is
+  // the other half: a flex item will not shrink below its content's
+  // min-content width until it is told it may.
   modelButtonWrapper: {
     minWidth: 0,
     maxWidth: '100%',
+    flexShrink: 1,
     overflow: 'hidden',
     display: 'inline-block',
   },
+  // `justifyContent` keeps the icon and the name packed at the start once the
+  // button is wider than its content; the gap replaces the spacing the name
+  // used to get from the Button's default centring.
   modelButton: {
     minWidth: 0,
     maxWidth: '100%',
+    justifyContent: 'flex-start',
+    gap: 0.75,
   },
   modelNameWrapper: {
     minWidth: 0,

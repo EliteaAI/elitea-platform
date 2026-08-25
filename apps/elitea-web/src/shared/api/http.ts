@@ -7,16 +7,14 @@
  *
  * The nine §5.4 behaviours implemented here or in `auth/`:
  *  1. explicit `credentials`: 'same-origin', switching to 'include' when the
- *     resolved base URL is cross-origin (old `fetchBaseQuery` set none —
- *     apps/elitea-ui/src/api/eliteaApi.js:13-15).
- *  2. real 401 → re-auth; redirect-sniff kept as SECONDARY signal
- *     (old app had redirect-sniff only — eliteaApi.js:21-49; the genuine 401
- *     from elitea-main middleware/auth.go:155 surfaced as a plain error).
- *     403 is DELIBERATELY not a re-auth signal any more — see `needsReauth`.
+ *     resolved base URL is cross-origin (old `fetchBaseQuery` set none).
+ *  2. real 401 → re-auth; redirect-sniff kept as SECONDARY signal (old app had
+ *     redirect-sniff only — eliteaApi.js:21-49; the genuine 401 from elitea-main
+ *     middleware/auth.go:155 surfaced as a plain error). 403 is DELIBERATELY not
+ *     a re-auth signal — see `needsReauth`; nor is a 401 on a `background` poll.
  *  3. single-flight re-auth: N concurrent 401s → one re-auth flow.
  *  6. dev bearer ONLY under `import.meta.env.DEV` (statically eliminated from
- *     production bundles; old app leaked it via runtime config —
- *     eliteaApi.js:60-63).
+ *     production bundles; old app leaked it via config — eliteaApi.js:60-63).
  *  8. AbortSignal on every request (react-query `signal` compatible).
  *  9. W3C `traceparent` when tracing is enabled (shape preserved from
  *     apps/elitea-ui/src/services/tracing/TraceService.js:55-61).
@@ -79,6 +77,8 @@ export interface HttpRequestOptions {
   /** JSON-serialized once (replayable); pass a string to send it verbatim. `FormData`/`Blob`/`URLSearchParams`/`ArrayBuffer` also pass through unchanged (their own Content-Type, e.g. multipart, is left for `fetch` to set). */
   body?: unknown;
   query?: Readonly<Record<string, string | number | boolean | undefined>>;
+  /** A peripheral poll whose 401 must NOT escalate to re-auth — see `features/notifications/api/notifications.ts` for the logout loop this exists to stop. */
+  background?: boolean;
 }
 
 export interface HttpClient {
@@ -356,7 +356,7 @@ export function createHttpClient(cfg: HttpConfig): HttpClient {
       return fromException<T>(cause, url);
     }
 
-    if (needsReauth(response)) {
+    if (needsReauth(response) && options.background !== true) {
       // Behaviour 2b first: a resource-authorization 401 is not a session
       // failure — surface its body instead of burning it on a re-auth.
       const resourceAuth = await resourceAuthorizationBody(response);

@@ -145,7 +145,7 @@ export function ConfigurationLinksEditor({
       <Box>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={disabled}
           onClick={() => {
             onChange([...links, { title: '', url: '' }]);

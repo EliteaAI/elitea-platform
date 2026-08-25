@@ -88,6 +88,16 @@ export interface ParticipantsLayoutProps {
   sections: SectionConfig;
   actions: ParticipantActions;
   renderContextBudget?: ParticipantsProps['renderContextBudget'];
+  /**
+   * The conversation the budget slot is for.
+   *
+   * It used to be absent, and the slot was invoked as
+   * `renderContextBudget({ conversationId: undefined })` — a literal, so the
+   * budget could never fetch for ANY conversation no matter what the caller
+   * passed. Nothing supplied `renderContextBudget` at the time, so the defect
+   * was invisible: the slot was dead, and the value it fed was wrong.
+   */
+  conversationId?: string | number | undefined;
 }
 
 /**
@@ -295,7 +305,7 @@ function ExpandedParticipantsContent({
 // Component (≤ 12 props via grouping)
 
 export function ParticipantsLayout({
-  header, users, sections, actions, renderContextBudget,
+  header, users, sections, actions, renderContextBudget, conversationId,
 }: ParticipantsLayoutProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const componentWidth = useContainerWidth(containerRef);
@@ -345,7 +355,7 @@ export function ParticipantsLayout({
       {/* Context budget slot */}
       {renderContextBudget && (
         <Box sx={styles.contextBudgetWrapper}>
-          {renderContextBudget({ conversationId: undefined })}
+          {renderContextBudget({ conversationId })}
         </Box>
       )}
     </Box>

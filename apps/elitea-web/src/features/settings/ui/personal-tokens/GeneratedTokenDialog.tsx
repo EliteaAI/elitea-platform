@@ -171,19 +171,19 @@ const getStyles = (): {
     alignItems: 'center',
     gap: '1rem',
   },
-  dialogContent: ({ palette }) => ({
+  dialogContent: (theme) => ({
     width: '31.25rem',
     borderTopLeftRadius: 'var(--el-shape-radiusSm, 4px)',
     borderTopRightRadius: 'var(--el-shape-radiusSm, 4px)',
-    background: palette.background.secondary,
+    background: theme.vars.palette.background.secondary,
     padding: '1rem 1.5rem 0',
     overflowX: 'hidden',
   }),
-  dialogActions: ({ palette }) => ({
+  dialogActions: (theme) => ({
     width: '31.25rem',
     borderBottomLeftRadius: 'var(--el-shape-radiusSm, 4px)',
     borderBottomRightRadius: 'var(--el-shape-radiusSm, 4px)',
-    background: palette.background.secondary,
+    background: theme.vars.palette.background.secondary,
     padding: '0 1.5rem 1rem',
     justifyContent: 'flex-end',
   }),
@@ -193,36 +193,36 @@ const getStyles = (): {
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  title: ({ palette, typography }) => ({
+  title: (theme) => ({
     fontFamily: 'Montserrat',
-    fontSize: typography.headingSmall.fontSize,
+    fontSize: theme.typography.headingSmall.fontSize,
     fontWeight: 600,
     lineHeight: '1.5rem',
-    color: palette.text.secondary,
+    color: theme.vars.palette.text.secondary,
   }),
-  closeButton: ({ palette }) => ({
+  closeButton: (theme) => ({
     cursor: 'pointer',
-    fill: palette.icon.fill.default,
+    fill: theme.vars.palette.icon.fill.default,
   }),
-  warningContainer: ({ palette }) => ({
+  warningContainer: (theme) => ({
     display: 'flex',
     alignItems: 'flex-start',
     gap: '0.5rem',
     padding: '0.5rem 0.75rem',
-    borderColor: palette.border.attention,
-    backgroundColor: palette.background.attention,
+    borderColor: theme.vars.palette.border.attention,
+    backgroundColor: theme.vars.palette.background.attention,
     borderRadius: 'var(--el-shape-radiusSm, 4px)',
   }),
-  warningIcon: ({ palette }) => ({
+  warningIcon: (theme) => ({
     width: '1rem',
     height: '1rem',
-    fill: palette.icon.fill.attention,
+    fill: theme.vars.palette.icon.fill.attention,
     flexShrink: 0,
   }),
-  tokenBox: ({ palette }) => ({
+  tokenBox: (theme) => ({
     marginTop: '1rem',
     padding: '0.5rem 0.75rem',
-    borderBottom: `0.0625rem solid ${palette.border.lines}`,
+    borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
   }),
   tokenName: {
     marginBottom: '0.25rem',

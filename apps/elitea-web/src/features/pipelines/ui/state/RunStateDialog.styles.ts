@@ -41,7 +41,7 @@ const CIRCLE_RADIUS = '50%';
  * inter-step connector (`processConnectorStyles(isError).connector`,
  * status-coloured on every state incl. its unclassed base rule) versus the
  * trailing `timeline.length < 2` placeholder connector (`styles.
- * stepConnector`, a single hardcoded `palette.border.flowNode` gray with
+ * stepConnector`, a single hardcoded `theme.vars.palette.border.flowNode` gray with
  * no `isError` dependency at all). Both connectors are rendered through
  * the same `<ProcessConnector isError visible>` call site pattern here, so
  * the `&:last-child` selector below stands in for that baseline split:
@@ -285,7 +285,7 @@ export const progressBoxSx: SxProps<Theme> = { width: '0.875rem', height: '0.875
 
 export const iconInactiveSx: SxProps<Theme> = (theme: Theme) => ({ color: theme.vars.palette.icon.fill.inactive });
 
-/** The `Interrupt`/`Stopped` branches' `AttentionIcon` wrapper — baseline: `sx={[styles.progressBox, ({ palette }) => ({ color: palette.status.onModeration })]}`. */
+/** The `Interrupt`/`Stopped` branches' `AttentionIcon` wrapper — baseline: `sx={[styles.progressBox, (theme) => ({ color: theme.vars.palette.status.onModeration })]}`. */
 export const attentionIconSx: SxProps<Theme> = (theme: Theme) => ({
   width: '0.875rem',
   height: '0.875rem',

@@ -133,10 +133,12 @@ export function ProviderTable({
                 </Typography>
               </TableCell>
               <TableCell align="right">
-                <Button size="small" onClick={() => onEdit(row)}>
+                <Button
+            variant="elitea" color="tertiary" size="small" onClick={() => onEdit(row)}>
                   {t('pages.admin.llmProviders.edit', 'Edit')}
                 </Button>
-                <Button size="small" color="error" onClick={() => onDelete(row)}>
+                <Button
+            variant="elitea" color="alarm" size="small" onClick={() => onDelete(row)}>
                   {t('pages.admin.llmProviders.delete', 'Delete')}
                 </Button>
               </TableCell>
@@ -211,13 +213,14 @@ export function ConfirmDelete({
       data-testid="llm-providers-confirm-delete"
       action={
         <>
-          <Button size="small" onClick={onCancel}>
+          <Button
+            variant="elitea" color="tertiary" size="small" onClick={onCancel}>
             {t('pages.admin.llmProviders.cancel', 'Cancel')}
           </Button>
           <Button
+            variant="elitea" color="alarm"
             size="small"
-            color="error"
-            data-testid="llm-providers-confirm-delete-button"
+                        data-testid="llm-providers-confirm-delete-button"
             onClick={() => onConfirm(provider)}
           >
             {t('pages.admin.llmProviders.delete', 'Delete')}

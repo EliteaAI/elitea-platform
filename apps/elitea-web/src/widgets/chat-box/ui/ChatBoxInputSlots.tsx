@@ -15,8 +15,8 @@
  */
 import type { ComponentProps, ReactNode, RefObject } from 'react';
 
-import { AttachmentButton, ChatInternalToolsConfigButton, SendButton, VoiceButton } from '@/widgets/chat';
-import type { AttachmentButtonHandle, VoiceButtonHandle, VoiceButtonInputHandle } from '@/widgets/chat';
+import { AttachmentButton, ChatInternalToolsConfigButton, PlusChatButton, SendButton, VoiceButton } from '@/widgets/chat';
+import type { AttachmentButtonHandle, PlusChatButtonEntitySubmenus, VoiceButtonHandle, VoiceButtonInputHandle } from '@/widgets/chat';
 import { HighlightedText } from '@/features/chat-messages';
 import { NewChatInput } from '@/features/chat-input';
 import { LLMModelSelector } from '@/widgets/llm-model-selector';
@@ -62,12 +62,23 @@ export interface ChatBoxInputSlotsProps {
   readonly internalTools: ChatBoxInputSlotsInternalTools;
   readonly model: ChatBoxInputSlotsModel;
   readonly refs: ChatBoxInputSlotsRefs;
+  /**
+   * The baseline's `fromTheChat` — true on the chat surface, false when the
+   * ChatBox is embedded in the agents page. It selects WHICH left-hand
+   * control the footer gets: the "+" menu, or a bare paperclip.
+   */
+  readonly isAgentsPage: boolean;
+  /** Real agent/pipeline/toolkit/MCP lists for the "+" menu's submenus, from `processes/chat`. */
+  readonly entitySubmenus: PlusChatButtonEntitySubmenus | undefined;
+  /** Participants list the "+" menu's Agents submenu picks from. */
+  readonly participants: readonly unknown[] | undefined;
 }
 
 export interface ChatBoxInputSlotsResult {
   readonly sendControl: (props: SendControlSlotProps) => ReactNode;
   readonly highlightOverlay: (props: HighlightOverlaySlotProps) => ReactNode;
   readonly attachmentButton: ReactNode;
+  /** `undefined` on the chat surface — the "+" menu owns the modules there. */
   readonly internalToolsConfig: ReactNode;
   readonly voiceButton: ReactNode;
   readonly modelSelector: ReactNode;
@@ -87,7 +98,7 @@ function buildSendButtonProps(props: SendControlSlotProps) {
 }
 
 /** Builds `NewChatInput`'s `slots` prop bundle — a function (not a component) so its return type slots directly into `NewChatInput`'s `slots` prop without an extra wrapper element. Prop objects are built as local consts (not inline `{...optField(...)}` spreads) so their `optField`-derived string keys aren't parsed as JSX-nested literals by the `i18next/no-literal-string` gate. */
-export function buildChatBoxInputSlots({ attachments, internalTools, model, refs }: ChatBoxInputSlotsProps): ChatBoxInputSlotsResult {
+export function buildChatBoxInputSlots({ attachments, internalTools, model, refs, isAgentsPage, entitySubmenus, participants }: ChatBoxInputSlotsProps): ChatBoxInputSlotsResult {
   const attachmentButtonProps = {
     disableAttachments: false,
     ...optField('attachments', attachments.attachments),
@@ -105,11 +116,40 @@ export function buildChatBoxInputSlots({ attachments, internalTools, model, refs
     ...optField('onSelectModel', model.onSelectModel),
     models: [...model.models],
   };
+  // `ChatInternalToolsConfigButton` and `PlusChatButton` take the same data in
+  // two different shapes — a `{key,label,enabled}` list plus
+  // `(key, enabled)`, versus enabled NAMES plus `({key, value})`. `key` here
+  // IS the tool's `name` (`useChatBoxInternalTools` builds it from
+  // `tool.name`), so the translation is shape-only, not a re-keying.
+  const onToolChange = internalTools.onToolChange;
+  const plusButtonProps = {
+    ...attachmentButtonProps,
+    ...optField(
+      'onInternalToolsConfigChange',
+      onToolChange ? ({ key, value }: { key: string; value: boolean }) => { onToolChange(key, value); } : undefined,
+    ),
+    internal_tools: internalTools.tools.filter((tool) => tool.enabled).map((tool) => tool.key),
+    ...optField('entitySubmenus', entitySubmenus),
+    ...optField('participants', participants ? [...participants] : undefined),
+  };
   return {
     sendControl: (props: SendControlSlotProps) => <SendButton {...buildSendButtonProps(props)} />,
     highlightOverlay: (props: HighlightOverlaySlotProps) => <HighlightedText text={props.text} ranges={props.ranges} />,
-    attachmentButton: <AttachmentButton ref={refs.attachmentButtonRef} {...attachmentButtonProps} />,
-    internalToolsConfig: <ChatInternalToolsConfigButton {...internalToolsConfigProps} />,
+    // Baseline `NewChatInput.jsx:239-274`: on the chat surface the "+" menu IS
+    // the left-hand control and it SUBSUMES both the paperclip and the
+    // internal-tools gear (its own "Attach Files" row and "Modules" submenu).
+    // Rendering all three side by side — which is what this file did, because
+    // nothing ever mounted `PlusChatButton` — gave the composer two buttons
+    // where the product has one, and left the entity submenus (agents,
+    // pipelines, toolkits, MCPs) unreachable from the chat entirely.
+    attachmentButton: isAgentsPage
+      ? <AttachmentButton ref={refs.attachmentButtonRef} {...attachmentButtonProps} />
+      : <PlusChatButton {...plusButtonProps} />,
+    // `undefined` on the chat surface: `NewChatInputFooterContent` gates this
+    // slot on `!isAgentsPage`, so returning the gear here would render it
+    // BESIDE the "+" that already contains it. The composition root is what
+    // withholds it, exactly as that component's own doc comment specifies.
+    internalToolsConfig: isAgentsPage ? <ChatInternalToolsConfigButton {...internalToolsConfigProps} /> : undefined,
     voiceButton: <VoiceButton ref={refs.voiceButtonRef} inputRef={refs.voiceInputRef} disabled={false} onRecordingChange={() => {}} />,
     modelSelector: <LLMModelSelector {...modelSelectorProps} />,
   };

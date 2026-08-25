@@ -1,17 +1,17 @@
 import { memo, useCallback, useRef, useState } from 'react';
 
 import AddIcon from '@mui/icons-material/Add';
+import Box from '@mui/material/Box';
 import ClickAwayListener from '@mui/material/ClickAwayListener';
 import IconButton from '@mui/material/IconButton';
-import Paper from '@mui/material/Paper';
 import Popper from '@mui/material/Popper';
-import type { Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 
 import { agentEditorHooks } from '@/features/agents';
 import { t } from '@/shared/i18n';
 
-import { AttachmentsPanel, MainMenuList } from './PlusChatButton.parts';
+import { AttachmentButton } from './AttachmentButton';
+import { AttachmentsPanel, MainMenuList, MenuPaper } from './PlusChatButton.parts';
 import {
   MENU_ITEMS,
   resolveActiveSubmenuView,
@@ -95,31 +95,40 @@ export const PlusChatButton = memo(
   }: PlusChatButtonProps) => {
     const [menuOpen, setMenuOpen] = useState(false);
     const [activeSubmenu, setActiveSubmenu] = useState<SubmenuKey | null>(null);
+    // The ROW the open submenu is anchored to, so it sits beside that row
+    // rather than replacing the whole menu (baseline `hoveredAnchorEl`).
+    const [submenuAnchor, setSubmenuAnchor] = useState<HTMLElement | null>(null);
     const [searchValue, setSearchValue] = useState('');
     const anchorRef = useRef<HTMLButtonElement>(null);
 
     const availableTools = agentEditorHooks.useAvailableInternalTools();
     const isMcpVisible = agentEditorHooks.useIsMcpVisible();
 
+    const onOpen = entitySubmenus?.onOpen;
+    // `onOpen` is called OUTSIDE the `setMenuOpen` updater on purpose: React
+    // may invoke an updater twice (StrictMode double-render), and this one
+    // starts network requests.
     const toggleMenu = useCallback(() => {
-      setMenuOpen((prev) => !prev);
+      if (!menuOpen) onOpen?.();
+      setMenuOpen(!menuOpen);
       if (activeSubmenu) {
         setActiveSubmenu(null);
+        setSubmenuAnchor(null);
       }
-    }, [activeSubmenu]);
+    }, [menuOpen, activeSubmenu, onOpen]);
 
     const closeMenu = useCallback(() => {
       setMenuOpen(false);
       setActiveSubmenu(null);
+      setSubmenuAnchor(null);
       setSearchValue('');
     }, []);
 
-    const handleSubmenuOpen = useCallback((key: SubmenuKey) => {
+    const handleSubmenuOpen = useCallback((key: SubmenuKey, anchor: HTMLElement) => {
       setActiveSubmenu(key);
-    }, []);
-
-    const handleBack = useCallback(() => {
-      setActiveSubmenu(null);
+      setSubmenuAnchor(anchor);
+      // Each category has its own search; carrying the previous one over
+      // would silently filter the newly-opened list by an unrelated string.
       setSearchValue('');
     }, []);
 
@@ -189,44 +198,62 @@ export const PlusChatButton = memo(
           placement="bottom-start"
           sx={{ zIndex: 9998 }}
         >
+          {/*
+            * ONE ClickAwayListener around BOTH papers. The submenu renders in
+            * its own portal, so a listener that only wrapped the main paper
+            * would treat every click inside the submenu — selecting an agent,
+            * ticking a module — as a click away and close the menu underneath
+            * the pointer.
+            */}
           <ClickAwayListener onClickAway={closeMenu}>
-            <Paper
-              elevation={8}
-              sx={(theme: Theme) => ({
-                minWidth: '17.5rem',
-                borderRadius: theme.vars.shape.radiusMd,
-                border: '0.0625rem solid',
-                borderColor: 'border.lines',
-                background: theme.vars.palette.background.secondary,
-                padding: 0,
-                overflow: 'hidden',
-              })}
-            >
-              {/* Main menu or submenu */}
-              {activeSubmenu === 'attachments' ? (
-                <AttachmentsPanel
-                  disableAttachments={disableAttachments}
-                  attachments={attachments}
-                  onAttachFiles={onAttachFiles}
-                  limits={limits}
+            <Box>
+              <MenuPaper>
+                <MainMenuList
+                  items={visibleMenuItems}
+                  onSelectSubmenu={handleSubmenuOpen}
+                  attachRow={
+                    <AttachmentButton
+                      showLabel
+                      disableAttachments={disableAttachments}
+                      attachments={attachments}
+                      onAttachFiles={onAttachFiles}
+                      limits={limits}
+                    />
+                  }
                 />
-              ) : activeSubmenu ? (
-                <PlusChatSubmenu
-                  items={submenuItems}
-                  searchValue={searchValue}
-                  onSearchChange={(e) => setSearchValue(e.target.value)}
-                  searchPlaceholder={t('widgets.chat.plusChatButton.searchPlaceholder', 'Search...')}
-                  showCreateNew={createConfig?.showCreateNew ?? false}
-                  onCreateNew={createConfig?.onCreateNew}
-                  createNewLabel={t('widgets.chat.plusChatButton.createNewLabel', 'Create new')}
-                  emptyMessage={t('widgets.chat.plusChatButton.noItemsAvailable', 'No {{submenu}} available', { submenu: activeSubmenu })}
-                  noResultsMessage={t('widgets.chat.plusChatButton.noItemsFound', 'No items found')}
-                  isLoading={false}
-                />
-              ) : (
-                <MainMenuList items={visibleMenuItems} onBack={handleBack} onSelectSubmenu={handleSubmenuOpen} />
-              )}
-            </Paper>
+              </MenuPaper>
+
+              <Popper
+                open={activeSubmenu !== null && submenuAnchor !== null}
+                anchorEl={submenuAnchor}
+                placement="right-start"
+                sx={{ zIndex: 9999 }}
+              >
+                <MenuPaper>
+                  {activeSubmenu === 'attachments' ? (
+                    <AttachmentsPanel
+                      disableAttachments={disableAttachments}
+                      attachments={attachments}
+                      onAttachFiles={onAttachFiles}
+                      limits={limits}
+                    />
+                  ) : (
+                    <PlusChatSubmenu
+                      items={submenuItems}
+                      searchValue={searchValue}
+                      onSearchChange={(e) => setSearchValue(e.target.value)}
+                      searchPlaceholder={t('widgets.chat.plusChatButton.searchPlaceholder', 'Search...')}
+                      showCreateNew={createConfig?.showCreateNew ?? false}
+                      onCreateNew={createConfig?.onCreateNew}
+                      createNewLabel={t('widgets.chat.plusChatButton.createNewLabel', 'Create new')}
+                      emptyMessage={t('widgets.chat.plusChatButton.noItemsAvailable', 'Nothing available')}
+                      noResultsMessage={t('widgets.chat.plusChatButton.noItemsFound', 'No items found')}
+                      isLoading={false}
+                    />
+                  )}
+                </MenuPaper>
+              </Popper>
+            </Box>
           </ClickAwayListener>
         </Popper>
       </>

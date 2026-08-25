@@ -53,8 +53,12 @@ import { eliteaFetch } from '@/shared/api/generated/mutator';
  * — same convention as `features/credentials/api/configurations.ts`'s
  * `fetchData<T>` (unit A7).
  */
-async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
-  const envelope = await eliteaFetch<{ data: T }>(url, options);
+async function fetchData<T>(
+  url: string,
+  options?: RequestInit,
+  transport?: { readonly background?: boolean },
+): Promise<T> {
+  const envelope = await eliteaFetch<{ data: T }>(url, options, transport);
   return envelope.data;
 }
 
@@ -157,7 +161,14 @@ export async function listNotifications(
   params: ListNotificationsParams,
   signal?: AbortSignal,
 ): Promise<NotificationListWire> {
-  return fetchData<NotificationListWire>(buildNotificationsListUrl(params), signal ? { signal } : {});
+  // `background`: this is the bell's own poll, running on every page the sidebar
+  // mounts and asked for by nobody. Its 401 must be handed back as a failure,
+  // never escalated into a re-auth — see `HttpRequestOptions.background`. The
+  // MUTATIONS below deliberately do NOT set it: those are user actions, and a
+  // 401 on one of them really does mean the session ended.
+  return fetchData<NotificationListWire>(buildNotificationsListUrl(params), signal ? { signal } : {}, {
+    background: true,
+  });
 }
 
 /* ── API-168: PUT /notifications/notification/prompt_lib/{projectId}/{id} ── */

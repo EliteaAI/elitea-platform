@@ -120,7 +120,7 @@ export function AdminSecrets() {
             data-testid="admin-secrets-search"
           />
           {state.onCreate ? (
-            <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={state.onCreate}>
+            <Button variant="elitea" color="primary" size="small" startIcon={<AddIcon />} onClick={state.onCreate}>
               {t('pages.admin.secrets.action.create', 'Create secret')}
             </Button>
           ) : null}
