@@ -19,7 +19,7 @@ import { aiPersonalityFeature, memoryFeature } from '@/features/settings';
 const { SettingsFormProvider } = aiPersonalityFeature;
 const { MemoryFormContent } = memoryFeature;
 
-export interface MemoryProps {
+interface MemoryProps {
   /** Currently-selected project id — threaded down from the route. */
   projectId?: string;
 }

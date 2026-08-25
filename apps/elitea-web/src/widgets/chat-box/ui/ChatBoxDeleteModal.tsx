@@ -13,7 +13,7 @@ import { t } from '@/shared/i18n';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 
 /** The slice of `useDeleteMessageAlert`'s return this dialog needs. */
-export interface ChatBoxDeleteAlert {
+interface ChatBoxDeleteAlert {
   readonly isOpen: boolean;
   readonly isAllMessages: boolean;
   readonly confirmationMessage: string;

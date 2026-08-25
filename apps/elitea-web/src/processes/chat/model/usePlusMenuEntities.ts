@@ -81,7 +81,7 @@ export function toPlusMenuItem(item: ParticipantEntityItem, projectId: string | 
 }
 
 /** Mirrors `widgets/chat`'s `PlusChatButtonEntitySubmenus` without importing it (a `widgets/` type in a `processes/` model file is legal, but this stays structural to keep the model layer JSX/widget-free). */
-export interface PlusMenuEntities {
+interface PlusMenuEntities {
   readonly pipelines: readonly unknown[];
   readonly toolkits: readonly unknown[];
   readonly mcps: readonly unknown[];

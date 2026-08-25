@@ -14,7 +14,7 @@ import { t } from '@/shared/i18n';
 import type { SingleSelectOption } from '@/shared/ui/SingleSelectMenuItem';
 
 /** Persona ids, in the baseline's display order. */
-export const PERSONA_VALUES = ['generic', 'qa', 'nerdy', 'quirky', 'cynical', 'none', 'bare'] as const;
+const PERSONA_VALUES = ['generic', 'qa', 'nerdy', 'quirky', 'cynical', 'none', 'bare'] as const;
 
 export type PersonaValue = (typeof PERSONA_VALUES)[number];
 

@@ -61,14 +61,31 @@ import { AdminNavFooter } from './AdminNavFooter';
 import { AdminNavHeader } from './AdminNavHeader';
 import { activeAdminNavItemId, visibleAdminNavGroups, type AdminNavItem } from './adminNavItems';
 import {
+  COLLAPSED_SIDE_BAR_WIDTH_REM,
+  SIDE_BAR_WIDTH_REM,
+} from '@/shared/ui/layout/sidebarWidth';
+
+import {
   readPersistedAdminNavCollapsed,
   useAdminNavCollapsedStore,
   writePersistedAdminNavCollapsed,
 } from './adminNavCollapsed';
 
-/** The reference's two widths, unchanged. */
-const ADMIN_NAV_WIDTH = '13.75rem';
-const ADMIN_NAV_COLLAPSED_WIDTH = '3.75rem';
+/**
+ * The rail's two widths — the SAME two the main app's rail uses.
+ *
+ * These were `13.75rem`/`3.75rem` (220/60px) while the main rail was 208/72,
+ * and the commit that introduced `sidebarWidth.ts` to unify them only ever
+ * changed one side: this file kept its own literals, so the two rails still
+ * disagreed and the shared rem exports had no consumer at all. The dead-code
+ * gate is what surfaced that — the constants were unused because the wiring
+ * was never finished, not because they were surplus.
+ *
+ * Both rails now read the baseline's own numbers (216/64,
+ * `apps/elitea-ui/src/common/constants.js:51,53`).
+ */
+const ADMIN_NAV_WIDTH = SIDE_BAR_WIDTH_REM;
+const ADMIN_NAV_COLLAPSED_WIDTH = COLLAPSED_SIDE_BAR_WIDTH_REM;
 
 export function AdminNav(): ReactNode {
   const collapsed = useAdminNavCollapsedStore((state) => state.collapsed);

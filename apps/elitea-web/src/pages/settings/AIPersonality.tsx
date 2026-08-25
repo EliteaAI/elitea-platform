@@ -18,7 +18,7 @@ import { aiPersonalityFeature } from '@/features/settings';
 
 const { AIPersonalityFormContent, SettingsFormProvider } = aiPersonalityFeature;
 
-export interface AIPersonalityProps {
+interface AIPersonalityProps {
   /** Currently-selected project id — threaded down from the route. */
   projectId?: string;
 }

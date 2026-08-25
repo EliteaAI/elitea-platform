@@ -44,7 +44,7 @@ import { CodeMirrorEditor } from '@/shared/ui/CodeMirrorEditor';
 import { t } from '@/shared/i18n';
 
 /** The baseline's first format option, kept verbatim (`ToolModal.jsx:27`). */
-export const TOOL_MODAL_AUTO_LANGUAGE = 'auto';
+const TOOL_MODAL_AUTO_LANGUAGE = 'auto';
 
 /** @public One entry of {@link useToolModalLanguageOptions}. */
 export interface ToolModalLanguageOption {

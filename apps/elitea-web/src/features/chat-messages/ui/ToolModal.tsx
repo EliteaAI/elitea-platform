@@ -62,7 +62,7 @@ function toEditorText(value: unknown): string {
  * `"<type> - <name>"` when the action carries both (baseline
  * `ToolModal.jsx:61`'s two-part title), otherwise whichever half exists.
  */
-export function toolModalTitle(type: string | undefined, name: string | undefined): string {
+function toolModalTitle(type: string | undefined, name: string | undefined): string {
   if (type && name) return `${type} - ${name}`;
   return name || type || t('chatMessages.toolModal.defaultTitle', 'Tool Details');
 }

@@ -78,7 +78,7 @@ const TAB_STAT_KIND = {
 const contentWidthSx = (railVisible: boolean): SxProps<Theme> => ({ width: railVisible ? RAIL_CONTENT_WIDTH : '100%' });
 
 /** Split out of the component body to keep its cyclomatic complexity inside the §3.5 budget. */
-export function railStatKindForTab(tab: UserPublicTabValue): RailStatKind | undefined {
+function railStatKindForTab(tab: UserPublicTabValue): RailStatKind | undefined {
   return tab === 'agents' || tab === 'pipelines' || tab === 'toolkits' ? TAB_STAT_KIND[tab] : undefined;
 }
 

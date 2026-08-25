@@ -18,7 +18,7 @@ import { preferencesFeature } from '@/features/settings';
 
 const { PreferencesFormContent } = preferencesFeature;
 
-export interface PreferencesProps {
+interface PreferencesProps {
   /** Currently-selected project id — threaded down from the route. */
   projectId: string;
 }

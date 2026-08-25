@@ -37,7 +37,7 @@ const DEFAULT_TARGET_SUMMARY_TOKENS = 4096;
 /** A numeric field is briefly `''` while the user clears it (see `handleConvertToNumberChange`). */
 type NumericFieldValue = number | '';
 
-export interface SummaryLlmSettings {
+interface SummaryLlmSettings {
   instructions: string;
   model_name: string;
   model_project_id: string | null;
