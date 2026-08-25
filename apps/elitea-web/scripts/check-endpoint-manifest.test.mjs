@@ -208,9 +208,24 @@ describe('GREEN — a handwritten entry with operationId:null is legal', () => {
  * Analytics page displayed a cost KPI of 0 from the usage endpoint's hardcoded
  * literal. GENERATED_OPERATION_COUNT is unchanged because the operation is not
  * new; only its registration is.
+ *
+ * 153 -> 160 AND 180 -> 187 together, when the in-app support assistant was
+ * ported: seven new spec operations (listSupportConversations,
+ * createSupportConversation, getSupportConversation, deleteSupportConversation,
+ * clearSupportConversationMessages, uploadSupportAttachments, startSupportTurn)
+ * landed in v2.yaml alongside internal/api/v2/supportassistant.
+ *
+ * BOTH COUNTS MOVE, which is the unusual half and the point of recording it:
+ * every entry above this one moved GENERATED_OPERATION_COUNT alone, because
+ * those PRs shipped a backend with no UI. This one ships the widget too
+ * (widgets/support-assistant, mounted by widgets/app-shell), so all seven
+ * operations acquire a manifest entry in the same change. The eighth support
+ * operation, `getSupportAssistantConfig`, is counted in neither delta: it and
+ * its `admin.getSupportAssistantConfig` entry both already existed, back when
+ * the route was a static {"enabled": false} stub.
  */
-const GENERATED_OPERATION_COUNT = 153;
-const MANIFEST_ENTRY_COUNT = 180;
+const GENERATED_OPERATION_COUNT = 160;
+const MANIFEST_ENTRY_COUNT = 187;
 
 describe('GREEN — the real, checked-in manifest', () => {
   it('exits 0 against src/shared/api/endpoints.manifest.json, unmodified', () => {
