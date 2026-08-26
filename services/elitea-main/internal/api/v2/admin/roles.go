@@ -65,6 +65,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 /* ── scopes ────────────────────────────────────────────────────────────── */
@@ -865,24 +866,48 @@ func (h *Handler) scopeProjectID(ctx context.Context, scope string) (int, error)
 // set the environment variable this function is trying to make unnecessary.
 func (h *Handler) supportProjectID(ctx context.Context) (int, error) {
 	settings, err := platformconfig.LoadSupportAssistant(ctx, h.pool)
-	if err != nil {
+	switch {
+	case err == nil:
+		if settings.ProjectID > 0 {
+			if settings.ProjectID > math.MaxInt32 {
+				return 0, matrixError{
+					status:  http.StatusInternalServerError,
+					message: "the stored support project id is out of range",
+				}
+			}
+			return int(settings.ProjectID), nil
+		}
+	case supportConfigTableMissing(err):
+		// A MISSING TABLE is a schema gap, not an outage, and the two want
+		// opposite answers. centry.platform_config is created by the bootstrap
+		// schema (internal/infra/db/migrations/001_initial.sql) and by nothing
+		// under migrations/shared/, so a deployment brought up by
+		// elitea-migrate alone genuinely has no such relation. Reporting 503
+		// there would replace the one message an operator can act on with an
+		// outage they cannot, so this case falls through to the environment
+		// exactly as an empty store does.
+	default:
 		return 0, matrixError{
 			status:  http.StatusServiceUnavailable,
 			message: "the support project could not be read",
 		}
 	}
-	if settings.ProjectID > 0 {
-		if settings.ProjectID > math.MaxInt32 {
-			return 0, matrixError{
-				status:  http.StatusInternalServerError,
-				message: "the stored support project id is out of range",
-			}
-		}
-		return int(settings.ProjectID), nil
-	}
 	// Unset, not unreadable. The assistant has never been enabled, so its
 	// project has never been created — the same answer pylon gives.
 	return envProjectID("SUPPORT_PROJECT_ID", 0)
+}
+
+// supportConfigTableMissing reports the schema-gap failures, in the same shape
+// and for the same reason as configurations.configurationSchemaMissing: a
+// missing relation must not be read as a working store that holds nothing, nor
+// as a database that has fallen over.
+func supportConfigTableMissing(err error) bool {
+	var postgresError *pgconn.PgError
+	if !errors.As(err, &postgresError) {
+		return false
+	}
+	// 3F000 invalid_schema_name, 42P01 undefined_table.
+	return postgresError.Code == "3F000" || postgresError.Code == "42P01"
 }
 
 func envProjectID(variable string, fallback int) (int, error) {

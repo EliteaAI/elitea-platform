@@ -37,10 +37,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/admin"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 /* ── harness ───────────────────────────────────────────────────────────── */
@@ -559,6 +559,42 @@ func TestSupportScopeFallsBackToTheEnvironmentWhenNothingIsStored(t *testing.T) 
 
 	if matrix := readMatrix(t, router, "support", "default"); !matrix.granted(t, "models.alpha.view", "viewer") {
 		t.Fatal("support scope ignored SUPPORT_PROJECT_ID with no stored id")
+	}
+}
+
+// A deployment whose centry.platform_config was never created is a SCHEMA GAP,
+// not an outage. It must keep the 404 that names the variable an operator can
+// set, rather than an unactionable 503 — the table is created by the bootstrap
+// schema and by nothing in the versioned migration history, so its absence is a
+// real shape and not a hypothetical one.
+func TestSupportScopeStillNamesTheVariableWithNoPlatformConfigTable(t *testing.T) {
+	pool, router := newRolesEnvironment(t)
+	t.Setenv("SUPPORT_PROJECT_ID", "")
+	if _, err := pool.Exec(context.Background(), "DROP TABLE centry.platform_config"); err != nil {
+		t.Fatalf("drop centry.platform_config: %v", err)
+	}
+
+	recorder := adminDo(t, router, http.MethodGet, "/admin/permissions/support/default", nil)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("support GET status = %d, want 404 with no platform_config table (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "SUPPORT_PROJECT_ID") {
+		t.Fatalf("404 body %q does not name the setting an operator can act on", body)
+	}
+}
+
+// The environment fallback still applies with the table gone, so a deployment
+// that pins the project by hand keeps working on a partially migrated schema.
+func TestSupportScopeUsesTheEnvironmentWithNoPlatformConfigTable(t *testing.T) {
+	pool, router := newRolesEnvironment(t)
+	t.Setenv("SUPPORT_PROJECT_ID", fmt.Sprint(supportProjectID))
+	if _, err := pool.Exec(context.Background(), "DROP TABLE centry.platform_config"); err != nil {
+		t.Fatalf("drop centry.platform_config: %v", err)
+	}
+
+	if matrix := readMatrix(t, router, "support", "default"); !matrix.granted(t, "models.alpha.view", "viewer") {
+		t.Fatal("support scope refused the environment fallback with no platform_config table")
 	}
 }
 
