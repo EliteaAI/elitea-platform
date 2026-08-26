@@ -1,0 +1,138 @@
+# env-drift allowlist for the elitea-main chart, consumed by
+# services/elitea-llm-gateway/scripts/env-drift-check.sh (which checks both
+# deployed Go services). One name per line; blank lines and # comments ignored.
+# An allowlisted var is never a FAIL and is not reported as drift.
+#
+# The rule going forward: any NEW env var elitea-main starts reading must either
+# appear in this chart's values.yaml `env` map (the whole map is rendered into
+# the ConfigMap) or be added here WITH a justification. Everything below is the
+# PRE-EXISTING baseline that predates this gate — it is not an endorsement, and
+# entries should migrate to values.yaml as each is wired up.
+
+# --- Secrets: must never be plaintext in a ConfigMap; supplied out-of-band via
+# --- a Kubernetes Secret / platform injection.
+APPLICATION_SECRET_KEY
+SECRETS_MASTER_KEY
+OIDC_CLIENT_ID
+OIDC_CLIENT_SECRET
+# GOOGLE_APPLICATION_CREDENTIALS (S17): deliberately NOT wired as a chart
+# secretKeyRef, unlike AZURE_STORAGE_KEY/S3_ACCESS_KEY/S3_SECRET_KEY (which
+# moved to values.yaml's secrets: block below — see deployment.yaml). GCS's
+# intended production path is GKE Workload Identity (serviceAccount.
+# annotations, added this stage), which needs no credentials file at all;
+# an explicit key-file env var is the emulator/non-GKE fallback, not the
+# baseline this chart should force every deployment to wire.
+GOOGLE_APPLICATION_CREDENTIALS
+
+# --- Identity provider endpoints, injected with the OIDC credentials above.
+OIDC_ISSUER_URL
+OIDC_REDIRECT_URI
+
+# --- Object-storage backend selection + per-backend settings (S2, S5, S12) now
+# --- wired directly in values.yaml's `env` map (plain) and `secrets` map
+# --- (AZURE_STORAGE_KEY, S3_ACCESS_KEY, S3_SECRET_KEY) — removed from here as
+# --- no longer drift. GCS_BUCKET and AZURE_STORAGE_CONTAINER, previously
+# --- listed here, were never read by elitea-main under those names at all
+# --- (the code reads STORAGE_CONTAINER for every backend); removed rather
+# --- than carried forward as unused entries.
+
+# --- Filesystem paths baked into the container image (Containerfile), not
+# --- per-deployment configuration.
+ADMIN_UI_STATIC_DIR
+DEFAULT_ICON_DATA_DIR
+ICONS_DATA_DIR
+ICON_DATA_DIR
+TOOL_ICON_DATA_DIR
+
+# --- Admin UI serving knobs, currently image/ingress-level concerns.
+ADMIN_UI_API_URL
+ADMIN_UI_BASE_PATH
+
+# --- Gateway client wiring (mTLS material + NATS/HTTP endpoints). Mirrors the
+# --- gateway chart's own mtls block; injected from the same cert Secret.
+GATEWAY_CA_FILE
+GATEWAY_CLIENT_CERT_FILE
+GATEWAY_CLIENT_KEY_FILE
+GATEWAY_SERVER_NAME
+GATEWAY_HTTP_ADDR
+GATEWAY_NATS_URL
+
+# --- Cutover / parity rollout controls, driven by the migration tooling rather
+# --- than steady-state chart values.
+ELITEA_URL
+ELITEA_SHADOW_URL
+LEGACY_LLM_URL
+LLM_BUDGET_PROJECTS_FILE
+LLM_PARITY_PROJECTS_FILE
+
+# --- Tenancy + operational flags set per environment by the platform.
+AI_PROJECT_ID
+PUBLIC_PROJECT_ID
+SHARED_PROJECT_ID
+SKIP_MIGRATIONS
+
+# --- TRUSTED_PROXY_CIDRS was listed in the block above. No elitea-main Go code
+# --- reads it now, so the entry is deleted. Its only reader was the
+# --- trusted-proxy header path in internal/api/middleware/auth.go, deleted in
+# --- #390: the variable was the sole production switch for a fifth credential
+# --- source that took X-Auth-Type/X-Auth-Id as the whole credential and never
+# --- ran the principal check. Do not add it back for elitea-main. The
+# --- ForwardAuth trusted-CIDR list is a different boundary and comes from the
+# --- auth configuration file (browserauth.TrustedProxyConfig), not from an
+# --- environment variable. services/elitea-llm-gateway keeps its own,
+# --- unrelated TRUSTED_PROXY_CIDRS and its own allowlist.
+
+# --- Local/dev-only debug flags, never a production chart knob. Discovered
+# --- unwired while empirically verifying S17's env-drift gate (fixing a
+# --- pipeline bug that had silently hidden it, along with a large batch of
+# --- test-only vars, from ever being checked before now).
+ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA
+
+# --- Removal tripwire, NOT a knob. AUTH_DEV_MODE was an unauthenticated-admin
+# --- bypass, deleted in ADR-0017 (#260). cmd/elitea-main still reads it for
+# --- one reason: to REFUSE TO START if a stale manifest still sets it to
+# --- "true", so an operator who believes authentication is disabled finds out
+# --- immediately. The chart must therefore never offer it, and the env-drift
+# --- gate's usual reading — "code reads it, so the chart must set it or the
+# --- feature is silently broken" — is inverted here. Do not wire this into
+# --- values.yaml; delete this line only when the startup guard itself goes.
+# --- It was previously allowlisted one block up, miscategorised beside
+# --- TRUSTED_PROXY_CIDRS as a per-environment platform flag.
+AUTH_DEV_MODE
+
+# --- Gradual-rollout feature flag (internal/api/router.go: "enforce project
+# --- access", checked via != "false", i.e. enabled by default). Allowlisted
+# --- rather than wired into values.yaml here: this flag's intended default
+# --- behavior for production is a call for whoever owns the rollout, not
+# --- something to guess while fixing an unrelated PR's merge conflict.
+FEATURE_FLAG_TOOLKIT_PROJECT_ACCESS
+
+# --- OIDC cookie security flag. Default (empty/unset) = Secure=true, which is
+# --- the correct production default. COOKIE_SECURE=false is only appropriate
+# --- for plain-HTTP localhost E2E runs and must never appear in production values.
+COOKIE_SECURE
+
+# --- Capability flag deliberately NOT wired, and it is the ONE exception in
+# --- the set issue #382 swept. Every other capability flag the composition
+# --- root reads now has a values.yaml knob; this one is being DELETED.
+# --- ELITEA_PROMPT_CONTEXT_READS_ENABLED gates a second composition of the
+# --- prompt-context read routes. That branch is unreachable and redundant at
+# --- once: it needs this flag AND ELITEA_CONFIGURATIONS_ENABLED AND production
+# --- authentication, while the ungated composition below it builds the same
+# --- reader pair for every deployment that could satisfy all three. So the
+# --- flag can only pre-empt a block that was going to run anyway. Issue #367
+# --- removes the flag and its branch. Wiring a knob for a name that is on its
+# --- way out would leave the chart setting a variable nothing reads.
+# --- Delete this line together with the flag.
+ELITEA_PROMPT_CONTEXT_READS_ENABLED
+
+# --- Rename tripwire, NOT a knob — same inverted reading as AUTH_DEV_MODE
+# --- above. The project-own-LLM policy survived the LiteLLM removal; only its
+# --- env var did not, becoming ELITEA_ALLOW_PROJECT_OWN_LLMS.
+# --- cmd/elitea-main reads the old name for exactly one reason: to REFUSE TO
+# --- START if a stale manifest still sets it, because silently ignoring a
+# --- `false` would fail OPEN — every project would regain permission to define
+# --- its own LLM credentials, and status_ok would start admitting rows the
+# --- operator meant to exclude. The chart must never set it. Delete this line
+# --- when the rejection guard itself goes.
+ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS

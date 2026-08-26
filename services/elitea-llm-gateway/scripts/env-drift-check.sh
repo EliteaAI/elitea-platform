@@ -181,16 +181,30 @@ check_target() {
   # (e.g. the mtls TLS paths); d) ConfigMap DATA keys written directly in a
   # template. All four are legitimate ways the chart sets an env.
   local chart_env chart_secrets chart_tmpl chart_data chart_all allow
-  chart_env="$({ yq -r '.env // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
-  chart_secrets="$({ yq -r '.secrets // {} | keys | .[]' "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
-  chart_tmpl="$({ grep -rhoE 'name: [A-Z][A-Z0-9_]+' "$chart/templates" 2>/dev/null || true; } \
+  # CHART_VALUES_PREFIX names the component's subtree when one chart carries
+  # several components (deploy/helm/elitea: `main`, `llmGateway`, ...). Empty —
+  # the default — reads the root, which is what a single-component chart has.
+  # Getting this wrong does not read as "no drift": the MIN_CHART_NAMES floor
+  # below fails the gate when the extraction stops matching, which is exactly
+  # how the flat-chart move was caught rather than silently passing.
+  local prefix_expr=".${CHART_VALUES_PREFIX:+${CHART_VALUES_PREFIX}.}"
+  chart_env="$({ yq -r "${prefix_expr}env // {} | keys | .[]" "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
+  chart_secrets="$({ yq -r "${prefix_expr}secrets // {} | keys | .[]" "$chart/values.yaml" 2>/dev/null || true; } | sort -u)"
+  # Scoped to the component's own template directory for the same reason as the
+  # values prefix above: in a multi-component chart, scanning every directory
+  # attributes another component's env names to this one and reports them as
+  # this component's dead config. A gate that emits warnings nobody can act on
+  # is a gate everyone learns to skip.
+  local tmpl_dir="$chart/templates${CHART_VALUES_PREFIX:+/$CHART_VALUES_PREFIX}"
+  [ -d "$tmpl_dir" ] || tmpl_dir="$chart/templates"
+  chart_tmpl="$({ grep -rhoE 'name: [A-Z][A-Z0-9_]+' "$tmpl_dir" 2>/dev/null || true; } \
                 | sed -E 's/name: //' | sort -u)"
   # (d) covers a block a template emits into a ConfigMap as `KEY: value` rather
   # than as a container `- name: KEY` entry. elitea-main's runtime plane is
   # written that way, because it is all-or-nothing and one helper owns the whole
   # block (#382). Without this pass the chart set thirty runtime names that the
   # gate still reported as never set.
-  chart_data="$({ grep -rhoE '^[[:space:]]*[A-Z][A-Z0-9_]+:' "$chart/templates" 2>/dev/null || true; } \
+  chart_data="$({ grep -rhoE '^[[:space:]]*[A-Z][A-Z0-9_]+:' "$tmpl_dir" 2>/dev/null || true; } \
                 | sed -E 's/^[[:space:]]*//; s/:$//' | sort -u)"
   chart_all="$(printf '%s\n%s\n%s\n%s\n' "$chart_env" "$chart_secrets" "$chart_tmpl" "$chart_data" | sort -u | sed '/^$/d')"
 
@@ -261,18 +275,22 @@ if [ "$#" -gt 0 ]; then
   }
   check_target "$@"
 else
-  check_target "elitea-llm-gateway" \
-    "$REPO/deploy/helm/elitea-llm-gateway" \
+  # Both services are components of the one platform chart, so each target names
+  # its own subtree with CHART_VALUES_PREFIX. Set per call rather than exported:
+  # the two targets read different subtrees in the same run, and an exported
+  # value would silently check one of them against the other's env map.
+  CHART_VALUES_PREFIX=llmGateway check_target "elitea-llm-gateway" \
+    "$REPO/deploy/helm/elitea" \
     "$ROOT/scripts/env-drift-allowlist.txt" \
     "$ROOT/internal"
 
   echo
   # elitea-main reads env in both internal/ and cmd/ (the composition root sets
   # up DB/Redis/shadow wiring there), so both dirs are scanned. Its allowlist
-  # lives next to its chart because the chart is the artifact under test.
-  check_target "elitea-main" \
-    "$REPO/deploy/helm/elitea-main" \
-    "$REPO/deploy/helm/elitea-main/env-drift-allowlist.txt" \
+  # lives next to the chart because the chart is the artifact under test.
+  CHART_VALUES_PREFIX=main check_target "elitea-main" \
+    "$REPO/deploy/helm/elitea" \
+    "$REPO/deploy/helm/elitea/env-drift-allowlist.txt" \
     "$REPO/services/elitea-main/internal" "$REPO/services/elitea-main/cmd"
 fi
 

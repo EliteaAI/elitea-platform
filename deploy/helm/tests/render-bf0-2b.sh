@@ -139,7 +139,7 @@ PY
 # assertion went on reading the old path. It raised FileNotFoundError, and no
 # caller ran it, so nothing printed the failure anywhere (#485).
 echo "== ArgoCD apps ordered by sync-wave =="
-python3 - "$DIR/argocd/applications" <<'PY' && ok "nats(-2) < nats-bootstrap(-1) < gateway(0)" || bad "argocd sync-wave ordering"
+python3 - "$DIR/argocd/applications" <<'PY' && ok "nats(-2) < nats-bootstrap(-1) < elitea(0)" || bad "argocd sync-wave ordering"
 import sys, yaml, pathlib
 d = pathlib.Path(sys.argv[1])
 def wave(f):
@@ -147,7 +147,8 @@ def wave(f):
     assert path.is_file(), f"{path} does not exist; the ArgoCD layout moved and this assertion stopped measuring"
     a = yaml.safe_load(open(path))
     return int(a["metadata"]["annotations"]["argocd.argoproj.io/sync-wave"])
-assert wave("nats.yaml") < wave("nats-bootstrap.yaml") < wave("elitea-llm-gateway.yaml"), "waves out of order"
+# The platform is one Application now; the gateway is a component of it.
+assert wave("nats.yaml") < wave("nats-bootstrap.yaml") < wave("elitea.yaml"), "waves out of order"
 PY
 
 echo
