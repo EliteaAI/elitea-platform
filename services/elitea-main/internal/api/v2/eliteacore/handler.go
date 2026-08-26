@@ -3220,6 +3220,20 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		"toolkits":     toolkits,
 	}
 
+	// `format=md` renders the SAME document as markdown — one file per version,
+	// zipped when there is more than one. See export_markdown.go, including the
+	// three frontmatter keys this service has no producer for
+	// (nested_agents/nested_pipelines, skills, pipeline_settings).
+	//
+	// Checked before `as_file`, which the markdown branch does not honour: it
+	// always sends a Content-Disposition, because a markdown export is a FILE
+	// by construction — that is what the client asks for and what the legacy
+	// sent.
+	if strings.EqualFold(r.URL.Query().Get("format"), "md") {
+		writeMarkdownExport(w, entityID, result)
+		return
+	}
+
 	if strings.EqualFold(r.URL.Query().Get("as_file"), "true") {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="elitea_export_%s.json"`, entityID))

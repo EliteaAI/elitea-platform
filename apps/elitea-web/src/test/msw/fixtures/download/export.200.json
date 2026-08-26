@@ -1,6 +1,6 @@
 {
-  "recordedAt": "2026-07-27",
+  "recordedAt": "2026-08-25",
   "synthetic": true,
-  "note": "Synthetic (unit S6): markdown export body for GET /api/v2/elitea_core/export_import/prompt_lib/{projectId}/{applicationId} (old app: pages/Common/Components/useExport.js:78-101).",
-  "body": "# Exported Agent\n\nSynthetic markdown body."
+  "note": "Synthetic (unit S6): markdown export body for GET /api/v2/elitea_core/export_import/prompt_lib/{projectId}/{applicationId}?format=md, which `shared/lib/download.ts:89` requests and saves as `<name>.md`. Re-read under R-M4 and found DESCRIBING A BACKEND THAT DID NOT EXIST: elitea-main ignored `format` entirely and answered the JSON export document to every request, so the product's Export-to-Markdown control downloaded a .md file full of JSON. The server now honours it (services/elitea-main/internal/api/v2/eliteacore/export_markdown.go), and this body is the shape it writes — `---` YAML frontmatter in the legacy's key order, then the agent's instructions as the body.",
+  "body": "---\nname: Exported Agent\ndescription: A synthetic agent used by the export probe.\nmodel: gpt-4o\ntemperature: 0.7\nagent_type: react\n---\n\nAnswer the user's question."
 }
