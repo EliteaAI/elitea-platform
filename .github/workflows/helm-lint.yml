@@ -147,25 +147,6 @@ jobs:
       # and stream bootstrap, the gateway Service shape and its SSE autoscaling
       # metric, and the sync-wave ORDER (the argocd job below asserts only that a
       # wave annotation is present).
-      # The chart carries a COPY of 001_initial.sql, because Helm cannot read a
-      # file outside its own directory and no Go binary embeds this one. A copy
-      # that drifts from the source bootstraps a schema the migrations were not
-      # written against — worse than not bootstrapping at all, and invisible
-      # until a fresh install fails somewhere in the middle of the chain.
-      - name: The vendored bootstrap SQL matches its source
-        run: |
-          src=services/elitea-main/internal/infra/db/migrations/001_initial.sql
-          copy=deploy/helm/elitea/files/001_initial.sql
-          for f in "$src" "$copy"; do
-            [ -s "$f" ] || { echo "::error::$f is missing or empty — this gate would compare nothing"; exit 1; }
-          done
-          if ! cmp -s "$src" "$copy"; then
-            echo "::error file=$copy::the vendored bootstrap SQL has drifted from $src"
-            diff -u "$src" "$copy" | head -40
-            exit 1
-          fi
-          echo "vendored bootstrap SQL matches its source ($(wc -c <"$copy") bytes)"
-
       - name: The NATS and gateway render assertions (BF0.2b)
         run: |
           python3 -c 'import yaml' 2>/dev/null \

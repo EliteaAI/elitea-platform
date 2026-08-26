@@ -101,19 +101,17 @@ redis:
   namespace: ""
   port: 6379
 
-# ── Database bootstrap ──────────────────────────────────────────────────────
+# ── Database preparation ────────────────────────────────────────────────────
 #
-# The step that makes a FRESH install possible at all. elitea-main's migrations
-# cannot run against an empty database — shared/0030 has a foreign key to
-# centry.project, and most of the centry schema is created by pylon, not by the
-# Go chain — so without this a first `helm install` dies at
+# The two things elitea-migrate cannot do for itself, because both need rights
+# the migrating role does not have: CREATE DATABASE for the agent-state store
+# the worker's checkpointer opens, and CREATE EXTENSION vector for the index
+# plane's unqualified DDL.
 #
-#   migrate: apply shared/0030_execution_kernel.sql: schema "centry" does not exist
-#
-# The compose stack has always done this (its `db-init` service); Kubernetes had
-# no equivalent, which is why every route to a working cluster went through a
-# human running psql. All three steps are idempotent and an already-bootstrapped
-# database is left untouched, so this is safe on upgrade.
+# The pylon-era schema is NOT here. elitea-migrate embeds 001_initial.sql and
+# applies it itself when the database does not carry it, so a fresh install
+# migrates from empty with no external step — and the objects end up owned by
+# the migrating role, which is what the histories need in order to ALTER them.
 dbInit:
   enabled: true
 
@@ -132,10 +130,8 @@ dbInit:
   # match the database in the worker's agent-checkpoint-connection material.
   agentStateDatabase: "elitea_v2_agentstate"
 
-  # The role elitea-migrate connects as. 001_initial.sql is applied by the admin
-  # above, so its objects are owned by the admin; the migration chain ALTERs them
-  # and needs ownership, failing at shared/0041 with "must be owner of table
-  # project" without this hand-over. Empty skips the hand-over.
+  # The role that OWNS the agent-state database created below — normally the
+  # same role elitea-main connects as. Empty creates it owned by the admin.
   appRole: "elitea_v2"
 
   image:
