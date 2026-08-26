@@ -1,61 +1,17 @@
 apiVersion: v2
 name: elitea
 description: >-
-  EliteA, as one release. Installs the whole first-party platform — API,
-  web, scheduler, LLM gateway, agent worker and the runtime plane it needs —
-  from a single values file, and externalizes the commodity infrastructure
-  (PostgreSQL, Redis, NATS, object storage) behind one connection contract.
+  EliteA, as one chart. Installs the whole first-party platform — API, web,
+  scheduler, LLM gateway, agent worker, the runtime dispatch bus and the
+  telemetry collector — from a single values file, and externalizes the
+  commodity infrastructure (PostgreSQL, Redis, NATS, object storage) behind one
+  connection contract.
 type: application
 
-# The placeholder every chart here carries; the release stamps the real number
-# into the packaged artifact. The subcharts below are pinned to the same
-# placeholder ON PURPOSE: they are file:// dependencies resolved from this
-# repository at package time, never fetched, so the constraint documents the
-# lockstep rather than selecting between published versions. All of them are
-# already released together under one semantic-release run.
+# No dependencies, deliberately. Every component is a template directory in this
+# chart, so there is nothing to vendor, no charts/ to build before installing
+# from a clone, and no `global:` indirection between a setting and the thing it
+# configures. NATS is not bundled either: it is commodity infrastructure this
+# chart points at rather than owns.
 version: 0.1.0
 appVersion: "0.1.0"
-
-dependencies:
-  - name: elitea-main
-    version: "0.1.0"
-    repository: "file://../elitea-main"
-    condition: elitea-main.enabled
-  - name: elitea-web
-    version: "0.1.0"
-    repository: "file://../elitea-web"
-    condition: elitea-web.enabled
-  - name: elitea-scheduler
-    version: "0.1.0"
-    repository: "file://../elitea-scheduler"
-    condition: elitea-scheduler.enabled
-  - name: elitea-llm-gateway
-    version: "0.1.0"
-    repository: "file://../elitea-llm-gateway"
-    condition: elitea-llm-gateway.enabled
-  # The runtime plane. These two are a pair: the worker is the only producer of
-  # an answer, and the TLS Redis is the only bus it is dispatched over. Enabling
-  # one without the other yields a platform that admits chat turns and never
-  # answers them.
-  - name: elitea-worker-python
-    version: "0.1.0"
-    repository: "file://../elitea-worker-python"
-    condition: elitea-worker-python.enabled
-  - name: elitea-runtime-redis
-    version: "0.1.0"
-    repository: "file://../elitea-runtime-redis"
-    condition: elitea-runtime-redis.enabled
-  - name: otel-collector
-    version: "0.1.0"
-    repository: "file://../otel-collector"
-    condition: otel-collector.enabled
-  - name: pylon-indexer
-    version: "0.1.0"
-    repository: "file://../pylon-indexer"
-    condition: pylon-indexer.enabled
-
-# NATS is deliberately NOT a dependency. The nats/ chart vendors an upstream
-# subchart, so depending on it would make packaging and even `helm template` of
-# this chart require network access to a third-party repository — and NATS is
-# exactly the kind of commodity a platform team already runs. Point
-# global.nats.url at it, or install deploy/helm/nats separately.

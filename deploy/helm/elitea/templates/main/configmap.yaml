@@ -1,0 +1,41 @@
+{{- if .Values.main.enabled }}
+{{- /*
+  Shared connection addresses, computed once from the top-level `nats` and
+  `redis` blocks and namespace-relative by default. An explicit env entry
+  under this component still wins. These are the settings that drifted when
+  each chart carried its own default.
+*/ -}}
+{{- $env := .Values.main.env | default dict }}
+{{- if not (get $env "REDIS_URL") }}{{- $env = merge (deepCopy $env) (dict "REDIS_URL" (include "elitea.serviceAddr" (dict "svc" $.Values.redis "ctx" $))) }}{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "elitea-main.fullname" . }}-config
+  labels:
+    {{- include "elitea-main.labels" . | nindent 4 }}
+data:
+  # Render the WHOLE .Values.main.env map (mirrors deploy/helm/elitea-llm-gateway's
+  # deployment.yaml `range`), instead of a fixed key list. A fixed list meant an
+  # operator could not set any env var the chart author had not anticipated, so
+  # code paths gated on such a var (e.g. the §2.6 SELF_REFERENTIAL_CREDENTIAL
+  # guard, which reads ELITEA_SELF_LLM_ORIGINS / DEPLOYMENT_URL) were silently
+  # inert in every Helm deployment. Every key previously rendered here is still
+  # rendered — they are the defaults in values.yaml's `env` map.
+  {{- range $key, $value := $env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+  {{/*
+    Capability prerequisites are checked HERE, and this ConfigMap always
+    renders, so `helm template` runs every check on every values file (issue
+    #382). Read elitea-main.validateCapabilities in _helpers.tpl for what each
+    check protects and which Go source refuses the same thing at boot.
+  */}}
+  {{- include "elitea-main.validateCapabilities" . }}
+  {{- with (include "elitea-main.runtimeEnv" .) }}
+  # --- Runtime plane (issue #382) --------------------------------------------
+  # All-or-nothing. internal/runtimecomposition/config.go requires this whole
+  # set at once, so the chart writes all of it or none of it. The names come
+  # from the runtime: block in values.yaml, never from the env map above.
+  {{- . | nindent 2 }}
+  {{- end }}
+{{- end }}

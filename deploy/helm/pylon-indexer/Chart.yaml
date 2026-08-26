@@ -1,6 +1,0 @@
-apiVersion: v2
-name: pylon-indexer
-description: Pylon runtime hosting the indexing plugins — retained until the index path is replatformed
-type: application
-version: 0.1.0
-appVersion: "1.2.25"

@@ -1,0 +1,27 @@
+{{- if .Values.llmGateway.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  # elitea-llm-gateway-svc — the internal ClusterIP the edge reverse-proxies to
+  # over mTLS. Named explicitly (not the release-derived fullname) because the
+  # design, runbook and edge config all reference `elitea-llm-gateway-svc`.
+  name: {{ .Values.llmGateway.service.name }}
+  labels:
+    {{- include "elitea-llm-gateway.labels" . | nindent 4 }}
+  {{- with .Values.llmGateway.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # ClusterIP only — mTLS-internal, NEVER public (design §9.1). Do not switch to
+  # LoadBalancer/NodePort; the gateway must be reachable solely from elitea-main
+  # on the mTLS-internal network.
+  type: ClusterIP
+  ports:
+    - name: https
+      port: {{ .Values.llmGateway.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "elitea-llm-gateway.selectorLabels" . | nindent 4 }}
+{{- end }}

@@ -1,0 +1,15 @@
+{{- if .Values.web.enabled }}
+{{- if .Values.web.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "elitea-web.fullname" . }}
+  labels:
+    {{- include "elitea-web.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.web.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "elitea-web.selectorLabels" . | nindent 6 }}
+{{- end }}
+{{- end }}

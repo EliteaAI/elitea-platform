@@ -402,51 +402,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `image:` names the image THIS workflow publishes for the chart, and
-          # it is what makes the chart's default `image.tag` get stamped with
-          # the release version below. Leave it empty for a chart that deploys
-          # a third-party image: stamping those would replace a deliberate
-          # upstream pin (NATS 2.12.0, otel-collector 0.114.0) with a version
-          # number that means nothing to that image's registry.
-          - chart: elitea-main
-            image: elitea-main
-          - chart: elitea-scheduler
-            image: elitea-scheduler
-          - chart: elitea-web
-            image: elitea-web
-          - chart: elitea-llm-gateway
-            image: elitea-llm-gateway
-          - chart: pylon-indexer
-            image: pylon-indexer
-          # The runtime plane. Without these two a release ships every image
-          # the chat path needs and no way to deploy the half that produces an
-          # answer, which is how the worker's chart ended up maintained outside
-          # this repository — and with it the workload-session provisioning
-          # that nothing else performs.
-          - chart: elitea-worker-python
-            image: elitea-worker-python
-          # Deploys the upstream redis image, so no tag is stamped: the pin in
-          # its values is deliberate and a release number means nothing to
-          # docker.io/library/redis.
-          - chart: elitea-runtime-redis
-            image: ""
-          # The umbrella: EliteA as one release. It ships no image of its own,
-          # so `image:` is empty — but its components do, and they are vendored
-          # into its package at whatever tag their values.yaml carries. The
-          # stamping step below therefore writes global.image.tag for this
-          # chart, which every component resolves its tag from. Without that a
-          # chart published at 1.2.3 would install `latest` for all eight.
+          # ONE chart for the platform. It ships every first-party image, so no
+          # single `image:` names it — `globalImageTag` below stamps the one tag
+          # every component resolves from instead. Without that a chart published
+          # at a release number would install `latest` for all of them.
           - chart: elitea
             image: ""
             globalImageTag: true
-          # Vendors the upstream nats subchart, so packaging it needs
-          # `helm dependency build` and network access to the upstream repo.
-          # The step below runs it for any chart that declares dependencies.
+          # NATS stays separate: commodity infrastructure the platform chart
+          # points at rather than owns, and it vendors an upstream subchart, so
+          # packaging needs `helm dependency build` and network access.
           - chart: nats
             image: ""
           - chart: nats-bootstrap
-            image: ""
-          - chart: otel-collector
             image: ""
 
     steps:

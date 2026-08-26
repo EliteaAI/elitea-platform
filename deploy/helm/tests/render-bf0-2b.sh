@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # render-bf0-2b.sh — render/config assertions for BF0.2b (NATS JetStream cluster
 # + gateway Helm/ArgoCD app). Deterministic, no live cluster required: it renders
-# the Helm charts with `helm template` and greps the profile/config files.
+# the Helm charts with `helm template ${GATEWAY_RENDER_POSTURE}` and greps the profile/config files.
 #
 # Run: deploy/helm/tests/render-bf0-2b.sh   (requires helm + python3 + PyYAML)
 #
@@ -11,6 +11,12 @@
 # covers the script itself as well as the charts it reads. A gate outside the
 # path that starts it is the same false green in another costume (#409, #429).
 set -euo pipefail
+
+# The single chart contains the LLM gateway, which REFUSES to render until an
+# operator states its two postures. Every render below therefore supplies them:
+# they are render-only values (.invalid is reserved by RFC 2606), and a chart
+# that rendered without them would be the defect that refusal exists to stop.
+GATEWAY_RENDER_POSTURE="--set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://render-only.example.invalid/llm/v1 --set-string llmGateway.egressPosture=public-unrestricted"
 
 # deploy/helm/tests -> deploy. The chart and ArgoCD paths below are relative to
 # it, so this must follow the file if it ever moves again.
@@ -27,9 +33,11 @@ DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 # RENDER-ONLY values. `.invalid` is reserved by RFC 2606 and never resolves, and
 # the label says what the value is for, so no reader can mistake either one for
 # a shipped default.
+# Component-scoped: the gateway is a component of the single elitea chart, so
+# its values live under `llmGateway`.
 GATEWAY_RENDER_VALUES=(
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1
-  --set-string egressPosture=public-unrestricted
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1
+  --set-string llmGateway.egressPosture=public-unrestricted
 )
 HELM="${HELM:-helm}"
 PASS=0
@@ -82,7 +90,7 @@ grep -q  -- '--replicas "${REPLICAS}"'      "$BS" && ok "replicas parameterised 
 if grep -qE 'kv add +GATEWAY_CUTOVER' "$BS"; then bad "must NOT create GATEWAY_CUTOVER (big-bang)"; else ok "no GATEWAY_CUTOVER bucket created"; fi
 
 echo "== gateway Service: mTLS-only ClusterIP, port 8083 (design §9.1) =="
-"$HELM" template gw "$DIR/helm/elitea-llm-gateway" "${GATEWAY_RENDER_VALUES[@]}" > "$TMP/gw.yaml"
+"$HELM" template gw "$DIR/helm/elitea" "${GATEWAY_RENDER_VALUES[@]}" > "$TMP/gw.yaml"
 python3 - "$TMP/gw.yaml" <<'PY' && ok "elitea-llm-gateway-svc ClusterIP:8083; server+client certs" || bad "gateway service/certs render"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
@@ -98,13 +106,17 @@ assert "server auth" in usages and "client auth" in usages, "need both server + 
 PY
 
 echo "== gateway HPA: custom /llm SSE metric (design §9.5) =="
-"$HELM" template gw "$DIR/helm/elitea-llm-gateway" "${GATEWAY_RENDER_VALUES[@]}" \
-  --set autoscaling.enabled=true > "$TMP/gw-hpa.yaml"
+"$HELM" template gw "$DIR/helm/elitea" "${GATEWAY_RENDER_VALUES[@]}" \
+  --set llmGateway.autoscaling.enabled=true > "$TMP/gw-hpa.yaml"
 python3 - "$TMP/gw-hpa.yaml" <<'PY' && ok "HPA scales on gateway_llm_sse_active_connections Pods metric" || bad "HPA custom metric"
 import sys, yaml
 docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if d]
-hpa = [d for d in docs if d["kind"] == "HorizontalPodAutoscaler"]
-assert hpa, "HPA missing when autoscaling.enabled=true"
+# Selected BY NAME: the single chart renders every component, so "the first
+# HPA in the document" is whichever component happens to sort first — it used to
+# be the only one.
+hpa = [d for d in docs if d["kind"] == "HorizontalPodAutoscaler"
+       and d["metadata"]["name"] == "elitea-llm-gateway"]
+assert hpa, "gateway HPA missing when llmGateway.autoscaling.enabled=true"
 m = hpa[0]["spec"]["metrics"][0]
 assert m["type"] == "Pods", "SSE metric must be a Pods metric, not Resource/CPU"
 assert m["pods"]["metric"]["name"] == "gateway_llm_sse_active_connections", "wrong SSE metric name"

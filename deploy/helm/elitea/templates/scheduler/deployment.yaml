@@ -1,0 +1,105 @@
+{{- if .Values.scheduler.enabled }}
+{{- /*
+  The database secret, resolved once for every component that reads it.
+  An explicit `secrets.DATABASE_URL` under this component wins and is taken
+  WHOLE — `hasKey` rather than a field-wise merge, so an entry that names a
+  secret can never be completed with a key from somewhere else and end up
+  pointing at a database nobody chose.
+*/ -}}
+{{- $secrets := .Values.scheduler.secrets | default dict }}
+{{- $pg := .Values.postgresql | default dict }}
+{{- if and $pg.existingSecret (not (hasKey $secrets "DATABASE_URL")) }}
+{{- $secrets = merge (deepCopy $secrets) (dict "DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "elitea-scheduler.fullname" . }}
+  labels:
+    {{- include "elitea-scheduler.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.scheduler.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "elitea-scheduler.selectorLabels" . | nindent 6 }}
+  strategy:
+    # Recreate by default (values.yaml): overlapping generations would contend
+    # for the same Redis tick lock and the same durable NATS consumer.
+    {{- toYaml .Values.scheduler.strategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-scheduler.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pods when the ConfigMap changes. This container reads its
+        # whole configuration through envFrom at START, so without this a
+        # `helm upgrade --set env.DATABASE_URL=…` rewrites the ConfigMap,
+        # leaves the Deployment spec byte-identical, replaces no pod — and the
+        # running scheduler keeps polling the OLD database while helm and
+        # ArgoCD both report success.
+        checksum/config: {{ include (print $.Template.BasePath "/scheduler/configmap.yaml") . | sha256sum }}
+        {{- with .Values.scheduler.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "elitea-scheduler.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.scheduler.terminationGracePeriodSeconds }}
+      {{- include "elitea.imagePullSecrets" (dict "local" .Values.scheduler.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      containers:
+        - name: elitea-scheduler
+          image: "{{ .Values.scheduler.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.scheduler.image.pullPolicy }}
+          ports:
+            # In-process health server only — this worker serves no product
+            # traffic. Must match the port in env.HTTP_ADDR.
+            - name: health
+              containerPort: {{ .Values.scheduler.healthPort }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "elitea-scheduler.fullname" . }}-config
+          {{- if $secrets }}
+          env:
+            {{- range $name, $ref := $secrets }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          {{- end }}
+          {{- if .Values.scheduler.probes.liveness.enabled }}
+          livenessProbe:
+            # DELIBERATELY a TCP check, not httpGet /healthz: /healthz pings
+            # Postgres, so an httpGet liveness probe would restart this pod on
+            # every database blip (issue #242's trap). Liveness answers only
+            # "is the process still there", readiness answers "can it work".
+            tcpSocket:
+              port: health
+            periodSeconds: {{ .Values.scheduler.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.scheduler.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.scheduler.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.scheduler.probes.readiness.path }}
+              port: health
+            periodSeconds: {{ .Values.scheduler.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.scheduler.probes.readiness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.scheduler.resources | nindent 12 }}
+      {{- with .Values.scheduler.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduler.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.scheduler.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
