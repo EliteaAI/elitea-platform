@@ -5,6 +5,7 @@ import { t } from '@/shared/i18n';
 import Box from '@mui/material/Box';
 import Checkbox from '@mui/material/Checkbox';
 import MenuItem from '@mui/material/MenuItem';
+import MenuList from '@mui/material/MenuList';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
@@ -135,59 +136,74 @@ export const PlusChatSubmenu = memo(
           }}
           onScroll={onScroll}
         >
-          {/* Create new button */}
-          {showCreateNew && (
-            <MenuItem
-              onClick={onCreateNew}
-              sx={{
-                padding: '0.5rem 1.25rem',
-                height: '2.5rem',
-                gap: 0.75,
-                color: 'text.secondary',
-                '&:hover': {
-                  backgroundColor: 'action.hover',
-                },
-              }}
-            >
-              <Typography variant="bodyMedium">{createNewLabel}</Typography>
-            </MenuItem>
-          )}
+          {/*
+            * `MenuList`, not a plain `Box`: MUI 9.2's `MenuItem` reads
+            * `MenuListContext` unconditionally and THROWS
+            * ("MUI: MenuListContext is missing…") when it is absent, so a
+            * `MenuItem` rendered under a bare `Popper`/`Paper` crashes the
+            * whole chat on the first submenu open. `MenuList` is the
+            * provider (same fix already in place in
+            * `ChatInternalToolsConfigButton.tsx` and
+            * `features/pipelines/ui/FStringAutocompletePopper.tsx`); it also
+            * restores the arrow-key roving focus these rows should have had.
+            * `disablePadding` keeps the previous flush-to-the-edges spacing.
+            */}
+          <MenuList disablePadding sx={{ outline: 'none' }}>
+            {/* Create new button */}
+            {showCreateNew && (
+              <MenuItem
+                onClick={onCreateNew}
+                sx={{
+                  padding: '0.5rem 1.25rem',
+                  height: '2.5rem',
+                  gap: 0.75,
+                  color: 'text.secondary',
+                  '&:hover': {
+                    backgroundColor: 'action.hover',
+                  },
+                }}
+              >
+                <Typography variant="bodyMedium">{createNewLabel}</Typography>
+              </MenuItem>
+            )}
 
-          {/* Items */}
-          {filteredItems.map((item) => (
-            <MenuItem
-              key={item.key}
-              onClick={handleItemClick(item)}
-              sx={{
-                padding: '0.5rem 1rem',
-                height: '2.5rem',
-                gap: 1,
-                color: 'text.secondary',
-                '&:hover': {
-                  backgroundColor: 'action.hover',
-                },
-              }}
-            >
-              {item.checked !== undefined && (
-                <Checkbox
-                  size="small"
-                  checked={item.checked}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={handleItemClick(item)}
-                />
-              )}
-              <Typography variant="bodyMedium">{item.label}</Typography>
-            </MenuItem>
-          ))}
+            {/* Items */}
+            {filteredItems.map((item) => (
+              <MenuItem
+                key={item.key}
+                onClick={handleItemClick(item)}
+                sx={{
+                  padding: '0.5rem 1rem',
+                  height: '2.5rem',
+                  gap: 1,
+                  color: 'text.secondary',
+                  '&:hover': {
+                    backgroundColor: 'action.hover',
+                  },
+                }}
+              >
+                {item.checked !== undefined && (
+                  <Checkbox
+                    size="small"
+                    checked={item.checked}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={handleItemClick(item)}
+                  />
+                )}
+                <Typography variant="bodyMedium">{item.label}</Typography>
+              </MenuItem>
+            ))}
 
-          {/* Loading / empty / no-results status row */}
-          {statusLabel !== null && (
-            <MenuItem disabled sx={{ padding: '0.5rem 1rem' }}>
-              <Typography variant="bodyMedium" color="text.secondary">
-                {statusLabel}
-              </Typography>
-            </MenuItem>
-          )}
+            {/* Loading / empty / no-results status row */}
+            {statusLabel !== null && (
+              <MenuItem disabled sx={{ padding: '0.5rem 1rem' }}>
+                <Typography variant="bodyMedium" color="text.secondary">
+                  {statusLabel}
+                </Typography>
+              </MenuItem>
+            )}
+
+          </MenuList>
 
           {/* Toggle placeholder (reserved for future use) */}
           {showToggle && (

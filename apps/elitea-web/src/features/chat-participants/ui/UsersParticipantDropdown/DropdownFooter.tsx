@@ -11,7 +11,7 @@
  */
 import { memo } from 'react';
 
-import { Box, MenuItem, Typography } from '@mui/material';
+import { Box, MenuItem, MenuList, Typography } from '@mui/material';
 import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 
 import { t } from '@/shared/i18n';
@@ -43,20 +43,40 @@ const DropdownFooter = memo((props: DropdownFooterProps): React.ReactElement | n
 
   return (
     <Box sx={{ borderTop: '1px solid', borderColor: 'divider', p: 1 }}>
-      <MenuItem
-        onClick={onSelectAll}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          borderRadius: 'var(--el-shape-radiusSm, 4px)',
-        }}
+      {/*
+        * `MenuList` wrapper: MUI 9.2's `MenuItem` reads `MenuListContext`
+        * unconditionally and THROWS ("MUI: MenuListContext is missing…")
+        * when it is absent. This footer renders under the dropdown's bare
+        * `Popper`/`Paper` (`index.tsx`), not under a `Menu`, so without a
+        * provider the row crashed the surrounding tree the moment the
+        * dropdown opened.
+        */}
+      {/*
+        * Labelled: this `MenuList` holds ONLY the bulk action, while the user
+        * rows above it (`UserMenu`) are role-less `div`s. Unlabelled, the one
+        * ARIA-meaningful container in the popup would announce as "menu,
+        * 1 item" and read as if there were no participants to choose.
+        */}
+      <MenuList
+        disablePadding
+        aria-label={t('chat-participants.dropdown.quickActionsLabel', 'Participant quick actions')}
+        sx={{ outline: 'none' }}
       >
-        <GroupOutlinedIcon fontSize="small" sx={{ color: 'text.secondary' }} />
-        <Typography variant="bodyMedium" color="text.secondary">
-          {t('chat-participants.dropdown.allUsers', 'All users')}
-        </Typography>
-      </MenuItem>
+        <MenuItem
+          onClick={onSelectAll}
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            borderRadius: 'var(--el-shape-radiusSm, 4px)',
+          }}
+        >
+          <GroupOutlinedIcon fontSize="small" sx={{ color: 'text.secondary' }} />
+          <Typography variant="bodyMedium" color="text.secondary">
+            {t('chat-participants.dropdown.allUsers', 'All users')}
+          </Typography>
+        </MenuItem>
+      </MenuList>
     </Box>
   );
 });

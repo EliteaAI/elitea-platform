@@ -87,7 +87,12 @@ export function usePrivateApplicationParticipants(
   const listQuery = useListApplications(
     projectId ?? '',
     { agents_type: agentsType, ...(trimmedQuery === '' ? {} : { query: trimmedQuery }) },
-    { query: { enabled: enabled && projectId !== undefined } },
+    // Non-EMPTY, not merely non-`undefined` — same gate, same reason as
+    // `toolkitParticipants.ts`: callers that normalise with `?? ''`
+    // (`useRecommendations`' `safeProjectId`) would otherwise clear a
+    // `!== undefined` check with an empty id and request
+    // `/elitea_core/applications/prompt_lib/` with no project in the path.
+    { query: { enabled: enabled && projectId !== undefined && projectId !== '' } },
   );
   return useMemo<ApplicationParticipantPage<Application>>(() => {
     // `.data.data`'s declared type includes the error-envelope variant —

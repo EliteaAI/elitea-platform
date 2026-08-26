@@ -245,6 +245,17 @@
     "src/features/chat-participants/ui/ParticipantActions/EditParticipantButton.tsx",
     "src/features/chat-participants/ui/ParticipantActions/ParticipantActions.tsx",
     "src/features/chat-participants/ui/ParticipantsWrapper.tsx",
+    // `UsersParticipantDropdown/DropdownFooter.tsx` moved here from
+    // `ignoreFiles` on knip's own "Remove from ignoreFiles" hint. The whole
+    // `UsersParticipantDropdown/` unit is still unwired (its `index.tsx`/
+    // `UserMenu.tsx` stay in `ignoreFiles`), but this file now has an
+    // importer — the `MenuListContext` regression test — and once ANY
+    // export is reachable, `ignoreFiles` stops suppressing the file's
+    // OTHER exports (`ALL_USERS_SENTINEL_ID`/`DropdownFooterProps`, both
+    // consumed only by the still-ignored `index.tsx`). `entry` covers
+    // both reports, exactly as the `src/shared/api/generated/**` note at
+    // the top of this file records. REMOVE when the unit is wired or deleted.
+    "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
     // Legacy shared API exports — functions exported from the old app's
     // configurations API and sound notification hooks, not consumed by
     // Wave-2 consumers yet.
@@ -352,7 +363,7 @@
     // remove the entry" lifecycle as the ignoreDependencies notes below.
     "src/features/chat-participants/ui/ExpandedParticipants/ParticipantsAccordion.tsx",
     "src/features/chat-participants/ui/ExpandedParticipants/UserParticipantItem.tsx",
-    "src/features/chat-participants/ui/UsersParticipantDropdown/DropdownFooter.tsx",
+    // `DropdownFooter.tsx` moved to `entry` above — see the note there.
     "src/features/chat-participants/ui/UsersParticipantDropdown/index.tsx",
     "src/features/chat-participants/ui/UsersParticipantDropdown/UserMenu.tsx",
     // [#71] A correct, complete port of the baseline's
