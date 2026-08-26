@@ -708,6 +708,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			pool,
 			currentConfigurationsConfig.PublicProjectID,
 			currentConfigurationsConfig.VaultMasterKeyFile,
+			currentConfigurationsConfig.VaultMasterKey,
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Configurations services: %w", err)
@@ -876,18 +877,38 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// Reuse the Configurations runtime's loader when it exists, so a
 		// deployment that DOES set ELITEA_VAULT_MASTER_KEY_FILE keeps reading
 		// master-key-wrapped project keys. Without that chain the master-key
-		// file cannot be expressed at all today (currentConfigurationsConfig
-		// rejects it unless ELITEA_CONFIGURATIONS_ENABLED=true), so the
-		// unwrapped loader is the only reachable shape there — which is also
-		// the shape centry writes when SECRETS_MASTER_KEY is unset.
+		// FILE cannot be expressed at all today (currentConfigurationsConfig
+		// rejects it unless ELITEA_CONFIGURATIONS_ENABLED=true) — but
+		// SECRETS_MASTER_KEY can, and usually is, so the loader built below
+		// takes it. Only a deployment that sets neither gets the unwrapped
+		// shape, which is what centry writes with no master key at all.
 		chatConfigVaults := currentConfigurationsRoot.VaultLoader()
 		if chatConfigVaults == nil {
-			unwrapped, vaultErr := storage.NewPostgresSecretVaultLoader(pool, nil)
+			// SECRETS_MASTER_KEY, not nil. A nil key builds the UNWRAPPED
+			// opener, and the secrets handler writes every project vault key
+			// WRAPPED with that variable whenever it is set — so a nil here
+			// reproduces, on this branch, the exact ErrInvalidProjectKey the
+			// Configurations loader was just fixed for: an intact vault row
+			// that will not open, and a chat configuration read that fails for
+			// every project which has one.
+			//
+			// This branch is not hypothetical. deploy/docker-compose.yml
+			// MANDATES SECRETS_MASTER_KEY and sets no Configurations flag, so
+			// it is exactly the shape that lands here.
+			//
+			// The key is re-read rather than taken from `masterKey` above:
+			// that one is the raw 32 bytes for the secrets handler, and this
+			// loader validates the 44-character encoded form.
+			chatConfigMasterKey, keyErr := encodedVaultMasterKeyFromEnv(os.LookupEnv)
+			if keyErr != nil {
+				return fmt.Errorf("compose ungated chat configuration vault loader: %w", keyErr)
+			}
+			ungated, vaultErr := storage.NewPostgresSecretVaultLoader(pool, chatConfigMasterKey)
 			if vaultErr != nil {
 				return fmt.Errorf("compose ungated chat configuration vault loader: %w", vaultErr)
 			}
-			defer unwrapped.Destroy()
-			chatConfigVaults = unwrapped
+			defer ungated.Destroy()
+			chatConfigVaults = ungated
 		}
 		chatConfigReader, readerErr :=
 			promptcontextreadsapi.NewCurrentChatConfigVaultReader(chatConfigVaults)

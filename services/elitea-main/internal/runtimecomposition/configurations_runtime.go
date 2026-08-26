@@ -1,7 +1,9 @@
 package runtimecomposition
 
 import (
+	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -32,10 +34,30 @@ type CurrentConfigurationsRuntime struct {
 	mutationRows     *repos.CurrentConfigurationMutationRepository
 }
 
+// NewCurrentConfigurationsRuntime composes the boundary.
+//
+// The master key has TWO accepted sources and they must agree, because the
+// vault rows this runtime reads are written by someone else: the secrets
+// handler, which wraps every project key with SECRETS_MASTER_KEY. Passing this
+// runtime a different key — or none — does not fail at composition time. It
+// fails later, once per read, as ErrInvalidProjectKey on a row that is
+// perfectly intact, and the model catalogue then answered 500 for EVERY
+// section on a deployment whose configuration rows were all present (#399's
+// one-key-source rule, applied to the reader this time).
+//
+//   - vaultMasterKeyFile is the file source. No compose file or chart in
+//     deploy/ sets ELITEA_VAULT_MASTER_KEY_FILE, so it is the override, not
+//     the default.
+//   - envMasterKey is the base64url-encoded SECRETS_MASTER_KEY the rest of the
+//     process already uses. It is what a real deployment supplies.
+//
+// A nil pair stays supported: that is the unwrapped shape centry writes when
+// no master key is set, and the E2E stack seeds it deliberately.
 func NewCurrentConfigurationsRuntime(
 	pool *pgxpool.Pool,
 	publicProjectID int32,
 	vaultMasterKeyFile string,
+	envMasterKey []byte,
 ) (*CurrentConfigurationsRuntime, error) {
 	if pool == nil || publicProjectID <= 0 {
 		return nil, errors.New("current Configurations database and public project are required")
@@ -44,11 +66,22 @@ func NewCurrentConfigurationsRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("load current Configurations catalog: %w", err)
 	}
-	masterKey, err := loadOptionalFernetMasterKey(vaultMasterKeyFile)
+	fileMasterKey, err := loadOptionalFernetMasterKey(vaultMasterKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(masterKey)
+	defer clear(fileMasterKey)
+	masterKey := fileMasterKey
+	if fileMasterKey == nil {
+		masterKey = envMasterKey
+	} else if len(envMasterKey) != 0 && !sameFernetKey(fileMasterKey, envMasterKey) {
+		// Refusing beats picking a winner. Whichever one lost would read some
+		// of the vaults in this database and not the others, and the half it
+		// could not open is indistinguishable from a corrupt row.
+		return nil, errors.New(
+			"ELITEA_VAULT_MASTER_KEY_FILE and SECRETS_MASTER_KEY hold different keys",
+		)
+	}
 
 	vaultLoader, err := storage.NewPostgresSecretVaultLoader(pool, masterKey)
 	if err != nil {
@@ -284,4 +317,42 @@ func (runtime *CurrentConfigurationsRuntime) Destroy() {
 	runtime.vaultWriter = nil
 	runtime.mutationRows = nil
 	runtime.publicProjectID = 0
+}
+
+// sameFernetKey reports whether two ENCODED Fernet keys name the same key.
+//
+// It compares what they DECODE to, not the text. base64 is not injective over
+// the last quantum of a 32-byte key: 44 characters with one '=' pad carry the
+// final 2 bytes in 18 bits, so 2 bits are unused, and Go's decoder is
+// non-strict about them. `...A=` and `...B=` can therefore be two spellings of
+// one key. Comparing the text would read those as a disagreement and refuse to
+// start a deployment whose two sources are in fact consistent.
+//
+// A key that will not decode falls back to the literal comparison. Both are
+// then rejected a few lines below by the vault loader's own validation, whose
+// message names the bad key — a better answer than "different keys".
+func sameFernetKey(a, b []byte) bool {
+	decodedA, okA := decodeFernetMasterKey(a)
+	defer clear(decodedA)
+	decodedB, okB := decodeFernetMasterKey(b)
+	defer clear(decodedB)
+	if !okA || !okB {
+		return bytes.Equal(a, b)
+	}
+	return bytes.Equal(decodedA, decodedB)
+}
+
+// decodeFernetMasterKey decodes the 44-character base64url form to its 32 raw
+// bytes. The caller clears the result.
+func decodeFernetMasterKey(encoded []byte) ([]byte, bool) {
+	if len(encoded) != encodedFernetKeyBytes {
+		return nil, false
+	}
+	decoded := make([]byte, base64.URLEncoding.DecodedLen(len(encoded)))
+	n, err := base64.URLEncoding.Decode(decoded, encoded)
+	if err != nil || n != fernetMasterKeyBytes {
+		clear(decoded)
+		return nil, false
+	}
+	return decoded[:n], true
 }

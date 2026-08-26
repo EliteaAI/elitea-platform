@@ -37,7 +37,7 @@ func TestCurrentArtifactsConfigurationCreatePersistsThroughGenericMutationServic
 	applyCurrentArtifactsConfigurationMigrations(t, pool)
 	prepareCurrentArtifactsConfigurationVault(t, pool)
 
-	runtime, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, 1, "")
+	runtime, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, 1, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -360,7 +360,7 @@ func newProjectVectorStoreWithSecretsForTest(
 	secrets runtimecomposition.ProjectVaultSecrets,
 ) *runtimecomposition.ProjectVectorStore {
 	t.Helper()
-	runtime, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, referenceProjectID, "")
+	runtime, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, referenceProjectID, "", nil)
 	if err != nil {
 		t.Fatalf("compose the Configurations runtime: %v", err)
 	}
