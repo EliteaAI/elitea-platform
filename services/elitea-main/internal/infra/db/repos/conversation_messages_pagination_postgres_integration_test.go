@@ -261,3 +261,212 @@ func TestListMessagesSortsByID(t *testing.T) {
 		t.Errorf("sort_by=id&sort_order=desc returned %v, want %v", listedContents(resp.Items), want)
 	}
 }
+
+// --- The free-text filter, pylon's `query` parameter (messages.py:86-91). ---
+
+// seedTimedTranscript writes one message group per content string, each a
+// minute apart, so ordering assertions rest on the timestamps rather than on
+// insertion luck — the same reason seedOrderedTranscript sets created_at
+// explicitly.
+func seedTimedTranscript(t *testing.T, repo *ConversationsRepo, contents ...string) (numericID, conversationUUID string) {
+	t.Helper()
+	ctx := context.Background()
+
+	if err := repo.pool.QueryRow(ctx, `
+INSERT INTO p_1.chat_conversations (uuid, name, author_id, source)
+VALUES (gen_random_uuid(), 'searchable transcript', 7, 'agent')
+RETURNING id::text, uuid::text`).Scan(&numericID, &conversationUUID); err != nil {
+		t.Fatalf("seed conversation: %v", err)
+	}
+
+	for i, content := range contents {
+		if _, err := repo.pool.Exec(ctx, `
+WITH participant AS (
+    INSERT INTO p_1.chat_participants (uuid, entity_name, entity_meta)
+    VALUES (gen_random_uuid(), 'user', '{"id": 42, "project_id": 1}'::jsonb)
+    RETURNING id
+), grp AS (
+    INSERT INTO p_1.chat_message_group (uuid, author_participant_id, conversation_id, created_at)
+    SELECT gen_random_uuid(), participant.id, $1::int,
+           TIMESTAMP '2026-01-01 00:00:00' + ($2::int * INTERVAL '1 minute')
+    FROM participant
+    RETURNING id
+), item AS (
+    INSERT INTO p_1.chat_message_items (uuid, item_type, order_index, message_group_id)
+    SELECT gen_random_uuid(), 'text_message', 0, grp.id FROM grp
+    RETURNING id
+)
+INSERT INTO p_1.chat_messages_text (id, content)
+SELECT item.id, $3 FROM item`, numericID, i, content); err != nil {
+			t.Fatalf("seed message group %q: %v", content, err)
+		}
+	}
+
+	return numericID, conversationUUID
+}
+
+func searchTranscript(term string, limit int) conversations.MessagesQuery {
+	return conversations.MessagesQuery{Limit: limit, SortBy: "created_at", SortOrder: "asc", Query: term}
+}
+
+func TestListMessagesFiltersByQuery(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID := seedTimedTranscript(t, repo,
+		"the cat sat on the mat", "a DOG barked", "cats and dogs")
+
+	resp, err := repo.ListMessages(ctx, "1", conversationUUID, searchTranscript("cat", 50))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	got := listedContents(resp.Items)
+	want := []string{"the cat sat on the mat", "cats and dogs"}
+	if !equalContents(got, want) {
+		t.Fatalf("searching for %q returned %v, want %v", "cat", got, want)
+	}
+
+	// total must describe the FILTERED set. Report the unfiltered count and
+	// total_pages describes a different result than items.
+	if resp.Total != 2 {
+		t.Errorf("total is %d, want 2 — the filter was not applied to the count", resp.Total)
+	}
+}
+
+// ILIKE, not LIKE: pylon's filter is case-insensitive.
+func TestListMessagesQueryIsCaseInsensitive(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	// The second group is what makes this discriminating: with only a matching
+	// group present, a filter that was never applied returns the same one item
+	// and the test passes while measuring nothing.
+	_, conversationUUID := seedTimedTranscript(t, repo, "a DOG barked", "a cat slept")
+
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, searchTranscript("dog", 50))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if got := listedContents(resp.Items); !equalContents(got, []string{"a DOG barked"}) {
+		t.Fatalf("case-insensitive search returned %v, want [a DOG barked]", got)
+	}
+}
+
+// An empty term is "no filter", not "match the empty string". Treat it as a
+// pattern and every group matches `%%`, which reads as a working filter right
+// up until someone clears the search box.
+func TestListMessagesEmptyQueryIsNoFilter(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	_, conversationUUID := seedTimedTranscript(t, repo, "one", "two", "three")
+
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, searchTranscript("", 50))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if resp.Total != 3 || len(resp.Items) != 3 {
+		t.Fatalf("an empty query returned total %d and %d items, want 3 and 3", resp.Total, len(resp.Items))
+	}
+}
+
+// The metacharacter escape. `%` and `_` are ILIKE wildcards, so an unescaped
+// term silently matches far more than the user typed — pylon interpolated the
+// raw term and had exactly that behaviour. Drop the escaping and every one of
+// these searches returns rows it should not.
+func TestListMessagesQueryTreatsWildcardsLiterally(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID := seedTimedTranscript(t, repo,
+		"discount is 50% today", "discount is 5000 today", "a_b", "axb", `back\slash`)
+
+	for _, tc := range []struct {
+		term string
+		want []string
+	}{
+		{"50%", []string{"discount is 50% today"}},
+		{"a_b", []string{"a_b"}},
+		{`back\slash`, []string{`back\slash`}},
+	} {
+		resp, err := repo.ListMessages(ctx, "1", conversationUUID, searchTranscript(tc.term, 50))
+		if err != nil {
+			t.Fatalf("search %q: %v", tc.term, err)
+		}
+		if got := listedContents(resp.Items); !equalContents(got, tc.want) {
+			t.Errorf("searching for %q returned %v, want %v", tc.term, got, tc.want)
+		}
+	}
+}
+
+// A group whose text is split across several matching items must appear ONCE.
+// Pylon joined the item table instead, so such a group came back duplicated and
+// was double-counted in `total`; EXISTS answers per group.
+func TestListMessagesQueryReturnsAGroupOnceWhenSeveralItemsMatch(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID := seedTimedTranscript(t, repo, "needle one")
+
+	// A second text item on the same group, also matching.
+	if _, err := repo.pool.Exec(ctx, `
+WITH item AS (
+    INSERT INTO p_1.chat_message_items (uuid, item_type, order_index, message_group_id)
+    SELECT gen_random_uuid(), 'text_message', 1, id FROM p_1.chat_message_group LIMIT 1
+    RETURNING id
+)
+INSERT INTO p_1.chat_messages_text (id, content) SELECT id, 'needle two' FROM item`); err != nil {
+		t.Fatalf("seed second matching item: %v", err)
+	}
+
+	resp, err := repo.ListMessages(ctx, "1", conversationUUID, searchTranscript("needle", 50))
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("a group with two matching items came back as total %d / %d items, want 1 and 1",
+			resp.Total, len(resp.Items))
+	}
+}
+
+// The filter and the window compose: paging through search results must skip
+// within the filtered set, not within the whole transcript.
+func TestListMessagesQueryComposesWithLimitAndOffset(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID := seedTimedTranscript(t, repo,
+		"match 1", "noise", "match 2", "noise", "match 3")
+
+	window := searchTranscript("match", 2)
+	window.Offset = 1
+	resp, err := repo.ListMessages(ctx, "1", conversationUUID, window)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if got := listedContents(resp.Items); !equalContents(got, []string{"match 2", "match 3"}) {
+		t.Fatalf("limit=2&offset=1 over the matches returned %v, want [match 2 match 3]", got)
+	}
+	if resp.Total != 3 {
+		t.Errorf("total is %d, want 3 matching groups", resp.Total)
+	}
+}
+
+// SQL injection through the search term. It is bound, not interpolated — unlike
+// sort_by — so this is a guard against a future "optimisation" that inlines it.
+func TestListMessagesQueryIsBoundNotInterpolated(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID := seedTimedTranscript(t, repo, "harmless")
+
+	if _, err := repo.ListMessages(ctx, "1", conversationUUID,
+		searchTranscript("' OR 1=1; DROP TABLE p_1.chat_message_group; --", 50)); err != nil {
+		t.Fatalf("a hostile search term errored instead of simply not matching: %v", err)
+	}
+	var groups int
+	if err := repo.pool.QueryRow(ctx, `SELECT count(*) FROM p_1.chat_message_group`).Scan(&groups); err != nil {
+		t.Fatalf("chat_message_group did not survive the search: %v", err)
+	}
+	if groups != 1 {
+		t.Fatalf("%d groups left, want 1", groups)
+	}
+}

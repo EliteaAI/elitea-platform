@@ -42,8 +42,14 @@ type mockRepo struct {
 	getMessageByUUIDFn        func(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	deleteMessagesFn          func(ctx context.Context, projectID, conversationID string) error
 	deleteMessageFn           func(ctx context.Context, projectID, groupUID string) error
-	listMessageGroupsFn       func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	listParticipantsFn        func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
+	// deleteMessageUserID records the identity the handler resolved from the
+	// request context and forwarded. Deleting a message is authorised against
+	// the caller, so a handler that dropped the identity would leave the
+	// repository unable to apply its rules — and would look exactly like a
+	// working handler to a test that only asserted the status code.
+	deleteMessageUserID string
+	listMessageGroupsFn func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
+	listParticipantsFn  func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -154,7 +160,8 @@ func (m *mockRepo) DeleteMessages(ctx context.Context, projectID, conversationID
 	return nil
 }
 
-func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID string) error {
+func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error {
+	m.deleteMessageUserID = userID
 	if m.deleteMessageFn != nil {
 		return m.deleteMessageFn(ctx, projectID, groupUID)
 	}
@@ -1310,5 +1317,67 @@ func TestUpdateContextStrategy_Error(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The `query` wire parameter, and the identity DeleteMessage forwards
+// ---------------------------------------------------------------------------
+
+// The free-text search term has to survive the handler. It reaches the
+// repository raw — escaping it here would bake one storage layer's pattern
+// syntax into the HTTP boundary.
+func TestListMessages_ReadsQueryFromTheWire(t *testing.T) {
+	got := listMessagesQuery(t, "query=50%25+off")
+	if got.Query != "50% off" {
+		t.Fatalf("Query is %q, want %q — the term was dropped or mangled in transit", got.Query, "50% off")
+	}
+}
+
+// An explicit `query=` is the same as sending nothing, which is what pylon's
+// truthiness check did. The distinction matters: as a pattern the empty string
+// matches every group, so a cleared search box would look like a working filter
+// returning everything rather than a filter that is off.
+func TestListMessages_EmptyQueryParameterIsNoFilter(t *testing.T) {
+	for _, rawQuery := range []string{"", "query="} {
+		if got := listMessagesQuery(t, rawQuery); got.Query != "" {
+			t.Errorf("%q resolved to Query %q, want empty", rawQuery, got.Query)
+		}
+	}
+}
+
+// DeleteMessage is authorised against the caller, so the handler must resolve
+// the identity and hand it to the repository. A handler that dropped it would
+// still answer 204 here — which is exactly why this asserts the forwarded
+// value rather than the status code.
+func TestDeleteMessage_ForwardsTheCallerIdentity(t *testing.T) {
+	repo := &mockRepo{}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/msg-1", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1", Email: "test@test.com"}))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", w.Code)
+	}
+	if repo.deleteMessageUserID != "user-1" {
+		t.Fatalf("the repository was given caller %q, want %q", repo.deleteMessageUserID, "user-1")
+	}
+}
+
+// With no user on the context the handler forwards an empty id rather than
+// inventing one. The repository refuses that, so the route fails closed.
+func TestDeleteMessage_ForwardsAnEmptyIdentityWhenUnauthenticated(t *testing.T) {
+	repo := &mockRepo{}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/msg-1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if repo.deleteMessageUserID != "" {
+		t.Fatalf("an unauthenticated request forwarded caller %q, want empty", repo.deleteMessageUserID)
 	}
 }

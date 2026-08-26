@@ -87,6 +87,15 @@ type MessagesQuery struct {
 	Offset    int
 	SortBy    string
 	SortOrder string
+
+	// Query is the free-text term a caller is searching the transcript for,
+	// matched against the text content of a group's items. Empty means "no
+	// filter" — NOT "match the empty string", which every group would satisfy.
+	//
+	// It is passed through raw. The repository decides what a match means and
+	// escapes the term for the pattern operator it uses; doing that here would
+	// bake one storage layer's pattern syntax into the HTTP boundary.
+	Query string
 }
 
 type Participant struct {
@@ -122,7 +131,7 @@ type Repository interface {
 	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	GetMessageByUUID(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	DeleteMessages(ctx context.Context, projectID, conversationID string) error
-	DeleteMessage(ctx context.Context, projectID, groupUID string) error
+	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error
 }
 
 type Handler struct {
@@ -615,6 +624,10 @@ func parseMessagesQuery(values url.Values) MessagesQuery {
 	if sortBy := values.Get("sort_by"); sortBy != "" {
 		query.SortBy = sortBy
 	}
+	// Pylon read this as `request.args.get('query')` and applied it only when
+	// truthy (messages.py:71,86), so an explicit `query=` was the same as
+	// sending nothing. Same here.
+	query.Query = values.Get("query")
 	// Only the exact token `asc` flips the order. Pylon wrote this as
 	// `desc if sort_order == 'desc' else asc`, so under pylon ANY unrecognised
 	// value — a typo, an empty explicit `sort_order=` — silently reversed the
@@ -649,10 +662,19 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DeleteMessage removes one message group.
+//
+// The caller's identity is part of the request, not decoration: deleting a
+// message is authorised against the conversation's author and the group's own
+// author, so the repository cannot decide it without knowing who is asking.
+// An unauthenticated context yields an empty id, which the repository refuses —
+// the route already sits behind `models.chat.messages.delete`, so that state
+// should be unreachable, and failing closed is right if it ever is not.
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	messageID := chi.URLParam(r, "messageID")
-	if err := h.repo.DeleteMessage(r.Context(), projectID, messageID); err != nil {
+	user, _ := auth.UserFromContext(r.Context())
+	if err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID); err != nil {
 		apierr.Write(w, err)
 		return
 	}

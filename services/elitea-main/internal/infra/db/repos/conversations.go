@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -1006,7 +1007,7 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 }
 
 // DeleteMessage removes one message group — the unit the route calls a
-// "message" — addressed by its UUID.
+// "message" — addressed by its UUID, on behalf of userID.
 //
 // DEFECT #602: this used to read
 //
@@ -1017,16 +1018,54 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 // where it does exist, it has no `group_uid` column (42703) — see the catalog
 // dump at testdata/postgres/legacy-centry-catalog.json. The identifier the
 // route carries is a chat_message_group UUID; pylon's own handler
-// (legacy/plugins/elitea_core/api/v2/message.py:80-83) resolves it exactly that
-// way.
+// (legacy/plugins/elitea_core/api/v2/message.py:80-83) resolves it that way.
 //
-// Scope: this restores the delete. It does NOT port pylon's surrounding rules —
-// author-only, last-group-only, refusing a summarized group, and emitting the
-// socket event. Those are a separate parity gap. Deleting the paired user-input
-// group is deliberately NOT done here: the web client deletes each group by id
-// itself (apps/elitea-web/src/features/chat-messages/model/useDeleteMessageFromConversation.ts),
-// so pairing here would delete a group the caller is about to name again.
-func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID string) error {
+// # The three rules, ported from pylon
+//
+// Restoring the delete without them would have been worse than leaving it
+// broken: an unconditional delete-by-uuid lets any member of a project with the
+// `models.chat.messages.delete` permission remove anyone's message from anyone's
+// conversation, and lets a message be removed from the middle of a transcript.
+//
+//  1. AUTHOR (message.py:91-101). The caller must own the conversation, or be
+//     the user who authored this group. A group's author is a participant row,
+//     and a participant is only a person when entity_name is 'user' — an
+//     'application' participant's entity_meta.id is an AGENT id, so comparing a
+//     user id against it would let user 42 delete the messages of agent 42.
+//     That is why the entity_name check is part of the predicate rather than an
+//     optimisation.
+//
+//  2. SUMMARIZED (message.py:108-112). A group whose meta says
+//     context.included is false has been folded into a summary; its text is
+//     already represented elsewhere in the context window, so deleting the row
+//     would not remove the content and would desynchronise the summary from the
+//     transcript it summarises.
+//
+//  3. LAST ONLY (message.py:114-122). Deleting from the middle of a transcript
+//     leaves the model with a conversation that never happened. Pylon ordered
+//     this check by created_at alone, which is nondeterministic here for the
+//     same reason ListMessages needs its id tiebreaker: created_at defaults to
+//     a transaction-scoped now(), so a turn's two groups share a timestamp to
+//     the microsecond and "the last message" was whichever row Postgres
+//     happened to return. This orders by (created_at, id) so the answer is
+//     stable, and so it agrees with the order ListMessages renders.
+//
+// STATUS CODES DIVERGE FROM PYLON DELIBERATELY. Pylon answered 400 for all
+// three (and for "not found"). Here they are 403, 400 and 400, with 404 for a
+// group that does not exist. Nothing switches on the status — the web client
+// renders the message body (useApplicationChatStreaming.hooks.ts:163-171) — and
+// a permission failure reported as "bad request" is the kind of thing that
+// sends the next reader looking for a malformed payload.
+//
+// STILL NOT PORTED: pylon deletes the paired user-input group along with the
+// assistant reply it is answering (message.py:129-146), and emits a socket
+// event for each. Pairing is not done here because the live client deletes ONE
+// id and prunes exactly that one id from its local state
+// (useApplicationChatStreaming.hooks.ts:161-173), so a server that removed two
+// rows would leave an orphaned question on screen until a reload. Pylon's
+// attachment cleanup (`delete_attachment`) is likewise absent: the attachment
+// byte path is a separate port.
+func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error {
 	s := schema(projectID)
 	if _, err := uuid.Parse(groupUID); err != nil {
 		return apierr.NotFound("message not found")
@@ -1038,25 +1077,72 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
+	// One statement answers all three rules, so the row cannot change between
+	// the check and the delete: the transaction plus a single read keeps
+	// "is this the last group?" true at the moment it is acted on.
+	inspect := fmt.Sprintf(`
+		SELECT mg.id,
+			conv.author_id::text,
+			author.entity_name,
+			COALESCE(author.entity_meta->>'id', ''),
+			COALESCE(mg.meta #>> '{context,included}', 'true'),
+			NOT EXISTS (
+				SELECT 1 FROM %q.chat_message_group later
+				WHERE later.conversation_id = mg.conversation_id
+				  AND (later.created_at, later.id) > (mg.created_at, mg.id)
+			)
+		FROM %q.chat_message_group mg
+		JOIN %q.chat_conversations conv ON conv.id = mg.conversation_id
+		JOIN %q.chat_participants author ON author.id = mg.author_participant_id
+		WHERE mg.uuid = $1::uuid`, s, s, s, s)
+
+	var groupID int64
+	var conversationAuthorID, authorEntityName, authorEntityID, contextIncluded string
+	var isLast bool
+	if err := transaction.QueryRow(ctx, inspect, groupUID).Scan(
+		&groupID, &conversationAuthorID, &authorEntityName, &authorEntityID, &contextIncluded, &isLast,
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return apierr.NotFound("message not found")
+		}
+		return fmt.Errorf("conversations: inspect message: %w", err)
+	}
+
+	// An empty userID is an unauthenticated caller. It must not match an empty
+	// author id either, so it is refused before the comparison rather than by
+	// it.
+	if userID == "" {
+		return apierr.Forbidden("message can be deleted only by the message or conversation author")
+	}
+	authoredByCaller := authorEntityName == "user" && authorEntityID == userID
+	if userID != conversationAuthorID && !authoredByCaller {
+		return apierr.Forbidden("message can be deleted only by the message or conversation author")
+	}
+	if contextIncluded == "false" {
+		return apierr.BadRequest("a summarized message cannot be deleted")
+	}
+	if !isLast {
+		return apierr.BadRequest("only the last message in the conversation can be deleted")
+	}
+
 	// chat_message_items does not cascade from chat_message_group, so the items
 	// go first. chat_messages_text/_context cascade from the items, and
 	// chat_message_trace_step cascades from the group.
-	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items
-		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE uuid = $1::uuid)`, s, s)
-	if _, err := transaction.Exec(ctx, items, groupUID); err != nil {
+	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE message_group_id = $1`, s)
+	if _, err := transaction.Exec(ctx, items, groupID); err != nil {
 		return fmt.Errorf("conversations: delete message items: %w", err)
 	}
 
 	// reply_to_id points at another group in the same conversation. Detaching
-	// the references first is what lets the last group be deleted without
-	// taking the question that produced it with it, or failing the FK.
-	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL
-		WHERE reply_to_id IN (SELECT id FROM %q.chat_message_group WHERE uuid = $1::uuid)`, s, s)
-	if _, err := transaction.Exec(ctx, detach, groupUID); err != nil {
+	// the references first is what lets the group be deleted without failing
+	// the FK. The last group can still be replied to by nothing, but a
+	// regenerated turn leaves such references behind.
+	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL WHERE reply_to_id = $1`, s)
+	if _, err := transaction.Exec(ctx, detach, groupID); err != nil {
 		return fmt.Errorf("conversations: detach message replies: %w", err)
 	}
 
-	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE uuid = $1::uuid`, s), groupUID)
+	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE id = $1`, s), groupID)
 	if err != nil {
 		return fmt.Errorf("conversations: delete message: %w", err)
 	}
@@ -1089,9 +1175,48 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	// instead — what this method used to do — is what turned the #599 type
 	// error into apparent data loss: a broken query and an empty conversation
 	// became indistinguishable, so nobody saw a failure to investigate.
+	// The free-text filter, and why it is an EXISTS rather than pylon's JOIN.
+	//
+	// Pylon wrote `query.join(TextMessageItem, ...).filter(content.ilike(...))`
+	// (messages.py:86-91). A group with two matching text items therefore
+	// appeared TWICE in its result and was counted twice by the `total` on the
+	// next line — the join multiplies the group by its matching items. EXISTS
+	// asks the same question ("does this group contain matching text?") and
+	// answers it once per group, so a group is one row and `total` is a count
+	// of groups, which is what the envelope's `total` claims to be everywhere
+	// else.
+	//
+	// The term is escaped. `%` and `_` are ILIKE metacharacters, so an
+	// unescaped search for `50%` or `a_b` silently matches far more than the
+	// user typed; pylon interpolated the raw term and had exactly that
+	// behaviour. Nothing sends `query` today — the web client never sets it —
+	// so there is no client relying on the wildcard reading, and a literal
+	// search is what a search box means. `\` is escaped first, or it would
+	// escape the escapes added after it.
+	filter, filterArgs := "", []any{}
+	if query.Query != "" {
+		pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query.Query)
+		filter = fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM %q.chat_message_items mi
+			JOIN %q.chat_messages_text mt ON mt.id = mi.id
+			WHERE mi.message_group_id = mg.id
+			  AND mi.item_type = 'text_message'
+			  AND mt.content ILIKE $%%d ESCAPE '\')`, s, s)
+		filterArgs = append(filterArgs, "%"+pattern+"%")
+	}
+
+	// `total` counts the FILTERED set, as pylon's did — it is computed after the
+	// filter is applied (messages.py:93). A total that ignored the filter would
+	// make total_pages describe a different result set than items.
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_message_group WHERE conversation_id = $1`, s)
-	if err := r.pool.QueryRow(ctx, countQ, id).Scan(&total); err != nil {
+	countFilter := ""
+	countArgs := []any{id}
+	if filter != "" {
+		countFilter = fmt.Sprintf(filter, 2)
+		countArgs = append(countArgs, filterArgs...)
+	}
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = $1%s`, s, countFilter)
+	if err := r.pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: count messages: %w", err)
 	}
 
@@ -1144,6 +1269,14 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		orderBy = fmt.Sprintf("mg.id %s", direction)
 	}
 
+	// $1..$3 are taken by the conversation id, the limit and the offset, so the
+	// filter's placeholder is $4 here and $2 in the count above. Same clause,
+	// different position — hence the %d the builder left in it.
+	pageFilter := ""
+	if filter != "" {
+		pageFilter = fmt.Sprintf(filter, 4)
+	}
+
 	q := fmt.Sprintf(`
 		SELECT mg.id, mg.conversation_id, COALESCE(mg.uuid::text, ''),
 			p.entity_name, mg.meta, mg.created_at,
@@ -1155,11 +1288,11 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 			), '')
 		FROM %q.chat_message_group mg
 		JOIN %q.chat_participants p ON p.id = mg.author_participant_id
-		WHERE mg.conversation_id = $1
+		WHERE mg.conversation_id = $1%s
 		ORDER BY %s
-		LIMIT $2 OFFSET $3`, s, s, s, s, orderBy)
+		LIMIT $2 OFFSET $3`, s, s, s, s, pageFilter, orderBy)
 
-	rows, err := r.pool.Query(ctx, q, id, limit, offset)
+	rows, err := r.pool.Query(ctx, q, append([]any{id, limit, offset}, filterArgs...)...)
 	if err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
 	}
