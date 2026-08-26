@@ -15,9 +15,11 @@ main:
   # this one: every flag below has its reasoning written out there.
   #
   # HOW TO USE IT
-  #   helm install elitea-main deploy/helm/elitea-main \
-  #     -f deploy/helm/elitea-main/values-standalone.yaml \
-  #     --set env.DATABASE_URL=... --set env.REDIS_URL=...
+  #   helm install elitea deploy/helm/elitea \
+  #     -f deploy/helm/elitea/values-standalone.yaml \
+  #     --set postgresql.existingSecret=... \
+  #     --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=... \
+  #     --set-string llmGateway.egressPosture=...
   #
   # The chart checks every prerequisite while it renders. A missing or
   # contradictory setting fails `helm template` and names the field, so you find
@@ -183,7 +185,7 @@ main:
     #
     # "1" matches the compose stack's seeded project. Change it to your own
     # public project, and set the SAME value in
-    # deploy/helm/elitea-llm-gateway/values.yaml, where the key has the same
+    # this file's `llmGateway:` block, where the key has the same
     # name. The gateway reads the public project to serve shared models (issue
     # #316); the two services must name one project or the gateway serves a
     # different model set from the one the UI offers.

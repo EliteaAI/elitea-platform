@@ -14,7 +14,7 @@ metadata:
   labels:
     {{- include "elitea-main.labels" . | nindent 4 }}
 data:
-  # Render the WHOLE .Values.main.env map (mirrors deploy/helm/elitea-llm-gateway's
+  # Render the WHOLE .Values.main.env map (mirrors the `llmGateway:` block's
   # deployment.yaml `range`), instead of a fixed key list. A fixed list meant an
   # operator could not set any env var the chart author had not anticipated, so
   # code paths gated on such a var (e.g. the §2.6 SELF_REFERENTIAL_CREDENTIAL

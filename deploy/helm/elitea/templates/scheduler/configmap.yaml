@@ -16,7 +16,7 @@ metadata:
     {{- include "elitea-scheduler.labels" . | nindent 4 }}
 data:
   # The WHOLE .Values.scheduler.env map is rendered (same reasoning as
-  # deploy/helm/elitea-main/templates/configmap.yaml): a fixed key list means an
+  # templates/main/configmap.yaml): a fixed key list means an
   # operator cannot set an env var the chart author did not anticipate, and code
   # paths gated on such a var stay silently inert in every Helm deployment.
   {{- range $key, $value := $env }}

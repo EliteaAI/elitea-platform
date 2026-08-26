@@ -392,7 +392,7 @@ main:
     # project's configurations and propagates the failure, so a missing id fails
     # every agent turn rather than yielding an empty public set.
     #
-    # Set the SAME value in deploy/helm/elitea-llm-gateway/values.yaml, where the
+    # Set the SAME value in this file's `llmGateway:` block, where the
     # key has the same name. The gateway reads the public project to serve the
     # shared models the operator publishes (issue #316). The two services must
     # name one project, or the gateway serves a different model set from the one
@@ -599,7 +599,7 @@ main:
 
   # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
   # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
-  # above — mirrors deploy/helm/elitea-llm-gateway's values.yaml `secrets:`
+  # above — mirrors this file's `llmGateway:` block `secrets:`
   # block. Each entry maps the ENV VAR NAME the binary reads -> the Secret
   # name + key. `optional: true` lets the pod start when the Secret or key is
   # absent — correct here because only one storage backend is active per
@@ -1113,7 +1113,7 @@ scheduler:
   terminationGracePeriodSeconds: 30
 
   # Rendered into the ConfigMap and consumed via envFrom, mirroring
-  # deploy/helm/elitea-main. Names and defaults are
+  # this chart's `main:` block. Names and defaults are
   # services/elitea-scheduler/internal/config/config.go; the values below match
   # deploy/docker-compose.yml's elitea-scheduler service where it sets them.
   env:
@@ -1194,14 +1194,14 @@ scheduler:
     BUDGET_WRITEBACK_MAX_DELIVER: "10"
 
     # Tracing (issue #250): same OTLP collector endpoint and kill switch as
-    # deploy/helm/elitea-main's env map — see that chart's values.yaml for the
+    # the `main.env` map — see that chart's values.yaml for the
     # full rationale. Read by libs/go/observability.
     OTEL_EXPORTER_OTLP_ENDPOINT: ""
     OTEL_SDK_DISABLED: ""
 
   # Sensitive vars from Kubernetes Secrets (rendered as valueFrom.secretKeyRef),
   # never plaintext in the ConfigMap above — same shape as
-  # deploy/helm/elitea-llm-gateway and deploy/helm/elitea-main.
+  # the `llmGateway:` block and this chart's `main:` block.
   #
   # RPC_HMAC_KEY signs the Pylon/Arbiter RPC payloads the poller publishes on
   # RPC_CHANNEL. `optional: true` because the binary tolerates an empty key (it
@@ -1486,7 +1486,7 @@ llmGateway:
     # projects are meant to use platform models ONLY — that left no usable model.
     #
     # Set this to the SAME value as elitea-main's ELITEA_AI_PROJECT_ID, which is
-    # the identically named key in deploy/helm/elitea-main/values.yaml (issue
+    # the identically named key in this file's `main:` block (issue
     # #382 added it there). The two services must name the same project or the
     # gateway will serve a different model set from the one the UI offers.
     #

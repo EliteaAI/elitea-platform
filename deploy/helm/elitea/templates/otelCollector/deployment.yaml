@@ -17,7 +17,7 @@ spec:
       annotations:
         # Roll the pod when the collector config changes — the binary reads
         # its pipeline config once at start, same reasoning as
-        # deploy/helm/elitea-scheduler/templates/deployment.yaml's checksum
+        # templates/scheduler/deployment.yaml's checksum
         # annotation.
         checksum/config: {{ include (print $.Template.BasePath "/otelCollector/configmap.yaml") . | sha256sum }}
         {{- with .Values.otelCollector.podAnnotations }}
