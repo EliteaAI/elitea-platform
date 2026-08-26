@@ -102,3 +102,44 @@ func TestCurrentConfigurationsRuntimeRefusesDisagreeingMasterKeys(t *testing.T) 
 		runtime.Destroy()
 	}
 }
+
+// Agreement is about the KEY, not its spelling. A 44-character Fernet key ends
+// in one '=' pad, so its final three characters carry 2 bytes in 18 bits and 2
+// bits go unused — and Go's base64 decoder accepts whatever is in them. Two
+// spellings of one key must not be read as two keys and refuse to boot a
+// deployment that is in fact consistent.
+func TestCurrentConfigurationsRuntimeComparesMasterKeysByValueNotSpelling(t *testing.T) {
+	fileKey := bytes.Repeat([]byte("A"), 43)
+	fileKey = append(fileKey, '=')
+	// Same 32 bytes, different text: only the discarded trailing bits differ.
+	envKey := bytes.Repeat([]byte("A"), 42)
+	envKey = append(envKey, 'B', '=')
+	decodedFile, ok := decodeFernetMasterKey(fileKey)
+	if !ok {
+		t.Fatal("fixture: the file key does not decode")
+	}
+	decodedEnv, ok := decodeFernetMasterKey(envKey)
+	if !ok {
+		t.Fatal("fixture: the env key does not decode")
+	}
+	if !bytes.Equal(decodedFile, decodedEnv) {
+		t.Fatalf("fixture: the two spellings decode differently (%x vs %x)", decodedFile, decodedEnv)
+	}
+	if bytes.Equal(fileKey, envKey) {
+		t.Fatal("fixture: the two spellings are textually identical, so this proves nothing")
+	}
+
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "master.key")
+	if err := os.WriteFile(path, fileKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewCurrentConfigurationsRuntime(&pgxpool.Pool{}, 1, path, envKey)
+	if runtime == nil || err != nil {
+		t.Fatalf("two spellings of one key were refused: runtime=%+v error=%v", runtime, err)
+	}
+	runtime.Destroy()
+}

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 )
 
 const maxCurrentConfigurationsPathBytes = 4096
@@ -92,13 +94,12 @@ func currentConfigurationsConfigFromEnv(
 	// a real local one (deploy/scripts/standalone-stack.sh seeds it). It is
 	// read only on the enabled path, because the disabled path above rejects
 	// Configurations settings and this variable belongs to the secrets
-	// handler, which runs either way.
-	var masterKey []byte
-	if value, present := lookup("SECRETS_MASTER_KEY"); present && value != "" {
-		if !validEncodedFernetKey(value) {
-			return currentConfigurationsConfig{}, errors.New("SECRETS_MASTER_KEY is invalid")
-		}
-		masterKey = []byte(value)
+	// handler, which runs either way. The DISABLED path's chat-config loader
+	// needs the same key and reads it from the environment directly, through
+	// the helper below.
+	masterKey, err := encodedVaultMasterKeyFromEnv(lookup)
+	if err != nil {
+		return currentConfigurationsConfig{}, err
 	}
 	// ELITEA_LITELLM_BASE_URL and ELITEA_LITELLM_MASTER_KEY_FILE are gone with
 	// the facade they configured — there is no proxy deployment to address and
@@ -153,4 +154,28 @@ func validEncodedFernetKey(value string) bool {
 	}
 	decoded, err := base64.URLEncoding.DecodeString(value)
 	return err == nil && len(decoded) == 32
+}
+
+// encodedVaultMasterKeyFromEnv returns SECRETS_MASTER_KEY in the form the vault
+// loader takes, or nil when it is unset.
+//
+// THE ENCODING MATTERS. storage.NewPostgresSecretVaultLoader and
+// repos.NewCurrentSecretVaultRepository both validate the 44-character
+// base64url form, while v2secrets.MasterKeyFromEnv decodes the SAME variable to
+// the raw 32 bytes for the secrets handler. The two are not interchangeable: a
+// loader handed the raw form rejects it as an invalid key. This helper is the
+// one place that produces the loader's form, so both callers get the same
+// bytes from the same variable.
+func encodedVaultMasterKeyFromEnv(lookup func(string) (string, bool)) ([]byte, error) {
+	if lookup == nil {
+		return nil, errors.New("vault master key environment lookup is required")
+	}
+	value, present := lookup(v2secrets.MasterKeyEnvVar)
+	if !present || value == "" {
+		return nil, nil
+	}
+	if !validEncodedFernetKey(value) {
+		return nil, errors.New(v2secrets.MasterKeyEnvVar + " is invalid")
+	}
+	return []byte(value), nil
 }

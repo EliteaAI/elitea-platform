@@ -3,6 +3,7 @@ package runtimecomposition
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -73,7 +74,7 @@ func NewCurrentConfigurationsRuntime(
 	masterKey := fileMasterKey
 	if fileMasterKey == nil {
 		masterKey = envMasterKey
-	} else if len(envMasterKey) != 0 && !bytes.Equal(fileMasterKey, envMasterKey) {
+	} else if len(envMasterKey) != 0 && !sameFernetKey(fileMasterKey, envMasterKey) {
 		// Refusing beats picking a winner. Whichever one lost would read some
 		// of the vaults in this database and not the others, and the half it
 		// could not open is indistinguishable from a corrupt row.
@@ -316,4 +317,42 @@ func (runtime *CurrentConfigurationsRuntime) Destroy() {
 	runtime.vaultWriter = nil
 	runtime.mutationRows = nil
 	runtime.publicProjectID = 0
+}
+
+// sameFernetKey reports whether two ENCODED Fernet keys name the same key.
+//
+// It compares what they DECODE to, not the text. base64 is not injective over
+// the last quantum of a 32-byte key: 44 characters with one '=' pad carry the
+// final 2 bytes in 18 bits, so 2 bits are unused, and Go's decoder is
+// non-strict about them. `...A=` and `...B=` can therefore be two spellings of
+// one key. Comparing the text would read those as a disagreement and refuse to
+// start a deployment whose two sources are in fact consistent.
+//
+// A key that will not decode falls back to the literal comparison. Both are
+// then rejected a few lines below by the vault loader's own validation, whose
+// message names the bad key — a better answer than "different keys".
+func sameFernetKey(a, b []byte) bool {
+	decodedA, okA := decodeFernetMasterKey(a)
+	defer clear(decodedA)
+	decodedB, okB := decodeFernetMasterKey(b)
+	defer clear(decodedB)
+	if !okA || !okB {
+		return bytes.Equal(a, b)
+	}
+	return bytes.Equal(decodedA, decodedB)
+}
+
+// decodeFernetMasterKey decodes the 44-character base64url form to its 32 raw
+// bytes. The caller clears the result.
+func decodeFernetMasterKey(encoded []byte) ([]byte, bool) {
+	if len(encoded) != encodedFernetKeyBytes {
+		return nil, false
+	}
+	decoded := make([]byte, base64.URLEncoding.DecodedLen(len(encoded)))
+	n, err := base64.URLEncoding.Decode(decoded, encoded)
+	if err != nil || n != fernetMasterKeyBytes {
+		clear(decoded)
+		return nil, false
+	}
+	return decoded[:n], true
 }
