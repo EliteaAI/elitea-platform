@@ -138,21 +138,32 @@ spec:
                 # elitea-migrate runs as the application role and ALTERs these
                 # tables, which requires ownership — without this the chain dies
                 # at shared/0041 with "must be owner of table project".
+                #
+                # The p_* TENANT schemas are handed over too, and they are a
+                # separate failure: 001_initial.sql creates p_1 through
+                # create_tenant_schema(), so it is admin-owned like the rest,
+                # and the TENANT half of the chain then stops with "tenant
+                # schema p_1 is not the effective schema" — after all 70 shared
+                # migrations have already succeeded, which makes it look like a
+                # search_path problem rather than an ownership one.
                 {{- if $d.appRole }}
                 psql "$PGURL" -v ON_ERROR_STOP=1 -q <<SQL
               DO \$reassign\$
               DECLARE r record;
               BEGIN
                 FOR r IN SELECT schemaname, tablename FROM pg_tables
-                         WHERE schemaname IN ('centry','public') LOOP
+                         WHERE schemaname IN ('centry','public')
+                            OR schemaname LIKE 'p!_%' ESCAPE '!' LOOP
                   EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.schemaname, r.tablename, '{{ $d.appRole }}');
                 END LOOP;
                 FOR r IN SELECT sequence_schema s, sequence_name n FROM information_schema.sequences
-                         WHERE sequence_schema IN ('centry','public') LOOP
+                         WHERE sequence_schema IN ('centry','public')
+                            OR sequence_schema LIKE 'p!_%' ESCAPE '!' LOOP
                   EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.s, r.n, '{{ $d.appRole }}');
                 END LOOP;
                 FOR r IN SELECT nspname FROM pg_namespace
-                         WHERE nspname IN ('centry','public') LOOP
+                         WHERE nspname IN ('centry','public')
+                            OR nspname LIKE 'p!_%' ESCAPE '!' LOOP
                   EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{{ $d.appRole }}');
                 END LOOP;
               END
