@@ -403,12 +403,13 @@ jobs:
       matrix:
         include:
           # ONE chart for the platform. It ships every first-party image, so no
-          # single `image:` names it — `globalImageTag` below stamps the one tag
-          # every component resolves from instead. Without that a chart published
-          # at a release number would install `latest` for all of them.
+          # single `image:` names it — `platformImageTag` below stamps the one
+          # top-level `image.tag` every component resolves from instead. Without
+          # that a chart published at a release number would install `latest`
+          # for all of them.
           - chart: elitea
             image: ""
-            globalImageTag: true
+            platformImageTag: true
           # NATS stays separate: commodity infrastructure the platform chart
           # points at rather than owns, and it vendors an upstream subchart, so
           # packaging needs `helm dependency build` and network access.
@@ -534,25 +535,32 @@ jobs:
             echo "stamped ${VALUES}: image.tag ${before} -> ${VERSION}"
           fi
 
-          # The umbrella has no image of its own but vendors every component
-          # chart, each carrying its own `image.tag: latest` placeholder. One
-          # global tag is what turns the package into a coherent release, so it
-          # is stamped and read back exactly like image.tag above — and its
-          # ABSENCE is an error, because a silently unstamped global is a chart
-          # that publishes at a release number and installs `latest`.
-          if [ "${{ matrix.globalImageTag }}" = "true" ]; then
-            if [ "$(yq -r '.global.image.tag' "$VALUES")" = "null" ]; then
-              echo "::error file=${VALUES}::no .global.image.tag to stamp — the umbrella's global image block moved"
+          # The platform chart has no single image of its own: it templates every
+          # component from one top-level `image.tag`, whose working-tree value is
+          # the placeholder `latest`. That one tag is what turns the package into
+          # a coherent release, so it is stamped and read back exactly like the
+          # per-component image.tag above — and its ABSENCE is an error, because
+          # a silently unstamped tag is a chart that publishes at a release
+          # number and installs `latest` for every component.
+          if [ "${{ matrix.platformImageTag }}" = "true" ]; then
+            before="$(yq -r '.image.tag' "$VALUES")"
+            if [ "$before" = "null" ]; then
+              echo "::error file=${VALUES}::no .image.tag to stamp — the platform chart's top-level image block moved"
               exit 1
             fi
-            yq -i ".global.image.tag = \"${VERSION}\"" "$VALUES"
-            got="$(yq -r '.global.image.tag' "$VALUES")"
+            yq -i ".image.tag = \"${VERSION}\"" "$VALUES"
+            got="$(yq -r '.image.tag' "$VALUES")"
             if [ "$got" != "$VERSION" ]; then
-              echo "::error file=${VALUES}::global.image.tag is '${got}', expected '${VERSION}'"
+              echo "::error file=${VALUES}::image.tag is '${got}', expected '${VERSION}'"
               exit 1
             fi
             yq -i ".appVersion = \"${VERSION}\"" "$CHART"
-            echo "stamped ${VALUES}: global.image.tag -> ${VERSION}"
+            got="$(yq -r '.appVersion' "$CHART")"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=${CHART}::appVersion is '${got}', expected '${VERSION}'"
+              exit 1
+            fi
+            echo "stamped ${VALUES}: image.tag ${before} -> ${VERSION}"
           fi
 
           yq '{"version": .version, "appVersion": .appVersion}' "$CHART"
