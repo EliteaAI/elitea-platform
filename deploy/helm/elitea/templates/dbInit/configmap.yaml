@@ -1,0 +1,30 @@
+{{- if .Values.dbInit.enabled }}
+# 001_initial.sql, carried into the release so the Job above can apply it.
+#
+# It is a COPY of services/elitea-main/internal/infra/db/migrations/001_initial.sql,
+# vendored because Helm cannot read a file outside its own chart directory and
+# no Go binary embeds this one. The copy is held byte-identical to the source by
+# a CI gate (.github/workflows/helm-lint.yml, "The vendored bootstrap SQL matches
+# its source") — a drifted copy would bootstrap a schema the migrations were not
+# written against, which is worse than not bootstrapping at all.
+#
+# Also carried as a hook resource so it exists before the pre-install Job that
+# mounts it: an ordinary ConfigMap is created with the release's own manifests,
+# which is AFTER every pre-install hook has run.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elitea-db-init-sql
+  labels:
+    {{- include "elitea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-30"
+    helm.sh/hook-delete-policy: before-hook-creation
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-30"
+data:
+  001_initial.sql: |
+{{ .Files.Get "files/001_initial.sql" | indent 4 }}
+{{- end }}

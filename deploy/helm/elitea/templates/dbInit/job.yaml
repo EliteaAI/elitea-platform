@@ -1,0 +1,193 @@
+{{- if .Values.dbInit.enabled }}
+{{- $d := .Values.dbInit }}
+# Bootstraps the database this platform cannot migrate into.
+#
+# WHY THIS EXISTS. elitea-main's migration chain CANNOT run against an empty
+# database: shared/0030 declares a foreign key to centry.project, and most of the
+# centry schema is created by pylon rather than by the Go chain. 001_initial.sql
+# is the schema that closes that gap, and nothing embeds it — no Go binary, no
+# migrate command. The compose stack applies it from a bind mount
+# (deploy/docker-compose.standalone-full.yml's `db-init`). Kubernetes had no
+# equivalent at all, so a fresh Helm install failed at
+#
+#   migrate: apply shared/0030_execution_kernel.sql: schema "centry" does not exist
+#
+# and every route to a working install went through a human running psql. This
+# Job is the Kubernetes half of that same step.
+#
+# It does three things, all idempotent, all transcribed from `db-init`:
+#   1. creates the agent-state DATABASE the worker's LangGraph checkpointer
+#      opens — a separate database, not a schema, because that is the
+#      connection-string shape the checkpointer uses. Without it the worker
+#      claims an execution, runs the agent, and then fails the delivery with
+#      "The durable agent checkpoint store is unavailable".
+#   2. installs the `vector` extension into `public`, because the index plane's
+#      DDL names the type unqualified and so it must sit on the default
+#      search_path. Separate from 001_initial.sql because it must also reach a
+#      database that predates that line.
+#   3. applies 001_initial.sql, but ONLY when centry.project is absent. An
+#      already-bootstrapped database — every existing install — is left alone.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elitea-db-init
+  labels:
+    {{- include "elitea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    # BEFORE the migration (weight 0), which is the whole point: the migration
+    # is what fails without this. Argo reads its own annotations and ignores
+    # helm.sh/hook-weight, so the wave states the same ordering in its dialect.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-20"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ $d.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "elitea.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      restartPolicy: Never
+      {{- include "elitea.imagePullSecrets" (dict "local" $d.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $d.runAsUser }}
+        runAsGroup: {{ $d.runAsGroup }}
+        fsGroup: {{ $d.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-init
+          image: "{{ $d.image.repository }}:{{ $d.image.tag }}"
+          imagePullPolicy: {{ $d.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # The admin DSN. It needs CREATE DATABASE and CREATE EXTENSION,
+            # which the application role usually does not have — that is why
+            # this names its own secret rather than reusing `postgresql`.
+            - name: PGURL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "dbInit.database.existingSecret is required (it needs CREATE DATABASE and CREATE EXTENSION rights)" $d.database.existingSecret }}
+                  key: {{ required "dbInit.database.key is required" $d.database.key }}
+            - name: AGENT_STATE_DB
+              value: {{ required "dbInit.agentStateDatabase is required" $d.agentStateDatabase | quote }}
+            - name: APP_ROLE
+              value: {{ $d.appRole | quote }}
+            - name: WAIT_ATTEMPTS
+              value: {{ $d.waitAttempts | quote }}
+            - name: WAIT_INTERVAL
+              value: {{ $d.waitIntervalSeconds | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              # Wait for the server. On a fresh install the operator's cluster
+              # may still be electing a primary.
+              attempt=0
+              until psql "$PGURL" -Atqc 'SELECT 1' >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge "$WAIT_ATTEMPTS" ]; then
+                  echo "ERROR: PostgreSQL did not answer after $WAIT_ATTEMPTS attempts." >&2
+                  psql "$PGURL" -Atqc 'SELECT 1' || true
+                  exit 1
+                fi
+                echo "  waiting for PostgreSQL ($attempt/$WAIT_ATTEMPTS)…"
+                sleep "$WAIT_INTERVAL"
+              done
+
+              # The database this DSN points at is the platform database; the
+              # agent-state one is created beside it on the same server.
+              ADMIN_URL="$(printf '%s' "$PGURL" | sed -E 's#(/)[^/?]+(\?|$)#\1postgres\2#')"
+
+              # 1. the agent-state database. `psql -c CREATE DATABASE` cannot run
+              #    inside a transaction, and IF NOT EXISTS does not exist for it,
+              #    so existence is checked first.
+              if [ "$(psql "$ADMIN_URL" -Atqc \
+                    "SELECT 1 FROM pg_database WHERE datname = '$AGENT_STATE_DB'")" != "1" ]; then
+                psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
+                  -c "CREATE DATABASE \"$AGENT_STATE_DB\"${APP_ROLE:+ OWNER \"$APP_ROLE\"}"
+                echo "created database $AGENT_STATE_DB"
+              else
+                echo "database $AGENT_STATE_DB already present"
+              fi
+
+              # 2. the vector type, on the default search_path.
+              psql "$PGURL" -v ON_ERROR_STOP=1 \
+                -c "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"
+
+              # 3. the centry schema, only when it is absent. `to_regclass`
+              #    returns NULL rather than raising for a missing schema, so
+              #    this is a question and not an error path.
+              if [ -n "$(psql "$PGURL" -Atqc "SELECT to_regclass('centry.project')")" ]; then
+                echo "centry schema already present; skipping 001_initial.sql"
+              else
+                echo "bootstrapping the centry schema from 001_initial.sql…"
+                psql "$PGURL" -v ON_ERROR_STOP=1 -q -f /sql/001_initial.sql
+                # Applied as the admin role, so the objects are owned by it.
+                # elitea-migrate runs as the application role and ALTERs these
+                # tables, which requires ownership — without this the chain dies
+                # at shared/0041 with "must be owner of table project".
+                {{- if $d.appRole }}
+                psql "$PGURL" -v ON_ERROR_STOP=1 -q <<SQL
+              DO \$reassign\$
+              DECLARE r record;
+              BEGIN
+                FOR r IN SELECT schemaname, tablename FROM pg_tables
+                         WHERE schemaname IN ('centry','public') LOOP
+                  EXECUTE format('ALTER TABLE %I.%I OWNER TO %I', r.schemaname, r.tablename, '{{ $d.appRole }}');
+                END LOOP;
+                FOR r IN SELECT sequence_schema s, sequence_name n FROM information_schema.sequences
+                         WHERE sequence_schema IN ('centry','public') LOOP
+                  EXECUTE format('ALTER SEQUENCE %I.%I OWNER TO %I', r.s, r.n, '{{ $d.appRole }}');
+                END LOOP;
+                FOR r IN SELECT nspname FROM pg_namespace
+                         WHERE nspname IN ('centry','public') LOOP
+                  EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.nspname, '{{ $d.appRole }}');
+                END LOOP;
+              END
+              \$reassign\$;
+              SQL
+                {{- end }}
+                echo "centry schema bootstrapped"
+              fi
+
+              # Prove it, with the question the migration will ask.
+              if [ -z "$(psql "$PGURL" -Atqc "SELECT to_regclass('centry.project')")" ]; then
+                echo "ERROR: centry.project still absent; shared/0030 would fail." >&2
+                exit 1
+              fi
+              echo "database ready"
+          resources:
+            {{- toYaml $d.resources | nindent 12 }}
+          volumeMounts:
+            - name: bootstrap-sql
+              mountPath: /sql
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: bootstrap-sql
+          configMap:
+            name: elitea-db-init-sql
+        - name: tmp
+          emptyDir: {}
+      {{- with $d.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $d.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

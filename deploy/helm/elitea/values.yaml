@@ -10,6 +10,37 @@
 # different NATS URLs, the database secret named in four places. Stating them
 # once is most of the reason this chart exists.
 
+# ── What this chart does NOT create ─────────────────────────────────────────
+#
+# Checked against deploy/docker-compose.standalone-full.yml, the reference
+# pylon-free stack. Every service in it is now covered by this chart except the
+# ones below, which are deliberately the operator's:
+#
+#   PostgreSQL          `postgresql` names its secret. The operator's lifecycle
+#                       is not this application's — see that block.
+#   Redis, NATS         `redis` / `nats` name them. Commodity infrastructure.
+#   Object storage      An S3-compatible endpoint, configured under `main.env`.
+#   Ingress             The cluster's own edge. `worker.platformEdge` is NOT it:
+#                       that one is internal, has no route from any gateway, and
+#                       exists only because the worker refuses a plaintext
+#                       platform_origin.
+#
+# THE ARTIFACT BUCKET MUST EXIST BEFORE THE FIRST SYNC, and this one bites
+# early: elitea-main probes the object store at boot and REFUSES to start
+# without it —
+#
+#   object store readiness probe: storage/s3: stat object: ... HeadObject ...
+#
+# so the migration Job fails and the release aborts. The compose stack creates
+# it (`rustfs-bucket-init`); on a managed object store it is a console or
+# terraform step. Create the bucket named by `main.env.STORAGE_CONTAINER`.
+#
+# NOT REQUIRED, and deleted: pylon-indexer. Index ingest is served by the Go
+# runtime plane through the agent worker, on the same command stream and
+# consumer group as agent execution, so one worker serves both capabilities.
+# The Python indexer appears in no pylon-free stack. It does still run in the
+# LEGACY deploy/docker-compose.yml, which is why its image is still published.
+
 # ── Images ──────────────────────────────────────────────────────────────────
 #
 # ONE tag for the whole platform. Every first-party image is built, signed and
@@ -69,6 +100,65 @@ redis:
   service: "elitea-valkey"
   namespace: ""
   port: 6379
+
+# ── Database bootstrap ──────────────────────────────────────────────────────
+#
+# The step that makes a FRESH install possible at all. elitea-main's migrations
+# cannot run against an empty database — shared/0030 has a foreign key to
+# centry.project, and most of the centry schema is created by pylon, not by the
+# Go chain — so without this a first `helm install` dies at
+#
+#   migrate: apply shared/0030_execution_kernel.sql: schema "centry" does not exist
+#
+# The compose stack has always done this (its `db-init` service); Kubernetes had
+# no equivalent, which is why every route to a working cluster went through a
+# human running psql. All three steps are idempotent and an already-bootstrapped
+# database is left untouched, so this is safe on upgrade.
+dbInit:
+  enabled: true
+
+  # Needs CREATE DATABASE and CREATE EXTENSION, which the application role
+  # usually lacks — hence its own secret rather than reusing `postgresql`.
+  # Point it at the operator's superuser DSN for the PLATFORM database; the
+  # agent-state database is created beside it on the same server.
+  database:
+    existingSecret: "elitea-postgres-cluster-superuser"
+    key: "uri"
+
+  # The LangGraph checkpoint store the worker opens. A separate DATABASE, not a
+  # schema, because that is the connection-string shape the checkpointer uses.
+  # Without it the worker claims an execution, runs the agent, and then fails
+  # delivery with "The durable agent checkpoint store is unavailable" — it must
+  # match the database in the worker's agent-checkpoint-connection material.
+  agentStateDatabase: "elitea_v2_agentstate"
+
+  # The role elitea-migrate connects as. 001_initial.sql is applied by the admin
+  # above, so its objects are owned by the admin; the migration chain ALTERs them
+  # and needs ownership, failing at shared/0041 with "must be owner of table
+  # project" without this hand-over. Empty skips the hand-over.
+  appRole: "elitea_v2"
+
+  image:
+    repository: docker.io/library/postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+  backoffLimit: 3
+  waitAttempts: 60
+  waitIntervalSeconds: 5
+  runAsUser: 999
+  runAsGroup: 999
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+
 
 main:
   # The API. Everything else is optional next to it.
