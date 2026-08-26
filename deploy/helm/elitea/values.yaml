@@ -67,14 +67,31 @@ global:
 # Keyed by chart name. `enabled` drives the dependency conditions in
 # Chart.yaml; everything else is an ordinary override of that chart's values.
 
+# ── A note on fullnameOverride, which appears on nearly every component ─────
+#
+# THESE NAMES ARE CERTIFICATE MATERIAL, not cosmetics. Helm's default fullname
+# is "<release>-<chart>", so installing these as one release called `elitea`
+# would rename elitea-main to `elitea-elitea-main` — and the runtime mTLS server
+# certificates carry DNS SANs for the BARE names (`elitea-main`,
+# `elitea-main.<ns>.svc`, ...), the worker dials control/output/content on
+# `elitea-main:9443`, and platform_origin is pinned to a certificate whose only
+# SAN is `elitea-platform-edge`. A renamed Service fails the TLS handshake with
+# a message that reads like a trust problem, nowhere near the rename.
+#
+# So every component is pinned to the name its certificates were minted for.
+# Changing one means re-minting that certificate.
+
 elitea-main:
   enabled: true
+  fullnameOverride: elitea-main
 
 elitea-web:
   enabled: true
+  fullnameOverride: elitea-web
 
 elitea-scheduler:
   enabled: true
+  fullnameOverride: elitea-scheduler
   env:
     # Bare host:port, NOT a URL: the value goes straight to goredis
     # Options.Addr. The chart's own default is "redis:6379", which resolves to
@@ -85,6 +102,7 @@ elitea-scheduler:
 
 elitea-llm-gateway:
   enabled: true
+  fullnameOverride: elitea-llm-gateway
   env:
     # Must name the SAME NATS as the scheduler: the budget counters are shared
     # state, and two components on two clusters of one counter enforce nothing.
@@ -106,14 +124,17 @@ elitea-llm-gateway:
 # turns that are never answered, so they default on together.
 elitea-worker-python:
   enabled: true
+  fullnameOverride: elitea-worker
 
 elitea-runtime-redis:
   enabled: true
 
 otel-collector:
   enabled: true
+  fullnameOverride: elitea-otel-collector
 
 # Off by default: the legacy indexer shim is only needed where the Python
 # indexing path is still in use.
 pylon-indexer:
   enabled: false
+  fullnameOverride: pylon-indexer

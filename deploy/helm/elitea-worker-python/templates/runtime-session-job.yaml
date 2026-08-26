@@ -27,7 +27,14 @@ metadata:
     app.kubernetes.io/component: runtime-session
   annotations:
     helm.sh/hook: pre-install,pre-upgrade
-    helm.sh/hook-weight: "-5"
+    # AFTER elitea-main's migration, which is weight 0 in the same pre-install
+    # phase and creates the table this Job writes to. Helm runs hooks in weight
+    # order and blocks on each, so a negative weight here deadlocks a fresh
+    # umbrella install: this Job would sit waiting for a table whose migration
+    # cannot start until it exits. It is harmless in a standalone install of
+    # this chart — there is no migration hook to order against — which is
+    # exactly why it survived until the two shipped in one release.
+    helm.sh/hook-weight: "10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
