@@ -75,10 +75,21 @@ test('the composer takes keystrokes without throwing (#597)', async ({ page }) =
   await input.click();
   await input.pressSequentially(TYPED, { delay: 20 });
 
-  expect(pageErrors, 'typing into the composer must not throw').toEqual([]);
-
   // The input is quiet AND working: it kept every character, and the send
   // control — which `ChatBox` renders only in response to input — appeared.
   await expect(input).toHaveValue(TYPED);
   await expect(page.getByTestId('chat-send-button')).toBeEnabled({ timeout: 5_000 });
+
+  // Read LAST, and only after a round-trip to the page. `pageerror` is
+  // delivered asynchronously over CDP, so a throw from the FINAL keystroke —
+  // or from something that keystroke scheduled — can still be in flight when
+  // `pressSequentially` resolves; read on the next line it would be missed and
+  // this test would go green on a broken composer. Protocol events arrive in
+  // order on one connection, so awaiting a round-trip issued after the last
+  // keypress guarantees every error the typing already raised has landed.
+  //
+  // Note it must be a round-trip and not `expect.poll`: polling for an EMPTY
+  // array passes on its first read, so it would not wait at all.
+  await page.evaluate(() => undefined);
+  expect(pageErrors, 'typing into the composer must not throw').toEqual([]);
 });
