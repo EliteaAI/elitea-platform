@@ -1,0 +1,67 @@
+# ArgoCD Application: EliteA — the whole platform, one chart, one Application.
+#
+# This replaces the six Applications that used to sync the platform's component
+# charts (elitea-main, elitea-web, elitea-scheduler, elitea-llm-gateway,
+# otel-collector, pylon-indexer). They synced independently, which meant nothing
+# ordered them against each other and nothing made them agree: each carried its
+# own copy of the database secret name, the NATS URL and the Redis address, and
+# they had already drifted apart. One chart, one Application, one values file.
+#
+# SYNC-WAVE 0 — after NATS (-2) and its JetStream bootstrap (-1), which the LLM
+# gateway's budget counters dial. Ordering WITHIN the platform is no longer a
+# wave concern: it is Helm hook ordering inside this one release. The migration
+# runs pre-install/pre-upgrade at weight 0 and Helm blocks on it, the
+# workload-session provisioning follows at weight 10, and the Redis consumer
+# groups are created post-install. A failed migration aborts the release and the
+# previous pods keep serving.
+#
+# BEFORE FIRST SYNC, in the `elitea` namespace:
+#
+#   - PostgreSQL must already exist. No chart here provisions it: CloudNativePG
+#     installs cluster-scoped CRDs and a controller whose lifecycle is not this
+#     application's, so bundling it would let a delete reach the database.
+#     Publish its DSN as a Secret and name it in `postgresql.existingSecret`.
+#
+#   - The database must be BOOTSTRAPPED, and this is not the same as existing.
+#     elitea-main's migrations cannot run against an empty database: shared/0030
+#     has a foreign key to centry.project, and most of the centry schema is
+#     created by pylon rather than by the Go chain. See deploy/runtime/README.md.
+#     An upgrade of an already-bootstrapped database is unaffected.
+#
+#   - The material Secrets the runtime plane mounts (runtime CA, server and
+#     client certificates, the command-signing keyring, the Redis ACL password,
+#     the output-spool key) must exist. deploy/runtime/README.md names the keys.
+#
+#   - The LLM gateway REFUSES to render until two postures are stated —
+#     `llmGateway.env.GATEWAY_SELF_LLM_ORIGINS` and `llmGateway.egressPosture`.
+#     Only the operator knows their own origins, so there is deliberately no
+#     default; supply them in the values file this Application points at.
+#
+# CHAT is off unless you turn on all three of `main.runtime.enabled`,
+# `worker.enabled` and `runtimeRedis.enabled` together. The chart refuses the
+# incoherent combinations at render time rather than installing something that
+# reports every pod Ready and then answers no message.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: elitea
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/eliteaai/elitea-platform
+    targetRevision: main
+    path: deploy/helm/elitea
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: elitea
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

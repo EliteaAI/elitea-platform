@@ -1,6 +1,0 @@
-apiVersion: v2
-name: elitea-scheduler
-description: Headless worker — legacy centry.schedule poller, price-catalog sync and budget write-back consumer
-type: application
-version: 0.1.0
-appVersion: "0.1.0"

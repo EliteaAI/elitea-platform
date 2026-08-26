@@ -104,7 +104,7 @@ jobs:
       # runtime names straight out of internal/runtimecomposition/config.go, so
       # a newly required name fails here until the chart renders it.
       - name: Capability flags reach the container environment
-        run: bash deploy/helm/elitea-main/tests/render-capabilities.sh
+        run: bash deploy/helm/tests/render-capabilities.sh
 
       # The runner image ships yq, so this usually downloads nothing. The
       # version is PINNED for the same reason as KUBECONFORM_VERSION and
@@ -244,45 +244,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - chart: elitea-main
-            values: -f deploy/helm/elitea-main/values-staging.yaml
-            # Non-default code paths that render nothing in the pass above.
-            # ingress.gatewayApi (HTTPRoute) is NOT toggled on here: the
-            # gateway.networking.k8s.io CRD schema isn't in CRDs-catalog at
-            # the pinned $CRD_SCHEMAS tag (only on its unpinned main), so
-            # kubeconform would fail on a missing schema. The standard
-            # Ingress path uses kubeconform's built-in kubernetes-version
-            # schema, no CRD needed.
-            toggles: --set migrations.enabled=false --set autoscaling.enabled=false --set podDisruptionBudget.enabled=false --set ingress.enabled=true --set-json 'ingress.hosts=["example.invalid"]'
-          # This chart REFUSES to render until the operator states two postures
-          # (#467, #473): the self-referential-credential origins, and the
-          # egress posture. Neither can have a chart default, because both name
-          # addresses that only the operator knows. So this gate must supply
-          # them, exactly as an operator does. A chart that renders on an empty
-          # guard is the defect the refusal exists to stop (#497).
-          #
-          # These are RENDER-ONLY values. `.invalid` is reserved by RFC 2606 and
-          # never resolves, and the label says what the value is for, so no
-          # reader can mistake either one for a shipped default.
-          - chart: elitea-llm-gateway
-            values: --set-string env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1 --set-string egressPosture=public-unrestricted
-            # The last --set of a key wins, so the two lines below move this
-            # pass to the OTHER egress posture. The allowlist posture is the
-            # only one that renders a non-empty GATEWAY_EGRESS_ALLOWLIST, so a
-            # break in it is invisible in the default pass above.
-            toggles: --set autoscaling.enabled=true --set networkPolicy.enabled=true --set preStop.enabled=true --set mtls.enabled=false --set ingress.enabled=true --set ingress.acknowledgeMTLSBypass=true --set-json 'ingress.hosts=["example.invalid"]' --set-string egressPosture=allowlist --set-string env.GATEWAY_EGRESS_ALLOWLIST=ci-render-only.example.invalid:8000
-          - chart: elitea-scheduler
-            values: ""
-            toggles: --set service.enabled=true --set probes.liveness.enabled=false --set probes.readiness.enabled=true
-          - chart: elitea-web
-            values: ""
-            toggles: --set autoscaling.enabled=true --set podDisruptionBudget.enabled=false --set preStop.enabled=false
-          - chart: pylon-indexer
-            values: ""
-            toggles: --set persistence.enabled=true --set probes.startup.enabled=false --set probes.liveness.enabled=false
-          - chart: otel-collector
-            values: ""
-            toggles: --set serviceAccount.create=false --set service.type=NodePort
+          # One chart, two passes. The postures are supplied because the LLM
+          # gateway is a component of it and REFUSES to render without them —
+          # render-only values, `.invalid` reserved by RFC 2606.
+          - chart: elitea
+            values: -f deploy/helm/elitea/values-staging.yaml --set-string 'llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' --set-string 'llmGateway.egressPosture=public-unrestricted'
+            # The runtime plane on, which is the configuration that serves chat
+            # and the one whose absence this chart exists to stop shipping
+            # silently. Also the non-default branches the pass above skips.
+            toggles: -f deploy/helm/elitea/values-standalone.yaml --set-string 'llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' --set-string 'llmGateway.egressPosture=allowlist' --set-string 'llmGateway.env.GATEWAY_EGRESS_ALLOWLIST=ci-render-only.example.invalid:8000' --set main.autoscaling.enabled=false --set main.podDisruptionBudget.enabled=false --set web.autoscaling.enabled=true --set otelCollector.enabled=false
           # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
           # upstream subchart, so templating it needs `helm dependency build`
           # and network access to the upstream repo. `helm lint` above still
@@ -303,6 +273,23 @@ jobs:
             "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
           kubeconform -v
+
+      # `helm template` on a chart with unvendored dependencies fails with
+      # "found in Chart.yaml, but missing in charts/ directory" — it does not
+      # resolve them itself. The umbrella's dependencies are all file:// paths
+      # in this repository, so this needs no network; charts that declare none
+      # skip it, exactly as the publish workflow's equivalent step does.
+      # Keyed on the tracked Chart.lock rather than parsing Chart.yaml, so this
+      # step needs no yq — which this job, unlike the publish workflow, does not
+      # install.
+      - name: Build chart dependencies
+        run: |
+          CHART_DIR="deploy/helm/${{ matrix.chart }}"
+          if [ -f "${CHART_DIR}/Chart.lock" ]; then
+            helm dependency build "$CHART_DIR"
+          else
+            echo "no dependencies declared"
+          fi
 
       - name: helm template (default values)
         run: |
@@ -332,10 +319,12 @@ jobs:
       # ports on both the Deployment and the Service — so a schema error in
       # them is invisible everywhere else.
       - name: helm template + kubeconform (standalone capability values)
-        if: matrix.chart == 'elitea-main'
+        if: matrix.chart == 'elitea'
         run: |
-          helm template ci-release deploy/helm/elitea-main \
-            -f deploy/helm/elitea-main/values-standalone.yaml \
+          helm template ci-release deploy/helm/elitea \
+            -f deploy/helm/elitea/values-standalone.yaml \
+            --set-string 'llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' \
+            --set-string 'llmGateway.egressPosture=public-unrestricted' \
             > /tmp/elitea-main-standalone.yaml
           kubeconform -strict -summary -verbose \
             -kubernetes-version 1.30.0 \

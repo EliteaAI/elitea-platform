@@ -1,0 +1,2202 @@
+# EliteA — the whole platform, one chart.
+#
+# There are no subcharts and no dependencies. Every component lives in
+# templates/<component>/ and is configured under its own key below, so a setting
+# is where you would look for it and there is exactly one file to read.
+#
+# The keys at the top are the ones MORE THAN ONE component must agree about.
+# Those are the settings that drifted while this was eight separate releases —
+# one chart defaulting REDIS_URL to "" and another to "redis:6379", two
+# different NATS URLs, the database secret named in four places. Stating them
+# once is most of the reason this chart exists.
+
+# ── What this chart does NOT create ─────────────────────────────────────────
+#
+# Checked against deploy/docker-compose.standalone-full.yml, the reference
+# pylon-free stack. Every service in it is now covered by this chart except the
+# ones below, which are deliberately the operator's:
+#
+#   PostgreSQL          `postgresql` names its secret. The operator's lifecycle
+#                       is not this application's — see that block.
+#   Redis, NATS         `redis` / `nats` name them. Commodity infrastructure.
+#   Object storage      An S3-compatible endpoint, configured under `main.env`.
+#   Ingress             The cluster's own edge. `worker.platformEdge` is NOT it:
+#                       that one is internal, has no route from any gateway, and
+#                       exists only because the worker refuses a plaintext
+#                       platform_origin.
+#
+# THE ARTIFACT BUCKET MUST EXIST BEFORE THE FIRST SYNC, and this one bites
+# early: elitea-main probes the object store at boot and REFUSES to start
+# without it —
+#
+#   object store readiness probe: storage/s3: stat object: ... HeadObject ...
+#
+# so the migration Job fails and the release aborts. The compose stack creates
+# it (`rustfs-bucket-init`); on a managed object store it is a console or
+# terraform step. Create the bucket named by `main.env.STORAGE_CONTAINER`.
+#
+# NOT REQUIRED, and deleted: pylon-indexer. Index ingest is served by the Go
+# runtime plane through the agent worker, on the same command stream and
+# consumer group as agent execution, so one worker serves both capabilities.
+# The Python indexer appears in no pylon-free stack. It does still run in the
+# LEGACY deploy/docker-compose.yml, which is why its image is still published.
+
+# ── Images ──────────────────────────────────────────────────────────────────
+#
+# ONE tag for the whole platform. Every first-party image is built, signed and
+# pushed by a single semantic-release run, so a per-component tag could only
+# ever express a mistake. The release stamps this field; the working tree keeps
+# the placeholder.
+#
+# Third-party images (the runtime Redis, the OTel collector) keep their own
+# deliberate pins under their component keys — a release number means nothing
+# to those registries.
+image:
+  tag: "latest"
+  # Applied to every component's pod spec.
+  pullSecrets: []
+
+# ── PostgreSQL ──────────────────────────────────────────────────────────────
+#
+# A SECRET REFERENCE, not a URL: the DSN carries a password, and a password in
+# a values file is a password in a ConfigMap. elitea-main, its migration, the
+# scheduler, the LLM gateway and the workload-session provisioner all read the
+# same database; before this block they named the secret separately.
+#
+# Externalized, with no embedded mode. CloudNativePG installs cluster-scoped
+# CRDs and a controller whose lifecycle is not this application's, so bundling
+# it would let `helm uninstall` reach the database. Run the operator and its
+# Cluster as their own release and point this at the secret it publishes.
+postgresql:
+  existingSecret: "elitea-main-db"
+  key: "database-url"
+
+# ── NATS ────────────────────────────────────────────────────────────────────
+#
+# The gateway's budget counters and the scheduler both dial it, and they MUST
+# name the same one: two components on two clusters of a shared counter enforce
+# nothing. Externalized — commodity infrastructure.
+#
+# `namespace` empty means this release's own namespace. Do not hardcode a
+# namespace here: a chart installable anywhere that names one silently couples
+# every other install to it.
+nats:
+  service: "elitea-nats"
+  namespace: ""
+  port: 4222
+
+# ── Redis (general purpose) ─────────────────────────────────────────────────
+#
+# Sessions, project SSE, scheduler coordination. Plaintext, and NOT the same
+# instance as the runtime dispatch bus under `worker`/`runtimeRedis` — that one
+# is mutually authenticated with an ACL user and a file-backed password, and
+# merging the two would be a security regression, not a simplification.
+#
+# A host/port pair rather than a string because both consumers want bare
+# host:port — the value goes straight to goredis Options.Addr, not to a URL
+# parser. The two charts previously defaulted it to "" and to "redis:6379",
+# neither of which resolves in a real namespace.
+redis:
+  service: "elitea-valkey"
+  namespace: ""
+  port: 6379
+
+# ── Database preparation ────────────────────────────────────────────────────
+#
+# The two things elitea-migrate cannot do for itself, because both need rights
+# the migrating role does not have: CREATE DATABASE for the agent-state store
+# the worker's checkpointer opens, and CREATE EXTENSION vector for the index
+# plane's unqualified DDL.
+#
+# The pylon-era schema is NOT here. elitea-migrate embeds 001_initial.sql and
+# applies it itself when the database does not carry it, so a fresh install
+# migrates from empty with no external step — and the objects end up owned by
+# the migrating role, which is what the histories need in order to ALTER them.
+dbInit:
+  enabled: true
+
+  # Needs CREATE DATABASE and CREATE EXTENSION, which the application role
+  # usually lacks — hence its own secret rather than reusing `postgresql`.
+  # Point it at the operator's superuser DSN for the PLATFORM database; the
+  # agent-state database is created beside it on the same server.
+  database:
+    existingSecret: "elitea-postgres-cluster-superuser"
+    key: "uri"
+
+  # The LangGraph checkpoint store the worker opens. A separate DATABASE, not a
+  # schema, because that is the connection-string shape the checkpointer uses.
+  # Without it the worker claims an execution, runs the agent, and then fails
+  # delivery with "The durable agent checkpoint store is unavailable" — it must
+  # match the database in the worker's agent-checkpoint-connection material.
+  agentStateDatabase: "elitea_v2_agentstate"
+
+  # The role that OWNS the agent-state database created below — normally the
+  # same role elitea-main connects as. Empty creates it owned by the admin.
+  appRole: "elitea_v2"
+
+  image:
+    repository: docker.io/library/postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+  backoffLimit: 3
+  waitAttempts: 60
+  waitIntervalSeconds: 5
+  runAsUser: 999
+  runAsGroup: 999
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+
+
+main:
+  # The API. Everything else is optional next to it.
+  enabled: true
+  # PROTOTYPE VALUES ONLY. This chart does not yet define NetworkPolicy,
+  # split database principals, or production secret delivery. An opt-in
+  # Ingress/HTTPRoute exists (ingress.enabled) but ships with no TLS secret
+  # or hostname configured — see ingress.tls / ingress.hosts below.
+  #
+  # CAPABILITY FLAGS (issue #382). cmd/elitea-main gates whole capabilities on
+  # environment variables, and this file sets every one of them. It did not
+  # before, so the same image served the pylon-free configuration on compose and
+  # served none of it on Kubernetes. Read the "Capability flags" block in the env
+  # map below, and the runtime: block further down.
+  #
+  # These defaults are for a DEFAULT install, which has no production
+  # authentication, so most capabilities ship off. values-standalone.yaml is the
+  # values file whose capability set matches the standalone compose stack.
+  # Prerequisites are checked while the chart renders, so a wrong combination
+  # fails `helm template` rather than the pod.
+  replicaCount: 2
+
+  # Pull secrets for a registry that needs credentials. ghcr.io/eliteaai/elitea-main
+  # is a PRIVATE package today — an anonymous pull is refused, unlike
+  # elitea-web's — so a cluster without an entry here cannot start this service
+  # at all: both the Deployment and the migration hook Job stop at
+  # ImagePullBackOff. A Kubernetes pull secret has no effect until something
+  # references it, and nothing in this chart did.
+  #
+  #   imagePullSecrets:
+  #     - name: ghcr-pull
+  imagePullSecrets: []
+
+  image:
+    repository: ghcr.io/eliteaai/elitea-main
+    # tag comes from the single top-level image.tag
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # Legacy-parity hardening (issue #241): the shipped image is already a
+  # distroless nonroot build, so runAsNonRoot/readOnlyRootFilesystem cost
+  # nothing here — no application-level temp-file writes were found (grepped
+  # for os.CreateTemp/os.TempDir); the container still gets a writable /tmp
+  # emptyDir (templates/deployment.yaml) for anything the Go runtime itself
+  # wants there.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  # Opt-in external reachability (issue #241; legacy parity with
+  # legacy/deploy/charts/charts/pylon's templates/httproute.yaml). Both the
+  # standard Ingress and the Gateway API HTTPRoute path are OFF by default —
+  # this chart cannot know your ingress controller / Gateway, hostnames, or
+  # TLS secret names. Set ingress.gatewayApi: true to render an HTTPRoute
+  # instead of a networking.k8s.io/v1 Ingress; the two are mutually exclusive.
+  ingress:
+    enabled: false
+    gatewayApi: false
+    className: ""
+    annotations: {}
+    path: /
+    pathType: Prefix
+    hosts: []
+    # TLS termination for the standard Ingress path only — ignored when
+    # gatewayApi: true (HTTPRoute TLS termination is the Gateway's own concern).
+    tls: []
+      # - secretName: elitea-main-tls
+      #   hosts:
+      #     - dev.elitea.ai
+    # Client-supplied identity headers stripped on the way in (#326). elitea-main
+    # treats X-Auth-Type + X-Auth-Id from a trusted-proxy source address as a
+    # finished identity, and in a cluster the whole pod network is typically
+    # inside trusted_proxy_cidrs — so anything reaching the Service with these
+    # headers set by the CALLER is an impersonation. Emptying this list re-opens
+    # that; extend it, do not shorten it.
+    #
+    # APPLIES TO THE HTTPRoute PATH ONLY (ingress.gatewayApi: true), where it
+    # renders a RequestHeaderModifier filter. A networking.k8s.io/v1 Ingress has
+    # no portable header-removal field, so on that path the strip MUST be
+    # configured on the ingress controller itself (ingress-nginx:
+    # `more_clear_input_headers` in a configuration-snippet, which many clusters
+    # disallow) or by fronting elitea-main with a Gateway. Do not assume the
+    # plain-Ingress path is covered by this chart.
+    stripIdentityHeaders:
+      - X-Auth-Type
+      - X-Auth-Id
+      - X-Auth-User-Id
+      - X-Auth-Reference
+      - X-Auth-Avatar
+      - X-Auth-Avatar-State
+      - X-Auth-Session-Id
+      - X-Auth-Session-Name
+      - X-Auth-Session-Endpoint
+      - X-Elitea-Identity-Signature
+      - X-Elitea-Project-Id
+      - X-Elitea-User-Id
+      - X-Elitea-Tenant-Id
+    # Only consulted when gatewayApi: true — the pre-existing Gateway this
+    # HTTPRoute attaches to (not created by this chart).
+    gateway:
+      name: ""
+      namespace: ""
+      sectionName: ""
+
+  # Optional file-based config mounts (issue #241), OFF by default. The chart
+  # does not build these ConfigMaps for you — point configMapName at a
+  # ConfigMap you provision out-of-band (kubectl create configmap / kustomize /
+  # a GitOps overlay) and the chart wires the volume + volumeMount + env var
+  # pointing at the mounted path. See internal/api/router.go (BRAND_PACK_PATH)
+  # and cmd/elitea-main/main.go:1119 (ELITEA_AUTH_CONFIG_FILE).
+  fileConfig:
+    authConfig:
+      enabled: false
+
+      # THE AUTHENTICATION CONFIGURATION ITSELF (issue #444).
+      #
+      # internal/authcomposition/material.go opens FIVE files, and their paths
+      # come from this document. Before issue #444 the document was always
+      # external — the chart knew a ConfigMap name and nothing more — so the
+      # chart could not know the five paths, rendered no volume for them, and
+      # every Kubernetes install of the runtime plane had to place the files by
+      # some other method.
+      #
+      # Put the document here and the chart:
+      #   * renders the ConfigMap for you;
+      #   * checks that all five paths sit in material.mountPath below, while it
+      #     renders, and names the offending path when one does not;
+      #   * mounts the material where the service opens it.
+      #
+      # Leave it empty and set configMapName instead to keep the document
+      # outside the chart. The chart then cannot see the five paths, and
+      # cmd/elitea-auth-material is the only gate: it reads the same document in
+      # the init container and stops the pod when the paths and the mount
+      # disagree.
+      #
+      # Set exactly one of document and configMapName.
+      #
+      # Read internal/authcomposition/config.go for the schema, and
+      # deploy/runtime/auth.form.yml for a complete example with comments.
+      document: {}
+
+      configMapName: ""
+      key: auth-config.json
+      mountPath: /etc/elitea/auth-config.json
+
+      # The five files that the document names: the Auth Redis password, the
+      # Auth Redis CA, the browser-attempt key, the PAT signing key and the Form
+      # users JSON.
+      #
+      # THE KEY NAMES ARE THE OPERATOR'S. Unlike the runtime material, the chart
+      # does not fix them: each name is the last component of a path in the
+      # document above. The Secret must carry one key for each of those names.
+      material:
+        # Where the service reads the five files. Every path in the document must
+        # sit in this directory, because one volume mount serves one directory.
+        #
+        # It must differ from runtime.material.mountPath. Each install container
+        # removes anything in its own directory that its own Secret does not
+        # carry, so one shared directory would make the two delete each other's
+        # files.
+        mountPath: /run/elitea-auth
+
+        # A Kubernetes Secret whose keys are the five file names, for example:
+        #
+        #   kubectl create secret generic elitea-main-auth-material \
+        #     --from-file=redis-auth-password --from-file=auth-redis-ca.crt ...
+        #
+        # The chart cannot mount that Secret straight at mountPath.
+        # internal/security/securefile refuses a path that resolves through a
+        # symlink and requires owner-only bits on private material, and a Secret
+        # volume gives neither: mounted whole it is a symlink farm, and mounted
+        # per file with subPath its files belong to root while this pod runs as
+        # nonroot. So the chart adds an init container, exactly as issue #404
+        # does for the runtime material. It runs the same image and the same
+        # user, copies each key into a memory-backed emptyDir at mode 0600, and
+        # reads every file back through securefile before it exits. A missing key
+        # stops the pod there, with a message.
+        secretName: ""
+
+        # The mode the kubelet gives each key of that Secret. The init container
+        # has to read them, and the kubelet owns them as root, so without a pod
+        # fsGroup the read bit for other users is the only one that reaches this
+        # pod's user. It applies inside this pod's own mount namespace only, and
+        # the copies that the service reads are owner-only. Set
+        # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+        secretDefaultMode: 0444
+
+        # The bound on the emptyDir that holds the copies.
+        sizeLimit: 8Mi
+
+        # An alternative source, for a deployment whose material is ALREADY real,
+        # owner-owned files at mountPath — a CSI secret driver, for example. It
+        # takes a Kubernetes volume specification without its `name`; the chart
+        # adds the name and mounts it read-only. Mutually exclusive with
+        # secretName, and no init container renders with it.
+        volume: {}
+    # The mTLS client material for the /llm hop (issue #463 left this half
+    # done: it moved LLM_GATEWAY_CLIENT_CERT / _KEY / LLM_GATEWAY_CA_FILE from
+    # secretKeyRef entries to file paths, and no volume ever served those paths).
+    #
+    # Nothing here goes through internal/security/securefile —
+    # internal/llmproxy/proxy.go calls tls.LoadX509KeyPair and os.ReadFile
+    # directly — so a plain Secret volume is enough and no init container copy is
+    # needed. That is the whole difference from runtime.material.
+    #
+    # `secretName` is the usual shape: a cert-manager Certificate issued INTO
+    # THIS namespace produces a Secret with tls.crt / tls.key / ca.crt, which are
+    # the default keys below. Point env.LLM_GATEWAY_CLIENT_CERT and its two
+    # siblings at mountPath/<key>.
+    #
+    # `volume` is the alternative for material that already exists as files (a
+    # CSI secret driver, for example) and is mutually exclusive with secretName.
+    llmGatewayClientMaterial:
+      enabled: false
+      secretName: ""
+      mountPath: /run/elitea-llm-gateway
+      # 0444, for the same reason runtime.material and the authentication
+      # material default to it: the kubelet owns these files as root, this pod
+      # runs as nonroot, and podSecurityContext sets no fsGroup — so the
+      # other-read bit is the only one that reaches the user that must read them.
+      #
+      # This shipped as 0440 and could not work: elitea-main reached
+      # "production runtime enabled" and then died with
+      #   compose llm gateway proxy: llmproxy: build mTLS transport:
+      #   load client cert: open /run/elitea-llm-gateway/tls.crt: permission denied
+      # on the first cluster that mounted it.
+      #
+      # Set podSecurityContext.fsGroup and lower this to 0440 to tighten it,
+      # exactly as the two blocks above document.
+      defaultMode: 0444
+      volume: {}
+    brandPack:
+      enabled: false
+      configMapName: ""
+      # BRAND_PACK_PATH is one pack file per deployment (branding package doc,
+      # internal/api/v2/branding/pack.go's LoadPack does os.ReadFile) — mounted
+      # via subPath, like authConfig above, not a whole-ConfigMap directory.
+      key: brand-pack.json
+      mountPath: /etc/elitea/brand-pack.json
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # Arbitrary env vars for the elitea-main container. The whole map is rendered
+  # into the ConfigMap (templates/configmap.yaml) and consumed via envFrom, so
+  # adding a key here is all that is needed to set a new env var.
+  env:
+    DATABASE_URL: ""
+
+    # Production keeps the provider-neutral Go object-store capability enabled
+    # and therefore fail-closed on missing storage configuration. Mixed Centry
+    # deployments explicitly set this to "false" while the current artifacts
+    # plugin remains authoritative.
+    ELITEA_ARTIFACTS_ENABLED: "true"
+
+    # --- Capability flags (issue #382) -----------------------------------------
+    # cmd/elitea-main gates whole capabilities on these names. Each one makes the
+    # composition root build a dependency, and the router registers a route group
+    # only when that dependency exists. Before issue #382 this chart set none of
+    # them, so a Kubernetes install served none of those route groups while the
+    # same image on compose served all of them.
+    #
+    # They ship "false" here, not "true". Two reasons, and both are about the
+    # DEFAULT install:
+    #   1. Most of them need production authentication, which this chart builds
+    #      only from fileConfig.authConfig (off by default). Shipping "true" with
+    #      authentication off would turn a working default install into a
+    #      CrashLoopBackOff.
+    #   2. An operator must choose a public project id and a Redis endpoint. The
+    #      chart cannot guess either.
+    #
+    # Read values-standalone.yaml for the values file that turns the set on. The
+    # chart checks every prerequisite at `helm template` time, so a wrong
+    # combination fails on the terminal, not in a restarting pod.
+
+    # The Configurations plane: eight configuration and model-catalogue routes,
+    # and the dependency that agent dispatch and index ingest both compose
+    # through. NEEDS production authentication.
+    ELITEA_CONFIGURATIONS_ENABLED: "false"
+
+    # A SECOND set of three configuration WRITE routes. Needs
+    # ELITEA_CONFIGURATIONS_ENABLED and runtime.enabled; this file has neither.
+    #
+    # The reason recorded here before — "demands the LiteLLM lifecycle facade" —
+    # is stale (#460). The lifecycle takes no LLM transport now. The flag stays
+    # off for two reasons that are true: the chart refuses it without the two
+    # prerequisites above, and it is not what makes a saved credential usable.
+    # The routes it composes WIN the path from the compatibility routes that
+    # every install serves — see
+    # TestConfigurationWriteRouteWinnerDependsOnTheMutationComposition — and they
+    # take a different request shape from the one apps/elitea-web sends. Turning
+    # this on is a cutover with its own web-client work.
+    ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
+
+    # The project-information route. NEEDS production authentication.
+    #
+    # With this off, the project-information path falls through to the prototype
+    # handler, which never counts teammates and always reports a null icon. The
+    # project screen reads exactly those two fields, so it shows zero teammates
+    # and no project icon — at 200, which is why nothing looked broken.
+    ELITEA_PROJECT_INFO_ENABLED: "false"
+
+    # The project whose configurations are PUBLIC and merge into every other
+    # project's option lookups. Read only when ELITEA_CONFIGURATIONS_ENABLED is
+    # on, and it must name a project that EXISTS: the model catalogue lists that
+    # project's configurations and propagates the failure, so a missing id fails
+    # every agent turn rather than yielding an empty public set.
+    #
+    # Set the SAME value in this file's `llmGateway:` block, where the
+    # key has the same name. The gateway reads the public project to serve the
+    # shared models the operator publishes (issue #316). The two services must
+    # name one project, or the gateway serves a different model set from the one
+    # the UI offers. Empty on BOTH sides leaves shared models unreachable: the
+    # picker offers them and the request then finds no credential.
+    ELITEA_AI_PROJECT_ID: ""
+
+    # Whether a project may define its own LLM credentials.
+    #
+    # STATED, never empty. This ConfigMap renders every key in this map, so an
+    # empty value here does not mean "unset" — the variable reaches the container
+    # PRESENT and empty. cmd/elitea-main/configurations_config.go:101 tests
+    # presence and then accepts only "true" or "false", so the empty value this
+    # chart used to ship stopped elitea-main at boot with
+    # "ELITEA_ALLOW_PROJECT_OWN_LLMS must be true or false" — and only once
+    # ELITEA_CONFIGURATIONS_ENABLED was on, which is why a default install never
+    # saw it and the first configured install died on it.
+    #
+    # "true" is the binary's own default (configurations_config.go:100), so this
+    # states the existing behaviour rather than changing it.
+    #
+    # Do NOT set ELITEA_LITELLM_ALLOW_PROJECT_OWN_LLMS: that is the old name, and
+    # cmd/elitea-main refuses to start when it is present, because silently
+    # ignoring it would fail open.
+    ELITEA_ALLOW_PROJECT_OWN_LLMS: "true"
+
+    # Path to the secret-vault master key. Empty means the vault key column holds
+    # the Fernet key itself; set means that column holds the key WRAPPED under
+    # this master key. The two readings are incompatible, so a deployment whose
+    # vault rows are unwrapped must leave this empty or every credential read
+    # fails, several layers away from anything that names a vault.
+    ELITEA_VAULT_MASTER_KEY_FILE: ""
+
+    # --- Capabilities deliberately left DARK -----------------------------------
+    # These two are exposed so the chart states them, and they must stay "false".
+    # Their routes answer a shape that the published contract and the generated
+    # client both reject, so turning either on breaks the web client. Issues #394
+    # and #395 track the contract work that must land FIRST. Change these only
+    # together with the contract and the regenerated client.
+    ELITEA_INDEX_TYPES_ENABLED: "false"
+    ELITEA_APPLICATION_SKILLS_ENABLED: "false"
+
+    # --- Project event stream (#152) -------------------------------------------
+    # Transport for GET /api/v2/events/prompt_lib/{projectID}. The router has a
+    # two-arm fallback and BOTH arms were unassigned in this chart, so the route
+    # was never registered and answered 404 — indistinguishable from a typo.
+    #
+    # Host:port of the general-purpose Redis, e.g. "elitea-redis-master:6379".
+    # This is NOT the runtime plane's Redis: that one is separate, mutually
+    # authenticated, and configured under runtime.redis below.
+    REDIS_URL: ""
+    REDIS_USERNAME: ""
+
+    # --- Admin console ---------------------------------------------------------
+    # Directory the admin single-page application is served from. The published
+    # image bakes this path and ships the bundle at it, so the value here matches
+    # the image and the standalone compose stack.
+    #
+    # CAUTION: an EMPTY value turns the admin console off, because the
+    # composition root builds the admin configuration only for a non-empty path —
+    # and this ConfigMap entry OVERRIDES the image's own setting. So clearing
+    # this key is a switch, not a no-op. Set it to "/nonexistent" when you deploy
+    # the `hybrid` image variant, which ships no admin bundle.
+    ADMIN_UI_STATIC_DIR: "/data/admin_ui/static/dist"
+
+    # --- circular-routing guard #1, upsert time (spec §2.6) --------------------
+    # Comma-separated list of the platform's OWN /llm origins, e.g.
+    #   "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+    # A credential whose api_base resolves to one of these is rejected at save
+    # time with SELF_REFERENTIAL_CREDENTIAL (the gateway's Account-side check is
+    # the request-time backstop).
+    # IMPORTANT: when BOTH this and DEPLOYMENT_URL below are empty, the resolved
+    # self-origin list is empty and guard #1 is INERT — every credential passes
+    # the check. elitea-main logs a one-time WARN at first use in that case.
+    ELITEA_SELF_LLM_ORIGINS: ""
+
+    # Public base URL of this deployment (e.g. "https://dev.elitea.ai"). When set,
+    # it is additionally treated as a self origin with "/llm" appended, so the
+    # common single-domain deployment is guarded with no extra configuration.
+    # Empty here leaves that convenience path off; see the note above — with
+    # ELITEA_SELF_LLM_ORIGINS also empty, §2.6 guard #1 is inert.
+    DEPLOYMENT_URL: ""
+
+    # --- OIDC email policy ------------------------------------------------------
+    # Set "true" to REFUSE one class of OIDC login. The login joins an existing
+    # account by email. The identity provider does not state
+    # `"email_verified": true`.
+    #
+    # The knob applies to ONE path: a provider subject with no link here that asks
+    # to adopt an account by its address (internal/api/v2/auth/oidc.go,
+    # joinAccountByEmail). A subject that already owns an account is never held to
+    # it, because the subject decides that account.
+    #
+    # Empty (the default) leaves the rule OFF, and that matches the code default.
+    # Many identity providers omit the claim, so "true" stops a working login on
+    # those. An explicit `"email_verified": false` is refused whatever this says.
+    # Turn it on when your provider always sends the claim.
+    OIDC_REQUIRE_EMAIL_VERIFIED: ""
+
+    # Filesystem path to a custom brand pack directory (internal/api/router.go);
+    # empty serves the built-in default brand pack. Discovered unwired while
+    # empirically verifying S17's env-drift gate — not itself a storage
+    # variable, but the same one-line fix as everything else in this map, and
+    # left unfixed it would have made the freshly-wired gate immediately red
+    # for an unrelated pre-existing reason.
+    BRAND_PACK_PATH: ""
+
+    # --- Object storage (S17; ADR-0016) -----------------------------------------
+    # STORAGE_BACKEND has no code default — ConfigFromEnv fails closed with no
+    # object store configured until this is explicitly one of "s3"/"azure"/"gcs".
+    # Never leave this empty in a real deployment; it is empty here only because
+    # the chart cannot know which backend an environment uses.
+    STORAGE_BACKEND: ""
+    # Physical bucket/container name. Required by ConfigFromEnv for every backend.
+    STORAGE_CONTAINER: ""
+    # Optional key prefix under which every object this deployment writes is
+    # scoped (multi-environment sharing of one bucket/container).
+    STORAGE_KEY_PREFIX: ""
+    # S3-only. Leave S3_ENDPOINT_URL empty for real AWS S3; set it for an
+    # S3-compatible endpoint (RustFS, MinIO, etc.). S3_ACCESS_KEY/S3_SECRET_KEY
+    # are NOT here — see the secrets: block below.
+    S3_ENDPOINT_URL: ""
+    S3_REGION: ""
+    S3_FORCE_PATH_STYLE: ""
+    # Azure-only. AZURE_STORAGE_KEY is NOT here — see the secrets: block below;
+    # leaving it unset (empty string, the Secret's `optional: true`) makes the
+    # backend use workload identity via serviceAccount.annotations instead of a
+    # static shared key.
+    AZURE_STORAGE_ACCOUNT: ""
+    AZURE_STORAGE_ENDPOINT: ""
+    # GCS-only. Leave empty for real GCS with workload identity (the normal
+    # production path — GOOGLE_APPLICATION_CREDENTIALS is deliberately not
+    # wired here; see env-drift-allowlist.txt). Set for an emulator endpoint.
+    GCS_ENDPOINT: ""
+    # Per-object upload size cap (bytes). Empty means "no override" — the
+    # handler falls back to its own default (S12).
+    ARTIFACT_MAX_OBJECT_BYTES: ""
+    # Chat attachment bucket retention, in days (S20a). Empty means "no
+    # override" — the handler falls back to its own default (365 days).
+    ARTIFACT_ATTACHMENT_RETENTION_DAYS: ""
+
+    # --- LLM gateway proxy (BF0.9c; issue #463) ---------------------------------
+    # URL of the elitea-llm-gateway service. Empty composes no GatewayProxy, and
+    # the /llm path then answers 503 llm_gateway_not_configured.
+    #
+    # WHY THERE IS NO DEFAULT VALUE HERE, and why that is not the old defect.
+    #
+    # The old defect was that an empty value made /llm answer 404, which is the
+    # same answer a misspelt path gets. That is fixed in the CODE, not here:
+    # internal/api/router.go now registers the path and answers 503 with the code
+    # llm_gateway_not_configured and the name of this variable. So the empty
+    # value is now a stated posture instead of a silent one.
+    #
+    # A default URL cannot be correct, and would be worse than the empty value:
+    #   1. internal/llmproxy/proxy.go ALWAYS builds an mTLS transport. With no
+    #      readable client certificate, tls.LoadX509KeyPair fails, llmproxy.New
+    #      returns an error, and cmd/elitea-main turns that into a FATAL boot
+    #      error. A default URL with no certificates is a crash loop, not a
+    #      working /llm path.
+    #   2. The certificates arrive through
+    #      fileConfig.llmGatewayClientMaterial above, which mounts a Secret at
+    #      the directory these three paths live in. That Secret must exist in
+    #      THIS namespace: the gateway chart's cert-manager Certificate issues
+    #      one into `elitea-gateway`, and a Secret is namespace-scoped, so a
+    #      split-namespace install needs the second Certificate or the
+    #      replication described in the "Cross-namespace Secrets" section of
+    #      deploy/README.md.
+    # So the chart refuses the half-configured combination instead: set this URL
+    # and the three file paths below together, or set none of them.
+    # elitea-main.validateLLMGateway in _helpers.tpl performs that check at
+    # `helm template` time, so the terminal that ran the command shows the reason.
+    #
+    # Cross-namespace: this must be an FQDN when the gateway is in another
+    # namespace, e.g.
+    #   https://elitea-llm-gateway-svc.elitea-gateway.svc.cluster.local:8083
+    LLM_GATEWAY_URL: ""
+
+    # The mTLS material for the hop above. These three are FILE PATHS, not the
+    # certificate text: internal/llmproxy/proxy.go passes them to
+    # tls.LoadX509KeyPair and os.ReadFile.
+    #
+    # They were previously declared in the `secrets:` block as secretKeyRef
+    # entries. That shape cannot work: a secretKeyRef sets the variable to the
+    # CONTENT of the Secret key, so the process then tried to open a file whose
+    # name was a PEM block. Mount the material as a volume and put the paths
+    # here.
+    LLM_GATEWAY_CLIENT_CERT: ""
+    LLM_GATEWAY_CLIENT_KEY: ""
+    LLM_GATEWAY_CA_FILE: ""
+
+    # --- Tracing / observability (issue #250) -----------------------------------
+    # OTLP/HTTP collector base URL. Read by both libs/go/observability (elitea-main's
+    # own span export) and internal/api/v2/tracing's otlp proxy target — one var
+    # controls both paths. Empty defers to the OTLP exporter's own env handling
+    # (effectively localhost, i.e. no-op in a cluster) and to tracing's own
+    # "http://otel-collector:4318" default, which only resolves if a service by
+    # that name exists in this namespace (see the otel-collector chart/values).
+    OTEL_EXPORTER_OTLP_ENDPOINT: ""
+    # Standard OTel SDK kill switch (https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
+    # Set to "true" to disable span export and make the tracing ingest routes
+    # answer "disabled" instead of forwarding — e.g. an environment with no
+    # collector deployed at all.
+    OTEL_SDK_DISABLED: ""
+
+  # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
+  # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map
+  # above — mirrors this file's `llmGateway:` block `secrets:`
+  # block. Each entry maps the ENV VAR NAME the binary reads -> the Secret
+  # name + key. `optional: true` lets the pod start when the Secret or key is
+  # absent — correct here because only one storage backend is active per
+  # STORAGE_BACKEND value, so e.g. AZURE_STORAGE_KEY is simply irrelevant
+  # when STORAGE_BACKEND=s3, and S3/Azure can each run credential-less via
+  # workload identity (serviceAccount.annotations) instead of a static key.
+  #
+  # CAUTION (found by adversarial review, S17): "credential-less" here does
+  # NOT mean "fails until configured" — it means the Go backend falls through
+  # to the cloud SDK's own ambient-credential chain (AWS's LoadDefaultConfig /
+  # Azure's NewDefaultAzureCredential / GCP's Application Default Credentials;
+  # see internal/infra/storage/{s3,azure,gcs}/backend.go). On a cluster whose
+  # NODES already carry some IAM role/managed identity with storage access
+  # (common when nodes also run logging/monitoring DaemonSets), an operator
+  # who forgets BOTH the Secret above AND serviceAccount.annotations gets a
+  # pod that starts, passes objectStoreReadinessProbe, and silently runs
+  # under whatever ambient node identity it happened to inherit — not the
+  # clear startup failure an operator would expect and could quickly
+  # diagnose. Set exactly one of (this Secret) or (serviceAccount.annotations)
+  # per backend deliberately; do not rely on "it started, so it must be
+  # configured right."
+  #
+  # Provision the referenced Secret out-of-band (kubectl create secret /
+  # external-secrets operator / sealed-secrets), e.g.:
+  #   kubectl create secret generic elitea-main-storage-secrets \
+  #     --from-literal=s3-access-key=... --from-literal=s3-secret-key=... \
+  #     --from-literal=azure-storage-key=...
+  secrets:
+    S3_ACCESS_KEY:
+      secretName: elitea-main-storage-secrets
+      key: s3-access-key
+      optional: true
+    S3_SECRET_KEY:
+      secretName: elitea-main-storage-secrets
+      key: s3-secret-key
+      optional: true
+    AZURE_STORAGE_KEY:
+      secretName: elitea-main-storage-secrets
+      key: azure-storage-key
+      optional: true
+    # Issue #11: the gateway now REFUSES TO START without this secret, and it must
+    # hold the SAME value on both sides — the edge signs the X-Elitea-* identity
+    # headers the gateway verifies. Leaving the edge unsigned while the gateway
+    # verifies makes every /llm request fail verification, so this side is
+    # non-optional too. Provision before install/upgrade.
+    GATEWAY_IDENTITY_SECRET:
+      secretName: elitea-main-llm-gateway-secrets
+      key: gateway-identity-secret
+      optional: false
+    # LLM_GATEWAY_CLIENT_CERT, LLM_GATEWAY_CLIENT_KEY and LLM_GATEWAY_CA_FILE were
+    # here as secretKeyRef entries. They are removed (issue #463), because that
+    # shape cannot work: internal/llmproxy/proxy.go reads all three as FILE PATHS,
+    # and a secretKeyRef sets the variable to the CONTENT of the Secret key. The
+    # pod then tried to open a file whose name was a PEM block. They are now plain
+    # path entries in the `env:` map above; mount the material as a volume.
+    # Password for the general-purpose Redis named by env.REDIS_URL above — the
+    # project event stream's transport (issue #382). Optional, because a Redis
+    # with no authentication needs no password and the pod must still start.
+    REDIS_PASSWORD:
+      secretName: elitea-main-redis-secrets
+      key: redis-password
+      optional: true
+
+  # --- Runtime plane (issue #382) ----------------------------------------------
+  # Agent execution, the execution-events stream, index ingest, index scheduling
+  # and configuration validation. This is the biggest capability the chart left
+  # dark, and it is the one that decides whether a Kubernetes install can run
+  # without pylon at all.
+  #
+  # ALL-OR-NOTHING. internal/runtimecomposition/config.go builds this
+  # configuration with a `required()` helper: every name must be present and
+  # non-empty, or the process exits at boot. It also REFUSES a setting whose
+  # dispatch plane is not explicitly enabled. So there is no "turn on half of
+  # it". The chart checks the whole set at `helm template` time and names the
+  # missing field, so a partial values file fails on the terminal.
+  #
+  # PREREQUISITE: production authentication. cmd/elitea-main refuses to compose
+  # the runtime without a principal validator and a forwarded-identity verifier,
+  # and this chart builds both only from fileConfig.authConfig. Set
+  # fileConfig.authConfig.enabled=true as well.
+  #
+  # WHAT STILL BLOCKS A KUBERNETES INSTALL — read this before you set
+  # enabled: true. The runtime reads its keys, passwords and certificates through
+  # internal/security/securefile, which applies three rules:
+  #   1. The path must be canonical and its final component must NOT be a
+  #      symlink.
+  #   2. Private material (command-signing-key.pem, redis-producer-password and
+  #      the three server .key files) must carry OWNER BITS ONLY — at most 0600.
+  #   3. The file must be readable by the process owner.
+  # A plain Kubernetes `secret:` volume breaks rule 1: it is a symlink farm, so
+  # every path resolves through a ..data/ symlink and securefile refuses it. A
+  # per-file `subPath` mount fixes rule 1 and then breaks rules 2 and 3 together:
+  # the file is owned by root, this pod runs as nonroot, and the only modes that
+  # let a nonroot process read a root-owned file (0440 with fsGroup, or 0444)
+  # carry group or other bits that rule 2 rejects.
+  #
+  # So the runtime plane needs a material source that writes REAL files owned by
+  # the pod's own user with mode 0600 — a CSI driver or a sidecar that
+  # materialises them into an emptyDir. That mechanism is issue #382's declared
+  # out-of-scope ("secret delivery"), so the chart does not choose one for you:
+  # runtime.material.volume takes the volume specification and the chart wires
+  # every file path under runtime.material.mountPath.
+  #
+  # deploy/scripts/gen-runtime-certs.sh mints the material and its FILE NAMES are
+  # the contract — the chart derives every path from them, so whatever supplies
+  # the volume must present exactly these names:
+  #   runtime-ca.crt                 command-signing-key.pem
+  #   control-server.crt             command-signing-keyring.json
+  #   control-server.key             redis-producer-password
+  #   output-server.crt              content-server.crt
+  #   output-server.key              content-server.key
+  runtime:
+    # OFF by default, because turning it on requires production Form
+    # authentication, and that needs `fileConfig.authConfig.document.public_origin`
+    # — an address only the operator knows, which no chart can default.
+    #
+    # It cannot be turned on ALONE, and it cannot be left off while the worker
+    # runs. The worker dials control/output/content on elitea-main, so either
+    # half without the other admits every chat turn over HTTP and then answers
+    # none of it — silently, with nothing in any log. templates/guards.yaml
+    # refuses that combination at render time rather than letting it install.
+    #
+    # To turn chat on, set all three together:
+    #   main.runtime.enabled, worker.enabled, runtimeRedis.enabled
+    # plus fileConfig.authConfig (see below).
+    enabled: false
+
+    # The base plane: configuration validation. Always required when enabled.
+    # The stream name must differ from every dispatch stream below.
+    commandStream: ""
+    maxOutstanding: 64
+    streamMaxEntries: 1024
+
+    # The four agent turn routes — the chat send path.
+    agentExecutionDispatch:
+      enabled: false
+      commandStream: ""
+      consumerGroup: ""
+      streamMaxEntries: 1024
+      # An https ORIGIN, with no path, query or fragment. elitea-main calls
+      # itself on it for the next-input-suggestion policy. Cleartext fails that
+      # one call and degrades a suggestion; it does not break the send path.
+      currentMainBaseUrl: ""
+
+    # Index start, index cancel and index metadata. NEEDS
+    # env.ELITEA_CONFIGURATIONS_ENABLED="true": the handlers compose through the
+    # Configurations dependency, and the embedding binding resolves from the same
+    # configuration rows.
+    #
+    # Giving this the SAME commandStream AND the SAME consumerGroup as
+    # agentExecutionDispatch is supported, and it is what the standalone compose
+    # stack does: one worker then serves both capabilities, because the worker
+    # dispatches on the command's capability id rather than on its stream. Doing
+    # that costs no second worker, no second consumer group and no extra Redis
+    # ACL grant. Sharing the stream with a DIFFERENT group is refused.
+    indexIngestDispatch:
+      # The SAME stream and group as agentExecutionDispatch on purpose: the
+      # worker dispatches on the command's capability id, not on its stream, so
+      # one worker serves both and this costs no second consumer group and no
+      # extra Redis ACL grant.
+      enabled: false
+      commandStream: ""
+      consumerGroup: ""
+      streamMaxEntries: 1024
+
+    # The index schedule write and delete routes. NEEDS indexIngestDispatch.
+    indexScheduling:
+      enabled: false
+      # Lowercase letters, digits, dot, underscore and hyphen; it must start with
+      # a letter or a digit.
+      instanceId: ""
+
+    # The runtime's OWN Redis — mutually authenticated, and separate from the
+    # general-purpose Redis in env.REDIS_URL above.
+    redis:
+      # Must be a rediss:// URL that carries an ACL USERNAME and NO password, and
+      # it must select database zero explicitly, e.g.
+      #   "rediss://producer@elitea-runtime-redis:6380/0"
+      # The password comes from the redis-producer-password file in the material
+      # volume, never from the URL.
+      url: ""
+      poolSize: 8
+
+    # Must equal the key id inside command-signing-keyring.json. The composition
+    # cross-checks the two and refuses to start on a mismatch.
+    signingKeyId: ""
+
+    # Three listeners, three DISTINCT addresses. The agent worker dials all three
+    # on this Service, so the server certificates must carry the Service name.
+    # The chart opens the ports on the container and the Service when the runtime
+    # is enabled.
+    listeners:
+      controlAddress: ":9443"
+      outputAddress: ":9444"
+      contentAddress: ":9445"
+
+    # Where the runtime keys, passwords and certificates come from, and where the
+    # service reads them.
+    #
+    # THE KEY NAMES ARE THE CONTRACT. The chart derives every ELITEA_RUNTIME_*
+    # file path from mountPath plus one of these names, and they are the names
+    # deploy/scripts/gen-runtime-certs.sh writes:
+    #
+    #   runtime-ca.crt                the trust root: the Redis CA, and the
+    #                                 client CA of all three listeners
+    #   command-signing-key.pem       Ed25519 PKCS#8, signs dispatch envelopes
+    #   command-signing-keyring.json  its public half, keyed by signingKeyId
+    #   redis-producer-password       the runtime Redis ACL password
+    #   control-server.crt / .key     the control listener keypair
+    #   output-server.crt / .key      the output listener keypair
+    #   content-server.crt / .key     the content listener keypair
+    #
+    # The server certificates must carry the Service name, because the agent
+    # worker dials all three listeners on this Service.
+    material:
+      mountPath: /run/elitea-runtime
+
+      # A Kubernetes Secret whose keys are the names above. This is the supported
+      # source, and it is how every other secret in this platform arrives:
+      #
+      #   kubectl create secret generic elitea-runtime-material \
+      #     --from-file=runtime-ca.crt --from-file=command-signing-key.pem ...
+      #
+      # The chart cannot mount that Secret straight at mountPath.
+      # internal/security/securefile refuses a path that resolves through a
+      # symlink and requires owner-only bits on private material, and a Secret
+      # volume gives neither: mounted whole it is a symlink farm, and mounted per
+      # file with subPath its files belong to root while this pod runs as
+      # nonroot. So the chart adds an init container (issue #404). It runs the
+      # same image and the same user, copies each key into a memory-backed
+      # emptyDir at mode 0600, and reads every file back through securefile
+      # before it exits. A missing key stops the pod there, with a message.
+      secretName: ""
+
+      # The mode the kubelet gives each key of that Secret. The init container
+      # has to read them, and the kubelet owns them as root, so without a pod
+      # fsGroup the read bit for other users is the only one that reaches this
+      # pod's user. It applies inside this pod's own mount namespace only, and
+      # the copies that the service reads are owner-only. Set
+      # podSecurityContext.fsGroup and lower this to 0440 to tighten it.
+      secretDefaultMode: 0444
+
+      # The bound on the emptyDir that holds the copies. The whole material is a
+      # few kilobytes; the rest is headroom for a large CA bundle.
+      sizeLimit: 8Mi
+
+      # An alternative source, for a deployment whose material is ALREADY real,
+      # owner-owned files at mountPath — a CSI secret driver, for example. It
+      # takes a Kubernetes volume specification without its `name`; the chart
+      # adds the name and mounts it read-only. Mutually exclusive with
+      # secretName, and no init container renders with it.
+      #
+      #   volume:
+      #     csi:
+      #       driver: secrets-store.csi.k8s.io
+      #       readOnly: true
+      #       volumeAttributes:
+      #         secretProviderClass: elitea-runtime-material
+      volume: {}
+
+  # Kubernetes execution path for the versioned migration corpus
+  # (services/elitea-main/migrations/{shared,tenant}, applied by the separate
+  # cmd/elitea-migrate binary already built into this chart's image) — distinct
+  # from the dev-only boot bootstrap (bootstrapLegacySchema /
+  # ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA in cmd/elitea-main, which this does NOT
+  # touch or replace). Runs as a pre-install/pre-upgrade Helm hook Job so it
+  # completes — or the release aborts — before any Deployment pods roll; see
+  # templates/migrate-job.yaml for the full ordering-guarantee explanation.
+  migrations:
+    enabled: true
+    # Empty means the namespace default ServiceAccount. The chart's own
+    # ServiceAccount cannot be used here: this Job is a pre-install hook and that
+    # object is created later in the release, so naming it makes a FIRST install
+    # fail with "error looking up service account ... not found". Set this only
+    # when the database credential comes from a bound identity (cloud IAM auth),
+    # and provision that ServiceAccount outside this chart so it exists when the
+    # hook runs.
+    serviceAccountName: ""
+    # -all-tenants mirrors deploy/centry-hybrid/pov-compose.yml's elitea-migrate
+    # invocation: apply the shared history, then the tenant history for every
+    # existing legacy project. Both cmd/elitea-migrate flags are idempotent —
+    # already-applied migration files are skipped — so re-running on every
+    # upgrade is safe.
+    args:
+      - -all-tenants
+    image:
+      # Empty means "use .Values.image.repository/.tag" (the Deployment's own
+      # image) — the normal case, since cmd/elitea-migrate ships in that same
+      # image. Only set these to pin the migration step to a different tag.
+      repository: ""
+      tag: ""
+    backoffLimit: 3
+    activeDeadlineSeconds: 600
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+  probes:
+    startup:
+      path: /startupz
+      initialDelaySeconds: 2
+      periodSeconds: 3
+      failureThreshold: 10
+    liveness:
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      failureThreshold: 2
+
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    targetMemoryUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    # IRSA (eks.amazonaws.com/role-arn) or Azure Workload Identity
+    # (azure.workload.identity/client-id) go here (S17) — credential-less
+    # access to the object store backend, an alternative to the static keys
+    # in the secrets: block above. Empty by default: static keys remain the
+    # baseline until an environment opts into workload identity.
+    annotations: {}
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+web:
+  # The browser app.
+  enabled: true
+  # elitea-web: the SPA image (apps/elitea-web/Containerfile) — nginx serving
+  # pre-built static assets under /app/, with config.js written at container start
+  # from the VITE_* env vars below (apps/elitea-web/docker-entrypoint.sh).
+  #
+  # Stateless, so replicas are free and a rollout is safe at any time.
+  replicaCount: 2
+
+  image:
+    # Published by .github/workflows/publish.yml (matrix entry `elitea-web`,
+    # context `.`, dockerfile apps/elitea-web/Containerfile). Issue #240 was
+    # filed while that entry did not exist yet; it does now, so this repository
+    # is real. Pin `tag` to a release in production — `latest` plus
+    # IfNotPresent means a node that already cached an older `latest` layer
+    # keeps serving it.
+    repository: ghcr.io/eliteaai/elitea-web
+    # tag comes from the single top-level image.tag
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    # The container's nginx listens on 80 (apps/elitea-web/nginx/spa.conf).
+    port: 80
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: "200m"
+      memory: 128Mi
+
+  # nginx treats SIGTERM as *fast* shutdown — it aborts in-flight connections
+  # rather than draining them (graceful is SIGQUIT). The grace period alone
+  # therefore drains nothing; the preStop hook below is what does.
+  terminationGracePeriodSeconds: 30
+
+  # preStop drain. Kubernetes runs this BEFORE SIGTERM, so:
+  #   1. the sleep gives kube-proxy/ingress time to remove this pod from the
+  #      endpoints list (removal is asynchronous — with maxUnavailable: 0 a
+  #      rolling upgrade otherwise resets requests still being routed here,
+  #      surfacing as intermittent 502s on index.html/asset fetches);
+  #   2. `nginx -s quit` is the GRACEFUL stop, finishing in-flight requests.
+  # The container normally exits during the hook, so SIGTERM's fast shutdown is
+  # never reached. Must stay well under terminationGracePeriodSeconds above.
+  # The nginx:1.27-alpine runtime has a shell, unlike the gateway's distroless
+  # image where the equivalent hook has to stay disabled.
+  preStop:
+    enabled: true
+    command: ["/bin/sh", "-c", "sleep 5 && nginx -s quit"]
+
+  # Runtime SPA configuration. docker-entrypoint.sh honours EXACTLY these five
+  # keys and writes them into window.elitea_ui_config; anything else added here
+  # reaches the container's environment but is never emitted to the browser.
+  #
+  # The two dev-mode auth keys from the old elitea-ui chain are deliberately
+  # absent (contract C7b / defect D10): a static bearer credential must never
+  # land in a world-readable config.js.
+  env:
+    # Path the SPA calls the API on. Relative, so it is resolved against the
+    # origin the browser loaded the app from — i.e. this assumes an ingress or
+    # gateway fronts both this Service and elitea-main on one host. If they are
+    # on different origins, set an absolute URL AND arrange CORS on elitea-main.
+    VITE_SERVER_URL: "/api/v2"
+    # Must stay in step with the nginx location blocks in the image, which are
+    # hardcoded to /app/. Changing this alone moves the SPA's router base without
+    # moving what nginx serves, producing 404s on every deep link.
+    VITE_BASE_URI: "/app/"
+    VITE_SOCKET_SERVER: ""
+    VITE_SOCKET_PATH: "/socket.io"
+    # REQUIRED, and empty is not a safe placeholder here. The SPA decides "is
+    # this the public project?" by string comparison against this value
+    # (entities/project/model/selectors.ts, routes/-guards/publicProject.ts), so
+    # "" makes every such check false: the public-project route guard never
+    # matches, `include_shared` inverts, public agent listing goes dark — with
+    # no error and no failing probe. "1" is what every other reference
+    # deployment uses (deploy/docker-compose.yml's elitea-ui). Override it if
+    # this deployment's public project has a different id.
+    VITE_PUBLIC_PROJECT_ID: "1"
+
+  probes:
+    # There is no /healthz in this image and no `location /` in spa.conf, so the
+    # container root returns 404 — probing "/" would fail a perfectly healthy
+    # pod. /app/index.html is served by the SPA-shell location block.
+    liveness:
+      path: /app/index.html
+      periodSeconds: 20
+      failureThreshold: 3
+    readiness:
+      path: /app/index.html
+      periodSeconds: 10
+      failureThreshold: 3
+
+  # CPU-based HPA is meaningful here (unlike the gateway's I/O-bound streaming or
+  # the scheduler's serialised workers): serving static assets is CPU/network
+  # work that scales linearly with replicas. Off by default so a cluster without
+  # metrics-server does not get a permanently-degraded HPA object.
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+scheduler:
+  # Scheduled runs and price sync.
+  enabled: true
+  # elitea-scheduler — headless worker. There is no ingress and (by default) no
+  # Service: nothing calls in, the process polls and consumes.
+  #
+  # READ services/elitea-scheduler/RETIREMENT.md AND THIS CHART'S README BEFORE
+  # INSTALLING. In short: this binary carries THREE independent responsibilities
+  # and the two that matter are not the scheduler loop —
+  #   1. the legacy centry.schedule poller (NOT the owner of product schedule
+  #      occurrences; elitea-main's scheduling kernel is). It starts
+  #      UNCONDITIONALLY — there is no env flag to turn it off (main.go always
+  #      calls sched.Run). Which jobs it acts on is decided by DATA: the enabled
+  #      flag on centry.schedule rows. Installing this chart against a database
+  #      whose rows for a job elitea-main also registers are still enabled gives
+  #      you TWO CLOCKS for that job, which RETIREMENT.md forbids.
+  #   2. the price-catalog sync worker (PRICE_SYNC_ENABLED, off by default);
+  #   3. the budget write-back consumer (BUDGET_WRITEBACK_ENABLED, off by
+  #      default) that drains GATEWAY_BUDGET_DELTAS into
+  #      gateway.llm_budget_accumulators.
+  # (2) and (3) are the reason the image cannot simply be deleted; they have no
+  # relocation decision yet.
+
+  # Single replica. The poller's mutual exclusion is a Redis tick lock, so extra
+  # replicas are not incorrect, but they buy nothing: every tick is executed once
+  # regardless, and the price-sync/write-back workers are likewise
+  # single-consumer shaped. Scale out only with a specific measured reason.
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/eliteaai/elitea-scheduler
+    # tag comes from the single top-level image.tag
+    pullPolicy: IfNotPresent
+
+  # Recreate, not RollingUpdate: two generations overlapping during a rollout
+  # would both hold pollers contending for the same Redis tick lock and the same
+  # durable NATS consumer. A few seconds of no scheduler is cheaper than that.
+  strategy:
+    type: Recreate
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: "500m"
+      memory: 256Mi
+
+  # The scheduler's shutdown path cancels the run context and closes the pool;
+  # there are no long-lived client streams to drain, unlike the gateway.
+  terminationGracePeriodSeconds: 30
+
+  # Rendered into the ConfigMap and consumed via envFrom, mirroring
+  # this chart's `main:` block. Names and defaults are
+  # services/elitea-scheduler/internal/config/config.go; the values below match
+  # deploy/docker-compose.yml's elitea-scheduler service where it sets them.
+  env:
+    # Empty means the binary's own default (localhost) — never correct in a
+    # cluster. Set this.
+    DATABASE_URL: ""
+    # host:port, NOT a redis:// URL — the value is passed straight to
+    # goredis.Options.Addr.
+    # Empty means the top-level `redis` block, resolved in this namespace.
+    REDIS_URL: ""
+    RPC_CHANNEL: "elitea_rpc"
+    # Must match .Values.healthPort below; the chart does not derive one from the
+    # other so that an operator changing one and not the other fails loudly at
+    # probe time rather than silently listening on the wrong port.
+    HTTP_ADDR: ":8081"
+
+    # Price-catalog sync (design §8.8). ON by default since issue #464.
+    #
+    # It was off, and it was off in the code too, so nothing ever filled
+    # gateway.gateway_models. With no prices the cost calculator values every call
+    # at zero. A budget whose spend is always zero never reaches its soft alert
+    # and never reaches its hard limit, so the whole budget feature was inert
+    # rather than merely unreported.
+    #
+    # The old reason for "off" was that enabling it against a database without
+    # gateway.gateway_models does nothing useful. That table is created by
+    # services/elitea-main/migrations/shared/0067_gateway_budget_schema.sql, which
+    # this chart's elitea-main sibling applies as a pre-install hook, so the table
+    # is present in every deployment that has the budget routes at all.
+    #
+    # PRICE_SYNC_SEED below carries a built-in catalogue, so this needs NO network
+    # access to be useful. PRICE_SYNC_LITELLM adds the public catalogue on top; a
+    # deployment with no egress can set that one to "false" and keep the seed.
+    PRICE_SYNC_ENABLED: "true"
+    PRICE_SYNC_INTERVAL: "24h"
+    PRICE_SYNC_LITELLM: "true"
+    PRICE_SYNC_SEED: "true"
+    PRICE_SYNC_LITELLM_URL: ""
+
+    # Budget write-back consumer (design §8.6). Requires BOTH the flag AND
+    # GATEWAY_NATS_URL; with either unset the consumer never starts.
+    #
+    # CROSS-NAMESPACE: NATS is installed by deploy/helm/nats into the
+    # `elitea-gateway` namespace (deploy/argocd/applications/nats.yaml) while this
+    # chart's ArgoCD Application targets `elitea`. The short name `nats` does NOT
+    # resolve across namespaces — use the FQDN below if you enable this.
+    # ON by default since issue #464, with the FQDN filled in.
+    #
+    # WHY THIS IS NOT AN OPTIONAL EXTRA. gateway.llm_budget_accumulators is not
+    # only the table the budget screens read. The gateway's fail-mode FSM reads it
+    # as the Postgres DURABLE TIER: internal/failmode/store.go selects acc_found
+    # and age_seconds from it, and the shipped LLM_BUDGET_NATS_FAIL_MODE is
+    # "tiered_hybrid", which decides whether to allow or refuse a call from that
+    # snapshot's freshness while NATS is down.
+    #
+    # With no consumer, the ONLY writer of that table is the gateway's own outage
+    # UPSERT. So the durable tier was filled during outages and never during
+    # healthy traffic — exactly backwards. The snapshot the degraded path consults
+    # was permanently absent or stale, and every budget route reported no data.
+    #
+    # If you turn this off, turn it off knowingly: the budget screens then report
+    # spend_available=false, which is the honest "no figure was collected" signal
+    # rather than a zero.
+    BUDGET_WRITEBACK_ENABLED: "true"
+    # CROSS-NAMESPACE, so this is an FQDN and not the short name `nats`. NATS is
+    # installed by deploy/helm/nats into `elitea-gateway`
+    # (deploy/argocd/applications/nats.yaml) while this chart's Application
+    # targets `elitea`. Change it if your topology differs.
+    #
+    # A NATS that does not answer is NOT fatal: cmd/elitea-scheduler logs
+    # "budget write-back: NATS connect failed; consumer disabled" and keeps
+    # running its other jobs. So this default degrades loudly instead of
+    # preventing a deployment that has no NATS from starting.
+    # Empty means the top-level `nats` block, resolved in this namespace.
+    GATEWAY_NATS_URL: ""
+    BUDGET_WRITEBACK_BATCH_SIZE: "500"
+    BUDGET_WRITEBACK_ACK_WAIT: "30s"
+    BUDGET_WRITEBACK_MAX_DELIVER: "10"
+
+    # Tracing (issue #250): same OTLP collector endpoint and kill switch as
+    # the `main.env` map — see that chart's values.yaml for the
+    # full rationale. Read by libs/go/observability.
+    OTEL_EXPORTER_OTLP_ENDPOINT: ""
+    OTEL_SDK_DISABLED: ""
+
+  # Sensitive vars from Kubernetes Secrets (rendered as valueFrom.secretKeyRef),
+  # never plaintext in the ConfigMap above — same shape as
+  # the `llmGateway:` block and this chart's `main:` block.
+  #
+  # RPC_HMAC_KEY signs the Pylon/Arbiter RPC payloads the poller publishes on
+  # RPC_CHANNEL. `optional: true` because the binary tolerates an empty key (it
+  # then publishes unsigned) — which is exactly why you should set it: an absent
+  # Secret does not fail, it downgrades.
+  #
+  #   kubectl create secret generic elitea-scheduler-secrets \
+  #     --from-literal=rpc-hmac-key=...
+  secrets:
+    RPC_HMAC_KEY:
+      secretName: elitea-scheduler-secrets
+      key: rpc-hmac-key
+      optional: true
+
+  # Port the in-process health server listens on (must equal the port in
+  # env.HTTP_ADDR above).
+  healthPort: 8081
+
+  # Optional ClusterIP over the health port. Off by default: kubelet probes reach
+  # the container directly, so a Service is only needed if something external
+  # (a Prometheus blackbox probe, an operator running curl) has to reach /healthz.
+  service:
+    enabled: false
+    type: ClusterIP
+    port: 8081
+    annotations: {}
+
+  probes:
+    # /healthz PINGS THE DATABASE (internal/health/health.go) — it is a readiness
+    # signal, not a liveness one. Wiring it to livenessProbe would restart this
+    # pod every time Postgres hiccups, which is the trap issue #242 fixed for the
+    # gateway. Liveness here is therefore a dependency-free TCP check that the
+    # health server is still accepting connections.
+    liveness:
+      enabled: true
+      periodSeconds: 20
+      failureThreshold: 3
+    # OFF by default, on purpose, and the reason is the sync waves rather than
+    # the probe itself. With service.enabled=false nothing routes to this pod, so
+    # readiness gates no traffic — but it still gates Deployment availability. A
+    # Postgres outage AFTER boot (an outage at boot exits the process instead)
+    # would flip /healthz to 503, take the pod NotReady, hold this wave-2
+    # Application at Progressing/Degraded, and block the wave-3 elitea-web sync —
+    # a frontend release stopped by a database blip in a worker nothing calls.
+    # Turn this on together with service.enabled, where the probe earns its
+    # keep by controlling endpoints.
+    readiness:
+      enabled: false
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+
+  # No HorizontalPodAutoscaler template in this chart, deliberately. Every unit of
+  # work here is serialised behind a Redis tick lock or a single durable consumer,
+  # so added replicas raise cost and lock contention without raising throughput —
+  # an HPA would be a control that cannot help. Set replicaCount by hand if a
+  # measured reason ever appears.
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+llmGateway:
+  # The model hop. Chat and every embedding call go through it.
+  enabled: true
+  # scale-1 profile (design §8.1.1): a single gateway replica. HA operators
+  # override replicaCount and LLM_BUDGET_EXPECTED_REPLICAS to the real count.
+  replicaCount: 1
+
+  image:
+    repository: ghcr.io/eliteaai/elitea-llm-gateway
+    # tag comes from the single top-level image.tag
+    pullPolicy: IfNotPresent
+
+  # §9.5: gateway memory must be >=1Gi — provider streaming buffers plus the
+  # bifrost object pools inflate the process well beyond the edge's footprint.
+  # Legacy-parity hardening (issue #241): the shipped image is distroless
+  # nonroot already, so runAsNonRoot/readOnlyRootFilesystem cost nothing — no
+  # application-level temp-file writes were found (grepped for os.CreateTemp/
+  # os.TempDir/os.Create). templates/deployment.yaml adds a writable /tmp
+  # emptyDir regardless.
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+  # §9.5: provider LLM streams can run up to ~120s. A short grace period truncates
+  # in-flight streams on every rolling deploy, so terminationGracePeriodSeconds
+  # MUST be >=150 and rise together with the gateway's srv.Shutdown() context
+  # (GATEWAY_SHUTDOWN_TIMEOUT).
+  # 150s of HTTP drain (GATEWAY_SHUTDOWN_TIMEOUT) PLUS headroom for the phases
+  # that run after it: the billing drain, the governance persist drain and the
+  # NATS close (see shutdownSequence). With no headroom SIGKILL lands the instant
+  # the HTTP drain uses its full budget, and the billing drain never executes —
+  # silently dropping the very spend the drain exists to preserve.
+  terminationGracePeriodSeconds: 180
+
+  # preStop hook (§9.5). The primary drain mechanism is the gateway's own
+  # SIGTERM-driven graceful shutdown (GATEWAY_SHUTDOWN_TIMEOUT, >=150s); the
+  # preStop hook adds a quiet window so kube-proxy/ingress endpoints deregister
+  # before SIGTERM, keeping new connections off a draining pod.
+  #
+  # NOTE: the runtime image is distroless/static, which has NO shell or sleep
+  # binary — an `exec` sleep would fail. `enabled: false` by default; enable it
+  # only with a `command` that the deployed image can actually run (e.g. the real
+  # BF0.2b image bundling a sleep binary, or an httpGet variant). When disabled,
+  # the app's graceful shutdown alone drains in-flight streams.
+  preStop:
+    enabled: false
+    # Rendered verbatim under container.lifecycle.preStop when enabled.
+    command: ["/bin/sleep", "15"]
+
+  env:
+    DATABASE_URL: ""
+    # §9.5: keep the SSE write deadline disabled and pools tuned. These mirror the
+    # config.go defaults; set explicitly so the deployment is self-documenting.
+    GATEWAY_SHUTDOWN_TIMEOUT: "150s"
+    GATEWAY_INITIAL_POOL_SIZE: "100"
+    GATEWAY_PROVIDER_CONCURRENCY: "50"
+    GATEWAY_LOG_LEVEL: "info"
+    # NATS budget-path circuit breaker (§8.5). Trip after N consecutive failures;
+    # probe again after the open-duration. Mirror config.go defaults.
+    LLM_BUDGET_CB_FAILURE_THRESHOLD: "3"
+    LLM_BUDGET_CB_OPEN_DURATION_SEC: "10"
+    # Stream-disconnect billing (issue #9, DECISIONS.md 2026-08-05). When a
+    # streaming client vanishes mid-response the gateway keeps the PROVIDER
+    # stream alive this long so the authoritative usage trailer can still arrive
+    # and be billed; if it does not arrive nothing is billed and a
+    # budget.unbilled_stream event is emitted. Clamped to 15000 in code; "0"
+    # disables the mechanism (early exits then bill nothing at all).
+    # The trade-off: a client that hits Stop may be billed for up to this much
+    # further generation, charged to its own project credential.
+    LLM_STREAM_GRACE_MS: "5000"
+    # Ceiling on concurrently-detained streams; each holds a goroutine and an
+    # open provider socket for up to LLM_STREAM_GRACE_MS.
+    LLM_STREAM_DRAIN_MAX_INFLIGHT: "256"
+    # Realtime WebSocket sessions (/llm/v1/realtime).
+    #
+    # How often a LIVE session re-asks the budget gate. This is the ONLY thing
+    # that bounds a session's spend: an HTTP request is gated once because it
+    # ends, and a session does not end. bifrost reports a turn start for two
+    # events the pylon relay never sends, so a re-check armed on turn start alone
+    # would never fire at all. Lower it to cut the spend that can follow an
+    # exhausted budget; raise it to cut budget reads. A non-positive or
+    # unparsable value keeps the 15 s default.
+    LLM_REALTIME_BUDGET_RECHECK_SEC: "15"
+    # How often the gateway re-reads the authored governance definitions from
+    # gateway.governance_config (issue #218). It is the bound on how long an
+    # operator waits between saving a definition on /admin/gateway/governance and
+    # this gateway enforcing it.
+    #
+    # There is NO event-driven reload. The poll is the only path, on purpose: a
+    # replica that missed an event because it was starting, or because NATS was
+    # down, must still converge. Lower it to shorten the wait; raise it to cut one
+    # small SELECT per replica per interval. A non-positive or unparsable value
+    # keeps the 30 s default.
+    #
+    # GET /governance/status on the internal listener reports the snapshot's
+    # loaded_at, every row the gateway REJECTED, and every row that loaded but can
+    # match nothing. Read it before concluding a rule is not working.
+    LLM_GOVERNANCE_REFRESH_SEC: "30"
+    # Ceiling on concurrent realtime sessions per replica; the per-project cap is
+    # this divided by 8 (floor 1). Each session pins four goroutines and two open
+    # sockets for as long as the caller talks, and a hijacked connection has its
+    # deadlines cleared, so no server timeout can ever reap one.
+    LLM_REALTIME_MAX_SESSIONS: "128"
+    # Browser origins that may open /llm/v1/realtime, comma-separated
+    # (e.g. "https://dev.elitea.ai"). EMPTY IS THE SECURE DEFAULT and it is not
+    # "no policy": a WebSocket handshake is NOT subject to CORS, so without an
+    # origin check any page could open this route with the user's ambient
+    # credentials. Empty admits only a handshake whose Origin matches the
+    # gateway's own host, or one with no Origin at all — which is every
+    # non-browser client, including the pylon-indexer relay this route exists
+    # for. Name a browser origin only on purpose; the startup log states which
+    # mode is armed.
+    LLM_REALTIME_ALLOWED_ORIGINS: ""
+    # scale-1 default; HA operators MUST override to the real replica count.
+    LLM_BUDGET_EXPECTED_REPLICAS: "1"
+    # NATS JetStream coordination substrate (design §8.1.1). Points at the NATS
+    # client ClusterIP service provisioned by deploy/helm/nats.
+    # Must match the env var name the binary reads: GATEWAY_NATS_URL (config.go).
+    # Empty means the top-level `nats` block, resolved in this namespace.
+    GATEWAY_NATS_URL: ""
+    # GATEWAY_IDENTITY_SECRET (HMAC key, §5.3) and SECRETS_MASTER_KEY (Fernet vault
+    # master key) are SENSITIVE — they are NOT set here as plaintext. They are wired
+    # from Kubernetes Secrets via the `secrets:` block below (rendered as
+    # valueFrom.secretKeyRef in deployment.yaml). Setting them here too would
+    # produce duplicate env keys.
+    #
+    # NOTE: GATEWAY_TLS_CERT_FILE / GATEWAY_TLS_KEY_FILE / GATEWAY_TLS_CA_FILE are
+    # NOT configured here. When mtls.enabled=true the chart injects these env vars
+    # automatically (deployment.yaml) pointing at the mtls.mountPath volume. Keeping
+    # them out of this map avoids duplicates and prevents operators from accidentally
+    # supplying conflicting paths.
+
+    # FIX 2 (MEDIUM): budget/NATS operational env vars — absent from round-1/round-2,
+    # so operators couldn't configure them and they silently took code defaults.
+    # Values below mirror config.go defaults (§8.5); override as needed.
+    #
+    # Platform-baseline NATS-failure policy (§8.5).
+    # "tiered_hybrid" (default) | "fail_open" | "fail_closed".
+    # A per-project gateway.project_budget.nats_fail_mode overrides this at runtime.
+    LLM_BUDGET_NATS_FAIL_MODE: "tiered_hybrid"
+    # How old (integer minutes) the Postgres snapshot may be before the tiered-hybrid
+    # fallback degrades to 503 (NATS_DOWN_PG_STALE). Default: 5.
+    LLM_BUDGET_PG_FRESHNESS_MIN: "5"
+    # Absolute per-replica degraded-window overspend cap in USD (§8.5).
+    # 0 = use 10 % of the project hard_limit_usd instead of a fixed cap.
+    LLM_BUDGET_NATS_DEGRADED_CAP_USD: "0"
+    # Continuous NATS outage ceiling (integer minutes). Once NATS has been down longer
+    # than this the FSM forces closed (503) regardless of snapshot freshness. Default: 10.
+    LLM_BUDGET_NATS_DEGRADED_MAX_DURATION_MIN: "10"
+
+    # BFF.6 — circular-routing guard #1 (spec §2.6): the platform's own /llm
+    # origins, comma-separated. Any credential api_base matching one of these is
+    # rejected with SELF_REFERENTIAL_CREDENTIAL at request time. MUST list every
+    # public and in-cluster origin that reaches the /llm surface; empty leaves
+    # the request-time guard inert (the elitea-main upsert-time guard remains).
+    # e.g. "https://dev.elitea.ai/llm/v1,http://elitea-main:8080/llm/v1"
+    #
+    # ISSUE #467: this MUST be set. The chart refuses to render while it is empty
+    # (elitea-llm-gateway.validateGuards in templates/_helpers.tpl), because an
+    # empty value makes the guard admit every credential and the process then
+    # writes one warning line and serves anyway. There is no default: only the
+    # operator knows the origins, and a guessed origin would guard a name nobody
+    # uses while leaving the real one open.
+    GATEWAY_SELF_LLM_ORIGINS: ""
+
+    # Issue #13 — egress allowlist for TENANT-AUTHORED credential `api_base`
+    # values. Comma-separated `host`, `host:port`, `*.domain` or `*.domain:port`.
+    # An unparsable entry is FATAL at startup (a typo must not silently narrow or
+    # widen the policy).
+    #
+    # Two modes, and there is deliberately no third:
+    #   ""       (default) api_base hosts are unrestricted, and bifrost's
+    #            SSRF-safe dialer stays ON for every provider — so no tenant can
+    #            steer the gateway at an RFC-1918 address. Self-hosted vLLM /
+    #            Ollama on a private network does NOT work in this mode.
+    #   non-empty  every credential api_base must match an entry (checked BEFORE
+    #            the Fernet vault decrypts its api_key, so a non-allowlisted
+    #            destination never receives a resolved secret), and private
+    #            destinations become reachable for the self-hosted classes only.
+    #
+    # Pin the port where you can. Setting this is also the only way to stop a
+    # tenant shipping its own vault secrets to an arbitrary PUBLIC host as a
+    # Bearer token — leaving it empty accepts that risk.
+    # e.g. "vllm.ml.svc.cluster.local:8000,ollama.ml.svc.cluster.local:11434"
+    #
+    # ISSUE #467: this key is governed by `egressPosture` at the bottom of this
+    # file. The chart refuses to render until that posture is stated, because the
+    # empty value is permissive and restrictive AT THE SAME TIME — it accepts any
+    # PUBLIC host and refuses every PRIVATE one — and an operator who did not
+    # choose it has almost certainly not understood which half applies to them.
+    GATEWAY_EGRESS_ALLOWLIST: ""
+
+    # Issue #316 — the platform's SHARED ("public") project. Elitea has always had
+    # two sources of models for a project: the project's own configurations, and
+    # the public project's `shared = true` rows that the operator publishes for
+    # everyone. The gateway read the caller's project only, so every shared model
+    # was unreachable: the model picker offered it, and the request then found no
+    # credential. With ELITEA_ALLOW_PROJECT_OWN_LLMS=false — the mode where
+    # projects are meant to use platform models ONLY — that left no usable model.
+    #
+    # Set this to the SAME value as elitea-main's ELITEA_AI_PROJECT_ID, which is
+    # the identically named key in this file's `main:` block (issue
+    # #382 added it there). The two services must name the same project or the
+    # gateway will serve a different model set from the one the UI offers.
+    #
+    # Leaving THIS key empty while elitea-main names a project is the state that
+    # keeps issue #316 inert on Kubernetes: the UI offers the shared models and
+    # the gateway then finds no credential for them. Set both or neither.
+    #
+    # Empty (the default) keeps the old project-local behaviour: no shared models.
+    # It is empty rather than "1" on purpose — an id naming a schema that does not
+    # exist would make every credential read fail.
+    #
+    # The caller's own rows always win over a shared row of the same name, and the
+    # public project is read ONLY for rows flagged shared = true.
+    ELITEA_AI_PROJECT_ID: ""
+
+    # Issue #12 — per-(project_id, model) AMPLIFICATION BACKSTOP. Shipped as
+    # "circular-routing guard #2" (spec §2.6) at a hardcoded 5 requests / 1 s /
+    # 30 s lockout, but it performs NO hop detection: it counts requests. At those
+    # numbers it was a 5 req/s rate limiter armed in production — a 50-VU run
+    # against one tuple measured 99.96% HTTP 429.
+    #
+    # No rate threshold can separate a routing loop from real traffic here: both
+    # are bounded by the same provider worker pool. The real anti-circular-routing
+    # mechanism is hop-marker detection, tracked separately. These numbers make
+    # the layer an honest backstop in the meantime.
+    #
+    # Threshold derivation: one replica's ceiling for a tuple is the provider
+    # worker pool (GATEWAY_PROVIDER_CONCURRENCY=50) over the fastest realistic
+    # call latency (~50 ms embeddings) = 1000 req/s. Above that, arrivals can
+    # never be served; below it, rejecting them is pure availability loss.
+    # A NEGATIVE threshold disarms the backstop entirely. Whichever mode results,
+    # the gateway logs it once at startup ("LOOP BREAKER ARMED"/"DISARMED").
+    LLM_LOOP_BREAKER_THRESHOLD: "1000"
+    LLM_LOOP_BREAKER_WINDOW_MS: "1000"
+    # Lockout after a trip. Reduced from the shipped 30 s: a 30 s lockout on a
+    # false positive is a small outage for that tuple.
+    LLM_LOOP_BREAKER_OPEN_SEC: "5"
+
+  # secrets: sensitive env vars sourced from Kubernetes Secrets (rendered as
+  # valueFrom.secretKeyRef in deployment.yaml), NOT plaintext in the env map above.
+  # Each entry maps the ENV VAR NAME the binary reads → the Secret name + key.
+  # `optional: true` lets the pod start when the Secret is absent (e.g. local/dev,
+  # or SECRETS_MASTER_KEY unset → vault runs in degraded single-level mode); set
+  # false to make the Secret mandatory in production.
+  #
+  # Provision the referenced Secret out-of-band (kubectl create secret / external-
+  # secrets operator / sealed-secrets), e.g.:
+  #   kubectl create secret generic elitea-llm-gateway-secrets \
+  #     --from-literal=identity-secret=... --from-literal=secrets-master-key=...
+  #
+  # BREAKING (issue #11, 2026-08-09): GATEWAY_IDENTITY_SECRET is now REQUIRED —
+  # `optional: false`. An empty secret disables identity verification, and the
+  # gateway then takes X-Elitea-Project-Id at face value to select which tenant's
+  # provider credentials it decrypts out of the Fernet vault. The binary refuses
+  # to start (FATAL) in that state, so a pod without the Secret would crash-loop;
+  # `optional: false` moves the failure earlier and makes it legible
+  # (CreateContainerConfigError naming the missing Secret key) instead.
+  #
+  # OPERATIONAL CONSEQUENCE: `helm install` with no
+  # `elitea-llm-gateway-secrets/identity-secret` no longer produces a running pod.
+  # Provision the Secret BEFORE installing/upgrading, and set the SAME value on
+  # elitea-main (`secrets.GATEWAY_IDENTITY_SECRET`, also non-optional) — the edge
+  # signs the identity headers the gateway verifies, so a mismatched or one-sided
+  # secret makes every /llm request fail verification.
+  secrets:
+    GATEWAY_IDENTITY_SECRET:
+      secretName: elitea-llm-gateway-secrets
+      key: identity-secret
+      optional: false   # issue #11 — empty secret ⇒ any caller picks any tenant's credentials
+    SECRETS_MASTER_KEY:
+      secretName: elitea-llm-gateway-secrets
+      key: secrets-master-key
+      optional: true    # unset ⇒ Fernet vault degraded single-level mode
+
+  # networkPolicy: egress containment, defence in depth for issue #13 (the
+  # tenant-authored api_base SSRF). The in-process control is
+  # GATEWAY_EGRESS_ALLOWLIST above; this is the second layer, for the case where
+  # that one is bypassed or a future carve-out widens it.
+  #
+  # OPT-IN, because attaching ANY egress rule to a pod denies everything not
+  # listed, and this chart cannot know where your Postgres, NATS and OTLP
+  # collector live. Enable it only after filling in `egress` below — otherwise the
+  # gateway loses its own dependencies. Requires a CNI that enforces
+  # NetworkPolicy; on one that does not, the object renders but does nothing.
+  # egressPosture — issue #467. Which egress policy this deployment runs.
+  #
+  # The chart REFUSES TO RENDER until this names one of the two values below.
+  # That is deliberate. The alternative was the shipped default, an empty
+  # GATEWAY_EGRESS_ALLOWLIST, which no operator had chosen and which behaves in
+  # two opposite ways at once.
+  #
+  # Read internal/account/egress.go and internal/account/account.go. The gateway
+  # sets AllowPrivateNetwork from whether the allowlist is configured, so:
+  #
+  #   "allowlist"            env.GATEWAY_EGRESS_ALLOWLIST names every host a
+  #                          tenant may put in api_base. Private destinations
+  #                          become reachable for the self-hosted provider
+  #                          classes (vLLM, Ollama). This is the only posture in
+  #                          which a self-hosted model on a private network
+  #                          works. The host check runs BEFORE the Fernet vault
+  #                          decrypts the api_key, so a host that is not on the
+  #                          list never receives a resolved secret.
+  #
+  #   "public-unrestricted"  env.GATEWAY_EGRESS_ALLOWLIST stays empty. A tenant
+  #                          may name ANY public host in api_base, and the
+  #                          gateway then sends that tenant's credential to it.
+  #                          bifrost's SSRF-safe dialer stays armed, so no tenant
+  #                          can steer the gateway at a private address — and a
+  #                          self-hosted vLLM or Ollama CANNOT WORK at all.
+  #                          Choose this only when every model is a public
+  #                          provider AND you accept that a tenant may ship its
+  #                          own vault secret to an address of its choosing.
+  #
+  # There is deliberately no third mode in which a tenant reaches an arbitrary
+  # private address.
+  egressPosture: ""
+
+  networkPolicy:
+    enabled: false
+    # allowPublicEgress opens 0.0.0.0/0 minus every private/link-local range, so
+    # cloud provider APIs work but nothing in-cluster is reachable. Set false only
+    # for an install that talks exclusively to self-hosted models.
+    allowPublicEgress: true
+    publicEgressPorts:
+      - protocol: TCP
+        port: 443
+    # In-cluster dependencies, rendered verbatim under spec.egress. Worked
+    # example — replace the selectors and ports with your own topology, and add
+    # an entry for every self-hosted model host GATEWAY_EGRESS_ALLOWLIST names:
+    #
+    # egress:
+    #   - to:
+    #       - podSelector:
+    #           matchLabels:
+    #             app.kubernetes.io/name: postgresql
+    #     ports:
+    #       - protocol: TCP
+    #         port: 5432
+    #   - to:
+    #       - podSelector:
+    #           matchLabels:
+    #             app.kubernetes.io/name: nats
+    #     ports:
+    #       - protocol: TCP
+    #         port: 4222
+    #   - to:
+    #       - podSelector:
+    #           matchLabels:
+    #             app.kubernetes.io/name: vllm
+    #     ports:
+    #       - protocol: TCP
+    #         port: 8000
+    egress: []
+
+  # elitea-llm-gateway-svc: mTLS-only ClusterIP (NOT public), port 8083 (design
+  # §9.1). Named explicitly so the edge/runbook references resolve.
+  service:
+    name: elitea-llm-gateway-svc
+    port: 8083
+    annotations: {}
+
+  # HPA on a custom /llm SSE-connection metric (design §9.5) — CPU/memory is a poor
+  # signal for I/O-bound streaming. Requires the Prometheus Adapter to surface the
+  # metric; disable if that adapter is not installed (falls back to replicaCount).
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    # Pods-metric name the Prometheus Adapter must expose (concurrent /llm SSE
+    # connections per pod). The gateway emits the underlying gauge in BF0.4/§10.
+    sseConnectionMetric: gateway_llm_sse_active_connections
+    # Scale out when average concurrent streams per pod approaches the tuned
+    # provider Concurrency budget (GATEWAY_PROVIDER_CONCURRENCY=50).
+    targetSSEConnectionsPerPod: "40"
+
+  # mTLS for the elitea-main -> gateway hop (design §9.1). cert-manager issues a
+  # server cert (this Deployment mounts it) and an edge client cert (elitea-main
+  # mounts it) from a shared internal CA issuer.
+  mtls:
+    enabled: true
+    serverSecretName: elitea-llm-gateway-server-tls
+    clientSecretName: elitea-main-gateway-client-tls
+    duration: 2160h    # 90d
+    renewBefore: 360h  # 15d
+    issuerRef:
+      # A cluster-shared internal (private-CA) issuer — NOT created by this chart.
+      name: elitea-internal-ca
+      kind: ClusterIssuer
+    # Where the server cert secret is mounted in the gateway container. The
+    # gateway serves TLS from tls.crt/tls.key and verifies client certs against
+    # ca.crt (mTLS require-and-verify).
+    mountPath: /etc/gateway/tls
+
+  # probes: with mtls.enabled (the default) the paths below are NOT used — the
+  # listener requires a verified client certificate, which a kubelet probe cannot
+  # present, so templates/deployment.yaml probes the socket instead. The paths
+  # apply when mtls.enabled is false.
+  probes:
+    liveness:
+      # Process liveness only (no dependency calls) — issue #242: a NATS blip
+      # must not restart the pod, only /readyz should pull it out of rotation.
+      path: /healthz
+      periodSeconds: 10
+      failureThreshold: 3
+    readiness:
+      path: /readyz
+      periodSeconds: 5
+      failureThreshold: 2
+
+  serviceAccount:
+    create: true
+    name: ""
+
+  # OFF by default: this chart's own scale-1 profile (replicaCount: 1 above)
+  # means minAvailable: 1 against a single replica would block every voluntary
+  # eviction (kubectl drain, node scale-down) forever. HA operators who raise
+  # replicaCount should turn this on.
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+  # Opt-in external reachability (issue #241; legacy parity), OFF by default.
+  # CAUTION: the gateway is mTLS-internal by design (service.yaml — "NEVER
+  # public", §9.1); enabling this exposes /llm outside the mTLS-only path the
+  # rest of this chart assumes. Only turn it on if your ingress
+  # controller/Gateway itself terminates and re-verifies mTLS equivalent to
+  # what elitea-main does today — templates/ingress.yaml refuses to render
+  # (helm `fail`) unless acknowledgeMTLSBypass is also set to true, so that
+  # confirmation can't be skipped by accident. Set ingress.gatewayApi: true to
+  # render an HTTPRoute instead of a networking.k8s.io/v1 Ingress; the two are
+  # mutually exclusive.
+  ingress:
+    enabled: false
+    acknowledgeMTLSBypass: false
+    gatewayApi: false
+    className: ""
+    annotations: {}
+    path: /
+    pathType: Prefix
+    hosts: []
+    tls: []
+      # - secretName: elitea-llm-gateway-tls
+      #   hosts:
+      #     - gateway.dev.elitea.ai
+    gateway:
+      name: ""
+      namespace: ""
+      sectionName: ""
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+worker:
+  # The agent worker: the ONLY producer of an answer. Requires main.runtime.enabled.
+  enabled: false
+  # The agent worker. Without it an admitted execution streams nothing and ends
+  # in a terminal failure: Go admits and projects executions but has no
+  # agent-token producer of its own.
+
+  image:
+    # Built, signed and published by this repository's own release workflow
+    # (.github/workflows/publish.yml), and public, so no pull secret is needed.
+    # The tag is stamped to the release version at package time — the default
+    # here only applies to a chart installed straight from the working tree.
+    repository: ghcr.io/eliteaai/elitea-worker-python
+    # tag comes from the single top-level image.tag
+    pullPolicy: IfNotPresent
+
+  imagePullSecrets: []
+
+  replicaCount: 1
+
+  # One Secret carrying every file the worker reads. Keys:
+  #   runtime-ca.crt                 agent-worker-client.crt
+  #   agent-worker-client.key        command-signing-keyring.json
+  #   redis-worker-password          worker-output-spool-key
+  #   agent-checkpoint-connection
+  materialSecretName: elitea-worker-material
+
+  # elitea_worker/config.py applies the same permission contract as the Go side:
+  # a private file must be 0600-or-tighter and no file may be group/other
+  # writable. A Secret volume cannot satisfy that (root-owned, or a symlink
+  # farm), so an init container copies each key into a memory-backed emptyDir at
+  # 0600 owned by the worker's uid — the same answer issue #404 gave elitea-main.
+  materialInit:
+    image: docker.io/library/alpine:3.20
+    sizeLimit: 8Mi
+
+  # uid/gid 10001 is the `elitea` user baked into the worker image.
+  runAsUser: 10001
+  runAsGroup: 10001
+
+  # Authorizes this worker's certificate against the control plane, by writing
+  # the row every runtime call is checked against.
+  #
+  # WHY THIS IS THE CHART'S JOB. WorkloadSessionsRepository "exposes no
+  # process-local registration or fallback allowlist" — a worker can never mint
+  # its own authority, which is correct and must stay that way. It says instead
+  # that "sessions are provisioned and revoked by the deployment control plane
+  # before a worker connects". For a Helm deployment the chart IS that control
+  # plane; nothing else in the release is. Without this the whole plane fails
+  # closed and SILENTLY: every ClaimCommand is refused, elitea-main logs nothing,
+  # and each refused turn is durably quarantined by the worker and permanently
+  # lost. See deploy/runtime/README.md.
+  #
+  # The check is one query over THREE values — workload_identity, session id and
+  # producer id — so a mismatch in any of them is an indistinguishable
+  # "unauthorized". Two of the three come from runtime.* below, and the third is
+  # read out of the worker's own certificate rather than restated as a value, so
+  # the row cannot describe an identity the worker does not actually present.
+  runtimeSession:
+    enabled: true
+
+    # How the provisioning Job reaches PostgreSQL. Point this at the same secret
+    # and key elitea-main reads DATABASE_URL from: the row lands in the shared
+    # elitea_runtime schema that service owns and migrates.
+    database:
+      secretName: elitea-main-db
+      key: database-url
+
+    # psql to write the row, openssl to read the certificate's SPIFFE URI.
+    # postgres:17 (Debian) rather than :17-alpine, which ships no openssl.
+    image:
+      repository: docker.io/library/postgres
+      tag: "17"
+      pullPolicy: IfNotPresent
+
+    # Re-stamped on every install and upgrade, which is the point: expires_at is
+    # mandatory and NOTHING in the product renews it, so a cluster that is never
+    # upgraded eventually goes dark with the same silent signature as never
+    # having been provisioned at all.
+    ttl: "2160h"
+
+    # Optional assertion, not an input. When set, the Job fails if the identity
+    # it reads out of the worker's certificate is not this exact string — useful
+    # when the certificate is minted by a pipeline this chart does not own and a
+    # silent re-issue under a different SPIFFE ID would otherwise just work.
+    expectedIdentity: ""
+
+    # The schema arrives with elitea-main's migration, which on a fresh install
+    # may still be running when this hook fires. The Job waits for the table
+    # rather than racing it.
+    waitAttempts: 60
+    waitIntervalSeconds: 5
+
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  runtime:
+    # These two are half of the authorization tuple; runtimeSession above reads
+    # the third out of the certificate and writes all three as one row. Changing
+    # either here changes what gets provisioned, so the two can never disagree.
+    workloadSessionId: elitea-agent-worker-1
+    producerId: elitea-agent-worker-1
+    consumerId: elitea-agent-worker-1-consumer
+    # rediss:// with an ACL username and NO password in the URL — the password
+    # comes from redis_password_path. The database must be spelled out.
+    redisUrl: "rediss://worker@elitea-runtime-redis:6380/0"
+    redisStream: "commands.v1.agent.execute.agent.shared.1.0"
+    redisGroup: "elitea-agent-worker-v1"
+    # The three mTLS listeners, dialled through elitea-main's Service. These
+    # names must appear as SANs on control/output/content-server.crt.
+    controlTarget: "elitea-main:9443"
+    outputTarget: "elitea-main:9444"
+    contentOrigin: "https://elitea-main:9445"
+    # The SDK refuses a plaintext platform origin (config.py:187), and
+    # elitea-main serves its product API over cleartext HTTP inside the cluster.
+    # platformEdge below bridges that.
+    platformOrigin: "https://elitea-platform-edge"
+    spoolRoot: /var/lib/elitea-worker/output-spool
+    spoolSizeLimit: 2Gi
+    # Broader than the current `artifact.delete_file` rule, so metadata drift
+    # cannot bypass approval.
+    sensitiveTools: '{"*":["delete_file"]}'
+    limits:
+      redis_read_batch: 4
+      redis_block_millis: 1000
+      redis_reclaim_idle_millis: 60000
+      redis_reclaim_interval_millis: 5000
+      dependency_retry_millis: 250
+      delivery_max_concurrency: 2
+      delivery_queue_capacity: 4
+      sync_max_workers: 2
+      sync_max_in_flight: 2
+      admission_timeout_millis: 5000
+      grpc_deadline_millis: 5000
+      content_timeout_millis: 15000
+      http_max_connections: 8
+      http_max_keepalive_connections: 4
+      output_max_queued_frames: 2
+      output_max_queued_bytes: 131072
+      output_max_sessions: 2
+      output_ack_timeout_millis: 15000
+      output_stream_deadline_millis: 300000
+      lease_poll_interval_millis: 10000
+      shutdown_timeout_millis: 30000
+
+  # The worker's platform_origin. A one-route Traefik whose only job is to
+  # terminate TLS with a certificate the worker trusts (the runtime CA) and
+  # forward to elitea-main, plus forward-auth on the execution-events stream —
+  # the one route that accepts no credential a client can present.
+  #
+  # It is NOT the public edge. It has no route from the Gateway and is reachable
+  # only in-cluster.
+  platformEdge:
+    enabled: true
+    image:
+      repository: docker.io/library/traefik
+      tag: "v3.4"
+      pullPolicy: IfNotPresent
+    # Service name AND the only SAN on platform-edge.crt. Both must match
+    # runtime.platformOrigin.
+    serviceName: elitea-platform-edge
+    # Secret with keys tls.crt / tls.key — the runtime CA's platform-edge pair.
+    tlsSecretName: elitea-platform-edge-tls
+    mainService: elitea-main
+    mainPort: 8080
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+runtimeRedis:
+  # The runtime dispatch bus the worker reads. Pairs with worker.
+  enabled: false
+  # TLS Redis for the runtime dispatch plane and production Form authentication.
+  #
+  # This is a SECOND Redis, deliberately separate from `elitea-valkey`, which
+  # stays plaintext and keeps serving elitea-main's REDIS_URL (sessions, project
+  # SSE). It exists because two consumers accept nothing else:
+  #
+  #   - internal/runtimecomposition/config.go  — rediss:// only, ACL username,
+  #     file-backed password, dialled at MinVersion TLS 1.3
+  #   - internal/authcomposition/config.go:469 — the same, for the auth session
+  #     store
+  #
+  # Cleartext is off entirely (`port 0`). A runtime plane reachable without TLS
+  # would let anything on the pod network XADD signed-envelope commands.
+
+  image:
+    repository: docker.io/library/redis
+    tag: "7-alpine"
+    pullPolicy: IfNotPresent
+
+  # Server certificate, CA and the ACL file all arrive in ONE Secret, minted by
+  # scripts/mint-elitea-secrets.sh. Keys: runtime-ca.crt, redis-server.crt,
+  # redis-server.key, redis-users.acl, redis-bootstrap-password.
+  #
+  # Unlike elitea-main's material, redis enforces no permission bits of its own,
+  # so a plain Secret volume is enough — no copy-into-emptyDir init container.
+  materialSecretName: elitea-runtime-redis-material
+
+  tlsPort: 6380
+
+  service:
+    # The name is load-bearing: it is the host in every rediss:// URL AND the
+    # only SAN on redis-server.crt. Renaming it silently breaks the TLS
+    # handshake with a message that reads like a trust problem.
+    name: elitea-runtime-redis
+
+  # XGROUP CREATE ... MKSTREAM for the dispatch streams, run as a Helm hook on
+  # every install and upgrade. Idempotent: BUSYGROUP means a previous run did it.
+  #
+  # The worker's ACL user deliberately has no XGROUP: a consumer that can create
+  # its own group can, after losing one, recreate it at the stream head and
+  # silently skip every command in flight. So the group is created here, from
+  # 0-0, by a bootstrap user that can do nothing else.
+  bootstrap:
+    enabled: true
+    agentStream: "commands.v1.agent.execute.agent.shared.1.0"
+    agentGroup: "elitea-agent-worker-v1"
+    configurationStream: "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0"
+    configurationGroup: "elitea-configuration-worker-v1"
+
+  # Persistence. The compose stack turns this off and calls the keys disposable,
+  # which is true of a laptop stack and false here: this instance keeps browser
+  # SESSIONS under the auth key prefix and in-flight DISPATCH COMMANDS in the
+  # streams. Without an AOF a pod restart — a drain, an image bump, an OOM —
+  # logs every user out and strands every command that was XADDed but not yet
+  # acknowledged, silently, because the consumer groups themselves come back
+  # from the bootstrap Job.
+  #
+  # Set enabled=false to accept that, on a stack where losing both is cheap.
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClassName: ceph-rbd
+    # everysec, not always: the fsync-per-write cost is not worth it for a
+    # dispatch bus whose worst case is one second of commands, and `always`
+    # would put an fsync in the path of every XADD.
+    appendfsync: everysec
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  # uid/gid 999 is the `redis` user in the official image. fsGroup makes the
+  # Secret volume readable after the entrypoint drops privileges.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+otelCollector:
+  # Telemetry. Safe to disable.
+  enabled: true
+  # otel-collector — receives OTLP traces from elitea-main, elitea-scheduler
+  # (libs/go/observability) and elitea-main's tracing ingest proxy
+  # (internal/api/v2/tracing). See Chart.yaml / deploy/otel-collector-config.yaml
+  # for the debug/file-exporter scope boundary (issue #250): swap `config` below
+  # for a real sink (otlp/otlphttp exporter to Tempo, a vendor backend, ...) when
+  # an environment needs traces to outlive the pod.
+
+  replicaCount: 1
+
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.114.0"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Service DNS name every other chart's OTEL_EXPORTER_OTLP_ENDPOINT should
+  # point at: "http://<fullname>.<namespace>.svc.cluster.local:4318" or, within
+  # the same namespace, simply "http://<fullname>:4318" (matches the compose
+  # service name "otel-collector" the dev stack's env vars use).
+  service:
+    type: ClusterIP
+    grpcPort: 4317
+    httpPort: 4318
+
+  # The collector's own config (mounted at /etc/otel-collector-config.yaml).
+  # Identical in shape to deploy/otel-collector-config.yaml so the compose and
+  # Helm paths stay in sync; kept as an inline string here (rather than a
+  # `.Files.Get` reference to that file) because Helm charts must be
+  # self-contained artifacts independent of the monorepo layout they happen to
+  # ship from.
+  config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch: {}
+
+    exporters:
+      # debug only — see deploy/otel-collector-config.yaml for why the file
+      # exporter was dropped (it needs its target file to pre-exist, and this
+      # distroless image has no shell to create one from).
+      debug:
+        verbosity: detailed
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [debug]
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}

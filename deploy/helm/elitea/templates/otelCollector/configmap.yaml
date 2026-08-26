@@ -1,0 +1,11 @@
+{{- if .Values.otelCollector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "otel-collector.fullname" . }}-config
+  labels:
+    {{- include "otel-collector.labels" . | nindent 4 }}
+data:
+  otel-collector-config.yaml: |
+{{ .Values.otelCollector.config | indent 4 }}
+{{- end }}

@@ -10,19 +10,23 @@ import (
 
 // chartValuesFile is the values file that ships the authentication
 // configuration as a chart value (issue #444).
-const chartValuesFile = "deploy/helm/elitea-main/values-standalone.yaml"
+const chartValuesFile = "deploy/helm/elitea/values-standalone.yaml"
 
 // chartValues is the part of the values file that this test reads. The rest of
 // the file is the chart's business.
+// The platform ships as ONE chart, so elitea-main's values live under the
+// `main` key rather than at the values root.
 type chartValues struct {
-	FileConfig struct {
-		AuthConfig struct {
-			Document yaml.Node `yaml:"document"`
-			Material struct {
-				MountPath string `yaml:"mountPath"`
-			} `yaml:"material"`
-		} `yaml:"authConfig"`
-	} `yaml:"fileConfig"`
+	Main struct {
+		FileConfig struct {
+			AuthConfig struct {
+				Document yaml.Node `yaml:"document"`
+				Material struct {
+					MountPath string `yaml:"mountPath"`
+				} `yaml:"material"`
+			} `yaml:"authConfig"`
+		} `yaml:"fileConfig"`
+	} `yaml:"main"`
 }
 
 // TestShippedChartDocumentIsAValidAuthenticationConfiguration reads the
@@ -52,7 +56,7 @@ func TestShippedChartDocumentIsAValidAuthenticationConfiguration(t *testing.T) {
 	if err := yaml.Unmarshal(raw, &values); err != nil {
 		t.Fatalf("decode %s: %v", chartValuesFile, err)
 	}
-	authConfig := values.FileConfig.AuthConfig
+	authConfig := values.Main.FileConfig.AuthConfig
 	if authConfig.Document.IsZero() {
 		t.Fatalf("%s carries no fileConfig.authConfig.document, so this test would prove nothing", chartValuesFile)
 	}

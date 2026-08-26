@@ -344,7 +344,7 @@ tasks:
       # plane dark (#382). This gate asserts the RENDERED YAML instead, and it
       # reads the required runtime names out of the Go source, so a new one
       # fails here until the chart renders it.
-      - bash deploy/helm/elitea-main/tests/render-capabilities.sh
+      - bash deploy/helm/tests/render-capabilities.sh
 
   helm:llmpath:
     desc: Check that the charts do not ship the LLM path off, and that the gateway guards refuse

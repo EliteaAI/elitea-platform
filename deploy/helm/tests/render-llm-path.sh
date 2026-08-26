@@ -18,10 +18,34 @@
 # Needs: helm, yq. No cluster, no network.
 set -euo pipefail
 
+# The single chart contains the LLM gateway, which REFUSES to render until an
+# operator states its two postures. Every render below therefore supplies them:
+# they are render-only values (.invalid is reserved by RFC 2606), and a chart
+# that rendered without them would be the defect that refusal exists to stop.
+# These suites assert against ONE component, and every extractor below reads
+# "the Deployment" or "the ConfigMap" from the render. The single chart renders
+# every component, so the suite narrows the render to its subject instead of
+# teaching twenty selectors to disambiguate.
+ONLY_SCHEDULER="--set main.enabled=false --set web.enabled=false --set llmGateway.enabled=false --set otelCollector.enabled=false --set worker.enabled=false --set runtimeRedis.enabled=false"
+ONLY_GATEWAY="--set main.enabled=false --set web.enabled=false --set scheduler.enabled=false --set otelCollector.enabled=false --set worker.enabled=false --set runtimeRedis.enabled=false"
+# Chooses the narrowing for one case. A case that states a gateway value is a
+# gateway case, and is left to supply (or withhold) the postures itself — the
+# suite asserts that withholding them is refused, which a blanket injection
+# would quietly satisfy.
+narrow_for() {
+  case "$*" in
+    *llmGateway.*) echo "$ONLY_GATEWAY" ;;
+    *scheduler.*) echo "$ONLY_SCHEDULER" ;;
+    *) echo "$ONLY_MAIN $GATEWAY_RENDER_POSTURE" ;;
+  esac
+}
+ONLY_MAIN="--set web.enabled=false --set scheduler.enabled=false --set llmGateway.enabled=false --set otelCollector.enabled=false --set worker.enabled=false --set runtimeRedis.enabled=false"
+GATEWAY_RENDER_POSTURE="--set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=https://render-only.example.invalid/llm/v1 --set-string llmGateway.egressPosture=public-unrestricted"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-MAIN="$REPO/deploy/helm/elitea-main"
-GATEWAY="$REPO/deploy/helm/elitea-llm-gateway"
-SCHEDULER="$REPO/deploy/helm/elitea-scheduler"
+MAIN="$REPO/deploy/helm/elitea"
+GATEWAY="$REPO/deploy/helm/elitea"
+SCHEDULER="$REPO/deploy/helm/elitea"
 COMPOSE="$REPO/deploy/docker-compose.standalone-full.yml"
 
 WORK="$(mktemp -d)"
@@ -41,16 +65,16 @@ done
 # A values set that satisfies the guards this script is about, so a test of ONE
 # variable is not passed or failed by a different one.
 GUARDS_OK=(
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
-  --set-string egressPosture=allowlist
-  --set-string env.GATEWAY_EGRESS_ALLOWLIST="vllm.ml.svc.cluster.local:8000"
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
+  --set-string llmGateway.egressPosture=allowlist
+  --set-string llmGateway.env.GATEWAY_EGRESS_ALLOWLIST="vllm.ml.svc.cluster.local:8000"
 )
 
 # renders "<description>" <chart> [args...] — the chart must render.
 renders() {
   local description="$1" chart="$2"
   shift 2
-  if helm template test-release "$chart" "$@" >"$WORK/render.yaml" 2>"$WORK/err.txt"; then
+  if helm template $(narrow_for "$@") test-release "$chart" "$@" >"$WORK/render.yaml" 2>"$WORK/err.txt"; then
     pass "the chart renders $description"
   else
     fail "the chart refuses $description, and it must not:
@@ -66,7 +90,7 @@ refuses() {
   local description="$1" expected="$2" chart="$3"
   shift 3
   local output
-  if output="$(helm template test-release "$chart" "$@" 2>&1)"; then
+  if output="$(helm template $(narrow_for "$@") test-release "$chart" "$@" 2>&1)"; then
     fail "the chart rendered $description, and the deployment would then be wrong at run time"
     return
   fi
@@ -124,7 +148,7 @@ echo "=== #463 — LLM_GATEWAY_URL, the public /llm path =======================
 
 # The OFF posture is coherent: with no URL there is no material either, so the
 # chart never renders a half-configured pod.
-helm template test-release "$MAIN" >"$WORK/main-default.yaml"
+helm template ${GATEWAY_RENDER_POSTURE} ${ONLY_MAIN} test-release "$MAIN" >"$WORK/main-default.yaml"
 for key in LLM_GATEWAY_URL LLM_GATEWAY_CLIENT_CERT LLM_GATEWAY_CLIENT_KEY LLM_GATEWAY_CA_FILE; do
   actual="$(configValue "$key" "$WORK/main-default.yaml")"
   if [ "$actual" = "__NO_ENVFROM_LINK__" ]; then
@@ -150,37 +174,37 @@ fi
 # readable client certificate is a fatal boot error.
 refuses "a gateway URL with no client certificate" \
   "LLM_GATEWAY_CLIENT_CERT" "$MAIN" \
-  --set-string env.LLM_GATEWAY_URL="https://gw:8083"
+  --set-string main.env.LLM_GATEWAY_URL="https://gw:8083"
 
 refuses "a gateway URL with no CA bundle" \
   "LLM_GATEWAY_CA_FILE" "$MAIN" \
-  --set-string env.LLM_GATEWAY_URL="https://gw:8083" \
-  --set-string env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt \
-  --set-string env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key
+  --set-string main.env.LLM_GATEWAY_URL="https://gw:8083" \
+  --set-string main.env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt \
+  --set-string main.env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key
 
 refuses "certificate material with no gateway URL" \
   "LLM_GATEWAY_URL" "$MAIN" \
-  --set-string env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt
+  --set-string main.env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt
 
 # The old `secrets:` wiring put PEM TEXT in these variables. The code reads them
 # as file paths, so that shape could never work.
 refuses "certificate text where a file path belongs" \
   "absolute file path" "$MAIN" \
-  --set-string env.LLM_GATEWAY_URL="https://gw:8083" \
-  --set-string env.LLM_GATEWAY_CLIENT_CERT="-----BEGIN CERTIFICATE-----" \
-  --set-string env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key \
-  --set-string env.LLM_GATEWAY_CA_FILE=/run/certs/ca.crt
+  --set-string main.env.LLM_GATEWAY_URL="https://gw:8083" \
+  --set-string main.env.LLM_GATEWAY_CLIENT_CERT="-----BEGIN CERTIFICATE-----" \
+  --set-string main.env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key \
+  --set-string main.env.LLM_GATEWAY_CA_FILE=/run/certs/ca.crt
 
 refuses "a gateway URL with no scheme" \
   "missing scheme or host" "$MAIN" \
-  --set-string env.LLM_GATEWAY_URL="gw:8083" \
-  --set-string env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt \
-  --set-string env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key \
-  --set-string env.LLM_GATEWAY_CA_FILE=/run/certs/ca.crt
+  --set-string main.env.LLM_GATEWAY_URL="gw:8083" \
+  --set-string main.env.LLM_GATEWAY_CLIENT_CERT=/run/certs/client.crt \
+  --set-string main.env.LLM_GATEWAY_CLIENT_KEY=/run/certs/client.key \
+  --set-string main.env.LLM_GATEWAY_CA_FILE=/run/certs/ca.crt
 
 # The ON posture reaches the container environment. This is the direction the
 # refusals above would otherwise never let anyone test.
-helm template test-release "$MAIN" -f "$MAIN/values-standalone.yaml" >"$WORK/main-standalone.yaml"
+helm template ${GATEWAY_RENDER_POSTURE} ${ONLY_MAIN} test-release "$MAIN" -f "$MAIN/values-standalone.yaml" >"$WORK/main-standalone.yaml"
 url="$(configValue LLM_GATEWAY_URL "$WORK/main-standalone.yaml")"
 if [ -n "$url" ] && [ "$url" != "__NO_ENVFROM_LINK__" ]; then
   pass "values-standalone.yaml renders LLM_GATEWAY_URL=\"$url\" into the consumed ConfigMap"
@@ -215,22 +239,22 @@ echo "=== #467 — the three guard variables ===================================
 # selfref.go appends "/llm" itself.
 refuses "the Configurations plane with no self-origin and no deployment URL" \
   "ELITEA_SELF_LLM_ORIGINS" "$MAIN" \
-  -f "$MAIN/values-standalone.yaml" --set-string env.DEPLOYMENT_URL=""
+  -f "$MAIN/values-standalone.yaml" --set-string main.env.DEPLOYMENT_URL=""
 
 renders "the Configurations plane with only DEPLOYMENT_URL set" "$MAIN" \
   -f "$MAIN/values-standalone.yaml" \
-  --set-string env.DEPLOYMENT_URL="https://elitea.example.com" \
-  --set-string env.ELITEA_SELF_LLM_ORIGINS=""
+  --set-string main.env.DEPLOYMENT_URL="https://elitea.example.com" \
+  --set-string main.env.ELITEA_SELF_LLM_ORIGINS=""
 
 renders "the Configurations plane with only ELITEA_SELF_LLM_ORIGINS set" "$MAIN" \
   -f "$MAIN/values-standalone.yaml" \
-  --set-string env.DEPLOYMENT_URL="" \
-  --set-string env.ELITEA_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
+  --set-string main.env.DEPLOYMENT_URL="" \
+  --set-string main.env.ELITEA_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
 
 # And the value reaches the container, not only the values file.
-helm template test-release "$MAIN" -f "$MAIN/values-standalone.yaml" \
-  --set-string env.DEPLOYMENT_URL="" \
-  --set-string env.ELITEA_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
+helm template ${GATEWAY_RENDER_POSTURE} ${ONLY_MAIN} test-release "$MAIN" -f "$MAIN/values-standalone.yaml" \
+  --set-string main.env.DEPLOYMENT_URL="" \
+  --set-string main.env.ELITEA_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
   >"$WORK/main-selforigins.yaml"
 if [ "$(configValue ELITEA_SELF_LLM_ORIGINS "$WORK/main-selforigins.yaml")" = "https://elitea.example.com/llm/v1" ]; then
   pass "ELITEA_SELF_LLM_ORIGINS reaches the container environment"
@@ -241,33 +265,33 @@ fi
 # The gateway, guard #1 at request time. There is no legitimate empty posture.
 refuses "an empty GATEWAY_SELF_LLM_ORIGINS" \
   "GATEWAY_SELF_LLM_ORIGINS" "$GATEWAY" \
-  --set-string egressPosture=public-unrestricted
+  --set-string llmGateway.egressPosture=public-unrestricted
 
 # The gateway, the egress allowlist. The posture must be STATED, because the
 # empty value is permissive for public hosts and closed for private ones.
 refuses "an unstated egress posture" \
   "egressPosture must be one of" "$GATEWAY" \
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1"
 
 refuses "the allowlist posture with no allowlist" \
   "needs env.GATEWAY_EGRESS_ALLOWLIST" "$GATEWAY" \
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
-  --set-string egressPosture=allowlist
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
+  --set-string llmGateway.egressPosture=allowlist
 
 refuses "an allowlist that contradicts the stated posture" \
   "contradicts" "$GATEWAY" \
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
-  --set-string egressPosture=public-unrestricted \
-  --set-string env.GATEWAY_EGRESS_ALLOWLIST="vllm.ml.svc.cluster.local:8000"
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
+  --set-string llmGateway.egressPosture=public-unrestricted \
+  --set-string llmGateway.env.GATEWAY_EGRESS_ALLOWLIST="vllm.ml.svc.cluster.local:8000"
 
 refuses "an egress posture that is not one of the two modes" \
   "egressPosture must be one of" "$GATEWAY" \
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
-  --set-string egressPosture=off
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
+  --set-string llmGateway.egressPosture=off
 
 # Both valid postures render, and both reach the container. A guard that
 # refuses everything also passes a test that only checks refusal.
-helm template test-release "$GATEWAY" "${GUARDS_OK[@]}" >"$WORK/gw-allowlist.yaml"
+helm template ${ONLY_GATEWAY} test-release "$GATEWAY" "${GUARDS_OK[@]}" >"$WORK/gw-allowlist.yaml"
 if [ "$(deployEnv GATEWAY_EGRESS_ALLOWLIST "$WORK/gw-allowlist.yaml")" = "vllm.ml.svc.cluster.local:8000" ]; then
   pass "the allowlist posture puts the private model host in the container environment"
 else
@@ -279,9 +303,9 @@ else
   fail "GATEWAY_SELF_LLM_ORIGINS does not reach the container environment"
 fi
 
-helm template test-release "$GATEWAY" \
-  --set-string env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
-  --set-string egressPosture=public-unrestricted >"$WORK/gw-public.yaml"
+helm template ${ONLY_GATEWAY} test-release "$GATEWAY" \
+  --set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS="https://elitea.example.com/llm/v1" \
+  --set-string llmGateway.egressPosture=public-unrestricted >"$WORK/gw-public.yaml"
 if [ -z "$(deployEnv GATEWAY_EGRESS_ALLOWLIST "$WORK/gw-public.yaml")" ]; then
   pass "the public-unrestricted posture renders an empty allowlist, as it states"
 else
@@ -315,9 +339,9 @@ fi
 
 # The same rule, held for a real value rather than for the shipped empty pair —
 # otherwise the assertion above passes on "both empty" forever.
-helm template test-release "$MAIN" -f "$MAIN/values-standalone.yaml" >"$WORK/main-id.yaml"
-helm template test-release "$GATEWAY" "${GUARDS_OK[@]}" \
-  --set-string env.ELITEA_AI_PROJECT_ID="1" >"$WORK/gw-id.yaml"
+helm template ${GATEWAY_RENDER_POSTURE} ${ONLY_MAIN} test-release "$MAIN" -f "$MAIN/values-standalone.yaml" >"$WORK/main-id.yaml"
+helm template ${ONLY_GATEWAY} test-release "$GATEWAY" "${GUARDS_OK[@]}" \
+  --set-string llmGateway.env.ELITEA_AI_PROJECT_ID="1" >"$WORK/gw-id.yaml"
 main_set="$(configValue ELITEA_AI_PROJECT_ID "$WORK/main-id.yaml")"
 gw_set="$(deployEnv ELITEA_AI_PROJECT_ID "$WORK/gw-id.yaml")"
 if [ -n "$main_set" ] && [ "$main_set" = "$gw_set" ]; then
@@ -329,7 +353,7 @@ fi
 echo
 echo "=== #464 — the budget accumulator writers ==============================="
 
-helm template test-release "$SCHEDULER" >"$WORK/scheduler.yaml"
+helm template ${ONLY_SCHEDULER} test-release "$SCHEDULER" >"$WORK/scheduler.yaml"
 while read -r key expected; do
   [ -z "$key" ] && continue
   actual="$(configValue "$key" "$WORK/scheduler.yaml")"
@@ -362,10 +386,10 @@ fi
 # rendered manifest, because that is a supported posture. What must NOT happen
 # is the flag reading "on" while the URL is empty.
 renders "a deliberate collection-off scheduler install" "$SCHEDULER" \
-  --set-string env.BUDGET_WRITEBACK_ENABLED=false \
-  --set-string env.PRICE_SYNC_ENABLED=false
-helm template test-release "$SCHEDULER" \
-  --set-string env.BUDGET_WRITEBACK_ENABLED=false >"$WORK/scheduler-off.yaml"
+  --set-string scheduler.env.BUDGET_WRITEBACK_ENABLED=false \
+  --set-string scheduler.env.PRICE_SYNC_ENABLED=false
+helm template ${ONLY_SCHEDULER} test-release "$SCHEDULER" \
+  --set-string scheduler.env.BUDGET_WRITEBACK_ENABLED=false >"$WORK/scheduler-off.yaml"
 if [ "$(configValue BUDGET_WRITEBACK_ENABLED "$WORK/scheduler-off.yaml")" = "false" ]; then
   pass "collection can be turned off deliberately, and the rendered value says so"
 else

@@ -59,3 +59,8 @@ deploy/certs/
 
 # Go coverage profiles (task coverage / ci-go.yml write one per module)
 coverage.out
+
+# Vendored Helm subchart archives. `helm dependency build` recreates them from
+# Chart.lock, which IS tracked; the .tgz files are build output and would trip
+# scripts/no-binaries-check.sh.
+deploy/helm/*/charts/*.tgz

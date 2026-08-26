@@ -1,0 +1,27 @@
+{{- if .Values.web.enabled }}
+{{- if .Values.web.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "elitea-web.fullname" . }}
+  labels:
+    {{- include "elitea-web.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "elitea-web.fullname" . }}
+  minReplicas: {{ .Values.web.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.web.autoscaling.maxReplicas }}
+  metrics:
+    # Plain CPU utilisation is an honest signal for static asset serving —
+    # unlike the gateway, where I/O-bound streaming makes CPU meaningless and a
+    # custom SSE-connection metric is used instead. Requires metrics-server.
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.web.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
