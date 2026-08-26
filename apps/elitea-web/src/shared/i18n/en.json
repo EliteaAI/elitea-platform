@@ -388,6 +388,7 @@
   "chat-participants.deleteModal.fromTheConversation": "from the conversation?",
   "chat-participants.deleteModal.textContent": "Are you sure to remove ",
   "chat-participants.dropdown.allUsers": "All users",
+  "chat-participants.dropdown.quickActionsLabel": "Participant quick actions",
   "chat-participants.dropdown.removeUser": "Remove user",
   "chat-participants.entityType.agent": "agent",
   "chat-participants.entityType.pipeline": "pipeline",

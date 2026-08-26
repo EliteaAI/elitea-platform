@@ -129,7 +129,14 @@ export function useToolkitParticipants(params: UseToolkitParticipantsParams): To
   const listQuery = useListToolkitInstances(
     projectId ?? '',
     { limit: PAGE_SIZE, offset },
-    { query: { enabled: enabled && projectId !== undefined } },
+    // Non-EMPTY, not merely non-`undefined`: `useParticipants` passes its
+    // `publicProjectId` straight through here, and that value is
+    // `String(import.meta.env.VITE_PUBLIC_PROJECT_ID ?? '')` — an empty
+    // string in any build where the var is unset (staging is one). An empty
+    // id still cleared a `!== undefined` gate and issued
+    // `GET /elitea_core/tools/prompt_lib/?limit=100&offset=0`, a 404 on
+    // every "+"-menu open.
+    { query: { enabled: enabled && projectId !== undefined && projectId !== '' } },
   );
 
   return useMemo<ToolkitParticipantsResult>(() => {
