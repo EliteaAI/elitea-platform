@@ -133,6 +133,26 @@ type AttachmentStore interface {
 	RequireAttachmentBucket(ctx context.Context, projectID int64, bucketName string, retentionDays int32) (bucketID int64, err error)
 	RecordAttachmentObject(ctx context.Context, bucketID int64, key string, byteLength int64, mediaType string, expiresAt *time.Time) error
 
+	// LookupAttachmentBucket resolves the same reserved system bucket
+	// RequireAttachmentBucket returns, but LOOKUP ONLY: it returns
+	// storage.ErrNotFound rather than creating the row. DeleteAttachments is
+	// its only caller, and a delete that creates a bucket as a side effect
+	// would leave a project that never uploaded anything owning a fresh,
+	// empty, retention-stamped bucket row — the create belongs to the upload
+	// path alone. Not found simply means nothing was ever stored, which is
+	// not an error for a delete.
+	LookupAttachmentBucket(ctx context.Context, projectID int64, bucketName string) (bucketID int64, err error)
+	// ListAttachmentObjectKeys returns the keys of the elitea_storage.objects
+	// metadata rows under keyPrefix in one bucket. DeleteAttachments derives
+	// its delete set from these ROWS, never from an ObjectStore.List of the
+	// bucket: the bucket is shared by every conversation in the project, and
+	// an object in it with no metadata row was not written by
+	// finalizeAttachment, so it is not this route's to delete.
+	ListAttachmentObjectKeys(ctx context.Context, bucketID int64, keyPrefix string) ([]string, error)
+	// DeleteAttachmentObjects removes the metadata rows naming keys. Bytes
+	// are the caller's job and must go FIRST — see DeleteAttachments.
+	DeleteAttachmentObjects(ctx context.Context, bucketID int64, keys []string) error
+
 	UpsertAttachmentChunk(ctx context.Context, projectID int64, conversationID, fileID string, chunkIndex, totalChunks int32, fileName, contentType string, body []byte) error
 	CountAttachmentChunks(ctx context.Context, projectID int64, conversationID, fileID string) (int64, error)
 	ListAttachmentChunksOrdered(ctx context.Context, projectID int64, conversationID, fileID string) ([]AttachmentChunk, error)

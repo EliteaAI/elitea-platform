@@ -3,12 +3,14 @@ package conversations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -976,14 +978,141 @@ func (h *Handler) AddAttachments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// DeleteAttachments removes a conversation's attachments: the stored bytes,
+// their elitea_storage.objects metadata rows, and finally the
+// chat_conversations.meta.attachments list that named them.
+//
+// DEFECT #599: this route used to strip the meta and nothing else. The
+// uploaded bytes and their metadata rows survived until the retention
+// sweeper eventually expired them, so "delete my attachments" forgot the
+// attachments without deleting them. Pylon's equivalent route removes the
+// bytes at the same moment (legacy/plugins/elitea_core/api/v2/
+// attachments.py:240, `mc.remove_file(bucket_name, filename)`); this is that
+// parity baseline.
 func (h *Handler) DeleteAttachments(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
+
+	// Bytes first, meta last. If the byte delete fails we must NOT strip the
+	// meta: the meta is the only thing left in the product that names those
+	// files, so stripping it after a failed delete produces exactly the state
+	// this defect is about — stored bytes nobody can see or retry deleting.
+	if err := h.deleteStoredAttachments(r.Context(), projectID, conversationID); err != nil {
+		apierr.Write(w, err)
+		return
+	}
 	if err := h.repo.DeleteAttachments(r.Context(), projectID, conversationID); err != nil {
 		apierr.Write(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// deleteStoredAttachments removes the object bytes and metadata rows
+// finalizeAttachment wrote for one conversation, and resolves the bucket the
+// same way finalizeAttachment does (policy first, defaultAttachmentBucketName
+// fallback) so the delete reads the same bucket the upload wrote.
+//
+// A returned error is meant to reach the client as a 500 rather than being
+// logged and swallowed: answering `{"ok": true}` for an attachment that is
+// still stored is the precise failure shape this change exists to remove.
+func (h *Handler) deleteStoredAttachments(ctx context.Context, projectIDStr, conversationID string) error {
+	// No database or object store configured: degrade to the historical
+	// metadata-only behaviour instead of failing the request, matching how
+	// writeAttachmentBytes degrades on the same two nil dependencies (see
+	// WithObjectStore/WithAttachmentStore). There are no bytes to delete in
+	// a deployment that could never have stored any.
+	if h.store == nil || h.attachments == nil {
+		return nil
+	}
+
+	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
+	if err != nil || projectID <= 0 {
+		return apierr.BadRequest("invalid project id")
+	}
+
+	bucketName, _, _, err := h.attachments.AttachmentPolicy(ctx, projectID)
+	if err != nil {
+		return apierr.Internal("get project storage policy: " + err.Error())
+	}
+	if bucketName == "" {
+		bucketName = defaultAttachmentBucketName
+	}
+
+	// Lookup, never create — a delete that mints a bucket row as a side
+	// effect is a worse outcome than the no-op it is standing in for. No
+	// bucket means nothing was ever stored for this project, which is a
+	// normal outcome here (meta-only attachments, or a conversation that
+	// never had an upload), not an error: skip cleanup, still strip the meta.
+	bucketID, err := h.attachments.LookupAttachmentBucket(ctx, projectID, bucketName)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return apierr.Internal("lookup attachment bucket: " + err.Error())
+	}
+
+	// REJECT LIKE METACHARACTERS IN THE PREFIX.
+	//
+	// ListAttachmentObjectKeys resolves to `key LIKE $prefix || '%'`
+	// (internal/db/queries/artifact_storage.sql:117), so `%` and `_` in the
+	// route parameter are WILDCARDS, not literals. A caller authorised for the
+	// project — this route sits behind models.chat.attachments.delete — could
+	// pass `%` as the conversation id and have the prefix become `%/`, which
+	// matches every key containing a slash: every conversation's attachments in
+	// the project, deleted in one request. `\` is rejected with them because it
+	// is the escape character the pattern would otherwise consume.
+	//
+	// Rejecting rather than escaping, because no legitimate identifier contains
+	// any of the three: finalizeAttachment builds the key from this same route
+	// parameter, and the values that reach it are conversation UUIDs and
+	// numeric ids. An escape would silently accept an identifier that cannot
+	// name a real conversation and then quietly match nothing.
+	if strings.ContainsAny(conversationID, `%_\`) {
+		return apierr.BadRequest("invalid conversation id")
+	}
+
+	// The recorded metadata rows are the source of truth for what to delete,
+	// NOT a listing of the object store. The bucket is shared by every
+	// conversation in the project, and an object in it with no metadata row
+	// was not written by finalizeAttachment — deriving the delete set from a
+	// store listing would let this route reach bytes it never recorded.
+	// finalizeAttachment keys every attachment `{conversationID}/{filename}`,
+	// so that prefix selects exactly this conversation's own objects.
+	keys, err := h.attachments.ListAttachmentObjectKeys(ctx, bucketID, conversationID+"/")
+	if err != nil {
+		return apierr.Internal("list attachment objects: " + err.Error())
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	refs := make([]storage.ObjectRef, 0, len(keys))
+	for _, key := range keys {
+		ref, err := storage.NewObjectRef(projectIDStr, bucketName, key)
+		if err != nil {
+			return apierr.Internal("invalid stored attachment key " + strconv.Quote(key) + ": " + err.Error())
+		}
+		refs = append(refs, ref)
+	}
+
+	// Bytes BEFORE rows. If this fails, the rows must still name what is
+	// stored — dropping the rows first would orphan the bytes with nothing
+	// left pointing at them, and neither this route nor the retention sweeper
+	// (which walks the same rows) could ever find them again.
+	result, err := h.store.DeleteBatch(ctx, refs)
+	if err != nil {
+		return apierr.Internal("delete attachment bytes: " + err.Error())
+	}
+	if len(result.Failed) > 0 {
+		return apierr.Internal(fmt.Sprintf("delete attachment bytes: %d of %d objects failed, first %q: %v",
+			len(result.Failed), len(refs), result.Failed[0].Key, result.Failed[0].Err))
+	}
+
+	if err := h.attachments.DeleteAttachmentObjects(ctx, bucketID, keys); err != nil {
+		return apierr.Internal("delete attachment metadata: " + err.Error())
+	}
+	return nil
 }
 
 func (h *Handler) GetContextAnalytics(w http.ResponseWriter, r *http.Request) {
