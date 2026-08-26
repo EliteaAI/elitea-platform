@@ -55,11 +55,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"sort"
 	"strconv"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -169,7 +171,7 @@ func (h *Handler) readMatrix(ctx context.Context, scope, mode string) (permissio
 		return permissionMatrix{roles: roles, catalogue: catalogue, granted: granted}, nil
 	}
 
-	projectID, err := scopeProjectID(scope)
+	projectID, err := h.scopeProjectID(ctx, scope)
 	if err != nil {
 		return permissionMatrix{}, err
 	}
@@ -600,7 +602,7 @@ func sortGrants(cells []grant) {
 func (h *Handler) applyGrantChanges(
 	ctx context.Context, scope, mode string, granted, revoked []grant,
 ) error {
-	insertSQL, deleteSQL, scopeArg, err := grantStatements(scope, mode)
+	insertSQL, deleteSQL, scopeArg, err := h.grantStatements(ctx, scope, mode)
 	if err != nil {
 		return err
 	}
@@ -630,7 +632,9 @@ func (h *Handler) applyGrantChanges(
 // grantStatements picks the pair of statements for the scope. Both are
 // parameterised on ($1 scope key, $2 role name, $3 permission) so the caller
 // does not branch per cell.
-func grantStatements(scope, mode string) (insertSQL, deleteSQL string, scopeArg any, err error) {
+func (h *Handler) grantStatements(
+	ctx context.Context, scope, mode string,
+) (insertSQL, deleteSQL string, scopeArg any, err error) {
 	if scope == scopeAdministration {
 		return `
 INSERT INTO public.auth_core__role_permission (role_id, permission)
@@ -643,7 +647,7 @@ WHERE role.id = grant_row.role_id
   AND role.mode = $1 AND role.name = $2 AND grant_row.permission = $3`, mode, nil
 	}
 
-	projectID, err := scopeProjectID(scope)
+	projectID, err := h.scopeProjectID(ctx, scope)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -719,7 +723,7 @@ type syncResult struct {
 }
 
 func (h *Handler) syncDefaultPermissionsToProjects(ctx context.Context) (syncResult, error) {
-	publicProjectID, err := scopeProjectID(scopePublic)
+	publicProjectID, err := h.scopeProjectID(ctx, scopePublic)
 	if err != nil {
 		return syncResult{}, err
 	}
@@ -821,24 +825,64 @@ const defaultPublicProjectID = 1
 
 // scopeProjectID resolves which project a project-scoped request edits.
 //
-// Pylon reads these from its plugin config (`elitea_config["ai_project_id"]` and
-// the support_assistant module's `support_project_id`). elitea-main has no
-// plugin config store — `PluginConfigValues` is still a stub — so they come from
-// the environment, in the same shape `internal/api/middleware/project.go`
-// already uses for the public project.
+// The PUBLIC project comes from the environment, in the same shape
+// `internal/api/middleware/project.go` already uses.
+//
+// The SUPPORT project does NOT, and the difference is not stylistic. Pylon read
+// it from the support_assistant module's `support_project_id`, and so does this
+// platform now: the admin Features page writes that key into
+// `centry.platform_config`, and `internal/api/v2/supportassistant` BOOTSTRAPS
+// the hidden project lazily — on the first support request after an operator
+// turns the assistant on — and writes the id it created back to the same key.
+// Nobody types that id anywhere.
+//
+// An environment variable therefore cannot be the source of truth: it would be
+// a second, hand-maintained copy of an id the service itself mints, and the
+// moment they disagree this tab edits the permissions of a project the
+// assistant is not using. It stays supported as a fallback for a deployment
+// that pins the project by hand, but the stored value wins.
 //
 // The SUPPORT project has NO default. Pylon answers 404 "Support project not
 // configured" when its id is unset, and so does this; inventing a default would
 // point that tab at some unrelated project's permissions.
-func scopeProjectID(scope string) (int, error) {
+func (h *Handler) scopeProjectID(ctx context.Context, scope string) (int, error) {
 	switch scope {
 	case scopePublic:
 		return envProjectID("AI_PROJECT_ID", defaultPublicProjectID)
 	case scopeSupport:
-		return envProjectID("SUPPORT_PROJECT_ID", 0)
+		return h.supportProjectID(ctx)
 	default:
 		return 0, matrixError{status: http.StatusNotFound, message: "unknown permission scope"}
 	}
+}
+
+// supportProjectID reads the bootstrapped hidden project, falling back to the
+// environment.
+//
+// A store that cannot be read is NOT treated as "unset". Answering 404 there
+// would tell the operator the assistant is not configured, when the truth is
+// that this process could not find out — and the next thing they would do is
+// set the environment variable this function is trying to make unnecessary.
+func (h *Handler) supportProjectID(ctx context.Context) (int, error) {
+	settings, err := platformconfig.LoadSupportAssistant(ctx, h.pool)
+	if err != nil {
+		return 0, matrixError{
+			status:  http.StatusServiceUnavailable,
+			message: "the support project could not be read",
+		}
+	}
+	if settings.ProjectID > 0 {
+		if settings.ProjectID > math.MaxInt32 {
+			return 0, matrixError{
+				status:  http.StatusInternalServerError,
+				message: "the stored support project id is out of range",
+			}
+		}
+		return int(settings.ProjectID), nil
+	}
+	// Unset, not unreadable. The assistant has never been enabled, so its
+	// project has never been created — the same answer pylon gives.
+	return envProjectID("SUPPORT_PROJECT_ID", 0)
 }
 
 func envProjectID(variable string, fallback int) (int, error) {
