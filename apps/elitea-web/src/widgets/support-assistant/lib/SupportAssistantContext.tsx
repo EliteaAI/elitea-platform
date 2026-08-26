@@ -10,17 +10,24 @@
  */
 import { createContext, useContext, type MutableRefObject, type ReactNode } from 'react';
 
+import type { TEliteaAssistantRef } from '../vendor/lib/types';
+
 /**
- * Shape of the `@eliteaai/elitea-assistant` component ref.
- * The actual type comes from the `@eliteaai/elitea-assistant` package;
- * this is a minimal interface matching the methods consumed by the
- * baseline's `SupportAssistantWidget`.
+ * The assistant component's imperative handle.
+ *
+ * It USED TO BE a three-method stand-in — "a minimal interface matching the
+ * methods consumed by the baseline's `SupportAssistantWidget`" — because the
+ * real type lived in a package this app did not depend on. The widget's source
+ * is ported under `../vendor/` now, so this is an ALIAS of the real handle
+ * rather than a guess at it.
+ *
+ * That matters beyond tidiness: a structural subset type still satisfies
+ * `useContext`, but it does NOT satisfy `ref=` on the component itself, so the
+ * stand-in would have quietly forced a cast at the one place the ref is actually
+ * attached — the place where being wrong about the handle's shape is a runtime
+ * error rather than a type error.
  */
-export interface EliteaAssistantInstance {
-  toggle: () => void;
-  open?: () => void;
-  close?: () => void;
-}
+export type EliteaAssistantInstance = TEliteaAssistantRef;
 
 /**
  * Context providing a mutable ref to the assistant instance.

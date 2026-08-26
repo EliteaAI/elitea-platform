@@ -1,0 +1,88 @@
+/* ── Chat Window ── */
+
+.elitea-assistant-window {
+  position: absolute;
+  bottom: 0rem;
+  width: 28.75rem;
+  height: 30rem;
+  border-radius: 1rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--elitea-assistant-window-shadow);
+  background: var(--elitea-assistant-chat-bg);
+  border: 0.0625rem solid var(--elitea-assistant-window-border);
+  animation: elitea-assistant-slide-up 0.25s ease-out;
+}
+
+.elitea-assistant-container--bottom-right .elitea-assistant-window {
+  right: 2.875rem;
+}
+
+.elitea-assistant-container--bottom-left .elitea-assistant-window {
+  left: 2.875rem;
+}
+
+@keyframes elitea-assistant-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Modal / Expanded ── */
+
+.elitea-assistant-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: elitea-assistant-fade-in 0.2s ease-out;
+}
+
+@keyframes elitea-assistant-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.elitea-assistant-window.elitea-assistant-window--expanded {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: 45rem;
+  height: 42.375rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 2rem);
+  z-index: 99999999999;
+  animation: elitea-assistant-scale-in 0.2s ease-out;
+}
+
+@media (max-width: 48rem) {
+  .elitea-assistant-window.elitea-assistant-window--expanded {
+    width: calc(100vw - 2rem);
+    height: calc(100vh - 2rem);
+    border-radius: 0.75rem;
+  }
+}
+
+@keyframes elitea-assistant-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

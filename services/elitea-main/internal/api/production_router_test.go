@@ -1649,7 +1649,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/notifications/notification/prompt_lib/{projectID}/{notificationID}",
 		"DELETE /api/v2/notifications/notifications/prompt_lib/{projectID}",
 		"DELETE /api/v2/projects/group/prompt_lib/{projectID}/{groupID}",
-		// Project DELETE (#333). Destructive: it drops the tenant schema.
 		"DELETE /api/v2/projects/project/{mode}/{projectID}",
 		"DELETE /api/v2/scim/v2/Groups/{id}",
 		"DELETE /api/v2/scim/v2/Users/{id}",
@@ -1658,8 +1657,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"DELETE /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"DELETE /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
-		// The S3-shaped write verbs, root-mounted and wildcard-captured for
-		// the same reasons as the reads below.
 		"DELETE /artifacts/s3/{bucket}/*",
 		"GET /api/openapi.json",
 		"GET /api/openapi.yaml",
@@ -1833,18 +1830,16 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"GET /api/v2/social/trending_authors/prompt_lib/{projectID}",
 		"GET /api/v2/support_assistant/config",
 		"GET /api/v2/support_assistant/config/",
+		"GET /api/v2/support_assistant/conversation/{conversationUUID}",
+		"GET /api/v2/support_assistant/conversations",
+		"GET /api/v2/support_assistant/conversations/",
 		"GET /api/v2/tracing/status/administration",
 		"GET /api/v2/tracing/status/prompt_lib/{projectID}",
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/",
 		"GET /api/v2/webhooks/prompt_lib/{projectID}/{webhookID}",
 		"GET /app/{projectID}/mcp",
 		"GET /app/{projectID}/mcp/*",
-		// Root-mounted on purpose: the SDK builds this URL from a bare
-		// origin with no /api/v2 segment, so this is the path that actually
-		// arrives. See mountArtifactRoutes in router.go.
 		"GET /artifacts/s3/{bucket}",
-		// The object read, wildcard-captured so a nested key
-		// ("folder/sub/file.txt") matches as one key rather than 404ing.
 		"GET /artifacts/s3/{bucket}/*",
 		"GET /auth",
 		"GET /avatars/{projectID}/{filename}",
@@ -1865,7 +1860,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"PATCH /api/v2/elitea_core/skill/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/skill_default_version/{mode}/{projectID}/{skillID}",
 		"PATCH /api/v2/elitea_core/tool/prompt_lib/{projectID}/{toolkitID}",
-		// The expanded version READ the SDK calls with a body-less PATCH (#336).
 		"PATCH /api/v2/elitea_core/version/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"PATCH /api/v2/scim/v2/Groups/{id}",
 		"PATCH /api/v2/scim/v2/Users/{id}",
@@ -1945,8 +1939,6 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/elitea_core/version_validator/prompt_lib/{projectID}/{applicationID}/{versionID}",
 		"POST /api/v2/elitea_core/versions/prompt_lib/{projectID}/{applicationID}",
 		"POST /api/v2/projects/group/prompt_lib/{projectID}",
-		// Project CREATE (#333). The handler refuses any {mode} other than
-		// `administration`, matching the reference's route table.
 		"POST /api/v2/projects/project/{mode}",
 		"POST /api/v2/scim/v2/Groups",
 		"POST /api/v2/scim/v2/Users",
@@ -1957,6 +1949,9 @@ func TestProductionRouterMatchesMainComposedRouteSurface(t *testing.T) {
 		"POST /api/v2/social/like/prompt_lib/{projectID}/application/{applicationID}",
 		"POST /api/v2/social/like/prompt_lib/{projectID}/{entityType}/{entityID}",
 		"POST /api/v2/social/pin/prompt_lib/{projectID}/{entityType}/{entityID}",
+		"POST /api/v2/support_assistant/conversations",
+		"POST /api/v2/support_assistant/conversations/",
+		"POST /api/v2/support_assistant/predict/{conversationUUID}",
 		"POST /api/v2/tracing/collect/prompt_lib",
 		"POST /api/v2/tracing/collect/prompt_lib/{projectID}",
 		"POST /api/v2/tracing/otlp/prompt_lib",

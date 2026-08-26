@@ -37,6 +37,7 @@ const (
 	SectionGuardrails       = "guardrails"
 	SectionDedicatedBanner  = "dedicated_banner"
 	SectionMaintenance      = "maintenance"
+	SectionSupportAssistant = "support_assistant"
 )
 
 // Field keys, for the same reason.
@@ -76,6 +77,14 @@ const (
 	KeyMaintenanceEnabled = "maintenance_enabled"
 	KeyMaintenanceTitle   = "maintenance_title"
 	KeyMaintenanceMessage = "maintenance_message"
+
+	KeySupportAssistantEnabled = "support_assistant_enabled"
+	KeySupportProjectID        = "support_project_id"
+	KeySupportAgentProjectID   = "support_agent_project_id"
+	KeySupportAgentID          = "support_agent_id"
+	KeySupportWelcomeMessage   = "support_welcome_message"
+	KeySupportAssistantName    = "support_assistant_name"
+	KeySupportPlaceholder      = "support_placeholder"
 )
 
 // Values is one section's stored rows, decoded. A key ABSENT from the map has
@@ -166,6 +175,24 @@ func (v Values) Ints(key string) []int64 {
 		out = append(out, int64(number))
 	}
 	return out
+}
+
+// Int reads a single JSON number as an int64, reporting whether the key held
+// one. It is a two-value read rather than a fallback read because the callers
+// that need it — the support assistant's project and agent ids — have to tell
+// "the operator has not chosen a project yet" from "the operator chose project
+// 0", and a fallback collapses those into one answer.
+//
+// A non-integral number is ABSENT, not truncated, for the same reason Ints
+// skips one: agent 1.5 is not agent 1, and resolving it to a neighbouring row
+// would run somebody else's agent against every support conversation on the
+// platform.
+func (v Values) Int(key string) (int64, bool) {
+	number, ok := v[key].(float64)
+	if !ok || number != float64(int64(number)) {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 // String reads a string, falling back when the key is absent or holds something

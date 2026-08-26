@@ -48,7 +48,22 @@ const VALIDATION_REASON =
 const SKILL_VALIDATION_REASON =
   'publish validation for skills in this service is deterministic (version name collisions, empty ' +
   'instructions, publish status); there is no AI evaluator for custom criteria to reach.';
-const WIDGET_REASON = 'the in-app support assistant is not mounted in this application';
+
+/*
+ * `SKILL_REASON` AND `WIDGET_REASON` BOTH USED TO STAND HERE, naming the two
+ * Features sections the server withheld. Neither survives: #585 built the skill
+ * publishing pipeline and #588 built the support assistant, so both sections are
+ * live and the server sends no reason for either.
+ *
+ * THAT LEFT TWO TESTS WITH NOTHING TO ASSERT — the sidebar's "Not available
+ * here" marker and the whole "a section with no consumer" case would have
+ * passed by looking at an empty set, which is the failure mode this page exists
+ * to prevent in the product. So the fixture keeps ONE withheld section as an
+ * explicit stand-in. It is not a real section, and it is not pretending to be:
+ * what these tests exercise is the page RENDERING a server-declared refusal, not
+ * which product feature happens to lack a consumer this week.
+ */
+const STAND_IN_REASON = 'this section is withheld by the server for a reason only the server knows';
 
 /** The server's own section list, trimmed to what these tests exercise. */
 const SECTIONS = [
@@ -155,8 +170,21 @@ const SECTIONS = [
     id: 'support_assistant',
     page: 'features',
     title: 'Support Assistant',
-    unavailable_reason: WIDGET_REASON,
-    fields: [{ key: 'vite_elitea_assistant', type: 'string', title: 'Assistant Enabled' }],
+    fields: [
+      // A BOOLEAN, matching the server. The reference's `vite_elitea_assistant`
+      // was a Vite build-time string of "0"/"1"; nothing here is built at build
+      // time, so the switch is a switch.
+      { key: 'support_assistant_enabled', type: 'boolean', title: 'Assistant Enabled', default: false },
+    ],
+  },
+  {
+    // The stand-in described in the header. Last in order, so it cannot
+    // interfere with "opens on the first AVAILABLE section".
+    id: 'withheld_stand_in',
+    page: 'features',
+    title: 'Withheld Example',
+    unavailable_reason: STAND_IN_REASON,
+    fields: [],
   },
   {
     id: 'voice_features',
@@ -297,11 +325,11 @@ describe('AdminFeatures — which section opens', () => {
   it('never fetches values for a section the server declared unavailable', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Support Assistant');
+    await openSection('Withheld Example');
 
     await screen.findByTestId('admin-features-unavailable');
     const reads = recorded.filter(
-      (entry) => entry.method === 'GET-values' && entry.url.includes('/support_assistant'),
+      (entry) => entry.method === 'GET-values' && entry.url.includes('/withheld_stand_in'),
     );
     expect(reads).toHaveLength(0);
   });
@@ -309,9 +337,9 @@ describe('AdminFeatures — which section opens', () => {
   it('marks the unavailable sections in the sidebar before they are opened', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    // Support Assistant. Skill Publishing used to be the second: it is live now
-    // (services/elitea-main/internal/api/v2/skillpublish), which is why this
-    // count went from two to one.
+    // The stand-in, alone. Skill Publishing and Support Assistant were the two
+    // real ones and both became live; see the header for why the fixture still
+    // carries a withheld section at all.
     expect(screen.getAllByText('Not available here')).toHaveLength(1);
   });
 
@@ -329,6 +357,17 @@ describe('AdminFeatures — which section opens', () => {
     // The AI-rules field states the server's reason instead of taking input.
     expect(screen.getByText(SKILL_VALIDATION_REASON)).toBeInTheDocument();
   });
+
+  it('renders the live Support Assistant form', async () => {
+    renderAdminRoute(<AdminFeatures />);
+    await waitForMcpSection();
+    await openSection('Support Assistant');
+
+    expect(screen.queryByTestId('admin-features-unavailable')).toBeNull();
+    // A SWITCH, not a text box: the reference's `vite_elitea_assistant` was a
+    // build-time string of "0"/"1".
+    expect(await screen.findByLabelText('Assistant Enabled')).toBeInTheDocument();
+  });
 });
 
 /* ── the sections with nothing behind them ─────────────────────────────── */
@@ -337,12 +376,12 @@ describe('AdminFeatures — a section with no consumer', () => {
   it("shows the SERVER's reason and no control at all", async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Support Assistant');
+    await openSection('Withheld Example');
 
     const notice = await screen.findByTestId('admin-features-unavailable');
-    expect(notice).toHaveTextContent('not mounted in this application');
-    // A DISABLED switch would still read as "configurable, just not now".
-    expect(screen.queryByRole('switch', { name: 'Assistant Enabled' })).not.toBeInTheDocument();
+    expect(notice).toHaveTextContent(STAND_IN_REASON);
+    // A DISABLED control would still read as "configurable, just not now".
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
   });

@@ -1973,9 +1973,186 @@ components:
       type: object
       required: [enabled]
       properties:
-        enabled: { type: boolean }
+        enabled:
+          type: boolean
+          description: >
+            Whether the widget should render AT ALL. It is `true` only when the
+            operator enabled the section, a hidden support project exists, and a
+            support agent has been chosen — an assistant that cannot answer is
+            reported as disabled rather than as enabled-and-broken.
+        title: { type: string }
+        welcome_message: { type: string }
+        placeholder: { type: string }
+        support_project_id:
+          type: integer
+          format: int64
+          description: >
+            The hidden project support conversations live in. It is an OUTPUT
+            only, echoed so the widget can build the project-scoped execution
+            event-stream URL; no support route accepts a project from a client.
+        user:
+          $ref: '#/components/schemas/SupportAssistantUser'
       description: >
-        NOTE(W2): static stub, internal/api/v2/eliteacore/handler.go:2944-2946.
+        Only `enabled` is required. A disabled deployment answers `{"enabled":
+        false}` and NOTHING ELSE — no project id, no operator strings, no
+        identity — so a feature that is off is not also a disclosure channel.
+
+    SupportAssistantUser:
+      type: object
+      description: The CALLER's own identity, for the avatar beside their messages.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        avatar:
+          type: string
+          description: Empty when the user has no avatar, or when the lookup failed.
+
+    SupportConversation:
+      type: object
+      required: [id, uuid, name, author_id, source]
+      properties:
+        id: { type: integer, format: int64 }
+        uuid: { type: string, format: uuid }
+        name: { type: string }
+        is_private: { type: boolean }
+        author_id: { type: integer, format: int64 }
+        source:
+          type: string
+          description: Always `support` on this surface.
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): DB jsonb column `chat_conversations.meta`, re-emitted
+            verbatim (internal/api/v2/supportassistant/store.go:323). The
+            support routes WRITE a fixed document into it — `is_hidden`,
+            `conversation_type`, `internal_tools` — but the column is shared with
+            the chat surface, which stores a context-strategy block and whatever
+            else a conversation accumulates, so the key set is not fixed by this
+            feature and typing it here would describe only the rows this feature
+            created.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        message_groups_count: { type: integer }
+
+    SupportConversationList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupportConversation' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more: { type: boolean }
+      description: >
+        The CALLER's conversations only. The support project is shared by every
+        user on the platform, so the listing is predicated on `author_id`; a
+        caller never sees another user's support transcript.
+
+    SupportConversationDetails:
+      allOf:
+        - $ref: '#/components/schemas/SupportConversation'
+        - type: object
+          properties:
+            message_groups:
+              type: array
+              description: >
+                The transcript, in the same message-group shape the chat surface
+                renders.
+              items:
+                type: object
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): the chat surface's own message-group document,
+                  produced verbatim by
+                  internal/infra/db/repos/conversations.go:947 and passed
+                  through unchanged. It is a map assembled per message
+                  ITEM TYPE — text, tool call, canvas, thinking step — so it has
+                  no fixed key set, and this facade deliberately does not
+                  reshape it: a support transcript and a chat transcript are the
+                  same rows, and a second schema for them would be a second
+                  thing to keep in step with the message model.
+            participants:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): internal/api/v2/conversations.Participant, produced
+                  by internal/infra/db/repos/conversations.go:136 and passed
+                  through unchanged. Its `entity_meta`, `meta` and
+                  `entity_settings` are
+                  jsonb columns whose contents differ per entity kind (user,
+                  application, llm), so the row is open by construction.
+
+    SupportAssistantContext:
+      type: object
+      description: >
+        The page context the widget collects — which screen the user is on, and
+        what they are looking at. Ported field-for-field from
+        legacy/plugins/support_assistant/models/pd/support.py.
+      properties:
+        assistant_name: { type: string }
+        assistant_version: { type: string }
+        project_id: { type: integer, format: int64 }
+        project_name: { type: string }
+        current_page: { type: string }
+        current_entity_type: { type: string }
+        current_entity_id: { type: integer, format: int64 }
+        current_entity_name: { type: string }
+        selected_provider: { type: string }
+        selected_model: { type: string }
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the reference's own free-form escape hatch
+            (legacy/plugins/support_assistant/models/pd/support.py:5's
+            `meta: Optional[Dict[str, Any]]`). It is CLIENT-SUPPLIED context
+            that the server never interprets — it is serialised into the text
+            the agent is given — so there is no key set to declare. Nothing is
+            authorized on it.
+
+    SupportPredictRequest:
+      type: object
+      required: [content, question_id]
+      properties:
+        content:
+          type: string
+          minLength: 1
+        question_id:
+          type: string
+          format: uuid
+          description: >
+            A lowercase UUID identifying THIS TURN, generated by the client. It
+            is required rather than server-generated because the execution
+            pipeline derives the turn's message identifiers from it
+            deterministically, which is what makes a retried POST resume the
+            same turn instead of billing a second agent run.
+        support_assistant_context:
+          $ref: '#/components/schemas/SupportAssistantContext'
+      description: >
+        Carries NO project, NO agent and NO LLM settings. The assistant answers
+        with the agent the OPERATOR chose; a client that could name one could run
+        any application in the support project against platform credentials.
+
+    SupportPredictResponse:
+      type: object
+      required: [execution_id, events_url]
+      properties:
+        task_id: { type: string }
+        execution_id: { type: string }
+        command_id: { type: string }
+        response_message_id: { type: string }
+        events_url:
+          type: string
+          description: >
+            The SSE stream to subscribe to for this turn, identical in shape to
+            the one the chat surface uses. The reference streamed this over
+            socket.io (`sio/support.py`); this service has no socket.io server.
+        created: { type: boolean }
 
     # ---- Analytics -------------------------------------------------------------
     AnalyticsKpis:
@@ -5579,14 +5756,31 @@ paths:
                 $ref: '#/components/schemas/PlatformSettings'
         '401': { $ref: '#/components/responses/401' }
 
+  # ---- Support assistant ------------------------------------------------------
+  #
+  # The in-app support widget. Served by internal/api/v2/supportassistant, which
+  # is a thin facade over the chat stack scoped to ONE HIDDEN PROJECT resolved
+  # from centry.platform_config.
+  #
+  # NO ROUTE BELOW TAKES A PROJECT. That is the surface's defining property: the
+  # project comes from operator configuration, never from the caller, which is
+  # what makes it impossible to aim a support route at another tenant. The
+  # conversation routes are additionally predicated on the caller being the
+  # conversation's author, because the project is shared by everybody.
   /support_assistant/config:
     get:
       operationId: getSupportAssistantConfig
       summary: Retrieve support assistant configuration
       description: |
-        NOTE(W2): static stub {"enabled": false},
-        internal/api/v2/eliteacore/handler.go:2944-2946.
-      tags: [admin]
+        The widget's first call on every page load, and the only route on this
+        surface with no permission gate.
+
+        It answers 200 with `{"enabled": false}` for an unauthenticated caller
+        and for every deployment that cannot serve the assistant. A 401 here
+        would be indistinguishable from a session expiry to a widget that mounts
+        in the app shell before a session necessarily exists, and there is
+        nothing to withhold: the disabled body is one boolean.
+      tags: [chat]
       responses:
         '200':
           description: Support assistant configuration
@@ -5594,7 +5788,123 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportAssistantConfig'
+
+  /support_assistant/conversations/:
+    get:
+      operationId: listSupportConversations
+      summary: List the caller's support conversations
+      tags: [chat]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: q
+          in: query
+          description: Case-insensitive substring match on the conversation name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The caller's support conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversationList'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: >
+            The assistant is disabled, has no hidden project, or has no agent
+            chosen. Which of the three is deliberately not distinguished.
+    post:
+      operationId: createSupportConversation
+      summary: Open a new support conversation
+      tags: [chat]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+      responses:
+        '201':
+          description: The created conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversation'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /support_assistant/conversation/{conversationUUID}:
+    parameters:
+      - name: conversationUUID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getSupportConversation
+      summary: Read one support conversation and its transcript
+      description: |
+        Answers 404 both when the conversation does not exist and when it belongs
+        to another user. Distinguishing them would confirm that a UUID names a
+        real support conversation belonging to a real other person.
+      tags: [chat]
+      responses:
+        '200':
+          description: The conversation and its transcript
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversationDetails'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+  /support_assistant/predict/{conversationUUID}:
+    parameters:
+      - name: conversationUUID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: startSupportTurn
+      summary: Ask the support assistant one question
+      description: |
+        Attaches the operator-chosen agent to the conversation as a participant
+        if it is not already there, then starts one agent run and answers with
+        the SSE `events_url` to subscribe to.
+
+        This is the REST replacement for the reference's socket.io
+        `support_predict` event: this service streams over SSE, so the turn is
+        started over HTTP and answered on the same durable execution stream the
+        chat surface already consumes.
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportPredictRequest'
+      responses:
+        '200':
+          description: The run started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportPredictResponse'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '502':
+          description: The agent execution pipeline refused to start the run.
+        '503':
+          description: The assistant is not configured to answer.
 
   /branding/bootstrap.js:
     # NOTE(W3): served OUTSIDE the auth group — the SPA shell loads this

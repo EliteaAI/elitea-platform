@@ -35,7 +35,9 @@
             "source": "generated",
             "responseSchema": "SupportAssistantConfig",
             "fixture": null,
-            "usedBy": []
+            "usedBy": [
+                "widgets/support-assistant"
+            ]
         },
         {
             "id": "admin.moderationStatus",
@@ -2042,6 +2044,54 @@
             "fixture": null,
             "usedBy": [
                 "entities/secret"
+            ]
+        },
+        {
+            "id": "support.listConversations",
+            "method": "GET",
+            "path": "/support_assistant/conversations/",
+            "operationId": "listSupportConversations",
+            "source": "generated",
+            "responseSchema": "SupportConversationList",
+            "fixture": null,
+            "usedBy": [
+                "widgets/support-assistant"
+            ]
+        },
+        {
+            "id": "support.createConversation",
+            "method": "POST",
+            "path": "/support_assistant/conversations/",
+            "operationId": "createSupportConversation",
+            "source": "generated",
+            "responseSchema": "SupportConversation",
+            "fixture": null,
+            "usedBy": [
+                "widgets/support-assistant"
+            ]
+        },
+        {
+            "id": "support.getConversation",
+            "method": "GET",
+            "path": "/support_assistant/conversation/{conversationUUID}",
+            "operationId": "getSupportConversation",
+            "source": "generated",
+            "responseSchema": "SupportConversationDetails",
+            "fixture": null,
+            "usedBy": [
+                "widgets/support-assistant"
+            ]
+        },
+        {
+            "id": "support.startTurn",
+            "method": "POST",
+            "path": "/support_assistant/predict/{conversationUUID}",
+            "operationId": "startSupportTurn",
+            "source": "generated",
+            "responseSchema": "SupportPredictResponse",
+            "fixture": null,
+            "usedBy": [
+                "widgets/support-assistant"
             ]
         }
     ]

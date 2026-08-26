@@ -340,38 +340,32 @@ func TestTheUnavailableFieldIsStillDECLARED(t *testing.T) {
 
 /* ── the sections that stay unavailable ────────────────────────────────── */
 
-// TestFeaturesSectionsWithNoConsumerRefuseBothVerbs, with the reason naming why.
-func TestFeaturesSectionsWithNoConsumerRefuseBothVerbs(t *testing.T) {
-	_, router := newConfigEnvironment(t)
-
-	cases := map[string]string{
-		// The wire exists; the widget at the other end has no render site.
-		//
-		// `skill_publishing` used to be here, refused for having no publish
-		// endpoint, no catalog and no categories surface. All three exist now
-		// (internal/api/v2/skillpublish), so the section is live and is
-		// asserted as such below rather than as a refusal.
-		"support_assistant": "not mounted in this application",
-	}
-	for section, fragment := range cases {
-		t.Run(section, func(t *testing.T) {
-			for _, method := range []string{http.MethodGet, http.MethodPut} {
-				var body any
-				if method == http.MethodPut {
-					body = map[string]any{"values": map[string]any{}}
-				}
-				recorder := configDo(t, router, method,
-					"/admin/plugin_config_values/administration/"+section, body)
-				if recorder.Code != http.StatusNotImplemented {
-					t.Errorf("%s = %d, want 501 (body %s)", method, recorder.Code, recorder.Body.String())
-				}
-				if got := decodeConfigBody(t, recorder).Error; !strings.Contains(got, fragment) {
-					t.Errorf("%s reason %q does not contain %q", method, got, fragment)
-				}
-			}
-		})
-	}
-}
+/*
+ * TestFeaturesSectionsWithNoConsumerRefuseBothVerbs USED TO STAND HERE, and is
+ * DELETED rather than skipped, because it has no instances left.
+ *
+ * It held two: `skill_publishing` ("no publish endpoint, no catalog, no
+ * categories") and `support_assistant` ("the widget has no render site"). #585
+ * built the skill publishing pipeline and #588 built the support assistant, so
+ * every section on the Features page now has a consumer and the server withholds
+ * none of them.
+ *
+ * The intermediate version of this test read the withheld set from the schema
+ * and `t.Skip`ped when it was empty. `scripts/go/declared-skips.txt` rejected
+ * that, correctly and by design: its rule 3 says "delete the test if nobody
+ * intends to run it — a test that always skips is not coverage, it is the
+ * appearance of coverage", and its ledger is reserved for tests CI genuinely
+ * cannot supply an environment for. "Nothing to assert" is not that.
+ *
+ * NOTHING IS LOST. The refusal contract — 501 on both verbs, with the server's
+ * own reason in the body — is exercised by six live instances on the
+ * Configuration side, in config_values_postgres_integration_test.go's
+ * `mcp_servers`, `observability`, `llm_proxy`, `runtime`, `admin_panel` and
+ * `auth`. And TestSchemaDeclaresAvailabilityForEverySection still holds every
+ * section to being either available WITH FIELDS or unavailable WITH A REASON,
+ * so a Features section that loses its consumer cannot quietly become a blank
+ * pane. When one is withheld again, this test comes back with it.
+ */
 
 /* ── the move ──────────────────────────────────────────────────────────── */
 

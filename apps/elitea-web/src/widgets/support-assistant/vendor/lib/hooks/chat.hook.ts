@@ -1,0 +1,394 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+import { MESSAGE_TYPES } from '../constants';
+import { useApi } from './api.hook';
+import { useSupportAssistantContext } from './supportContext.hook';
+import { useSupportStream } from './stream.hook';
+import type { TConversationListItem, TMessage, TRawConversation, TSocketMessage } from '../types';
+import { generateUUID, parseConversationMessages } from '../utils';
+
+type TUseChatProps = {
+  welcomeMessage: string;
+  /**
+   * The hidden support project.
+   *
+   * It is accepted and NOT READ. Its only consumer was the socket room join
+   * (`chat_enter_room` carried `project_id`), which is gone with the transport;
+   * the SSE stream is named by an `events_url` the server builds itself, so the
+   * client never has to know the project. It stays on the props because the
+   * config endpoint still reports it and a future surface (a "view this in the
+   * full chat" link, say) would need it — and because removing it would make the
+   * config field look unused end to end when it is not.
+   */
+  supportProjectId: number | null;
+  initialHistory: TConversationListItem[];
+  initialConversation: TRawConversation | null;
+  isInitLoading: boolean;
+};
+
+export const useChat = (props: TUseChatProps) => {
+  const { welcomeMessage, initialHistory, initialConversation, isInitLoading } = props;
+
+  const hasInitializedRef = useRef(false);
+
+  const api = useApi();
+  const supportAssistantContext = useSupportAssistantContext();
+
+  const createWelcomeMessages = useCallback(
+    (): TMessage[] =>
+      welcomeMessage
+        ? [{ id: 'welcome', role: 'assistant' as const, content: welcomeMessage, timestamp: Date.now() }]
+        : [],
+    [welcomeMessage],
+  );
+
+  const [messages, setMessages] = useState<TMessage[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [history, setHistory] = useState<TConversationListItem[]>([]);
+  const [isSwitchingConversation, setIsSwitchingConversation] = useState(false);
+
+  const isLoading = useMemo(
+    () => isInitLoading || isSwitchingConversation,
+    [isInitLoading, isSwitchingConversation],
+  );
+
+  const isStreaming = useMemo(() => messages.some(m => m.isStreaming || m.isAnimating), [messages]);
+
+  const handleAnimationComplete = useCallback((messageId: string) => {
+    setMessages(prev => prev.map(m => (m.id === messageId ? { ...m, isAnimating: false } : m)));
+  }, []);
+
+  /*
+   * TRANSPORT.
+   *
+   * The published widget joins a socket ROOM per conversation and emits
+   * `support_predict`; this platform has no socket.io, so a turn is started over
+   * REST and its frames arrive on the execution's SSE stream. See
+   * `stream.hook.ts` for the full account of what that changes — in particular
+   * that `enterRoom`/`leaveRoom` have no equivalent and are gone, because an
+   * execution stream is a subscription to ONE TURN rather than to a
+   * conversation.
+   */
+  const settleStreamingMessages = useCallback((reason?: string) => {
+    setMessages(prev =>
+      prev.map(m =>
+        m.isStreaming
+          ? {
+              ...m,
+              isStreaming: false,
+              statusMessage: undefined,
+              ...(reason !== undefined && m.content === ''
+                ? { content: reason, isError: true }
+                : {}),
+            }
+          : m,
+      ),
+    );
+  }, []);
+
+  const handlePredict = useCallback((message: TSocketMessage) => {
+    const { message_id, type, content, response_metadata } = message;
+
+    const mapStepToStatusMessage = (stepType: string): string => {
+      if (stepType === MESSAGE_TYPES.START_TASK || stepType === MESSAGE_TYPES.AGENT_START)
+        return 'Starting up...';
+      if (stepType === MESSAGE_TYPES.AGENT_LLM_START) return 'Looking things up...';
+      if (stepType === MESSAGE_TYPES.AGENT_TOOL_START) return 'Consulting knowledge base...';
+      if (stepType === MESSAGE_TYPES.AGENT_LLM_CHUNK) return 'Writing response...';
+      return '';
+    };
+
+    switch (type) {
+      case MESSAGE_TYPES.START_TASK:
+        setMessages(prev => [
+          ...prev,
+          {
+            id: message_id,
+            role: 'assistant',
+            content: '',
+            timestamp: Date.now(),
+            isStreaming: true,
+            statusMessage: mapStepToStatusMessage(type),
+          },
+        ]);
+        break;
+
+      case MESSAGE_TYPES.AGENT_START:
+        setMessages(prev =>
+          prev.map(m => (m.id === message_id ? { ...m, statusMessage: mapStepToStatusMessage(type) } : m)),
+        );
+        break;
+
+      case MESSAGE_TYPES.AGENT_LLM_START:
+      case MESSAGE_TYPES.AGENT_TOOL_START:
+        setMessages(prev =>
+          prev.map(m => (m.id === message_id ? { ...m, statusMessage: mapStepToStatusMessage(type) } : m)),
+        );
+        break;
+
+      case MESSAGE_TYPES.AGENT_TOOL_END:
+      case MESSAGE_TYPES.AGENT_LLM_END:
+      case MESSAGE_TYPES.AGENT_ON_TRANSITIONAL_EDGE:
+      case MESSAGE_TYPES.AGENT_ON_FUNCTION_TOOL_NODE:
+        break;
+
+      case MESSAGE_TYPES.CHUNK:
+      case MESSAGE_TYPES.AI_MESSAGE_CHUNK: {
+        const chunk = typeof content === 'string' ? content : JSON.stringify(content);
+        const finished = !!response_metadata?.finish_reason;
+
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === message_id
+              ? {
+                  ...m,
+                  content: m.content + chunk,
+                  statusMessage: undefined,
+                  ...(finished && { isStreaming: false }),
+                }
+              : m,
+          ),
+        );
+        break;
+      }
+
+      case MESSAGE_TYPES.AGENT_LLM_CHUNK:
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === message_id && m.statusMessage !== mapStepToStatusMessage(type)
+              ? { ...m, statusMessage: mapStepToStatusMessage(type) }
+              : m,
+          ),
+        );
+        break;
+
+      case MESSAGE_TYPES.AGENT_RESPONSE: {
+        const responseContent = typeof content === 'string' ? content : JSON.stringify(content);
+        setMessages(prev =>
+          prev.map(m => {
+            if (m.id !== message_id) return m;
+
+            return {
+              ...m,
+              content: responseContent,
+              isStreaming: false,
+              isAnimating: true,
+              statusMessage: undefined,
+            };
+          }),
+        );
+        break;
+      }
+
+      case MESSAGE_TYPES.PIPELINE_FINISH:
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === message_id && m.isStreaming ? { ...m, isStreaming: false, statusMessage: undefined } : m,
+          ),
+        );
+        break;
+
+      case MESSAGE_TYPES.ERROR:
+      case MESSAGE_TYPES.AGENT_EXCEPTION:
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === message_id
+              ? {
+                  ...m,
+                  content: typeof content === 'string' ? content : 'An error occurred',
+                  isStreaming: false,
+                  isAnimating: false,
+                  isError: true,
+                  statusMessage: undefined,
+                }
+              : m,
+          ),
+        );
+        break;
+    }
+  }, []);
+
+  const handleError = useCallback((data: { error: string; code: string }) => {
+    setMessages(prev => [
+      ...prev,
+      {
+        id: generateUUID(),
+        role: 'assistant' as const,
+        content: data.error || 'An error occurred',
+        timestamp: Date.now(),
+        isError: true,
+      },
+    ]);
+  }, []);
+
+  /*
+   * `handleConversationNameUpdated` IS GONE. It listened for
+   * `chat_conversation_name_updated`, a frame the server pushed down the
+   * conversation's socket ROOM after auto-naming it. There is no room to push it
+   * down, so the history list picks the new name up on its next read instead of
+   * live. See `stream.hook.ts`.
+   */
+
+  useEffect(() => {
+    if (isInitLoading || hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
+    setHistory(initialHistory);
+
+    const mostRecent = initialHistory[0];
+    if (mostRecent && initialConversation) {
+      const parsed = parseConversationMessages(initialConversation);
+      setMessages(parsed.length > 0 ? parsed : createWelcomeMessages());
+      setCurrentConversationId(mostRecent.uuid);
+    } else {
+      setMessages(createWelcomeMessages());
+    }
+  }, [isInitLoading, initialHistory, initialConversation, createWelcomeMessages]);
+
+  const stream = useSupportStream({
+    /*
+     * The cast is the transport seam, and it is narrow on purpose.
+     *
+     * `ExecutionEventData` is `Readonly<Record<string, unknown>>` — the SSE
+     * layer deliberately does not type the frame, because the same envelope
+     * carries every node event the runtime emits. `TSocketMessage` is the
+     * widget's view of the subset it reads. They describe the SAME BYTES:
+     * `features/chat-messages/lib/chatStreamFrame.ts` records that the SSE
+     * `execution.node_event` payload is identical to the socket's `chat_predict`
+     * receive event, down to it still carrying `sio_event: "chat_predict"`.
+     *
+     * `handlePredict` reads four fields and switches on `type`, treating an
+     * unrecognised one as a no-op, so a frame that does not match this shape
+     * falls through rather than throwing.
+     */
+    onFrame: frame => handlePredict(frame as unknown as TSocketMessage),
+    onSettled: settleStreamingMessages,
+  });
+
+  const handleSend = useCallback(
+    async (text: string) => {
+      let activeConversationId = currentConversationId;
+
+      // Create conversation if needed
+      if (!activeConversationId) {
+        try {
+          const created = await api.createConversation();
+          activeConversationId = created.uuid;
+          setCurrentConversationId(activeConversationId);
+          setHistory(prev => [created, ...prev]);
+        } catch {
+          setMessages(prev => [
+            ...prev,
+            {
+              id: generateUUID(),
+              role: 'assistant',
+              content: 'Failed to create conversation. Please try again.',
+              timestamp: Date.now(),
+              isError: true,
+            },
+          ]);
+          return;
+        }
+      }
+
+      setMessages(prev => [
+        ...prev,
+        { id: generateUUID(), role: 'user', content: text, timestamp: Date.now() },
+      ]);
+
+      if (!activeConversationId) return;
+
+      /*
+       * START THE TURN, then subscribe.
+       *
+       * `question_id` is generated HERE, once, and is the turn's idempotency
+       * key: the server derives the turn's message identifiers from it, so a
+       * retried POST resumes the same run rather than billing a second one. It
+       * is why the endpoint requires it instead of minting one itself.
+       *
+       * NO ATTACHMENTS TRAVEL WITH A TURN. The start contract has no field for
+       * them and the route refuses a non-empty `attachments_info`, so the whole
+       * attachment surface is unported rather than half-wired — see
+       * `../../components/chat/MessageInput.tsx`.
+       */
+      try {
+        const started = await api.startTurn(activeConversationId, {
+          content: text,
+          question_id: generateUUID(),
+          support_assistant_context: supportAssistantContext
+            ? (supportAssistantContext as unknown as Record<string, unknown>)
+            : undefined,
+        });
+        if (started.events_url) {
+          stream.open(started.events_url);
+        } else {
+          // A 200 with no stream to subscribe to. The run may well be live, but
+          // this client has no way to see it finish, and a spinner that never
+          // resolves is worse than saying so.
+          handleError({ error: 'The support assistant did not return a response stream.', code: 'NO_STREAM' });
+        }
+      } catch {
+        handleError({ error: 'Failed to reach the support assistant. Please try again.', code: 'START_FAILED' });
+      }
+    },
+    [
+      currentConversationId,
+      api,
+      supportAssistantContext,
+      stream,
+      handleError,
+    ],
+  );
+
+  const handleNewChat = useCallback(() => {
+    // Dropping the stream WITHOUT settling: the user left the turn rather than
+    // the turn failing, so nothing should be marked as an error. The run itself
+    // keeps going server-side and its answer is in the transcript when they come
+    // back to that conversation.
+    stream.close();
+    setCurrentConversationId(null);
+    setMessages(createWelcomeMessages());
+    setInputText('');
+  }, [stream, createWelcomeMessages]);
+
+  const handleSelectConversation = useCallback(
+    async (conversationId: string) => {
+      if (currentConversationId === conversationId) return;
+      // #328's rule, in miniature: a stream belongs to the conversation that
+      // started it. Leaving that conversation drops it, so its frames cannot be
+      // folded into the transcript now on screen.
+      stream.close();
+
+      setCurrentConversationId(conversationId);
+      setInputText('');
+      setMessages([]);
+      setIsSwitchingConversation(true);
+
+      try {
+        const conversation = await api.getConversation(conversationId);
+        const parsed = parseConversationMessages(conversation);
+        setMessages(parsed.length > 0 ? parsed : createWelcomeMessages());
+      } catch {
+        setMessages(createWelcomeMessages());
+      } finally {
+        setIsSwitchingConversation(false);
+      }
+    },
+    [currentConversationId, stream, createWelcomeMessages, api],
+  );
+
+  return {
+    messages,
+    inputText,
+    setInputText,
+    history,
+    currentConversationId: currentConversationId ?? '',
+    isLoading,
+    isStreaming,
+    handleNewChat,
+    handleSelectConversation,
+    handleSend,
+    handleAnimationComplete,
+  };
+};

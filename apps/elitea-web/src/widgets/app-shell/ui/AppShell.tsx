@@ -8,6 +8,7 @@ import { getConfig } from '@/shared/config';
 import { usePlatformAnnouncements } from '@/shared/lib/hooks/usePlatformAnnouncements';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { SupportAssistantWidget } from '@/widgets/support-assistant';
 import {
   Sidebar,
   usePermissionSet,
@@ -208,6 +209,29 @@ export function AppShell({ children }: AppShellProps): ReactNode {
         {children}
         <NavBlockerDialog />
       </Box>
+      {/*
+       * The in-app support assistant.
+       *
+       * MOUNTED HERE, OUTSIDE `main`, and last: it is a floating overlay with
+       * its own fixed positioning, so putting it inside the scrolling content
+       * column would scroll the button off the page.
+       *
+       * It renders NOTHING on a deployment that has not enabled it — the
+       * component asks `GET /support_assistant/config` and mounts the overlay
+       * only on `enabled: true`, which the server answers only when an operator
+       * has turned the section on AND chosen a support agent. That check is the
+       * whole reason the widget is mounted unconditionally here rather than
+       * behind a flag read in this file: there is one place that decides, and it
+       * is the one that also knows whether the assistant can actually answer.
+       *
+       * The render-prop child is `null` on purpose. `onToggleAssistant` exists
+       * so a caller can offer its own "ask support" affordance; this shell has
+       * no such affordance to offer, and the assistant's own floating button is
+       * how a user opens it. A future caller — the baseline's
+       * `CredentialWarningBanner`, whose `onMount` was written for exactly this
+       * — reaches the same handle through `useEliteaAssistantRef()`.
+       */}
+      <SupportAssistantWidget project={project ?? undefined}>{() => null}</SupportAssistantWidget>
     </Box>
   );
 }
