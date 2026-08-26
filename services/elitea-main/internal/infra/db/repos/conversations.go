@@ -299,30 +299,59 @@ func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationI
 	if err != nil {
 		return err
 	}
-	// Delete dependent records first; propagate any failure.
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
+
+	// DEFECT #602: two of the six statements here named tables that exist in NO
+	// schema anywhere, so deleting a conversation answered 500 on every
+	// deployment.
+	//
+	//   * `chat_messages` (the bare name) is a dead legacy artifact — an older
+	//     flat one-row-per-message representation with an inline `content`
+	//     column. Its successor is the chat_message_group -> chat_message_items
+	//     -> chat_messages_text graph that migrations/tenant/0123 creates and
+	//     ListMessages reads. Pylon does not declare it either.
+	//   * `chat_conversation_summaries` appeared exactly once in this
+	//     repository — in the statement below. It is not in pylon, not in any
+	//     migration, and not in the pg-catalog dump of the live legacy database
+	//     (testdata/postgres/legacy-centry-catalog.json).
+	//
+	// Neither is recoverable, so both statements are gone rather than repaired.
+	// What replaces them is the item level of the real graph: chat_message_items
+	// does NOT cascade from chat_message_group, so deleting groups without
+	// deleting their items first violates the FK.
+	//
+	// One transaction, because the previous sequential Execs could leave a
+	// conversation with its participants detached and its messages still
+	// present if any statement in the middle failed.
+	transaction, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("conversations: delete: %w", err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete participant mapping: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_items
+		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE conversation_id = $1)`, s, s), id); err != nil {
+		return fmt.Errorf("conversations: delete message items: %w", err)
+	}
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete message groups: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s), id); err != nil {
-		return fmt.Errorf("conversations: delete messages: %w", err)
-	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete selected conversations: %w", err)
-	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_conversation_summaries WHERE conversation_id = $1`, s), id); err != nil {
-		return fmt.Errorf("conversations: delete summaries: %w", err)
 	}
 
 	q := fmt.Sprintf(`DELETE FROM %q.chat_conversations WHERE id = $1`, s)
-	ct, err := r.pool.Exec(ctx, q, id)
+	ct, err := transaction.Exec(ctx, q, id)
 	if err != nil {
 		return fmt.Errorf("conversations: delete: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
 		return apierr.NotFound("conversation not found")
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("conversations: delete commit: %w", err)
 	}
 	return nil
 }
@@ -976,17 +1005,79 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 	return nil
 }
 
+// DeleteMessage removes one message group — the unit the route calls a
+// "message" — addressed by its UUID.
+//
+// DEFECT #602: this used to read
+//
+//	DELETE FROM %q.chat_messages WHERE group_uid = $1
+//
+// which could not work on ANY deployment. `chat_messages` does not exist on a
+// database this repository provisioned (42P01), and on a legacy pylon database,
+// where it does exist, it has no `group_uid` column (42703) — see the catalog
+// dump at testdata/postgres/legacy-centry-catalog.json. The identifier the
+// route carries is a chat_message_group UUID; pylon's own handler
+// (legacy/plugins/elitea_core/api/v2/message.py:80-83) resolves it exactly that
+// way.
+//
+// Scope: this restores the delete. It does NOT port pylon's surrounding rules —
+// author-only, last-group-only, refusing a summarized group, and emitting the
+// socket event. Those are a separate parity gap. Deleting the paired user-input
+// group is deliberately NOT done here: the web client deletes each group by id
+// itself (apps/elitea-web/src/features/chat-messages/model/useDeleteMessageFromConversation.ts),
+// so pairing here would delete a group the caller is about to name again.
 func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID string) error {
 	s := schema(projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE group_uid = $1`, s)
-	_, err := r.pool.Exec(ctx, q, groupUID)
+	if _, err := uuid.Parse(groupUID); err != nil {
+		return apierr.NotFound("message not found")
+	}
+
+	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("conversations: delete message: %w", err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+
+	// chat_message_items does not cascade from chat_message_group, so the items
+	// go first. chat_messages_text/_context cascade from the items, and
+	// chat_message_trace_step cascades from the group.
+	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items
+		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE uuid = $1::uuid)`, s, s)
+	if _, err := transaction.Exec(ctx, items, groupUID); err != nil {
+		return fmt.Errorf("conversations: delete message items: %w", err)
+	}
+
+	// reply_to_id points at another group in the same conversation. Detaching
+	// the references first is what lets the last group be deleted without
+	// taking the question that produced it with it, or failing the FK.
+	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL
+		WHERE reply_to_id IN (SELECT id FROM %q.chat_message_group WHERE uuid = $1::uuid)`, s, s)
+	if _, err := transaction.Exec(ctx, detach, groupUID); err != nil {
+		return fmt.Errorf("conversations: detach message replies: %w", err)
+	}
+
+	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE uuid = $1::uuid`, s), groupUID)
+	if err != nil {
+		return fmt.Errorf("conversations: delete message: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return apierr.NotFound("message not found")
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("conversations: delete message commit: %w", err)
 	}
 	return nil
 }
 
-func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
+// ListMessages serves the transcript window the caller asked for.
+//
+// DEFECT #603: the window used to be computed from `page`/`page_size`, a pair
+// no caller sends — see conversations.MessagesQuery for the client and pylon
+// evidence — so `offset` never advanced and `sort_order` never applied. The
+// parameters now arrive resolved, as limit/offset/sort, which is the shape
+// pylon applied them in: `.order_by(sorting(sorting_by), sorting(id))
+// .limit(limit).offset(offset)` (messages.py:98-100).
+func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
 	s := schema(projectID)
 
 	id, err := r.resolveConversationID(ctx, projectID, conversationID)
@@ -1004,7 +1095,55 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: count messages: %w", err)
 	}
 
-	offset := (page - 1) * pageSize
+	// The handler resolves these, but this method is reachable from anything
+	// holding the repository, and a limit of 0 would answer an empty transcript
+	// for a conversation that has one — the exact failure shape #599 was.
+	limit := query.Limit
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// sort_by names a COLUMN, so it cannot be bound as a parameter — it is
+	// concatenated into the statement below. Only a value this map produces is
+	// ever interpolated, so an attacker-supplied sort_by reaches Postgres as
+	// `created_at` and nothing else. Pylon resolved it with
+	// `getattr(ConversationMessageGroup, sort_by)` (messages.py:75), which
+	// accepted any attribute of the model and raised AttributeError -> 500 on
+	// anything else; in Python that was merely rude, in this form it would be
+	// an injection. The three entries are the columns of chat_message_group
+	// (migrations/tenant/0123_agent_chat_message_tables.sql:93-105) that a
+	// transcript can meaningfully be ordered by.
+	sortColumn := "created_at"
+	switch query.SortBy {
+	case "created_at", "updated_at", "id":
+		sortColumn = query.SortBy
+	}
+
+	direction := "DESC"
+	if query.SortOrder == "asc" {
+		direction = "ASC"
+	}
+
+	// The `id` tiebreaker is pylon's, and it is load-bearing rather than
+	// decorative: created_at defaults to now(), which in Postgres is
+	// transaction-scoped, so every group written by one transaction — the
+	// user-input/assistant-reply pair among them — shares a timestamp to the
+	// microsecond. Without it the two halves of a turn can come back in either
+	// order, and worse, a row can appear on two consecutive offset pages while
+	// another appears on neither. Ordering BY id when id is already the sort
+	// key would just repeat the clause.
+	orderBy := fmt.Sprintf("mg.%s %s, mg.id %s", sortColumn, direction, direction)
+	if sortColumn == "id" {
+		orderBy = fmt.Sprintf("mg.id %s", direction)
+	}
+
 	q := fmt.Sprintf(`
 		SELECT mg.id, mg.conversation_id, COALESCE(mg.uuid::text, ''),
 			p.entity_name, mg.meta, mg.created_at,
@@ -1017,10 +1156,10 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		FROM %q.chat_message_group mg
 		JOIN %q.chat_participants p ON p.id = mg.author_participant_id
 		WHERE mg.conversation_id = $1
-		ORDER BY mg.created_at DESC
-		LIMIT $2 OFFSET $3`, s, s, s, s)
+		ORDER BY %s
+		LIMIT $2 OFFSET $3`, s, s, s, s, orderBy)
 
-	rows, err := r.pool.Query(ctx, q, id, pageSize, offset)
+	rows, err := r.pool.Query(ctx, q, id, limit, offset)
 	if err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
 	}
@@ -1052,16 +1191,28 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
 	}
 
-	totalPages := total / pageSize
-	if total%pageSize > 0 {
+	totalPages := total / limit
+	if total%limit > 0 {
 		totalPages++
 	}
+
+	// The envelope keeps its {items,total,page,page_size,total_pages} shape:
+	// apps/elitea-web/e2e/streaming/chat.streaming.spec.ts:212 reads
+	// `body.items`, so switching to pylon's {rows,total} would trade this
+	// defect for a red e2e. A limit/offset caller never named a page, so both
+	// fields are DERIVED from the window actually served — page_size is the
+	// limit, and page is the 1-based index of the page containing the first row
+	// returned. For a page/page_size caller that round-trips exactly. For an
+	// offset that is not a multiple of the limit it is the nearest true
+	// statement available, and it is reported rather than omitted because a
+	// zero there would read as "page 0 of N", which is false for every request.
+	page := offset/limit + 1
 
 	return conversations.MessagesListResponse{
 		Items:      items,
 		Total:      total,
 		Page:       page,
-		PageSize:   pageSize,
+		PageSize:   limit,
 		TotalPages: totalPages,
 	}, nil
 }

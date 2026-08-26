@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -58,6 +59,36 @@ type MessagesListResponse struct {
 	TotalPages int       `json:"total_pages"`
 }
 
+// MessagesQuery is the transcript window one GET
+// /messages/prompt_lib/{projectID}/{conversationID} asked for, resolved from
+// the query string before it reaches the repository.
+//
+// DEFECT #603: this route read `page`/`page_size` and nothing else, and no
+// caller has ever sent either. The web client builds the query string as
+// `{...params, limit, offset: page * pageSize}`
+// (apps/elitea-web/src/entities/conversation/api/messageApi.ts:59-63); the SPA
+// it was ported from does the same (frontends/EliteaUI/.../chat.api.js:24-32);
+// and pylon, the contract both were written against, read `limit` (default 10),
+// `offset` (default 0), `sort_by` (default created_at) and `sort_order`
+// (default desc) — legacy/plugins/elitea_core/api/v2/messages.py:71-107. So
+// every request collapsed onto this server's own defaults: page 1, size 50,
+// created_at DESC. Scrolling back re-fetched the same newest 50 groups
+// forever (useLoadMoreMessages.ts:96 sends offset=10,20,30…), and a caller
+// that asked for `sort_order=asc` (useChatPageData.ts:66,
+// usePlaybackConversation.ts:66) was served DESC.
+//
+// SortBy crosses this boundary UNVALIDATED on purpose: it names a column, so it
+// is concatenated into SQL rather than bound, and the allow-list that decides
+// what may be interpolated lives at that interpolation site
+// (repos.ConversationsRepo.ListMessages) where it cannot be bypassed by a
+// second caller of the interface.
+type MessagesQuery struct {
+	Limit     int
+	Offset    int
+	SortBy    string
+	SortOrder string
+}
+
 type Participant struct {
 	ID             int            `json:"id"`
 	EntityName     string         `json:"entity_name"`
@@ -72,7 +103,7 @@ type Repository interface {
 	Create(ctx context.Context, projectID string, conv Conversation) (Conversation, error)
 	Update(ctx context.Context, projectID, conversationID string, conv Conversation) (Conversation, error)
 	Delete(ctx context.Context, projectID, conversationID string) error
-	ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (MessagesListResponse, error)
+	ListMessages(ctx context.Context, projectID, conversationID string, query MessagesQuery) (MessagesListResponse, error)
 	ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
 	ListParticipants(ctx context.Context, projectID, conversationID string) ([]Participant, error)
 	AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error
@@ -527,19 +558,80 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const (
+	// Pylon's default page of a transcript is 10 groups
+	// (messages.py:73). The 50 this handler used instead was never observable
+	// — no caller sends page_size — so restoring the legacy number changes what
+	// a parameterless request returns, and nothing else.
+	defaultMessagesLimit = 10
+
+	// The cap the page_size branch already enforced, carried over onto `limit`.
+	// Pylon has no cap at all, but the ceiling matters more here than parity
+	// does: ListMessages runs one correlated string_agg subquery per group, so
+	// an uncapped limit lets an anonymous query string decide how much work the
+	// database does. 100 is not arbitrary either — it is exactly what the
+	// largest real caller asks for (usePlaybackConversation.ts:66 requests
+	// pageSize 100), so the cap binds nothing that exists today.
+	maxMessagesLimit = 100
+)
+
+// parseMessagesQuery resolves the transcript window from the query string.
+//
+// PRECEDENCE, and why it is this way round (#603): `limit`/`offset` are the
+// primary pair because they are the pair pylon defined and the pair every
+// client sends. `page`/`page_size` are read FIRST and then overwritten, which
+// makes limit/offset win whenever both are present, while leaving the
+// page/page_size pair fully functional for a caller that sends only it — this
+// server has advertised that pair for long enough that dropping it would be a
+// second silent break, and the sibling List handler on the same resource takes
+// limit/offset, so a client mixing the two is plausible.
+//
+// `page` is converted through the limit that is already resolved, so
+// page=3&limit=25 means offset 50, not offset 50-derived-from-some-other-size.
+func parseMessagesQuery(values url.Values) MessagesQuery {
+	query := MessagesQuery{
+		Limit:     defaultMessagesLimit,
+		SortBy:    "created_at",
+		SortOrder: "desc",
+	}
+
+	if pageSize, err := strconv.Atoi(values.Get("page_size")); err == nil && pageSize > 0 {
+		query.Limit = pageSize
+	}
+	if limit, err := strconv.Atoi(values.Get("limit")); err == nil && limit > 0 {
+		query.Limit = limit
+	}
+	if query.Limit > maxMessagesLimit {
+		query.Limit = maxMessagesLimit
+	}
+
+	if page, err := strconv.Atoi(values.Get("page")); err == nil && page > 1 {
+		query.Offset = (page - 1) * query.Limit
+	}
+	if offset, err := strconv.Atoi(values.Get("offset")); err == nil && offset > 0 {
+		query.Offset = offset
+	}
+
+	if sortBy := values.Get("sort_by"); sortBy != "" {
+		query.SortBy = sortBy
+	}
+	// Only the exact token `asc` flips the order. Pylon wrote this as
+	// `desc if sort_order == 'desc' else asc`, so under pylon ANY unrecognised
+	// value — a typo, an empty explicit `sort_order=` — silently reversed the
+	// transcript. The documented default is desc; an unrecognised value gets
+	// the documented default rather than the opposite of it.
+	if values.Get("sort_order") == "asc" {
+		query.SortOrder = "asc"
+	}
+
+	return query
+}
+
 func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 50
-	}
 
-	resp, err := h.repo.ListMessages(r.Context(), projectID, conversationID, page, pageSize)
+	resp, err := h.repo.ListMessages(r.Context(), projectID, conversationID, parseMessagesQuery(r.URL.Query()))
 	if err != nil {
 		apierr.Write(w, err)
 		return

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ type mockRepo struct {
 	createFn                  func(ctx context.Context, projectID string, conv conversations.Conversation) (conversations.Conversation, error)
 	updateFn                  func(ctx context.Context, projectID, conversationID string, conv conversations.Conversation) (conversations.Conversation, error)
 	deleteFn                  func(ctx context.Context, projectID, conversationID string) error
-	listMessagesFn            func(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error)
+	listMessagesFn            func(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error)
 	addParticipantFn          func(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	removeParticipantFn       func(ctx context.Context, projectID, conversationID, participantID string) error
 	updateEntitySettingsFn    func(ctx context.Context, projectID, conversationID, participantID string, settings map[string]any) error
@@ -65,8 +66,8 @@ func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string)
 	return m.deleteFn(ctx, projectID, conversationID)
 }
 
-func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
-	return m.listMessagesFn(ctx, projectID, conversationID, page, pageSize)
+func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
+	return m.listMessagesFn(ctx, projectID, conversationID, query)
 }
 
 func (m *mockRepo) AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error {
@@ -502,12 +503,12 @@ func TestDelete_Error(t *testing.T) {
 
 func TestListMessages_Success(t *testing.T) {
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
+		listMessagesFn: func(_ context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
 			return conversations.MessagesListResponse{
 				Items:    []conversations.Message{{ID: "m1", ConversationID: conversationID}},
 				Total:    1,
-				Page:     page,
-				PageSize: pageSize,
+				Page:     query.Offset/query.Limit + 1,
+				PageSize: query.Limit,
 			}, nil
 		},
 	}
@@ -530,30 +531,117 @@ func TestListMessages_Success(t *testing.T) {
 	}
 }
 
-func TestListMessages_DefaultPagination(t *testing.T) {
-	var gotPage, gotPageSize int
+// listMessagesQuery drives one request through the router and reports the
+// MessagesQuery the handler resolved from it.
+//
+// Every test below asserts on that value rather than on the response body,
+// because the parameters are exactly what #603 lost: the old handler read
+// `page`/`page_size`, the clients have always sent `limit`/`offset`, and every
+// response still looked structurally fine. No server test named a wire
+// parameter, so the two sides stayed internally consistent and neither could
+// see the other.
+func listMessagesQuery(t *testing.T, rawQuery string) conversations.MessagesQuery {
+	t.Helper()
+	var got conversations.MessagesQuery
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, _, _ string, page, pageSize int) (conversations.MessagesListResponse, error) {
-			gotPage = page
-			gotPageSize = pageSize
+		listMessagesFn: func(_ context.Context, _, _ string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
+			got = query
 			return conversations.MessagesListResponse{}, nil
 		},
 	}
-	h := conversations.NewHandler(repo)
-	router := newRouter(h)
+	router := newRouter(conversations.NewHandler(repo))
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/messages", nil)
+	target := "/projects/proj-1/conversations/conv-1/messages"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d, want 200", target, w.Code)
+	}
+	return got
+}
 
-	if gotPage != 1 || gotPageSize != 50 {
-		t.Errorf("expected page=1 pageSize=50, got page=%d pageSize=%d", gotPage, gotPageSize)
+// A request that names nothing gets pylon's defaults (messages.py:73-77), not
+// this server's invented page-1-of-50. The 50 was never reachable by any
+// caller, so nothing depends on it.
+func TestListMessages_DefaultPagination(t *testing.T) {
+	got := listMessagesQuery(t, "")
+	want := conversations.MessagesQuery{Limit: 10, Offset: 0, SortBy: "created_at", SortOrder: "desc"}
+	if got != want {
+		t.Errorf("no query string resolved to %+v, want %+v", got, want)
+	}
+}
+
+// The parameter names the clients actually put on the wire
+// (apps/elitea-web/src/entities/conversation/api/messageApi.ts:59-63). This is
+// the assertion whose absence made #603 invisible.
+func TestListMessages_ReadsLimitOffsetSortFromTheWire(t *testing.T) {
+	got := listMessagesQuery(t, "limit=25&offset=75&sort_by=updated_at&sort_order=asc")
+	want := conversations.MessagesQuery{Limit: 25, Offset: 75, SortBy: "updated_at", SortOrder: "asc"}
+	if got != want {
+		t.Errorf("limit/offset/sort request resolved to %+v, want %+v", got, want)
+	}
+}
+
+// The scroll-back orchestrator (useLoadMoreMessages.ts:96) walks the offset in
+// page-size steps. Each step has to reach the repository unchanged; the old
+// handler dropped all of them, so every step re-served the first window.
+func TestListMessages_OffsetAdvancesAcrossPages(t *testing.T) {
+	for _, offset := range []int{10, 20, 30} {
+		got := listMessagesQuery(t, fmt.Sprintf("limit=10&offset=%d", offset))
+		if got.Offset != offset {
+			t.Errorf("offset=%d resolved to Offset %d", offset, got.Offset)
+		}
+	}
+}
+
+// page/page_size is kept as a fallback so a caller that does send it — none
+// today, but this server advertised the pair — is not broken by the fix.
+func TestListMessages_PageAndPageSizeStillWorkAsAFallback(t *testing.T) {
+	got := listMessagesQuery(t, "page=3&page_size=25")
+	if got.Limit != 25 || got.Offset != 50 {
+		t.Errorf("page=3&page_size=25 resolved to limit %d offset %d, want 25 and 50", got.Limit, got.Offset)
+	}
+}
+
+// Precedence is explicit: limit/offset are the pair pylon defined and the pair
+// every client sends, so they win over page/page_size when both appear.
+func TestListMessages_LimitOffsetWinOverPageAndPageSize(t *testing.T) {
+	got := listMessagesQuery(t, "page=3&page_size=25&limit=5&offset=7")
+	if got.Limit != 5 || got.Offset != 7 {
+		t.Errorf("mixed request resolved to limit %d offset %d, want 5 and 7", got.Limit, got.Offset)
+	}
+}
+
+// The cap is the one the page_size branch already enforced. 100 is what the
+// largest real caller asks for (usePlaybackConversation.ts:66), so it binds
+// nothing that exists and bounds the per-group string_agg subquery for
+// everything else.
+func TestListMessages_LimitIsCapped(t *testing.T) {
+	if got := listMessagesQuery(t, "limit=100"); got.Limit != 100 {
+		t.Errorf("limit=100 resolved to %d, want 100 served intact", got.Limit)
+	}
+	if got := listMessagesQuery(t, "limit=5000"); got.Limit != 100 {
+		t.Errorf("limit=5000 resolved to %d, want the 100 cap", got.Limit)
+	}
+}
+
+// Junk must not silently reverse the transcript or zero the window: an
+// unparseable or non-positive value leaves the documented default standing.
+// (Pylon's `desc if sort_order == 'desc' else asc` did reverse it.)
+func TestListMessages_RejectsUnusableParameters(t *testing.T) {
+	got := listMessagesQuery(t, "limit=abc&offset=-5&sort_order=descending")
+	want := conversations.MessagesQuery{Limit: 10, Offset: 0, SortBy: "created_at", SortOrder: "desc"}
+	if got != want {
+		t.Errorf("unusable parameters resolved to %+v, want the defaults %+v", got, want)
 	}
 }
 
 func TestListMessages_Error(t *testing.T) {
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, _, _ string, _, _ int) (conversations.MessagesListResponse, error) {
+		listMessagesFn: func(_ context.Context, _, _ string, _ conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
 			return conversations.MessagesListResponse{}, errRepo
 		},
 	}
