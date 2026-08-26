@@ -340,77 +340,32 @@ func TestTheUnavailableFieldIsStillDECLARED(t *testing.T) {
 
 /* ── the sections that stay unavailable ────────────────────────────────── */
 
-// TestFeaturesSectionsWithNoConsumerRefuseBothVerbs, with the reason naming why.
-//
-// THE SECTION LIST IS READ FROM THE SERVER, not hardcoded, and that is a
-// resolution rather than a refactor. This test held a two-entry map:
-// `skill_publishing` ("no publish endpoint, no catalog, no categories") and
-// `support_assistant` ("the widget has no render site"). Two branches then
-// closed one gap each — #585 built the skill publishing pipeline, #588 built
-// the support assistant — and each correctly deleted the OTHER entry from this
-// map. Both were right at the time they were written; merged, the map is empty.
-//
-// AN EMPTY MAP IS A TEST THAT ASSERTS NOTHING AND PASSES, which is exactly the
-// failure this file exists to catch in the product. Deriving the set from the
-// schema means the check keeps working however many sections are withheld —
-// and says so out loud when the answer is none, rather than reporting a silent
-// green for having looked at nothing.
-func TestFeaturesSectionsWithNoConsumerRefuseBothVerbs(t *testing.T) {
-	_, router := newConfigEnvironment(t)
-
-	recorder := configDo(t, router, http.MethodGet, "/admin/plugin_config_schemas/administration", nil)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("schema status = %d, want 200", recorder.Code)
-	}
-	var schema struct {
-		Sections []struct {
-			ID                string `json:"id"`
-			Page              string `json:"page"`
-			UnavailableReason string `json:"unavailable_reason"`
-		} `json:"sections"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &schema); err != nil {
-		t.Fatalf("decode schema: %v", err)
-	}
-
-	withheld := map[string]string{}
-	for _, section := range schema.Sections {
-		// The literal, not admin.configPageFeatures: this is the external
-		// `admin_test` package and that constant is unexported. The sibling
-		// check in config_values_postgres_integration_test.go spells it the
-		// same way.
-		if section.Page == "features" && section.UnavailableReason != "" {
-			withheld[section.ID] = section.UnavailableReason
-		}
-	}
-	if len(withheld) == 0 {
-		// Not a failure: every Features section having a consumer is the goal.
-		// It is announced so that a reader of the test output can tell "nothing
-		// to check" from "checked and fine".
-		t.Skip("no Features section is currently withheld; this check has nothing to exercise")
-	}
-
-	for section, reason := range withheld {
-		t.Run(section, func(t *testing.T) {
-			for _, method := range []string{http.MethodGet, http.MethodPut} {
-				var body any
-				if method == http.MethodPut {
-					body = map[string]any{"values": map[string]any{}}
-				}
-				recorder := configDo(t, router, method,
-					"/admin/plugin_config_values/administration/"+section, body)
-				if recorder.Code != http.StatusNotImplemented {
-					t.Errorf("%s = %d, want 501 (body %s)", method, recorder.Code, recorder.Body.String())
-				}
-				// The refusal must carry the SERVER'S OWN reason, so an operator
-				// is told why rather than just "no".
-				if got := decodeConfigBody(t, recorder).Error; got != reason {
-					t.Errorf("%s reason = %q, want the schema's %q", method, got, reason)
-				}
-			}
-		})
-	}
-}
+/*
+ * TestFeaturesSectionsWithNoConsumerRefuseBothVerbs USED TO STAND HERE, and is
+ * DELETED rather than skipped, because it has no instances left.
+ *
+ * It held two: `skill_publishing` ("no publish endpoint, no catalog, no
+ * categories") and `support_assistant` ("the widget has no render site"). #585
+ * built the skill publishing pipeline and #588 built the support assistant, so
+ * every section on the Features page now has a consumer and the server withholds
+ * none of them.
+ *
+ * The intermediate version of this test read the withheld set from the schema
+ * and `t.Skip`ped when it was empty. `scripts/go/declared-skips.txt` rejected
+ * that, correctly and by design: its rule 3 says "delete the test if nobody
+ * intends to run it — a test that always skips is not coverage, it is the
+ * appearance of coverage", and its ledger is reserved for tests CI genuinely
+ * cannot supply an environment for. "Nothing to assert" is not that.
+ *
+ * NOTHING IS LOST. The refusal contract — 501 on both verbs, with the server's
+ * own reason in the body — is exercised by six live instances on the
+ * Configuration side, in config_values_postgres_integration_test.go's
+ * `mcp_servers`, `observability`, `llm_proxy`, `runtime`, `admin_panel` and
+ * `auth`. And TestSchemaDeclaresAvailabilityForEverySection still holds every
+ * section to being either available WITH FIELDS or unavailable WITH A REASON,
+ * so a Features section that loses its consumer cannot quietly become a blank
+ * pane. When one is withheld again, this test comes back with it.
+ */
 
 /* ── the move ──────────────────────────────────────────────────────────── */
 

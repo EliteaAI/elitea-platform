@@ -303,8 +303,35 @@ adminTest(
     ]) {
       await expect(page.getByRole('button', { name: new RegExp(section) })).toBeVisible();
     }
-    // The unavailable ones are marked BEFORE they are opened.
-    await expect(page.getByText('Not available here').first()).toBeVisible();
+    /*
+     * THE MARKER IS ASSERTED AGAINST THE SERVER'S OWN ANSWER, not against a
+     * standing assumption that some section is withheld.
+     *
+     * This line used to read `expect(getByText('Not available here').first())
+     * .toBeVisible()`, which was true while `skill_publishing` and
+     * `support_assistant` were both withheld. #585 and #588 gave each of them a
+     * consumer, so the marker now renders zero times and the unconditional
+     * assertion fails — not because the page regressed, but because the product
+     * caught up with it.
+     *
+     * The property worth holding is the CORRESPONDENCE: the sidebar marks
+     * exactly those sections the server declares unavailable, however many that
+     * is. Asserting a count of zero when the server withholds nothing is a real
+     * assertion, not a vacuous one — it would catch the page marking a live
+     * section as unavailable.
+     */
+    const withheldCount = await page.evaluate(async () => {
+      const response = await fetch('/api/v2/admin/plugin_config_schemas/administration', {
+        credentials: 'include',
+      });
+      const body = (await response.json()) as {
+        sections?: { page?: string; unavailable_reason?: string }[];
+      };
+      return (body.sections ?? []).filter(
+        (section) => section.page === 'features' && Boolean(section.unavailable_reason),
+      ).length;
+    });
+    await expect(page.getByText('Not available here')).toHaveCount(withheldCount);
 
     await checkA11y(page);
   },
