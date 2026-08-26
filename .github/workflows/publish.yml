@@ -430,6 +430,15 @@ jobs:
           # docker.io/library/redis.
           - chart: elitea-runtime-redis
             image: ""
+          # The umbrella: EliteA as one release. It ships no image of its own,
+          # so `image:` is empty — but its components do, and they are vendored
+          # into its package at whatever tag their values.yaml carries. The
+          # stamping step below therefore writes global.image.tag for this
+          # chart, which every component resolves its tag from. Without that a
+          # chart published at 1.2.3 would install `latest` for all eight.
+          - chart: elitea
+            image: ""
+            globalImageTag: true
           # Vendors the upstream nats subchart, so packaging it needs
           # `helm dependency build` and network access to the upstream repo.
           # The step below runs it for any chart that declares dependencies.
@@ -555,6 +564,27 @@ jobs:
             fi
 
             echo "stamped ${VALUES}: image.tag ${before} -> ${VERSION}"
+          fi
+
+          # The umbrella has no image of its own but vendors every component
+          # chart, each carrying its own `image.tag: latest` placeholder. One
+          # global tag is what turns the package into a coherent release, so it
+          # is stamped and read back exactly like image.tag above — and its
+          # ABSENCE is an error, because a silently unstamped global is a chart
+          # that publishes at a release number and installs `latest`.
+          if [ "${{ matrix.globalImageTag }}" = "true" ]; then
+            if [ "$(yq -r '.global.image.tag' "$VALUES")" = "null" ]; then
+              echo "::error file=${VALUES}::no .global.image.tag to stamp — the umbrella's global image block moved"
+              exit 1
+            fi
+            yq -i ".global.image.tag = \"${VERSION}\"" "$VALUES"
+            got="$(yq -r '.global.image.tag' "$VALUES")"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=${VALUES}::global.image.tag is '${got}', expected '${VERSION}'"
+              exit 1
+            fi
+            yq -i ".appVersion = \"${VERSION}\"" "$CHART"
+            echo "stamped ${VALUES}: global.image.tag -> ${VERSION}"
           fi
 
           yq '{"version": .version, "appVersion": .appVersion}' "$CHART"

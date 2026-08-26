@@ -1,0 +1,119 @@
+# EliteA, as one release.
+#
+# HOW THIS FILE IS ORGANISED, because it is deliberately thin:
+#
+#   global:      facts more than one component needs. Set them ONCE here.
+#   <component>: per-component overrides, keyed by chart name. Everything the
+#                component charts default on their own stays in their own
+#                values.yaml — this file does not restate it.
+#
+# The rule for `global`: a setting belongs here when two or more components
+# must agree about it. Those are the settings that drifted while these were
+# eight separate releases — one chart defaulting REDIS_URL to "" and another to
+# "redis:6379", two different NATS URLs — because nothing forced them to be one
+# value. Anything only one component reads stays in that component's section.
+
+global:
+  # ── Images ────────────────────────────────────────────────────────────────
+  #
+  # ONE tag for the whole platform. Every first-party image here is built,
+  # signed and pushed by a single semantic-release run, so a per-component tag
+  # would only ever express a mistake. The release stamps this field; the
+  # working tree keeps the placeholder.
+  #
+  # Empty means "use each component chart's own image.tag", which is what an
+  # install straight from the working tree gets.
+  image:
+    tag: ""
+    # Applied only where a component chart has no pull secret of its own.
+    pullSecrets: []
+
+  # ── PostgreSQL ────────────────────────────────────────────────────────────
+  #
+  # A SECRET REFERENCE, not a URL: the DSN carries a password, and a password
+  # in a values file is a password in a ConfigMap. elitea-main, the scheduler
+  # and the LLM gateway all read the same database, and before this block they
+  # each named the secret separately.
+  #
+  # Externalized by default. There is no embedded mode: CloudNativePG installs
+  # cluster-scoped CRDs and a controller whose lifecycle is not this
+  # application's, so bundling it would let `helm uninstall` reach the
+  # database. Run the operator and its Cluster as their own release and point
+  # this at the secret it publishes.
+  postgresql:
+    existingSecret: "elitea-main-db"
+    key: "database-url"
+
+  # ── NOT YET GLOBAL: Redis, runtime Redis, NATS ────────────────────────────
+  #
+  # These three are the other settings that drifted between the separate
+  # releases, and they are deliberately NOT global keys yet. The component
+  # charts ship non-empty defaults for them — "nats://nats:4222" in one chart
+  # and "nats://nats.elitea-gateway.svc.cluster.local:4222" in another, one
+  # resolvable only from its own namespace and the other only from a different
+  # one — so a global could never tell "the operator set this" from "the chart
+  # guessed". Making them global means first removing those defaults, which
+  # changes what a standalone install of those charts does and belongs in its
+  # own reviewed change.
+  #
+  # Until then they are set per component below, in this one file. That is
+  # still one file instead of three repositories, and an inert `global.nats`
+  # block that silently lost to a chart default would be worse than an honest
+  # repetition: a setting that looks applied and is not is the failure mode
+  # this whole consolidation exists to remove.
+
+# ── Components ──────────────────────────────────────────────────────────────
+#
+# Keyed by chart name. `enabled` drives the dependency conditions in
+# Chart.yaml; everything else is an ordinary override of that chart's values.
+
+elitea-main:
+  enabled: true
+
+elitea-web:
+  enabled: true
+
+elitea-scheduler:
+  enabled: true
+  env:
+    # Bare host:port, NOT a URL: the value goes straight to goredis
+    # Options.Addr. The chart's own default is "redis:6379", which resolves to
+    # nothing in a real namespace.
+    REDIS_URL: "elitea-valkey:6379"
+    # Fully qualified on purpose — see the NATS note under `global` above.
+    GATEWAY_NATS_URL: "nats://elitea-nats.elitea.svc.cluster.local:4222"
+
+elitea-llm-gateway:
+  enabled: true
+  env:
+    # Must name the SAME NATS as the scheduler: the budget counters are shared
+    # state, and two components on two clusters of one counter enforce nothing.
+    GATEWAY_NATS_URL: "nats://elitea-nats.elitea.svc.cluster.local:4222"
+  # This chart REFUSES to render until both of these are stated, and that
+  # refusal is correct — only the operator knows their own origins, and a
+  # guessed one would guard a name nobody uses while reading as armed. There is
+  # deliberately no default here either.
+  #
+  #   env.GATEWAY_SELF_LLM_ORIGINS: every origin that reaches this deployment's
+  #     /llm surface, public and in-cluster, comma-separated.
+  #   egressPosture: "allowlist" (with env.GATEWAY_EGRESS_ALLOWLIST) or
+  #     "public-unrestricted".
+  #
+  # Set them in your own values file; leaving them out fails the install with a
+  # message naming both.
+
+# The two halves of the runtime plane. Disabling either leaves chat admitting
+# turns that are never answered, so they default on together.
+elitea-worker-python:
+  enabled: true
+
+elitea-runtime-redis:
+  enabled: true
+
+otel-collector:
+  enabled: true
+
+# Off by default: the legacy indexer shim is only needed where the Python
+# indexing path is still in use.
+pylon-indexer:
+  enabled: false

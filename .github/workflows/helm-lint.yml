@@ -299,6 +299,25 @@ jobs:
           - chart: elitea-runtime-redis
             values: ""
             toggles: --set persistence.enabled=false --set bootstrap.enabled=false
+          # The umbrella. Its dependencies are all file:// paths inside this
+          # repository, so `helm dependency build` needs no network — which is
+          # the reason nats/ is NOT one of them.
+          #
+          # The two gateway postures are supplied for the same reason as in the
+          # elitea-llm-gateway entry above: that subchart refuses to render
+          # without them, so the umbrella cannot render without them either.
+          # Render-only values, `.invalid` per RFC 2606.
+          #
+          # global.image.tag is set because it is the whole point of the
+          # umbrella's image block: with it empty every component falls back to
+          # its own tag, which is the case the pass below would otherwise be
+          # silently measuring.
+          - chart: elitea
+            values: --set-string 'elitea-llm-gateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' --set-string 'elitea-llm-gateway.egressPosture=public-unrestricted' --set global.image.tag=0.0.0-ci
+            # Turning the runtime plane off is the branch an operator uses when
+            # the worker runs elsewhere, and it removes the only producer of an
+            # answer — so a break in it is invisible in the default pass.
+            toggles: --set-string 'elitea-llm-gateway.env.GATEWAY_SELF_LLM_ORIGINS=https://ci-render-only.example.invalid/llm/v1' --set-string 'elitea-llm-gateway.egressPosture=public-unrestricted' --set elitea-worker-python.enabled=false --set elitea-runtime-redis.enabled=false --set pylon-indexer.enabled=true
           # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
           # upstream subchart, so templating it needs `helm dependency build`
           # and network access to the upstream repo. `helm lint` above still
@@ -319,6 +338,23 @@ jobs:
             "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
           kubeconform -v
+
+      # `helm template` on a chart with unvendored dependencies fails with
+      # "found in Chart.yaml, but missing in charts/ directory" — it does not
+      # resolve them itself. The umbrella's dependencies are all file:// paths
+      # in this repository, so this needs no network; charts that declare none
+      # skip it, exactly as the publish workflow's equivalent step does.
+      # Keyed on the tracked Chart.lock rather than parsing Chart.yaml, so this
+      # step needs no yq — which this job, unlike the publish workflow, does not
+      # install.
+      - name: Build chart dependencies
+        run: |
+          CHART_DIR="deploy/helm/${{ matrix.chart }}"
+          if [ -f "${CHART_DIR}/Chart.lock" ]; then
+            helm dependency build "$CHART_DIR"
+          else
+            echo "no dependencies declared"
+          fi
 
       - name: helm template (default values)
         run: |

@@ -1,3 +1,14 @@
+{{- /*
+  The database secret, resolved once. An explicit .Values.secrets entry always
+  wins; global.postgresql fills in when there is none, so an umbrella install
+  names the secret in one place instead of once per component. `merge` gives
+  priority to its first argument, which is what makes the explicit entry win.
+*/ -}}
+{{- $secrets := .Values.secrets | default dict }}
+{{- $pg := (.Values.global | default dict).postgresql | default dict }}
+{{- if $pg.existingSecret }}
+{{- $secrets = merge (deepCopy $secrets) (dict "DATABASE_URL" (dict "secretName" $pg.existingSecret "key" ($pg.key | default "database-url"))) }}
+{{- end }}
 {{/*
   Guard prerequisites are checked HERE, and this Deployment always renders, so
   `helm template` runs every check on every values file (issue #467). Read
@@ -37,7 +48,7 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: elitea-llm-gateway
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ ((.Values.global | default dict).image | default dict).tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -49,8 +60,13 @@ spec:
               protocol: TCP
           env:
             {{- range $key, $value := .Values.env }}
+            {{- if not (hasKey $secrets $key) }}
+            # Skipped when the same name is secret-backed below: emitting both
+            # put one name twice in this list, and only the ordering decided
+            # which won.
             - name: {{ $key }}
               value: {{ $value | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.mtls.enabled }}
             # FIX 1 (HIGH): inject TLS paths so the server calls ListenAndServeTLS
@@ -65,7 +81,7 @@ spec:
             - name: GATEWAY_TLS_CA_FILE
               value: {{ .Values.mtls.mountPath }}/ca.crt
             {{- end }}
-            {{- range $name, $ref := .Values.secrets }}
+            {{- range $name, $ref := $secrets }}
             # Sensitive vars from Kubernetes Secrets (never plaintext in env map).
             - name: {{ $name }}
               valueFrom:

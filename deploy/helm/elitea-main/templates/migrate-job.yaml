@@ -1,3 +1,13 @@
+{{- /*
+  Same database-secret resolution as deployment.yaml, and it must stay in step
+  with it: a migration that runs against a different database than the service
+  is worse than one that does not run at all.
+*/ -}}
+{{- $secrets := .Values.secrets | default dict }}
+{{- $pg := (.Values.global | default dict).postgresql | default dict }}
+{{- if $pg.existingSecret }}
+{{- $secrets = merge (deepCopy $secrets) (dict "DATABASE_URL" (dict "secretName" $pg.existingSecret "key" ($pg.key | default "database-url"))) }}
+{{- end }}
 {{- if .Values.migrations.enabled }}
 apiVersion: batch/v1
 kind: Job
@@ -78,7 +88,7 @@ spec:
           # single Containerfile builds both /elitea-main and /elitea-migrate
           # into one image) — override via migrations.image.* only for the rare
           # case of pinning the migration step independently.
-          image: "{{ .Values.migrations.image.repository | default .Values.image.repository }}:{{ .Values.migrations.image.tag | default .Values.image.tag }}"
+          image: "{{ .Values.migrations.image.repository | default .Values.image.repository }}:{{ .Values.migrations.image.tag | default ((.Values.global | default dict).image | default dict).tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           {{- with .Values.securityContext }}
           securityContext:
@@ -96,10 +106,12 @@ spec:
           # in CreateContainerConfigError on every fresh `helm install`.
           env:
             {{- range $key, $value := .Values.env }}
+            {{- if not (hasKey $secrets $key) }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-            {{- range $name, $ref := .Values.secrets }}
+            {{- end }}
+            {{- range $name, $ref := $secrets }}
             - name: {{ $name }}
               valueFrom:
                 secretKeyRef:

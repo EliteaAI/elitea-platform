@@ -1,3 +1,14 @@
+{{- /*
+  The database secret, resolved once. An explicit .Values.secrets entry always
+  wins; global.postgresql fills in when there is none, so an umbrella install
+  names the secret in one place instead of once per component. `merge` gives
+  priority to its first argument, which is what makes the explicit entry win.
+*/ -}}
+{{- $secrets := .Values.secrets | default dict }}
+{{- $pg := (.Values.global | default dict).postgresql | default dict }}
+{{- if $pg.existingSecret }}
+{{- $secrets = merge (deepCopy $secrets) (dict "DATABASE_URL" (dict "secretName" $pg.existingSecret "key" ($pg.key | default "database-url"))) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -33,7 +44,7 @@ spec:
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       containers:
         - name: elitea-scheduler
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          image: "{{ .Values.image.repository }}:{{ ((.Values.global | default dict).image | default dict).tag | default .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             # In-process health server only — this worker serves no product
@@ -44,9 +55,9 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "elitea-scheduler.fullname" . }}-config
-          {{- if .Values.secrets }}
+          {{- if $secrets }}
           env:
-            {{- range $name, $ref := .Values.secrets }}
+            {{- range $name, $ref := $secrets }}
             - name: {{ $name }}
               valueFrom:
                 secretKeyRef:
