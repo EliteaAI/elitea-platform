@@ -45,6 +45,19 @@ const NO_ROLE = '' as const;
 /** What the role `<Select>` holds: an administration role, or the empty "None" value. */
 type RoleSelectValue = AdminRole | typeof NO_ROLE;
 
+/**
+ * The per-row controls. `undefined` ⇒ that control is not rendered at all —
+ * "this tab has no delete" and "this operator may not delete" collapse into one
+ * representation and so cannot disagree with each other.
+ */
+export interface AdminUserRowActions {
+  readonly onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
+  readonly onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
+  readonly onDelete: ((userIds: number[]) => void) | undefined;
+  /** Always present: activity is a READ, so it exists on every tab. */
+  readonly onOpenActivity: (user: AdminUserRow) => void;
+}
+
 export interface AdminUsersTableProps {
   users: readonly AdminUserRow[];
   isLoading: boolean;
@@ -53,10 +66,17 @@ export interface AdminUsersTableProps {
   sortField: string;
   sortDirection: 'asc' | 'desc';
   onSort: (field: string, direction: 'asc' | 'desc') => void;
-  /** Absent ⇒ the column/control is not rendered at all (the system-users tab). */
-  onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
-  onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
-  onDelete: ((userIds: number[]) => void) | undefined;
+  /**
+   * The per-row controls, as ONE object rather than four sibling props.
+   *
+   * Grouped because the §3.5 component-props budget is 12 and the flat form
+   * reached 13 when the activity control became live. They are the coherent
+   * set to group: every one of them acts on a single row, and the page builds
+   * them together. It must be a MEMOISED object — this component is `memo`'d
+   * and `columns` is a `useMemo` over it, so a fresh literal per render would
+   * defeat both.
+   */
+  rowActions: AdminUserRowActions;
   /**
    * Presentation-only: `false` disables the `super_admin` option. The server
    * enforces the same rule and refuses regardless of what this says.
@@ -80,9 +100,7 @@ export const AdminUsersTable = memo(function AdminUsersTable({
   sortField,
   sortDirection,
   onSort,
-  onSetAdminRole,
-  onToggleSuspended,
-  onDelete,
+  rowActions,
   canAssignSuperAdmin,
   pendingIds,
 }: AdminUsersTableProps) {
@@ -161,6 +179,8 @@ export const AdminUsersTable = memo(function AdminUsersTable({
       },
     ];
 
+    const { onSetAdminRole, onToggleSuspended, onDelete, onOpenActivity } = rowActions;
+
     if (onSetAdminRole) {
       definitions.push({
         field: 'admin_role',
@@ -203,90 +223,87 @@ export const AdminUsersTable = memo(function AdminUsersTable({
       });
     }
 
-    if (onToggleSuspended || onDelete) {
-      definitions.push({
-        field: 'actions',
-        headerName: t('pages.admin.users.column.actions', 'Actions'),
-        width: 150,
-        sortable: false,
-        disableColumnMenu: true,
-        renderCell: (params: GridRenderCellParams<AdminUserRow>) => {
-          const row = params.row;
-          const busy = pendingIds.has(row.id);
-          const suspendLabel = row.suspended
-            ? t('pages.admin.users.action.unsuspend', 'Unsuspend user')
-            : t('pages.admin.users.action.suspend', 'Suspend user');
-          return (
-            // The click must not reach the DataGrid row: with
-            // `checkboxSelection` on, MUI X treats a row click as a selection
-            // toggle, which deselects the very row an action belongs to (#130).
-            <Box sx={{ display: 'flex', gap: 0.25 }} onClick={(event) => event.stopPropagation()}>
-              {onToggleSuspended ? (
-                <Tooltip title={suspendLabel}>
-                  <span>
-                    <IconButton
-                      size="small"
-                      aria-label={suspendLabel}
-                      disabled={busy}
-                      onClick={() => onToggleSuspended(row)}
-                    >
-                      {row.suspended ? (
-                        <CheckCircleOutlinedIcon fontSize="small" color="success" />
-                      ) : (
-                        <BlockOutlinedIcon fontSize="small" />
-                      )}
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              ) : null}
-
-              {/*
-                User activity. The reference page opens a drawer backed by the
-                audit-trail endpoints (`useAuditTrailListQuery` and friends);
-                elitea-main serves none of them, so there is nothing to show.
-                Rendered DISABLED with the reason rather than omitted, so the
-                gap is visible on the page instead of only in the tracker — and
-                never as a control that opens an empty drawer.
-              */}
-              <Tooltip
-                title={t(
-                  'pages.admin.users.action.activityUnavailable',
-                  'User activity is unavailable: the per-user activity view has not been ported yet',
-                )}
-              >
+    // Unconditional: the suspend and delete controls are permission- and
+    // tab-dependent, but the activity control is not, so this column is never
+    // empty and is never skipped. It WAS skipped when it held only writes.
+    definitions.push({
+      field: 'actions',
+      headerName: t('pages.admin.users.column.actions', 'Actions'),
+      width: 150,
+      sortable: false,
+      disableColumnMenu: true,
+      renderCell: (params: GridRenderCellParams<AdminUserRow>) => {
+        const row = params.row;
+        const busy = pendingIds.has(row.id);
+        const suspendLabel = row.suspended
+          ? t('pages.admin.users.action.unsuspend', 'Unsuspend user')
+          : t('pages.admin.users.action.suspend', 'Suspend user');
+        return (
+          // The click must not reach the DataGrid row: with
+          // `checkboxSelection` on, MUI X treats a row click as a selection
+          // toggle, which deselects the very row an action belongs to (#130).
+          <Box sx={{ display: 'flex', gap: 0.25 }} onClick={(event) => event.stopPropagation()}>
+            {onToggleSuspended ? (
+              <Tooltip title={suspendLabel}>
                 <span>
                   <IconButton
                     size="small"
-                    disabled
-                    aria-label={t('pages.admin.users.action.activity', 'User activity')}
+                    aria-label={suspendLabel}
+                    disabled={busy}
+                    onClick={() => onToggleSuspended(row)}
                   >
-                    <TimelineOutlinedIcon fontSize="small" />
+                    {row.suspended ? (
+                      <CheckCircleOutlinedIcon fontSize="small" color="success" />
+                    ) : (
+                      <BlockOutlinedIcon fontSize="small" />
+                    )}
                   </IconButton>
                 </span>
               </Tooltip>
+            ) : null}
 
-              {onDelete ? (
-                <Tooltip title={t('pages.admin.users.action.delete', 'Delete user')}>
-                  <span>
-                    <IconButton
-                      size="small"
-                      aria-label={t('pages.admin.users.action.delete', 'Delete user')}
-                      disabled={busy}
-                      onClick={() => onDelete([row.id])}
-                    >
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
-                  </span>
-                </Tooltip>
-              ) : null}
-            </Box>
-          );
-        },
-      });
-    }
+            {/*
+              User activity. Opens `UserActivityDrawer` — the same audit
+              endpoints the Audit Trail page reads, with `user_id` pinned to
+              this row. It shipped DISABLED while elitea-main served no audit
+              API at all; it does now, so this is a live control.
+
+              Rendered on BOTH tabs and regardless of the write permissions:
+              it is a read, and the server authorises it on its own.
+            */}
+            <Tooltip title={t('pages.admin.users.action.activity', 'User activity')}>
+              <span>
+                <IconButton
+                  size="small"
+                  aria-label={t('pages.admin.users.action.activity', 'User activity')}
+                  onClick={() => onOpenActivity(row)}
+                >
+                  <TimelineOutlinedIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+
+            {onDelete ? (
+              <Tooltip title={t('pages.admin.users.action.delete', 'Delete user')}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={t('pages.admin.users.action.delete', 'Delete user')}
+                    disabled={busy}
+                    onClick={() => onDelete([row.id])}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+            ) : null}
+          </Box>
+        );
+      },
+    });
 
     return definitions;
-  }, [onSetAdminRole, onToggleSuspended, onDelete, canAssignSuperAdmin, pendingIds, roleOptions]);
+  }, [rowActions, canAssignSuperAdmin, pendingIds, roleOptions]);
 
   if (!isLoading && users.length === 0) {
     return (

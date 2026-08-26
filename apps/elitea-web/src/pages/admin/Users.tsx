@@ -10,17 +10,16 @@
  *
  * ## What is real and what is not
  *
- * Three of the reference page's four row actions had NO server before this
- * unit. Each was resolved deliberately:
+ * Three of the reference page's four row actions had NO server when this unit
+ * started. All four are now live; each was resolved deliberately:
  *
  *  - **delete**, **set admin role**, **suspend/unsuspend** — implemented for
  *    real in `services/elitea-main/internal/api/v2/admin/users.go`, covered by
  *    write-then-re-read tests. Live controls.
- *  - **user activity** — still has no server. A14's Audit Trail page since gave
- *    elitea-main a real audit API, so the ORIGINAL reason ("no audit-trail
- *    API") stopped being true and has been corrected; what is missing now is
- *    the per-user activity VIEW, not the data. Still rendered DISABLED, with
- *    the accurate reason in its tooltip (see `AdminUsersTable`).
+ *  - **user activity** — live, as of the per-user activity port. A14's Audit
+ *    Trail page gave elitea-main a real audit API whose four endpoints all take
+ *    `user_id`; this page's row control opens `./UserActivityDrawer` over it.
+ *    It shipped disabled only because the VIEW was missing, never the data.
  *  - **export** — real, and the one place this port deliberately differs in
  *    FORMAT from the reference: it writes CSV, not .xlsx, because this app
  *    carries no spreadsheet dependency (see `./adminUsersCsv`). The control
@@ -53,6 +52,7 @@ import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
 import { AdminUsersTable } from './AdminUsersTable';
+import { UserActivityDrawer } from './UserActivityDrawer';
 import { ADMIN_USERS_PAGE_SIZE, useAdminUsersPage } from './useAdminUsersPage';
 
 
@@ -170,9 +170,7 @@ export function AdminUsers() {
             sortField={state.sortField}
             sortDirection={state.sortDirection}
             onSort={state.onSort}
-            onSetAdminRole={state.onSetAdminRole}
-            onToggleSuspended={state.onToggleSuspended}
-            onDelete={state.onDeleteRow}
+            rowActions={state.rowActions}
             canAssignSuperAdmin={state.canAssignSuperAdmin}
             pendingIds={state.pendingIds}
           />
@@ -209,6 +207,8 @@ export function AdminUsers() {
         name={deleteTargetName}
         copy={{ title: t('pages.admin.users.deleteModal.title', 'Delete confirmation') }}
       />
+
+      <UserActivityDrawer user={state.activityUser} onClose={state.onCloseActivity} />
     </DrawerPage>
   );
 }

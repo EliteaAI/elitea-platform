@@ -1,6 +1,0 @@
-{
-  "recordedAt": "2026-07-27",
-  "synthetic": true,
-  "note": "Synthetic (unit S6): single-shot (non-chunked, file.size <= CHUNK_SIZE) upload ack (useUploadWithProgress.js:30-37, response[0]).",
-  "body": [{ "id": "att-2", "filename": "small.txt", "size": 42 }]
-}

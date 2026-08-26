@@ -76,6 +76,28 @@ function useAdminUserHandlers(): void {
       recorded.push({ method: 'PUT', url: request.url, body: await request.json() });
       return HttpResponse.json({ id: 11, suspended: true });
     }),
+    // The activity drawer's four reads. Empty, because what this file asserts
+    // about the drawer is that it OPENS for the right row — the rows it then
+    // shows are `UserActivityDrawer.test.tsx`'s subject. They are registered
+    // even for the tests that never open it: `onUnhandledRequest: 'error'`
+    // (R-M5) turns an unmocked audit call into a failure of whatever test
+    // happened to trigger it.
+    http.get('*/elitea_core/audit_traces/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ rows: [], total: 0 });
+    }),
+    http.get('*/elitea_core/audit/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ rows: [], total: 0 });
+    }),
+    http.get('*/elitea_core/audit_trace_heatmap/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ data: [], metadata: null });
+    }),
+    http.get('*/elitea_core/audit_heatmap/administration', ({ request }) => {
+      recorded.push({ method: 'GET', url: request.url, body: null });
+      return HttpResponse.json({ data: [], metadata: null });
+    }),
   );
 }
 
@@ -235,16 +257,23 @@ describe('Admin › Users', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 
-  it('renders the one unbacked control as disabled, stating why', async () => {
+  // No "renders the unbacked controls as disabled" test survives here: this
+  // page has none left. Export became a real CSV download, and activity is a
+  // real drawer — the assertions below are what each of them replaced.
+  it('opens the activity drawer for the row it was clicked on', async () => {
+    const user = userEvent.setup();
     renderAdminRoute(<AdminUsers />);
     await screen.findByText('Ada Admin');
 
-    // Activity: the per-user activity view has no server. (The audit-trail API
-    // its original reason cited now exists — see pages/admin/AuditTrail.tsx —
-    // so that reason was corrected rather than left to go quietly stale.)
     const activityButtons = screen.getAllByRole('button', { name: 'User activity' });
     expect(activityButtons).toHaveLength(2);
-    activityButtons.forEach((button) => expect(button).toBeDisabled());
+    activityButtons.forEach((button) => expect(button).toBeEnabled());
+
+    await user.click(activityButtons[1] as HTMLElement);
+
+    // The SECOND row's user, not the first: a drawer wired to `rows[0]` looks
+    // right until the operator opens it from any other row.
+    expect(await screen.findByText('Bo Blocked (ID: 12)')).toBeInTheDocument();
   });
 
   /**
@@ -337,6 +366,15 @@ describe('Admin › Users', () => {
     // role/suspend/delete control for them and neither does this port.
     expect(screen.queryByRole('button', { name: 'Delete user' })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Admin Role' })).not.toBeInTheDocument();
+
+    // Activity survives, and it is the whole reason the actions column is
+    // pushed unconditionally: the column used to exist only `if (onToggleSuspended
+    // || onDelete)`, and on this tab both are `undefined` — so restoring that
+    // guard would delete this tab's only control with every other assertion
+    // here still passing. One button per row of the (unfiltered) fixture.
+    expect(screen.getAllByRole('button', { name: 'User activity' })).toHaveLength(
+      USERS_BODY.rows.length,
+    );
   });
 
   it('asks the server for the search term rather than filtering the loaded page', async () => {
