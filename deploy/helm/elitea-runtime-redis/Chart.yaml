@@ -1,0 +1,12 @@
+apiVersion: v2
+name: elitea-runtime-redis
+description: >-
+  The TLS Redis the EliteA runtime dispatch plane and production Form
+  authentication both require, plus the consumer groups they dispatch through.
+  Deliberately a SECOND Redis, separate from the plaintext instance serving
+  elitea-main's REDIS_URL: two consumers accept nothing but rediss:// with an
+  ACL username and a file-backed password. The compose stack provisions the
+  same thing from deploy/runtime/redis.conf and bootstrap-streams.sh.
+type: application
+version: 0.1.0
+appVersion: "7"

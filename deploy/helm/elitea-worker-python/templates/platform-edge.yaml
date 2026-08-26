@@ -1,0 +1,191 @@
+{{- if .Values.platformEdge.enabled }}
+{{- $edge := .Values.platformEdge }}
+# The worker's platform_origin: a one-consumer TLS edge in front of
+# elitea-main. Transcribed from deploy/runtime/platform-edge.yml and
+# platform-edge-dynamic.yml in the platform repository.
+#
+# Why it exists: elitea-worker-python refuses a plaintext platform origin
+# (config.py:187) and elitea-main has no TLS listener for its ordinary
+# /api/v2 + /llm surface — its three mTLS listeners serve the private
+# control/output/content protocols, not the product API.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $edge.serviceName }}
+  labels:
+    {{- include "elitea-worker-python.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+data:
+  traefik.yml: |
+    # Port 443 rather than 8443 so platform_origin stays a bare origin. A port
+    # would work — the worker's validator allows one — but every URL the SDK
+    # builds from that base would carry it.
+    entryPoints:
+      platform:
+        address: ":443"
+    providers:
+      file:
+        filename: /etc/traefik/dynamic.yml
+    log:
+      level: INFO
+    accessLog: {}
+  dynamic.yml: |
+    tls:
+      stores:
+        default:
+          defaultCertificate:
+            certFile: /run/edge-tls/tls.crt
+            keyFile: /run/edge-tls/tls.key
+    http:
+      routers:
+        # The execution-events SSE stream. It needs its own router because it
+        # is the one route here that accepts NO credential a client can
+        # present: production_runtime.go composes it with PrincipalValidator +
+        # ForwardedIdentityVerifier only, so the PAT that admitted the turn
+        # cannot read the turn's own stream. It is reachable exclusively
+        # through a forward-auth edge that authenticates the caller and
+        # projects verified identity headers.
+        #
+        # Scoped to this exact path rather than applied to the catch-all: every
+        # other route through this edge authenticates the worker's bearer
+        # directly, and putting an authenticating edge in front of them would
+        # change how requests that already work are authorized.
+        platform-execution-events:
+          rule: PathRegexp(`^/api/v2/executions/[0-9]+/[^/]+/events$`)
+          priority: 100
+          entryPoints: [platform]
+          tls: {}
+          middlewares:
+            - strip-caller-auth-context
+            - runtime-forward-auth
+          service: elitea-main
+        platform:
+          rule: PathPrefix(`/`)
+          entryPoints: [platform]
+          tls: {}
+          service: elitea-main
+      middlewares:
+        # MUST run before the forward-auth call, and its absence would be an
+        # authentication bypass rather than an inconvenience: elitea-main
+        # trusts X-Auth-* from a trusted proxy, so a caller that could set them
+        # itself would choose its own identity. Traefik deletes a header whose
+        # customRequestHeaders value is empty.
+        strip-caller-auth-context:
+          headers:
+            customRequestHeaders:
+              X-Auth-Type: ""
+              X-Auth-ID: ""
+              X-Auth-User-ID: ""
+              X-Auth-Reference: ""
+              X-Auth-Avatar: ""
+              X-Auth-Avatar-State: ""
+        # An internal address, never a product route.
+        runtime-forward-auth:
+          forwardAuth:
+            address: "http://{{ $edge.mainService }}:{{ $edge.mainPort }}/internal/forward-auth/main"
+            authResponseHeaders:
+              - X-Auth-Type
+              - X-Auth-ID
+              - X-Auth-User-ID
+              - X-Auth-Reference
+      services:
+        elitea-main:
+          loadBalancer:
+            servers:
+              # Cleartext inside the cluster. The edge terminates TLS for the
+              # worker; it does not re-originate it, and elitea-main cannot
+              # accept it on this port anyway.
+              - url: "http://{{ $edge.mainService }}:{{ $edge.mainPort }}"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $edge.serviceName }}
+  labels:
+    {{- include "elitea-worker-python.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+spec:
+  type: ClusterIP
+  ports:
+    - name: https
+      port: 443
+      targetPort: platform
+      protocol: TCP
+  selector:
+    {{- include "elitea-worker-python.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $edge.serviceName }}
+  labels:
+    {{- include "elitea-worker-python.labels" . | nindent 4 }}
+    app.kubernetes.io/component: platform-edge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "elitea-worker-python.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: platform-edge
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-worker-python.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: platform-edge
+      annotations:
+        # Over the values rather than the rendered file: the ConfigMap lives in
+        # this same template, and including a file from itself recurses.
+        checksum/config: {{ toYaml $edge | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: traefik
+          image: "{{ $edge.image.repository }}:{{ $edge.image.tag }}"
+          imagePullPolicy: {{ $edge.image.pullPolicy }}
+          args: ["--configFile=/etc/traefik/traefik.yml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - name: platform
+              containerPort: 443
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: platform
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml $edge.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/traefik
+              readOnly: true
+            - name: edge-tls
+              mountPath: /run/edge-tls
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $edge.serviceName }}
+        - name: edge-tls
+          secret:
+            # The runtime CA's platform-edge pair. Its only SAN is the Service
+            # name above, which is the exact host in platform_origin — so a
+            # certificate from any other issuer fails closed at the worker.
+            secretName: {{ $edge.tlsSecretName }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+{{- end }}

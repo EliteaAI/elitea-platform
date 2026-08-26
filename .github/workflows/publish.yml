@@ -418,6 +418,18 @@ jobs:
             image: elitea-llm-gateway
           - chart: pylon-indexer
             image: pylon-indexer
+          # The runtime plane. Without these two a release ships every image
+          # the chat path needs and no way to deploy the half that produces an
+          # answer, which is how the worker's chart ended up maintained outside
+          # this repository — and with it the workload-session provisioning
+          # that nothing else performs.
+          - chart: elitea-worker-python
+            image: elitea-worker-python
+          # Deploys the upstream redis image, so no tag is stamped: the pin in
+          # its values is deliberate and a release number means nothing to
+          # docker.io/library/redis.
+          - chart: elitea-runtime-redis
+            image: ""
           # Vendors the upstream nats subchart, so packaging it needs
           # `helm dependency build` and network access to the upstream repo.
           # The step below runs it for any chart that declares dependencies.

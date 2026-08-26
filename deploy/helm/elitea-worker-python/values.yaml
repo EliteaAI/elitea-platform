@@ -1,0 +1,197 @@
+# The agent worker. Without it an admitted execution streams nothing and ends
+# in a terminal failure: Go admits and projects executions but has no
+# agent-token producer of its own.
+
+image:
+  # Built, signed and published by this repository's own release workflow
+  # (.github/workflows/publish.yml), and public, so no pull secret is needed.
+  # The tag is stamped to the release version at package time — the default
+  # here only applies to a chart installed straight from the working tree.
+  repository: ghcr.io/eliteaai/elitea-worker-python
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+# One Secret carrying every file the worker reads. Keys:
+#   runtime-ca.crt                 agent-worker-client.crt
+#   agent-worker-client.key        command-signing-keyring.json
+#   redis-worker-password          worker-output-spool-key
+#   agent-checkpoint-connection
+materialSecretName: elitea-worker-material
+
+# elitea_worker/config.py applies the same permission contract as the Go side:
+# a private file must be 0600-or-tighter and no file may be group/other
+# writable. A Secret volume cannot satisfy that (root-owned, or a symlink
+# farm), so an init container copies each key into a memory-backed emptyDir at
+# 0600 owned by the worker's uid — the same answer issue #404 gave elitea-main.
+materialInit:
+  image: docker.io/library/alpine:3.20
+  sizeLimit: 8Mi
+
+# uid/gid 10001 is the `elitea` user baked into the worker image.
+runAsUser: 10001
+runAsGroup: 10001
+
+# Authorizes this worker's certificate against the control plane, by writing
+# the row every runtime call is checked against.
+#
+# WHY THIS IS THE CHART'S JOB. WorkloadSessionsRepository "exposes no
+# process-local registration or fallback allowlist" — a worker can never mint
+# its own authority, which is correct and must stay that way. It says instead
+# that "sessions are provisioned and revoked by the deployment control plane
+# before a worker connects". For a Helm deployment the chart IS that control
+# plane; nothing else in the release is. Without this the whole plane fails
+# closed and SILENTLY: every ClaimCommand is refused, elitea-main logs nothing,
+# and each refused turn is durably quarantined by the worker and permanently
+# lost. See deploy/runtime/README.md.
+#
+# The check is one query over THREE values — workload_identity, session id and
+# producer id — so a mismatch in any of them is an indistinguishable
+# "unauthorized". Two of the three come from runtime.* below, and the third is
+# read out of the worker's own certificate rather than restated as a value, so
+# the row cannot describe an identity the worker does not actually present.
+runtimeSession:
+  enabled: true
+
+  # How the provisioning Job reaches PostgreSQL. Point this at the same secret
+  # and key elitea-main reads DATABASE_URL from: the row lands in the shared
+  # elitea_runtime schema that service owns and migrates.
+  database:
+    secretName: elitea-main-db
+    key: database-url
+
+  # psql to write the row, openssl to read the certificate's SPIFFE URI.
+  # postgres:17 (Debian) rather than :17-alpine, which ships no openssl.
+  image:
+    repository: docker.io/library/postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+
+  # Re-stamped on every install and upgrade, which is the point: expires_at is
+  # mandatory and NOTHING in the product renews it, so a cluster that is never
+  # upgraded eventually goes dark with the same silent signature as never
+  # having been provisioned at all.
+  ttl: "2160h"
+
+  # Optional assertion, not an input. When set, the Job fails if the identity
+  # it reads out of the worker's certificate is not this exact string — useful
+  # when the certificate is minted by a pipeline this chart does not own and a
+  # silent re-issue under a different SPIFFE ID would otherwise just work.
+  expectedIdentity: ""
+
+  # The schema arrives with elitea-main's migration, which on a fresh install
+  # may still be running when this hook fires. The Job waits for the table
+  # rather than racing it.
+  waitAttempts: 60
+  waitIntervalSeconds: 5
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+runtime:
+  # These two are half of the authorization tuple; runtimeSession above reads
+  # the third out of the certificate and writes all three as one row. Changing
+  # either here changes what gets provisioned, so the two can never disagree.
+  workloadSessionId: elitea-agent-worker-1
+  producerId: elitea-agent-worker-1
+  consumerId: elitea-agent-worker-1-consumer
+  # rediss:// with an ACL username and NO password in the URL — the password
+  # comes from redis_password_path. The database must be spelled out.
+  redisUrl: "rediss://worker@elitea-runtime-redis:6380/0"
+  redisStream: "commands.v1.agent.execute.agent.shared.1.0"
+  redisGroup: "elitea-agent-worker-v1"
+  # The three mTLS listeners, dialled through elitea-main's Service. These
+  # names must appear as SANs on control/output/content-server.crt.
+  controlTarget: "elitea-main:9443"
+  outputTarget: "elitea-main:9444"
+  contentOrigin: "https://elitea-main:9445"
+  # The SDK refuses a plaintext platform origin (config.py:187), and
+  # elitea-main serves its product API over cleartext HTTP inside the cluster.
+  # platformEdge below bridges that.
+  platformOrigin: "https://elitea-platform-edge"
+  spoolRoot: /var/lib/elitea-worker/output-spool
+  spoolSizeLimit: 2Gi
+  # Broader than the current `artifact.delete_file` rule, so metadata drift
+  # cannot bypass approval.
+  sensitiveTools: '{"*":["delete_file"]}'
+  limits:
+    redis_read_batch: 4
+    redis_block_millis: 1000
+    redis_reclaim_idle_millis: 60000
+    redis_reclaim_interval_millis: 5000
+    dependency_retry_millis: 250
+    delivery_max_concurrency: 2
+    delivery_queue_capacity: 4
+    sync_max_workers: 2
+    sync_max_in_flight: 2
+    admission_timeout_millis: 5000
+    grpc_deadline_millis: 5000
+    content_timeout_millis: 15000
+    http_max_connections: 8
+    http_max_keepalive_connections: 4
+    output_max_queued_frames: 2
+    output_max_queued_bytes: 131072
+    output_max_sessions: 2
+    output_ack_timeout_millis: 15000
+    output_stream_deadline_millis: 300000
+    lease_poll_interval_millis: 10000
+    shutdown_timeout_millis: 30000
+
+# The worker's platform_origin. A one-route Traefik whose only job is to
+# terminate TLS with a certificate the worker trusts (the runtime CA) and
+# forward to elitea-main, plus forward-auth on the execution-events stream —
+# the one route that accepts no credential a client can present.
+#
+# It is NOT the public edge. It has no route from the Gateway and is reachable
+# only in-cluster.
+platformEdge:
+  enabled: true
+  image:
+    repository: docker.io/library/traefik
+    tag: "v3.4"
+    pullPolicy: IfNotPresent
+  # Service name AND the only SAN on platform-edge.crt. Both must match
+  # runtime.platformOrigin.
+  serviceName: elitea-platform-edge
+  # Secret with keys tls.crt / tls.key — the runtime CA's platform-edge pair.
+  tlsSecretName: elitea-platform-edge-tls
+  mainService: elitea-main
+  mainPort: 8080
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

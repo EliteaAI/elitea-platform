@@ -1,0 +1,193 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "elitea-worker-python.fullname" . }}
+  labels:
+    {{- include "elitea-worker-python.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Recreate: every replica claims from the same consumer group with the SAME
+  # consumer_id, and two consumers sharing one name split acknowledgements
+  # between them. Scaling out means giving each replica its own consumer_id and
+  # its own workload session row, which this chart does not model.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "elitea-worker-python.selectorLabels" . | nindent 6 }}
+      # The component label is part of the SELECTOR, not decoration: the
+      # platform-edge pods carry the same name/instance labels, so without it
+      # this Deployment's selector is a subset of theirs and the two overlap —
+      # which Kubernetes documents as undefined behaviour.
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "elitea-worker-python.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/runtime: {{ include (print $.Template.BasePath "/configmap-runtime.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        # Runs as root because it must chown: the emptyDirs arrive owned by
+        # root, and the worker's permission check rejects anything the running
+        # uid does not own at 0600. It exits before the worker starts, and the
+        # worker container itself never runs as root.
+        - name: material
+          image: {{ .Values.materialInit.image }}
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+          env:
+            - name: MATERIAL_FILES
+              value: {{ include "elitea-worker-python.materialFiles" . | quote }}
+            - name: OWNER
+              value: "{{ .Values.runAsUser }}:{{ .Values.runAsGroup }}"
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              # Copy each expected key, and nothing else. A key the Secret does
+              # not carry stops the pod HERE, with the file name in the message,
+              # rather than in a restart loop of the worker.
+              for name in $MATERIAL_FILES; do
+                if [ ! -f "/src/$name" ]; then
+                  echo "ERROR: material Secret has no key '$name'" >&2
+                  exit 1
+                fi
+                cp "/src/$name" "/dst/$name"
+                chmod 600 "/dst/$name"
+                chown "$OWNER" "/dst/$name"
+              done
+
+              # The trust bundle the worker PROCESS uses: the runtime CA plus
+              # the public roots. SSL_CERT_FILE and REQUESTS_CA_BUNDLE apply to
+              # every TLS connection the process makes, not only to the four
+              # platform hops, so a runtime-CA-only bundle also decides what
+              # happens when an agent tool dials GitHub, Jira or an HTTPS MCP
+              # server — it fails the certificate check. The private CA alone
+              # is right for compose, whose only egress is the /llm proxy.
+              cat /dst/runtime-ca.crt /etc/ssl/certs/ca-certificates.crt \
+                > /dst/trust-bundle.crt
+              chmod 644 /dst/trust-bundle.crt
+              chown "$OWNER" /dst/trust-bundle.crt
+
+              # Remove anything the Secret does not carry: a stale file left in
+              # a reused volume is material nobody provisioned.
+              for existing in /dst/*; do
+                [ -e "$existing" ] || continue
+                base="$(basename "$existing")"
+                keep=0
+                for name in $MATERIAL_FILES trust-bundle.crt; do
+                  [ "$base" = "$name" ] && keep=1
+                done
+                [ "$keep" -eq 1 ] || rm -f "$existing"
+              done
+
+              # The output spool root must be private and owned by the worker:
+              # serve.py validates it as a private directory on every start.
+              chown "$OWNER" /spool
+              chmod 700 /spool
+              echo "runtime material installed"
+          volumeMounts:
+            - name: material-source
+              mountPath: /src
+              readOnly: true
+            - name: material
+              mountPath: /dst
+            - name: spool
+              mountPath: /spool
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsUser: {{ .Values.runAsUser }}
+            runAsGroup: {{ .Values.runAsGroup }}
+            {{- with .Values.securityContext }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # The only supported command shape: one JSON config, no env-var
+          # settings. Capabilities are compiled in, and the Go side decides
+          # which of them it will accept.
+          args: ["serve", "--config", "/run/elitea/runtime.json"]
+          env:
+            # TLS trust for platform_origin. The SDK routes verification
+            # through the OS trust store on import, which cannot contain a CA
+            # minted for this cluster, so that injection is disabled and the
+            # two variables below cover both HTTP stacks the SDK uses:
+            # `requests` for /api/v2 and httpx/openai for the model call.
+            #
+            # The bundle the init container built: the runtime CA AND the
+            # public roots. The runtime CA alone would be tighter for the four
+            # platform hops — and it is still the only thing runtime.json's
+            # ca_path trusts for them — but these two variables are
+            # process-wide, so a private-CA-only bundle also governs what an
+            # agent tool sees when it dials a public HTTPS endpoint.
+            - name: ELITEA_DISABLE_SYSTEM_CA
+              value: "1"
+            - name: REQUESTS_CA_BUNDLE
+              value: /run/elitea-runtime/trust-bundle.crt
+            - name: SSL_CERT_FILE
+              value: /run/elitea-runtime/trust-bundle.crt
+            # The one environment variable the worker itself reads.
+            - name: ELITEA_SENSITIVE_TOOLS
+              value: {{ .Values.runtime.sensitiveTools | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime-config
+              mountPath: /run/elitea/runtime.json
+              subPath: runtime.json
+              readOnly: true
+            - name: material
+              mountPath: /run/elitea-runtime
+            - name: spool
+              mountPath: {{ .Values.runtime.spoolRoot }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: runtime-config
+          configMap:
+            name: {{ include "elitea-worker-python.fullname" . }}-runtime
+        - name: material-source
+          secret:
+            secretName: {{ required "materialSecretName is required" .Values.materialSecretName }}
+            # The init container reads these as root, so the kubelet's default
+            # root ownership is enough; the copies it writes are 0600 and owned
+            # by the worker.
+            defaultMode: 0400
+        - name: material
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.materialInit.sizeLimit }}
+        - name: spool
+          emptyDir:
+            sizeLimit: {{ .Values.runtime.spoolSizeLimit }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

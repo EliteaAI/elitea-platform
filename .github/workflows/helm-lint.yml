@@ -283,6 +283,22 @@ jobs:
           - chart: otel-collector
             values: ""
             toggles: --set serviceAccount.create=false --set service.type=NodePort
+          # The runtime plane. Both charts render fully on their defaults, so
+          # the toggles below reach the branches the defaults skip.
+          #
+          # runtimeSession.enabled=false is templated on purpose: it is the
+          # switch an operator flips when a session is provisioned out of band,
+          # and it silently removes the ONLY thing that authorizes the worker.
+          # A break in that branch is invisible in the default pass.
+          - chart: elitea-worker-python
+            values: ""
+            toggles: --set platformEdge.enabled=false --set runtimeSession.enabled=false --set-string runtimeSession.expectedIdentity=spiffe://ci-render-only.example.invalid/ns/x/sa/y
+          # persistence.enabled=false swaps the PVC for an emptyDir and rewrites
+          # redis.conf's durability block, and bootstrap.enabled=false drops the
+          # consumer-group Job — the same shape of removal as above.
+          - chart: elitea-runtime-redis
+            values: ""
+            toggles: --set persistence.enabled=false --set bootstrap.enabled=false
           # nats/ and nats-bootstrap/ are excluded on purpose: nats vendors an
           # upstream subchart, so templating it needs `helm dependency build`
           # and network access to the upstream repo. `helm lint` above still

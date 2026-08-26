@@ -1,0 +1,94 @@
+# TLS Redis for the runtime dispatch plane and production Form authentication.
+#
+# This is a SECOND Redis, deliberately separate from `elitea-valkey`, which
+# stays plaintext and keeps serving elitea-main's REDIS_URL (sessions, project
+# SSE). It exists because two consumers accept nothing else:
+#
+#   - internal/runtimecomposition/config.go  — rediss:// only, ACL username,
+#     file-backed password, dialled at MinVersion TLS 1.3
+#   - internal/authcomposition/config.go:469 — the same, for the auth session
+#     store
+#
+# Cleartext is off entirely (`port 0`). A runtime plane reachable without TLS
+# would let anything on the pod network XADD signed-envelope commands.
+
+image:
+  repository: docker.io/library/redis
+  tag: "7-alpine"
+  pullPolicy: IfNotPresent
+
+# Server certificate, CA and the ACL file all arrive in ONE Secret, minted by
+# scripts/mint-elitea-secrets.sh. Keys: runtime-ca.crt, redis-server.crt,
+# redis-server.key, redis-users.acl, redis-bootstrap-password.
+#
+# Unlike elitea-main's material, redis enforces no permission bits of its own,
+# so a plain Secret volume is enough — no copy-into-emptyDir init container.
+materialSecretName: elitea-runtime-redis-material
+
+tlsPort: 6380
+
+service:
+  # The name is load-bearing: it is the host in every rediss:// URL AND the
+  # only SAN on redis-server.crt. Renaming it silently breaks the TLS
+  # handshake with a message that reads like a trust problem.
+  name: elitea-runtime-redis
+
+# XGROUP CREATE ... MKSTREAM for the dispatch streams, run as a Helm hook on
+# every install and upgrade. Idempotent: BUSYGROUP means a previous run did it.
+#
+# The worker's ACL user deliberately has no XGROUP: a consumer that can create
+# its own group can, after losing one, recreate it at the stream head and
+# silently skip every command in flight. So the group is created here, from
+# 0-0, by a bootstrap user that can do nothing else.
+bootstrap:
+  enabled: true
+  agentStream: "commands.v1.agent.execute.agent.shared.1.0"
+  agentGroup: "elitea-agent-worker-v1"
+  configurationStream: "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0"
+  configurationGroup: "elitea-configuration-worker-v1"
+
+# Persistence. The compose stack turns this off and calls the keys disposable,
+# which is true of a laptop stack and false here: this instance keeps browser
+# SESSIONS under the auth key prefix and in-flight DISPATCH COMMANDS in the
+# streams. Without an AOF a pod restart — a drain, an image bump, an OOM —
+# logs every user out and strands every command that was XADDed but not yet
+# acknowledged, silently, because the consumer groups themselves come back
+# from the bootstrap Job.
+#
+# Set enabled=false to accept that, on a stack where losing both is cheap.
+persistence:
+  enabled: true
+  size: 8Gi
+  storageClassName: ceph-rbd
+  # everysec, not always: the fsync-per-write cost is not worth it for a
+  # dispatch bus whose worst case is one second of commands, and `always`
+  # would put an fsync in the path of every XADD.
+  appendfsync: everysec
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+# uid/gid 999 is the `redis` user in the official image. fsGroup makes the
+# Secret volume readable after the entrypoint drops privileges.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
