@@ -167,7 +167,7 @@ func TestDeleteMessageRemovesOnlyThatGroup(t *testing.T) {
 	ctx := context.Background()
 	_, conversationUUID, groupUUIDs := seedConversationWithParticipant(t, repo, "keep me", "delete me")
 
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
 		t.Fatalf("delete message: %v", err)
 	}
 
@@ -206,7 +206,7 @@ WHERE uuid = $2::uuid`, groupUUIDs[1], groupUUIDs[0]); err != nil {
 		t.Fatalf("link reply: %v", err)
 	}
 
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
 		t.Fatalf("delete the last group while another group points at it: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestDeleteMessageRejectsAnUnknownGroup(t *testing.T) {
 		"not-a-uuid",
 		"",
 	} {
-		if err := repo.DeleteMessage(context.Background(), "1", identifier, conversationAuthorID); err == nil {
+		if _, err := repo.DeleteMessage(context.Background(), "1", identifier, conversationAuthorID); err == nil {
 			t.Errorf("deleting message %q succeeded, want an error", identifier)
 		}
 	}
@@ -276,7 +276,7 @@ func TestDeleteMessageRefusesANonAuthor(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
 
-	err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], otherUserID)
+	_, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], otherUserID)
 	if err == nil {
 		t.Fatal("a user who owns neither the conversation nor the message deleted it")
 	}
@@ -292,7 +292,7 @@ func TestDeleteMessageAllowsTheMessageAuthor(t *testing.T) {
 	numericID, _, _ := seedConversationWithParticipant(t, repo, "question")
 	groupUUID := seedGroupAuthoredBy(t, repo, numericID, "user", otherUserID)
 
-	if err := repo.DeleteMessage(context.Background(), "1", groupUUID, otherUserID); err != nil {
+	if _, err := repo.DeleteMessage(context.Background(), "1", groupUUID, otherUserID); err != nil {
 		t.Fatalf("the message's own author could not delete it: %v", err)
 	}
 }
@@ -307,7 +307,7 @@ func TestDeleteMessageDoesNotMistakeAnAgentIDForAUserID(t *testing.T) {
 	numericID, _, _ := seedConversationWithParticipant(t, repo, "question")
 	groupUUID := seedGroupAuthoredBy(t, repo, numericID, "application", otherUserID)
 
-	if err := repo.DeleteMessage(context.Background(), "1", groupUUID, otherUserID); err == nil {
+	if _, err := repo.DeleteMessage(context.Background(), "1", groupUUID, otherUserID); err == nil {
 		t.Fatal("user 8 deleted a group authored by AGENT 8")
 	}
 }
@@ -317,7 +317,7 @@ func TestDeleteMessageRefusesAnUnauthenticatedCaller(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question")
 
-	if err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[0], ""); err == nil {
+	if _, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[0], ""); err == nil {
 		t.Fatal("an empty caller id deleted a message")
 	}
 }
@@ -336,7 +336,7 @@ WHERE uuid = $1::uuid`, groupUUIDs[0]); err != nil {
 		t.Fatalf("mark summarized: %v", err)
 	}
 
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err == nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err == nil {
 		t.Fatal("a summarized message was deleted")
 	}
 }
@@ -357,7 +357,7 @@ func TestDeleteMessageTreatsAbsentContextMetaAsIncluded(t *testing.T) {
 			groupUUIDs[0], meta); err != nil {
 			t.Fatalf("set meta %s: %v", meta, err)
 		}
-		if err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err != nil {
+		if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err != nil {
 			t.Fatalf("meta %s made an ordinary message undeletable: %v", meta, err)
 		}
 		// Re-seed for the next case: the delete above consumed the group.
@@ -375,15 +375,15 @@ func TestDeleteMessageRefusesAnythingButTheLastGroup(t *testing.T) {
 	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "first", "second", "third")
 
 	for i, groupUUID := range groupUUIDs[:2] {
-		if err := repo.DeleteMessage(ctx, "1", groupUUID, conversationAuthorID); err == nil {
+		if _, err := repo.DeleteMessage(ctx, "1", groupUUID, conversationAuthorID); err == nil {
 			t.Errorf("group %d, which is not the last, was deleted", i)
 		}
 	}
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[2], conversationAuthorID); err != nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[2], conversationAuthorID); err != nil {
 		t.Fatalf("the last group could not be deleted: %v", err)
 	}
 	// And now the one before it is the last, so it becomes deletable.
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
 		t.Fatalf("after removing the last group its predecessor stayed undeletable: %v", err)
 	}
 }
@@ -404,10 +404,156 @@ func TestDeleteMessageBreaksCreatedAtTiesByID(t *testing.T) {
 		t.Fatalf("flatten timestamps: %v", err)
 	}
 
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err == nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err == nil {
 		t.Error("with equal timestamps the LOWER-id group was accepted as the last one")
 	}
-	if err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err != nil {
 		t.Fatalf("with equal timestamps the higher-id group was refused: %v", err)
+	}
+}
+
+// --- Pair deletion (pylon message.py:129-146). ---
+
+// linkReply makes the group at replyIdx the answer to the group at questionIdx,
+// which is the shape every real turn has.
+func linkReply(t *testing.T, repo *ConversationsRepo, replyUUID, questionUUID string) {
+	t.Helper()
+	if _, err := repo.pool.Exec(context.Background(), `
+UPDATE p_1.chat_message_group
+SET reply_to_id = (SELECT id FROM p_1.chat_message_group WHERE uuid = $2::uuid)
+WHERE uuid = $1::uuid`, replyUUID, questionUUID); err != nil {
+		t.Fatalf("link reply: %v", err)
+	}
+}
+
+// Deleting an answer takes the question it answers. Leaving the question behind
+// is what the pairing exists to prevent: the model is re-sent a question with no
+// answer beneath it, so the transcript reads as though the assistant ignored the
+// user.
+func TestDeleteMessageRemovesThePairedUserInput(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, conversationUUID, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
+	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
+
+	deleted, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID)
+	if err != nil {
+		t.Fatalf("delete the answer: %v", err)
+	}
+	if len(deleted) != 2 || deleted[0] != groupUUIDs[1] || deleted[1] != groupUUIDs[0] {
+		t.Fatalf("reported %v as deleted, want [answer question] = %v", deleted, []string{groupUUIDs[1], groupUUIDs[0]})
+	}
+
+	// Both really gone, items and text with them — and the conversation stays.
+	conversations, groups, items, texts, _ := countConversationRows(t, repo)
+	if conversations != 1 || groups != 0 || items != 0 || texts != 0 {
+		t.Fatalf("after deleting the pair: %d conversations, %d groups, %d items, %d texts — want 1, 0, 0, 0",
+			conversations, groups, items, texts)
+	}
+	resp, err := repo.ListMessages(ctx, "1", conversationUUID, wholeTranscript())
+	if err != nil {
+		t.Fatalf("list after the pair delete: %v", err)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("transcript still holds %v", listedContents(resp.Items))
+	}
+}
+
+// A group with no reply_to_id is an ordinary single delete, not an error, and
+// reports exactly one id.
+func TestDeleteMessageWithoutAPairRemovesOnlyItself(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "keep me", "delete me")
+
+	deleted, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], conversationAuthorID)
+	if err != nil {
+		t.Fatalf("delete an unpaired group: %v", err)
+	}
+	if len(deleted) != 1 || deleted[0] != groupUUIDs[1] {
+		t.Fatalf("reported %v as deleted, want just %q", deleted, groupUUIDs[1])
+	}
+	if _, groups, _, _, _ := countConversationRows(t, repo); groups != 1 {
+		t.Fatalf("%d groups left, want 1 — an unpaired delete took something else", groups)
+	}
+}
+
+// The pair is followed in ONE direction. reply_to_id points backwards, so
+// deleting a question must never reach forward to its answer — and in practice
+// the last-only rule refuses that delete first, which is the belt to this
+// braces.
+func TestDeleteMessageDoesNotFollowTheReplyLinkForwards(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
+	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
+
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID); err == nil {
+		t.Fatal("deleting the question — not the last group — was allowed")
+	}
+	if _, groups, _, _, _ := countConversationRows(t, repo); groups != 2 {
+		t.Fatalf("the refused delete removed rows: %d groups left, want 2", groups)
+	}
+}
+
+// If the paired question is summarized the WHOLE delete is refused. Removing
+// the answer alone here would be the exact outcome pairing exists to prevent,
+// so a half-done delete is worse than none.
+func TestDeleteMessageRefusesWhenThePairedQuestionIsSummarized(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
+	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
+
+	if _, err := repo.pool.Exec(ctx, `
+UPDATE p_1.chat_message_group SET meta = '{"context": {"included": false}}'::jsonb
+WHERE uuid = $1::uuid`, groupUUIDs[0]); err != nil {
+		t.Fatalf("mark the question summarized: %v", err)
+	}
+
+	if _, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID); err == nil {
+		t.Fatal("the answer was deleted even though its paired question is summarized")
+	}
+	if _, groups, _, _, _ := countConversationRows(t, repo); groups != 2 {
+		t.Fatalf("a refused pair delete still removed rows: %d groups left, want 2", groups)
+	}
+}
+
+// A third group referencing one of the doomed pair must be detached, not
+// orphaned into an FK violation. The detach deliberately skips references
+// BETWEEN the two doomed groups — those disappear together — so this checks the
+// `NOT (id = ANY($1))` half of that clause has not swallowed the outside
+// reference too.
+func TestDeleteMessagePairDetachesOutsideReferences(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer", "bystander")
+	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
+	// The bystander is the newest group, so it is the one that may be deleted;
+	// point it at the question so the pair delete has an outside reference to
+	// clear. Deleting the bystander takes the question with it.
+	linkReply(t, repo, groupUUIDs[2], groupUUIDs[0])
+
+	deleted, err := repo.DeleteMessage(ctx, "1", groupUUIDs[2], conversationAuthorID)
+	if err != nil {
+		t.Fatalf("delete the newest group and its paired question: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("reported %v as deleted, want two ids", deleted)
+	}
+
+	// The answer group survives, and no longer points at the removed question.
+	var replyTo *int
+	if err := repo.pool.QueryRow(ctx,
+		`SELECT reply_to_id FROM p_1.chat_message_group WHERE uuid = $1::uuid`, groupUUIDs[1]).
+		Scan(&replyTo); err != nil {
+		t.Fatalf("read the surviving group: %v", err)
+	}
+	if replyTo != nil {
+		t.Fatalf("the surviving group still points at a deleted one (reply_to_id=%d)", *replyTo)
 	}
 }

@@ -131,7 +131,7 @@ type Repository interface {
 	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	GetMessageByUUID(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	DeleteMessages(ctx context.Context, projectID, conversationID string) error
-	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error
+	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error)
 }
 
 type Handler struct {
@@ -662,7 +662,7 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteMessage removes one message group.
+// DeleteMessage removes one message group and the user input it answers.
 //
 // The caller's identity is part of the request, not decoration: deleting a
 // message is authorised against the conversation's author and the group's own
@@ -670,15 +670,26 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 // An unauthenticated context yields an empty id, which the repository refuses —
 // the route already sits behind `models.chat.messages.delete`, so that state
 // should be unreachable, and failing closed is right if it ever is not.
+//
+// WHY THIS ANSWERS 200 WITH A BODY RATHER THAN 204. One request can remove TWO
+// groups — the reply named in the URL and the question it answers — and a
+// client that prunes only the id it asked for would leave the other message on
+// screen until a reload, which is worse than not pairing at all. Pylon told the
+// client through a per-group socket event (message.py:154-171); there is no
+// such channel on this route, so the response carries the fact instead. The
+// body names every group that is really gone, newest first, so a client can
+// prune exactly what the server removed rather than guessing at the pairing
+// rule — the pairing lives in one place, on the server.
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	messageID := chi.URLParam(r, "messageID")
 	user, _ := auth.UserFromContext(r.Context())
-	if err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID); err != nil {
+	deleted, err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID)
+	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
 func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request) {

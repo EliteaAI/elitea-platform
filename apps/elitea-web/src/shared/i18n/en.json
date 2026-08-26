@@ -477,7 +477,7 @@
   "chatInput.versionSelector.tooltip": "Version selector",
   "chatInput.versionSelector.versions": "Versions",
   "chatMessages.deleteMessageAlert.allMessagesCopy": "The deleted messages can't be restored. Are you sure to delete all the messages?",
-  "chatMessages.deleteMessageAlert.singleMessageCopy": "The deleted message can't be restored. Are you sure to delete the message?",
+  "chatMessages.deleteMessageAlert.singleMessageCopy": "This also removes the question it answers, and neither can be restored. Are you sure you want to delete this message?",
   "chatMessages.toolModal.copyAriaLabel": "Copy {{pane}}",
   "chatMessages.toolModal.defaultTitle": "Tool Details",
   "chatMessages.toolModal.inputCaption": "INPUT",

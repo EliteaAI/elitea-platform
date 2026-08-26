@@ -48,6 +48,9 @@ type mockRepo struct {
 	// repository unable to apply its rules — and would look exactly like a
 	// working handler to a test that only asserted the status code.
 	deleteMessageUserID string
+	// deleteMessageResult is what the repository reports it removed — one id
+	// for a lone group, two when the reply's paired question went with it.
+	deleteMessageResult []string
 	listMessageGroupsFn func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
 	listParticipantsFn  func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
@@ -160,12 +163,15 @@ func (m *mockRepo) DeleteMessages(ctx context.Context, projectID, conversationID
 	return nil
 }
 
-func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error {
+func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error) {
 	m.deleteMessageUserID = userID
 	if m.deleteMessageFn != nil {
-		return m.deleteMessageFn(ctx, projectID, groupUID)
+		return m.deleteMessageResult, m.deleteMessageFn(ctx, projectID, groupUID)
 	}
-	return nil
+	if m.deleteMessageResult != nil {
+		return m.deleteMessageResult, nil
+	}
+	return []string{groupUID}, nil
 }
 
 // newRouter mounts the handler under /projects/{projectID}/conversations to
@@ -685,6 +691,10 @@ func TestDeleteMessages_Success(t *testing.T) {
 // DeleteMessage (stub - no repo call)
 // ---------------------------------------------------------------------------
 
+// 200 with a body, not 204. One request can remove TWO groups — the reply named
+// in the URL and the question it answers — and the response is the only channel
+// telling the client which ones really went, so a body is the point of the
+// status change rather than an incidental consequence of it.
 func TestDeleteMessage_Success(t *testing.T) {
 	h := conversations.NewHandler(&mockRepo{})
 	router := newRouter(h)
@@ -693,8 +703,43 @@ func TestDeleteMessage_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, w.Body.String())
+	}
+	if len(body.Deleted) != 1 || body.Deleted[0] != "msg-1" {
+		t.Fatalf("deleted is %v, want [msg-1]", body.Deleted)
+	}
+}
+
+// When the repository removed the pair, both ids reach the client. A handler
+// that answered a bare 204, or that echoed only the requested id, would leave
+// the paired question on screen until a reload — the exact outcome pairing
+// exists to prevent.
+func TestDeleteMessage_ReportsThePairedGroupItRemoved(t *testing.T) {
+	repo := &mockRepo{deleteMessageResult: []string{"answer-uid", "question-uid"}}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/answer-uid", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if len(body.Deleted) != 2 || body.Deleted[0] != "answer-uid" || body.Deleted[1] != "question-uid" {
+		t.Fatalf("deleted is %v, want [answer-uid question-uid]", body.Deleted)
 	}
 }
 
@@ -1359,8 +1404,8 @@ func TestDeleteMessage_ForwardsTheCallerIdentity(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
 	}
 	if repo.deleteMessageUserID != "user-1" {
 		t.Fatalf("the repository was given caller %q, want %q", repo.deleteMessageUserID, "user-1")

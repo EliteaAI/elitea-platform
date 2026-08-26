@@ -226,8 +226,16 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     }
     const convId = conversationUuid ?? (conversationId !== undefined ? String(conversationId) : '');
     try {
-      await triggerDeleteMessage({ projectId: toProjectIdString(projectId), id: messageId, conversationId: convId });
-      setChatHistory((prev) => prev.filter((item) => item.id !== messageId));
+      const result = await triggerDeleteMessage({ projectId: toProjectIdString(projectId), id: messageId, conversationId: convId });
+      // Prune every group the SERVER says it removed. Deleting an answer also
+      // deletes the question it replies to, so filtering on `messageId` alone
+      // left that question on screen until the next refetch. `chatHistory`
+      // items are keyed by message-group UUID (entities/message normalise), the
+      // same ids the server returns, so these match directly.
+      const removed = new Set<string>(
+        result?.deleted && result.deleted.length > 0 ? result.deleted.map(String) : [String(messageId)],
+      );
+      setChatHistory((prev) => prev.filter((item) => !removed.has(String(item.id))));
     } catch (error) {
       console.warn('[useChatBoxHandlers] deleteAnswer failed:', error);
     }

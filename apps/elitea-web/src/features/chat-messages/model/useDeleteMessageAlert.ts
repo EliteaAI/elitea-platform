@@ -64,7 +64,10 @@ export function useDeleteMessageAlert({
 
   const openDialog = useCallback((id: string) => {
     setMessageId(id);
-    setConfirmationMessage(t('chatMessages.deleteMessageAlert.singleMessageCopy', "The deleted message can't be restored. Are you sure to delete the message?"));
+    // The copy names the pair on purpose: deleting an answer also deletes the
+    // question it replies to (the server pairs them), so a dialog promising
+    // that one message goes would be asking consent for something else.
+    setConfirmationMessage(t('chatMessages.deleteMessageAlert.singleMessageCopy', 'This also removes the question it answers, and neither can be restored. Are you sure you want to delete this message?'));
     setIsOpen(true);
   }, []);
 

@@ -123,8 +123,13 @@ export function usePipelineChatStreaming(params: UsePipelineChatStreamingParams)
         onError?.(pipelineErrorMessage(result.error) || 'Failed to delete the message, please try again.');
         return;
       }
+      // Prune every group the SERVER says it removed, not just the one we
+      // named: a delete takes the answer AND the question it replies to, so a
+      // single-id filter leaves an orphaned question rendered until a reload.
+      // Same reasoning as the agents hook, which shares this adapter contract.
+      const removed = new Set<string>(result.deleted?.map(String) ?? [String(messageIdToDelete)]);
       setChatHistory((prev) => {
-        const updated = prev.filter((msg) => msg.id !== messageIdToDelete);
+        const updated = prev.filter((msg) => !removed.has(String(msg.id)));
         callback?.();
         return updated;
       });

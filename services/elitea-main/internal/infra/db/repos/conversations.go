@@ -1006,8 +1006,9 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 	return nil
 }
 
-// DeleteMessage removes one message group — the unit the route calls a
-// "message" — addressed by its UUID, on behalf of userID.
+// DeleteMessage removes one message group and the user input it answers,
+// addressed by the group's UUID, on behalf of userID. It reports the UUIDs of
+// every group it actually removed, newest first.
 //
 // DEFECT #602: this used to read
 //
@@ -1019,6 +1020,19 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 // dump at testdata/postgres/legacy-centry-catalog.json. The identifier the
 // route carries is a chat_message_group UUID; pylon's own handler
 // (legacy/plugins/elitea_core/api/v2/message.py:80-83) resolves it that way.
+//
+// # Why the pair goes together
+//
+// A turn is two groups: the user's question, and the reply that points back at
+// it through reply_to_id. Deleting only the reply leaves a question the model
+// will be re-sent on the next turn with no answer beneath it — a transcript
+// that reads as though the assistant ignored the user. Pylon deletes both
+// (message.py:129-146) and that is the behaviour the chat UI was built around.
+//
+// The pair is followed in ONE direction only: from this group to the group it
+// replies to. Deleting a user question does NOT take its answer, because
+// reply_to_id points backwards and the answer is the later group — which the
+// last-only rule already refuses to skip past.
 //
 // # The three rules, ported from pylon
 //
@@ -1033,13 +1047,17 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 //     'application' participant's entity_meta.id is an AGENT id, so comparing a
 //     user id against it would let user 42 delete the messages of agent 42.
 //     That is why the entity_name check is part of the predicate rather than an
-//     optimisation.
+//     optimisation. Pylon authorises on the named group only, not on its pair,
+//     and so does this.
 //
-//  2. SUMMARIZED (message.py:108-112). A group whose meta says
-//     context.included is false has been folded into a summary; its text is
-//     already represented elsewhere in the context window, so deleting the row
-//     would not remove the content and would desynchronise the summary from the
-//     transcript it summarises.
+//  2. SUMMARIZED (message.py:108-112, and again at :135-139 for the pair). A
+//     group whose meta says context.included is false has been folded into a
+//     summary; its text is already represented elsewhere in the context window,
+//     so deleting the row would not remove the content and would desynchronise
+//     the summary from the transcript it summarises. Checked on BOTH groups: if
+//     the paired question is summarized, the whole delete is refused rather
+//     than half-done, because removing the answer alone is the outcome the
+//     pairing exists to prevent.
 //
 //  3. LAST ONLY (message.py:114-122). Deleting from the middle of a transcript
 //     leaves the model with a conversation that never happened. Pylon ordered
@@ -1048,7 +1066,9 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 //     a transaction-scoped now(), so a turn's two groups share a timestamp to
 //     the microsecond and "the last message" was whichever row Postgres
 //     happened to return. This orders by (created_at, id) so the answer is
-//     stable, and so it agrees with the order ListMessages renders.
+//     stable, and so it agrees with the order ListMessages renders. The rule
+//     applies to the NAMED group; its pair is by construction the group before
+//     it, which is exactly what the rule would otherwise forbid.
 //
 // STATUS CODES DIVERGE FROM PYLON DELIBERATELY. Pylon answered 400 for all
 // three (and for "not found"). Here they are 403, 400 and 400, with 404 for a
@@ -1057,29 +1077,28 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 // a permission failure reported as "bad request" is the kind of thing that
 // sends the next reader looking for a malformed payload.
 //
-// STILL NOT PORTED: pylon deletes the paired user-input group along with the
-// assistant reply it is answering (message.py:129-146), and emits a socket
-// event for each. Pairing is not done here because the live client deletes ONE
-// id and prunes exactly that one id from its local state
-// (useApplicationChatStreaming.hooks.ts:161-173), so a server that removed two
-// rows would leave an orphaned question on screen until a reload. Pylon's
-// attachment cleanup (`delete_attachment`) is likewise absent: the attachment
-// byte path is a separate port.
-func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) error {
+// STILL NOT PORTED: pylon's attachment cleanup (`delete_attachment`), because
+// the attachment byte path is a separate port, and the per-group socket event,
+// which the returned UUIDs replace for the one client that exists.
+func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error) {
 	s := schema(projectID)
 	if _, err := uuid.Parse(groupUID); err != nil {
-		return apierr.NotFound("message not found")
+		return nil, apierr.NotFound("message not found")
 	}
 
 	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("conversations: delete message: %w", err)
+		return nil, fmt.Errorf("conversations: delete message: %w", err)
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
-	// One statement answers all three rules, so the row cannot change between
-	// the check and the delete: the transaction plus a single read keeps
-	// "is this the last group?" true at the moment it is acted on.
+	// One statement answers all three rules and finds the pair, so nothing can
+	// change between the check and the delete: the transaction plus a single
+	// read keeps "is this the last group?" true at the moment it is acted on.
+	//
+	// The paired columns are LEFT JOINed — a group with no reply_to_id, or one
+	// whose target has already gone, is an ordinary single delete, not an
+	// error.
 	inspect := fmt.Sprintf(`
 		SELECT mg.id,
 			conv.author_id::text,
@@ -1090,69 +1109,87 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 				SELECT 1 FROM %q.chat_message_group later
 				WHERE later.conversation_id = mg.conversation_id
 				  AND (later.created_at, later.id) > (mg.created_at, mg.id)
-			)
+			),
+			paired.id,
+			COALESCE(paired.uuid::text, ''),
+			COALESCE(paired.meta #>> '{context,included}', 'true')
 		FROM %q.chat_message_group mg
 		JOIN %q.chat_conversations conv ON conv.id = mg.conversation_id
 		JOIN %q.chat_participants author ON author.id = mg.author_participant_id
-		WHERE mg.uuid = $1::uuid`, s, s, s, s)
+		LEFT JOIN %q.chat_message_group paired ON paired.id = mg.reply_to_id
+		WHERE mg.uuid = $1::uuid`, s, s, s, s, s)
 
 	var groupID int64
 	var conversationAuthorID, authorEntityName, authorEntityID, contextIncluded string
 	var isLast bool
+	var pairedID *int64
+	var pairedUUID, pairedContextIncluded string
 	if err := transaction.QueryRow(ctx, inspect, groupUID).Scan(
 		&groupID, &conversationAuthorID, &authorEntityName, &authorEntityID, &contextIncluded, &isLast,
+		&pairedID, &pairedUUID, &pairedContextIncluded,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return apierr.NotFound("message not found")
+			return nil, apierr.NotFound("message not found")
 		}
-		return fmt.Errorf("conversations: inspect message: %w", err)
+		return nil, fmt.Errorf("conversations: inspect message: %w", err)
 	}
 
 	// An empty userID is an unauthenticated caller. It must not match an empty
 	// author id either, so it is refused before the comparison rather than by
 	// it.
 	if userID == "" {
-		return apierr.Forbidden("message can be deleted only by the message or conversation author")
+		return nil, apierr.Forbidden("message can be deleted only by the message or conversation author")
 	}
 	authoredByCaller := authorEntityName == "user" && authorEntityID == userID
 	if userID != conversationAuthorID && !authoredByCaller {
-		return apierr.Forbidden("message can be deleted only by the message or conversation author")
+		return nil, apierr.Forbidden("message can be deleted only by the message or conversation author")
 	}
 	if contextIncluded == "false" {
-		return apierr.BadRequest("a summarized message cannot be deleted")
+		return nil, apierr.BadRequest("a summarized message cannot be deleted")
+	}
+	if pairedID != nil && pairedContextIncluded == "false" {
+		return nil, apierr.BadRequest("a summarized message cannot be deleted")
 	}
 	if !isLast {
-		return apierr.BadRequest("only the last message in the conversation can be deleted")
+		return nil, apierr.BadRequest("only the last message in the conversation can be deleted")
+	}
+
+	doomed := []int64{groupID}
+	deleted := []string{groupUID}
+	if pairedID != nil {
+		doomed = append(doomed, *pairedID)
+		deleted = append(deleted, pairedUUID)
 	}
 
 	// chat_message_items does not cascade from chat_message_group, so the items
 	// go first. chat_messages_text/_context cascade from the items, and
 	// chat_message_trace_step cascades from the group.
-	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE message_group_id = $1`, s)
-	if _, err := transaction.Exec(ctx, items, groupID); err != nil {
-		return fmt.Errorf("conversations: delete message items: %w", err)
+	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE message_group_id = ANY($1)`, s)
+	if _, err := transaction.Exec(ctx, items, doomed); err != nil {
+		return nil, fmt.Errorf("conversations: delete message items: %w", err)
 	}
 
-	// reply_to_id points at another group in the same conversation. Detaching
-	// the references first is what lets the group be deleted without failing
-	// the FK. The last group can still be replied to by nothing, but a
-	// regenerated turn leaves such references behind.
-	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL WHERE reply_to_id = $1`, s)
-	if _, err := transaction.Exec(ctx, detach, groupID); err != nil {
-		return fmt.Errorf("conversations: detach message replies: %w", err)
+	// reply_to_id points at another group. Detaching references from groups that
+	// are NOT themselves doomed is what lets these rows go without failing the
+	// FK; the reply between the two doomed groups needs no detaching, because
+	// both disappear in the same statement.
+	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL
+		WHERE reply_to_id = ANY($1) AND NOT (id = ANY($1))`, s)
+	if _, err := transaction.Exec(ctx, detach, doomed); err != nil {
+		return nil, fmt.Errorf("conversations: detach message replies: %w", err)
 	}
 
-	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE id = $1`, s), groupID)
+	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE id = ANY($1)`, s), doomed)
 	if err != nil {
-		return fmt.Errorf("conversations: delete message: %w", err)
+		return nil, fmt.Errorf("conversations: delete message: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
-		return apierr.NotFound("message not found")
+		return nil, apierr.NotFound("message not found")
 	}
 	if err := transaction.Commit(ctx); err != nil {
-		return fmt.Errorf("conversations: delete message commit: %w", err)
+		return nil, fmt.Errorf("conversations: delete message commit: %w", err)
 	}
-	return nil
+	return deleted, nil
 }
 
 // ListMessages serves the transcript window the caller asked for.

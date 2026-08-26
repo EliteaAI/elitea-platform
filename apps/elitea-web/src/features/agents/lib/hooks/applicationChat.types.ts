@@ -81,11 +81,19 @@ export interface CreateConversationAdapterResult {
  */
 export interface ChatConversationAdapter {
   readonly createConversation: (input: CreateConversationAdapterInput) => Promise<CreateConversationAdapterResult>;
+  /**
+   * Deleting one message can remove TWO groups — the answer, and the question
+   * it replies to, which the server pairs and removes together. `deleted`
+   * carries the group ids the server reports it actually removed, so a caller
+   * prunes exactly that set instead of assuming the one id it asked for.
+   * Absent means "the implementation cannot say", and callers fall back to the
+   * requested id.
+   */
   readonly deleteMessage: (input: {
     readonly conversationId: string | number | undefined;
     readonly projectId: string | undefined;
     readonly id: string | number;
-  }) => Promise<{ readonly error?: unknown }>;
+  }) => Promise<{ readonly error?: unknown; readonly deleted?: readonly string[] }>;
   readonly deleteAllMessages: (input: {
     readonly conversationId: string | number | undefined;
     readonly projectId: string | undefined;

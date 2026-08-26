@@ -252,6 +252,47 @@ describe('useApplicationChatStreaming — onDeleteMessage', () => {
     expect(onInfo).toHaveBeenCalledWith('The message has been deleted');
   });
 
+  // The server deletes an answer together with the question it replies to and
+  // names both in its response. Pruning only the requested id leaves that
+  // question rendered until a reload, which is the failure this whole pairing
+  // exists to avoid — so the hook must follow the server's list, not its own
+  // argument.
+  it('removes every group the server reports it deleted, not just the requested one', async () => {
+    const client = createTestSocketClient();
+    const adapter = stubAdapter({ deleteMessage: vi.fn().mockResolvedValue({ deleted: ['answer', 'question'] }) });
+    const { params, setChatHistory } = baseParams(client, { adapter });
+    const { result } = renderHook(() => useApplicationChatStreaming(params));
+
+    await act(async () => {
+      await result.current.onDeleteMessage('answer');
+    });
+
+    const updater = setChatHistory.mock.calls[0]?.[0] as (prev: ChatHistoryMessage[]) => ChatHistoryMessage[];
+    expect(
+      updater([
+        { id: 'question', role: 'user' },
+        { id: 'answer', role: 'assistant' },
+        { id: 'keep', role: 'assistant' },
+      ]),
+    ).toEqual([{ id: 'keep', role: 'assistant' }]);
+  });
+
+  // An adapter that cannot report what went — the placeholder implementations,
+  // and any server still answering 204 — must still prune the id we asked for.
+  it('falls back to the requested id when the adapter reports no deleted list', async () => {
+    const client = createTestSocketClient();
+    const adapter = stubAdapter({ deleteMessage: vi.fn().mockResolvedValue({}) });
+    const { params, setChatHistory } = baseParams(client, { adapter });
+    const { result } = renderHook(() => useApplicationChatStreaming(params));
+
+    await act(async () => {
+      await result.current.onDeleteMessage('m1');
+    });
+
+    const updater = setChatHistory.mock.calls[0]?.[0] as (prev: ChatHistoryMessage[]) => ChatHistoryMessage[];
+    expect(updater([{ id: 'm1', role: 'user' }, { id: 'm2', role: 'assistant' }])).toEqual([{ id: 'm2', role: 'assistant' }]);
+  });
+
   it('calls onError with the error message and does not touch chat history on failure', async () => {
     const client = createTestSocketClient();
     const onError = vi.fn();
