@@ -78,6 +78,15 @@ func TestExportHonoursTheMarkdownFormat(t *testing.T) {
 		t.Errorf("the JSON export document reached a markdown response:\n%s", body)
 	}
 
+	// The SEEDED TOOLKIT must be in the file. This is the assertion the first
+	// version of this test lacked: it checked the media type and the
+	// frontmatter opener, both of which a renderer that silently dropped every
+	// toolkit still satisfies — and one did, because `version["tools"]` is a
+	// `[]map[string]any` that no `.([]any)` assertion accepts.
+	if !strings.Contains(body, "toolkits:") {
+		t.Errorf("the seeded agent's toolkit is missing from its export:\n%s", body)
+	}
+
 	// The filename the browser will use, and the header that lets it read it
 	// cross-origin. Without the latter the download silently falls back to the
 	// client's guessed name.

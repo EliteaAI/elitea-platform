@@ -87,20 +87,28 @@ var settingsExcludeKeys = map[string]bool{
 var pgvectorKeepKeys = map[string]bool{"elitea_title": true, "configuration_type": true}
 
 var (
-	slugStripPattern    = regexp.MustCompile(`[^\w\s-]`)
-	slugSeparatorRegexp = regexp.MustCompile(`[-\s]+`)
+	// NOT `[^\w\s-]`. Go's RE2 `\w` is ASCII-only, while Python 3's `re` `\w`
+	// on a str is Unicode-aware — so the literal transcription of
+	// export_import_utils.py:28 stripped every non-Latin letter that the legacy
+	// KEEPS. An agent named "日本語 Agent" slugged to "-agent" here and to
+	// "日本語-agent" there, and a wholly non-Latin name slugged to "" and took
+	// markdownFilename's fallback, so every such agent in a project downloaded
+	// as the same "application.agent.md" and overwrote the last one.
+	// `\p{L}\p{N}_` is what Python's `\w` actually means.
+	slugStripPattern    = regexp.MustCompile(`[^\p{L}\p{N}_\s\p{Zs}-]`)
+	slugSeparatorRegexp = regexp.MustCompile(`[-\s\p{Zs}]+`)
 )
 
-// slugify is export_import_utils.py:28, including its 50-character truncation.
-// `\w` is the same class in Go's regexp as in Python's `re` for ASCII; both
-// leave non-ASCII letters to be stripped, so a purely non-ASCII name slugs to
-// the empty string in both — markdownFilename covers that case.
+// slugify is export_import_utils.py:28, including its 50-CHARACTER truncation.
 func slugify(text string) string {
 	text = strings.ToLower(strings.TrimSpace(text))
 	text = slugStripPattern.ReplaceAllString(text, "")
 	text = slugSeparatorRegexp.ReplaceAllString(text, "-")
-	if len(text) > 50 {
-		text = text[:50]
+	// Runes, not bytes: Python slices characters here, and now that non-ASCII
+	// letters survive the strip, a byte slice could cut a UTF-8 rune in half
+	// and put an invalid sequence in a filename.
+	if runes := []rune(text); len(runes) > 50 {
+		text = string(runes[:50])
 	}
 	return text
 }
@@ -156,6 +164,12 @@ func isEmptyValue(value any) bool {
 	case string:
 		return typed == ""
 	case []any:
+		return len(typed) == 0
+	// The export document carries both slice shapes — `exportedVersionVariables`
+	// returns `make([]map[string]any, 0)`, which is non-nil and empty. Without
+	// this case it fell to `default: false` and every agent with no variables
+	// got a `variables: []` key the legacy omits.
+	case []map[string]any:
 		return len(typed) == 0
 	case map[string]any:
 		return len(typed) == 0
@@ -384,7 +398,11 @@ func applicationToMarkdown(app map[string]any, toolkits []any, version map[strin
 	front.set("welcome_message", version["welcome_message"])
 	front.set("conversation_starters", version["conversation_starters"])
 
-	tools, _ := version["tools"].([]any)
+	// toAnySlice, not a `.([]any)` assertion: `exportedVersions` stores this as
+	// `[]map[string]any` (export_import.go:238), which no `[]any` assertion
+	// satisfies. Asserting instead of normalising silently dropped the whole
+	// `toolkits:` block from every exported file.
+	tools := toAnySlice(version["tools"])
 
 	body := ""
 	if rawAgentType == "pipeline" {
@@ -477,17 +495,38 @@ func toAnySlice(value any) []any {
 
 /* ── the response ────────────────────────────────────────────────────────── */
 
+// uniqueEntryName returns `name` the first time it is asked for it, and
+// `<stem>-2.md`, `<stem>-3.md`, … for each repeat — so a collision costs a
+// suffix rather than a file.
+func uniqueEntryName(used map[string]int, name string) string {
+	used[name]++
+	if used[name] == 1 {
+		return name
+	}
+	stem, suffix := name, ""
+	if dot := strings.LastIndex(name, "."); dot > 0 {
+		stem, suffix = name[:dot], name[dot:]
+	}
+	return fmt.Sprintf("%s-%d%s", stem, used[name], suffix)
+}
+
 // zipArchive is `create_zip_archive` (:1165).
 func zipArchive(files []exportedFile) ([]byte, error) {
 	var buffer bytes.Buffer
 	archive := zip.NewWriter(&buffer)
+	used := make(map[string]int, len(files))
 	for _, file := range files {
-		entry, err := archive.Create(file.name)
+		// archive/zip accepts a duplicate name without complaint and every
+		// extractor then overwrites, so two versions whose names slug alike
+		// ("Release Candidate" and "release-candidate") would leave the archive
+		// one file short with nothing reporting it. The export is a backup.
+		name := uniqueEntryName(used, file.name)
+		entry, err := archive.Create(name)
 		if err != nil {
-			return nil, fmt.Errorf("create zip entry %q: %w", file.name, err)
+			return nil, fmt.Errorf("create zip entry %q: %w", name, err)
 		}
 		if _, err := entry.Write([]byte(file.content)); err != nil {
-			return nil, fmt.Errorf("write zip entry %q: %w", file.name, err)
+			return nil, fmt.Errorf("write zip entry %q: %w", name, err)
 		}
 	}
 	if err := archive.Close(); err != nil {

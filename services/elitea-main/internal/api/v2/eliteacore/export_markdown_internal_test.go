@@ -30,8 +30,13 @@ func agentVersion() map[string]any {
 			"max_tokens":  float64(2048),
 			"top_p":       0.0,
 		},
-		"meta":  map[string]any{"step_limit": float64(12)},
-		"tools": []any{map[string]any{"import_uuid": "tk-1"}},
+		"meta": map[string]any{"step_limit": float64(12)},
+		// `[]map[string]any`, which is what exportedVersions stores
+		// (export_import.go:238) — NOT the `[]any` these fixtures used to
+		// hand-write. That mismatch is why the suite agreed with a renderer
+		// that dropped every toolkit.
+		"tools":     []map[string]any{{"import_uuid": "tk-1"}},
+		"variables": []map[string]any{},
 	}
 }
 
@@ -214,6 +219,37 @@ func TestMarkdownExportZipsMoreThanOneVersion(t *testing.T) {
 
 // A single file goes out as markdown, named, and with the header the browser
 // needs to see the name at all.
+// Two version names that slug alike must not become one file. zip accepts the
+// duplicate silently and extractors overwrite, so the loss shows up only when
+// somebody opens the backup.
+func TestMarkdownExportZipDoesNotDropAVersionToANameCollision(t *testing.T) {
+	first := agentVersion()
+	first["name"] = "Release Candidate"
+	second := agentVersion()
+	second["name"] = "release-candidate"
+	document := agentDocument(agentVersion())
+	apps, _ := document["applications"].([]map[string]any)
+	apps[0]["versions"] = []any{first, second}
+
+	recorder := httptest.NewRecorder()
+	writeMarkdownExport(recorder, "7", document)
+
+	archive, err := zip.NewReader(bytes.NewReader(recorder.Body.Bytes()), int64(recorder.Body.Len()))
+	if err != nil {
+		t.Fatalf("the response is not a readable zip: %v", err)
+	}
+	names := map[string]bool{}
+	for _, entry := range archive.File {
+		if names[entry.Name] {
+			t.Errorf("two entries share the name %q — extracting loses one", entry.Name)
+		}
+		names[entry.Name] = true
+	}
+	if len(names) != 2 {
+		t.Errorf("the archive holds %d distinct entries, want one per version", len(names))
+	}
+}
+
 func TestMarkdownExportSendsOneFileAsMarkdownWithItsName(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	writeMarkdownExport(recorder, "7", agentDocument(agentVersion()))
@@ -239,6 +275,10 @@ func TestSlugifyMatchesTheLegacyRules(t *testing.T) {
 		{"multi   space", "multi-space"},
 		{"already-hyphenated", "already-hyphenated"},
 		{strings.Repeat("a", 80), strings.Repeat("a", 50)},
+		// Python's `\w` is Unicode-aware, so the legacy keeps these. Go's is
+		// not, and the first transcription of this function stripped them.
+		{"日本語 Agent", "日本語-agent"},
+		{"Кириллица", "кириллица"},
 	} {
 		if got := slugify(testCase.in); got != testCase.want {
 			t.Errorf("slugify(%q) = %q, want %q", testCase.in, got, testCase.want)
@@ -249,7 +289,43 @@ func TestSlugifyMatchesTheLegacyRules(t *testing.T) {
 // A name that slugs to nothing must still produce a usable filename rather
 // than a file called ".agent.md", which is hidden on every unix desktop.
 func TestMarkdownFilenameFallsBackForANameThatSlugsToNothing(t *testing.T) {
-	if got := markdownFilename("日本語", "base", "react"); got != "application.agent.md" {
+	// Punctuation only. "日本語" was the example here until slugify was
+	// corrected to keep non-Latin letters — it now has a name of its own and
+	// no longer reaches this branch, which is the point.
+	if got := markdownFilename("!!!", "base", "react"); got != "application.agent.md" {
 		t.Errorf("markdownFilename = %q, want the application fallback", got)
+	}
+	if got := markdownFilename("日本語", "base", "react"); got != "日本語.agent.md" {
+		t.Errorf("markdownFilename = %q, want the name kept, not the fallback", got)
+	}
+}
+
+// The renderer must find the toolkits through whichever slice shape the
+// document carries. Asserted on the KEY, because the failure was total: the
+// block was absent, not wrong.
+func TestMarkdownExportEmitsToolkitsFromTheStoredSliceShape(t *testing.T) {
+	for name, tools := range map[string]any{
+		"[]map[string]any (what exportedVersions builds)": []map[string]any{{"import_uuid": "tk-1"}},
+		"[]any (what a JSON round trip yields)":           []any{map[string]any{"import_uuid": "tk-1"}},
+	} {
+		version := agentVersion()
+		version["tools"] = tools
+		file := renderOne(t, agentDocument(version))
+		if !strings.Contains(file.content, "toolkits:") {
+			t.Errorf("%s: the toolkits block is missing entirely:\n%s", name, file.content)
+		}
+		if !strings.Contains(file.content, "toolkit: Postgres") {
+			t.Errorf("%s: the toolkit was not resolved:\n%s", name, file.content)
+		}
+	}
+}
+
+// An empty list is not a value worth writing. The legacy's `if variables:`
+// drops the key; emitting `variables: []` describes an agent that has an empty
+// variable set rather than one that was never given any.
+func TestMarkdownExportOmitsAnEmptyVariablesList(t *testing.T) {
+	file := renderOne(t, agentDocument(agentVersion()))
+	if strings.Contains(file.content, "variables:") {
+		t.Errorf("an empty variables list was written as a key:\n%s", file.content)
 	}
 }
