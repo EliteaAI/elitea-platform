@@ -170,10 +170,7 @@ export function AdminUsers() {
             sortField={state.sortField}
             sortDirection={state.sortDirection}
             onSort={state.onSort}
-            onSetAdminRole={state.onSetAdminRole}
-            onToggleSuspended={state.onToggleSuspended}
-            onDelete={state.onDeleteRow}
-            onOpenActivity={state.onOpenActivity}
+            rowActions={state.rowActions}
             canAssignSuperAdmin={state.canAssignSuperAdmin}
             pendingIds={state.pendingIds}
           />

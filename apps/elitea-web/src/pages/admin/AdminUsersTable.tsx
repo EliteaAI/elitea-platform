@@ -45,6 +45,19 @@ const NO_ROLE = '' as const;
 /** What the role `<Select>` holds: an administration role, or the empty "None" value. */
 type RoleSelectValue = AdminRole | typeof NO_ROLE;
 
+/**
+ * The per-row controls. `undefined` ⇒ that control is not rendered at all —
+ * "this tab has no delete" and "this operator may not delete" collapse into one
+ * representation and so cannot disagree with each other.
+ */
+export interface AdminUserRowActions {
+  readonly onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
+  readonly onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
+  readonly onDelete: ((userIds: number[]) => void) | undefined;
+  /** Always present: activity is a READ, so it exists on every tab. */
+  readonly onOpenActivity: (user: AdminUserRow) => void;
+}
+
 export interface AdminUsersTableProps {
   users: readonly AdminUserRow[];
   isLoading: boolean;
@@ -53,12 +66,17 @@ export interface AdminUsersTableProps {
   sortField: string;
   sortDirection: 'asc' | 'desc';
   onSort: (field: string, direction: 'asc' | 'desc') => void;
-  /** Absent ⇒ the column/control is not rendered at all (the system-users tab). */
-  onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
-  onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
-  onDelete: ((userIds: number[]) => void) | undefined;
-  /** Always present: activity is a READ, so it exists on every tab. */
-  onOpenActivity: (user: AdminUserRow) => void;
+  /**
+   * The per-row controls, as ONE object rather than four sibling props.
+   *
+   * Grouped because the §3.5 component-props budget is 12 and the flat form
+   * reached 13 when the activity control became live. They are the coherent
+   * set to group: every one of them acts on a single row, and the page builds
+   * them together. It must be a MEMOISED object — this component is `memo`'d
+   * and `columns` is a `useMemo` over it, so a fresh literal per render would
+   * defeat both.
+   */
+  rowActions: AdminUserRowActions;
   /**
    * Presentation-only: `false` disables the `super_admin` option. The server
    * enforces the same rule and refuses regardless of what this says.
@@ -82,10 +100,7 @@ export const AdminUsersTable = memo(function AdminUsersTable({
   sortField,
   sortDirection,
   onSort,
-  onSetAdminRole,
-  onToggleSuspended,
-  onDelete,
-  onOpenActivity,
+  rowActions,
   canAssignSuperAdmin,
   pendingIds,
 }: AdminUsersTableProps) {
@@ -163,6 +178,8 @@ export const AdminUsersTable = memo(function AdminUsersTable({
           ),
       },
     ];
+
+    const { onSetAdminRole, onToggleSuspended, onDelete, onOpenActivity } = rowActions;
 
     if (onSetAdminRole) {
       definitions.push({
@@ -286,15 +303,7 @@ export const AdminUsersTable = memo(function AdminUsersTable({
     });
 
     return definitions;
-  }, [
-    onSetAdminRole,
-    onToggleSuspended,
-    onDelete,
-    onOpenActivity,
-    canAssignSuperAdmin,
-    pendingIds,
-    roleOptions,
-  ]);
+  }, [rowActions, canAssignSuperAdmin, pendingIds, roleOptions]);
 
   if (!isLoading && users.length === 0) {
     return (

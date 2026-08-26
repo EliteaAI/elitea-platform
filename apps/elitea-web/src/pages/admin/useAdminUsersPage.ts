@@ -15,6 +15,7 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { t } from '@/shared/i18n';
 
+import type { AdminUserRowActions } from './AdminUsersTable';
 import { adminUiShowsControlFor } from './adminUiConfig';
 import { downloadCsv, fetchAllPages } from './adminCsv';
 import { buildAdminUsersCsv } from './adminUsersCsv';
@@ -77,16 +78,19 @@ export interface AdminUsersPageState {
    * `undefined`-means-absent set below: it exists on both tabs and whatever the
    * admin-panel config advertises. The server authorises the read itself.
    */
-  readonly onOpenActivity: (user: AdminUserRow) => void;
   readonly onCloseActivity: () => void;
   /** Downloads every row the current tab + search select, as CSV. */
   readonly onExport: () => void;
 
   /** `undefined` ⇒ the control is not rendered on this tab / for this user. */
   readonly onSelectionChange: ((ids: number[]) => void) | undefined;
-  readonly onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
-  readonly onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
-  readonly onDeleteRow: ((ids: number[]) => void) | undefined;
+  /**
+   * The per-row controls, as one MEMOISED object — `AdminUsersTable` is
+   * `memo`'d and derives its columns from this, so a fresh literal per render
+   * would defeat both. Grouped rather than passed flat because the table's
+   * props reached the §3.5 budget of 12 when activity became live.
+   */
+  readonly rowActions: AdminUserRowActions;
 }
 
 /**
@@ -252,6 +256,8 @@ export function useAdminUsersPage(): AdminUsersPageState {
     [suspendUser, reportFailure],
   );
 
+  const handleOpenActivity = useCallback((user: AdminUserRow) => setActivityUser(user), []);
+
   const onConfirmDelete = useCallback(() => {
     const ids = deleteIds;
     setErrorMessage('');
@@ -313,6 +319,19 @@ export function useAdminUsersPage(): AdminUsersPageState {
   // suspend or delete control for them, and neither does this port.
   const writable = showsUserControls && !isSystemTab;
 
+  const rowActions = useMemo<AdminUserRowActions>(
+    () => ({
+      onSetAdminRole: writable ? handleSetAdminRole : undefined,
+      onToggleSuspended: writable ? handleToggleSuspended : undefined,
+      onDelete: writable ? setDeleteIds : undefined,
+      // Not gated on `writable`: activity is a READ, so it exists on the
+      // system tab and for an operator with no write permissions. The server
+      // authorises the audit query itself.
+      onOpenActivity: handleOpenActivity,
+    }),
+    [writable, handleSetAdminRole, handleToggleSuspended, handleOpenActivity],
+  );
+
   return {
     activeTab,
     isSystemTab,
@@ -345,13 +364,10 @@ export function useAdminUsersPage(): AdminUsersPageState {
     onRequestDelete: useCallback((ids: number[]) => setDeleteIds(ids), []),
     onCancelDelete: useCallback(() => setDeleteIds([]), []),
     onConfirmDelete,
-    onOpenActivity: useCallback((user: AdminUserRow) => setActivityUser(user), []),
     onCloseActivity: useCallback(() => setActivityUser(null), []),
     onExport,
 
     onSelectionChange: writable ? setSelectedIds : undefined,
-    onSetAdminRole: writable ? handleSetAdminRole : undefined,
-    onToggleSuspended: writable ? handleToggleSuspended : undefined,
-    onDeleteRow: writable ? setDeleteIds : undefined,
+    rowActions,
   };
 }
