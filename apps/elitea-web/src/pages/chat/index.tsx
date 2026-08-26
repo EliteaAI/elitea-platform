@@ -169,11 +169,10 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
       <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
         <ChatBox
-          {...(activeConversation ? { activeConversation } : {})}
+          conversation={{ ...(activeConversation ? { active: activeConversation } : {}), isLoading: isLoadingConversation }}
           {...(projectId !== undefined ? { projectId } : {})}
           {...(user ? { user } : {})}
           participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
-          isLoadingConversation={isLoadingConversation}
           {...(editorCallbacks || entitySubmenus
             ? {
                 extensions: {

@@ -14,7 +14,7 @@
  * imports sideways across those features — legal for widgets/, forbidden
  * for features/ (R-L1, `.dependency-cruiser.cjs`'s `no-sideways-features`).
  */
-import type { ComponentRef } from 'react';
+import type { ComponentRef, Ref } from 'react';
 import { memo, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 
 import { Box } from '@mui/material';
@@ -39,7 +39,9 @@ import {
   optField,
   resolveConversationStarters,
 } from './ChatBox.helpers';
-import type { ChatBoxActiveConversation, ChatBoxEditorCallbacks } from './ChatBox.helpers';
+import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
+import type { ChatBoxConversationProp } from './ChatBox.props';
+import { unwrapChatBoxConversation } from './ChatBox.props';
 import type { ChatBoxHandle } from './ChatBox.types';
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
 import { buildChatBoxPopupsProps, ChatBoxPopups } from './ChatBoxPopups';
@@ -68,7 +70,10 @@ type NewChatInputHandle = ComponentRef<typeof NewChatInput>;
 
 /** @public Props for the ChatBox composition root. */
 export interface ChatBoxProps {
-  readonly activeConversation?: ChatBoxActiveConversation;
+  /** Host ref for the `ChatBoxHandle` (React 19 passes `ref` as a prop) — see `ChatBox.types.ts`. */
+  readonly ref?: Ref<ChatBoxHandle> | undefined;
+  /** Bundled to stay under the §3.5 component-props budget (one slot instead of two), which the `ref` prop above pushed this component over — see `ChatBox.props.ts`. */
+  readonly conversation?: ChatBoxConversationProp;
   readonly hidden?: boolean;
   readonly fromTheChat?: boolean;
   readonly projectId?: string | number;
@@ -79,7 +84,6 @@ export interface ChatBoxProps {
   readonly setChatHistory?: React.Dispatch<React.SetStateAction<readonly unknown[]>>;
   readonly conversationStarters?: readonly { id: string; text: string }[];
   readonly isAgentsPage?: boolean;
-  readonly isLoadingConversation?: boolean;
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
@@ -100,7 +104,8 @@ export type { ChatBoxHandle };
 /* ------------------------------------------------------------------ */
 
 const ChatBoxInner = memo(function ChatBox({
-  activeConversation,
+  ref,
+  conversation,
   hidden = false,
   projectId,
   user,
@@ -108,7 +113,6 @@ const ChatBoxInner = memo(function ChatBox({
   setChatHistory,
   conversationStarters,
   isAgentsPage,
-  isLoadingConversation,
   llm,
   onDelete,
   extensions,
@@ -117,6 +121,7 @@ const ChatBoxInner = memo(function ChatBox({
   const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
+  const { activeConversation, isLoadingConversation } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
 
@@ -299,15 +304,12 @@ const ChatBoxInner = memo(function ChatBox({
     stopStreamRef.current();
     streamingRef.current.stopStreaming();
   }, [stopStreamRef, streamingRef]);
-  useImperativeHandle(
-    chatInputRef as unknown as React.Ref<ChatBoxHandle>,
-    () => ({
-      onClear: () => { handleClearRef.current(); },
-      mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
-      stopAll: stopGeneration,
-    }),
-    [handleClearRef, stopGeneration],
-  );
+  // MUST target the host `ref`, never `chatInputRef` — see `ChatBox.types.ts`.
+  useImperativeHandle(ref, () => ({
+    onClear: () => { handleClearRef.current(); },
+    mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
+    stopAll: stopGeneration,
+  }), [handleClearRef, stopGeneration]);
 
   // Early return
   if (hidden) return null;

@@ -534,9 +534,29 @@ test('J26.1: the notification SSE stream is mounted, and a dropped connection is
  * "1" in every fallback branch (#167). Every branch of that resolver is
  * membership-checked, which is what makes this assertion hold rather than
  * happening to hold on a single-project deployment.
+ *
+ * THE ADMISSION GATE APPLIES HERE TOO, and unlike J26.1 this journey cannot
+ * dodge it — the stream under test IS the sidebar's own.
+ *
+ * `events.go` admits four concurrent streams per principal and answers the
+ * fifth with 429 (see J26.1's header). The suite runs parallel workers as ONE
+ * persona and every page that reaches `/app/chat` mounts `NotificationButton`,
+ * so the member principal sits at the cap and a page that arrives mid-overlap
+ * is refused. Measured 2026-08-26 against the real stack: five pages on one
+ * context yield statuses `[200], [200], [200], [200], [429, 429]`. Run alone
+ * this test passed; run beside its neighbours it failed on `responses[0]`
+ * being 429, which reads exactly like a broken subscription and is not one.
+ *
+ * So the scenario re-attempts until a slot frees, exactly as J26.1 does, and
+ * each attempt starts from `about:blank` so the previous attempt's stream is
+ * released rather than competing with the next one. What it does NOT do is
+ * accept "429 or 200" — that would gut the assertion. A refusal only buys
+ * another attempt; the last attempt still has to produce a real 200, and a
+ * 403 (the #166/#167 regression this journey exists for) still fails, with
+ * its status named.
  */
 test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
 
   const requests: string[] = [];
   const failures: string[] = [];
@@ -559,15 +579,45 @@ test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
     }
   });
 
-  await page.goto(BASE_URL + '/app/chat');
+  const deadline = Date.now() + 45_000;
+  for (;;) {
+    // The assertions below read the LAST attempt only, so each attempt starts
+    // from an empty record. Same arrays throughout: the listeners above are
+    // bound once, to these.
+    requests.length = 0;
+    failures.length = 0;
+    responses.length = 0;
 
-  // The client half is live regardless: the sidebar really does open a stream.
-  // This part passes today and is what makes the failure below specific — the
-  // subscription exists, it just cannot be authorized.
-  await expect.poll(() => requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    await page.goto(BASE_URL + '/app/chat');
+
+    // The client half is live regardless: the sidebar really does open a
+    // stream. This part passes even when the stream is refused, and is what
+    // makes the assertions below specific — the subscription exists, the
+    // question is only whether it is authorized.
+    await expect.poll(() => requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    // Wait for the attempt to SETTLE (admitted, refused, or dropped) rather
+    // than reading a stream that is still opening.
+    await expect
+      .poll(() => responses.length + failures.length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    // 403 is NOT retried: it is the regression this journey guards, it will
+    // not clear on a later attempt, and it should fail fast rather than burn
+    // the whole deadline first.
+    const status = responses[0]?.status;
+    if (status === 200 || status === 403 || Date.now() >= deadline) break;
+
+    // Drop this page's own stream before re-attempting, so the retry competes
+    // with the other workers only and not with itself.
+    await page.goto('about:blank');
+    await page.waitForTimeout(3_000);
+  }
 
   expect(failures, `the sidebar's notification stream was dropped: ${failures.join(', ')}`).toEqual([]);
-  await expect.poll(() => responses[0]?.status, { timeout: 15_000 }).toBe(200);
+  expect(
+    responses[0]?.status,
+    `sidebar stream statuses: ${responses.map((r) => r.status).join(', ') || 'none'} (429 means the per-principal stream cap stayed full for the whole deadline; 403 is the authorize() regression this journey guards)`,
+  ).toBe(200);
 });
 
 /**

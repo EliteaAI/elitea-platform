@@ -257,10 +257,20 @@ export const VoiceButton = memo(
         startRecording();
       }, [inputRef, startRecording]);
 
+      // The focus hand-back belongs to a recording that was actually running:
+      // it returns the caret to the composer after the transcript lands. But
+      // `stop()` is ALSO called with nothing recording — `NewChatInput`'s
+      // `useStopVoiceOnConversationChange` fires it on mount and on every
+      // conversation change ("stops any ACTIVE one-shot recording"). Ungated,
+      // that steals focus into the composer on cold load and on every
+      // conversation switch, which on `/chat` blanks the placeholder
+      // (`UserInputEditableArea` renders none while focused) and on mobile pops
+      // the keyboard. It went unnoticed only because `ChatBox` was clobbering
+      // this ref, so `focus?.()` was a silent no-op (PR #597).
       const handleStopRecording = useCallback(() => {
         stopRecording();
-        inputRef?.current?.focus?.();
-      }, [inputRef, stopRecording]);
+        if (isRecording) inputRef?.current?.focus?.();
+      }, [inputRef, stopRecording, isRecording]);
 
       useImperativeHandle(ref, () => ({ stop: handleStopRecording }), [handleStopRecording]);
 
