@@ -14,7 +14,7 @@
  * imports sideways across those features — legal for widgets/, forbidden
  * for features/ (R-L1, `.dependency-cruiser.cjs`'s `no-sideways-features`).
  */
-import type { ComponentRef } from 'react';
+import type { ComponentRef, Ref } from 'react';
 import { memo, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 
 import { Box } from '@mui/material';
@@ -68,6 +68,8 @@ type NewChatInputHandle = ComponentRef<typeof NewChatInput>;
 
 /** @public Props for the ChatBox composition root. */
 export interface ChatBoxProps {
+  /** Host ref for the `ChatBoxHandle` (React 19 passes `ref` as a prop) — see `ChatBox.types.ts`. */
+  readonly ref?: Ref<ChatBoxHandle> | undefined;
   readonly activeConversation?: ChatBoxActiveConversation;
   readonly hidden?: boolean;
   readonly fromTheChat?: boolean;
@@ -100,6 +102,7 @@ export type { ChatBoxHandle };
 /* ------------------------------------------------------------------ */
 
 const ChatBoxInner = memo(function ChatBox({
+  ref,
   activeConversation,
   hidden = false,
   projectId,
@@ -299,15 +302,12 @@ const ChatBoxInner = memo(function ChatBox({
     stopStreamRef.current();
     streamingRef.current.stopStreaming();
   }, [stopStreamRef, streamingRef]);
-  useImperativeHandle(
-    chatInputRef as unknown as React.Ref<ChatBoxHandle>,
-    () => ({
-      onClear: () => { handleClearRef.current(); },
-      mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
-      stopAll: stopGeneration,
-    }),
-    [handleClearRef, stopGeneration],
-  );
+  // MUST target the host `ref`, never `chatInputRef` — see `ChatBox.types.ts`.
+  useImperativeHandle(ref, () => ({
+    onClear: () => { handleClearRef.current(); },
+    mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
+    stopAll: stopGeneration,
+  }), [handleClearRef, stopGeneration]);
 
   // Early return
   if (hidden) return null;
