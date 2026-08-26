@@ -190,6 +190,35 @@ func (h *Handler) publishGuardrail(ctx context.Context) publishGuardrailState {
 	}
 }
 
+// skillPublishGuardrail is the same resolution over the SKILL section.
+//
+// Separate from `publishGuardrail` rather than parameterised by section id,
+// because the two sections do not share field keys either — the skill switch is
+// `is_skill_publish_blocked`, not `is_publish_blocked` — and a single function
+// taking three arguments to say "the other one" reads worse than two that each
+// say which they are.
+func (h *Handler) skillPublishGuardrail(ctx context.Context) publishGuardrailState {
+	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionSkillPublishing)
+	if err != nil {
+		return publishGuardrailState{}
+	}
+	return publishGuardrailState{
+		blocked:   values.Bool(platformconfig.KeySkillPublishBlocked, false),
+		whitelist: values.Ints(platformconfig.KeySkillPublishWhitelistProjectIDs),
+	}
+}
+
+// projectIDList returns a non-nil slice so an empty whitelist encodes as `[]`
+// rather than `null`. A client that has to distinguish those two — and this one
+// does, because "blocked with an empty whitelist" means blocked everywhere —
+// has been handed the server's problem.
+func projectIDList(ids []int64) []int64 {
+	if ids == nil {
+		return []int64{}
+	}
+	return ids
+}
+
 // extraAgentCategories returns the operator-configured categories.
 func (h *Handler) extraAgentCategories(ctx context.Context) []string {
 	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionAgentPublishing)

@@ -6,10 +6,14 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useNavigate } from '@tanstack/react-router';
+import Tab from '@mui/material/Tab';
+import Tabs from '@mui/material/Tabs';
+
+import { useNavigate, useParams } from '@tanstack/react-router';
 
 import {
   exportSkill,
+  PublicSkillsCatalog,
   SkillImportButton,
   SkillsList,
   useSkillMutations,
@@ -21,7 +25,7 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { EntityListRail, RAIL_CONTENT_WIDTH, useEntityRailVisible, useRailTagSelection } from '@/shared/ui/EntityRail';
 import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
-import { useSidebarCollapsedStore } from '@/widgets/sidebar';
+import { usePermissionSet, useSidebarCollapsedStore } from '@/widgets/sidebar';
 
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 
@@ -55,8 +59,28 @@ function downloadMarkdown(content: string, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
+/**
+ * The two tabs `/skills/$tab` addresses.
+ *
+ * The route has carried a `:tab` segment since it was ported and nothing read
+ * it — the page rendered the project's own list whatever the segment said, so
+ * `/skills/public` and `/skills/all` were the same screen. They are not any
+ * more: `public` is the published catalog, which is what the `:tab` segment was
+ * for in the baseline's own `SkillsTabs` constant.
+ *
+ * Any other value resolves to `all`, so an old link cannot land on a blank tab.
+ */
+export const SKILL_TABS = ['all', 'public'] as const;
+export type SkillTab = (typeof SKILL_TABS)[number];
+
+export function resolveSkillTab(tab: string | undefined): SkillTab {
+  return tab === 'public' ? 'public' : 'all';
+}
+
 export function Skills(): ReactNode {
   const navigate = useNavigate();
+  const routeParams = useParams({ strict: false }) as { readonly tab?: string };
+  const activeTab = resolveSkillTab(routeParams.tab);
   const projectId = useSelectedProjectId();
   const [query, setQuery] = useState('');
   const [pendingDelete, setPendingDelete] = useState<SkillRecord>();
@@ -66,6 +90,7 @@ export function Skills(): ReactNode {
   const navRailCollapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const railVisible = useEntityRailVisible(navRailCollapsed);
   const { selectedTags } = useRailTagSelection();
+  const permissions = usePermissionSet(projectId);
   const visibleSkills = useMemo(() => filterSkillsByTags(skills.data?.items ?? [], selectedTags), [skills.data, selectedTags]);
 
   const handleExport = async (skill: SkillRecord): Promise<void> => {
@@ -107,8 +132,30 @@ export function Skills(): ReactNode {
             </BaseBtn>
           </Box>
         </Box>
-        {!railVisible && searchBar}
+        <Tabs
+          value={activeTab}
+          onChange={(_event, next: SkillTab) => {
+            void navigate({ to: '/skills/$tab', params: { tab: next } });
+          }}
+        >
+          <Tab
+            value="all"
+            label={t('skills.page.tabAll', 'Skills')}
+          />
+          <Tab
+            value="public"
+            label={t('skills.page.tabPublic', 'Public')}
+          />
+        </Tabs>
+        {activeTab === 'public' && (
+          <PublicSkillsCatalog
+            projectId={projectId}
+            permissions={permissions}
+          />
+        )}
+        {activeTab === 'all' && !railVisible && searchBar}
         {actionError && <Typography role="alert">{actionError}</Typography>}
+        {activeTab === 'all' && (
         <SkillsList
           items={visibleSkills}
           isLoading={skills.isFetching && skills.data === undefined}
@@ -125,6 +172,7 @@ export function Skills(): ReactNode {
             void handleExport(skill);
           }}
         />
+        )}
       </Box>
       <EntityListRail
         projectId={projectId}

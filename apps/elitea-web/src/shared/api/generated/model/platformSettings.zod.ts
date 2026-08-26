@@ -71,6 +71,30 @@ export const PlatformSettings = zod
       .describe(
         "A14 (issue 200): the second voice flag. Leaves the control VISIBLE but non-interactive with an admin tooltip, which the button already renders (`tooltipAdminDisabled`) against a constant hardcoded to `false`.\n",
       ),
+    is_publish_blocked: zod
+      .boolean()
+      .optional()
+      .describe(
+        "The AGENT publishing guardrail, as authored on the admin Features page (Agent Publishing) and enforced by `POST \/elitea_core\/publish\/prompt_lib\/{project_id}\/{version_id}`. Published so the product UI can gate its Publish control on the same answer the handler enforces, rather than rendering an enabled button into a 403. Optional for the same reason as mcp_in_menu_enabled.\n",
+      ),
+    publish_whitelist_project_ids: zod
+      .array(zod.int())
+      .optional()
+      .describe(
+        'The projects that may still publish agents while the switch above is on. An EMPTY list while blocked means nobody may publish — it is not \"no restrictions\" — which is why the list is published rather than a resolved boolean: a client that has it can also say why the control is off.\n',
+      ),
+    is_skill_publish_blocked: zod
+      .boolean()
+      .optional()
+      .describe(
+        "The SKILL publishing guardrail, authored on the admin Features page (Skill Publishing) and enforced by `POST \/elitea_core\/publish_skill\/...`. Independent of `is_publish_blocked`: the two are separate sections with separate switches, and freezing one does not freeze the other. Admin publishes from the public project itself are exempt from both.\n",
+      ),
+    skill_publish_whitelist_project_ids: zod
+      .array(zod.int())
+      .optional()
+      .describe(
+        "The projects that may still publish skills while the switch above is on, with the same empty-list-means-nobody rule as the agent whitelist.\n",
+      ),
     blocked_toolkits: zod
       .array(zod.string())
       .optional()

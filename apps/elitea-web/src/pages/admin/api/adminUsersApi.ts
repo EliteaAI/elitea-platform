@@ -119,6 +119,20 @@ function readCounts(response: unknown): AdminUsersPage['counts'] {
   };
 }
 
+/**
+ * One page of `GET /admin/auth_users/administration`, without a hook.
+ *
+ * Exported because the export control (see `useAdminUsersPage`) has to walk
+ * EVERY page imperatively on click; going through `useQuery` there would mean
+ * either a second always-mounted query for data nobody renders, or a
+ * `limit: total` request whose size no server bound checks.
+ */
+export async function fetchAdminUsersPage(params: AdminUsersQueryParams): Promise<AdminUsersPage> {
+  const response = await eliteaFetch<unknown>(buildListUrl(params));
+  const { rows, total } = unwrapListPage<AdminUserRow>(response, 'adminAuthUsers');
+  return { rows, total, counts: readCounts(response) };
+}
+
 /** `GET /admin/auth_users/administration` — one page of the global user list. */
 export function useAdminUsers(
   params: AdminUsersQueryParams,
@@ -127,11 +141,7 @@ export function useAdminUsers(
   return useQuery({
     queryKey: adminUsersKeys.list(params),
     enabled: options.enabled ?? true,
-    queryFn: async (): Promise<AdminUsersPage> => {
-      const response = await eliteaFetch<unknown>(buildListUrl(params));
-      const { rows, total } = unwrapListPage<AdminUserRow>(response, 'adminAuthUsers');
-      return { rows, total, counts: readCounts(response) };
-    },
+    queryFn: () => fetchAdminUsersPage(params),
   });
 }
 

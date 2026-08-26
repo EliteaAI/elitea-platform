@@ -45,15 +45,25 @@ let recorded: RecordedRequest[] = [];
 const VALIDATION_REASON =
   'publish validation in this service is deterministic (name collisions, sub-agent cycles and depth); ' +
   'there is no AI evaluator for custom criteria to reach.';
-const SKILL_REASON = 'skill publishing is not implemented in this service';
+const SKILL_VALIDATION_REASON =
+  'publish validation for skills in this service is deterministic (version name collisions, empty ' +
+  'instructions, publish status); there is no AI evaluator for custom criteria to reach.';
+
 /*
- * `WIDGET_REASON` USED TO STAND HERE, and `support_assistant` used to be this
- * file's second unavailable exemplar. It is LIVE now: the widget is mounted in
- * `widgets/app-shell` and `internal/api/v2/supportassistant` serves the whole
- * surface, so the server no longer sends a reason for it and this fixture no
- * longer invents one. `skill_publishing` is the remaining unavailable section
- * and carries the assertions that used to be split across both.
+ * `SKILL_REASON` AND `WIDGET_REASON` BOTH USED TO STAND HERE, naming the two
+ * Features sections the server withheld. Neither survives: #585 built the skill
+ * publishing pipeline and #588 built the support assistant, so both sections are
+ * live and the server sends no reason for either.
+ *
+ * THAT LEFT TWO TESTS WITH NOTHING TO ASSERT — the sidebar's "Not available
+ * here" marker and the whole "a section with no consumer" case would have
+ * passed by looking at an empty set, which is the failure mode this page exists
+ * to prevent in the product. So the fixture keeps ONE withheld section as an
+ * explicit stand-in. It is not a real section, and it is not pretending to be:
+ * what these tests exercise is the page RENDERING a server-declared refusal, not
+ * which product feature happens to lack a consumer this week.
  */
+const STAND_IN_REASON = 'this section is withheld by the server for a reason only the server knows';
 
 /** The server's own section list, trimmed to what these tests exercise. */
 const SECTIONS = [
@@ -116,8 +126,37 @@ const SECTIONS = [
     id: 'skill_publishing',
     page: 'features',
     title: 'Skill Publishing',
-    unavailable_reason: SKILL_REASON,
-    fields: [],
+    fields: [
+      {
+        key: 'is_skill_publish_blocked',
+        type: 'boolean',
+        title: 'Block Skill Publishing',
+        default: false,
+      },
+      {
+        key: 'skill_publish_whitelist_project_ids',
+        type: 'array',
+        items: { type: 'integer' },
+        title: 'Skill Publishing Allowed Projects',
+        default: [],
+        visible_when: { field: 'is_skill_publish_blocked', value: true },
+      },
+      {
+        key: 'skill_categories',
+        type: 'array',
+        items: { type: 'string' },
+        title: 'Skill Categories',
+        default: [],
+      },
+      {
+        key: 'skill_publish_validation_rules',
+        type: 'string',
+        format: 'textarea',
+        title: 'Skill Publish Validation Rules',
+        default: '',
+        unavailable_reason: SKILL_VALIDATION_REASON,
+      },
+    ],
   },
   {
     id: 'resources',
@@ -137,6 +176,15 @@ const SECTIONS = [
       // time, so the switch is a switch.
       { key: 'support_assistant_enabled', type: 'boolean', title: 'Assistant Enabled', default: false },
     ],
+  },
+  {
+    // The stand-in described in the header. Last in order, so it cannot
+    // interfere with "opens on the first AVAILABLE section".
+    id: 'withheld_stand_in',
+    page: 'features',
+    title: 'Withheld Example',
+    unavailable_reason: STAND_IN_REASON,
+    fields: [],
   },
   {
     id: 'voice_features',
@@ -277,11 +325,11 @@ describe('AdminFeatures — which section opens', () => {
   it('never fetches values for a section the server declared unavailable', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Skill Publishing');
+    await openSection('Withheld Example');
 
     await screen.findByTestId('admin-features-unavailable');
     const reads = recorded.filter(
-      (entry) => entry.method === 'GET-values' && entry.url.includes('/skill_publishing'),
+      (entry) => entry.method === 'GET-values' && entry.url.includes('/withheld_stand_in'),
     );
     expect(reads).toHaveLength(0);
   });
@@ -289,9 +337,36 @@ describe('AdminFeatures — which section opens', () => {
   it('marks the unavailable sections in the sidebar before they are opened', async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    // Skill Publishing, alone: `support_assistant` became available when the
-    // widget acquired a render site and a backend.
+    // The stand-in, alone. Skill Publishing and Support Assistant were the two
+    // real ones and both became live; see the header for why the fixture still
+    // carries a withheld section at all.
     expect(screen.getAllByText('Not available here')).toHaveLength(1);
+  });
+
+  it('renders the live Skill Publishing form, with its one unavailable field disclosed', async () => {
+    renderAdminRoute(<AdminFeatures />);
+    await waitForMcpSection();
+    await openSection('Skill Publishing');
+
+    expect(screen.queryByTestId('admin-features-unavailable')).toBeNull();
+    expect(await screen.findByLabelText('Block Skill Publishing')).toBeInTheDocument();
+    expect(screen.getByText('Skill Categories')).toBeInTheDocument();
+    // The whitelist is hidden until the block switch is on — the same
+    // `visible_when` rule the agent section uses.
+    expect(screen.queryByText('Skill Publishing Allowed Projects')).toBeNull();
+    // The AI-rules field states the server's reason instead of taking input.
+    expect(screen.getByText(SKILL_VALIDATION_REASON)).toBeInTheDocument();
+  });
+
+  it('renders the live Support Assistant form', async () => {
+    renderAdminRoute(<AdminFeatures />);
+    await waitForMcpSection();
+    await openSection('Support Assistant');
+
+    expect(screen.queryByTestId('admin-features-unavailable')).toBeNull();
+    // A SWITCH, not a text box: the reference's `vite_elitea_assistant` was a
+    // build-time string of "0"/"1".
+    expect(await screen.findByLabelText('Assistant Enabled')).toBeInTheDocument();
   });
 });
 
@@ -301,10 +376,10 @@ describe('AdminFeatures — a section with no consumer', () => {
   it("shows the SERVER's reason and no control at all", async () => {
     renderAdminRoute(<AdminFeatures />);
     await waitForMcpSection();
-    await openSection('Skill Publishing');
+    await openSection('Withheld Example');
 
     const notice = await screen.findByTestId('admin-features-unavailable');
-    expect(notice).toHaveTextContent('skill publishing is not implemented');
+    expect(notice).toHaveTextContent(STAND_IN_REASON);
     // A DISABLED control would still read as "configurable, just not now".
     expect(screen.queryByRole('switch')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();

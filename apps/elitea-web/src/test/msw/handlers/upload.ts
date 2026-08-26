@@ -29,13 +29,28 @@ import { z } from 'zod';
 import type { ZodType } from 'zod';
 
 import { registerValidatedHandlers } from '../register';
-import chunkComplete200 from '../fixtures/upload/chunk-complete.200.json';
-import chunkInProgress200 from '../fixtures/upload/chunk-in-progress.200.json';
+import chunkComplete201 from '../fixtures/upload/chunk-complete.201.json';
+import chunkInProgress202 from '../fixtures/upload/chunk-in-progress.202.json';
 import error500 from '../fixtures/upload/error.500.json';
-import smallFile200 from '../fixtures/upload/small-file.200.json';
+import smallFile201 from '../fixtures/upload/small-file.201.json';
 
-const inProgressBody = z.object({ in_progress: z.literal(true) });
-const chunkAckArrayBody = z.array(z.object({ id: z.string(), filename: z.string(), size: z.number() }));
+/*
+ * These two schemas are the GO handler's contract, not the legacy Python one
+ * they used to describe (services/elitea-main/internal/api/v2/conversations/
+ * attachments.go:348 and :461). The statuses are the real ones too — 202 for a
+ * chunk the server has taken but not assembled, 201 for the assembled file —
+ * which is what makes `upload.ts:161`'s `status >= 200 && status < 300` a
+ * tested claim rather than an untested one: every previous fixture answered
+ * 200, so nothing here ever exercised a 2xx that was not 200.
+ */
+const inProgressBody = z.object({
+  status: z.literal('chunk_received'),
+  file_id: z.string(),
+  chunk_index: z.number(),
+  total_chunks: z.number(),
+  message: z.string(),
+});
+const chunkAckArrayBody = z.array(z.object({ filepath: z.string(), file_size: z.number() }));
 const errorBody = z.object({ error: z.string() });
 
 const UPLOAD_PATH = '*/elitea_core/attachments/prompt_lib/*';
@@ -71,24 +86,24 @@ function validated(id: string, schema: ZodType, fixture: { recordedAt: string; b
 
 /** Always responds with the in-progress ack — pair with chunkAckComplete() via sequential server.use() calls to model a real chunk sequence. */
 export function chunkAckInProgress(sink?: CapturedUploadRequest[]): RequestHandler {
-  return validated('upload.chunk.inProgress', inProgressBody, chunkInProgress200, http.post(UPLOAD_PATH, ({ request }) => {
+  return validated('upload.chunk.inProgress', inProgressBody, chunkInProgress202, http.post(UPLOAD_PATH, ({ request }) => {
     capture(request, sink);
-    return HttpResponse.json(chunkInProgress200.body);
+    return HttpResponse.json(chunkInProgress202.body, { status: 202 });
   }));
 }
 
 /** Always responds with the final-chunk ack. */
 export function chunkAckComplete(sink?: CapturedUploadRequest[]): RequestHandler {
-  return validated('upload.chunk.complete', chunkAckArrayBody, chunkComplete200, http.post(UPLOAD_PATH, ({ request }) => {
+  return validated('upload.chunk.complete', chunkAckArrayBody, chunkComplete201, http.post(UPLOAD_PATH, ({ request }) => {
     capture(request, sink);
-    return HttpResponse.json(chunkComplete200.body);
+    return HttpResponse.json(chunkComplete201.body, { status: 201 });
   }));
 }
 
 export function smallFileOk(sink?: CapturedUploadRequest[]): RequestHandler {
-  return validated('upload.small.ok', chunkAckArrayBody, smallFile200, http.post(UPLOAD_PATH, ({ request }) => {
+  return validated('upload.small.ok', chunkAckArrayBody, smallFile201, http.post(UPLOAD_PATH, ({ request }) => {
     capture(request, sink);
-    return HttpResponse.json(smallFile200.body);
+    return HttpResponse.json(smallFile201.body, { status: 201 });
   }));
 }
 
@@ -114,6 +129,8 @@ export function chunkAckSequence(finalCallNumber: number, sink?: CapturedUploadR
   return http.post(UPLOAD_PATH, ({ request }) => {
     callCount += 1;
     capture(request, sink);
-    return callCount === finalCallNumber ? HttpResponse.json(chunkComplete200.body) : HttpResponse.json(chunkInProgress200.body);
+    return callCount === finalCallNumber
+      ? HttpResponse.json(chunkComplete201.body, { status: 201 })
+      : HttpResponse.json(chunkInProgress202.body, { status: 202 });
   });
 }

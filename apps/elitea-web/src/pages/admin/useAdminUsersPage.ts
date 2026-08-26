@@ -15,8 +15,12 @@ import { useCallback, useMemo, useState } from 'react';
 
 import { t } from '@/shared/i18n';
 
+import type { AdminUserRowActions } from './AdminUsersTable';
 import { adminUiShowsControlFor } from './adminUiConfig';
+import { downloadCsv, fetchAllPages } from './adminCsv';
+import { buildAdminUsersCsv } from './adminUsersCsv';
 import {
+  fetchAdminUsersPage,
   useAdminUsers,
   useDeleteAdminUsers,
   useSetAdminRole,
@@ -45,6 +49,8 @@ export interface AdminUsersPageState {
   readonly selectedIds: number[];
   readonly deleteIds: number[];
   readonly errorMessage: string;
+  /** The user whose activity drawer is open, or `null` when it is closed. */
+  readonly activityUser: AdminUserRow | null;
 
   readonly rows: readonly AdminUserRow[];
   readonly total: number;
@@ -52,6 +58,7 @@ export interface AdminUsersPageState {
   readonly isFetching: boolean;
   readonly isError: boolean;
   readonly isDeleting: boolean;
+  readonly isExporting: boolean;
   readonly pendingIds: ReadonlySet<number>;
 
   /** Presentation only — the server authorises every write on its own. */
@@ -66,12 +73,24 @@ export interface AdminUsersPageState {
   readonly onRequestDelete: (ids: number[]) => void;
   readonly onCancelDelete: () => void;
   readonly onConfirmDelete: () => void;
+  /**
+   * Activity is a READ over the audit endpoints, so it is not part of the
+   * `undefined`-means-absent set below: it exists on both tabs and whatever the
+   * admin-panel config advertises. The server authorises the read itself.
+   */
+  readonly onCloseActivity: () => void;
+  /** Downloads every row the current tab + search select, as CSV. */
+  readonly onExport: () => void;
 
   /** `undefined` ⇒ the control is not rendered on this tab / for this user. */
   readonly onSelectionChange: ((ids: number[]) => void) | undefined;
-  readonly onSetAdminRole: ((userId: number, roleName: AdminRole | null) => void) | undefined;
-  readonly onToggleSuspended: ((user: AdminUserRow) => void) | undefined;
-  readonly onDeleteRow: ((ids: number[]) => void) | undefined;
+  /**
+   * The per-row controls, as one MEMOISED object — `AdminUsersTable` is
+   * `memo`'d and derives its columns from this, so a fresh literal per render
+   * would defeat both. Grouped rather than passed flat because the table's
+   * props reached the §3.5 budget of 12 when activity became live.
+   */
+  readonly rowActions: AdminUserRowActions;
 }
 
 /**
@@ -123,6 +142,8 @@ export function useAdminUsersPage(): AdminUsersPageState {
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [deleteIds, setDeleteIds] = useState<number[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
+  const [activityUser, setActivityUser] = useState<AdminUserRow | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
   const isSystemTab = activeTab === 1;
   const userType = USER_TYPES[activeTab] ?? 'platform';
@@ -235,6 +256,8 @@ export function useAdminUsersPage(): AdminUsersPageState {
     [suspendUser, reportFailure],
   );
 
+  const handleOpenActivity = useCallback((user: AdminUserRow) => setActivityUser(user), []);
+
   const onConfirmDelete = useCallback(() => {
     const ids = deleteIds;
     setErrorMessage('');
@@ -250,9 +273,64 @@ export function useAdminUsersPage(): AdminUsersPageState {
     });
   }, [deleteIds, deleteUsers, reportFailure]);
 
+  /**
+   * Export. CSV rather than the reference's .xlsx — see `adminUsersCsv.ts` for
+   * why the format differs. A failure is REPORTED, not swallowed: the reference
+   * catches and discards it, so a 403 there looks like a click that did nothing.
+   */
+  const onExport = useCallback(() => {
+    setErrorMessage('');
+    setIsExporting(true);
+    void (async () => {
+      try {
+        const { rows, truncated } = await fetchAllPages((limit, offset) =>
+          fetchAdminUsersPage({
+            limit,
+            offset,
+            search: search || undefined,
+            userType,
+            sortBy: sortField,
+            sortOrder: sortDirection,
+          }),
+        );
+        downloadCsv(`users-${userType}.csv`, buildAdminUsersCsv(rows));
+        // A capped walk still downloads — but silently, a short file is
+        // indistinguishable from a complete one, so it has to SAY so.
+        if (truncated) {
+          setErrorMessage(
+            // `rows`, not `count`: i18next reads `count` as a plural selector
+            // and would look for `_one`/`_other` keys this bundle has not got.
+            t(
+              'pages.admin.users.export.truncated',
+              'The export was capped: the file holds the first {{rows}} users, not the whole list.',
+              { rows: rows.length },
+            ),
+          );
+        }
+      } catch (error) {
+        reportFailure(t('pages.admin.users.error.export', 'Failed to export the user list.'), error);
+      } finally {
+        setIsExporting(false);
+      }
+    })();
+  }, [search, userType, sortField, sortDirection, reportFailure]);
+
   // System users are the platform's own service accounts: pylon offers no role,
   // suspend or delete control for them, and neither does this port.
   const writable = showsUserControls && !isSystemTab;
+
+  const rowActions = useMemo<AdminUserRowActions>(
+    () => ({
+      onSetAdminRole: writable ? handleSetAdminRole : undefined,
+      onToggleSuspended: writable ? handleToggleSuspended : undefined,
+      onDelete: writable ? setDeleteIds : undefined,
+      // Not gated on `writable`: activity is a READ, so it exists on the
+      // system tab and for an operator with no write permissions. The server
+      // authorises the audit query itself.
+      onOpenActivity: handleOpenActivity,
+    }),
+    [writable, handleSetAdminRole, handleToggleSuspended, handleOpenActivity],
+  );
 
   return {
     activeTab,
@@ -264,6 +342,7 @@ export function useAdminUsersPage(): AdminUsersPageState {
     selectedIds: isSystemTab ? [] : selectedIds,
     deleteIds,
     errorMessage,
+    activityUser,
 
     rows: listing.rows,
     total: listing.total,
@@ -271,6 +350,7 @@ export function useAdminUsersPage(): AdminUsersPageState {
     isFetching: listQuery.isFetching,
     isError: listQuery.isError,
     isDeleting: deleteUsers.isPending,
+    isExporting,
     pendingIds,
 
     canAssignSuperAdmin,
@@ -284,10 +364,10 @@ export function useAdminUsersPage(): AdminUsersPageState {
     onRequestDelete: useCallback((ids: number[]) => setDeleteIds(ids), []),
     onCancelDelete: useCallback(() => setDeleteIds([]), []),
     onConfirmDelete,
+    onCloseActivity: useCallback(() => setActivityUser(null), []),
+    onExport,
 
     onSelectionChange: writable ? setSelectedIds : undefined,
-    onSetAdminRole: writable ? handleSetAdminRole : undefined,
-    onToggleSuspended: writable ? handleToggleSuspended : undefined,
-    onDeleteRow: writable ? setDeleteIds : undefined,
+    rowActions,
   };
 }

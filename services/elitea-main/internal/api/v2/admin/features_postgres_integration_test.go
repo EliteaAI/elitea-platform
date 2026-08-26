@@ -120,6 +120,70 @@ func TestAgentPublishingSectionIsWritableAndPersists(t *testing.T) {
 	}
 }
 
+// TestSkillPublishingSectionIsWritableAndPersists — the section that used to be
+// withheld.
+//
+// It is asserted separately from the agent one, rather than folded into a table
+// with it, because the pair's INDEPENDENCE is the behaviour: they are different
+// section rows with different field keys, and a test that drove both through one
+// helper would still pass if the skill save silently landed in the agent
+// section's rows.
+func TestSkillPublishingSectionIsWritableAndPersists(t *testing.T) {
+	pool, router := newConfigEnvironment(t)
+
+	recorder := saveSection(t, router, "skill_publishing", map[string]any{
+		"is_skill_publish_blocked":            true,
+		"skill_publish_whitelist_project_ids": []any{7},
+		"skill_categories":                    []any{"Security"},
+	})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT = %d (body %s)", recorder.Code, recorder.Body.String())
+	}
+
+	values := readSection(t, router, "skill_publishing").Values
+	if values["is_skill_publish_blocked"] != true {
+		t.Errorf("is_skill_publish_blocked = %v", values["is_skill_publish_blocked"])
+	}
+	raw, ok := storedValueSQL(t, pool, "skill_publishing", "skill_publish_whitelist_project_ids")
+	if !ok || raw != "[7]" {
+		t.Errorf("stored whitelist = %q (present=%v)", raw, ok)
+	}
+	raw, ok = storedValueSQL(t, pool, "skill_publishing", "skill_categories")
+	if !ok || raw != `["Security"]` {
+		t.Errorf("stored categories = %q (present=%v)", raw, ok)
+	}
+
+	// The agent section must not have moved: a skill save that landed there
+	// would freeze agent publishing on a deployment that only asked to freeze
+	// skills.
+	if _, ok := storedValueSQL(t, pool, "agent_publishing", "is_publish_blocked"); ok {
+		t.Error("saving the skill section wrote into agent_publishing")
+	}
+}
+
+// TestSkillPublishValidationRulesIsRefusedByName — the field-level reason, the
+// skill-side twin of the agent one below.
+func TestSkillPublishValidationRulesIsRefusedByName(t *testing.T) {
+	pool, router := newConfigEnvironment(t)
+
+	recorder := saveSection(t, router, "skill_publishing", map[string]any{
+		"skill_publish_validation_rules": "reject anything mentioning production",
+	})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("PUT = %d, want 400 (body %s)", recorder.Code, recorder.Body.String())
+	}
+	reason := decodeConfigBody(t, recorder).Error
+	if !strings.Contains(reason, "skill_publish_validation_rules") {
+		t.Errorf("error %q does not name the field", reason)
+	}
+	if !strings.Contains(reason, "deterministic") {
+		t.Errorf("error %q does not carry the server's reason", reason)
+	}
+	if _, ok := storedValueSQL(t, pool, "skill_publishing", "skill_publish_validation_rules"); ok {
+		t.Error("the refused field was written anyway")
+	}
+}
+
 // TestArrayElementTypesAreEnforced.
 //
 // Both consumers type-assert their elements and SKIP what does not match
@@ -277,22 +341,56 @@ func TestTheUnavailableFieldIsStillDECLARED(t *testing.T) {
 /* ── the sections that stay unavailable ────────────────────────────────── */
 
 // TestFeaturesSectionsWithNoConsumerRefuseBothVerbs, with the reason naming why.
+//
+// THE SECTION LIST IS READ FROM THE SERVER, not hardcoded, and that is a
+// resolution rather than a refactor. This test held a two-entry map:
+// `skill_publishing` ("no publish endpoint, no catalog, no categories") and
+// `support_assistant` ("the widget has no render site"). Two branches then
+// closed one gap each — #585 built the skill publishing pipeline, #588 built
+// the support assistant — and each correctly deleted the OTHER entry from this
+// map. Both were right at the time they were written; merged, the map is empty.
+//
+// AN EMPTY MAP IS A TEST THAT ASSERTS NOTHING AND PASSES, which is exactly the
+// failure this file exists to catch in the product. Deriving the set from the
+// schema means the check keeps working however many sections are withheld —
+// and says so out loud when the answer is none, rather than reporting a silent
+// green for having looked at nothing.
 func TestFeaturesSectionsWithNoConsumerRefuseBothVerbs(t *testing.T) {
 	_, router := newConfigEnvironment(t)
 
-	cases := map[string]string{
-		// No skill publish endpoint, no skill catalog, no categories surface.
-		//
-		// `support_assistant` USED TO BE HERE, withheld because the widget at
-		// the other end of its wire had no render site. It is live now: the
-		// widget is mounted in apps/elitea-web's AppShell and
-		// internal/api/v2/supportassistant serves the whole surface. Its
-		// availability is asserted in
-		// TestSchemaDeclaresAvailabilityForEverySection, next to the consumer
-		// that justifies it.
-		"skill_publishing": "skill publishing is not implemented",
+	recorder := configDo(t, router, http.MethodGet, "/admin/plugin_config_schemas/administration", nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("schema status = %d, want 200", recorder.Code)
 	}
-	for section, fragment := range cases {
+	var schema struct {
+		Sections []struct {
+			ID                string `json:"id"`
+			Page              string `json:"page"`
+			UnavailableReason string `json:"unavailable_reason"`
+		} `json:"sections"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &schema); err != nil {
+		t.Fatalf("decode schema: %v", err)
+	}
+
+	withheld := map[string]string{}
+	for _, section := range schema.Sections {
+		// The literal, not admin.configPageFeatures: this is the external
+		// `admin_test` package and that constant is unexported. The sibling
+		// check in config_values_postgres_integration_test.go spells it the
+		// same way.
+		if section.Page == "features" && section.UnavailableReason != "" {
+			withheld[section.ID] = section.UnavailableReason
+		}
+	}
+	if len(withheld) == 0 {
+		// Not a failure: every Features section having a consumer is the goal.
+		// It is announced so that a reader of the test output can tell "nothing
+		// to check" from "checked and fine".
+		t.Skip("no Features section is currently withheld; this check has nothing to exercise")
+	}
+
+	for section, reason := range withheld {
 		t.Run(section, func(t *testing.T) {
 			for _, method := range []string{http.MethodGet, http.MethodPut} {
 				var body any
@@ -304,8 +402,10 @@ func TestFeaturesSectionsWithNoConsumerRefuseBothVerbs(t *testing.T) {
 				if recorder.Code != http.StatusNotImplemented {
 					t.Errorf("%s = %d, want 501 (body %s)", method, recorder.Code, recorder.Body.String())
 				}
-				if got := decodeConfigBody(t, recorder).Error; !strings.Contains(got, fragment) {
-					t.Errorf("%s reason %q does not contain %q", method, got, fragment)
+				// The refusal must carry the SERVER'S OWN reason, so an operator
+				// is told why rather than just "no".
+				if got := decodeConfigBody(t, recorder).Error; got != reason {
+					t.Errorf("%s reason = %q, want the schema's %q", method, got, reason)
 				}
 			}
 		})

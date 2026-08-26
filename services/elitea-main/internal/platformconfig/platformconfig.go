@@ -32,6 +32,7 @@ import (
 const (
 	SectionMCPConfiguration = "mcp_configuration"
 	SectionAgentPublishing  = "agent_publishing"
+	SectionSkillPublishing  = "skill_publishing"
 	SectionVoiceFeatures    = "voice_features"
 	SectionGuardrails       = "guardrails"
 	SectionDedicatedBanner  = "dedicated_banner"
@@ -46,8 +47,20 @@ const (
 	KeyPublishBlocked             = "is_publish_blocked"
 	KeyPublishWhitelistProjectIDs = "publish_whitelist_project_ids"
 	KeyAgentCategories            = "agent_categories"
-	KeyVoiceEnabled               = "vite_voice_features_enabled"
-	KeyVoiceTemporarilyDisabled   = "vite_voice_features_temporarily_disabled"
+
+	// The skill-publishing guardrail is a SEPARATE section with its own three
+	// keys, exactly as the reference keeps it
+	// (`skill_publishing_guardrail` in elitea_core's admin_schema.json). It is
+	// not an alias of the agent trio: an operator who freezes agent publishing
+	// during an incident has not thereby frozen skill publishing, and the
+	// reference's own platform_settings endpoint publishes the two pairs
+	// independently for exactly that reason.
+	KeySkillPublishBlocked             = "is_skill_publish_blocked"
+	KeySkillPublishWhitelistProjectIDs = "skill_publish_whitelist_project_ids"
+	KeySkillCategories                 = "skill_categories"
+
+	KeyVoiceEnabled             = "vite_voice_features_enabled"
+	KeyVoiceTemporarilyDisabled = "vite_voice_features_temporarily_disabled"
 
 	KeyBlockedToolkits                = "blocked_toolkits"
 	KeyBlockedTools                   = "blocked_tools"

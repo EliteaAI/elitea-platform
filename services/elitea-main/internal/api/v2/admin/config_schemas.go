@@ -91,15 +91,18 @@ const (
 	// endpoints that enforce it.
 	serviceDescriptorsElsewhereUnavailable = eliteacore.ServiceDescriptorsUnavailableReason
 
-	// skillPublishingUnavailable — the reference's Skill Publishing section
-	// governs a publishing pipeline this service does not have. `grep -rn
-	// skill_publishing_guardrail services/` returns nothing; there is no skill
-	// publish handler, no skill categories endpoint and no skill catalog filter
-	// bar to feed. Declaring the four fields so the form could render them would
-	// be inventing settings for a subsystem that is not here.
-	skillPublishingUnavailable = "skill publishing is not implemented in this service: there is no skill publish " +
-		"endpoint, no skill catalog and no skill categories surface for these settings to govern. The controls are " +
-		"withheld rather than shown governing nothing."
+	// skillPublishValidationRulesUnavailable is the skill-side twin of
+	// publishValidationRulesUnavailable below, and it is withheld for the same
+	// reason and at the same level: the FIELD, not the section.
+	//
+	// `internal/api/v2/skillpublish/validate.go` is deterministic end to end —
+	// version-name collisions, empty instructions, the draft/published status —
+	// and says so on the wire (`ai_validation_available: false`). The reference
+	// feeds this textarea to an LLM evaluator that this service has no transport
+	// for (#126/#194), so a custom rules prompt would have nothing to reach.
+	skillPublishValidationRulesUnavailable = "publish validation for skills in this service is deterministic " +
+		"(version name collisions, empty instructions, publish status); there is no AI evaluator for custom " +
+		"criteria to reach, so these rules would never be applied."
 
 	// The support assistant section USED TO carry an `unavailable_reason` here,
 	// saying that the switch had a wire (`GET /support_assistant/config`) and no
@@ -467,22 +470,80 @@ func agentPublishingSection() map[string]any {
 	}
 }
 
-// skillPublishingSection — declared, and declared unavailable.
+// skillPublishingSection — LIVE, where it used to be withheld.
 //
-// The alternative was to omit it. Omitting it would have made the section
-// silently disappear relative to the reference, which reads to an operator as a
-// page that lost a feature rather than a platform that does not have one; the
-// reason is the only thing that distinguishes those two.
+// It was withheld because the subsystem it governs did not exist: there was no
+// skill publish endpoint, no public skill catalog and no skill categories
+// route, so every field would have been a control over nothing. #267 built all
+// three (`internal/api/v2/skillpublish`), which left this section as the last
+// missing half — the guardrail was enforced against the AGENT section's switch
+// because a skill-specific one had nowhere to be authored, and the catalog's
+// category list was the nine hardcoded defaults with no way to add a tenth.
+//
+// The three fields below are the reference's own
+// (`skill_publishing_guardrail.*` in elitea_core's admin_schema.json), keeping
+// its field KEYS rather than the agent section's: `is_skill_publish_blocked`
+// and `skill_publish_whitelist_project_ids` are the names the reference's
+// platform_settings endpoint publishes, and the product UI reads them from
+// there, so renaming them here would cost a translation layer on the wire for
+// no gain.
+//
+// The fourth reference field, `skill_publish_validation_rules`, carries its own
+// reason instead of being omitted — the same treatment
+// `publish_validation_rules` gets on the agent section, for the same cause.
 func skillPublishingSection() map[string]any {
 	return map[string]any{
-		"id":                 "skill_publishing",
-		"page":               configPageFeatures,
-		"unavailable_reason": skillPublishingUnavailable,
-		"title":              "Skill Publishing",
-		"description":        "Control who may publish skills, and which categories they may publish into.",
-		"order":              12,
-		"icon":               "bolt",
-		"fields":             []map[string]any{},
+		"id":          "skill_publishing",
+		"page":        configPageFeatures,
+		"title":       "Skill Publishing",
+		"description": "Control who may publish skills, and which categories they may publish into.",
+		"order":       12,
+		"icon":        "bolt",
+		"fields": []map[string]any{
+			{
+				"key":         "is_skill_publish_blocked",
+				"type":        "boolean",
+				"title":       "Block Skill Publishing",
+				"description": "When enabled, skill publishing is refused platform-wide except from the projects listed below. Admin publishes from the public project are always exempt.",
+				"path":        "skill_publishing_guardrail.is_publish_blocked",
+				"section":     "skill_publishing",
+				"default":     false,
+			},
+			{
+				"key":         "skill_publish_whitelist_project_ids",
+				"type":        "array",
+				"items":       map[string]any{"type": "integer"},
+				"title":       "Skill Publishing Allowed Projects",
+				"description": "Projects where skill publishing remains allowed while it is blocked globally. If empty, skill publishing is blocked everywhere.",
+				"path":        "skill_publishing_guardrail.whitelist_project_ids",
+				"section":     "skill_publishing",
+				"default":     []any{},
+				"visible_when": map[string]any{
+					"field": "is_skill_publish_blocked", "value": true,
+				},
+			},
+			{
+				"key":         "skill_categories",
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"title":       "Skill Categories",
+				"description": "Additional skill categories offered in the skill publish dialog and the public catalog filter, alongside the built-in defaults. Managed independently from Agent Categories. The built-in defaults cannot be removed here.",
+				"path":        "skill_publishing_guardrail.skill_categories",
+				"section":     "skill_publishing",
+				"default":     []any{},
+			},
+			{
+				"unavailable_reason": skillPublishValidationRulesUnavailable,
+				"key":                "skill_publish_validation_rules",
+				"type":               "string",
+				"format":             "textarea",
+				"title":              "Skill Publish Validation Rules",
+				"description":        "Custom evaluation criteria for AI validation of skills before publishing.",
+				"path":               "skill_publishing_guardrail.publish_validation_rules",
+				"section":            "skill_publishing",
+				"default":            "",
+			},
+		},
 	}
 }
 
