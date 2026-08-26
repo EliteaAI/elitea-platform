@@ -1,6 +1,7 @@
 package runtimecomposition
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -32,10 +33,30 @@ type CurrentConfigurationsRuntime struct {
 	mutationRows     *repos.CurrentConfigurationMutationRepository
 }
 
+// NewCurrentConfigurationsRuntime composes the boundary.
+//
+// The master key has TWO accepted sources and they must agree, because the
+// vault rows this runtime reads are written by someone else: the secrets
+// handler, which wraps every project key with SECRETS_MASTER_KEY. Passing this
+// runtime a different key — or none — does not fail at composition time. It
+// fails later, once per read, as ErrInvalidProjectKey on a row that is
+// perfectly intact, and the model catalogue then answered 500 for EVERY
+// section on a deployment whose configuration rows were all present (#399's
+// one-key-source rule, applied to the reader this time).
+//
+//   - vaultMasterKeyFile is the file source. No compose file or chart in
+//     deploy/ sets ELITEA_VAULT_MASTER_KEY_FILE, so it is the override, not
+//     the default.
+//   - envMasterKey is the base64url-encoded SECRETS_MASTER_KEY the rest of the
+//     process already uses. It is what a real deployment supplies.
+//
+// A nil pair stays supported: that is the unwrapped shape centry writes when
+// no master key is set, and the E2E stack seeds it deliberately.
 func NewCurrentConfigurationsRuntime(
 	pool *pgxpool.Pool,
 	publicProjectID int32,
 	vaultMasterKeyFile string,
+	envMasterKey []byte,
 ) (*CurrentConfigurationsRuntime, error) {
 	if pool == nil || publicProjectID <= 0 {
 		return nil, errors.New("current Configurations database and public project are required")
@@ -44,11 +65,22 @@ func NewCurrentConfigurationsRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("load current Configurations catalog: %w", err)
 	}
-	masterKey, err := loadOptionalFernetMasterKey(vaultMasterKeyFile)
+	fileMasterKey, err := loadOptionalFernetMasterKey(vaultMasterKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(masterKey)
+	defer clear(fileMasterKey)
+	masterKey := fileMasterKey
+	if fileMasterKey == nil {
+		masterKey = envMasterKey
+	} else if len(envMasterKey) != 0 && !bytes.Equal(fileMasterKey, envMasterKey) {
+		// Refusing beats picking a winner. Whichever one lost would read some
+		// of the vaults in this database and not the others, and the half it
+		// could not open is indistinguishable from a corrupt row.
+		return nil, errors.New(
+			"ELITEA_VAULT_MASTER_KEY_FILE and SECRETS_MASTER_KEY hold different keys",
+		)
+	}
 
 	vaultLoader, err := storage.NewPostgresSecretVaultLoader(pool, masterKey)
 	if err != nil {

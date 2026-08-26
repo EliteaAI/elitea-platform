@@ -708,6 +708,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			pool,
 			currentConfigurationsConfig.PublicProjectID,
 			currentConfigurationsConfig.VaultMasterKeyFile,
+			currentConfigurationsConfig.VaultMasterKey,
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Configurations services: %w", err)
