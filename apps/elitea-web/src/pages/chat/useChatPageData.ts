@@ -42,7 +42,7 @@ export interface UseChatPageDataParams {
 export interface UseChatPageDataResult {
   readonly projectId: string | undefined;
   readonly user: { readonly id: string; readonly name: string; readonly avatar: string } | undefined;
-  readonly activeConversation: ChatBoxProps['activeConversation'];
+  readonly activeConversation: NonNullable<ChatBoxProps['conversation']>['active'];
   readonly isLoadingConversation: boolean;
 }
 
@@ -60,7 +60,7 @@ function currentAuthorOf(data: unknown): SocialAuthorProfile | undefined {
 }
 
 /** Maps the REST conversation-details + message-list queries into `ChatBox`'s `activeConversation` prop shape. */
-function useActiveConversation(projectId: string | undefined, conversationId: string | undefined): { readonly activeConversation: ChatBoxProps['activeConversation']; readonly isLoading: boolean } {
+function useActiveConversation(projectId: string | undefined, conversationId: string | undefined): { readonly activeConversation: NonNullable<ChatBoxProps['conversation']>['active']; readonly isLoading: boolean } {
   const enabled = projectId !== undefined && conversationId !== undefined;
   const detailsQuery = conversationApi.useDetails({ projectId: projectId ?? '', id: conversationId ?? '' }, { enabled });
   const messageListQuery = conversationApi.useMessageList(
@@ -68,7 +68,7 @@ function useActiveConversation(projectId: string | undefined, conversationId: st
     { enabled },
   );
 
-  const activeConversation = useMemo<ChatBoxProps['activeConversation']>(() => {
+  const activeConversation = useMemo<NonNullable<ChatBoxProps['conversation']>['active']>(() => {
     if (!conversationId) return { isNew: true };
     if (!detailsQuery.data) return undefined;
     /*
