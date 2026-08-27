@@ -49,6 +49,7 @@ import (
 	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/artifactbootstrap"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/projectprovisioning"
 	platformauth "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/cutover"
@@ -2586,7 +2587,27 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Social plugin ===
-			r.Mount("/social", v2social.NewHandler(cfg.Pool).Routes())
+			//
+			// The personal-project ensurer is wired here and nowhere else.
+			// `GET /social/author` is the endpoint that answers
+			// `personal_project_id`, and until this option existed it answered
+			// "" for every account a fresh deployment ever created: nothing in
+			// this service provisioned the `project_user_<uid>` project the
+			// resolver looks for. The SPA reads "" as "no personal project yet"
+			// and parks the browser on `/onboarding`, which is where every new
+			// user was stuck.
+			//
+			// The SAME pipeline the project-create route and the support
+			// assistant use, for the reason stated at that call site: a project
+			// assembled by a second, simpler path is a half-provisioned project.
+			socialOptions := []v2social.Option{}
+			if provisioner, ok := newProjectProvisioner(cfg); ok {
+				if ensurer, err := personalproject.NewEnsurer(cfg.Pool, provisioner); err == nil {
+					socialOptions = append(socialOptions,
+						v2social.WithPersonalProjectEnsurer(ensurer))
+				}
+			}
+			r.Mount("/social", v2social.NewHandler(cfg.Pool, socialOptions...).Routes())
 
 			// === Tracing plugin (issue #250) ===
 			//

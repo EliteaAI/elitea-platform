@@ -2,63 +2,61 @@
  * Onboarding page — the first-screen experience for new users.
  * Port of `apps/elitea-ui/src/pages/Onboarding/Onboarding.jsx` (Wave-2 unit A13).
  *
- * ── What was changed ────────────────────────────────────────────────────────
+ * ── What this screen IS ─────────────────────────────────────────────────────
  *
- * 1. **Redux → mock user.**  The old page reads `state.user` from a Redux store
- *    and calls `useLazyAuthorDetailsQuery` / `useLazyProjectListQuery` to wait
- *    for `personal_project_id`.  The new app has no auth provider wired into
- *    this page; the user model is replaced by a simple mock object so the
- *    component renders without errors while the real auth is built.
+ * A wait. `routes/-guards/indexRoute.ts` sends a user with no
+ * `personal_project_id` here, the server provisions that project in the
+ * background, and this page polls `GET /social/author` until the id appears —
+ * then offers "Jump in". Everything else on it (the tips carousel, the
+ * progress bar, "about 5 min") is decoration over that one poll.
  *
- * 2. **GA event tracking (useTrackEvent).**  The old app fires Google Analytics
- *    events through `useTrackEvent` (imported from `GA.js`).  The new app has
- *    no analytics infra yet.  Disclosed, not silently dropped — the calls are
- *    omitted entirely and noted here.  When an analytics system lands the
- *    page should be re-connected.
+ * ── The defect this file used to BE ─────────────────────────────────────────
  *
- * 3. **No Suspense for OnboardingTour.**  The old app wraps the tour in
- *    `Suspense` + `lazyWithRetry`.  Here we import it directly (inlined).
+ * It polled nothing. The page read a module-level `MOCK_USER` with a hardcoded
+ * empty `personal_project_id`, and its "poll" was a stub that declared the
+ * workspace ready once the COSMETIC progress bar reached its cap — about 150
+ * seconds, whatever the server said. So:
  *
- * 4. **Route wiring.**  `routes/_shell/onboarding.tsx` mounts this page, and
- *    `routes/-guards/indexRoute.ts` sends a user with no `personal_project_id`
- *    here. "Jump in" navigates through the router. A root-relative
- *    `window.location.href = '/chat'` ignored the router `basepath` (`/app/`
- *    in every real deployment). A new account therefore left the SPA. It hit
- *    a 404 on its first action. Router navigation does not reload the page. The
- *    `_shouldRefreshProjects` gap in `handlePersonalProjectReady` therefore
- *    stays visible, which a full reload would hide. Back keeps
- *    `window.history.back()`, which ignores the basename. Its other half,
- *    `location.state?.from`, is a follow-up (see change 9).
+ *   - a user whose personal project genuinely existed still sat through the
+ *     fake wait, because nothing ever asked;
+ *   - a user whose personal project did NOT exist was told it was ready
+ *     anyway, sent to `/chat` with no project selected, and bounced straight
+ *     back here by the index guard on the next navigation. That was the
+ *     "stuck in onboarding" loop, and the server half of it (nothing in
+ *     elitea-main ever created a `project_user_<uid>` project — see
+ *     internal/application/personalproject) is fixed in the same change.
  *
- * 5. **Logo.**  Uses the new-app icon component `@/shared/ui/icons/logo-icon`.
+ * The baseline polls `useLazyAuthorDetailsQuery` every 5 s and finishes on
+ * `result.personal_project_id`. This does the same through the generated
+ * `useGetCurrentAuthor` query — the SAME query `widgets/app-shell` reads to
+ * auto-select the personal project once it exists, so one poll feeds both and
+ * the shell selects the project the moment this page sees it.
  *
- * 6. **Removed import:** `FirstVisitPrompt` — not used in this page's current
- *    flow (the old app imported it from interactive-tours but only used it
- *    indirectly through props or context not surfaced in this component).
+ * ── Other deviations from the baseline, stated rather than dropped ──────────
  *
- * 7. **Removed import:** `ChunkHelpers` — the old app used it for
- *    `lazyWithRetry`.  We inline the OnboardingTour import instead.
+ * 1. **GA event tracking (useTrackEvent).**  The old app fires Google
+ *    Analytics events through `useTrackEvent` (imported from `GA.js`). The new
+ *    app has no analytics infra yet. Disclosed, not silently dropped — the
+ *    calls are omitted entirely and noted here.
  *
- * 8. **Theme tokens (R-T7).**  Every colour now reads `theme.vars.palette.*`
- *    (live CSS var, repaints on scheme change), not `theme.palette.*` (frozen
- *    to the default scheme); `background.onboarding{,Body}`/`boxShadow.onboarding`
- *    are typed on `Palette`/`TypeBackground`, so the old unsafe casts are
- *    gone too. Footer shimmer gradient's fix: see its own `sx` comment.
+ * 2. **No Suspense for OnboardingTour.**  The old app wraps the tour in
+ *    `Suspense` + `lazyWithRetry`. Here we import it directly (inlined).
  *
- * 9. **Welcome/loading guard restored.**  Re-added `!user.personal_project_id
- *    && user.id` on the Welcome screen and the `!user.id` loading branch
- *    (local spinner; old app's `LoadingPage` is out of scope). Both extra
- *    conditions are dead with today's static `MOCK_USER`, by design.
+ * 3. **`getProjectList()` on ready.**  The baseline refetches the project list
+ *    so the switcher knows the new project. `widgets/app-shell` reads that list
+ *    itself and auto-selects on the author response, so a refetch from this
+ *    page would be a second fetcher for a decision this page does not make.
  *
- * 10. **Resume-on-refresh restored.**  Re-added the effect that restarts the
- *    progress/polling intervals on mount when the tour is already showing
- *    and the project isn't ready (e.g. a refresh mid-onboarding) — see that
- *    effect's own comment.
+ * 4. **Route wiring.**  "Jump in" navigates through the router. A root-relative
+ *    `window.location.href = '/chat'` ignored the router `basepath` (`/app/` in
+ *    every real deployment), so a new account left the SPA and hit a 404 on its
+ *    first action. Back uses the router's own history for the same reason, and
+ *    is shown only when there is somewhere to go back TO — `useCanGoBack()` is
+ *    this router's equivalent of the baseline's `location.state?.from` gate.
  *
- * 11. **Poll stub resolves instead of no-op-ing forever.**  See the comment
- *    inside `startProgressAndPolling` — the old no-op, plus
- *    `MOCK_USER.personal_project_id` being a `const`, left the wizard's 3rd
- *    screen unreachable through any user action.
+ * 5. **Theme tokens (R-T7).**  Every colour reads `theme.vars.palette.*` (live
+ *    CSS var, repaints on scheme change), not `theme.palette.*` (frozen to the
+ *    default scheme).
  *
  * @public Wave-2 unit A13 surface: consumers mount this page behind a route.
  */
@@ -67,118 +65,151 @@ import { memo, useCallback, useEffect, useRef, useState } from 'react';
 
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { Box, CircularProgress, IconButton, LinearProgress, Typography } from '@mui/material';
-import { useNavigate } from '@tanstack/react-router';
+import { useCanGoBack, useNavigate, useRouteContext, useRouter } from '@tanstack/react-router';
 
 import { FIRST_ELITEA_TOUR_ID, markTourPending } from '@/features/interactive-tours';
 import { OnboardingTour, Welcome, WorkspaceIsReady } from '@/features/onboarding';
+import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 import { t } from '@/shared/i18n';
 import { createStorage } from '@/shared/lib/storage';
 import { LogoIcon } from '@/shared/ui/icons/logo-icon';
 
-/** Placeholder user — the real user model will come from the auth provider. */
-const MOCK_USER = {
-  id: 'mock-user',
-  name: 'Developer',
-  email: 'dev@elitea.com',
-  personal_project_id: '', // blank → walks through the "project ready" flow
-} as const;
+import { styles } from './Onboarding.styles';
 
 const ONBOARDING_STORAGE_KEY = 'onboarding_state';
 const sessionStore = createStorage('session');
 
-/** Progress bar cap/step; also doubles as the poll stub's readiness check
- *  (change 11 in the file doc comment). */
+/** Baseline poll cadence for `authorDetails` while the project is provisioning. */
+const AUTHOR_POLL_INTERVAL_MS = 5_000;
+
+/** Progress bar cap/step — cosmetic only; readiness comes from the server. */
 const PROGRESS_CAP = 95;
 const PROGRESS_STEP = 95 / 150;
+
+/**
+ * The caller's profile, read out of the generated query's enveloped
+ * `{data, status, headers}` result — the same read `widgets/app-shell`'s
+ * `personalProjectIdOf` performs, and for the same reason (`eliteaFetch`
+ * throws on non-2xx, so the 401 arm is unreachable at this read site).
+ */
+interface AuthorProfile {
+  readonly id?: string;
+  readonly name?: string;
+  readonly email?: string;
+  readonly personal_project_id?: string;
+}
+
+function authorOf(data: unknown): AuthorProfile | undefined {
+  return (data as { readonly data?: AuthorProfile } | undefined)?.data;
+}
+
+/**
+ * `user.name || user.email` — the baseline's own fallback
+ * (`Onboarding.jsx`'s `<Welcome name={user.name || user.email}/>`). `Welcome`
+ * supplies its own "there" when both are blank.
+ */
+function displayName(author: AuthorProfile): string | undefined {
+  if (author.name !== undefined && author.name !== '') return author.name;
+  if (author.email !== undefined && author.email !== '') return author.email;
+  return undefined;
+}
+
+/**
+ * `auth.refreshSession` from the TanStack Router root context
+ * (`src/app/router-context.ts`) — read structurally rather than imported,
+ * because `pages/` may not import `app/` (`no-upward-from-pages`). Same shape
+ * `features/settings`'s `TokensTable` uses to read `auth.getUser`.
+ *
+ * WHY THE PAGE NEEDS IT. The route guards do not read the author query; they
+ * read the session the router was given, and that session captured
+ * `personal_project_id: undefined` at boot. Without a refresh, a user who
+ * finishes onboarding and later navigates to `/` is judged by the stale
+ * session and sent straight back here.
+ */
+interface SessionRefreshContext {
+  readonly auth?: {
+    readonly refreshSession?: () => Promise<void>;
+  };
+}
+
+function selectRefreshSession(context: unknown): (() => Promise<void>) | undefined {
+  if (typeof context !== 'object' || context === null) return undefined;
+  return (context as SessionRefreshContext).auth?.refreshSession;
+}
 
 const Onboarding = memo(() => {
   // Disclosed, not silently dropped: useTrackEvent is unavailable in the new
   // app — no analytics infra yet.
   const navigate = useNavigate();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
+  const routeContext: unknown = useRouteContext({ strict: false });
   const progressIntervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const queryStatusIntervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [thePrivateProjectIsReady, setThePrivateProjectIsReady] = useState(false);
 
-  // Check if user has clicked "Get Started" button before
+  // Check if user has clicked "Get Started" before (survives a refresh).
   const hasClickedGetStarted = sessionStore.get(ONBOARDING_STORAGE_KEY) === 'true';
-  const [showTour, setShowTour] = useState(hasClickedGetStarted || !!MOCK_USER.personal_project_id);
+  const [showTour, setShowTour] = useState(hasClickedGetStarted);
   const [progress, setProgress] = useState(5);
-  // Mirrors `progress` so the 5s polling interval can read the latest value
-  // without itself becoming an impure state-updater side effect.
-  const progressRef = useRef(5);
+
+  /**
+   * The poll. It runs only while this page is actually waiting — the tour is
+   * on screen and the project has not arrived — which is exactly the window
+   * the baseline's `setInterval(getUserDetails, 5000)` covers. `false` stops
+   * it; the query itself stays mounted so the answer is still read.
+   */
+  const [waiting, setWaiting] = useState(hasClickedGetStarted);
+  const authorQuery = useGetCurrentAuthor({
+    query: { refetchInterval: waiting ? AUTHOR_POLL_INTERVAL_MS : false },
+  });
+  const author = authorOf(authorQuery.data);
+  const personalProjectId = author?.personal_project_id ?? '';
+  const welcomeName = author === undefined ? undefined : displayName(author);
 
   const onClearIntervals = useCallback(() => {
+    setWaiting(false);
     if (progressIntervalIdRef.current !== null) {
       clearInterval(progressIntervalIdRef.current);
       progressIntervalIdRef.current = null;
     }
-    if (queryStatusIntervalIdRef.current !== null) {
-      clearInterval(queryStatusIntervalIdRef.current);
-      queryStatusIntervalIdRef.current = null;
-    }
   }, []);
 
-  const handlePersonalProjectReady = useCallback(
-    ({ _shouldRefreshProjects = false }: { _shouldRefreshProjects?: boolean } = {}) => {
-      void _shouldRefreshProjects; // Disclosed: getProjectList() not available yet
-      // Disclosed: markTourPending may be unavailable if interactive-tours is not fully wired.
-      // A failure here (e.g. a storage write throwing — Safari private
-      // browsing, quota exceeded) must not abort the state transition below:
-      // this is a best-effort UI hint, not a precondition for "workspace is
-      // ready" actually being ready.
-      try {
-        if (typeof markTourPending === 'function') {
-          markTourPending(FIRST_ELITEA_TOUR_ID);
-        }
-      } catch {
-        // Handled (§3.6): see comment above — best-effort only.
+  const handlePersonalProjectReady = useCallback(() => {
+    // Disclosed: markTourPending may be unavailable if interactive-tours is not
+    // fully wired. A failure here (e.g. a storage write throwing — Safari
+    // private browsing, quota exceeded) must not abort the state transition
+    // below: this is a best-effort UI hint, not a precondition for "workspace
+    // is ready" actually being ready.
+    try {
+      if (typeof markTourPending === 'function') {
+        markTourPending(FIRST_ELITEA_TOUR_ID);
       }
-      onClearIntervals();
-      setShowTour(true);
-      setThePrivateProjectIsReady(true);
-      sessionStore.remove(ONBOARDING_STORAGE_KEY);
-    },
-    [onClearIntervals],
-  );
+    } catch {
+      // Handled (§3.6): see comment above — best-effort only.
+    }
+    onClearIntervals();
+    setShowTour(true);
+    setThePrivateProjectIsReady(true);
+    sessionStore.remove(ONBOARDING_STORAGE_KEY);
+  }, [onClearIntervals]);
 
-  // Starts the progress/polling intervals if not already running. Shared by
-  // `handleShowTour` and the resume-on-refresh effect below, so a fresh
-  // click and a reload mid-onboarding start the exact same intervals.
-  const startProgressAndPolling = useCallback(() => {
-    if (progressIntervalIdRef.current === null) {
-      progressIntervalIdRef.current = setInterval(() => {
-        setProgress(prev => {
-          const next = prev < PROGRESS_CAP ? prev + PROGRESS_STEP : prev;
-          progressRef.current = next;
-          return next;
-        });
-      }, 1000);
-    }
-    if (queryStatusIntervalIdRef.current === null) {
-      // Mock "poll until ready" (change 11): the real app polls
-      // `useLazyAuthorDetailsQuery` every 5s until the server reports
-      // `personal_project_id` (no auth backend to poll yet — change 1). This
-      // resolves once the progress bar hits its cap instead, so "workspace
-      // is ready" is reachable via a live click-and-wait, not a dead no-op.
-      queryStatusIntervalIdRef.current = setInterval(() => {
-        if (progressRef.current >= PROGRESS_CAP) {
-          handlePersonalProjectReady({ _shouldRefreshProjects: true });
-        }
-      }, 5000);
-    }
-  }, [handlePersonalProjectReady]);
+  const startProgress = useCallback(() => {
+    setWaiting(true);
+    if (progressIntervalIdRef.current !== null) return;
+    progressIntervalIdRef.current = setInterval(() => {
+      setProgress(prev => (prev < PROGRESS_CAP ? prev + PROGRESS_STEP : prev));
+    }, 1000);
+  }, []);
 
   const handleShowTour = useCallback(() => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_click_get_started')
     // is called by the old page here — analytics gap.
     sessionStore.set(ONBOARDING_STORAGE_KEY, 'true');
-
-    if (!MOCK_USER.personal_project_id) {
-      startProgressAndPolling();
+    if (!personalProjectId) {
+      startProgress();
     }
-
     setShowTour(true);
-  }, [startProgressAndPolling]);
+  }, [personalProjectId, startProgress]);
 
   const handleJumpIn = () => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_jump_in') is
@@ -196,24 +227,38 @@ const Onboarding = memo(() => {
     };
   }, [onClearIntervals]);
 
-  // Resume progress/polling after a refresh mid-onboarding (change 10):
-  // sessionStorage still has ONBOARDING_STORAGE_KEY, so `showTour` starts
-  // `true` on this mount, but `handleShowTour` never ran in THIS mount to
-  // start the intervals — without this effect they'd stall forever after a
-  // reload. `startProgressAndPolling` no-ops if already running, so this
-  // can't double-start them right after `handleShowTour` itself starts them.
+  // Resume the progress bar after a refresh mid-onboarding: sessionStorage
+  // still holds ONBOARDING_STORAGE_KEY, so `showTour` starts `true` on this
+  // mount, but `handleShowTour` never ran in THIS mount to start the interval.
+  // `startProgress` no-ops when it is already running, so this cannot
+  // double-start it right after `handleShowTour` itself did.
   useEffect(() => {
-    if (!MOCK_USER.personal_project_id && showTour && !thePrivateProjectIsReady) {
-      startProgressAndPolling();
+    if (!personalProjectId && showTour && !thePrivateProjectIsReady) {
+      startProgress();
     }
-  }, [showTour, thePrivateProjectIsReady, startProgressAndPolling]);
+  }, [personalProjectId, showTour, thePrivateProjectIsReady, startProgress]);
 
-  // When personal_project_id is already set, skip to tour immediately.
+  /**
+   * THE TRANSITION THIS PAGE EXISTS FOR: the server named a personal project.
+   *
+   * It fires for the user who was waiting AND for the one who arrived here
+   * already holding a project (a deep link, or the index guard racing a stale
+   * session) — the baseline has the same two entry points into
+   * `handlePersonalProjectReady`.
+   *
+   * The session refresh is what stops the loop: the guards judge on the
+   * router's session, not on this query, so a session still carrying no
+   * personal project would send this user back here on the next visit to `/`.
+   * `router.invalidate()` then re-runs every active `beforeLoad` against the
+   * refreshed session.
+   */
   useEffect(() => {
-    if (MOCK_USER.personal_project_id) {
-      handlePersonalProjectReady();
-    }
-  }, [handlePersonalProjectReady]);
+    if (!personalProjectId || thePrivateProjectIsReady) return;
+    handlePersonalProjectReady();
+    const refreshSession = selectRefreshSession(routeContext);
+    if (refreshSession === undefined) return;
+    void refreshSession().then(() => router.invalidate());
+  }, [personalProjectId, thePrivateProjectIsReady, handlePersonalProjectReady, routeContext, router]);
 
   return (
     <Box
@@ -231,9 +276,9 @@ const Onboarding = memo(() => {
         position: 'relative',
       })}
     >
-      {!!MOCK_USER.personal_project_id && (
+      {!!personalProjectId && canGoBack && (
         <IconButton
-          onClick={() => window.history.back()}
+          onClick={() => router.history.back()}
           sx={styles.backButton}
           aria-label="Go back"
         >
@@ -268,14 +313,18 @@ const Onboarding = memo(() => {
               background: theme.vars.palette.background.onboardingBody,
             })}
           >
-            {!showTour && !MOCK_USER.personal_project_id && MOCK_USER.id && (
+            {!showTour && !personalProjectId && author?.id !== undefined && (
               <Welcome
-                name={MOCK_USER.name || MOCK_USER.email}
+                // Spread rather than `name={welcomeName}`: under
+                // `exactOptionalPropertyTypes` an optional prop does not accept
+                // an explicit `undefined`, and omitting it is what lets
+                // `Welcome`'s own "there" default apply.
+                {...(welcomeName !== undefined ? { name: welcomeName } : {})}
                 onShowTour={handleShowTour}
               />
             )}
             {showTour && <OnboardingTour />}
-            {!MOCK_USER.id && (
+            {author?.id === undefined && (
               <Box sx={styles.loadingContainer}>
                 <CircularProgress aria-label={t('pages.onboarding.loadingAriaLabel', 'Loading…')} />
               </Box>
@@ -291,9 +340,9 @@ const Onboarding = memo(() => {
                   return {
                     color: baseColor,
                     fontWeight: 600,
-                    // `baseColor` is now a `var(--el-...)` ref (change 8), so
-                    // the old `${baseColor}55` hex-alpha suffix is invalid
-                    // CSS here; `transparent` stands in as the faded stop.
+                    // `baseColor` is a `var(--el-...)` ref, so the old
+                    // `${baseColor}55` hex-alpha suffix is invalid CSS here;
+                    // `transparent` stands in as the faded stop.
                     background: `linear-gradient(90deg, transparent 0%, ${baseColor} 21.15%, transparent 100%)`,
                     backgroundSize: '200% 100%',
                     backgroundClip: 'text',
@@ -346,55 +395,5 @@ const Onboarding = memo(() => {
 });
 
 Onboarding.displayName = 'Onboarding';
-
-const styles = {
-  backButton: {
-    position: 'absolute' as const,
-    top: '1rem',
-    left: '1.5rem',
-    zIndex: 10,
-  },
-  body: {
-    width: '100%',
-    maxWidth: '53.75rem',
-    boxSizing: 'border-box' as const,
-    height: '40rem',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'flex-start',
-    gap: '2rem',
-  },
-  logo: {
-    width: '6.1875rem',
-    height: '1.25rem',
-  },
-  footer: {
-    height: '2.875rem',
-    width: '28.75rem',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  footerHead: {
-    width: '100%',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  progressContainer: {
-    width: '100%',
-  },
-  /** Stand-in for the old app's `pages/LoadingPage.jsx` — out of this unit's
-   *  `pages/onboarding` scope, and the new app has no shared equivalent yet. */
-  loadingContainer: {
-    width: '100%',
-    height: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-};
 
 export default Onboarding;

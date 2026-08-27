@@ -14,16 +14,46 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
-type Handler struct {
-	pool *pgxpool.Pool
+// PersonalProjectEnsurer creates the caller's personal project when they have
+// none. Satisfied by internal/application/personalproject.Ensurer.
+//
+// EnsureAsync returns immediately: provisioning applies a whole tenant
+// migration corpus, and this is a read endpoint the SPA polls. See GetAuthor.
+type PersonalProjectEnsurer interface {
+	EnsureAsync(userID int64)
 }
 
-func NewHandler(pool *pgxpool.Pool) *Handler {
-	return &Handler{pool: pool}
+type Handler struct {
+	pool            *pgxpool.Pool
+	personalProject PersonalProjectEnsurer
+}
+
+// Option configures a Handler at construction time.
+type Option func(*Handler)
+
+// WithPersonalProjectEnsurer wires the personal-project provisioner.
+//
+// It is optional in the constructor and REQUIRED in practice: without it
+// `GET /social/author` reports the personal project a fresh account does not
+// have, forever, and the SPA parks that account on `/onboarding` waiting for a
+// project nothing will create. It is an option only because a composition
+// without a database pool cannot build one — the same gate the project-create
+// route uses.
+func WithPersonalProjectEnsurer(ensurer PersonalProjectEnsurer) Option {
+	return func(h *Handler) { h.personalProject = ensurer }
+}
+
+func NewHandler(pool *pgxpool.Pool, options ...Option) *Handler {
+	handler := &Handler{pool: pool}
+	for _, option := range options {
+		option(handler)
+	}
+	return handler
 }
 
 func (h *Handler) Routes() chi.Router {
@@ -110,8 +140,40 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 	// select a different user's profile).
 	resp.ID = user.ID
 	resp.PersonalProjectID = h.resolvePersonalProjectID(ctx, user.ID)
+	if resp.PersonalProjectID == "" {
+		h.ensurePersonalProject(user.ID)
+	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ensurePersonalProject asks for the caller's personal project to be created,
+// and does not wait for it.
+//
+// WHY HERE. This endpoint is the one that answers "which project do your
+// private things live in", it is authenticated on every plane, and the SPA
+// calls it on boot and then polls it every five seconds from the onboarding
+// screen while it waits — so it is both the place that observes the gap and the
+// place that reports it closed. pylon triggers the same work from its auth
+// layer, for every authenticated request, through the `auth_visitor` event
+// (legacy/plugins/projects/events/projects.py:8).
+//
+// It costs nothing on an account that HAS a personal project, because it is
+// reached only when the resolver above answered "". A first-time caller gets
+// "" on this response and the real id on a later one, which is exactly the
+// contract the onboarding screen is written against.
+func (h *Handler) ensurePersonalProject(userID string) {
+	if h.personalProject == nil {
+		return
+	}
+	id, ok := personalproject.UserIDFromString(userID)
+	if !ok {
+		// A principal whose id is not an auth_core__user id — a development
+		// stub, or a token principal that resolved no owner. `project_user_<id>`
+		// would name a project nobody could be a member of.
+		return
+	}
+	h.personalProject.EnsureAsync(id)
 }
 
 // resolvePersonalProjectID answers "which project do this user's private
@@ -140,8 +202,13 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 // Returns "" when no project can be resolved. That is a truthful answer, and
 // the SPA treats it as "no personal project yet".
 //
-// NOT covered here: this Go stack never PROVISIONS a `project_user_<uid>`
-// project, so branch 1 only ever fires for data migrated from pylon.
+// NOT covered here: PROVISIONING. This function reads; it never creates. When
+// it answers "" for a live account, GetAuthor asks
+// internal/application/personalproject to create the missing
+// `project_user_<uid>` project in the background, and a later call resolves it
+// through branch 1. Before that package existed, branch 1 could only ever fire
+// for data migrated from pylon, and every account on a fresh deployment was
+// answered "" for good.
 func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) string {
 	uid, convErr := strconv.Atoi(userID)
 	if convErr != nil || uid <= 0 {
