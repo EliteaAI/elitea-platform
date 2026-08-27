@@ -1281,7 +1281,24 @@ PY
     # dev@elitea.ai, who has none, and the hop then reports
     # `project_not_resolved` — a true statement about the wrong caller, which
     # made this check permanently SKIPPED even on a correctly seeded stack.
-    LLM_PROBE_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+    #
+    # AND IT MUST BE THE SEEDED CALLER, not merely A caller with a personal
+    # project. `ORDER BY t.user_id LIMIT 1` used to name the seeded persona by
+    # accident: nothing in this stack created a personal project for anybody
+    # else, so the persona was the only candidate. elitea-main now provisions
+    # the caller's personal project when it has none
+    # (internal/application/personalproject), and THIS SCRIPT triggers it — the
+    # #326 edge check above calls /social/author as the lowest-id PAT owner,
+    # dev@elitea.ai. Measured: that gave user 1 a brand-new empty project 2,
+    # which then won this ORDER BY and made every assertion below read a
+    # project seed-llm never touched ("project 2 holds no chat model row",
+    # while the seeded rows sat in 90003/90106).
+    #
+    # So the candidate is chosen by the thing the assertions are actually
+    # about: whose personal project HOLDS the seeded chat model row. The first
+    # candidate is kept as the fallback, so a stack with no seeded row still
+    # names a project in its failure message instead of `p_.`.
+    LLM_CANDIDATES="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT t.uuid || ' ' || p.id
            FROM public.auth_core__token t
@@ -1289,8 +1306,27 @@ PY
            JOIN public.auth_core__project_user_role pur
              ON pur.project_id = p.id AND pur.user_id = t.user_id
           WHERE t.uuid IS NOT NULL
-          ORDER BY t.user_id
-          LIMIT 1" 2>/dev/null | tr -d '\r')"
+          ORDER BY t.user_id" 2>/dev/null | tr -d '\r')"
+    LLM_PROBE_ROW=""
+    while IFS= read -r llm_candidate; do
+      [ -n "$llm_candidate" ] || continue
+      [ -n "$LLM_PROBE_ROW" ] || LLM_PROBE_ROW="$llm_candidate"
+      llm_candidate_project="$(printf '%s' "$llm_candidate" | awk '{print $2}')"
+      # `</dev/null` is load-bearing: `compose exec -T` inherits this loop's
+      # stdin, which is the heredoc below, and would swallow the remaining
+      # candidates after the first iteration.
+      llm_candidate_model="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT 1 FROM p_${llm_candidate_project}.configuration
+            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+            LIMIT 1" </dev/null 2>/dev/null | tr -d '[:space:]')"
+      if [ -n "$llm_candidate_model" ]; then
+        LLM_PROBE_ROW="$llm_candidate"
+        break
+      fi
+    done <<EOF
+$LLM_CANDIDATES
+EOF
     LLM_PROBE="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $1}')"
     LLM_PROJECT="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $2}')"
     if [ -z "$LLM_PROBE" ]; then
@@ -1730,6 +1766,14 @@ except Exception as error:
     # start route's permission IN it. That project — not project 1 — is where
     # the turn runs, because the /llm hop resolves the caller's PERSONAL project
     # to find the credential (#290).
+    #
+    # The permission join is what keeps this probe pointed at the SEEDED
+    # persona now that elitea-main provisions a personal project for any caller
+    # that lacks one (internal/application/personalproject). Such a project
+    # carries project ROLES and no auth_core__project_role_permission rows —
+    # projectprovisioning writes roles only, on purpose — so it cannot match
+    # here. Read that alongside the LLM probe above, which had no permission
+    # join and did start picking those projects.
     CHAT_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT t.uuid || ' ' || t.user_id || ' ' || p.id

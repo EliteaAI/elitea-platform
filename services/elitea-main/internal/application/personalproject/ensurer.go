@@ -46,6 +46,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -222,13 +223,20 @@ func (e *Ensurer) Ensure(ctx context.Context, userID int64) (int64, error) {
 	if userID <= 0 {
 		return 0, fmt.Errorf("personalproject: user id must be positive, got %d", userID)
 	}
-	// int32 is what auth_core__user.id is, and what the advisory lock's second
-	// key accepts. An id outside it names no account.
-	if userID > (1<<31)-1 {
+	// `auth_core__user.id` is an `integer`, and an advisory lock key is an
+	// int4. An id outside that range names no account, so it is refused here
+	// rather than silently truncated into somebody else's lock.
+	if userID > math.MaxInt32 {
 		return 0, fmt.Errorf("personalproject: user id %d is out of range", userID)
 	}
+	// Narrowed ONCE, immediately after the bound check, and passed on as an
+	// int32 from here. The deferred unlock below closes over this value: a
+	// conversion written inside that closure would not be dominated by the
+	// check above — which is exactly what CodeQL's
+	// go/incorrect-integer-conversion flagged.
+	accountKey := int32(userID)
 
-	eligible, err := e.eligible(ctx, userID)
+	eligible, err := e.eligible(ctx, accountKey)
 	if err != nil {
 		return 0, err
 	}
@@ -252,7 +260,7 @@ func (e *Ensurer) Ensure(ctx context.Context, userID int64) (int64, error) {
 	var locked bool
 	if err := connection.QueryRow(ctx,
 		`SELECT pg_try_advisory_lock($1::integer, $2::integer)`,
-		int32(advisoryLockClass), int32(userID),
+		int32(advisoryLockClass), accountKey,
 	).Scan(&locked); err != nil {
 		return 0, fmt.Errorf("personalproject: lock user %d: %w", userID, err)
 	}
@@ -271,7 +279,7 @@ func (e *Ensurer) Ensure(ctx context.Context, userID int64) (int64, error) {
 		defer cancel()
 		if _, unlockErr := connection.Exec(unlockCtx,
 			`SELECT pg_advisory_unlock($1::integer, $2::integer)`,
-			int32(advisoryLockClass), int32(userID),
+			int32(advisoryLockClass), accountKey,
 		); unlockErr != nil {
 			e.logger.WarnContext(ctx, "personal project advisory lock was not released",
 				"user_id", userID, "err", unlockErr)
@@ -358,19 +366,19 @@ func (e *Ensurer) existingProject(
 //     would build a tenant its owner cannot reach.
 //   - a per-project system identity. process_visitor skips it by name, and
 //     resolvePersonalProjectID already answers for it by email.
-func (e *Ensurer) eligible(ctx context.Context, userID int64) (bool, error) {
+func (e *Ensurer) eligible(ctx context.Context, accountKey int32) (bool, error) {
 	var email, name string
 	var suspended bool
 	err := e.pool.QueryRow(ctx,
 		`SELECT COALESCE(email, ''), COALESCE(name, ''), suspended
 		 FROM public.auth_core__user WHERE id = $1`,
-		int32(userID),
+		accountKey,
 	).Scan(&email, &name, &suspended)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("personalproject: read user %d: %w", userID, err)
+		return false, fmt.Errorf("personalproject: read user %d: %w", accountKey, err)
 	}
 	if suspended {
 		return false, nil
@@ -387,8 +395,12 @@ func (e *Ensurer) eligible(ctx context.Context, userID int64) (bool, error) {
 // same guard before it can ask for a personal project: a token principal, a
 // forwarded header, or a development stub can put a non-numeric value there,
 // and `project_user_<that>` is not a project anybody should create.
+// The bit size is 32, not 64, and deliberately: `auth_core__user.id` is an
+// `integer`, so a value that does not fit one is not a user id at all. Parsing
+// at the column's own width refuses it here instead of carrying an
+// unrepresentable number to a caller that would have to narrow it later.
 func UserIDFromString(userID string) (int64, bool) {
-	parsed, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 64)
+	parsed, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 32)
 	if err != nil || parsed <= 0 {
 		return 0, false
 	}

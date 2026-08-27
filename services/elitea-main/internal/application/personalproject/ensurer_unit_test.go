@@ -49,10 +49,16 @@ func TestUserIDFromStringRefusesEverythingThatIsNotAUserID(t *testing.T) {
 		}
 	}
 
-	for _, refused := range []string{"", "0", "-3", "dev-user", "9.5", "9a", "system"} {
+	// `auth_core__user.id` is an `integer`. A value past that width is not a
+	// user id, and accepting one would hand an int32 narrowing — the advisory
+	// lock key, the account lookup — a number it cannot hold.
+	for _, refused := range []string{"", "0", "-3", "dev-user", "9.5", "9a", "system", "2147483648", "9223372036854775808"} {
 		if got, ok := personalproject.UserIDFromString(refused); ok {
 			t.Errorf("UserIDFromString(%q) = (%d, true), want refused", refused, got)
 		}
+	}
+	if got, ok := personalproject.UserIDFromString("2147483647"); !ok || got != 2147483647 {
+		t.Errorf("UserIDFromString(math.MaxInt32) = (%d, %v), want (2147483647, true)", got, ok)
 	}
 }
 

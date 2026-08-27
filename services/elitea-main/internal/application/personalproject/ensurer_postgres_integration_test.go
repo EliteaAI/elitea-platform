@@ -292,6 +292,30 @@ func TestEnsureSkipsIdentitiesThatMustNotOwnAPersonalProject(t *testing.T) {
 	}
 }
 
+// An id past int32 is refused, not TRUNCATED. `auth_core__user.id` is an
+// `integer` and an advisory lock key is an int4, so a silent narrowing would
+// take the lock of — and then read — a different account entirely:
+// `int32(4294967305)` is 9.
+func TestEnsureRefusesAUserIDItCannotNarrow(t *testing.T) {
+	ctx := context.Background()
+	pool := newPersonalProjectPool(t)
+	ensurer := newTestEnsurer(t, pool)
+	victim := seedUser(t, pool, "victim@autotest.local", "Victim")
+
+	if _, err := ensurer.Ensure(ctx, int64(victim)+(1<<32)); err == nil {
+		t.Fatal("an id past int32 was accepted")
+	}
+
+	var projects int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM centry.project WHERE name LIKE 'project_user_%'`).Scan(&projects); err != nil {
+		t.Fatal(err)
+	}
+	if projects != 0 {
+		t.Fatalf("%d personal project(s) were created for an out-of-range id", projects)
+	}
+}
+
 // EnsureAsync is what the request handler calls, so it is what has to work:
 // it must return before provisioning finishes, and the project must appear.
 func TestEnsureAsyncProvisionsOffTheCallersGoroutine(t *testing.T) {
