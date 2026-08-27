@@ -16,6 +16,7 @@ const MAX_PATH_BYTES: usize = 8 * 1024;
 const MAX_PARAMETER_NAME_BYTES: usize = 1_024;
 const MAX_PARAMETER_SCHEMA_BYTES: usize = 64 * 1024;
 const MAX_URL_BYTES: usize = 8 * 1024;
+const MAX_RESPONSE_COLLECTION_DEPTH: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenApiSpecErrorCode {
@@ -76,6 +77,7 @@ pub(crate) struct OpenApiOperation {
     parameters: Vec<OpenApiParameter>,
     body: Option<OpenApiRequestBody>,
     schema: Value,
+    response_collection_paths: Vec<Vec<String>>,
 }
 
 impl OpenApiOperation {
@@ -112,6 +114,11 @@ impl OpenApiOperation {
     #[must_use]
     pub(crate) fn parameters_schema(&self) -> Value {
         self.schema.clone()
+    }
+
+    #[must_use]
+    pub(crate) fn response_collection_paths(&self) -> &[Vec<String>] {
+        &self.response_collection_paths
     }
 
     #[must_use]
@@ -255,6 +262,7 @@ pub(crate) fn parse_operations(
             let body = parse_request_body(root, raw_operation.get("requestBody"))?;
             let description = operation_description(&method, path, raw_operation)?;
             let schema = operation_schema(&parameters, body.as_ref())?;
+            let response_collection_paths = response_collection_paths(root, raw_operation)?;
             operations.push(OpenApiOperation {
                 name: name.into(),
                 method,
@@ -263,6 +271,7 @@ pub(crate) fn parse_operations(
                 parameters,
                 body,
                 schema,
+                response_collection_paths,
             });
             if operations.len() > MAX_OPERATIONS {
                 return Err(resource_exhausted());
@@ -721,6 +730,26 @@ fn operation_schema(
         }
     }
     properties.insert(
+        "response_search".to_owned(),
+        json!({
+            "type":["string","null"],
+            "minLength":1,
+            "maxLength":4096,
+            "default":null,
+            "description":"Optional words, quoted phrases, and -excluded terms used to select matching objects from a large response collection."
+        }),
+    );
+    properties.insert(
+        "response_limit".to_owned(),
+        json!({
+            "type":["integer","null"],
+            "minimum":1,
+            "maximum":200,
+            "default":null,
+            "description":"Maximum collection items returned after response_search. Defaults to 50 when selection is enabled."
+        }),
+    );
+    properties.insert(
         "headers".to_owned(),
         json!({
             "type":["object","null"],
@@ -764,6 +793,109 @@ fn operation_schema(
         "required":required,
         "additionalProperties":false
     }))
+}
+
+fn response_collection_paths(
+    root: &Map<String, Value>,
+    operation: &Map<String, Value>,
+) -> Result<Vec<Vec<String>>, OpenApiSpecError> {
+    let Some(responses) = operation.get("responses") else {
+        return Ok(Vec::new());
+    };
+    let responses = responses.as_object().ok_or_else(invalid_specification)?;
+    let mut successful = responses
+        .iter()
+        .filter(|(status, _)| status.starts_with('2'))
+        .collect::<Vec<_>>();
+    successful.sort_by(|(left, _), (right, _)| {
+        (left.as_str() != "200", left.as_str()).cmp(&(right.as_str() != "200", right.as_str()))
+    });
+    for (_, raw_response) in successful {
+        let response = resolve_object(root, raw_response)?;
+        let mut schemas = Vec::new();
+        if let Some(content) = response.get("content") {
+            let content = content.as_object().ok_or_else(invalid_specification)?;
+            let mut media_types = content.iter().collect::<Vec<_>>();
+            media_types.sort_by(|(left, _), (right, _)| {
+                let priority = |media_type: &str| {
+                    let media_type = media_type.to_ascii_lowercase();
+                    (
+                        media_type != "application/json",
+                        !media_type.contains("+json"),
+                    )
+                };
+                priority(left)
+                    .cmp(&priority(right))
+                    .then_with(|| left.cmp(right))
+            });
+            for (_, media) in media_types {
+                if let Some(schema) = media.as_object().and_then(|media| media.get("schema")) {
+                    schemas.push(schema);
+                }
+            }
+        }
+        if let Some(schema) = response.get("schema") {
+            schemas.push(schema);
+        }
+        for schema in schemas {
+            let resolved = resolve_schema(root, schema, 0, &mut BTreeSet::new())?;
+            let mut paths = Vec::new();
+            collect_response_collection_paths(&resolved, &mut Vec::new(), 0, &mut paths);
+            paths.dedup();
+            if !paths.is_empty() {
+                return Ok(paths);
+            }
+        }
+    }
+    Ok(Vec::new())
+}
+
+fn collect_response_collection_paths(
+    schema: &Value,
+    path: &mut Vec<String>,
+    depth: usize,
+    paths: &mut Vec<Vec<String>>,
+) {
+    if depth > MAX_RESPONSE_COLLECTION_DEPTH {
+        return;
+    }
+    let Some(schema) = schema.as_object() else {
+        return;
+    };
+    let schema_type = schema.get("type").and_then(Value::as_str);
+    if schema_type == Some("array")
+        || (schema.contains_key("items") && schema_type != Some("object"))
+    {
+        if !paths.contains(path) {
+            paths.push(path.clone());
+        }
+        return;
+    }
+    if schema_type == Some("object")
+        && matches!(
+            schema.get("additionalProperties"),
+            Some(Value::Object(_) | Value::Bool(true))
+        )
+    {
+        if !paths.contains(path) {
+            paths.push(path.clone());
+        }
+        return;
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for (name, child) in properties {
+            path.push(name.clone());
+            collect_response_collection_paths(child, path, depth + 1, paths);
+            path.pop();
+        }
+    }
+    for composition in ["allOf", "oneOf", "anyOf"] {
+        if let Some(branches) = schema.get(composition).and_then(Value::as_array) {
+            for branch in branches {
+                collect_response_collection_paths(branch, path, depth + 1, paths);
+            }
+        }
+    }
 }
 
 fn parse_request_body(

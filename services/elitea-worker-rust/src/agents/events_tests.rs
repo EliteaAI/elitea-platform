@@ -212,6 +212,8 @@ fn nested_pipeline_hitl_event(child_checkpoint_id: &str, child_thread: &str) -> 
             "data": {
                 "schema_revision": "elitea.graph.hitl-interrupt.v1",
                 "type": "hitl",
+                "interaction_type": "pipeline_hitl_node",
+                "history_contract_version": 1,
                 "guardrail_type": "pipeline_hitl",
                 "node_name": "review",
                 "message": message,
@@ -261,6 +263,8 @@ fn deeply_nested_pipeline_hitl_event(
                 "data": {
                     "schema_revision": "elitea.graph.hitl-interrupt.v1",
                     "type": "hitl",
+                    "interaction_type": "pipeline_hitl_node",
+                    "history_contract_version": 1,
                     "guardrail_type": "pipeline_hitl",
                     "node_name": "review",
                     "message": message,
@@ -852,6 +856,8 @@ fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
     let event = pipeline_hitl_event(json!({
         "schema_revision": "elitea.graph.hitl-interrupt.v1",
         "type": "hitl",
+        "interaction_type": "pipeline_hitl_node",
+        "history_contract_version": 1,
         "guardrail_type": "pipeline_hitl",
         "node_name": "review",
         "message": "Review the generated answer.",
@@ -882,6 +888,10 @@ fn graph_dynamic_hitl_projects_one_checkpoint_bound_public_interrupt() {
     let pending = &metadata["hitl_interrupt"];
     assert_eq!(pending, &metadata["hitl_interrupts"][0]);
     assert_eq!(pending["guardrail_type"], "pipeline_hitl");
+    assert_eq!(pending["interaction_type"], "pipeline_hitl_node");
+    assert_eq!(pending["history_contract_version"], 1);
+    assert_eq!(metadata["interaction_type"], "pipeline_hitl_node");
+    assert_eq!(metadata["history_contract_version"], 1);
     assert_eq!(pending["node_name"], "review");
     assert_eq!(pending["routes"]["reject"], "END");
     assert_eq!(pending["edit_state_key"], "answer");
@@ -1174,6 +1184,8 @@ fn malformed_graph_hitl_never_becomes_an_approval_card() {
     let valid = json!({
         "schema_revision": "elitea.graph.hitl-interrupt.v1",
         "type": "hitl",
+        "interaction_type": "pipeline_hitl_node",
+        "history_contract_version": 1,
         "guardrail_type": "pipeline_hitl",
         "node_name": "review",
         "message": "Review the generated answer.",

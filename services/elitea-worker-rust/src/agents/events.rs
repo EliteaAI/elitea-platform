@@ -56,6 +56,8 @@ const PIPELINE_TOOL_HITL_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-tool-hitl-inte
 const PIPELINE_MCP_AUTH_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-mcp-auth-interrupt.v1\0";
 const PIPELINE_CLARIFYING_DIGEST_DOMAIN: &[u8] = b"elitea.pipeline-clarifying-interrupt.v1\0";
 const PIPELINE_HITL_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
+const PIPELINE_HITL_INTERACTION_TYPE: &str = "pipeline_hitl_node";
+const PIPELINE_HITL_HISTORY_CONTRACT_VERSION: u8 = 1;
 const PIPELINE_TOOL_HITL_SCHEMA: &str = "elitea.graph.tool-confirmation.v1";
 const PIPELINE_MCP_AUTH_SCHEMA: &str = "elitea.graph.mcp-authorization.v1";
 const PIPELINE_CLARIFYING_SCHEMA: &str = "elitea.graph.clarifying-question.v1";
@@ -1266,6 +1268,8 @@ impl AgentEventProjector {
         let message = data.message.clone();
         let pending = json!({
             "type": "hitl",
+            "interaction_type": data.interaction_type,
+            "history_contract_version": data.history_contract_version,
             "interrupt_id": binding.interrupt_id,
             "call_digest": binding.call_digest,
             "guardrail_type": "pipeline_hitl",
@@ -1280,6 +1284,8 @@ impl AgentEventProjector {
             "thread_id": self.context.thread_id,
             "chat_project_id": self.context.chat_project_id,
             "message": data.message,
+            "interaction_type": data.interaction_type,
+            "history_contract_version": data.history_contract_version,
             "hitl_interrupt": pending,
             "hitl_interrupts": [pending],
             "node_name": data.node_name,
@@ -2175,6 +2181,8 @@ struct PipelineHitlData {
     schema_revision: String,
     #[serde(rename = "type")]
     interrupt_type: String,
+    interaction_type: String,
+    history_contract_version: u8,
     guardrail_type: String,
     node_name: String,
     message: String,
@@ -2222,6 +2230,8 @@ impl PipelineHitlData {
     fn validate(&self, graph_message: &str) -> Result<(), AgentEventProjectionError> {
         if self.schema_revision != PIPELINE_HITL_SCHEMA
             || self.interrupt_type != "hitl"
+            || self.interaction_type != PIPELINE_HITL_INTERACTION_TYPE
+            || self.history_contract_version != PIPELINE_HITL_HISTORY_CONTRACT_VERSION
             || self.guardrail_type != "pipeline_hitl"
             || self.message != graph_message
             || !valid_pipeline_node_identity(&self.node_name)

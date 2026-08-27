@@ -105,6 +105,8 @@ async fn node_interrupt_payload_and_message_modes_are_bounded() {
     assert_eq!(message, "Review the answer.");
     let data = data.expect("HITL payload data");
     assert_eq!(data["schema_revision"], "elitea.graph.hitl-interrupt.v1");
+    assert_eq!(data["interaction_type"], "pipeline_hitl_node");
+    assert_eq!(data["history_contract_version"], 1);
     assert_eq!(data["guardrail_type"], "pipeline_hitl");
     assert_eq!(data["node_name"], "review");
     assert_eq!(

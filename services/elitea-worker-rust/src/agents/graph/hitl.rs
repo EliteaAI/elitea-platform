@@ -24,6 +24,8 @@ const MAX_RENDERED_MESSAGE_BYTES: usize = 8 * 1024;
 const MAX_EDIT_VALUE_BYTES: usize = 64 * 1024;
 const HITL_CONFIG_DIGEST_DOMAIN: &[u8] = b"elitea.graph.hitl.config.v1\0";
 const HITL_INTERRUPT_SCHEMA: &str = "elitea.graph.hitl-interrupt.v1";
+const PIPELINE_HITL_INTERACTION_TYPE: &str = "pipeline_hitl_node";
+const PIPELINE_HITL_HISTORY_CONTRACT_VERSION: u8 = 1;
 pub(crate) const HITL_RESUME_STATE_KEY: &str = "__elitea_hitl_resume_v1";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd)]
@@ -249,6 +251,8 @@ impl HitlNodeDefinition {
         json!({
             "schema_revision": HITL_INTERRUPT_SCHEMA,
             "type": "hitl",
+            "interaction_type": PIPELINE_HITL_INTERACTION_TYPE,
+            "history_contract_version": PIPELINE_HITL_HISTORY_CONTRACT_VERSION,
             "guardrail_type": "pipeline_hitl",
             "node_name": self.id,
             "message": message,

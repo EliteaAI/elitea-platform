@@ -1,7 +1,7 @@
 use std::fmt;
 
 use reqwest::Url;
-use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value};
 use zeroize::Zeroizing;
 
@@ -14,6 +14,8 @@ const MAX_SECRET_BYTES: usize = 64 * 1_024;
 const MAX_IDENTITY_BYTES: usize = 1_024;
 const MAX_SCOPE_BYTES: usize = 16 * 1_024;
 const MAX_SELECTED_TOOLS: usize = 1_024;
+const MAX_ADDITIONAL_HEADERS: usize = 128;
+const MAX_HEADER_VALUE_BYTES: usize = 16 * 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OpenApiConfigErrorCode {
@@ -64,6 +66,7 @@ pub(crate) struct OpenApiToolkitConfig {
     base_url: Url,
     operations: Vec<OpenApiOperation>,
     auth: OpenApiAuth,
+    additional_headers: HeaderMap,
 }
 
 impl OpenApiToolkitConfig {
@@ -84,6 +87,7 @@ impl OpenApiToolkitConfig {
         let parsed = parse_operations(spec, base_override, &selected_tools)
             .map_err(|error| Self::map_spec_error(error.code()))?;
         let auth_settings = merged_auth_settings(settings)?;
+        let additional_headers = parse_additional_headers(&auth_settings)?;
         let auth = parse_auth(
             toolkit_name,
             &parsed.base_url,
@@ -94,6 +98,7 @@ impl OpenApiToolkitConfig {
             base_url: parsed.base_url,
             operations: parsed.operations,
             auth,
+            additional_headers,
         })
     }
 
@@ -124,6 +129,7 @@ impl OpenApiToolkitConfig {
         OpenApiClientConfig {
             base_url: self.base_url,
             auth: self.auth,
+            additional_headers: self.additional_headers,
         }
     }
 }
@@ -169,6 +175,37 @@ impl OpenApiAuth {
 pub(crate) struct OpenApiClientConfig {
     pub(super) base_url: Url,
     pub(super) auth: OpenApiAuth,
+    pub(super) additional_headers: HeaderMap,
+}
+
+fn parse_additional_headers(
+    settings: &Map<String, Value>,
+) -> Result<HeaderMap, OpenApiConfigError> {
+    let Some(raw) = settings.get("headers") else {
+        return Ok(HeaderMap::new());
+    };
+    if raw.is_null() {
+        return Ok(HeaderMap::new());
+    }
+    let raw = raw.as_object().ok_or_else(invalid_configuration)?;
+    if raw.len() > MAX_ADDITIONAL_HEADERS {
+        return Err(resource_exhausted());
+    }
+    let mut headers = HeaderMap::with_capacity(raw.len());
+    for (name, value) in raw {
+        let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| invalid_configuration())?;
+        if restricted_configured_header(&name) {
+            return Err(invalid_configuration());
+        }
+        let value = value
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= MAX_HEADER_VALUE_BYTES)
+            .ok_or_else(invalid_configuration)?;
+        let mut value = HeaderValue::from_str(value).map_err(|_| invalid_configuration())?;
+        value.set_sensitive(true);
+        headers.insert(name, value);
+    }
+    Ok(headers)
 }
 
 fn merged_auth_settings(
@@ -402,6 +439,18 @@ fn restricted_header(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "connection"
             | "cookie"
+            | "set-cookie"
+    )
+}
+
+fn restricted_configured_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "proxy-authorization"
+            | "host"
+            | "content-length"
+            | "transfer-encoding"
+            | "connection"
             | "set-cookie"
     )
 }

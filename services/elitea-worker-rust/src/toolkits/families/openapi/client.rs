@@ -25,6 +25,7 @@ use tokio::time::Instant;
 use zeroize::Zeroizing;
 
 use super::config::{OpenApiAuth, OpenApiClientConfig};
+use super::response_selection::ResponseSelection;
 use super::spec::{OpenApiOperation, OpenApiParameter, OpenApiParameterLocation};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -412,12 +413,19 @@ impl OpenApiClient {
         &self,
         operation: &OpenApiOperation,
         arguments: &Map<String, Value>,
-    ) -> Result<(OpenApiRequest, Option<String>), OpenApiClientError> {
+    ) -> Result<(OpenApiRequest, Option<String>, Option<ResponseSelection>), OpenApiClientError>
+    {
         let allowed = operation
             .parameters()
             .iter()
             .map(OpenApiParameter::name)
-            .chain(["body_json", "headers", "regexp"])
+            .chain([
+                "body_json",
+                "headers",
+                "regexp",
+                "response_search",
+                "response_limit",
+            ])
             .collect::<std::collections::HashSet<_>>();
         if arguments.keys().any(|key| !allowed.contains(key.as_str())) {
             return Err(invalid_input());
@@ -484,6 +492,7 @@ impl OpenApiClient {
             insert_header(&mut headers, COOKIE, &cookies.join("; "))?;
         }
         apply_extra_headers(&mut headers, arguments.get("headers"))?;
+        headers.extend(self.config.additional_headers.clone());
         apply_auth(
             &mut headers,
             &self.config.auth,
@@ -532,7 +541,12 @@ impl OpenApiClient {
             }
             Some(_) => return Err(invalid_input()),
         };
-        Ok((OpenApiRequest { request, body }, regexp))
+        let response_selection =
+            ResponseSelection::parse(arguments).map_err(|()| invalid_input())?;
+        if regexp.is_some() && response_selection.is_some() {
+            return Err(invalid_input());
+        }
+        Ok((OpenApiRequest { request, body }, regexp, response_selection))
     }
 }
 
@@ -543,13 +557,17 @@ impl OpenApiApi for OpenApiClient {
         operation: &OpenApiOperation,
         arguments: &Map<String, Value>,
     ) -> Result<Value, OpenApiClientError> {
-        let (request, regexp) = self.build_request(operation, arguments).await?;
+        let (request, regexp, response_selection) =
+            self.build_request(operation, arguments).await?;
         let response = self.transport.execute(request).await?;
         map_status(response.status)?;
-        if response.body.len() > MAX_OUTPUT_BYTES {
+        if response_selection.is_none() && response.body.len() > MAX_OUTPUT_BYTES {
             return Err(resource_exhausted());
         }
         let mut output = String::from_utf8(response.body).map_err(|_| invalid_response())?;
+        if let Some(response_selection) = response_selection {
+            output = response_selection.apply(&output, operation.response_collection_paths());
+        }
         if let Some(regexp) = regexp {
             let expression = regex::Regex::new(&regexp).map_err(|_| invalid_input())?;
             output = expression.replace_all(&output, "").into_owned();

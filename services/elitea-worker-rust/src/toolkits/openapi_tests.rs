@@ -575,3 +575,237 @@ async fn request_body_and_credential_header_overrides_are_strict() {
         super::families::openapi::client::OpenApiClientErrorCode::InvalidInput
     );
 }
+
+#[tokio::test]
+async fn configured_secret_headers_combine_with_and_cannot_override_primary_auth() {
+    let config = OpenApiToolkitConfig::parse(
+        "Customer API",
+        &settings(
+            &json!({
+                "api_key":"primary-key",
+                "auth_type":"Bearer",
+                "headers":{
+                    "x-api-key":"gateway-key",
+                    "x-tenant":"tenant-a",
+                    "authorization":"untrusted-value"
+                }
+            }),
+            &["get_users_by_id"],
+        ),
+        &Map::new(),
+    )
+    .expect("additional secret headers");
+    let operation = config.operations()[0].clone();
+    let transport = Arc::new(FixtureTransport {
+        requests: Mutex::new(Vec::new()),
+        token_requests: Mutex::new(Vec::new()),
+        token: String::new(),
+        responses: Mutex::new(vec![OpenApiResponse {
+            status: StatusCode::OK,
+            body: b"{}".to_vec(),
+        }]),
+    });
+    let client = OpenApiClient::with_transport(config.into_client_parts(), transport.clone());
+    client
+        .execute(
+            &operation,
+            json!({"id":"1"}).as_object().expect("operation arguments"),
+        )
+        .await
+        .expect("configured headers request");
+
+    let requests = transport
+        .requests
+        .lock()
+        .expect("configured header requests");
+    let headers = requests[0].headers();
+    assert_eq!(headers["x-api-key"], "gateway-key");
+    assert_eq!(headers["x-tenant"], "tenant-a");
+    assert_eq!(headers[AUTHORIZATION], "Bearer primary-key");
+    assert!(headers["x-api-key"].is_sensitive());
+    assert!(headers[AUTHORIZATION].is_sensitive());
+}
+
+#[tokio::test]
+async fn response_search_uses_declared_collection_and_preserves_response_shape() {
+    let spec = json!({
+        "openapi":"3.0.3",
+        "servers":[{"url":"https://api.example.test"}],
+        "paths":{
+            "/records":{
+                "get":{
+                    "operationId":"list_records",
+                    "responses":{
+                        "200":{
+                            "description":"ok",
+                            "content":{
+                                "application/json":{
+                                    "schema":{
+                                        "type":"object",
+                                        "properties":{
+                                            "payload":{
+                                                "type":"object",
+                                                "properties":{
+                                                    "entries":{"type":"array","items":{"type":"object"}}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let config = OpenApiToolkitConfig::parse(
+        "Search API",
+        json!({"spec":spec,"selected_tools":["list_records"]})
+            .as_object()
+            .expect("search settings"),
+        &Map::new(),
+    )
+    .expect("search config");
+    let operation = config.operations()[0].clone();
+    assert_eq!(
+        operation.response_collection_paths(),
+        &[vec!["payload".to_owned(), "entries".to_owned()]]
+    );
+    assert_eq!(
+        operation.parameters_schema()["properties"]["response_limit"]["maximum"],
+        200
+    );
+    let transport = Arc::new(FixtureTransport {
+        requests: Mutex::new(Vec::new()),
+        token_requests: Mutex::new(Vec::new()),
+        token: String::new(),
+        responses: Mutex::new(vec![OpenApiResponse {
+            status: StatusCode::OK,
+            body: serde_json::to_vec(&json!({
+                "audit":[{"title":"database shadow"},{"title":"database shadow two"}],
+                "payload":{
+                    "entries":[
+                        {"id":"routine","title":"routine update"},
+                        {"id":"target","title":"critical database outage"}
+                    ]
+                },
+                "count":2
+            }))
+            .expect("response body"),
+        }]),
+    });
+    let client = OpenApiClient::with_transport(config.into_client_parts(), transport.clone());
+    let result = client
+        .execute(
+            &operation,
+            json!({"response_search":"critical database","response_limit":1})
+                .as_object()
+                .expect("selection arguments"),
+        )
+        .await
+        .expect("selected response");
+    let selected: Value = serde_json::from_str(result.as_str().expect("string tool result"))
+        .expect("selection envelope");
+    assert_eq!(
+        selected["_elitea_response_selection"]["collection_path"],
+        "$.payload.entries"
+    );
+    assert_eq!(selected["data"]["payload"]["entries"][0]["id"], "target");
+    assert_eq!(selected["data"]["audit"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        transport.requests.lock().expect("selection requests")[0]
+            .uri()
+            .to_string(),
+        "https://api.example.test/records"
+    );
+}
+
+#[tokio::test]
+async fn response_search_preserves_matching_keyed_objects_and_rejects_regexp_mix() {
+    let spec = json!({
+        "openapi":"3.0.3",
+        "servers":[{"url":"https://api.example.test"}],
+        "paths":{
+            "/users":{
+                "get":{
+                    "operationId":"list_users",
+                    "responses":{
+                        "200":{
+                            "description":"ok",
+                            "content":{
+                                "application/json":{
+                                    "schema":{
+                                        "type":"object",
+                                        "properties":{
+                                            "usersById":{
+                                                "type":"object",
+                                                "additionalProperties":{"type":"object"}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let config = OpenApiToolkitConfig::parse(
+        "Map API",
+        json!({"spec":spec,"selected_tools":["list_users"]})
+            .as_object()
+            .expect("map settings"),
+        &Map::new(),
+    )
+    .expect("map config");
+    let operation = config.operations()[0].clone();
+    let transport = Arc::new(FixtureTransport {
+        requests: Mutex::new(Vec::new()),
+        token_requests: Mutex::new(Vec::new()),
+        token: String::new(),
+        responses: Mutex::new(vec![OpenApiResponse {
+            status: StatusCode::OK,
+            body: serde_json::to_vec(&json!({
+                "usersById":{
+                    "user-alpha":{"name":"Alice","status":"active"},
+                    "user-beta":{"name":"Bob","status":"active"}
+                },
+                "count":2
+            }))
+            .expect("map body"),
+        }]),
+    });
+    let client = OpenApiClient::with_transport(config.into_client_parts(), transport.clone());
+    let selected = client
+        .execute(
+            &operation,
+            json!({"response_search":"\"user beta\""})
+                .as_object()
+                .expect("map arguments"),
+        )
+        .await
+        .expect("selected map");
+    let selected: Value = serde_json::from_str(selected.as_str().expect("map result string"))
+        .expect("map selection envelope");
+    assert_eq!(
+        selected["data"]["usersById"],
+        json!({"user-beta":{"name":"Bob","status":"active"}})
+    );
+
+    let error = client
+        .execute(
+            &operation,
+            json!({"regexp":"Bob","response_search":"Bob"})
+                .as_object()
+                .expect("mixed arguments"),
+        )
+        .await
+        .expect_err("regexp and structured selection conflict");
+    assert_eq!(
+        error.code(),
+        super::families::openapi::client::OpenApiClientErrorCode::InvalidInput
+    );
+    assert_eq!(transport.requests.lock().expect("map requests").len(), 1);
+}

@@ -104,7 +104,8 @@ no new protobuf field was required. A pipeline Agent node now carries the same e
 parallel Authorize/Skip set through its graph checkpoint: the child hierarchy
 remains public, partial sets fail before materialization, Skip closes each
 original call with `mcp_auth_decision`, and mixed sensitive/auth leaves resume
-atomically. The bounded inline OpenAPI dynamic family and the explicitly
+atomically. The bounded inline OpenAPI dynamic family, including static secret
+headers and schema-aware bounded response search, and the explicitly
 selected eight-read delegated SharePoint Graph core now use this exact-resource
 flow; their remaining OAuth/content capabilities are listed in the toolset
 ledger.
@@ -157,7 +158,8 @@ open gate. The remaining authorization gates are independent partial sibling
 resume, mixed-guardrail aggregation,
 platform OAuth/DCR, runtime-discovered post-token model-loop challenges,
 remaining SharePoint content/app-only operations,
-remaining OpenAPI capabilities and production activation.
+remaining OpenAPI remote-specification, binary/artifact and production
+activation capabilities.
 
 Explicit pipeline parallel-node design checkpoint: the existing
 `graph/{yaml,parallel}.rs` code remains a disconnected prototype. The proposed

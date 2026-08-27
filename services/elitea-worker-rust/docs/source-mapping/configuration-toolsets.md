@@ -167,7 +167,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 | `carrier` | `CarrierConfiguration` | `EliteACarrierToolkit` | 18 | No | corresponding family paths | Planned; source has no focused family tests |
 | `report_portal` | `configurations/report_portal.py::ReportPortalConfiguration` | `tools/report_portal::ReportPortalToolkit` | 9 | Yes | `toolkits/families/report_portal/{config,client,tools}.rs` | Capability-disabled complete read family: nine bounded project/report reads, including explicit UTF-8 HTML and base64 PDF export projections; authorized materialization, egress policy and live provider proof remain gates |
 | `testio` | `TestIOConfiguration` | `TestIOToolkit` | 15 | Yes | corresponding family paths | Deferred as an incoherent source contract: the check and official API require `Authorization: Token`, while runtime tools send `Bearer`; exploratory-test retrieval cannot receive its implementation-required product ID; and the two SDK write payloads do not map to the current provider create/confirmation operations without inventing product behavior |
-| `openapi` | `configurations/openapi.py::OpenApiConfiguration` | `tools/openapi::{EliteAOpenAPIToolkit,OpenApiAction}` | Dynamic | Yes | `toolkits/families/openapi/{config,spec,client,tools}.rs` | Partial capability-disabled family: bounded inline OpenAPI 3.x JSON/YAML parsing, selected dynamic operations, exact request schemas, fixed-origin JSON calls and anonymous/API-key/client-credentials/delegated OAuth are implemented. Remote specifications, legacy auth objects, rich OAuth discovery/DCR, runtime 401 re-authorization, non-JSON request/response bodies, artifact routing, approved egress and live-provider proof remain gates |
+| `openapi` | `configurations/openapi.py::OpenApiConfiguration` | `tools/openapi::{EliteAOpenAPIToolkit,OpenApiAction}`, `tools/openapi/{api_wrapper,response_selection}.py` | Dynamic | Yes | `toolkits/families/openapi/{config,spec,client,response_selection,tools}.rs` | Partial capability-disabled family: bounded inline OpenAPI 3.x JSON/YAML parsing, selected dynamic operations, exact request schemas, fixed-origin JSON calls, static secret headers, anonymous/API-key/client-credentials/delegated OAuth and bounded schema-aware response search are implemented. Remote specifications, legacy auth objects, rich OAuth discovery/DCR, runtime 401 re-authorization, non-JSON request bodies, binary/artifact routing, approved egress and live-provider proof remain gates |
 | `langfuse` | `LangfuseConfiguration` | No standard toolkit | 0 | Yes | `configurations/families/langfuse.rs` | Planned; observability support configuration |
 | `aha` | `configurations/aha.py::AhaConfiguration` | `tools/aha::AhaToolkit` | 33 | Yes | `toolkits/families/aha/` | Capability-disabled complete family; all 25 reads, 6 writes, 1 delete and the effectful combined execute surface are retained, with artifact-backed attachment upload behind a claim-scoped verified temp-spool resolver |
 | `pgvector` | `PgVectorConfiguration` | No standalone toolkit | 0 | No | `configurations/families/pgvector.rs` | Planned; shared indexing/runtime dependency |
@@ -176,6 +176,8 @@ The OpenAPI slice follows the current SDK business boundary without copying its
 LangChain wrappers. `elitea_sdk/configurations/openapi.py` maps to
 `toolkits/families/openapi/config.rs`; `elitea_sdk/tools/openapi/api_wrapper.py`
 maps to the bounded parser and fixed-origin client in `spec.rs` and `client.rs`;
+`elitea_sdk/tools/openapi/response_selection.py` maps to the bounded selector in
+`response_selection.rs`;
 and `elitea_sdk/tools/openapi/{__init__,tool}.py` maps to native ADK dynamic
 tools in `tools.rs`. `toolkits/materialize.rs` passes the invocation-scoped
 delegated-token map into every configured family and merges the returned auth
@@ -187,6 +189,12 @@ replays the same provider call ID, while Skip executes no endpoint. Client
 credentials reuse one zeroizing invocation-scoped token until the provider's
 bounded `expires_in` window (with the SDK's one-minute refresh buffer); no token
 is kept in a process-global registry.
+
+Configured `headers` are claim-materialized secret values, not model arguments.
+They apply to every operation with any primary authentication mode. Primary
+authentication wins on a case-insensitive name collision. Host, length,
+transfer and proxy-control headers remain rejected. Per-call headers stay
+non-secret and cannot replace credential headers.
 
 This is a dynamic toolset compiler, not a static Rust catalog. Each selected
 specification operation becomes one native ADK tool whose operation ID,
@@ -203,6 +211,16 @@ values so they cannot become a space or fragment boundary. Spaces are always
 pass. The differential test includes the SDK's Planisware/OData regression
 shape but the implementation contains no OData-specific names or values.
 
+Each operation schema now exposes only `response_search` and `response_limit`
+as structured response controls. The client removes them before the HTTP call.
+It uses successful response schemas, including local references, composed
+schemas and keyed `additionalProperties` maps, to select the intended
+collection. BM25 ranking returns untouched array objects or `key: object`
+pairs inside the original envelope. The response includes compact selection
+metadata and stays below 50,000 serialized characters. Omitting both controls
+preserves the exact legacy UTF-8 result. `regexp` remains available alone and
+cannot be combined with structured selection.
+
 This is intentionally `partial`, not `ported`. Specifications must already be
 sealed inline and are capped at 1 MiB; URL-based loading is rejected until a
 claim-scoped egress grant exists. The initial client accepts JSON request bodies
@@ -211,7 +229,8 @@ program, legacy nested auth shapes, post-materialization 401 token refresh,
 multipart/form/binary bodies, binary or artifact results and production network
 admission remain explicit gaps. `src/toolkits/openapi_tests.rs` owns parser,
 selection, dynamic schema, RFC query construction, auth precedence, guarded-tool,
-exact-token rematerialization, block-policy and redacted-failure proof.
+exact-token rematerialization, secret-header precedence, array/map response
+selection, block-policy and redacted-failure proof.
 
 The SharePoint slice is intentionally smaller than the current 28-tool SDK
 catalog. `elitea_sdk/configurations/sharepoint.py` and the token/site-path logic
