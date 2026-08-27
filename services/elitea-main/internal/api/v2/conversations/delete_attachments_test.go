@@ -436,3 +436,122 @@ func TestDeleteAttachments_RejectsLikeWildcardsInTheConversationID(t *testing.T)
 		}
 	}
 }
+
+// --- `delete_attachment` on a message delete (#606 option 1) ---------------
+
+func doDeleteMessage(t *testing.T, h *conversations.Handler, target string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	rec := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(rec, req)
+	return rec
+}
+
+func deleteMessageHandler(att *fakeAttachmentStore, obj *deleteFakeObjectStore, refs []conversations.AttachmentRef) *conversations.Handler {
+	repo := &mockRepo{deleteMessageResult: []string{"answer"}, deleteMessageAttachments: refs}
+	return conversations.NewHandler(repo).WithObjectStore(obj).WithAttachmentStore(att)
+}
+
+// Without the flag the bytes stay. Pylon makes this opt-in too — a delete that
+// silently destroyed uploaded files would be a bigger surprise than one that
+// leaves them for the retention sweeper.
+func TestDeleteMessage_LeavesAttachmentBytesWithoutTheFlag(t *testing.T) {
+	att := newFakeAttachmentStore()
+	att.seedBucket(1, "chat-attachments", 7)
+	att.seedObject(7, "conv/report.pdf")
+	obj := newDeleteFakeObjectStore(nil, "conv/report.pdf")
+	h := deleteMessageHandler(att, obj, []conversations.AttachmentRef{{Bucket: "chat-attachments", Name: "conv/report.pdf"}})
+
+	rec := doDeleteMessage(t, h, "/projects/1/conversations/c1/messages/answer")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertStrings(t, "deleted object keys", obj.deleted, nil)
+	assertStrings(t, "surviving objects", obj.remaining(), []string{"conv/report.pdf"})
+}
+
+// With the flag the bytes and their storage records go.
+func TestDeleteMessage_DeletesAttachmentBytesWithTheFlag(t *testing.T) {
+	att := newFakeAttachmentStore()
+	att.seedBucket(1, "chat-attachments", 7)
+	att.seedObject(7, "conv/report.pdf")
+	att.seedObject(7, "conv/keep.pdf")
+	obj := newDeleteFakeObjectStore(nil, "conv/report.pdf", "conv/keep.pdf")
+	h := deleteMessageHandler(att, obj, []conversations.AttachmentRef{{Bucket: "chat-attachments", Name: "conv/report.pdf"}})
+
+	rec := doDeleteMessage(t, h, "/projects/1/conversations/c1/messages/answer?delete_attachment")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertStrings(t, "deleted object keys", obj.deleted, []string{"conv/report.pdf"})
+	assertStrings(t, "surviving objects", obj.remaining(), []string{"conv/keep.pdf"})
+	assertStrings(t, "surviving metadata rows", att.recordedKeys(), []string{"conv/keep.pdf"})
+}
+
+// PRESENCE, not value. Pylon tests `'delete_attachment' in request.args`, so a
+// bare flag counts and so does `=false`. A client that has been sending the
+// bare form at pylon for years must keep working, which a `== "true"` check
+// would silently break.
+func TestDeleteMessage_AttachmentFlagIsPresenceNotValue(t *testing.T) {
+	for _, query := range []string{"?delete_attachment", "?delete_attachment=", "?delete_attachment=false", "?delete_attachment=1"} {
+		att := newFakeAttachmentStore()
+		att.seedBucket(1, "chat-attachments", 7)
+		att.seedObject(7, "conv/report.pdf")
+		obj := newDeleteFakeObjectStore(nil, "conv/report.pdf")
+		h := deleteMessageHandler(att, obj, []conversations.AttachmentRef{{Bucket: "chat-attachments", Name: "conv/report.pdf"}})
+
+		rec := doDeleteMessage(t, h, "/projects/1/conversations/c1/messages/answer"+query)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: expected 200, got %d", query, rec.Code)
+		}
+		if len(obj.deleted) != 1 {
+			t.Errorf("%s: deleted %v, want the one attachment", query, obj.deleted)
+		}
+	}
+}
+
+// A byte-delete failure surfaces. The message rows are already gone by this
+// point — the repository committed before returning — so reporting 200 would
+// claim a cleanup that did not happen, and the caller would never retry.
+func TestDeleteMessage_AttachmentByteFailureIs500(t *testing.T) {
+	att := newFakeAttachmentStore()
+	att.seedBucket(1, "chat-attachments", 7)
+	att.seedObject(7, "conv/report.pdf")
+	obj := newDeleteFakeObjectStore(nil, "conv/report.pdf")
+	obj.batchErr = errors.New("object store down")
+	h := deleteMessageHandler(att, obj, []conversations.AttachmentRef{{Bucket: "chat-attachments", Name: "conv/report.pdf"}})
+
+	rec := doDeleteMessage(t, h, "/projects/1/conversations/c1/messages/answer?delete_attachment")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertStrings(t, "surviving metadata rows", att.recordedKeys(), []string{"conv/report.pdf"})
+}
+
+// Attachments can name different buckets, so the byte delete groups by bucket
+// rather than assuming one. Collapse that and a second bucket's objects are
+// addressed against the wrong bucket.
+func TestDeleteMessage_DeletesAcrossSeveralBuckets(t *testing.T) {
+	att := newFakeAttachmentStore()
+	att.seedBucket(1, "chat-attachments", 7)
+	att.seedBucket(1, "legacy-attachments", 8)
+	att.seedObject(7, "conv/new.pdf")
+	att.seedObject(8, "conv/old.pdf")
+	obj := newDeleteFakeObjectStore(nil, "conv/new.pdf", "conv/old.pdf")
+	h := deleteMessageHandler(att, obj, []conversations.AttachmentRef{
+		{Bucket: "chat-attachments", Name: "conv/new.pdf"},
+		{Bucket: "legacy-attachments", Name: "conv/old.pdf"},
+	})
+
+	rec := doDeleteMessage(t, h, "/projects/1/conversations/c1/messages/answer?delete_attachment")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertStrings(t, "deleted object keys", obj.deleted, []string{"conv/new.pdf", "conv/old.pdf"})
+	assertStrings(t, "surviving metadata rows", att.recordedKeys(), nil)
+}

@@ -30,6 +30,9 @@ type CurrentAdhocTurn struct {
 	ResponseMessageID   string
 	QuestionMeta        json.RawMessage
 	UserInput           string
+	// Attachments are the `attachment_message` items written onto the QUESTION
+	// group in the same transaction (#606). Empty for a turn with no files.
+	Attachments []CurrentTurnAttachment
 }
 
 func (turn CurrentAdhocTurn) Validate() error {
@@ -37,7 +40,8 @@ func (turn CurrentAdhocTurn) Validate() error {
 		!validUUID(turn.ConversationUUID) || !validUUID(turn.QuestionID) ||
 		!validUUID(turn.QuestionItemID) || !validUUID(turn.ResponseMessageID) ||
 		!validCurrentAgentText(turn.UserInput, maxCurrentAgentUserInputBytes) ||
-		!validJSONObject(turn.QuestionMeta) {
+		!validJSONObject(turn.QuestionMeta) ||
+		!validCurrentTurnAttachments(turn.Attachments) {
 		return ErrInvalidCurrentAgentStart
 	}
 	return nil
@@ -49,6 +53,7 @@ func (turn *CurrentAdhocTurn) Clone() *CurrentAdhocTurn {
 	}
 	clone := *turn
 	clone.QuestionMeta = bytes.Clone(turn.QuestionMeta)
+	clone.Attachments = cloneCurrentTurnAttachments(turn.Attachments)
 	return &clone
 }
 
@@ -77,6 +82,10 @@ type CurrentAdhocStartRequest struct {
 	UserInput           string
 	InteractionUUID     string
 	LLMSettings         json.RawMessage
+	// Attachments carries `payload.attachments` from the start body: the
+	// files the composer uploaded before sending, already split into
+	// (bucket, name) by the route. #606.
+	Attachments []CurrentTurnAttachmentRef
 }
 
 func (request CurrentAdhocStartRequest) Validate() error {
@@ -143,6 +152,10 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	if request.InteractionUUID != "" {
 		questionMeta, _ = json.Marshal(map[string]string{"interaction_uuid": request.InteractionUUID})
 	}
+	attachments, err := currentTurnAttachments(request.QuestionID, request.Attachments)
+	if err != nil {
+		return CurrentApplicationStartOutcome{}, err
+	}
 	projectID := strconv.FormatInt(request.ProjectID, 10)
 	actorID := strconv.FormatInt(request.ActorUserID, 10)
 	outcome, err := service.admissions.Submit(ctx, SubmitRequest{
@@ -158,7 +171,7 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 			ConversationUUID: request.ConversationUUID, TargetParticipantID: target.TargetParticipantID,
 			QuestionID: request.QuestionID, QuestionItemID: questionItemID,
 			ResponseMessageID: responseMessageID, QuestionMeta: questionMeta,
-			UserInput: request.UserInput,
+			UserInput: request.UserInput, Attachments: attachments,
 		},
 	})
 	if err != nil {

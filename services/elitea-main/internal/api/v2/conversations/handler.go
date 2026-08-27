@@ -100,6 +100,31 @@ type MessagesQuery struct {
 	Query string
 }
 
+// AttachmentRef locates one stored attachment: the bucket it lives in and the
+// object name within it. Both come straight from the `chat_messages_attachment`
+// row (#606), where `name` already carries the `{conversationUUID}/` prefix the
+// upload path keys objects by — so this pair addresses the object directly,
+// with no reconstruction.
+type AttachmentRef struct {
+	Bucket string
+	Name   string
+}
+
+// DeleteMessageResult is what one message delete removed.
+//
+// Attachments are reported rather than deleted by the repository because the
+// bytes do not live in the database: the repository removes the ROWS, and only
+// the handler holds the object store. Reporting them is also what lets the
+// byte delete happen strictly AFTER the authorisation and last-message guards
+// have passed — see Handler.DeleteMessage for why that ordering is the point.
+type DeleteMessageResult struct {
+	// Deleted holds the UUIDs of every message group that went, newest first.
+	Deleted []string
+	// Attachments holds every stored attachment those groups carried. Empty
+	// unless the groups had attachment items.
+	Attachments []AttachmentRef
+}
+
 type Participant struct {
 	ID             int            `json:"id"`
 	EntityName     string         `json:"entity_name"`
@@ -133,7 +158,7 @@ type Repository interface {
 	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	GetMessageByUUID(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	DeleteMessages(ctx context.Context, projectID, conversationID string) error
-	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error)
+	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (DeleteMessageResult, error)
 }
 
 type Handler struct {
@@ -664,7 +689,9 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DeleteMessage removes one message group and the user input it answers.
+// DeleteMessage removes one message group and the user input it answers, and —
+// when the caller asks for it — the bytes of any attachment those groups
+// carried.
 //
 // The caller's identity is part of the request, not decoration: deleting a
 // message is authorised against the conversation's author and the group's own
@@ -682,16 +709,115 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 // body names every group that is really gone, newest first, so a client can
 // prune exactly what the server removed rather than guessing at the pairing
 // rule — the pairing lives in one place, on the server.
+//
+// # `delete_attachment`, and the pylon ordering bug NOT reproduced
+//
+// Pylon removes an attachment's stored bytes only when the request carries a
+// `delete_attachment` query flag (message.py:103-107), and this keeps that
+// opt-in: a delete that silently destroyed uploaded files would be a bigger
+// surprise than one that leaves them for the retention sweeper.
+//
+// But pylon runs that loop BEFORE its "summarized message cannot be deleted"
+// and "only the last message" guards (message.py:103 vs :108-122), so a request
+// that goes on to answer 400 has ALREADY deleted the files. That is a defect,
+// not a contract, and it is not ported. Here the repository applies every guard
+// and commits first; the bytes are touched only once the delete is a fact.
+//
+// The cost of that ordering is the opposite failure: rows gone, bytes not. It
+// is the cheaper one, and it is bounded — the objects are still recorded in
+// `elitea_storage.objects`, so the retention sweeper still finds and expires
+// them. Deleting the bytes first and refusing afterwards, pylon's order, is
+// unrecoverable: the file is gone and the message still claims it.
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	messageID := chi.URLParam(r, "messageID")
 	user, _ := auth.UserFromContext(r.Context())
-	deleted, err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID)
+
+	result, err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID)
 	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+
+	// Presence, not value — pylon tests `'delete_attachment' in request.args`,
+	// so `?delete_attachment` with no value counts, and so does `=false`.
+	// Matching that literally matters more than tidiness: a client that has
+	// been sending the bare flag at pylon for years must keep working.
+	if _, asked := r.URL.Query()["delete_attachment"]; asked && len(result.Attachments) > 0 {
+		if err := h.deleteAttachmentObjects(r.Context(), projectID, result.Attachments); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": result.Deleted})
+}
+
+// deleteAttachmentObjects removes the stored bytes of attachments whose rows
+// have already gone, and then their `elitea_storage.objects` records.
+//
+// Bytes before records, for the same reason DeleteAttachments does it that way:
+// the record is what the retention sweeper walks, so dropping it first would
+// orphan the bytes from the only thing that could ever find them again.
+//
+// A `chat_messages_attachment` row and an `elitea_storage.objects` row are
+// independent — the first is the message's claim on a file, the second is the
+// storage layer's record of it — so an attachment may legitimately have no
+// object record here (an upload from before the S20a byte path, or a row pylon
+// wrote). A missing record is not an error: the bytes are deleted by ref, and
+// the record delete simply matches nothing.
+func (h *Handler) deleteAttachmentObjects(ctx context.Context, projectIDStr string, attachments []AttachmentRef) error {
+	if h.store == nil || h.attachments == nil {
+		// Nothing could have been stored in a deployment with no object store;
+		// same degradation writeAttachmentBytes and DeleteAttachments apply.
+		return nil
+	}
+	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
+	if err != nil || projectID <= 0 {
+		return apierr.BadRequest("invalid project id")
+	}
+
+	// Group by bucket: the object store addresses a bucket at a time, and an
+	// attachment row carries its own bucket, so one message group's items are
+	// not guaranteed to share one.
+	byBucket := map[string][]string{}
+	refs := map[string][]storage.ObjectRef{}
+	for _, attachment := range attachments {
+		if attachment.Bucket == "" || attachment.Name == "" {
+			continue
+		}
+		ref, err := storage.NewObjectRef(projectIDStr, attachment.Bucket, attachment.Name)
+		if err != nil {
+			// A row whose name cannot address an object is not a reason to
+			// fail the delete — the message is already gone. Skip it; the
+			// retention sweeper still owns the bytes.
+			continue
+		}
+		byBucket[attachment.Bucket] = append(byBucket[attachment.Bucket], attachment.Name)
+		refs[attachment.Bucket] = append(refs[attachment.Bucket], ref)
+	}
+
+	for bucket, bucketRefs := range refs {
+		result, err := h.store.DeleteBatch(ctx, bucketRefs)
+		if err != nil {
+			return apierr.Internal("delete attachment bytes: " + err.Error())
+		}
+		if len(result.Failed) > 0 {
+			return apierr.Internal(fmt.Sprintf("delete attachment bytes: %d of %d objects failed, first %q: %v",
+				len(result.Failed), len(bucketRefs), result.Failed[0].Key, result.Failed[0].Err))
+		}
+		bucketID, err := h.attachments.LookupAttachmentBucket(ctx, projectID, bucket)
+		if errors.Is(err, storage.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return apierr.Internal("lookup attachment bucket: " + err.Error())
+		}
+		if err := h.attachments.DeleteAttachmentObjects(ctx, bucketID, byBucket[bucket]); err != nil {
+			return apierr.Internal("delete attachment metadata: " + err.Error())
+		}
+	}
+	return nil
 }
 
 func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request) {

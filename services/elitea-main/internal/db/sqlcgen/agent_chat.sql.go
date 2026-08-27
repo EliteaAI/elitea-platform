@@ -245,7 +245,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- ` + "`" + `attachment_message` + "`" + ` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR (
                     historical_item.item_type = 'context_message'
                     AND NOT EXISTS (
@@ -309,10 +313,11 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            $11::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group
 `
 
@@ -333,6 +338,7 @@ type InsertCurrentAdhocTurnParams struct {
 type InsertCurrentAdhocTurnRow struct {
 	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
 	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionMessageGroupID *int32      `db:"question_message_group_id" json:"question_message_group_id"`
 }
 
 func (q *Queries) InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error) {
@@ -350,8 +356,76 @@ func (q *Queries) InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentA
 		arg.ExecutionID,
 	)
 	var i InsertCurrentAdhocTurnRow
-	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID, &i.QuestionMessageGroupID)
 	return i, err
+}
+
+const insertCurrentAgentAttachmentItem = `-- name: InsertCurrentAgentAttachmentItem :exec
+WITH item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    VALUES (
+        $5::uuid,
+        'attachment_message',
+        $6::integer,
+        '{}'::jsonb,
+        $7::integer
+    )
+    RETURNING id
+)
+INSERT INTO chat_messages_attachment (id, name, bucket, attachment_type, content)
+SELECT item.id,
+       $1::text,
+       $2::text,
+       $3::text,
+       $4::json
+FROM item
+`
+
+type InsertCurrentAgentAttachmentItemParams struct {
+	Name           string      `db:"name" json:"name"`
+	Bucket         string      `db:"bucket" json:"bucket"`
+	AttachmentType string      `db:"attachment_type" json:"attachment_type"`
+	Content        []byte      `db:"content" json:"content"`
+	ItemID         pgtype.UUID `db:"item_id" json:"item_id"`
+	OrderIndex     int32       `db:"order_index" json:"order_index"`
+	MessageGroupID int32       `db:"message_group_id" json:"message_group_id"`
+}
+
+// #606: one uploaded chat attachment, as an `attachment_message` item on the
+// QUESTION group plus its 1:1 payload row.
+//
+// Both rows in ONE statement, via a data-modifying CTE, rather than two calls:
+// chat_messages_attachment's primary key IS the item's id (0127 shares the
+// key so the discriminator and the payload cannot disagree), so the payload
+// insert must see the id the item insert generated. Doing it in one statement
+// also means there is no window in which an `attachment_message` item exists
+// with no payload — the shape ListMessageGroups treats as "no attachment row"
+// and renders as nothing.
+//
+// order_index is supplied, not computed with count(*) the way
+// InsertCurrentAgentTextItem does it: these items are written inside the
+// admission transaction immediately after the question item, so the caller
+// already knows the sequence (1, 2, ... — the question's text item holds 0,
+// matching pylon's enumerate(attachments_info, start=1) at
+// rpc/chat_all.py:303). A count(*) here would additionally re-read a table it
+// is writing to, per attachment.
+//
+// `content` is cast to json, NOT jsonb: 0127 records why the deployed column
+// is json (a shared table pylon also reads/writes, where jsonb's key
+// reordering and whitespace normalisation would change the stored bytes).
+func (q *Queries) InsertCurrentAgentAttachmentItem(ctx context.Context, arg InsertCurrentAgentAttachmentItemParams) error {
+	_, err := q.db.Exec(ctx, insertCurrentAgentAttachmentItem,
+		arg.Name,
+		arg.Bucket,
+		arg.AttachmentType,
+		arg.Content,
+		arg.ItemID,
+		arg.OrderIndex,
+		arg.MessageGroupID,
+	)
+	return err
 }
 
 const insertCurrentAgentTextContent = `-- name: InsertCurrentAgentTextContent :exec
@@ -465,7 +539,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- ` + "`" + `attachment_message` + "`" + ` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR historical_item.item_type = 'context_message'
             )
       )
@@ -515,10 +593,11 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            $13::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group
 `
 
@@ -541,6 +620,7 @@ type InsertCurrentApplicationTurnParams struct {
 type InsertCurrentApplicationTurnRow struct {
 	ResponseMessageGroupID int32       `db:"response_message_group_id" json:"response_message_group_id"`
 	ResponseMessageID      pgtype.UUID `db:"response_message_id" json:"response_message_id"`
+	QuestionMessageGroupID *int32      `db:"question_message_group_id" json:"question_message_group_id"`
 }
 
 func (q *Queries) InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error) {
@@ -560,7 +640,7 @@ func (q *Queries) InsertCurrentApplicationTurn(ctx context.Context, arg InsertCu
 		arg.ExecutionID,
 	)
 	var i InsertCurrentApplicationTurnRow
-	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID)
+	err := row.Scan(&i.ResponseMessageGroupID, &i.ResponseMessageID, &i.QuestionMessageGroupID)
 	return i, err
 }
 
@@ -996,7 +1076,29 @@ WHERE conversation.uuid = $5::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: ` + "`" + `attachment_message` + "`" + ` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. ` + "`" + `attachment_message` + "`" + `
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- ` + "`" + `canvas_message` + "`" + ` and ` + "`" + `context_message` + "`" + ` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR (
                 historical_item.item_type = 'context_message'
                 AND NOT EXISTS (
@@ -1386,7 +1488,29 @@ WHERE conversation.uuid = $4::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: ` + "`" + `attachment_message` + "`" + ` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. ` + "`" + `attachment_message` + "`" + `
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- ` + "`" + `canvas_message` + "`" + ` and ` + "`" + `context_message` + "`" + ` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR historical_item.item_type = 'context_message'
         )
   )

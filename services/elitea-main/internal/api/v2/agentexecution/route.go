@@ -124,9 +124,28 @@ type currentApplicationStartHandler struct {
 	useCase StartUseCase
 }
 
+// currentStartAttachment is one entry of `payload.attachments`, the shape the
+// composer sends after uploading files (apps/elitea-web
+// widgets/chat-box/ui/hooks/useChatBoxHandlers.helpers.ts:286-295, put inside
+// `payload` by useChatBoxSend.ts:135). `filepath` is exactly what the upload
+// endpoint returned. `name` is also sent and is deliberately IGNORED: it is
+// the display basename, while the column's `name` must be the object key —
+// the filepath's post-bucket remainder, conversation-uuid prefix included —
+// or the stored bytes become unaddressable. See
+// agentexecutionapp.ParseAttachmentFilepath. #606.
+type currentStartAttachment struct {
+	Filepath string `json:"filepath"`
+	Name     string `json:"name"`
+}
+
 type currentApplicationStartBody struct {
 	Payload struct {
 		UserInput string `json:"user_input"`
+		// #606: previously undeclared, so every attachment the client sent
+		// was silently dropped by the decoder and no chat_messages_attachment
+		// row was ever written. Distinct from AttachmentsInfo below, which is
+		// a different, still-unported field kept only as a rejection gate.
+		Attachments []currentStartAttachment `json:"attachments"`
 	} `json:"payload"`
 	ProjectID        int64           `json:"project_id"`
 	ParticipantID    int64           `json:"participant_id"`
@@ -221,6 +240,17 @@ func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter,
 		writeUnsupported(writer)
 		return
 	}
+	// A filepath that does not split into a non-empty bucket and a non-empty
+	// name is malformed input, not an unsupported feature, so it is a 400 and
+	// not the 422 the parity gates above return. Refusing the whole start
+	// rather than dropping the offending entry is deliberate: a silently
+	// dropped attachment produces an admitted turn the user believes carried
+	// their file.
+	attachments, ok := parseStartAttachments(body.Payload.Attachments)
+	if !ok {
+		writeError(writer, http.StatusBadRequest, "Invalid agent execution request")
+		return
+	}
 
 	var outcome agentexecutionapp.CurrentApplicationStartOutcome
 	switch contract {
@@ -236,6 +266,7 @@ func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter,
 				ConversationUUID: conversationID, TargetParticipantID: body.ParticipantID,
 				QuestionID: body.QuestionID, UserInput: body.Payload.UserInput,
 				InteractionUUID: body.InteractionUUID,
+				Attachments:     attachments,
 			},
 		)
 	case CurrentAdhocStartContract:
@@ -251,6 +282,7 @@ func (handler *currentApplicationStartHandler) Start(writer http.ResponseWriter,
 				QuestionID: body.QuestionID, UserInput: body.Payload.UserInput,
 				InteractionUUID: body.InteractionUUID,
 				LLMSettings:     bytes.Clone(body.LLMSettings),
+				Attachments:     attachments,
 			},
 		)
 	}
@@ -611,4 +643,25 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(value)
+}
+
+// parseStartAttachments splits every `payload.attachments` filepath into the
+// (bucket, name) pair the item rows are keyed by, rejecting the whole request
+// if any one of them is malformed. The split itself is pylon's, and lives in
+// the application package so the HTTP layer never decides what a column holds.
+func parseStartAttachments(
+	entries []currentStartAttachment,
+) ([]agentexecutionapp.CurrentTurnAttachmentRef, bool) {
+	if len(entries) == 0 {
+		return nil, true
+	}
+	refs := make([]agentexecutionapp.CurrentTurnAttachmentRef, 0, len(entries))
+	for _, entry := range entries {
+		ref, ok := agentexecutionapp.ParseAttachmentFilepath(entry.Filepath)
+		if !ok {
+			return nil, false
+		}
+		refs = append(refs, ref)
+	}
+	return refs, true
 }

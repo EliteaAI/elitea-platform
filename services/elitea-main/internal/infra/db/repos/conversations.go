@@ -1080,15 +1080,16 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 // STILL NOT PORTED: pylon's attachment cleanup (`delete_attachment`), because
 // the attachment byte path is a separate port, and the per-group socket event,
 // which the returned UUIDs replace for the one client that exists.
-func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error) {
+func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (conversations.DeleteMessageResult, error) {
 	s := schema(projectID)
+	var result conversations.DeleteMessageResult
 	if _, err := uuid.Parse(groupUID); err != nil {
-		return nil, apierr.NotFound("message not found")
+		return result, apierr.NotFound("message not found")
 	}
 
 	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("conversations: delete message: %w", err)
+		return result, fmt.Errorf("conversations: delete message: %w", err)
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
@@ -1129,29 +1130,29 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 		&pairedID, &pairedUUID, &pairedContextIncluded,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, apierr.NotFound("message not found")
+			return result, apierr.NotFound("message not found")
 		}
-		return nil, fmt.Errorf("conversations: inspect message: %w", err)
+		return result, fmt.Errorf("conversations: inspect message: %w", err)
 	}
 
 	// An empty userID is an unauthenticated caller. It must not match an empty
 	// author id either, so it is refused before the comparison rather than by
 	// it.
 	if userID == "" {
-		return nil, apierr.Forbidden("message can be deleted only by the message or conversation author")
+		return result, apierr.Forbidden("message can be deleted only by the message or conversation author")
 	}
 	authoredByCaller := authorEntityName == "user" && authorEntityID == userID
 	if userID != conversationAuthorID && !authoredByCaller {
-		return nil, apierr.Forbidden("message can be deleted only by the message or conversation author")
+		return result, apierr.Forbidden("message can be deleted only by the message or conversation author")
 	}
 	if contextIncluded == "false" {
-		return nil, apierr.BadRequest("a summarized message cannot be deleted")
+		return result, apierr.BadRequest("a summarized message cannot be deleted")
 	}
 	if pairedID != nil && pairedContextIncluded == "false" {
-		return nil, apierr.BadRequest("a summarized message cannot be deleted")
+		return result, apierr.BadRequest("a summarized message cannot be deleted")
 	}
 	if !isLast {
-		return nil, apierr.BadRequest("only the last message in the conversation can be deleted")
+		return result, apierr.BadRequest("only the last message in the conversation can be deleted")
 	}
 
 	doomed := []int64{groupID}
@@ -1161,12 +1162,46 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 		deleted = append(deleted, pairedUUID)
 	}
 
+	// Read the attachments BEFORE anything is deleted. `chat_messages_attachment`
+	// cascades from `chat_message_items` (tenant migration 0127), so the item
+	// delete below takes these rows with it — after that there is nothing left
+	// naming the stored files, and the handler could not clean them up even if
+	// asked. The bytes themselves are the handler's to remove, and only once
+	// this transaction has committed; see Handler.DeleteMessage for why that
+	// ordering deliberately differs from pylon's.
+	//
+	// Selected by `item_type` as well as by the join, because the discriminator
+	// and the payload table are two statements of the same fact and this is the
+	// place a disagreement between them would show up as silent data loss.
+	attachmentQ := fmt.Sprintf(`
+		SELECT att.bucket, att.name
+		FROM %q.chat_message_items mi
+		JOIN %q.chat_messages_attachment att ON att.id = mi.id
+		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
+		ORDER BY mi.message_group_id, mi.order_index`, s, s)
+	attachmentRows, err := transaction.Query(ctx, attachmentQ, doomed)
+	if err != nil {
+		return result, fmt.Errorf("conversations: read message attachments: %w", err)
+	}
+	for attachmentRows.Next() {
+		var ref conversations.AttachmentRef
+		if err := attachmentRows.Scan(&ref.Bucket, &ref.Name); err != nil {
+			attachmentRows.Close()
+			return result, fmt.Errorf("conversations: scan message attachment: %w", err)
+		}
+		result.Attachments = append(result.Attachments, ref)
+	}
+	attachmentRows.Close()
+	if err := attachmentRows.Err(); err != nil {
+		return result, fmt.Errorf("conversations: read message attachments: %w", err)
+	}
+
 	// chat_message_items does not cascade from chat_message_group, so the items
-	// go first. chat_messages_text/_context cascade from the items, and
-	// chat_message_trace_step cascades from the group.
+	// go first. chat_messages_text/_context/_attachment cascade from the items,
+	// and chat_message_trace_step cascades from the group.
 	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE message_group_id = ANY($1)`, s)
 	if _, err := transaction.Exec(ctx, items, doomed); err != nil {
-		return nil, fmt.Errorf("conversations: delete message items: %w", err)
+		return result, fmt.Errorf("conversations: delete message items: %w", err)
 	}
 
 	// reply_to_id points at another group. Detaching references from groups that
@@ -1176,20 +1211,21 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL
 		WHERE reply_to_id = ANY($1) AND NOT (id = ANY($1))`, s)
 	if _, err := transaction.Exec(ctx, detach, doomed); err != nil {
-		return nil, fmt.Errorf("conversations: detach message replies: %w", err)
+		return result, fmt.Errorf("conversations: detach message replies: %w", err)
 	}
 
 	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE id = ANY($1)`, s), doomed)
 	if err != nil {
-		return nil, fmt.Errorf("conversations: delete message: %w", err)
+		return result, fmt.Errorf("conversations: delete message: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
-		return nil, apierr.NotFound("message not found")
+		return result, apierr.NotFound("message not found")
 	}
 	if err := transaction.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("conversations: delete message commit: %w", err)
+		return result, fmt.Errorf("conversations: delete message commit: %w", err)
 	}
-	return deleted, nil
+	result.Deleted = deleted
+	return result, nil
 }
 
 // ListMessages serves the transcript window the caller asked for.
@@ -1469,14 +1505,35 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		return []map[string]any{}, nil
 	}
 
-	// Fetch message_items with text content for all groups
+	// Fetch message_items with their payload for all groups.
+	//
+	// #606: the attachment join is what makes an uploaded file appear inline in
+	// the transcript at all. Before it, an attachment row existed (0127) but
+	// this query only ever joined chat_messages_text, so an `attachment_message`
+	// item came back with no `item_details` whatsoever — the web client's
+	// `extractMessageItemText` rendered it as the literal `[undefined]`
+	// (apps/elitea-web/src/widgets/chat-box/ui/hooks/useChatBoxHandlers.helpers.ts:265)
+	// and `MessageAttachmentList` had no filepath to download.
+	//
+	// The text column keeps its COALESCE and the attachment columns do not:
+	// `mt.content` is NOT NULL in its own table, so an empty string is
+	// unambiguously "no text item here" and scanning it into a plain string is
+	// safe. The attachment columns are NOT NULL in THEIR table too, but that
+	// says nothing about this LEFT JOIN — every one of them is NULL for a text
+	// item — and here the difference between "absent" and "present but empty"
+	// is load-bearing: COALESCE'ing `ma.name` to '' would make a text item
+	// indistinguishable from an attachment whose name really is empty, and this
+	// function must not hang empty attachment keys off a text item. So they are
+	// scanned as pointers and nil means "no attachment row", full stop.
 	itemQ := fmt.Sprintf(`
 		SELECT mi.id, mi.message_group_id, mi.item_type, mi.order_index, mi.meta,
-			COALESCE(mt.content, '')
+			COALESCE(mt.content, ''),
+			ma.name, ma.bucket, ma.attachment_type, ma.content
 		FROM %q.chat_message_items mi
 		LEFT JOIN %q.chat_messages_text mt ON mt.id = mi.id
+		LEFT JOIN %q.chat_messages_attachment ma ON ma.id = mi.id
 		WHERE mi.message_group_id = ANY($1)
-		ORDER BY mi.message_group_id, mi.order_index`, s, s)
+		ORDER BY mi.message_group_id, mi.order_index`, s, s, s)
 
 	itemRows, err := r.pool.Query(ctx, itemQ, groupIDs)
 	if err == nil {
@@ -1494,8 +1551,11 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 			var orderIndex int
 			var itemMeta []byte
 			var textContent string
+			var attachmentName, attachmentBucket, attachmentType *string
+			var attachmentContent []byte
 
-			if err := itemRows.Scan(&itemID, &groupID, &itemType, &orderIndex, &itemMeta, &textContent); err != nil {
+			if err := itemRows.Scan(&itemID, &groupID, &itemType, &orderIndex, &itemMeta, &textContent,
+				&attachmentName, &attachmentBucket, &attachmentType, &attachmentContent); err != nil {
 				continue
 			}
 
@@ -1509,6 +1569,15 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 				item["item_details"] = map[string]any{"content": textContent}
 			}
 
+			// The discriminator is `attachment_message`, not `attachment`
+			// (elitea_core/models/message_items/attachment.py:15-17
+			// `polymorphic_identity`); 0127 records the same. The row is
+			// required as well as the item_type, so an item mislabelled in the
+			// database yields no item_details rather than a map of nils.
+			if itemType == "attachment_message" && attachmentName != nil && attachmentBucket != nil && attachmentType != nil {
+				item["item_details"] = attachmentItemDetails(itemID, itemType, *attachmentName, *attachmentBucket, *attachmentType, attachmentContent)
+			}
+
 			if idx, ok := groupIndex[groupID]; ok {
 				items := groups[idx]["message_items"].([]map[string]any)
 				groups[idx]["message_items"] = append(items, item)
@@ -1516,7 +1585,15 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		}
 	}
 
-	// Also set "content" on each group from its text items (for backward compat)
+	// Also set "content" on each group from its text items (for backward compat).
+	//
+	// #606: this stays keyed on `text_message` deliberately. An attachment now
+	// carries an `item_details` too, so widening the filter — or dropping it
+	// and joining every item's details — would splice an attachment's payload
+	// into the message's rendered text. It cannot happen by accident either:
+	// an attachment's `item_details["content"]` is a decoded JSON value, never
+	// a string, so the assertion below would reject it. The item_type filter is
+	// the intent; the assertion is the second line of defence.
 	for i, g := range groups {
 		items := g["message_items"].([]map[string]any)
 		var content string
@@ -1536,6 +1613,61 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 	}
 
 	return groups, nil
+}
+
+// attachmentItemDetails shapes one `attachment_message` item's payload for the
+// transcript (#606).
+//
+// KEYS. Pylon's own API returns exactly {filepath, attachment_type, content,
+// id, item_type} — `filepath` being the computed property "/" + bucket + "/" +
+// name (elitea_core/models/pd/attachment.py:32-43,
+// models/message_items/attachment.py:29-32) — and never exposes `bucket` or
+// `name` separately. This function emits those five AND `name` and `bucket`,
+// a deliberate divergence, because the web client reads both directly:
+//
+//   - `name`   — useChatBoxHandlers.helpers.ts:265 renders an attachment in the
+//     transcript as `[${details?.name}]`, PlaybackChatBox.tsx:283-287 keys the
+//     playback toolbar on it, and entities/attachment's `getAttachmentName`
+//     prefers it over the filepath basename. Omitting it renders `[undefined]`.
+//   - `bucket` — chat-input/ui/imageAttachment.helpers.ts:78 chooses the
+//     download path with `details?.bucket !== '__undefined__'`; without the key
+//     that sentinel check can never fire and a sentinel-bucket attachment is
+//     routed to artifact storage, which has nothing to serve.
+//
+// `id` is the message ITEM's id (shared with the attachment row by the 1:1
+// primary key), which is what PlaybackChatBox.tsx:286 keys on.
+//
+// CONTENT IS DECODED, AND NEVER NULL. The column is `json` holding a LIST of
+// content chunks in pylon, which the client walks looking for an `image_url`
+// entry (entities/attachment/model/selectors.ts:36-44). Handing it back as a
+// string would make that walk see one opaque scalar and every inline image
+// would stop rendering, so it is unmarshalled to `any` and re-encoded as JSON.
+//
+// An absent or unparseable content emits `[]`, not null and not an omission.
+// That is not cosmetic: the client's `findContentByType` tests
+// `content === undefined` and then `Array.isArray(content)`, and falls through
+// to `content.type` — so a JSON `null` on the wire is neither undefined nor an
+// array and throws a TypeError reading `type` of null, taking the whole
+// message list down. `[]` and omission are both safe; `[]` is chosen so the
+// key's type is invariant across every attachment, which is one less shape for
+// a client to branch on.
+func attachmentItemDetails(itemID int, itemType, name, bucket, attachmentType string, content []byte) map[string]any {
+	var decoded any = []any{}
+	if len(content) > 0 {
+		var parsed any
+		if err := json.Unmarshal(content, &parsed); err == nil && parsed != nil {
+			decoded = parsed
+		}
+	}
+	return map[string]any{
+		"id":              itemID,
+		"item_type":       itemType,
+		"name":            name,
+		"bucket":          bucket,
+		"filepath":        "/" + bucket + "/" + name,
+		"attachment_type": attachmentType,
+		"content":         decoded,
+	}
 }
 
 func intFromAny(v any) int {

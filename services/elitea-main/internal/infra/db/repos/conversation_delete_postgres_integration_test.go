@@ -437,10 +437,11 @@ func TestDeleteMessageRemovesThePairedUserInput(t *testing.T) {
 	_, conversationUUID, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
 	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
 
-	deleted, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID)
+	result, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID)
 	if err != nil {
 		t.Fatalf("delete the answer: %v", err)
 	}
+	deleted := result.Deleted
 	if len(deleted) != 2 || deleted[0] != groupUUIDs[1] || deleted[1] != groupUUIDs[0] {
 		t.Fatalf("reported %v as deleted, want [answer question] = %v", deleted, []string{groupUUIDs[1], groupUUIDs[0]})
 	}
@@ -467,10 +468,11 @@ func TestDeleteMessageWithoutAPairRemovesOnlyItself(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "keep me", "delete me")
 
-	deleted, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], conversationAuthorID)
+	result, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], conversationAuthorID)
 	if err != nil {
 		t.Fatalf("delete an unpaired group: %v", err)
 	}
+	deleted := result.Deleted
 	if len(deleted) != 1 || deleted[0] != groupUUIDs[1] {
 		t.Fatalf("reported %v as deleted, want just %q", deleted, groupUUIDs[1])
 	}
@@ -538,10 +540,11 @@ func TestDeleteMessagePairDetachesOutsideReferences(t *testing.T) {
 	// clear. Deleting the bystander takes the question with it.
 	linkReply(t, repo, groupUUIDs[2], groupUUIDs[0])
 
-	deleted, err := repo.DeleteMessage(ctx, "1", groupUUIDs[2], conversationAuthorID)
+	result, err := repo.DeleteMessage(ctx, "1", groupUUIDs[2], conversationAuthorID)
 	if err != nil {
 		t.Fatalf("delete the newest group and its paired question: %v", err)
 	}
+	deleted := result.Deleted
 	if len(deleted) != 2 {
 		t.Fatalf("reported %v as deleted, want two ids", deleted)
 	}
@@ -555,5 +558,130 @@ func TestDeleteMessagePairDetachesOutsideReferences(t *testing.T) {
 	}
 	if replyTo != nil {
 		t.Fatalf("the surviving group still points at a deleted one (reply_to_id=%d)", *replyTo)
+	}
+}
+
+// --- Attachment items on a deleted message (#606 option 1). ---
+
+// seedAttachmentItem hangs an attachment item off a group, the way a sent
+// message with a file does. `name` carries the conversation-uuid prefix, which
+// is what makes it address the stored object directly.
+func seedAttachmentItem(t *testing.T, repo *ConversationsRepo, groupUUID, bucket, name string) {
+	t.Helper()
+	if _, err := repo.pool.Exec(context.Background(), `
+WITH item AS (
+    INSERT INTO p_1.chat_message_items (uuid, item_type, order_index, message_group_id)
+    SELECT gen_random_uuid(), 'attachment_message', 1, id
+    FROM p_1.chat_message_group WHERE uuid = $1::uuid
+    RETURNING id
+)
+INSERT INTO p_1.chat_messages_attachment (id, name, bucket, attachment_type, content)
+SELECT item.id, $3, $2, 'document', '[]'::json FROM item`, groupUUID, bucket, name); err != nil {
+		t.Fatalf("seed attachment item: %v", err)
+	}
+}
+
+// The repository reports what the deleted groups had stored, so the handler can
+// remove the bytes. It reports rather than deletes because the bytes are not in
+// the database — and because reporting is what lets the byte delete happen only
+// after every guard has passed.
+func TestDeleteMessageReportsTheAttachmentsItRemoved(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
+	seedAttachmentItem(t, repo, groupUUIDs[1], "chat-attachments", "conv-uuid/report.pdf")
+	seedAttachmentItem(t, repo, groupUUIDs[0], "chat-attachments", "conv-uuid/question.png")
+	linkReply(t, repo, groupUUIDs[1], groupUUIDs[0])
+
+	result, err := repo.DeleteMessage(ctx, "1", groupUUIDs[1], conversationAuthorID)
+	if err != nil {
+		t.Fatalf("delete the answer: %v", err)
+	}
+
+	// Both groups go, so both groups' attachments are reported.
+	got := make([]string, 0, len(result.Attachments))
+	for _, a := range result.Attachments {
+		got = append(got, a.Bucket+"/"+a.Name)
+	}
+	want := []string{"chat-attachments/conv-uuid/report.pdf", "chat-attachments/conv-uuid/question.png"}
+	if len(got) != len(want) {
+		t.Fatalf("reported attachments %v, want %v", got, want)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("attachment %q was not reported", w)
+		}
+	}
+
+	// The rows themselves are gone, carried by the item cascade 0127 declares.
+	var attachments int
+	if err := repo.pool.QueryRow(ctx, `SELECT count(*) FROM p_1.chat_messages_attachment`).Scan(&attachments); err != nil {
+		t.Fatalf("count attachment rows: %v", err)
+	}
+	if attachments != 0 {
+		t.Fatalf("%d attachment rows survived the delete, want 0 — the cascade from chat_message_items did not fire", attachments)
+	}
+}
+
+// A message with no attachments reports none — not a nil-vs-empty distinction
+// the handler would have to care about, just nothing to clean up.
+func TestDeleteMessageReportsNoAttachmentsWhenThereAreNone(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "question", "answer")
+
+	result, err := repo.DeleteMessage(context.Background(), "1", groupUUIDs[1], conversationAuthorID)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(result.Attachments) != 0 {
+		t.Fatalf("reported %v attachments for a message that had none", result.Attachments)
+	}
+}
+
+// A REFUSED delete must report nothing — this is pylon's ordering bug, stated
+// as a test. Pylon deletes the bytes before its summarized/last-message guards
+// run, so a request that then answers 400 has already destroyed the files.
+// Here the guards run first and the caller never learns of an attachment it is
+// not allowed to delete.
+func TestDeleteMessageReportsNoAttachmentsWhenItRefuses(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	repo := NewConversationsRepo(pool)
+	ctx := context.Background()
+	_, _, groupUUIDs := seedConversationWithParticipant(t, repo, "first", "second")
+	seedAttachmentItem(t, repo, groupUUIDs[0], "chat-attachments", "conv-uuid/first.pdf")
+
+	// Not the last group: refused.
+	result, err := repo.DeleteMessage(ctx, "1", groupUUIDs[0], conversationAuthorID)
+	if err == nil {
+		t.Fatal("deleting a non-last group was allowed")
+	}
+	if len(result.Attachments) != 0 {
+		t.Fatalf("a refused delete reported %v attachments to clean up", result.Attachments)
+	}
+
+	// And a refused delete for the wrong caller, on the last group.
+	seedAttachmentItem(t, repo, groupUUIDs[1], "chat-attachments", "conv-uuid/second.pdf")
+	result, err = repo.DeleteMessage(ctx, "1", groupUUIDs[1], otherUserID)
+	if err == nil {
+		t.Fatal("a non-author deleted a message")
+	}
+	if len(result.Attachments) != 0 {
+		t.Fatalf("a refused delete reported %v attachments to clean up", result.Attachments)
+	}
+
+	var attachments int
+	if err := repo.pool.QueryRow(ctx, `SELECT count(*) FROM p_1.chat_messages_attachment`).Scan(&attachments); err != nil {
+		t.Fatalf("count attachment rows: %v", err)
+	}
+	if attachments != 2 {
+		t.Fatalf("%d attachment rows left after two refused deletes, want 2", attachments)
 	}
 }

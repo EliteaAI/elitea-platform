@@ -265,6 +265,14 @@ type ChatMessageTraceStep struct {
 	Attrs             []byte             `db:"attrs" json:"attrs"`
 }
 
+type ChatMessagesAttachment struct {
+	ID             int32  `db:"id" json:"id"`
+	Name           string `db:"name" json:"name"`
+	Bucket         string `db:"bucket" json:"bucket"`
+	AttachmentType string `db:"attachment_type" json:"attachment_type"`
+	Content        []byte `db:"content" json:"content"`
+}
+
 type ChatMessagesContext struct {
 	ContextData []byte  `db:"context_data" json:"context_data"`
 	ContextType *string `db:"context_type" json:"context_type"`

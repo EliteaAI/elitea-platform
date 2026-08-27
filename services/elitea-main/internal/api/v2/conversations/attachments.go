@@ -31,28 +31,32 @@ package conversations
 // into the same SumProjectBytes aggregate every other artifact write
 // already contributes to.
 //
-// One legacy DB write is deliberately NOT ported: legacy also inserts a
-// chat_messages_attachment row (schema c.POSTGRES_TENANT_SCHEMA, polymorphic
-// child of message_items) so a chat message can render its attachments
-// inline. That table is not in this service's current migration baseline
-// (internal/db/schema/agent_chat_baseline.sql has chat_conversations/
-// chat_message_items/chat_messages_text/chat_messages_context — no
-// chat_messages_attachment) — unlike centry.project/centry.notifications
-// (externally-owned tables this service references but never creates),
-// there is no existing "current baseline" doc establishing who owns this
-// table's DDL today. Inventing a migration for it here risks colliding with
-// whatever process (legacy's own Alembic history, most likely) already owns
-// it in the real shared database. Left as an explicit open question for a
-// human owner, the same treatment S13/S14/S18 give their own external-
-// ownership gaps: does Go take over migration ownership of
-// chat_messages_attachment, is it provisioned by a shared process this
-// service should just start writing to, or does the chat UI's attachment
-// rendering move onto elitea_storage.objects as a separate, later,
-// consumer-side change (out of this plan's scope per "Any change to
-// consumer code" in "Explicitly out of scope")? Until answered, an
-// uploaded attachment's bytes are durable and downloadable through the
-// generic artifact API, but does not yet appear inline in the chat
-// transcript the way a legacy attachment does.
+// The legacy chat_messages_attachment row this file used to leave unwritten
+// IS now written, so the open question recorded here through part 1 of #606 is
+// answered: Go took migration ownership of the table
+// (migrations/tenant/0127_chat_message_attachment_items.sql, which records why
+// the collision risk with pylon's own Alembic history is addressable), and the
+// row itself is written by the ADMISSION transaction, not by this upload
+// handler — internal/infra/db/repos/agent_execution_jobs.go's
+// insertCurrentTurnAttachments, from `payload.attachments` on the start route.
+// It is written there and not here because an attachment must hang off the
+// message group it was SENT with, and this handler runs while the user is
+// still composing: at upload time there is no message group to attach to yet.
+//
+// What that leaves this file responsible for is unchanged — the bytes, the
+// elitea_storage.buckets/objects metadata, and the deterministic
+// `{conversationUUID}/{sanitizedFilename}` object key. That key is load
+// bearing on the other side: the client sends the filepath this endpoint
+// returned, the admission splits it on the first slash after the bucket, and
+// the remainder becomes the item's `name` — which is what
+// ConversationsRepo.DeleteMessage feeds back to the object store when a
+// message is deleted with ?delete_attachment.
+//
+// STILL NOT PORTED, and not by this change: the extracted document text pylon
+// appends to the item's `content` from a separate processing step, and image
+// thumbnailing. Those read the object through the SDK and belong to the
+// worker/SDK port; the admission writes only the creation-time scaffold chunk
+// (see agentexecutionapp.attachmentContentScaffold).
 
 import (
 	"bytes"
@@ -60,7 +64,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -71,6 +74,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	agentexecutionapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/agentexecution"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
@@ -218,9 +222,16 @@ type attachmentCreated struct {
 // isImageAttachment mirrors process_uploaded_files' own is_image check:
 // image/* by extension, except .svg (kept on the regular file limit,
 // matching legacy exactly).
+//
+// #606 made this rule load bearing in a SECOND place — an attachment item's
+// `attachment_type` column is "image" or "document" by exactly this test — so
+// it moved to agentexecutionapp.AttachmentKind and this stays a thin
+// delegation. Two copies would let the size ceiling this function gates and
+// the classification stored on the message disagree about what an image is
+// after any future edit to either copy, and nothing would fail until a user
+// uploaded the one extension that had drifted.
 func isImageAttachment(fileName string) bool {
-	mt := mime.TypeByExtension(path.Ext(fileName))
-	return strings.HasPrefix(mt, "image/") && !strings.HasSuffix(strings.ToLower(fileName), ".svg")
+	return agentexecutionapp.AttachmentKind(fileName) == agentexecutionapp.AttachmentKindImage
 }
 
 // sanitizeAttachmentFilename strips any directory component and control

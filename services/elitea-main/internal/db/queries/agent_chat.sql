@@ -259,7 +259,29 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: `attachment_message` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. `attachment_message`
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- `canvas_message` and `context_message` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR historical_item.item_type = 'context_message'
         )
   );
@@ -561,7 +583,29 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: `attachment_message` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. `attachment_message`
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- `canvas_message` and `context_message` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR (
                 historical_item.item_type = 'context_message'
                 AND NOT EXISTS (
@@ -1158,7 +1202,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- `attachment_message` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR historical_item.item_type = 'context_message'
             )
       )
@@ -1208,10 +1256,11 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            sqlc.arg(execution_id)::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group;
 
 -- name: LockCurrentAgentResponseForTerminal :one
@@ -1404,7 +1453,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- `attachment_message` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR (
                     historical_item.item_type = 'context_message'
                     AND NOT EXISTS (
@@ -1468,8 +1521,53 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            sqlc.arg(execution_id)::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group;
+
+-- name: InsertCurrentAgentAttachmentItem :exec
+-- #606: one uploaded chat attachment, as an `attachment_message` item on the
+-- QUESTION group plus its 1:1 payload row.
+--
+-- Both rows in ONE statement, via a data-modifying CTE, rather than two calls:
+-- chat_messages_attachment's primary key IS the item's id (0127 shares the
+-- key so the discriminator and the payload cannot disagree), so the payload
+-- insert must see the id the item insert generated. Doing it in one statement
+-- also means there is no window in which an `attachment_message` item exists
+-- with no payload — the shape ListMessageGroups treats as "no attachment row"
+-- and renders as nothing.
+--
+-- order_index is supplied, not computed with count(*) the way
+-- InsertCurrentAgentTextItem does it: these items are written inside the
+-- admission transaction immediately after the question item, so the caller
+-- already knows the sequence (1, 2, ... — the question's text item holds 0,
+-- matching pylon's enumerate(attachments_info, start=1) at
+-- rpc/chat_all.py:303). A count(*) here would additionally re-read a table it
+-- is writing to, per attachment.
+--
+-- `content` is cast to json, NOT jsonb: 0127 records why the deployed column
+-- is json (a shared table pylon also reads/writes, where jsonb's key
+-- reordering and whitespace normalisation would change the stored bytes).
+WITH item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    VALUES (
+        sqlc.arg(item_id)::uuid,
+        'attachment_message',
+        sqlc.arg(order_index)::integer,
+        '{}'::jsonb,
+        sqlc.arg(message_group_id)::integer
+    )
+    RETURNING id
+)
+INSERT INTO chat_messages_attachment (id, name, bucket, attachment_type, content)
+SELECT item.id,
+       sqlc.arg(name)::text,
+       sqlc.arg(bucket)::text,
+       sqlc.arg(attachment_type)::text,
+       sqlc.arg(content)::json
+FROM item;

@@ -215,6 +215,29 @@ type Querier interface {
 	InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error)
+	// #606: one uploaded chat attachment, as an `attachment_message` item on the
+	// QUESTION group plus its 1:1 payload row.
+	//
+	// Both rows in ONE statement, via a data-modifying CTE, rather than two calls:
+	// chat_messages_attachment's primary key IS the item's id (0127 shares the
+	// key so the discriminator and the payload cannot disagree), so the payload
+	// insert must see the id the item insert generated. Doing it in one statement
+	// also means there is no window in which an `attachment_message` item exists
+	// with no payload — the shape ListMessageGroups treats as "no attachment row"
+	// and renders as nothing.
+	//
+	// order_index is supplied, not computed with count(*) the way
+	// InsertCurrentAgentTextItem does it: these items are written inside the
+	// admission transaction immediately after the question item, so the caller
+	// already knows the sequence (1, 2, ... — the question's text item holds 0,
+	// matching pylon's enumerate(attachments_info, start=1) at
+	// rpc/chat_all.py:303). A count(*) here would additionally re-read a table it
+	// is writing to, per attachment.
+	//
+	// `content` is cast to json, NOT jsonb: 0127 records why the deployed column
+	// is json (a shared table pylon also reads/writes, where jsonb's key
+	// reordering and whitespace normalisation would change the stored bytes).
+	InsertCurrentAgentAttachmentItem(ctx context.Context, arg InsertCurrentAgentAttachmentItemParams) error
 	InsertCurrentAgentTextContent(ctx context.Context, arg InsertCurrentAgentTextContentParams) error
 	InsertCurrentAgentTextItem(ctx context.Context, messageGroupID int64) (int32, error)
 	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)

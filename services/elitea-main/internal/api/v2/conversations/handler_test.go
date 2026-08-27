@@ -51,8 +51,12 @@ type mockRepo struct {
 	// deleteMessageResult is what the repository reports it removed — one id
 	// for a lone group, two when the reply's paired question went with it.
 	deleteMessageResult []string
-	listMessageGroupsFn func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	listParticipantsFn  func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
+	// deleteMessageAttachments is what the repository reports the deleted
+	// groups had stored, which the handler only acts on when the request asks
+	// for it with `delete_attachment`.
+	deleteMessageAttachments []conversations.AttachmentRef
+	listMessageGroupsFn      func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
+	listParticipantsFn       func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -163,15 +167,19 @@ func (m *mockRepo) DeleteMessages(ctx context.Context, projectID, conversationID
 	return nil
 }
 
-func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) ([]string, error) {
+func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (conversations.DeleteMessageResult, error) {
 	m.deleteMessageUserID = userID
+	result := conversations.DeleteMessageResult{
+		Deleted:     m.deleteMessageResult,
+		Attachments: m.deleteMessageAttachments,
+	}
+	if result.Deleted == nil {
+		result.Deleted = []string{groupUID}
+	}
 	if m.deleteMessageFn != nil {
-		return m.deleteMessageResult, m.deleteMessageFn(ctx, projectID, groupUID)
+		return result, m.deleteMessageFn(ctx, projectID, groupUID)
 	}
-	if m.deleteMessageResult != nil {
-		return m.deleteMessageResult, nil
-	}
-	return []string{groupUID}, nil
+	return result, nil
 }
 
 // newRouter mounts the handler under /projects/{projectID}/conversations to
