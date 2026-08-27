@@ -211,6 +211,45 @@ describe('Onboarding', () => {
     expect(screen.getByLabelText('View tour in full screen')).toBeInTheDocument();
   });
 
+  it('shows the tour alone after a refresh mid-onboarding — no spinner on top of it', async () => {
+    // `showTour` starts true from sessionStorage while the author query is
+    // still in flight. Both branches used to render into the same flex column.
+    sessionStore.set('onboarding_state', 'true');
+    server.use(getGetCurrentAuthorMockHandler(() => new Promise(() => {}) as never));
+    await renderOnboarding();
+
+    expect(screen.getByLabelText('View tour in full screen')).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar', { name: /loading/i })).not.toBeInTheDocument();
+  });
+
+  it('says so when the author query fails, instead of spinning forever', async () => {
+    server.use(
+      getGetCurrentAuthorMockHandler(() => {
+        throw new Error('boom');
+      }),
+    );
+    await renderOnboarding();
+
+    expect(await screen.findByText(/could not load your account/i)).toBeInTheDocument();
+    expect(screen.queryByRole('progressbar', { name: /loading/i })).not.toBeInTheDocument();
+
+    // And the dead end is recoverable: the server comes back, the user retries.
+    personalProjectId = '42';
+    server.use(
+      getGetCurrentAuthorMockHandler(() => ({
+        id: 'user-1',
+        name: 'Test User',
+        email: 'test@example.com',
+        avatar: '',
+        description: '',
+        personal_project_id: personalProjectId,
+      })),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+    expect(await screen.findByRole('button', { name: /Jump in now!/i })).toBeInTheDocument();
+  });
+
   it('shows the loading spinner while the author query has not answered', async () => {
     // No handler answer yet: the request hangs, so the page has no user.
     server.use(getGetCurrentAuthorMockHandler(() => new Promise(() => {}) as never));
@@ -263,7 +302,10 @@ describe('Onboarding', () => {
     personalProjectId = '42';
     await advance(10_000);
 
-    expect(refreshCalls).toBeGreaterThan(0);
+    // Exactly once, not merely "at least once": the effect that fires this
+    // lists the route context in its dependencies, so a fresh context identity
+    // re-runs it — and each run is a full boot probe plus a router invalidate.
+    expect(refreshCalls).toBe(1);
   });
 
   it('lets a user who already holds a personal project straight through, with no wait at all', async () => {

@@ -46,6 +46,17 @@ export const styles = {
   progressContainer: {
     width: '100%',
   },
+  /** The dead-end branch: the author query stopped answering. */
+  errorContainer: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: '1rem',
+    alignItems: 'center',
+    justifyContent: 'center',
+    textAlign: 'center' as const,
+  },
   /** Stand-in for the old app's `pages/LoadingPage.jsx` — out of this unit's
    *  `pages/onboarding` scope, and the new app has no shared equivalent yet. */
   loadingContainer: {

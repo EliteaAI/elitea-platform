@@ -292,6 +292,55 @@ func TestEnsureSkipsIdentitiesThatMustNotOwnAPersonalProject(t *testing.T) {
 	}
 }
 
+// A row carrying this user's personal-project name that the user is NOT a
+// member of is not their personal project, however much the name looks like
+// one — the resolver's first branch is membership-checked. Returning it
+// reported success while /social/author went on answering "" for good.
+//
+// Reachable two ways, one cause: `POST /projects` takes the name as free text
+// and reserves nothing, and pylon-era data carries `project_user_<uid>` rows
+// whose role assignments are gone.
+func TestEnsureIgnoresAProjectOfTheSameNameTheCallerIsNotAMemberOf(t *testing.T) {
+	ctx := context.Background()
+	pool := newPersonalProjectPool(t)
+	ensurer := newTestEnsurer(t, pool)
+	victim := seedUser(t, pool, "victim@autotest.local", "Victim")
+	squatter := seedUser(t, pool, "squatter@autotest.local", "Squatter")
+
+	var squattedID int64
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO centry.project (name, owner_id, plugins, create_success)
+		 VALUES ($1, $2, '{}', true) RETURNING id`,
+		personalproject.Name(victim), squatter,
+	).Scan(&squattedID); err != nil {
+		t.Fatalf("seed the squatted project: %v", err)
+	}
+
+	provisioned, err := ensurer.Ensure(ctx, victim)
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if provisioned == squattedID {
+		t.Fatal("Ensure handed the caller a project they are not a member of")
+	}
+
+	// The squatted row is left alone: it is somebody else's project, and the
+	// repair path must never delete one.
+	var survivors int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM centry.project WHERE id = $1`, squattedID).Scan(&survivors); err != nil {
+		t.Fatal(err)
+	}
+	if survivors != 1 {
+		t.Fatalf("Ensure deleted project %d, which belongs to another user", squattedID)
+	}
+
+	// And the caller ends up with a project the resolver actually answers with.
+	if resolved := resolveAuthorPersonalProjectID(ctx, t, pool, victim); resolved != provisioned {
+		t.Fatalf("the author resolver answered %d, want the provisioned project %d", resolved, provisioned)
+	}
+}
+
 // An id past int32 is refused, not TRUNCATED. `auth_core__user.id` is an
 // `integer` and an advisory lock key is an int4, so a silent narrowing would
 // take the lock of — and then read — a different account entirely:

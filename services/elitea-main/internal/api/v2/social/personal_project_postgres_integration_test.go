@@ -25,6 +25,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -51,40 +52,43 @@ const (
 // internal/infra/db.RunMigrations (what the other integration tests in this
 // package use) does not install — so this suite builds the same template
 // internal/application/projectprovisioning's own suite does.
-var personalProjectSocialTemplate string
+//
+// BUILT ON FIRST USE, NOT IN TestMain. A TestMain runs for the whole package,
+// so a template that failed to build there would `os.Exit(1)` before m.Run()
+// and take handler_test.go, authors_test.go and feedback_test.go down with it
+// — three suites that touch no database at all. Building it lazily keeps the
+// failure inside the tests that actually need it.
+var (
+	personalProjectSocialTemplateOnce sync.Once
+	personalProjectSocialTemplate     string
+	personalProjectSocialTemplateErr  error
+)
 
-func TestMain(m *testing.M) {
-	databaseURL := personalProjectSocialDatabaseURL()
-	if databaseURL == "" {
-		os.Exit(m.Run())
-	}
-
-	bootstrap, err := os.ReadFile(personalProjectSocialBootstrap)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "read bootstrap schema: %v\n", err)
-		os.Exit(1)
-	}
-
-	ctx, cancel := dbtest.BuildContext(context.Background())
-	adminPool, err := pgxpool.New(ctx, databaseURL)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "open admin pool: %v\n", err)
-		cancel()
-		os.Exit(1)
-	}
-	templateName, err := dbtest.EnsureTemplate(ctx, adminPool, dbtest.Spec{
-		Files:   platformmigrations.Files,
-		Seed:    string(bootstrap),
-		Tenants: []int64{1},
+// personalProjectSocialTemplateName builds the template once per package run
+// and returns the same answer — or the same error — to every later caller.
+func personalProjectSocialTemplateName(databaseURL string) (string, error) {
+	personalProjectSocialTemplateOnce.Do(func() {
+		bootstrap, err := os.ReadFile(personalProjectSocialBootstrap)
+		if err != nil {
+			personalProjectSocialTemplateErr = fmt.Errorf("read bootstrap schema: %w", err)
+			return
+		}
+		ctx, cancel := dbtest.BuildContext(context.Background())
+		defer cancel()
+		adminPool, err := pgxpool.New(ctx, databaseURL)
+		if err != nil {
+			personalProjectSocialTemplateErr = fmt.Errorf("open admin pool: %w", err)
+			return
+		}
+		defer adminPool.Close()
+		personalProjectSocialTemplate, personalProjectSocialTemplateErr = dbtest.EnsureTemplate(
+			ctx, adminPool, dbtest.Spec{
+				Files:   platformmigrations.Files,
+				Seed:    string(bootstrap),
+				Tenants: []int64{1},
+			})
 	})
-	adminPool.Close()
-	cancel()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "build personal project template: %v\n", err)
-		os.Exit(1)
-	}
-	personalProjectSocialTemplate = templateName
-	os.Exit(m.Run())
+	return personalProjectSocialTemplate, personalProjectSocialTemplateErr
 }
 
 func personalProjectSocialDatabaseURL() string {
@@ -227,8 +231,9 @@ func newPersonalProjectSocialPool(t *testing.T) *pgxpool.Pool {
 	if databaseURL == "" {
 		t.Skipf("set %s to run the personal project author-endpoint test", personalProjectSocialURLEnv)
 	}
-	if personalProjectSocialTemplate == "" {
-		t.Fatalf("TestMain did not build the personal project template")
+	template, err := personalProjectSocialTemplateName(databaseURL)
+	if err != nil {
+		t.Fatalf("build the personal project template: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -241,19 +246,19 @@ func newPersonalProjectSocialPool(t *testing.T) *pgxpool.Pool {
 	defer adminPool.Close()
 
 	databaseName := fmt.Sprintf("elitea_social_pp_%d_%d", os.Getpid(), time.Now().UnixNano())
-	if err := dbtest.CreateFromTemplate(ctx, adminPool, personalProjectSocialTemplate, databaseName); err != nil {
+	if err := dbtest.CreateFromTemplate(ctx, adminPool, template, databaseName); err != nil {
 		t.Fatalf("create isolated database: %v", err)
 	}
 
-	config, err := pgxpool.ParseConfig(databaseURL)
-	if err != nil {
-		t.Fatalf("parse %s: %v", personalProjectSocialURLEnv, err)
+	config, parseErr := pgxpool.ParseConfig(databaseURL)
+	if parseErr != nil {
+		t.Fatalf("parse %s: %v", personalProjectSocialURLEnv, parseErr)
 	}
 	config.ConnConfig.Database = databaseName
 	config.MaxConns = 4
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("open isolated pool: %v", err)
+	pool, poolErr := pgxpool.NewWithConfig(ctx, config)
+	if poolErr != nil {
+		t.Fatalf("open isolated pool: %v", poolErr)
 	}
 	t.Cleanup(func() {
 		pool.Close()

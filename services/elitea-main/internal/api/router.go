@@ -652,6 +652,25 @@ func compressJSONResponses() func(http.Handler) http.Handler {
 // of the routes registered here have not been assigned an exact legacy route
 // policy, but real deployments need them anyway (#243).
 func newProductionRouter(cfg RouterConfig) chi.Router {
+	// The project-create pipeline, built ONCE and shared by every mount that
+	// needs it: the projects route, the support assistant, and the two readers
+	// of "the caller's personal project" below.
+	//
+	// It used to be built per call site. Three Provisioner values over one
+	// pool, each with its own vault handler and bootstrappers, is the shape the
+	// configurations handler in this file already warns about — "Building two
+	// would let the write path and the read path disagree about which pool they
+	// are on" — and an option added at one site and not the others would give
+	// them three different behaviours for no visible reason.
+	projectProvisioner, projectProvisionerOK := newProjectProvisioner(cfg)
+	// The personal-project ensurer over that one provisioner. Nil when the
+	// composition has no pool, which every consumer tolerates.
+	var personalProjects *personalproject.Ensurer
+	if projectProvisionerOK {
+		if ensurer, err := personalproject.NewEnsurer(cfg.Pool, projectProvisioner); err == nil {
+			personalProjects = ensurer
+		}
+	}
 	if cfg.AuthClient == nil {
 		cfg.AuthClient = cfg.Auth.Client
 	}
@@ -976,8 +995,8 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			projectOptions := []v2projects.Option{
 				v2projects.WithPermissionResolver(permissionResolver),
 			}
-			if provisioner, ok := newProjectProvisioner(cfg); ok {
-				projectOptions = append(projectOptions, v2projects.WithProvisioner(provisioner))
+			if projectProvisionerOK {
+				projectOptions = append(projectOptions, v2projects.WithProvisioner(projectProvisioner))
 			}
 			r.Mount("/projects", v2projects.NewHandler(cfg.Pool, projectOptions...).Routes())
 
@@ -2601,11 +2620,9 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// assistant use, for the reason stated at that call site: a project
 			// assembled by a second, simpler path is a half-provisioned project.
 			socialOptions := []v2social.Option{}
-			if provisioner, ok := newProjectProvisioner(cfg); ok {
-				if ensurer, err := personalproject.NewEnsurer(cfg.Pool, provisioner); err == nil {
-					socialOptions = append(socialOptions,
-						v2social.WithPersonalProjectEnsurer(ensurer))
-				}
+			if personalProjects != nil {
+				socialOptions = append(socialOptions,
+					v2social.WithPersonalProjectEnsurer(personalProjects))
 			}
 			r.Mount("/social", v2social.NewHandler(cfg.Pool, socialOptions...).Routes())
 
@@ -2732,9 +2749,9 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// secrets vault, buckets — because a project assembled by a
 				// second, simpler path is exactly the half-provisioned project
 				// the support routes would then 500 against.
-				if provisioner, ok := newProjectProvisioner(cfg); ok {
+				if projectProvisionerOK {
 					supportOptions = append(supportOptions,
-						v2support.WithProvisioner(supportProjectProvisioner{provisioner}))
+						v2support.WithProvisioner(supportProjectProvisioner{projectProvisioner}))
 				}
 				r.Mount("/support_assistant", v2support.NewHandler(cfg.Pool, supportOptions...).Routes())
 			}
@@ -2834,10 +2851,29 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			r.Mount("/llm", proxy)
 		})
 	}
+	// The /llm resolver ASKS for the personal project it could not find.
+	//
+	// `/social/author` is the SPA's reader of that value; this is the other
+	// one, and it is the reader a PAT-only caller reaches — the SDK, a
+	// scheduled job, a scripted client. Hooking only the SPA's endpoint left
+	// those callers with no personal project and `project_not_resolved` on
+	// every /llm request, permanently. The concrete type is asserted rather
+	// than the interface widened: only the database-backed resolver can be
+	// given an ensurer, and a composition that supplied any other one keeps
+	// exactly the resolver it supplied.
+	withPersonalProjects := func(resolver apimw.PersonalProjectResolver) apimw.PersonalProjectResolver {
+		if personalProjects == nil {
+			return resolver
+		}
+		if database, ok := resolver.(*apimw.DBPersonalProjectResolver); ok {
+			return database.WithPersonalProjectEnsurer(personalProjects)
+		}
+		return resolver
+	}
 	if cfg.GatewayProxy != nil {
-		mountLLM(cfg.GatewayProxy, cfg.GatewayProjectResolver)
+		mountLLM(cfg.GatewayProxy, withPersonalProjects(cfg.GatewayProjectResolver))
 	} else if cfg.LLMProxy != nil {
-		mountLLM(cfg.LLMProxy, cfg.LLMProjectResolver)
+		mountLLM(cfg.LLMProxy, withPersonalProjects(cfg.LLMProjectResolver))
 	} else {
 		// Issue #463: NO backend is composed, because LLM_GATEWAY_URL is empty.
 		//

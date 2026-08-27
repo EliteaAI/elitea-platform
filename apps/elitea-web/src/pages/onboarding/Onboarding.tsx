@@ -74,6 +74,8 @@ import { t } from '@/shared/i18n';
 import { createStorage } from '@/shared/lib/storage';
 import { LogoIcon } from '@/shared/ui/icons/logo-icon';
 
+import { AuthorUnavailable } from './AuthorUnavailable';
+import { authorOf, displayName, selectRefreshSession } from './Onboarding.selectors';
 import { styles } from './Onboarding.styles';
 
 const ONBOARDING_STORAGE_KEY = 'onboarding_state';
@@ -86,57 +88,6 @@ const AUTHOR_POLL_INTERVAL_MS = 5_000;
 const PROGRESS_CAP = 95;
 const PROGRESS_STEP = 95 / 150;
 
-/**
- * The caller's profile, read out of the generated query's enveloped
- * `{data, status, headers}` result — the same read `widgets/app-shell`'s
- * `personalProjectIdOf` performs, and for the same reason (`eliteaFetch`
- * throws on non-2xx, so the 401 arm is unreachable at this read site).
- */
-interface AuthorProfile {
-  readonly id?: string;
-  readonly name?: string;
-  readonly email?: string;
-  readonly personal_project_id?: string;
-}
-
-function authorOf(data: unknown): AuthorProfile | undefined {
-  return (data as { readonly data?: AuthorProfile } | undefined)?.data;
-}
-
-/**
- * `user.name || user.email` — the baseline's own fallback
- * (`Onboarding.jsx`'s `<Welcome name={user.name || user.email}/>`). `Welcome`
- * supplies its own "there" when both are blank.
- */
-function displayName(author: AuthorProfile): string | undefined {
-  if (author.name !== undefined && author.name !== '') return author.name;
-  if (author.email !== undefined && author.email !== '') return author.email;
-  return undefined;
-}
-
-/**
- * `auth.refreshSession` from the TanStack Router root context
- * (`src/app/router-context.ts`) — read structurally rather than imported,
- * because `pages/` may not import `app/` (`no-upward-from-pages`). Same shape
- * `features/settings`'s `TokensTable` uses to read `auth.getUser`.
- *
- * WHY THE PAGE NEEDS IT. The route guards do not read the author query; they
- * read the session the router was given, and that session captured
- * `personal_project_id: undefined` at boot. Without a refresh, a user who
- * finishes onboarding and later navigates to `/` is judged by the stale
- * session and sent straight back here.
- */
-interface SessionRefreshContext {
-  readonly auth?: {
-    readonly refreshSession?: () => Promise<void>;
-  };
-}
-
-function selectRefreshSession(context: unknown): (() => Promise<void>) | undefined {
-  if (typeof context !== 'object' || context === null) return undefined;
-  return (context as SessionRefreshContext).auth?.refreshSession;
-}
-
 const Onboarding = memo(() => {
   // Disclosed, not silently dropped: useTrackEvent is unavailable in the new
   // app — no analytics infra yet.
@@ -145,6 +96,17 @@ const Onboarding = memo(() => {
   const canGoBack = useCanGoBack();
   const routeContext: unknown = useRouteContext({ strict: false });
   const progressIntervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /**
+   * Latches the "project arrived" transition, synchronously.
+   *
+   * The effect below cannot guard on `thePrivateProjectIsReady` alone: it SETS
+   * that state, and state set in an effect is not visible to a re-run queued
+   * before it commits. `useRouteContext` is in that effect's dependency list,
+   * so any render giving the context a fresh identity re-runs it — and two runs
+   * would each fire a full session refresh (three requests apiece) and a
+   * `router.invalidate()`.
+   */
+  const readyHandledRef = useRef(false);
   const [thePrivateProjectIsReady, setThePrivateProjectIsReady] = useState(false);
 
   // Check if user has clicked "Get Started" before (survives a refresh).
@@ -253,12 +215,13 @@ const Onboarding = memo(() => {
    * refreshed session.
    */
   useEffect(() => {
-    if (!personalProjectId || thePrivateProjectIsReady) return;
+    if (!personalProjectId || readyHandledRef.current) return;
+    readyHandledRef.current = true;
     handlePersonalProjectReady();
     const refreshSession = selectRefreshSession(routeContext);
     if (refreshSession === undefined) return;
     void refreshSession().then(() => router.invalidate());
-  }, [personalProjectId, thePrivateProjectIsReady, handlePersonalProjectReady, routeContext, router]);
+  }, [personalProjectId, handlePersonalProjectReady, routeContext, router]);
 
   return (
     <Box
@@ -324,9 +287,25 @@ const Onboarding = memo(() => {
               />
             )}
             {showTour && <OnboardingTour />}
-            {author?.id === undefined && (
+            {/*
+              Exclusive with the tour, which it used to render ON TOP OF: a
+              refresh mid-onboarding starts `showTour` true from sessionStorage
+              while the author query has not answered, and both branches were
+              live at once inside the same flex column.
+
+              The error arm exists because the query can also END without an
+              answer. `/social/author` answering 500, or the network dropping,
+              exhausts TanStack Query's retries and leaves `author` undefined
+              for good — which rendered a bare spinner forever, indistinguishable
+              from "still provisioning".
+            */}
+            {!showTour && author?.id === undefined && (
               <Box sx={styles.loadingContainer}>
-                <CircularProgress aria-label={t('pages.onboarding.loadingAriaLabel', 'Loading…')} />
+                {authorQuery.isError ? (
+                  <AuthorUnavailable onRetry={() => void authorQuery.refetch()} />
+                ) : (
+                  <CircularProgress aria-label={t('pages.onboarding.loadingAriaLabel', 'Loading…')} />
+                )}
               </Box>
             )}
           </Box>

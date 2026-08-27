@@ -72,16 +72,21 @@ type Provisioner interface {
 	Deprovision(ctx context.Context, projectID int64) (projectprovisioning.Result, error)
 }
 
-// personalProjectNameTemplate is pylon's PROJECT_PERSONAL_NAME_TEMPLATE
-// (legacy/plugins/projects/constants.py:13), and the name
-// social/handler.go's resolvePersonalProjectID and
-// api/middleware/project_resolver.go both look up. All three have to agree, and
-// the two readers build it from the same `project_user_` literal.
-const personalProjectNameTemplate = "project_user_%d"
+// NamePrefix is pylon's PROJECT_PERSONAL_NAME_TEMPLATE
+// (legacy/plugins/projects/constants.py:13) without its id.
+//
+// IT IS EXPORTED BECAUSE THE WRITER AND THE READERS MUST AGREE. This package
+// writes the name; social/handler.go's resolvePersonalProjectID and
+// api/middleware/project_resolver.go read it. Each used to carry its own
+// `project_user_` literal, and nothing failed if one changed — a rename that
+// updated the writer alone would make provisioning succeed and resolution
+// answer "" for every account, which is the exact defect this package exists
+// to close. Both readers now build the name from here.
+const NamePrefix = "project_user_"
 
 // Name is the personal project of one user, by id.
 func Name(userID int64) string {
-	return fmt.Sprintf(personalProjectNameTemplate, userID)
+	return NamePrefix + strconv.FormatInt(userID, 10)
 }
 
 // personalProjectPlugins is pylon's create_personal_project default
@@ -109,6 +114,23 @@ const systemUserNamePrefix = ":system:project:"
 // rolling deploy.
 const advisoryLockClass = 0x454C5041 // "ELPA"
 
+// maxConcurrentProvisions bounds how many personal projects this process
+// builds at once.
+//
+// IT IS A CONNECTION BUDGET, not a throughput knob. Ensure holds one pool
+// connection for its whole run — the advisory lock is session scoped, so it
+// cannot be released earlier — while projectprovisioning takes FURTHER
+// connections from that same pool for its steps, and migrate.Runner.ApplyTenant
+// takes one of its own. The pool defaults to max(4, NumCPU) connections, so on
+// a small pod four simultaneous first logins would hold every connection for
+// their locks and then block forever waiting for a connection to do the work
+// with — starving the whole API until the timeout fired.
+//
+// One, matching the reference: pylon's private_projects.py runs a SINGLE
+// worker thread over a visitor queue. Waiting is free here, because nothing is
+// waiting on the result — the SPA polls.
+const maxConcurrentProvisions = 1
+
 // defaultProvisionTimeout bounds one provisioning attempt.
 //
 // It is generous because the work is genuinely long: the project_schema step
@@ -132,6 +154,11 @@ type Ensurer struct {
 	// without this, each poll would start another provisioning attempt, and
 	// they would queue up on the advisory lock behind the first.
 	inFlight sync.Map
+
+	// slots is the concurrency budget maxConcurrentProvisions describes. A
+	// buffered channel rather than a worker pool: the goroutine that waits here
+	// holds nothing while it waits, which is the entire point.
+	slots chan struct{}
 }
 
 // Option configures an Ensurer at construction time.
@@ -169,6 +196,7 @@ func NewEnsurer(pool *pgxpool.Pool, provisioner Provisioner, options ...Option) 
 		provisioner: provisioner,
 		logger:      slog.Default(),
 		timeout:     defaultProvisionTimeout,
+		slots:       make(chan struct{}, maxConcurrentProvisions),
 	}
 	for _, option := range options {
 		option(ensurer)
@@ -196,6 +224,11 @@ func (e *Ensurer) EnsureAsync(userID int64) {
 	}
 	go func() {
 		defer e.inFlight.Delete(userID)
+		// Wait for a slot BEFORE the timeout starts. A goroutine queued behind
+		// another user's provisioning holds no connection and no deadline; one
+		// whose clock started at spawn time could expire before it ever ran.
+		e.slots <- struct{}{}
+		defer func() { <-e.slots }()
 		// context.Background(), not the request's: the request that triggered
 		// this is answered long before provisioning finishes, and cancelling
 		// halfway through leaves a half-built tenant for the next attempt to
@@ -286,33 +319,64 @@ func (e *Ensurer) Ensure(ctx context.Context, userID int64) (int64, error) {
 		}
 	}()
 
-	return e.ensureLocked(ctx, userID)
+	return e.ensureLocked(ctx, userID, accountKey)
 }
 
 // ensureLocked is Ensure's body, with the advisory lock held.
-func (e *Ensurer) ensureLocked(ctx context.Context, userID int64) (int64, error) {
-	existingID, created, found, err := e.existingProject(ctx, userID)
+//
+// It takes the id BOTH ways on purpose. `accountKey` is the narrowed value the
+// bound check above produced, and every query below binds that rather than
+// narrowing again: a conversion written here would sit in a function the guard
+// does not dominate, which is the shape CodeQL's
+// go/incorrect-integer-conversion flagged in the deferred unlock. `userID` is
+// what the provisioner's own int64 fields and the project name are built from.
+func (e *Ensurer) ensureLocked(ctx context.Context, userID int64, accountKey int32) (int64, error) {
+	candidates, err := e.existingProjects(ctx, userID, accountKey)
 	if err != nil {
 		return 0, err
 	}
-	switch {
-	case found && created:
-		return existingID, nil
-	case found && !created:
-		// A project row that provisioning never finished. projectprovisioning
-		// compensates its own failures, so reaching this state means the
-		// compensation itself failed — or the process died mid-flight. Either
-		// way the row is unusable AND permanent: resolvePersonalProjectID's
-		// first branch matches on the name, so the owner would be told they
-		// have a project that no tenant schema backs.
-		//
-		// pylon repairs it the same way (fix_create_personal_projects: delete
-		// then create).
-		e.logger.WarnContext(ctx, "removing an unfinished personal project before recreating it",
-			"user_id", userID, "project_id", existingID)
-		if _, err := e.provisioner.Deprovision(ctx, existingID); err != nil {
-			return 0, fmt.Errorf("personalproject: remove unfinished project %d: %w", existingID, err)
+
+	// THE ONLY ROW THAT COUNTS IS THE ONE THE RESOLVER WOULD RETURN.
+	// resolvePersonalProjectID's first branch matches the name AND requires the
+	// caller to hold a project role in it, so a row this caller is not a member
+	// of is not their personal project however much its name looks like one.
+	// Returning such a row here reported success while /social/author went on
+	// answering "" for good.
+	for _, candidate := range candidates {
+		if candidate.member && candidate.created {
+			return candidate.id, nil
 		}
+	}
+
+	// A row this caller OWNS that provisioning never finished.
+	// projectprovisioning compensates its own failures, so reaching this state
+	// means the compensation itself failed, or the process died mid-flight.
+	// pylon repairs it the same way (fix_create_personal_projects: delete then
+	// create).
+	//
+	// The ownership test is the guard, not decoration: `centry.project.name` is
+	// caller-supplied free text on `POST /projects` and carries no unique
+	// index, so without it this branch would delete a project somebody else
+	// made and named `project_user_<this caller>`.
+	for _, candidate := range candidates {
+		if candidate.owned && !candidate.created {
+			e.logger.WarnContext(ctx, "removing an unfinished personal project before recreating it",
+				"user_id", userID, "project_id", candidate.id)
+			if _, err := e.provisioner.Deprovision(ctx, candidate.id); err != nil {
+				return 0, fmt.Errorf("personalproject: remove unfinished project %d: %w", candidate.id, err)
+			}
+			break
+		}
+	}
+
+	// Anything still standing under this name belongs to somebody else. It is
+	// left alone and a new row is provisioned beside it: the resolver selects
+	// on membership, so the row created below is the one it will answer with,
+	// and the alternative is leaving this caller with no personal project at
+	// all for as long as the other row exists.
+	if len(candidates) != 0 {
+		e.logger.WarnContext(ctx, "a project of this name exists that the caller is not a member of",
+			"user_id", userID, "name", Name(userID), "existing", candidateIDs(candidates))
 	}
 
 	result, err := e.provisioner.Provision(ctx, projectprovisioning.Request{
@@ -332,26 +396,73 @@ func (e *Ensurer) ensureLocked(ctx context.Context, userID int64) (int64, error)
 	return result.ProjectID, nil
 }
 
-// existingProject reads the user's personal project row.
+// existingCandidate is one row already carrying this user's personal-project
+// name, with the two facts that decide what may be done with it.
+type existingCandidate struct {
+	id      int64
+	created bool
+	// owned reports `owner_id = <this user>`. Only an owned row may be deleted.
+	owned bool
+	// member reports the project-role assignment resolvePersonalProjectID's
+	// first branch requires. Only a member row may be RETURNED, because only a
+	// member row is one that resolver will ever answer with.
+	member bool
+}
+
+// existingProjects reads EVERY row already carrying this user's
+// personal-project name, lowest id first.
 //
-// ORDER BY id is the same tie-break resolvePersonalProjectID applies, so the
-// two agree about WHICH row is the personal project on a database that already
-// carries duplicates — centry.project has no unique index on `name`, and a
-// deployment that ran without this package's advisory lock could have two.
-func (e *Ensurer) existingProject(
-	ctx context.Context, userID int64,
-) (projectID int64, created bool, found bool, err error) {
-	err = e.pool.QueryRow(ctx,
-		`SELECT id, create_success FROM centry.project WHERE name = $1 ORDER BY id LIMIT 1`,
-		Name(userID),
-	).Scan(&projectID, &created)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false, false, nil
-	}
+// Every row, not the lowest one: `centry.project` has no unique index on
+// `name` and `POST /projects` accepts the name as free text, so more than one
+// can exist. The caller decides between them with the resolver's own rule
+// rather than with a `LIMIT 1` that can pick a row the resolver ignores.
+//
+// Lowest id first because that is the resolver's tie-break WITHIN its first
+// branch, so the row this returns first among the member rows is the row
+// `/social/author` will report.
+func (e *Ensurer) existingProjects(
+	ctx context.Context, userID int64, accountKey int32,
+) ([]existingCandidate, error) {
+	rows, err := e.pool.Query(ctx, `
+SELECT
+    project.id,
+    project.create_success,
+    project.owner_id = $2::integer AS owned,
+    EXISTS (
+        SELECT 1
+        FROM public.auth_core__project_user_role AS assignment
+        WHERE assignment.project_id = project.id
+          AND assignment.user_id = $2::integer
+    ) AS member
+FROM centry.project AS project
+WHERE project.name = $1
+ORDER BY project.id`, Name(userID), accountKey)
 	if err != nil {
-		return 0, false, false, fmt.Errorf("personalproject: read project for user %d: %w", userID, err)
+		return nil, fmt.Errorf("personalproject: read projects for user %d: %w", userID, err)
 	}
-	return projectID, created, true, nil
+	defer rows.Close()
+
+	var candidates []existingCandidate
+	for rows.Next() {
+		var candidate existingCandidate
+		if err := rows.Scan(&candidate.id, &candidate.created, &candidate.owned, &candidate.member); err != nil {
+			return nil, fmt.Errorf("personalproject: read projects for user %d: %w", userID, err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("personalproject: read projects for user %d: %w", userID, err)
+	}
+	return candidates, nil
+}
+
+// candidateIDs renders the ids for the log line that reports a name collision.
+func candidateIDs(candidates []existingCandidate) string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, strconv.FormatInt(candidate.id, 10))
+	}
+	return strings.Join(ids, ",")
 }
 
 // eligible reports whether this account is one that should own a personal
@@ -387,22 +498,4 @@ func (e *Ensurer) eligible(ctx context.Context, accountKey int32) (bool, error) 
 		return false, nil
 	}
 	return true, nil
-}
-
-// UserIDFromString parses the `auth.User` id a handler holds.
-//
-// Handlers carry the principal id as a string, and every one of them needs the
-// same guard before it can ask for a personal project: a token principal, a
-// forwarded header, or a development stub can put a non-numeric value there,
-// and `project_user_<that>` is not a project anybody should create.
-// The bit size is 32, not 64, and deliberately: `auth_core__user.id` is an
-// `integer`, so a value that does not fit one is not a user id at all. Parsing
-// at the column's own width refuses it here instead of carrying an
-// unrepresentable number to a caller that would have to narrow it later.
-func UserIDFromString(userID string) (int64, bool) {
-	parsed, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 32)
-	if err != nil || parsed <= 0 {
-		return 0, false
-	}
-	return parsed, true
 }

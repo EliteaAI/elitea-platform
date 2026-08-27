@@ -1,8 +1,7 @@
 package personalproject_test
 
-// The parts that need no database: the name both readers agree on, the
-// principal-id guard, and the two constructor/receiver states a composition can
-// legitimately be in.
+// The parts that need no database: the name both readers agree on, and the two
+// constructor/receiver states a composition can legitimately be in.
 
 import (
 	"context"
@@ -12,12 +11,12 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
 )
 
-// The name is a CONTRACT with two readers that do not import this package:
-// internal/api/v2/social/handler.go's resolvePersonalProjectID and
-// internal/api/middleware/project_resolver.go both build
-// `project_user_<uid>` from their own literal. A change here that they do not
-// follow makes provisioning succeed and resolution fail — silently, and for
-// every account.
+// The name is a CONTRACT with two readers: internal/api/v2/social/handler.go's
+// resolvePersonalProjectID and internal/api/middleware/project_resolver.go.
+// Both now build it from `NamePrefix` rather than from a literal of their own,
+// so this pins the value that shape produces — a change to it that the readers
+// do not follow would make provisioning succeed and resolution fail silently,
+// for every account.
 func TestNameMatchesThePersonalProjectTemplateBothResolversUse(t *testing.T) {
 	for userID, want := range map[int64]string{
 		1:       "project_user_1",
@@ -27,38 +26,6 @@ func TestNameMatchesThePersonalProjectTemplateBothResolversUse(t *testing.T) {
 		if got := personalproject.Name(userID); got != want {
 			t.Errorf("Name(%d) = %q, want %q", userID, got, want)
 		}
-	}
-}
-
-// A handler holds the principal id as a string, and not every principal that
-// reaches `/social/author` carries an auth_core__user id in it — a development
-// stub or an unresolved token principal can put anything there.
-// `project_user_<anything>` is a project nobody could be a member of.
-func TestUserIDFromStringRefusesEverythingThatIsNotAUserID(t *testing.T) {
-	for _, accepted := range []struct {
-		raw  string
-		want int64
-	}{
-		{"9", 9},
-		{" 42 ", 42},
-	} {
-		got, ok := personalproject.UserIDFromString(accepted.raw)
-		if !ok || got != accepted.want {
-			t.Errorf("UserIDFromString(%q) = (%d, %v), want (%d, true)",
-				accepted.raw, got, ok, accepted.want)
-		}
-	}
-
-	// `auth_core__user.id` is an `integer`. A value past that width is not a
-	// user id, and accepting one would hand an int32 narrowing — the advisory
-	// lock key, the account lookup — a number it cannot hold.
-	for _, refused := range []string{"", "0", "-3", "dev-user", "9.5", "9a", "system", "2147483648", "9223372036854775808"} {
-		if got, ok := personalproject.UserIDFromString(refused); ok {
-			t.Errorf("UserIDFromString(%q) = (%d, true), want refused", refused, got)
-		}
-	}
-	if got, ok := personalproject.UserIDFromString("2147483647"); !ok || got != 2147483647 {
-		t.Errorf("UserIDFromString(math.MaxInt32) = (%d, %v), want (2147483647, true)", got, ok)
 	}
 }
 

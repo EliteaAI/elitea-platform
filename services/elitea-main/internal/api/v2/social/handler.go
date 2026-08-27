@@ -141,7 +141,7 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 	resp.ID = user.ID
 	resp.PersonalProjectID = h.resolvePersonalProjectID(ctx, user.ID)
 	if resp.PersonalProjectID == "" {
-		h.ensurePersonalProject(user.ID)
+		h.ensurePersonalProject(user)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -162,15 +162,18 @@ func (h *Handler) GetAuthor(w http.ResponseWriter, r *http.Request) {
 // reached only when the resolver above answered "". A first-time caller gets
 // "" on this response and the real id on a later one, which is exactly the
 // contract the onboarding screen is written against.
-func (h *Handler) ensurePersonalProject(userID string) {
+func (h *Handler) ensurePersonalProject(user auth.User) {
 	if h.personalProject == nil {
 		return
 	}
-	id, ok := personalproject.UserIDFromString(userID)
+	// `OwningUserID`, not a fresh parse of `user.ID`: it is this repository's
+	// reviewed answer to "which auth_core__user owns this principal". It reads
+	// the validated `UserID` field first and refuses a principal whose id is a
+	// TOKEN id, neither of which a parse of the compatibility field can do.
+	// `project_user_<token id>` would name a project nobody could be a member
+	// of.
+	id, ok := user.OwningUserID()
 	if !ok {
-		// A principal whose id is not an auth_core__user id — a development
-		// stub, or a token principal that resolved no owner. `project_user_<id>`
-		// would name a project nobody could be a member of.
 		return
 	}
 	h.personalProject.EnsureAsync(id)
@@ -220,13 +223,18 @@ func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) s
 	// does not depend on UNION ALL branch ordering (which Postgres does not
 	// guarantee), and `id IS NOT NULL` keeps a non-matching branch from
 	// producing a NULL that the Scan below could not hold.
+	//
+	// The name comes in as a parameter built from personalproject.NamePrefix,
+	// not from a `project_user_` literal spelled again here: the package that
+	// WRITES that name and the two places that read it have to agree, and an
+	// inline literal is how they would come to disagree silently.
 	var projectID int
 	err := h.pool.QueryRow(ctx, `
 		SELECT candidate.id
 		FROM (
 		    SELECT 1 AS priority, project.id AS id
 		    FROM centry.project AS project
-		    WHERE project.name = 'project_user_' || $1::integer::text
+		    WHERE project.name = $2
 		      AND EXISTS (
 		          SELECT 1
 		          FROM public.auth_core__project_user_role AS assignment
@@ -253,7 +261,7 @@ func (h *Handler) resolvePersonalProjectID(ctx context.Context, userID string) s
 		WHERE candidate.id IS NOT NULL
 		ORDER BY candidate.priority, candidate.id
 		LIMIT 1
-	`, uid).Scan(&projectID)
+	`, uid, personalproject.Name(int64(uid))).Scan(&projectID)
 	if err != nil || projectID <= 0 {
 		return ""
 	}
