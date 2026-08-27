@@ -198,7 +198,7 @@ func AttachmentKind(fileName string) string {
 // when it has computed the content and found none; this is a partial payload
 // that names where the file lives, and a later extraction step appending to it
 // is exactly what pylon does.
-func attachmentContentScaffold(ref CurrentTurnAttachmentRef, kind string) json.RawMessage {
+func attachmentContentScaffold(ref CurrentTurnAttachmentRef, kind, itemID string) json.RawMessage {
 	filepath := "/" + ref.Bucket + "/" + ref.Name
 	text := strings.Join([]string{
 		"Bucket: " + ref.Bucket,
@@ -216,6 +216,13 @@ func attachmentContentScaffold(ref CurrentTurnAttachmentRef, kind string) json.R
 			"bucket":                   ref.Bucket,
 			"name":                     ref.Name,
 			"filepath":                 filepath,
+			// The item's own id, so the worker can name EXACTLY the row whose
+			// content it enriched when it reports the text back (#607). The
+			// alternative — matching on (bucket, name) — is ambiguous the
+			// moment the same file is attached twice in one conversation,
+			// which is an ordinary thing for a user to do and would silently
+			// write one file's text onto another's row.
+			"item_id": itemID,
 		}
 	}
 	encoded, err := json.Marshal([]map[string]any{chunk})
@@ -251,12 +258,13 @@ func currentTurnAttachments(
 			return nil, ErrInvalidCurrentAgentStart
 		}
 		kind := AttachmentKind(ref.Name)
+		itemID := currentTurnUUID(questionID, "attachment-item-"+strconv.Itoa(index+1))
 		attachments = append(attachments, CurrentTurnAttachment{
-			ItemID:         currentTurnUUID(questionID, "attachment-item-"+strconv.Itoa(index+1)),
+			ItemID:         itemID,
 			Name:           ref.Name,
 			Bucket:         ref.Bucket,
 			AttachmentType: kind,
-			Content:        attachmentContentScaffold(ref, kind),
+			Content:        attachmentContentScaffold(ref, kind, itemID),
 		})
 	}
 	return attachments, nil

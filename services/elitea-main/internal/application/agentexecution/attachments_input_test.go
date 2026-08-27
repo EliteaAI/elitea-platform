@@ -206,6 +206,14 @@ func TestAttachmentScaffoldMarksOnlyDocumentsForContentExtraction(t *testing.T) 
 		marker["filepath"] != "/chat-attachments/conv/report.pdf" {
 		t.Fatalf("marker=%+v", marker)
 	}
+	// The item id is what lets the worker name EXACTLY the row it enriched
+	// when it reports the extracted text back (#607). Matching on
+	// (bucket, name) instead is ambiguous the moment the same file is
+	// attached twice in one conversation, and would write one file's text
+	// onto another's row.
+	if marker["item_id"] != attachments[0].ItemID {
+		t.Fatalf("marker item_id=%v want the attachment's own id %q", marker["item_id"], attachments[0].ItemID)
+	}
 	// An image has no text to extract (pylon's ImageToModelProcessor sets no
 	// flag), so the key is ABSENT rather than present-and-false: the worker's
 	// default reading of a missing key must be "nothing to do".
