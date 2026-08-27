@@ -67,9 +67,13 @@ const SECTIONS = [
     ],
   },
   {
-    id: 'advanced',
-    title: 'Advanced',
-    unavailable_reason: 'the Advanced section edits raw plugin YAML',
+    // A section that is STILL unavailable. It used to be `advanced`, which is
+    // no longer declared at all: its subject is Pylon plugin loading, which the
+    // target architecture removes on purpose, so the row was removed rather
+    // than left saying "not available here" forever.
+    id: 'runtime',
+    title: 'Runtime',
+    unavailable_reason: 'these settings configure Pylon plugin runtimes',
     fields: [],
   },
 ];
@@ -173,7 +177,7 @@ describe('AdminConfiguration — the unavailable sections', () => {
   it('offers no save control at all on an unavailable section', async () => {
     renderAdminRoute(<AdminConfiguration />);
     await waitForResources();
-    await userEvent.click(screen.getByRole('button', { name: /Advanced/ }));
+    await userEvent.click(screen.getByRole('button', { name: /Runtime/ }));
 
     await screen.findByTestId('admin-configuration-unavailable');
     expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();

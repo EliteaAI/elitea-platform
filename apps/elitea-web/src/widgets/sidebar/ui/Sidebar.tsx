@@ -14,9 +14,13 @@ import { t } from '@/shared/i18n';
 import { readPersistedCollapsed, writePersistedCollapsed } from '../lib/collapsedPersistence';
 import { useSidebarCollapsedStore } from '../model/sidebarCollapsed.store';
 import { SidebarBody } from './SidebarBody';
+import { COLLAPSED_SIDE_BAR_WIDTH_PX, SIDE_BAR_WIDTH_PX } from '@/shared/ui/layout/sidebarWidth';
 
-export const SIDE_BAR_WIDTH_PX = 208;
-export const COLLAPSED_SIDE_BAR_WIDTH_PX = 72;
+// Re-exported, not redefined: these used to be literals here (208/72) that
+// disagreed with the admin rail's own (220/60), and with the baseline's
+// 216/64. See `shared/ui/layout/sidebarWidth.ts`. The re-export keeps this
+// module's existing consumers importing from where they already do.
+export { SIDE_BAR_WIDTH_PX, COLLAPSED_SIDE_BAR_WIDTH_PX };
 
 export interface SidebarProps {
   permissions: ReadonlySet<string>;

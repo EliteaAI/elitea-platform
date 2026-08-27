@@ -131,7 +131,7 @@ export const AuditTrailFilters = memo(function AuditTrailFilters({
           />
         </LocalizationProvider>
 
-        <Button variant="contained" size="small" startIcon={<SearchOutlinedIcon />} onClick={onApply}>
+        <Button variant="elitea" color="primary" size="small" startIcon={<SearchOutlinedIcon />} onClick={onApply}>
           {t('pages.admin.audit.filter.apply', 'Apply')}
         </Button>
 

@@ -17,17 +17,17 @@ export const promptsStyles: Record<string, SxProps<Theme>> = {
     flexWrap: 'wrap',
     gap: spacing(1.5),
   }),
-  card: ({ palette, breakpoints }) => ({
-    border: `0.0625rem solid ${palette.border.table}`,
-    backgroundColor: palette.background.secondary,
+  card: (theme) => ({
+    border: `0.0625rem solid ${theme.vars.palette.border.table}`,
+    backgroundColor: theme.vars.palette.background.secondary,
     borderRadius: 'var(--el-shape-radiusMd, 8px)',
     flex: '0 0 calc((100% - 1.5rem) / 3)',
     maxWidth: 'calc((100% - 1.5rem) / 3)',
-    [breakpoints.down('lg')]: {
+    [theme.breakpoints.down('lg')]: {
       flex: '0 0 calc((100% - 1.5rem) / 2)',
       maxWidth: 'calc((100% - 1.5rem) / 2)',
     },
-    [breakpoints.down('md')]: {
+    [theme.breakpoints.down('md')]: {
       flex: '0 0 100%',
       maxWidth: '100%',
     },
@@ -70,14 +70,14 @@ export const promptsStyles: Record<string, SxProps<Theme>> = {
     gap: '0.25rem',
     flexShrink: 0,
   },
-  editButton: ({ palette }) => ({
+  editButton: (theme) => ({
     '&:hover svg': {
-      fill: palette.icon.fill.secondary,
+      fill: theme.vars.palette.icon.fill.secondary,
     },
   }),
-  restoreButton: ({ palette }) => ({
+  restoreButton: (theme) => ({
     '&:hover svg': {
-      fill: palette.icon.fill.secondary,
+      fill: theme.vars.palette.icon.fill.secondary,
     },
   }),
   modalBody: {
@@ -89,12 +89,12 @@ export const promptsStyles: Record<string, SxProps<Theme>> = {
   keyRow: ({ spacing }) => ({
     padding: spacing(2),
   }),
-  editorContainer: ({ palette }) => ({
+  editorContainer: (theme) => ({
     flex: 1,
     minHeight: 0,
     overflowY: 'auto',
     display: 'flex',
-    borderBottom: `0.0625rem solid ${palette.border.lines}`,
+    borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
   }),
   modalFooter: ({ spacing }) => ({
     display: 'flex',

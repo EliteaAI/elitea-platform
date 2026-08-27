@@ -19,7 +19,6 @@ import { ToolIcon } from '@/shared/ui/icons/tool-icon';
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutlined';
 
 import { computeIsSelectedProjectPublic, navSections, selectedNavItem, visibleNavSections, type NavItemValue } from '../lib/navSections';
-import { NotificationButton } from './NotificationButton';
 import { ProjectSwitcher } from './ProjectSwitcher';
 import { SidebarFooter } from './SidebarFooter';
 import { SidebarHeader } from './SidebarHeader';
@@ -75,13 +74,13 @@ export interface SidebarBodyProps {
  * here. The React-Query cache-reset half is not ported: there is no
  * per-project cache to reset yet (no landed Wave-2 unit populates one).
  *
- * `NotificationButton` (SHELL-013) is mounted directly before
- * `<SidebarFooter>`, gated on `!collapsed` — this unit's task brief's
- * explicit mount instruction. `NotificationButton.tsx`'s own doc comment
- * has the full account of why that is NOT actually where the old app put
- * it (`SidebarBody.jsx:233`: inside the sticky-top header row, next to the
- * logo/toggle button) and why it stays here anyway (this unit's file scope
- * is this file + the new widget only, not `SidebarHeader.tsx`).
+ * `NotificationButton` is NOT here any more. It used to sit directly before
+ * `<SidebarFooter>`, which put the bell at the BOTTOM of the rail; the old
+ * app has it in the sticky-top header row next to the logo
+ * (`SidebarBody.jsx:233`). The misplacement was deliberate and documented —
+ * the unit that added it owned this file and the widget but not
+ * `SidebarHeader.tsx`, so it could not put the bell where it belonged. It
+ * now lives in `SidebarHeader.tsx`, which is that row.
  *
  * `sections` also gates `skills` on the selected project being the public
  * project (`../lib/navSections.ts`'s `computeIsSelectedProjectPublic`) —
@@ -163,7 +162,6 @@ export function SidebarBody({
         })}
       </Box>
 
-      {!collapsed && <NotificationButton />}
       <SidebarFooter collapsed={collapsed} />
     </Box>
   );

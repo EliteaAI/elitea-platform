@@ -195,18 +195,27 @@ const ROUTES: readonly VisualRoute[] = [
     //
     // Re-measured under the corrected method: loaded YES, stalled no.
     //
-    // The KPI row no longer renders at all. The analytics routes stopped
-    // fabricating zeros (#303) — every table they queried has never existed —
-    // so the live endpoint answers 500 and the page renders its error branch.
-    // The landmark moves to that branch's text, which keeps the property the
-    // comment above is defending: it is NOT satisfied during the spinner, only
-    // once the query has resolved. `getByRole('main')` would be, which is how
-    // this baseline came to be a photograph of a spinner in the first place.
+    // The landmark has moved twice with the backend, and BOTH moves were
+    // landmark changes rather than pixel changes — with a landmark that never
+    // resolves, the test never reaches `toHaveScreenshot`, so
+    // `--update-snapshots` writes no PNG and a regeneration run produces
+    // nothing to review.
     //
-    // This is a landmark change, not a pixel change: with the old landmark the
-    // test never reached `toHaveScreenshot`, so `--update-snapshots` wrote no
-    // PNG and a regeneration run produced nothing to review.
-    landmark: (page) => page.getByText('Failed to load analytics data.', { exact: true }),
+    //   1. The analytics routes stopped fabricating zeros (#303), the endpoint
+    //      answered 500, and the KPI row stopped rendering — so the landmark
+    //      became the error branch's text.
+    //   2. The gateway request log (shared migration 0099) gave the endpoint a
+    //      real producer, it answers 200 again, and the KPI row is back.
+    //
+    // So the landmark is the KPI row's testid once more. It keeps the property
+    // the comment above is defending — it is NOT satisfied during the spinner,
+    // only once the query has resolved — where `getByRole('main')` would be,
+    // which is how this baseline came to be a photograph of a spinner in the
+    // first place.
+    //
+    // THE BASELINE PNG MUST BE REGENERATED with this change: the screen goes
+    // from one line of error text to a populated KPI row and charts.
+    landmark: (page) => page.getByTestId('analytics-kpi-row'),
   },
   {
     // @covers /settings/project-params

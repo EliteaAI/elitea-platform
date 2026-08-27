@@ -1,0 +1,26 @@
+{{- if .Values.scheduler.enabled }}
+{{- if .Values.scheduler.service.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "elitea-scheduler.fullname" . }}
+  labels:
+    {{- include "elitea-scheduler.labels" . | nindent 4 }}
+  {{- with .Values.scheduler.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # Off by default (values.yaml): nothing calls into this worker, and kubelet
+  # probes reach the container directly. Enable only to expose /healthz to an
+  # external prober.
+  type: {{ .Values.scheduler.service.type }}
+  ports:
+    - name: health
+      port: {{ .Values.scheduler.service.port }}
+      targetPort: health
+      protocol: TCP
+  selector:
+    {{- include "elitea-scheduler.selectorLabels" . | nindent 4 }}
+{{- end }}
+{{- end }}

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 import AccordionSummary from '@mui/material/AccordionSummary';
-import type { AccordionSummaryOwnerState, AccordionSummaryProps } from '@mui/material/AccordionSummary';
+import type { AccordionSummaryProps } from '@mui/material/AccordionSummary';
 import type { Theme } from '@mui/material/styles';
 
 import { combineSx } from '../lib/combineSx';
@@ -68,20 +68,25 @@ export function StyledAccordionSummary({
             marginInlineStart: isLeft ? theme.spacing(1.5) : 0,
           }),
         },
-        expandIconWrapper: (ownerState: AccordionSummaryOwnerState) => {
-          // [MUI 9.2 type hazard] `AccordionSummaryOwnerState` is typed as
-          // `Omit<AccordionSummaryProps, 'slots' | 'slotProps'>` — it omits
-          // `expanded`, which `AccordionSummary.js` injects into the REAL
-          // runtime ownerState object from `AccordionContext`
-          // (`{ ...props, expanded, disabled, disableGutters }`) but which
-          // was never added to the exported type. Verified against
-          // `node_modules/@mui/material/AccordionSummary/AccordionSummary.js`
-          // and `.d.ts` directly. The cast documents the gap at its one
-          // read site instead of widening the callback's declared parameter
-          // type (which `slotProps.expandIconWrapper`'s own contravariant
-          // function-parameter position rejects).
-          const isExpanded = (ownerState as AccordionSummaryOwnerState & { expanded?: boolean }).expanded;
-          return { sx: { transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' } };
+        // The rotation is expressed as a `&.Mui-expanded` CLASS rule, not as a
+        // value computed from `ownerState.expanded`.
+        //
+        // The computed form looked correct and rendered wrong. MUI ships its
+        // own rule for this slot's expanded state, qualified by TWO classes
+        // (the slot class plus the expanded class) — specificity (0,2,0). A
+        // value returned from this callback lands in a single generated class,
+        // (0,1,0), so MUI's rule won every time and expanded sections rotated
+        // 180 degrees instead of 90: the chevron pointed LEFT rather than
+        // down, on every accordion in the app. Matching the class selector
+        // matches the specificity, and Emotion emits ours later, so ours wins.
+        //
+        // The base icon is `ArrowForwardIosSharpIcon` — a RIGHT chevron
+        // (`StyledExpandMoreIcon`) — so 90 degrees is what turns it downward.
+        expandIconWrapper: {
+          sx: {
+            transform: 'rotate(0deg)',
+            '&.Mui-expanded': { transform: 'rotate(90deg)' },
+          },
         },
       }}
       {...rest}

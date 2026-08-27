@@ -2517,10 +2517,12 @@ export const getListSkillCategoriesUrl = (projectId: string) => {
 };
 
 /**
- * The nine predefined categories, "Other" last. Admin-added extras
- * (the reference's `skill_publishing_guardrail.skill_categories`) are not
- * served: this platform's admin config schema has no such field.
- * @summary List the predefined skill categories available for publishing
+ * The nine predefined categories plus any an administrator added on the
+ * admin Features page (Skill Publishing -> Skill Categories), with
+ * "Other" always last. `is_default` marks the built-ins, which cannot be
+ * removed. Deduplication is case-insensitive and the first-seen spelling
+ * wins, so re-typing a built-in does not create a second bucket.
+ * @summary List the skill categories available for publishing
  */
 export const listSkillCategories = async (
   projectId: string,
@@ -2656,7 +2658,7 @@ export function useListSkillCategories<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary List the predefined skill categories available for publishing
+ * @summary List the skill categories available for publishing
  */
 
 export function useListSkillCategories<

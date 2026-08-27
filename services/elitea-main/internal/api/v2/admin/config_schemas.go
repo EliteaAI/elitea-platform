@@ -42,29 +42,16 @@ const (
 		"platform has no plugin descriptors to reconfigure and nothing here reads these values, so editing them " +
 		"would have no effect. Use the Pylon admin panel while the hybrid deployment is running."
 
-	// extraUIConfigUnavailable covers the `extra_ui_config.*` sections other
-	// than `resources`. These are not Pylon RUNTIME concerns — they are product
-	// settings that legacy delivered by injecting the whole of elitea_core's
-	// `extra_ui_config` into `window.elitea_ui_config`. They are unavailable for
-	// the narrower reason that no surface in this platform reads them yet, which
-	// is a gap to close rather than a boundary to respect.
-	extraUIConfigUnavailable = "nothing in this platform reads this setting yet. The legacy UI received it by " +
-		"injecting the plugin's extra_ui_config into the page; no equivalent consumer has been built here, so the " +
-		"control is withheld rather than shown saving into a void."
-
-	// maintenanceSplashUnavailable — pylon's maintenance mode is a gevent router
-	// hook installed on the bootstrap plugin's persisted state, serving a 503
-	// splash to anyone whose administration-mode roles do not include admin
-	// (legacy/plugins/bootstrap/tools/splash.py). Nothing in this service
-	// installs such a hook, and inventing one would be a new product feature.
-	maintenanceSplashUnavailable = "maintenance mode is a Pylon request hook that serves a 503 splash to non-admin " +
-		"users; this platform installs no such hook, so the switch would toggle a setting nothing enforces."
-
-	// advancedRuntimeUnavailable — the Advanced section is raw plugin YAML
-	// editing, per-pylon log tailing and plugin update/reload. All four of its
-	// endpoints are Pylon runtime introspection.
-	advancedRuntimeUnavailable = "the Advanced section edits raw plugin YAML, tails pylon logs and reloads plugins " +
-		"on live Pylon runtimes. Those runtimes are not part of this platform."
+	// extraUIConfigUnavailable used to cover the `extra_ui_config.*` sections
+	// other than `resources` — settings the legacy UI received by injecting
+	// elitea_core's `extra_ui_config` into the page, withheld here for the
+	// narrower reason that nothing read them YET. It was described as a gap to
+	// close rather than a boundary to respect, and every section that held it
+	// has now closed its gap: `resources` first (the Help Center),
+	// `support_assistant` by acquiring the specific reason below, and
+	// `dedicated_banner` by acquiring a consumer. The constant is gone rather
+	// than kept for a future section, so the next one to need it has to state
+	// what reads it before it can be written.
 
 	// governanceElsewhereUnavailable — the LLM-governance fields are NOT saved
 	// through this endpoint even in the reference: elitea-main has its own CRUD
@@ -104,28 +91,35 @@ const (
 	// endpoints that enforce it.
 	serviceDescriptorsElsewhereUnavailable = eliteacore.ServiceDescriptorsUnavailableReason
 
-	// skillPublishingUnavailable — the reference's Skill Publishing section
-	// governs a publishing pipeline this service does not have. `grep -rn
-	// skill_publishing_guardrail services/` returns nothing; there is no skill
-	// publish handler, no skill categories endpoint and no skill catalog filter
-	// bar to feed. Declaring the four fields so the form could render them would
-	// be inventing settings for a subsystem that is not here.
-	skillPublishingUnavailable = "skill publishing is not implemented in this service: there is no skill publish " +
-		"endpoint, no skill catalog and no skill categories surface for these settings to govern. The controls are " +
-		"withheld rather than shown governing nothing."
+	// skillPublishValidationRulesUnavailable is the skill-side twin of
+	// publishValidationRulesUnavailable below, and it is withheld for the same
+	// reason and at the same level: the FIELD, not the section.
+	//
+	// `internal/api/v2/skillpublish/validate.go` is deterministic end to end —
+	// version-name collisions, empty instructions, the draft/published status —
+	// and says so on the wire (`ai_validation_available: false`). The reference
+	// feeds this textarea to an LLM evaluator that this service has no transport
+	// for (#126/#194), so a custom rules prompt would have nothing to reach.
+	skillPublishValidationRulesUnavailable = "publish validation for skills in this service is deterministic " +
+		"(version name collisions, empty instructions, publish status); there is no AI evaluator for custom " +
+		"criteria to reach, so these rules would never be applied."
 
-	// supportAssistantWidgetUnavailable replaces the generic extra_ui_config
-	// reason with the specific one. The switch would be read by
-	// `GET /support_assistant/config`, whose only client is
-	// `widgets/support-assistant/ui/SupportAssistantWidget.tsx` — and that
-	// widget is not mounted anywhere (`grep -rn SupportAssistantWidget src/`
-	// finds one doc-comment mention and no JSX site), renders no floating
-	// assistant, and documents in its own body that `@eliteaai/elitea-assistant`
-	// is not a dependency of this app. Turning the switch on would change one
-	// boolean in an unmounted component.
-	supportAssistantWidgetUnavailable = "the in-app support assistant is not mounted in this application: the " +
-		"@eliteaai/elitea-assistant package is not a dependency and SupportAssistantWidget has no render site, so " +
-		"enabling it would change a flag no rendered surface reads."
+	// The support assistant section USED TO carry an `unavailable_reason` here,
+	// saying that the switch had a wire (`GET /support_assistant/config`) and no
+	// rendered consumer: `SupportAssistantWidget` had no render site and
+	// `@eliteaai/elitea-assistant` was not a dependency, so enabling it "would
+	// change a flag no rendered surface reads".
+	//
+	// Both halves are now false, which is why the constant is DELETED rather
+	// than kept for reuse. The widget is mounted in `AppShell`, ported into
+	// `apps/elitea-web/src/widgets/support-assistant/` rather than taken as a
+	// dependency (the published package streams over socket.io, which this
+	// service does not serve), and the switch is read by
+	// `internal/api/v2/supportassistant`, which serves the whole surface —
+	// config, conversations, attachments and one agent turn per question.
+	//
+	// Deleting the constant is deliberate: the next section that wants to be
+	// withheld has to state what reads it before it can be written.
 
 	// authProvidersElsewhereUnavailable — the Authentication section is now a
 	// pointer to a real surface, in the same way `mcp_servers` is.
@@ -186,6 +180,28 @@ const (
 	configPageFeatures = "features"
 )
 
+// ## The Advanced section is GONE, not withheld
+//
+// It used to be declared here with an `unavailable_reason` saying that it edits
+// raw plugin YAML, tails pylon logs and reloads plugins on live Pylon runtimes,
+// and that those runtimes are not part of this platform. Every word of that was
+// true, and it is why the section is now absent instead.
+//
+// A withheld section is a promise: it tells an operator that the capability
+// belongs on this page and is coming. Advanced is the one section on this page
+// whose subject the target architecture removes ON PURPOSE — AGENTS.md names
+// Pylon plugin loading and the Arbiter bus as things this platform does not
+// preserve — so there is nothing to arrive. Leaving the row in the sidebar
+// spends a permanent line of the operator's attention on a control that will
+// never exist, which is the same failure mode as a form that saves into a void,
+// one step removed.
+//
+// `configuration.advanced` therefore leaves declaredPermissions() with it
+// (roles.go). A deployment whose legacy roles still grant the name keeps it in
+// the matrix — the catalogue is the union of granted and declared — so no
+// existing grant is invalidated; the name simply stops being one this service
+// declares a gate for.
+
 func configSections() []map[string]any {
 	return []map[string]any{
 		guardrailsSection(),
@@ -205,7 +221,6 @@ func configSections() []map[string]any {
 		voiceFeaturesSection(),
 		serviceDescriptorsSection(),
 		maintenanceSection(),
-		advancedSection(),
 	}
 }
 
@@ -455,22 +470,80 @@ func agentPublishingSection() map[string]any {
 	}
 }
 
-// skillPublishingSection — declared, and declared unavailable.
+// skillPublishingSection — LIVE, where it used to be withheld.
 //
-// The alternative was to omit it. Omitting it would have made the section
-// silently disappear relative to the reference, which reads to an operator as a
-// page that lost a feature rather than a platform that does not have one; the
-// reason is the only thing that distinguishes those two.
+// It was withheld because the subsystem it governs did not exist: there was no
+// skill publish endpoint, no public skill catalog and no skill categories
+// route, so every field would have been a control over nothing. #267 built all
+// three (`internal/api/v2/skillpublish`), which left this section as the last
+// missing half — the guardrail was enforced against the AGENT section's switch
+// because a skill-specific one had nowhere to be authored, and the catalog's
+// category list was the nine hardcoded defaults with no way to add a tenth.
+//
+// The three fields below are the reference's own
+// (`skill_publishing_guardrail.*` in elitea_core's admin_schema.json), keeping
+// its field KEYS rather than the agent section's: `is_skill_publish_blocked`
+// and `skill_publish_whitelist_project_ids` are the names the reference's
+// platform_settings endpoint publishes, and the product UI reads them from
+// there, so renaming them here would cost a translation layer on the wire for
+// no gain.
+//
+// The fourth reference field, `skill_publish_validation_rules`, carries its own
+// reason instead of being omitted — the same treatment
+// `publish_validation_rules` gets on the agent section, for the same cause.
 func skillPublishingSection() map[string]any {
 	return map[string]any{
-		"id":                 "skill_publishing",
-		"page":               configPageFeatures,
-		"unavailable_reason": skillPublishingUnavailable,
-		"title":              "Skill Publishing",
-		"description":        "Control who may publish skills, and which categories they may publish into.",
-		"order":              12,
-		"icon":               "bolt",
-		"fields":             []map[string]any{},
+		"id":          "skill_publishing",
+		"page":        configPageFeatures,
+		"title":       "Skill Publishing",
+		"description": "Control who may publish skills, and which categories they may publish into.",
+		"order":       12,
+		"icon":        "bolt",
+		"fields": []map[string]any{
+			{
+				"key":         "is_skill_publish_blocked",
+				"type":        "boolean",
+				"title":       "Block Skill Publishing",
+				"description": "When enabled, skill publishing is refused platform-wide except from the projects listed below. Admin publishes from the public project are always exempt.",
+				"path":        "skill_publishing_guardrail.is_publish_blocked",
+				"section":     "skill_publishing",
+				"default":     false,
+			},
+			{
+				"key":         "skill_publish_whitelist_project_ids",
+				"type":        "array",
+				"items":       map[string]any{"type": "integer"},
+				"title":       "Skill Publishing Allowed Projects",
+				"description": "Projects where skill publishing remains allowed while it is blocked globally. If empty, skill publishing is blocked everywhere.",
+				"path":        "skill_publishing_guardrail.whitelist_project_ids",
+				"section":     "skill_publishing",
+				"default":     []any{},
+				"visible_when": map[string]any{
+					"field": "is_skill_publish_blocked", "value": true,
+				},
+			},
+			{
+				"key":         "skill_categories",
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"title":       "Skill Categories",
+				"description": "Additional skill categories offered in the skill publish dialog and the public catalog filter, alongside the built-in defaults. Managed independently from Agent Categories. The built-in defaults cannot be removed here.",
+				"path":        "skill_publishing_guardrail.skill_categories",
+				"section":     "skill_publishing",
+				"default":     []any{},
+			},
+			{
+				"unavailable_reason": skillPublishValidationRulesUnavailable,
+				"key":                "skill_publish_validation_rules",
+				"type":               "string",
+				"format":             "textarea",
+				"title":              "Skill Publish Validation Rules",
+				"description":        "Custom evaluation criteria for AI validation of skills before publishing.",
+				"path":               "skill_publishing_guardrail.publish_validation_rules",
+				"section":            "skill_publishing",
+				"default":            "",
+			},
+		},
 	}
 }
 
@@ -1135,15 +1208,35 @@ func resourcesSection() map[string]any {
 	}
 }
 
+// dedicatedBannerSection — the platform-wide notification banner. LIVE.
+//
+// It carried extraUIConfigUnavailable ("nothing in this platform reads this
+// setting yet") and the reason was accurate: the legacy SPA read the banner from
+// a BUILD-TIME environment variable, `VITE_MAINTENANCE_BANNER`, so the rows this
+// form wrote were read by nothing anywhere — not here and not in the reference
+// deployment either. The admin control and the rendered banner were two
+// unconnected things that happened to share a name.
+//
+// They are connected now. `platformconfig.LoadBanner` resolves these five keys,
+// `GET /elitea_core/platform_settings/prompt_lib` marshals the result as
+// `dedicated_banner`, and apps/elitea-web's `MaintenanceBanner` renders it in the
+// app shell. That also makes it a RUNTIME control rather than a redeploy, which
+// is the point of a banner: an operator raising one is telling users about
+// something that is happening now.
+//
+// The `path` values are kept as they were. They are legacy provenance — where
+// pylon would have written the key inside `extra_ui_config` — and nothing here
+// reads them; the storage key is `key`, in `centry.platform_config` under this
+// section id. They stay because a deployment migrating from pylon needs the two
+// namings to be traceable to each other.
 func dedicatedBannerSection() map[string]any {
 	return map[string]any{
-		"id":                 "dedicated_banner",
-		"unavailable_reason": extraUIConfigUnavailable,
-		"title":              "Banner",
-		"description":        "Enable dedicated banner to communicate important notifications across the platform.",
-		"order":              89,
-		"icon":               "campaign",
-		"always_visible":     true,
+		"id":             "dedicated_banner",
+		"title":          "Banner",
+		"description":    "Enable dedicated banner to communicate important notifications across the platform.",
+		"order":          89,
+		"icon":           "campaign",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
 				"key":         "banner_enabled",
@@ -1184,13 +1277,15 @@ func dedicatedBannerSection() map[string]any {
 				"enum":        []string{"info", "warning"},
 			},
 			{
-				"key":         "banner_message",
-				"type":        "string",
-				"title":       "Banner Message",
-				"description": "The message content displayed in the banner. Supports Markdown formatting.",
-				"path":        "extra_ui_config.vite_maintenance_banner.message",
-				"section":     "dedicated_banner",
-				"default":     "",
+				"key":    "banner_message",
+				"type":   "string",
+				"format": "textarea",
+				"title":  "Banner Message",
+				"description": "The message content displayed in the banner. Supports Markdown formatting. " +
+					"An enabled banner with no message renders nothing.",
+				"path":    "extra_ui_config.vite_maintenance_banner.message",
+				"section": "dedicated_banner",
+				"default": "",
 			},
 		},
 	}
@@ -1198,44 +1293,73 @@ func dedicatedBannerSection() map[string]any {
 
 func supportAssistantSection() map[string]any {
 	return map[string]any{
-		"id":   "support_assistant",
-		"page": configPageFeatures,
-		// The reason is narrowed from the generic extra_ui_config one: this
-		// section's switch DOES have a wire (`GET /support_assistant/config`),
-		// and the wire is not what is missing. What is missing is a rendered
-		// consumer at the other end. Saying "nothing reads this yet" would have
-		// been true but pointed at the wrong thing to fix.
-		"unavailable_reason": supportAssistantWidgetUnavailable,
-		"title":              "Support Assistant",
-		"description":        "Enable the in-app support assistant widget for all users.",
-		"order":              14,
-		"icon":               "support_agent",
-		"always_visible":     true,
+		// LIVE. Every field below is read on the next request by
+		// `internal/platformconfig.LoadSupportAssistant`, and this page is the
+		// ONLY writer of those rows — the reference's
+		// `PUT /support_assistant/config` is deliberately not ported, so the
+		// form and the server cannot disagree about field names or defaults.
+		"id":             "support_assistant",
+		"page":           configPageFeatures,
+		"title":          "Support Assistant",
+		"description":    "Enable the in-app support assistant widget for all users.",
+		"order":          14,
+		"icon":           "support_agent",
+		"always_visible": true,
 		"fields": []map[string]any{
 			{
-				"key":         "vite_elitea_assistant",
-				"type":        "string",
+				// A BOOLEAN, replacing the reference's `vite_elitea_assistant`
+				// string of "0"/"1".
+				//
+				// That field was a Vite build-time variable injected into the
+				// legacy SPA's page, so it could only ever be a string, and the
+				// admin form rendered a text box in which "false", "no" and "0"
+				// meant three different things to nobody. Nothing here is built
+				// at build time, so the switch is the type it always was.
+				"key":         "support_assistant_enabled",
+				"type":        "boolean",
 				"title":       "Assistant Enabled",
-				"description": "When enabled, the support assistant widget is available to all users environment-wide.",
-				"path":        "extra_ui_config.vite_elitea_assistant",
+				"description": "When enabled, the support assistant widget is available to all users environment-wide. The assistant only appears once an agent is selected below.",
+				"path":        "support_assistant_enabled",
 				"section":     "support_assistant",
-				"default":     "0",
+				"default":     false,
 			},
 			{
-				"key":         "support_project_id",
-				"type":        "integer",
-				"title":       "Support Project ID",
-				"description": "Project ID used by the support assistant for conversations. Auto-created if left empty.",
-				"path":        "support_project_id",
-				"section":     "support_assistant",
-				"default":     nil,
+				// WRITTEN BACK BY THE SERVER as well as read. Left empty on an
+				// enabled deployment, the first support request provisions the
+				// hidden project and records its id here, so an operator can see
+				// which project the transcripts landed in. Clearing the field
+				// does not orphan it: the bootstrap adopts an existing
+				// "Support Assistant" project by name before creating one.
+				//
+				// THE DESCRIPTION NAMES THE CONSEQUENCE, and that is the point
+				// of it. Support conversations live in a project shared by
+				// everyone, so the assistant enrols each caller into this
+				// project as `viewer` on first use
+				// (internal/api/v2/supportassistant/store.go's ensureEnrolled).
+				// Naming an EXISTING project here therefore grants the entire
+				// user base the default-mode viewer rights migration 0068 seeds
+				// — conversation and application reads included — and correcting
+				// the id afterwards does not withdraw the memberships already
+				// written. An operator cannot weigh that from "auto-created if
+				// left empty", which is all this field used to say.
+				"key":   "support_project_id",
+				"type":  "integer",
+				"title": "Support Project ID",
+				"description": "Project ID used by the support assistant for conversations. Leave empty to have a " +
+					"dedicated hidden project created automatically — that is the recommended setting. WARNING: " +
+					"naming an existing project here enrols EVERY user on the platform into it as a viewer, " +
+					"giving them read access to that project's conversations and agents. Memberships already " +
+					"granted are not removed if you change this value.",
+				"path":    "support_project_id",
+				"section": "support_assistant",
+				"default": nil,
 			},
 			{
 				"key":         "support_agent_project_id",
 				"type":        "integer",
 				"title":       "Agent Project ID",
-				"description": "Project ID where the support agent is located.",
-				"path":        "agent_project_id",
+				"description": "Project ID where the support agent is located. Leave empty to use the support project itself.",
+				"path":        "support_agent_project_id",
 				"section":     "support_assistant",
 				"default":     nil,
 			},
@@ -1243,8 +1367,8 @@ func supportAssistantSection() map[string]any {
 				"key":         "support_agent_id",
 				"type":        "integer",
 				"title":       "Agent ID",
-				"description": "Application ID of the support agent.",
-				"path":        "agent_id",
+				"description": "Application ID of the support agent. Until this is set the assistant stays hidden, because it has nothing to answer with.",
+				"path":        "support_agent_id",
 				"section":     "support_assistant",
 				"default":     nil,
 			},
@@ -1253,7 +1377,7 @@ func supportAssistantSection() map[string]any {
 				"type":        "string",
 				"title":       "Welcome Message",
 				"description": "Initial greeting message shown in the support widget.",
-				"path":        "welcome_message",
+				"path":        "support_welcome_message",
 				"section":     "support_assistant",
 				"default":     "Hello! How can I help you today?",
 			},
@@ -1262,9 +1386,24 @@ func supportAssistantSection() map[string]any {
 				"type":        "string",
 				"title":       "Assistant Name",
 				"description": "Display name for the support assistant.",
-				"path":        "assistant_name",
+				"path":        "support_assistant_name",
 				"section":     "support_assistant",
 				"default":     "ELITEA Support",
+			},
+			{
+				// The reference has no admin field for this — `config.py` reads
+				// `config.get('placeholder', ...)` from a key its own
+				// admin_schema.json never declares, so no operator could ever
+				// set it. Declaring it is the smaller change; leaving the read
+				// pointed at a field nobody can write is the defect this page
+				// exists to remove.
+				"key":         "support_placeholder",
+				"type":        "string",
+				"title":       "Input Placeholder",
+				"description": "Placeholder text shown in the assistant's message box.",
+				"path":        "support_placeholder",
+				"section":     "support_assistant",
+				"default":     "Type a message...",
 			},
 		},
 	}
@@ -1310,29 +1449,81 @@ func voiceFeaturesSection() map[string]any {
 	}
 }
 
+// maintenanceSection — the platform maintenance switch. LIVE, and ENFORCED.
+//
+// It carried maintenanceSplashUnavailable, which said the switch "would toggle a
+// setting nothing enforces". That was true and it is the sentence this section
+// had to earn its way out of: something enforces it now.
+//
+// WHAT REPLACED THE PYLON HOOK. In pylon this was a gevent router hook installed
+// on the bootstrap plugin's persisted state, which intercepted every request,
+// called `auth_authorize` over RPC, read the caller's administration-mode roles
+// and served a 503 splash to anyone who was not an admin
+// (legacy/plugins/bootstrap/tools/splash.py). Here it is
+// `internal/api/middleware`'s Maintenance middleware on the `/api/v2` group,
+// which asks the same question of the same permission model and answers 503 with
+// the copy authored below.
+//
+// The port is deliberately NOT a byte-for-byte one, in two places:
+//
+//   - The splash is JSON and a client-side page, not `splash_template` HTML. The
+//     pylon hook returned a WSGI app serving a stored HTML document because it
+//     sat in front of everything, including the SPA's own assets. This
+//     middleware sits on the JSON API only — the SPA still loads — so the
+//     product can render its own splash in its own theme, and an operator
+//     authors words rather than markup. A stored HTML template editable from an
+//     admin form is also an XSS surface aimed at every user of the platform, and
+//     declining to build one is not a gap.
+//   - There is no bypass cookie. `splash_bypass_cookie`/`splash_bypass_token`
+//     were a shared static secret in plugin config that granted full access to
+//     anyone who had ever seen it. The admin permission is the bypass.
+//
+// WHO GETS THROUGH. Holders of `runtime.plugins` in administration mode — the
+// permission pylon's own maintenance.py declares on this surface — plus the
+// routes an admin needs in order to sign in and turn the switch back off. The
+// middleware owns that list; see its doc comment for why each entry is on it.
 func maintenanceSection() map[string]any {
 	return map[string]any{
-		"id":                 "maintenance",
-		"unavailable_reason": maintenanceSplashUnavailable,
-		"title":              "Maintenance",
-		"description":        "Enable maintenance mode to show a splash screen to all non-admin users.",
-		"order":              91,
-		"icon":               "construction",
-		"always_visible":     true,
-		"fields":             []map[string]any{},
-	}
-}
-
-func advancedSection() map[string]any {
-	return map[string]any{
-		"id":                  "advanced",
-		"unavailable_reason":  advancedRuntimeUnavailable,
-		"title":               "Advanced",
-		"description":         "View and edit raw plugin configurations for all connected pylons.",
-		"order":               100,
-		"icon":                "code",
-		"always_visible":      true,
-		"required_permission": "configuration.advanced",
-		"fields":              []map[string]any{},
+		"id":    "maintenance",
+		"title": "Maintenance",
+		"description": "Enable maintenance mode to refuse the API to everyone without administration " +
+			"access and show them a splash screen. Administrators keep full access, so this switch can " +
+			"always be turned off from here.",
+		"order":          91,
+		"icon":           "construction",
+		"always_visible": true,
+		// The same permission the middleware bypasses on. A caller who cannot
+		// be admitted during a maintenance window must not be able to start one
+		// either.
+		"required_permission": "runtime.plugins",
+		"fields": []map[string]any{
+			{
+				"key":   "maintenance_enabled",
+				"type":  "boolean",
+				"title": "Maintenance Mode",
+				"description": "When enabled, every API request from a user without administration access " +
+					"is refused with 503 and the splash below.",
+				"section": "maintenance",
+				"default": false,
+			},
+			{
+				"key":         "maintenance_title",
+				"type":        "string",
+				"title":       "Splash Title",
+				"description": "Heading shown on the splash screen. Left empty, a default is used.",
+				"section":     "maintenance",
+				"default":     "",
+			},
+			{
+				"key":    "maintenance_message",
+				"type":   "string",
+				"format": "textarea",
+				"title":  "Splash Message",
+				"description": "Body text shown on the splash screen — say what is happening and when it " +
+					"ends. Supports Markdown formatting. Left empty, a default is used.",
+				"section": "maintenance",
+				"default": "",
+			},
+		},
 	}
 }

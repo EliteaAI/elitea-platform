@@ -34,6 +34,12 @@ import { buildFieldDefinition, parseFieldValue, validateFieldValue } from './lib
 import { EnvironmentFieldRow } from './ui/environment/EnvironmentFieldRow';
 export type { EnvironmentFieldDefinition } from './lib/environment/environmentField.helpers';
 
+import { PreferencesFormContent } from './ui/preferences/PreferencesFormContent';
+
+import { AIPersonalityFormContent } from './ui/ai-personality/AIPersonalityFormContent';
+import { SettingsFormProvider } from './ui/ai-personality/SettingsFormProvider';
+import { MemoryFormContent } from './ui/memory/MemoryFormContent';
+
 import ConfigurationsPanel from './ui/ai-configuration/ConfigurationsPanel';
 import OpenAITemplate from './ui/ai-configuration/OpenAITemplate';
 import ProjectAIConfiguration from './ui/ai-configuration/ProjectAIConfiguration';
@@ -61,6 +67,21 @@ export const projectContextFeature = { ProjectContextBody, ProjectContextToasts,
 
 /** Personalization tab (`pages/settings/Personalization.tsx`). */
 export const profileFeature = { useDefaultModel, ProfileFormContent, ProfileValidationSchema, deserializeProfileFormData, serializeProfileFormData };
+
+/** Preferences tab (`pages/settings/Preferences.tsx`). */
+export const preferencesFeature = { PreferencesFormContent };
+
+/**
+ * AI-Personality tab (`pages/settings/AIPersonality.tsx`).
+ *
+ * `SettingsFormProvider` is the save mechanism Settings › Memory shares —
+ * one fetch, one Formik host, one `PUT /social/author` — which is why it is
+ * exported from this bundle rather than duplicated in `memoryFeature`.
+ */
+export const aiPersonalityFeature = { AIPersonalityFormContent, SettingsFormProvider };
+
+/** Memory tab (`pages/settings/Memory.tsx`) — hosted by `aiPersonalityFeature.SettingsFormProvider`. */
+export const memoryFeature = { MemoryFormContent };
 
 /** Environment tab (`pages/settings/Environment.tsx`). */
 export const environmentFeature = { ENVIRONMENT_FIELD_DEFAULTS, ENVIRONMENT_FIELD_ORDER, ENVIRONMENT_SECTION, buildFieldDefinition, parseFieldValue, validateFieldValue, EnvironmentFieldRow };

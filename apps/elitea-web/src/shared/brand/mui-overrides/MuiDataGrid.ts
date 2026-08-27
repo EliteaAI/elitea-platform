@@ -31,6 +31,12 @@ import type { EliteaComponents } from '../theme-types';
  *    higher-specificity rule.
  */
 export const MuiDataGrid: EliteaComponents['MuiDataGrid'] = {
+  // 2.25rem at the 16px root, matching the legacy header strip's own
+  // `height: '2.25rem'`. Set as a DEFAULT PROP rather than a CSS height: the
+  // grid measures this number to place the virtualised rows beneath the
+  // header, so forcing the height in CSS alone leaves the row viewport offset
+  // by the difference and the first row slides under the header strip.
+  defaultProps: { columnHeaderHeight: 36 },
   styleOverrides: {
     root: ({ theme }) => ({
       backgroundColor: 'transparent',
@@ -39,6 +45,48 @@ export const MuiDataGrid: EliteaComponents['MuiDataGrid'] = {
         },
         '& .MuiDataGrid-container--top [role=row], & .MuiDataGrid-container--bottom [role=row]': {
           background: 'transparent',
+        },
+        // ── the column-header strip ───────────────────────────────────────
+        //
+        // Ported from the legacy `GridTableHeader.jsx`
+        // (`frontends/EliteaUI/src/[fsd]/entities/grid-table/ui/`), which the
+        // product's own list views still render. This app's grids inherited the
+        // DataGrid's bare default instead: no ground, no outline, no radius, and
+        // the header label in the grid's own font rather than `labelMedium` — so
+        // side by side with the legacy screens the header read as a different
+        // component rather than the same one.
+        //
+        // The strip is a self-contained rounded panel, NOT a table head that
+        // bleeds into the rows: it carries its own border on all four sides and
+        // clips its corners, which is why `overflow: hidden` is part of the
+        // port rather than decoration.
+        '& .MuiDataGrid-columnHeaders': {
+          backgroundColor: theme.vars.palette.background.userInputBackground,
+          border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
+          borderRadius: theme.vars.shape.radiusMd,
+          overflow: 'hidden',
+        },
+        '& .MuiDataGrid-columnHeaderTitle': {
+          ...theme.typography.labelMedium,
+          color: theme.vars.palette.text.secondary,
+        },
+        // The legacy divider is a SHORT, vertically centred tick (1.25rem of a
+        // 2.25rem strip) sitting on the cell's trailing edge — not a full-height
+        // rule, and not after the last column. The grid ships a resize handle in
+        // that position instead, so the handle is hidden and the tick is drawn
+        // as the cell's own pseudo-element.
+        '& .MuiDataGrid-columnSeparator': {
+          display: 'none',
+        },
+        '& .MuiDataGrid-columnHeader:not(:last-of-type)::after': {
+          content: '""',
+          position: 'absolute',
+          right: 0,
+          top: '50%',
+          transform: 'translateY(-50%)',
+          width: '0.0625rem',
+          height: '1.25rem',
+          backgroundColor: theme.vars.palette.divider,
         },
         '& .MuiDataGrid-columnHeader--sortable': {
           padding: 0,

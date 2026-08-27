@@ -101,6 +101,17 @@ export interface GatewayDiagnosticRow {
 export interface GatewayStatusBody {
   readonly enabled?: boolean;
   readonly rate_limits_enforceable?: boolean;
+  /**
+   * The public project whose shared credentials and models this gateway reads
+   * in addition to the caller's own. An empty string means the second scope is
+   * OFF; `undefined` means the gateway is too old to say, which is a different
+   * fact and must not be read as "off".
+   *
+   * The Providers tab compares it against the project elitea-main publishes
+   * into. The two come from different services, so a mismatch produces platform
+   * credentials that resolve for nobody while every other signal stays healthy.
+   */
+  readonly shared_project_id?: string;
   readonly store?: {
     readonly has_database?: boolean;
     readonly last_attempt?: string;

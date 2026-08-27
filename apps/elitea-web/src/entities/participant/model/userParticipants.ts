@@ -51,7 +51,12 @@ export function useUserParticipants(params: UseUserParticipantsParams): UserPart
   const { projectId, query, enabled = true } = params;
   const trimmedQuery = query?.trim().toLowerCase() ?? '';
   const listQuery = useUserList(projectId ?? '', undefined, {
-    query: { enabled: enabled && projectId !== undefined },
+    // Non-EMPTY, not merely non-`undefined` — same gate, same reason as
+    // `toolkitParticipants.ts`: `useRecommendations` passes its
+    // `safeProjectId` (`projectId ?? ''`) straight through, so an
+    // unresolved project would request `/elitea_core/users/prompt_lib/`
+    // with no project in the path.
+    query: { enabled: enabled && projectId !== undefined && projectId !== '' },
   });
 
   return useMemo<UserParticipantsResult>(() => {

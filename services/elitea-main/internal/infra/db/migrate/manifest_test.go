@@ -175,12 +175,40 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	// It was written as 0097 and renumbered on merge, for the reason the entry
 	// above records: 0097 landed on main while this was in review, and a number
 	// is claimed at merge rather than at authoring.
-	require.EqualValues(t, 98, Head(shared))
+	// 99: shared/0099_gateway_request_logs.sql, the gateway's per-request log.
+	// It is a THIRD per-request table beside the money accumulator and the
+	// billing ledger, and the reason is that a billing delta rides only a
+	// BILLED request — so a call refused by a budget, rejected by a policy,
+	// addressed to an unresolvable model or failed upstream produces no ledger
+	// row at all. A log built over the ledger would list successes and no
+	// failures, which is the opposite of what a log is for.
+	//
+	// It stores NO request or response content, including no upstream error
+	// text: the failure column is a classification the gateway assigns, so
+	// there is no column a prompt fragment can reach.
+	require.EqualValues(t, 99, Head(shared))
 
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
 	// 125: tenant/0125_entity_tool_mapping_entity_id.sql.
-	require.EqualValues(t, 125, Head(tenant))
+	//
+	// 126: tenant/0126_chat_folders_and_selected_conversations.sql, which gives
+	// the ledgered corpus the conversation-folder objects that until now existed
+	// only in the dev bootstrap — chat_conversation_folders,
+	// chat_conversations.folder_id and attachment_participant_id, and
+	// chat_selected_conversations. 0123 declared a chat_conversations that was a
+	// strict SUBSET of the deployed one because it mirrored the sqlc COMPILER
+	// projection, which is a projection of the queries and not of the schema.
+	// The corpus could therefore not rebuild the shape every deployment runs,
+	// and the repository test template — built from the corpus alone — could not
+	// execute a single line of folder SQL.
+	//
+	// 127: tenant/0127_chat_message_attachment_items.sql, which takes ownership
+	// of chat_messages_attachment (#606). Its absence was why an uploaded chat
+	// attachment was conversation-scoped only, with no association to the
+	// message it was sent with: it never rendered inline in the transcript, and
+	// pylon's per-message attachment cleanup had nothing to iterate.
+	require.EqualValues(t, 127, Head(tenant))
 
 	agentState, err := LoadManifest(platformmigrations.Files, ScopeAgentState)
 	require.NoError(t, err)

@@ -57,15 +57,43 @@ export const getGetProjectAnalyticsResponseMock = (
   overrideResponse: Partial<Extract<ProjectAnalytics, object>> = {},
 ): ProjectAnalytics => ({
   kpis: {
-    unique_users: faker.number.float({ fractionDigits: 2 }),
-    total_project_users: faker.number.float({ fractionDigits: 2 }),
-    ai_active_users: faker.number.float({ fractionDigits: 2 }),
-    adoption_rate: faker.number.float({ fractionDigits: 2 }),
-    llm_calls: faker.number.float({ fractionDigits: 2 }),
-    tool_runs: faker.number.float({ fractionDigits: 2 }),
-    chat_msgs: faker.number.float({ fractionDigits: 2 }),
-    agent_runs: faker.number.float({ fractionDigits: 2 }),
+    ai_active_users: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    active_project_members: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    total_project_users: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    adoption_rate: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    llm_calls: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
     total_tokens: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    unique_users: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    tool_runs: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    chat_msgs: faker.helpers.arrayElement([
+      faker.number.float({ fractionDigits: 2 }),
+      undefined,
+    ]),
+    agent_runs: faker.helpers.arrayElement([
       faker.number.float({ fractionDigits: 2 }),
       undefined,
     ]),
@@ -77,21 +105,74 @@ export const getGetProjectAnalyticsResponseMock = (
   top_ai_users: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
-  ).map(() => ({})),
+  ).map(() => ({
+    user_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    name: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    run_count: faker.number.int(),
+    total_tokens: faker.number.int(),
+    last_active_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  })),
   daily_activity: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
-  ).map(() => ({})),
+  ).map(() => ({
+    date: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    llm_calls: faker.number.int(),
+    total_tokens: faker.number.int(),
+    active_users: faker.number.int(),
+  })),
   models: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
     model: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    provider: faker.string.alpha({ length: { min: 10, max: 20 } }),
     prompt_tokens: faker.number.int(),
     completion_tokens: faker.number.int(),
-    total_cost: faker.number.float({ fractionDigits: 2 }),
     run_count: faker.number.int(),
   })),
+  models_truncated: faker.datatype.boolean(),
+  health: faker.helpers.arrayElement([
+    {
+      requests: faker.number.int(),
+      errors: faker.number.int(),
+      error_rate: faker.number.float({ fractionDigits: 2 }),
+      by_error_code: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        error_code: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        requests: faker.number.int(),
+      })),
+      error_codes_truncated: faker.datatype.boolean(),
+      by_model: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        provider: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        model: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        streaming: faker.datatype.boolean(),
+        requests: faker.number.int(),
+        errors: faker.number.int(),
+        error_rate: faker.number.float({ fractionDigits: 2 }),
+        avg_duration_ms: faker.number.float({ fractionDigits: 2 }),
+        p95_duration_ms: faker.number.float({ fractionDigits: 2 }),
+      })),
+      daily: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        date: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        requests: faker.number.int(),
+        errors: faker.number.int(),
+      })),
+    },
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
@@ -104,9 +185,15 @@ export const getListAnalyticsUsersResponseMock = (
   ).map(() => ({
     user_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
     email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    name: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
     run_count: faker.number.int(),
+    total_tokens: faker.number.int(),
     last_active_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   })),
+  truncated: faker.datatype.boolean(),
   ...overrideResponse,
 });
 
@@ -115,24 +202,55 @@ export const getGetAnalyticsUserDetailResponseAnalyticsDetailEnvelopeMock = (
 ): AnalyticsDetailEnvelope => ({
   ...{
     entity_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    kpis: {
-      unique_users: faker.number.float({ fractionDigits: 2 }),
-      total_project_users: faker.number.float({ fractionDigits: 2 }),
-      ai_active_users: faker.number.float({ fractionDigits: 2 }),
-      adoption_rate: faker.number.float({ fractionDigits: 2 }),
-      llm_calls: faker.number.float({ fractionDigits: 2 }),
-      tool_runs: faker.number.float({ fractionDigits: 2 }),
-      chat_msgs: faker.number.float({ fractionDigits: 2 }),
-      agent_runs: faker.number.float({ fractionDigits: 2 }),
-      total_tokens: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-      total_cost: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-    },
+    kpis: faker.helpers.arrayElement([
+      {
+        ai_active_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        active_project_members: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_project_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        adoption_rate: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        llm_calls: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_tokens: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        unique_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        tool_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        chat_msgs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        agent_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_cost: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+      },
+      undefined,
+    ]),
     users: faker.helpers.arrayElement([
       Array.from(
         { length: faker.number.int({ min: 1, max: 10 }) },
@@ -172,9 +290,15 @@ export const getGetAnalyticsUserDetailResponseAnalyticsUsersListMock = (
     ).map(() => ({
       user_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
       email: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      name: faker.helpers.arrayElement([
+        faker.string.alpha({ length: { min: 10, max: 20 } }),
+        undefined,
+      ]),
       run_count: faker.number.int(),
+      total_tokens: faker.number.int(),
       last_active_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     })),
+    truncated: faker.datatype.boolean(),
   },
   ...overrideResponse,
 });
@@ -207,24 +331,55 @@ export const getGetAnalyticsToolDetailResponseAnalyticsDetailEnvelopeMock = (
 ): AnalyticsDetailEnvelope => ({
   ...{
     entity_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    kpis: {
-      unique_users: faker.number.float({ fractionDigits: 2 }),
-      total_project_users: faker.number.float({ fractionDigits: 2 }),
-      ai_active_users: faker.number.float({ fractionDigits: 2 }),
-      adoption_rate: faker.number.float({ fractionDigits: 2 }),
-      llm_calls: faker.number.float({ fractionDigits: 2 }),
-      tool_runs: faker.number.float({ fractionDigits: 2 }),
-      chat_msgs: faker.number.float({ fractionDigits: 2 }),
-      agent_runs: faker.number.float({ fractionDigits: 2 }),
-      total_tokens: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-      total_cost: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-    },
+    kpis: faker.helpers.arrayElement([
+      {
+        ai_active_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        active_project_members: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_project_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        adoption_rate: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        llm_calls: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_tokens: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        unique_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        tool_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        chat_msgs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        agent_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_cost: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+      },
+      undefined,
+    ]),
     users: faker.helpers.arrayElement([
       Array.from(
         { length: faker.number.int({ min: 1, max: 10 }) },
@@ -301,24 +456,55 @@ export const getGetAnalyticsAgentDetailResponseAnalyticsDetailEnvelopeMock = (
 ): AnalyticsDetailEnvelope => ({
   ...{
     entity_name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-    kpis: {
-      unique_users: faker.number.float({ fractionDigits: 2 }),
-      total_project_users: faker.number.float({ fractionDigits: 2 }),
-      ai_active_users: faker.number.float({ fractionDigits: 2 }),
-      adoption_rate: faker.number.float({ fractionDigits: 2 }),
-      llm_calls: faker.number.float({ fractionDigits: 2 }),
-      tool_runs: faker.number.float({ fractionDigits: 2 }),
-      chat_msgs: faker.number.float({ fractionDigits: 2 }),
-      agent_runs: faker.number.float({ fractionDigits: 2 }),
-      total_tokens: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-      total_cost: faker.helpers.arrayElement([
-        faker.number.float({ fractionDigits: 2 }),
-        undefined,
-      ]),
-    },
+    kpis: faker.helpers.arrayElement([
+      {
+        ai_active_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        active_project_members: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_project_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        adoption_rate: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        llm_calls: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_tokens: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        unique_users: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        tool_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        chat_msgs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        agent_runs: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+        total_cost: faker.helpers.arrayElement([
+          faker.number.float({ fractionDigits: 2 }),
+          undefined,
+        ]),
+      },
+      undefined,
+    ]),
     users: faker.helpers.arrayElement([
       Array.from(
         { length: faker.number.int({ min: 1, max: 10 }) },

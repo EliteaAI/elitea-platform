@@ -37,6 +37,10 @@ import {
 import { readPersistedAdminNavCollapsed, useAdminNavCollapsedStore } from './adminNavCollapsed';
 import { adminApiBaseUrl } from './adminUiConfig';
 import { createAdminRouter } from './router';
+import {
+  COLLAPSED_SIDE_BAR_WIDTH_REM,
+  SIDE_BAR_WIDTH_REM,
+} from '@/shared/ui/layout/sidebarWidth';
 
 installWebStorageShim();
 
@@ -372,7 +376,17 @@ describe('active route', () => {
     const router = createAdminRouter();
     await router.load();
     expect(router.state.matches.map((match) => match.routeId)).toEqual(['__root__', '/secrets']);
-  });
+    // 30s, not vitest's 5s default. `router.load()` here is not a stub: it
+    // resolves the REAL route tree and pulls in the matched page's module
+    // graph, which is the whole point of the test — a synthetic match shape
+    // would not notice TanStack changing what it puts in `matches`. That
+    // import costs a second or two warm, and several under the coverage
+    // instrumentation CI runs it with, so the default budget failed this
+    // sharded job while the same test passed on its own (issue: the shard
+    // reported `Test timed out in 5000ms` at 5006ms). The assertion is
+    // unchanged; only the time it is allowed to take is stated deliberately
+    // instead of inherited.
+  }, 30_000);
 
   it('marks nothing when no nav item owns the route', () => {
     // Better than defaulting to the first item: a nav claiming you are on a page
@@ -415,12 +429,18 @@ describe('collapsed state', () => {
     // Mutation testing found this: swapping the two widths changed nothing any
     // test could see, so the nav could have "collapsed" to full width — labels
     // gone, rail unchanged — and every other test here would still have passed.
+    //
+    // Asserted against the SHARED constants, not literals. The literals were
+    // `13.75rem`/`3.75rem` — this rail's own numbers, which disagreed with the
+    // main app's rail. Restating them here is what let the two drift apart
+    // while both files' tests stayed green, so the assertion now fails if the
+    // rails stop sharing one definition rather than if a number changes.
     await mountAdmin();
     const nav = screen.getByTestId('admin-nav');
-    expect(getComputedStyle(nav).width).toBe('13.75rem');
+    expect(getComputedStyle(nav).width).toBe(SIDE_BAR_WIDTH_REM);
 
     await userEvent.click(screen.getByTestId('admin-nav-collapse-toggle'));
-    expect(getComputedStyle(nav).width).toBe('3.75rem');
+    expect(getComputedStyle(nav).width).toBe(COLLAPSED_SIDE_BAR_WIDTH_REM);
   });
 
   it('points the chevron at what the click will do', async () => {

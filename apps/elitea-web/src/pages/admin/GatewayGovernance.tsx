@@ -74,7 +74,7 @@ export function AdminGatewayGovernance() {
           {t('pages.admin.governance.title', 'LLM Governance')}
         </Typography>
         <Button
-          variant="contained"
+          variant="elitea" color="primary"
           size="small"
           startIcon={<AddIcon />}
           onClick={state.onCreate}

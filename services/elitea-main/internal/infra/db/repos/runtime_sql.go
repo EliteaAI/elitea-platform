@@ -96,6 +96,13 @@ func (e pgxExecutor) InsertCurrentAgentTextContent(
 	return sqlcgen.New(e.queryer).InsertCurrentAgentTextContent(ctx, arg)
 }
 
+func (e pgxExecutor) UpdateCurrentAgentAttachmentContent(
+	ctx context.Context,
+	arg sqlcgen.UpdateCurrentAgentAttachmentContentParams,
+) (int64, error) {
+	return sqlcgen.New(e.queryer).UpdateCurrentAgentAttachmentContent(ctx, arg)
+}
+
 func (e pgxExecutor) FinalizeCurrentAgentFullMessage(
 	ctx context.Context,
 	arg sqlcgen.FinalizeCurrentAgentFullMessageParams,

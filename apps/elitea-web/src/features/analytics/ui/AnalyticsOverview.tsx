@@ -7,12 +7,11 @@ import { useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
-import type { ProjectAnalytics } from '@/shared/api/generated/model';
+import type { ProjectAnalytics, UserActivity } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
 
 import { pickChartColor, pickMedalColor } from '../lib/constants';
 import { fmtNum } from '../lib/format';
-import { numField, strField } from '../lib/looseRecord';
 import { AnalyticsKpiRow } from './components/AnalyticsKpiRow';
 import { ChartTooltip } from './components/ChartTooltip';
 import { ModelUsageTable } from './components/ModelUsageTable';
@@ -21,15 +20,31 @@ import { ModelUsageTable } from './components/ModelUsageTable';
  * Ported from
  * `apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsOverview.jsx`.
  *
- * `top_ai_users`/`daily_activity` are `zod.looseObject({})` arrays (the Go
- * handler hardcodes both to `[]` today — see `lib/looseRecord.ts`'s
- * header), read defensively so the leaderboard/chart are forward-compatible
- * with a future backend that populates them, without asserting a shape the
- * schema does not promise.
+ * ── `top_ai_users`/`daily_activity` ARE REAL DATA NOW ──
+ *
+ * They were `zod.looseObject({})` arrays read through `numField`/`strField`,
+ * because the Go handler hardcoded both to `[]` and the spec could not say what
+ * an element would look like. Read defensively, they degraded silently: every
+ * field the backend did not send became `0` or `''`, so a leaderboard populated
+ * with the wrong key names would have rendered a list of blank names scoring
+ * zero rather than failing.
+ *
+ * Both are typed and populated as of the gateway request log (shared migration
+ * 0099). The loose readers are gone from this file: the chart's series are
+ * `llm_calls`/`active_users` and the leaderboard's rows are `UserActivity`,
+ * which the compiler now checks. The old field names it was guessing at
+ * (`events`, `users`, `user_email`, `ai_events`, `tool_runs`, `agent_runs`)
+ * never existed on any response.
  */
 export interface AnalyticsOverviewProps {
   readonly data: ProjectAnalytics;
   readonly onUserClick?: (userId: string) => void;
+  /**
+   * Project spend for the same window, already formatted. From
+   * `/analytics_costs` — the one owner of the money figure — rather than from
+   * `data`, which no longer publishes a cost at all.
+   */
+  readonly totalCost?: string | undefined;
 }
 
 const kpiRowWrapSx: SxProps<Theme> = { display: 'flex', flexDirection: 'column', gap: (theme: Theme) => theme.spacing(2) };
@@ -113,54 +128,50 @@ const scoreSx = (theme: Theme) => ({
   flexShrink: 0,
 });
 
-interface DailyActivityPoint {
-  readonly date: string;
-  readonly events: number;
-  readonly users: number;
+/**
+ * What to show for a member. `email` is empty when the identity tables are
+ * absent — the server still reports the row, because "user 41 made 900 calls"
+ * is useful without a display name and dropping it would silently shrink the
+ * leaderboard. The id is the fallback, never a blank.
+ */
+function displayName(user: UserActivity): string {
+  // `||`, not `??`: the server sends an EMPTY STRING for an unresolvable
+  // email, not null, so `??` would pick the empty string and render a blank
+  // row where the id belongs.
+  return (user.name ?? '') || user.email || `#${user.user_id}`;
 }
 
-interface LeaderboardRow {
-  readonly userId: string;
-  readonly email: string;
-  readonly llmCalls: number;
-  readonly toolRuns: number;
-  readonly agentRuns: number;
-  readonly aiEvents: number;
-}
-
-function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): ReactNode {
+function AnalyticsOverviewImpl({ data, onUserClick, totalCost }: AnalyticsOverviewProps): ReactNode {
   const theme = useTheme();
   const axisStroke = theme.vars.palette.text.primary;
   const axisTickStyle = { fill: axisStroke, fontSize: theme.typography.labelSmall.fontSize };
 
-  const dailyActivity = useMemo<DailyActivityPoint[]>(
-    () =>
-      data.daily_activity.map((point) => ({
-        date: strField(point, 'date'),
-        events: numField(point, 'events'),
-        users: numField(point, 'users'),
-      })),
-    [data.daily_activity],
-  );
+  const dailyActivity = data.daily_activity;
+  const topAiUsers = data.top_ai_users;
 
-  const topAiUsers = useMemo<LeaderboardRow[]>(
-    () =>
-      data.top_ai_users.map((row) => ({
-        userId: strField(row, 'user_id'),
-        email: strField(row, 'user_email'),
-        llmCalls: numField(row, 'llm_calls'),
-        toolRuns: numField(row, 'tool_runs'),
-        agentRuns: numField(row, 'agent_runs'),
-        aiEvents: numField(row, 'ai_events'),
-      })),
-    [data.top_ai_users],
-  );
-
-  const totalModelCalls = useMemo(() => data.models.reduce((sum, model) => sum + model.run_count, 0), [data.models]);
+  // The share denominator, and the reason it is not always this sum.
+  //
+  // `models` is CAPPED server-side. Summing a cut array normalises every share
+  // against the busiest N rather than against the project, so the column adds to
+  // 100% over a subset while the LLM CALLS tile beside it reports the real
+  // total — two numbers on one screen that disagree with nothing explaining why.
+  //
+  // When the server says it cut the list, the denominator becomes the KPI's own
+  // request count instead. That figure counts requests this table cannot show —
+  // ones that never resolved a model — so the shares no longer sum to 100%, and
+  // that is the honest shape: the remainder is traffic the table is not
+  // describing.
+  const totalModelCalls = useMemo(() => {
+    if (data.models_truncated) return data.kpis.llm_calls ?? 0;
+    return data.models.reduce((sum, model) => sum + model.run_count, 0);
+  }, [data.models, data.models_truncated, data.kpis.llm_calls]);
 
   return (
     <Box sx={kpiRowWrapSx}>
-      <AnalyticsKpiRow kpis={data.kpis} />
+      <AnalyticsKpiRow
+        kpis={data.kpis}
+        totalCost={totalCost}
+      />
       <Box sx={chartsGridSx}>
         <Box sx={cardSx}>
           <Typography
@@ -199,8 +210,8 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                 <Area
                   yAxisId="events"
                   type="monotone"
-                  dataKey="events"
-                  name={t('analytics.overview.dailyActivity.seriesEvents', 'Events')}
+                  dataKey="llm_calls"
+                  name={t('analytics.overview.dailyActivity.seriesEvents', 'LLM calls')}
                   stroke={theme.vars.palette.status.draft}
                   fill={theme.vars.palette.status.draft}
                   fillOpacity={0.15}
@@ -209,8 +220,8 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                 <Area
                   yAxisId="users"
                   type="monotone"
-                  dataKey="users"
-                  name={t('analytics.overview.dailyActivity.seriesUsers', 'Users')}
+                  dataKey="active_users"
+                  name={t('analytics.overview.dailyActivity.seriesUsers', 'Active users')}
                   stroke={theme.vars.palette.status.published}
                   fill={theme.vars.palette.status.published}
                   fillOpacity={0.1}
@@ -225,13 +236,13 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
             variant="labelMedium"
             sx={titleSx}
           >
-            {t('analytics.overview.leaderboard.title', 'Top 5 AI Adopters')}
+            {t('analytics.overview.leaderboard.title', 'Top AI Adopters')}
           </Typography>
           <Typography
             variant="bodySmall"
             sx={subtitleSx}
           >
-            {t('analytics.overview.leaderboard.subtitle', 'Leaderboard by AI events (LLM + Tool + Agent)')}
+            {t('analytics.overview.leaderboard.subtitle', 'Leaderboard by LLM calls')}
           </Typography>
           {topAiUsers.length > 0 ? (
             <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', overflow: 'auto' }}>
@@ -239,9 +250,9 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                 const clickable = onUserClick !== undefined;
                 return (
                   <Box
-                    key={`${user.userId}-${index}`}
+                    key={`${user.user_id}-${index}`}
                     sx={leaderboardRowSx(theme, clickable)}
-                    onClick={clickable ? () => onUserClick(user.userId) : undefined}
+                    onClick={clickable ? () => onUserClick(user.user_id) : undefined}
                   >
                     <Typography sx={rankSx}>{index + 1}</Typography>
                     <Box
@@ -256,7 +267,7 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                         backgroundColor: index < 3 ? pickMedalColor(index) : pickChartColor(index - 3),
                       }}
                     >
-                      <Typography sx={initialSx}>{(user.email || '?')[0]?.toUpperCase()}</Typography>
+                      <Typography sx={initialSx}>{(displayName(user) || '?')[0]?.toUpperCase()}</Typography>
                     </Box>
                     <Box sx={{ flex: 1, minWidth: 0 }}>
                       <Typography
@@ -264,16 +275,14 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                         noWrap
                         sx={emailSx(theme, clickable)}
                       >
-                        {user.email}
+                        {displayName(user)}
                       </Typography>
                       <Typography
                         variant="bodySmall"
                         sx={statsSx}
                       >
-                        {t('analytics.overview.leaderboard.stats', '{{llm}} LLM · {{tool}} Tool · {{agent}} Agent', {
-                          llm: fmtNum(user.llmCalls),
-                          tool: fmtNum(user.toolRuns),
-                          agent: fmtNum(user.agentRuns),
+                        {t('analytics.overview.leaderboard.stats', '{{tokens}} tokens', {
+                          tokens: fmtNum(user.total_tokens),
                         })}
                       </Typography>
                     </Box>
@@ -281,7 +290,7 @@ function AnalyticsOverviewImpl({ data, onUserClick }: AnalyticsOverviewProps): R
                       variant="bodyMedium"
                       sx={scoreSx}
                     >
-                      {fmtNum(user.aiEvents)}
+                      {fmtNum(user.run_count)}
                     </Typography>
                   </Box>
                 );

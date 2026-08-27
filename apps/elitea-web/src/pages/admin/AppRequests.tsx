@@ -187,10 +187,12 @@ export function AdminAppRequests() {
             <Typography variant="bodySmall" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={state.onPreviousPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={state.onPreviousPage}>
               {t('pages.admin.appRequests.previous', 'Previous')}
             </Button>
-            <Button size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
               {t('pages.admin.appRequests.next', 'Next')}
             </Button>
           </Box>

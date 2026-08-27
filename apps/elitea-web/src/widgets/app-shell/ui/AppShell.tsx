@@ -5,8 +5,10 @@ import Box from '@mui/material/Box';
 import { useRouterState } from '@tanstack/react-router';
 
 import { getConfig } from '@/shared/config';
+import { usePlatformAnnouncements } from '@/shared/lib/hooks/usePlatformAnnouncements';
 import type { SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { SupportAssistantWidget } from '@/widgets/support-assistant';
 import {
   Sidebar,
   usePermissionSet,
@@ -17,7 +19,9 @@ import {
 } from '@/widgets/sidebar';
 
 import { useSelectedProject } from '../model/useSelectedProject.hooks';
+import { MaintenanceSplash } from './MaintenanceSplash';
 import { NavBlockerDialog } from './NavBlockerDialog';
+import { PlatformBanner } from './PlatformBanner';
 import { PageTitleSetter } from './PageTitleSetter';
 
 export interface AppShellProps {
@@ -100,12 +104,15 @@ const PERSONAL_PROJECT_FALLBACK_NAME = 'Private';
  *    unit's owned paths (not `src/widgets/{sidebar,create-button,
  *    app-shell}/`) and not in this unit's `sourceFiles` slice.
  *  - `MaintenanceBanner` (`features/maintenance/**`, listed in this unit's
- *    `sourceFiles`) — needs `VITE_MAINTENANCE_MESSAGE/START/END/BANNER`,
- *    which are outside `shared/config`'s CLOSED `ConfigSchema` (F3, six
- *    keys, explicitly documented as closed) and this unit cannot extend
- *    that schema (outside its ownership fence). No banner renders; adding
- *    one without a real config source would be exactly the "no placeholder
- *    code" rule's target.
+ *    `sourceFiles`) — STALE CLAIM, corrected: this was dropped because the
+ *    banner's only config source was `VITE_MAINTENANCE_MESSAGE/START/END/
+ *    BANNER`, build-time environment variables outside `shared/config`'s
+ *    CLOSED `ConfigSchema`, and "adding one without a real config source
+ *    would be exactly the 'no placeholder code' rule's target". The reason
+ *    was right and the config source now exists: admin › Configuration ›
+ *    Banner writes `centry.platform_config` and `platform_settings`
+ *    publishes it. Rendered below as `<PlatformBanner>`, alongside the
+ *    maintenance splash the same admin page now enables.
  *  - The `ImportWizardModal` trigger/UI (`[fsd]/entities/import-wizard/**`,
  *    listed in `sourceFiles`) — its parsing pipeline
  *    (`parseMdFrontmatter`/`mdToApplicationJson`) transitively imports
@@ -126,6 +133,7 @@ export function AppShell({ children }: AppShellProps): ReactNode {
   const authorQuery = useGetCurrentAuthor();
   const personalProjectId = personalProjectIdOf(authorQuery.data);
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
+  const { banner, maintenance } = usePlatformAnnouncements();
   const isOnboardingPage = pathname === ONBOARDING_PATHNAME;
   const hideSidebar = isOnboardingPage && !personalProjectId;
 
@@ -158,6 +166,18 @@ export function AppShell({ children }: AppShellProps): ReactNode {
 
   const sidebarWidth = isOnboardingPage ? 0 : collapsed ? COLLAPSED_SIDE_BAR_WIDTH_PX : SIDE_BAR_WIDTH_PX;
 
+  // A maintenance window replaces the whole shell — sidebar included — for
+  // everyone the API is refusing. Rendering the product around the splash would
+  // leave every control looking usable while every request behind it answers
+  // 503, which is the confusion this screen exists to remove.
+  //
+  // `bypass` is the SERVER's answer for this caller, not a permission check
+  // repeated here: an administrator keeps the product, because they are the
+  // person who has to end the window. See `usePlatformAnnouncements`.
+  if (maintenance.enabled && !maintenance.bypass) {
+    return <MaintenanceSplash maintenance={maintenance} />;
+  }
+
   return (
     <Box sx={{ display: 'flex' }}>
       {!hideSidebar && (
@@ -181,9 +201,37 @@ export function AppShell({ children }: AppShellProps): ReactNode {
         }}
       >
         <PageTitleSetter projectName={project?.name} />
+        {/* Above the page content and inside `main`, so it scrolls with the
+            document rather than floating over it. The legacy banner was
+            absolutely positioned at `zIndex: 2400`, which put it on top of
+            every dialog in the app. */}
+        <PlatformBanner banner={banner} />
         {children}
         <NavBlockerDialog />
       </Box>
+      {/*
+       * The in-app support assistant.
+       *
+       * MOUNTED HERE, OUTSIDE `main`, and last: it is a floating overlay with
+       * its own fixed positioning, so putting it inside the scrolling content
+       * column would scroll the button off the page.
+       *
+       * It renders NOTHING on a deployment that has not enabled it — the
+       * component asks `GET /support_assistant/config` and mounts the overlay
+       * only on `enabled: true`, which the server answers only when an operator
+       * has turned the section on AND chosen a support agent. That check is the
+       * whole reason the widget is mounted unconditionally here rather than
+       * behind a flag read in this file: there is one place that decides, and it
+       * is the one that also knows whether the assistant can actually answer.
+       *
+       * The render-prop child is `null` on purpose. `onToggleAssistant` exists
+       * so a caller can offer its own "ask support" affordance; this shell has
+       * no such affordance to offer, and the assistant's own floating button is
+       * how a user opens it. A future caller — the baseline's
+       * `CredentialWarningBanner`, whose `onMount` was written for exactly this
+       * — reaches the same handle through `useEliteaAssistantRef()`.
+       */}
+      <SupportAssistantWidget project={project ?? undefined}>{() => null}</SupportAssistantWidget>
     </Box>
   );
 }

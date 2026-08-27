@@ -52,7 +52,7 @@ func TestConfigurationWriteRouteMakesACredentialVisibleToTheGateway(t *testing.T
 		t.Fatalf("provision the project 1 vault: %v", err)
 	}
 
-	configurations, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, 1, "")
+	configurations, err := runtimecomposition.NewCurrentConfigurationsRuntime(pool, 1, "", nil)
 	if err != nil {
 		t.Fatalf("compose the Configurations runtime: %v", err)
 	}

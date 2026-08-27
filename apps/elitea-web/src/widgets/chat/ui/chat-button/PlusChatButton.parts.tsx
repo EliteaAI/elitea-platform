@@ -8,10 +8,12 @@
 import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
+import Paper from '@mui/material/Paper';
 import type { Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
+import { ArrowRightIcon } from '@/shared/ui/icons/arrow-right-icon';
 
 import { AttachmentButton } from './AttachmentButton';
 import type { MenuItemDef, SubmenuKey } from './PlusChatButton.helpers';
@@ -60,70 +62,96 @@ export function AttachmentsPanel({
 
 export interface MainMenuListProps {
   readonly items: readonly MenuItemDef[];
-  readonly onBack: () => void;
-  readonly onSelectSubmenu: (key: SubmenuKey) => void;
+  /** Receives the hovered/clicked row element so the submenu can anchor beside it. */
+  readonly onSelectSubmenu: (key: SubmenuKey, anchor: HTMLElement) => void;
+  /** The "Attach files" row rendered above the categories — see this component's doc. */
+  readonly attachRow: ReactNode;
 }
 
-export function MainMenuList({ items, onBack, onSelectSubmenu }: MainMenuListProps): ReactNode {
-  return (
-    <Box>
-      {/* Back button header */}
-      <Box
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1,
-          padding: '0.5rem 1rem',
-          borderBottom: '0.0625rem solid',
-          borderColor: 'border.lines',
-          cursor: 'pointer',
-          color: 'text.secondary',
-        }}
-        onClick={onBack}
-      >
-        <Typography variant="bodyMedium" sx={{ flex: 1 }}>
-          {t('widgets.chat.plusChatButton.addToChatLabel', 'Add to chat')}
-        </Typography>
-      </Box>
+const rowSx = (theme: Theme) => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 1,
+  padding: '0.375rem 1rem',
+  height: '2.75rem',
+  cursor: 'pointer',
+  color: theme.vars.palette.text.secondary,
+  '&:hover': { backgroundColor: theme.vars.palette.action.hover },
+});
 
-      {/* Menu items */}
-      {items.map((item) => (
+const menuIconSx = { width: '1.25rem', height: '1.25rem', flexShrink: 0 } as const;
+
+/**
+ * The "+" menu's top level: the attach-files row, then the expandable
+ * categories, in the baseline's order (`PlusChatButton.jsx:361-397`).
+ *
+ * Two things this used to do that the reference does not:
+ *
+ *  - a **"Add to chat" header row wired to `onBack`** sat above everything.
+ *    At the top level there is nothing to go back to, so it was a clickable
+ *    row that did nothing; the reference has no such header.
+ *  - the chevron was the **literal character `›`** in a `Typography`. It
+ *    inherits the font's own metrics, so it sat at a different size and
+ *    baseline from every other chevron in the app. It is now `ArrowRightIcon`,
+ *    the ported asset the baseline uses here.
+ *
+ * Rows open their submenu on HOVER as well as click (baseline
+ * `onMouseEnter={e => handleItemHover(key, e)}`), and hand back the row
+ * element so the caller can anchor the submenu BESIDE it rather than
+ * replacing this list with it. There is deliberately no `onMouseLeave`: the
+ * submenu is dismissed by opening a different one or by clicking away, so the
+ * pointer can travel from the row into the submenu without it vanishing
+ * mid-move. That is the failure a leave-handler plus a re-entry timer is
+ * usually written to paper over.
+ */
+export function MainMenuList({ items, onSelectSubmenu, attachRow }: MainMenuListProps): ReactNode {
+  return (
+    <Box role="menu">
+      {attachRow}
+      {items.map(({ key, label, submenu, Icon }) => (
         <Box
-          key={item.key}
+          key={key}
           role="menuitem"
           tabIndex={0}
-          sx={(theme: Theme) => ({
-            display: 'flex',
-            alignItems: 'center',
-            gap: 0.75,
-            padding: '0.5rem 1rem',
-            height: '2.75rem',
-            cursor: 'pointer',
-            color: theme.vars.palette.text.secondary,
-            '&:hover': {
-              backgroundColor: theme.vars.palette.action.hover,
-            },
-          })}
-          onClick={() => item.submenu && onSelectSubmenu(item.submenu)}
+          data-testid={`plus-menu-${key}`}
+          sx={rowSx}
+          onClick={(e) => submenu && onSelectSubmenu(submenu, e.currentTarget)}
+          onMouseEnter={(e) => submenu && onSelectSubmenu(submenu, e.currentTarget)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              if (item.submenu) onSelectSubmenu(item.submenu);
+              if (submenu) onSelectSubmenu(submenu, e.currentTarget);
             }
           }}
         >
-          <Typography variant="labelMedium" sx={{ flex: 1 }}>{item.label}</Typography>
-          <Typography
-            variant="bodySmall"
-            sx={(theme: Theme) => ({
-              opacity: 0.5,
-              color: theme.vars.palette.text.disabled,
-            })}
-          >
-            ›
-          </Typography>
+          <Icon style={menuIconSx} />
+          <Typography variant="labelMedium" sx={{ flex: 1 }}>{label}</Typography>
+          <ArrowRightIcon style={menuIconSx} />
         </Box>
       ))}
     </Box>
+  );
+}
+
+/**
+ * The surface both the main menu and its submenu sit on — one component so
+ * the two papers cannot drift apart in radius, border or elevation.
+ */
+export function MenuPaper({ children }: { readonly children: ReactNode }): ReactNode {
+  return (
+    <Paper
+      elevation={8}
+      sx={(theme: Theme) => ({
+        minWidth: '17.5rem',
+        borderRadius: theme.vars.shape.radiusMd,
+        border: '0.0625rem solid',
+        borderColor: 'border.lines',
+        background: theme.vars.palette.background.secondary,
+        padding: 0,
+        overflow: 'hidden',
+      })}
+    >
+      {children}
+    </Paper>
   );
 }

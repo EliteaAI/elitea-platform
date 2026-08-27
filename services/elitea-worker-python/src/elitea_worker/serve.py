@@ -44,7 +44,16 @@ from elitea_worker.execution.delivery import (
     IndexClientContextFactory,
     IndexIngestDeliveryProcessor,
 )
-from elitea_worker.execution.errors import DependencyUnavailable, WorkerError
+from elitea_worker.execution.errors import (
+    DependencyUnavailable,
+    InvalidInput,
+    ResourceExhausted,
+    WorkerError,
+)
+from elitea_worker.execution.quarantine import (
+    CompositeQuarantineStore,
+    FileQuarantineStore,
+)
 from elitea_worker.execution.supervisor import ExecutionSupervisor
 from elitea_worker.handlers.validation import ConfigurationValidationHandler
 from elitea_worker.indexing_runtime_capabilities import (
@@ -66,6 +75,7 @@ from elitea_worker.transport.input_content import (
 from elitea_worker.transport.output_grpc import OutputGrpcSession, secure_output_channel
 from elitea_worker.transport.output_spool import EncryptedOutputSpool
 from elitea_worker.transport.redis_asyncio import RedisAsyncioControlClient
+from elitea_worker.transport.redis_quarantine import SharedQuarantineStore
 from elitea_worker.transport.redis_commands import (
     RedisCommandConsumer,
     RedisCommandDelivery,
@@ -128,6 +138,23 @@ class _ShutdownBudget:
         return max(0.0, deadline - asyncio.get_running_loop().time())
 
 
+class QuarantineStore(Protocol):
+    """The durable half of the quarantine.
+
+    Narrow by design, like the command consumer beside it: record one entry,
+    read them all back, and nothing else. `clear` is deliberately absent from
+    what the serve loop can reach — a worker that decided an entry is hopeless
+    is not the component that may decide it is repaired.
+    """
+
+    @property
+    def cap(self) -> int: ...
+
+    async def load(self) -> frozenset[str]: ...
+
+    async def add(self, entry_id: str, *, reason_code: str) -> bool: ...
+
+
 class WorkerServeLoop:
     """Bounded read/reclaim queue with no data-plane publication surface."""
 
@@ -143,6 +170,7 @@ class WorkerServeLoop:
         dependency_retry_millis: int,
         shutdown_timeout_millis: int,
         event_sink: Callable[[str, WorkerError | None], None] | None = None,
+        quarantine_store: QuarantineStore | None = None,
     ) -> None:
         if (
             min(
@@ -168,6 +196,25 @@ class WorkerServeLoop:
         self._dependency_retry = dependency_retry_millis / 1000
         self._shutdown_timeout = shutdown_timeout_millis / 1000
         self._owned_entry_ids: set[tuple[str, str]] = set()
+        # Entries this process refuses to re-lease, because re-running them
+        # cannot change the outcome. See `_worker`'s non-retryable branch.
+        #
+        # Bounded like every other buffer here: an unbounded set would turn a
+        # broken dependency into a memory leak. The cap is the same order as the
+        # ownership window, so it can hold every entry this worker could have
+        # in flight, and one more round of them.
+        # Entry ids, not (stream, entry_id) like `_owned_entry_ids`: runtime v1
+        # binds ONE stream to this consumer group, and this loop drives exactly
+        # one consumer, so the stream is a constant here. Keying on it too would
+        # mean deriving the name a second way for the durable load, and a
+        # mismatch there would silently un-quarantine everything.
+        self._quarantined: set[str] = set()
+        self._quarantine_cap = 2 * (queue_capacity + max_concurrency)
+        # Optional on purpose. Without a store the quarantine still stops the
+        # spin for the life of this process, which is the whole of the defect
+        # for a single-worker deployment; with one it also survives a restart
+        # and is shared with every other worker in the group.
+        self._quarantine_store = quarantine_store
         # One token covers each fetched, queued, or actively processed PEL entry.
         self._ownership_slots: asyncio.Queue[None] = asyncio.Queue(
             queue_capacity + max_concurrency
@@ -179,6 +226,7 @@ class WorkerServeLoop:
     async def run(self, stop: asyncio.Event) -> None:
         if stop.is_set():
             return
+        await self._load_durable_quarantine()
         intake = asyncio.create_task(
             self._intake_loop(stop),
             name="elitea-redis-intake",
@@ -303,6 +351,116 @@ class WorkerServeLoop:
                     next_reclaim = loop.time() + self._reclaim_interval
                 self._release_delivery_capacity(reserved)
 
+    async def _persist_quarantine(
+        self,
+        delivery: RedisCommandDelivery,
+        error: WorkerError,
+    ) -> None:
+        """Make the refusal outlive this process.
+
+        In-memory alone, a restart re-runs the parked command once and parks it
+        again — the spin returns, just slower and once per process. Recording it
+        is what makes the decision survive, and what shares it with every other
+        worker in the group.
+
+        Never fatal, and never allowed to undo the in-memory decision: the entry
+        is already quarantined here whatever the store says, so a store outage
+        degrades to the process-local behaviour rather than resuming the spin.
+        The two failure shapes are announced separately because they need
+        different operator responses — a refusal is a bound that was reached, an
+        unavailability is a dependency to fix.
+        """
+        if self._quarantine_store is None:
+            return
+        try:
+            stored = await self._quarantine_store.add(
+                delivery.entry_id,
+                reason_code=error.code,
+            )
+        except asyncio.CancelledError:
+            raise
+        except WorkerError as exc:
+            self._event_sink("quarantine_write_rejected", exc)
+            return
+        except Exception:
+            self._event_sink("quarantine_write_unavailable", DependencyUnavailable())
+            return
+        if not stored:
+            # The DURABLE cap refused it, which is a different bound from this
+            # process's own cap and has to be said separately: this entry will
+            # be re-run once by the next worker that starts.
+            self._event_sink("quarantine_store_full", error)
+
+    async def _load_durable_quarantine(self) -> None:
+        """Adopt this group's existing refusals before reading any command.
+
+        Ordering is the point: seeding AFTER intake starts would leave a window
+        in which the very entry a previous process parked is executed once more,
+        which is the behaviour this exists to remove.
+
+        A failure to read is NOT fatal. Refusing to start would turn a
+        degraded-but-working worker into an outage; the cost of continuing is
+        that a parked entry runs once more and is parked again. Announced either
+        way, because the two states are operationally different.
+        """
+        if self._quarantine_store is None:
+            return
+        try:
+            recorded = await self._quarantine_store.load()
+        except asyncio.CancelledError:
+            raise
+        except WorkerError as exc:
+            self._event_sink("quarantine_load_rejected", exc)
+            return
+        except Exception:
+            self._event_sink("quarantine_load_unavailable", DependencyUnavailable())
+            return
+        self._quarantined.update(recorded)
+        if recorded:
+            self._event_sink("quarantine_loaded", None)
+        # A record that lost lines is still usable, but the entries it lost will
+        # each run once more before being parked again — so it is reported.
+        if getattr(self._quarantine_store, "malformed_lines", 0):
+            self._event_sink(
+                "quarantine_record_damaged",
+                InvalidInput("The quarantine record contains unreadable lines."),
+            )
+        # Which TIER degraded, not merely that something did: a shared-tier
+        # failure means the decision stops crossing replicas, a local-tier
+        # failure means it stops surviving a restart. Same event class, very
+        # different operator response.
+        if getattr(self._quarantine_store, "shared_failed", False):
+            self._event_sink(
+                "quarantine_shared_unavailable",
+                DependencyUnavailable(
+                    "The shared quarantine is unreadable; the decision is local "
+                    "to this worker until it returns."
+                ),
+            )
+        if getattr(self._quarantine_store, "local_failed", False):
+            self._event_sink(
+                "quarantine_local_unavailable",
+                DependencyUnavailable(
+                    "The local quarantine record is unreadable; the decision "
+                    "may not survive a restart."
+                ),
+            )
+        # Reported rather than done quietly: this worker has just written rows
+        # for refusals it never made, which is a change an operator reading the
+        # file should be able to correlate with something.
+        if getattr(self._quarantine_store, "backfilled", 0):
+            self._event_sink("quarantine_backfilled", None)
+        # The local cap refused to copy part of the group's decision, so those
+        # entries are honoured now and forgotten at the next restart.
+        if getattr(self._quarantine_store, "backfill_refused", 0):
+            self._event_sink(
+                "quarantine_backfill_incomplete",
+                ResourceExhausted(
+                    "The local quarantine record is full; part of the shared "
+                    "decision will not survive a restart."
+                ),
+            )
+
     async def _heartbeat_loop(self) -> None:
         while True:
             await asyncio.sleep(self._reclaim_interval)
@@ -360,6 +518,18 @@ class WorkerServeLoop:
             if key in self._owned_entry_ids:
                 self._release_delivery_capacity(1)
                 continue
+            # A quarantined entry is dropped BEFORE it can be handed to a
+            # worker. XAUTOCLAIM keeps returning it — it is still in the PEL,
+            # and deliberately so (see `_worker`) — but re-executing it would
+            # only reproduce the same refusal, which is what made one
+            # undeliverable output spin every reclaim turn indefinitely.
+            #
+            # Silent on purpose: the quarantine decision is announced ONCE, by
+            # the worker that made it. Re-announcing it on every reclaim page is
+            # the log flood this replaces.
+            if delivery.entry_id in self._quarantined:
+                self._release_delivery_capacity(1)
+                continue
             self._owned_entry_ids.add(key)
             accepted.append(delivery)
         self._release_delivery_capacity(reserved - len(deliveries))
@@ -391,6 +561,39 @@ class WorkerServeLoop:
                 raise
             except WorkerError as exc:
                 self._event_sink("delivery_rejected", exc)
+                # `retryable` used to be printed and then ignored. The entry is
+                # never ACKed on this path — correctly, because the output it
+                # owes was never delivered and ACKing would discard the command
+                # — so it stayed in the PEL and XAUTOCLAIM handed it back every
+                # reclaim turn, forever. Measured: one undeliverable output
+                # rejected every 15-45s for 13 minutes, with `retryable: false`
+                # in every line.
+                #
+                # Re-running it cannot change the answer, so this process stops
+                # taking it. The entry is left PENDING rather than ACKed: that
+                # keeps the command recoverable by the server-side repair the
+                # refusal asks for, and losing a command is worse than leaving
+                # one parked.
+                #
+                # LIMITS, stated because they are not obvious. This is
+                # process-local: a second worker, or this one after a restart,
+                # will pick the entry up again and refuse it again. Durable
+                # dead-lettering needs the control plane to own the decision,
+                # which is the same missing "server-side recovery" the message
+                # names. What this does fix is the spin, and the silence.
+                if not exc.retryable:
+                    if len(self._quarantined) < self._quarantine_cap:
+                        self._quarantined.add(delivery.entry_id)
+                        self._event_sink(
+                            "delivery_quarantined",
+                            _quarantine_notice(exc, key),
+                        )
+                        await self._persist_quarantine(delivery, exc)
+                    else:
+                        # Announced rather than silently widened: past the cap
+                        # the old spin resumes, and an operator must know that
+                        # is what they are now looking at.
+                        self._event_sink("delivery_quarantine_full", exc)
             except Exception as exc:
                 _emit_unexpected_delivery_failure(exc)
                 self._event_sink("delivery_unavailable", DependencyUnavailable())
@@ -399,6 +602,37 @@ class WorkerServeLoop:
                     self._owned_entry_ids.remove(key)
                     self._release_delivery_capacity(1)
                 self._queue.task_done()
+
+
+def _quarantine_notice(
+    error: WorkerError,
+    key: tuple[str, str],
+) -> WorkerError:
+    """The one-shot, operator-facing statement that an entry was parked.
+
+    It keeps the original `code` and `retryable` so the event still classifies
+    the same way, and names the entry plus the remedy — because the underlying
+    refusal ("server-side recovery is required") says what must happen without
+    saying to WHAT, and nothing in this process performs that recovery.
+
+    The stream name and Redis entry id are infrastructure identifiers, not
+    execution content, so they are safe to print under the same rules as the
+    rest of `safe_message`.
+    """
+    stream, entry_id = key
+    return WorkerError(
+        code=error.code,
+        safe_message=(
+            f"{error.safe_message} "
+            f"Entry {entry_id} on stream {stream} is left PENDING and will not "
+            f"be retried by this worker; re-running it cannot change the "
+            f"outcome. The execution's own output is lost — a caller waiting on "
+            f"it sees no answer. Clearing the pending entry requires the "
+            f"server-side recovery named above."
+        ),
+        exit_code=error.exit_code,
+        retryable=error.retryable,
+    )
 
 
 def _emit_unexpected_delivery_failure(error: Exception) -> None:
@@ -696,6 +930,18 @@ async def _serve_deployment_inner(
             read_count=limits.redis_read_batch,
             block_ms=limits.redis_block_millis,
         )
+        # Two tiers, because they fail independently. The Redis hash is scoped to
+        # this (stream, group) and is what makes the decision cross replicas; the
+        # spool file is what still works when Redis does not. See
+        # execution/quarantine.py's CompositeQuarantineStore.
+        quarantine_store = CompositeQuarantineStore(
+            shared=SharedQuarantineStore(
+                redis_client,
+                stream=config.redis_stream,
+                group=config.redis_group,
+            ),
+            local=FileQuarantineStore(config.spool_root / "quarantine.v1"),
+        )
         metadata = (
             ("x-elitea-workload-session", config.workload_session_id),
             ("x-elitea-producer-id", config.producer_id),
@@ -786,6 +1032,7 @@ async def _serve_deployment_inner(
             dependency_retry_millis=limits.dependency_retry_millis,
             shutdown_timeout_millis=limits.shutdown_timeout_millis,
             event_sink=_emit_runtime_event,
+            quarantine_store=quarantine_store,
         )
         await _run_with_shutdown_budget(runtime, stop, shutdown_budget)
     finally:

@@ -256,6 +256,7 @@ export function ConfigurationToolMapEditor({
       )}
       <Box>
         <Button
+            variant="elitea" color="tertiary"
           size="small"
           disabled={disabled}
           onClick={() => {

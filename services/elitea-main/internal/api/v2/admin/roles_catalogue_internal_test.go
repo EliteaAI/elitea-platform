@@ -8,10 +8,11 @@ package admin
 // then not a row, and parseMatrixBody rejects it with "unknown permission", so
 // no API path can grant it. Two shapes follow.
 //
-//   - `configuration.advanced` and `configuration.service_descriptors` gate two
-//     admin Configuration sections (config_schemas.go, enforced by
-//     config_values.go). No migration seeds either one, so both were
-//     ungrantable from the first boot.
+//   - `configuration.service_descriptors` gates an admin Configuration section
+//     (config_schemas.go, enforced by config_values.go). No migration seeds it,
+//     so it was ungrantable from the first boot. `configuration.advanced` was
+//     the second name in this pair until the Advanced section was removed; it
+//     is no longer declared, because the section it gated is gone.
 //   - Revocation was irreversible. `configuration.governance` is seeded by one
 //     migration only (shared/0082). An operator who unchecks its last holder
 //     deletes the row the catalogue came from, and the name can never be
@@ -48,10 +49,14 @@ func TestDeclaredPermissionsHoldEveryConfigSectionGate(t *testing.T) {
 				section["id"], permission)
 		}
 	}
-	for _, want := range []string{"configuration.advanced", "configuration.service_descriptors"} {
-		if !declared[want] {
-			t.Errorf("declaredPermissions() omits %q, which no migration grants", want)
-		}
+	if !declared["configuration.service_descriptors"] {
+		t.Error(`declaredPermissions() omits "configuration.service_descriptors", which no migration grants`)
+	}
+	// The Advanced section is gone, so its gate must not be declared any more —
+	// a declared name with no section behind it is a permission an operator can
+	// grant and that nothing ever consults.
+	if declared["configuration.advanced"] {
+		t.Error(`declaredPermissions() still declares "configuration.advanced"; the Advanced section was removed`)
 	}
 }
 
@@ -64,10 +69,20 @@ func TestPermissionCatalogueKeepsDeclaredNamesWithoutAGrant(t *testing.T) {
 	for _, name := range catalogue {
 		present[name] = true
 	}
-	for _, want := range []string{"configuration.advanced", "configuration.service_descriptors"} {
-		if !present[want] {
-			t.Errorf("catalogue built from zero grants omits %q", want)
+	if !present["configuration.service_descriptors"] {
+		t.Error(`catalogue built from zero grants omits "configuration.service_descriptors"`)
+	}
+	// A deployment whose legacy roles still HOLD configuration.advanced keeps
+	// the row: the catalogue is the union of granted and declared, so removing
+	// the declaration invalidates no existing grant.
+	granted := false
+	for _, name := range catalogueFrom([]string{"configuration.advanced"}) {
+		if name == "configuration.advanced" {
+			granted = true
 		}
+	}
+	if !granted {
+		t.Error("a granted configuration.advanced disappeared from the catalogue")
 	}
 
 	sorted := mergePermissionCatalogue([]string{"b.two", "a.one", "b.two"}, []string{"a.one", "c.three"})

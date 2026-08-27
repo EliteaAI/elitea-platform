@@ -40,6 +40,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/admin"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	dbschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/schema"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 /* ── harness ───────────────────────────────────────────────────────────── */
@@ -282,6 +283,23 @@ func newRolesPool(t *testing.T) *pgxpool.Pool {
 			t.Fatalf("apply baseline projection: %v", err)
 		}
 	}
+	// centry.platform_config carries the support project id the support scope
+	// resolves. No baseline projection holds it, so it is created here the same
+	// way internal/api/v2/eliteacore's platform-flags test creates it. Without
+	// the table the support scope reads an ERROR rather than an empty store,
+	// which is a different answer — and a fixture that cannot tell those two
+	// apart cannot test either one.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE centry.platform_config (
+			section    text NOT NULL,
+			key        text NOT NULL,
+			value      jsonb NOT NULL,
+			updated_at timestamptz NOT NULL DEFAULT now(),
+			updated_by text,
+			PRIMARY KEY (section, key)
+		);`); err != nil {
+		t.Fatalf("create centry.platform_config: %v", err)
+	}
 	return pool
 }
 
@@ -508,6 +526,90 @@ func TestSupportScopeReadsItsOwnProjectOnceConfigured(t *testing.T) {
 	}
 	if matrix.granted(t, "admin.auth.users", "admin") {
 		t.Fatalf("support scope reported the ADMINISTRATION matrix")
+	}
+}
+
+// The stored id is the source of truth, not the environment. The hidden support
+// project is created by internal/api/v2/supportassistant on the first support
+// request after an operator enables the assistant, and its id is written to
+// centry.platform_config — nobody types it into a chart. An environment variable
+// that disagreed would make this tab edit the permissions of a project the
+// assistant is not using, so the stored value has to win.
+func TestSupportScopePrefersTheStoredProjectOverTheEnvironment(t *testing.T) {
+	pool, router := newRolesEnvironment(t)
+	// A DIFFERENT, existing project, so a wrong answer is a wrong matrix rather
+	// than a 404 that any bug could produce.
+	t.Setenv("SUPPORT_PROJECT_ID", fmt.Sprint(sharedProjectID))
+	storeSupportProjectID(t, pool, supportProjectID)
+
+	matrix := readMatrix(t, router, "support", "default")
+	if matrix.granted(t, "models.gamma.delete", "admin") {
+		t.Fatalf("support scope read the ENVIRONMENT project %d, not the stored one", sharedProjectID)
+	}
+	if !matrix.granted(t, "models.alpha.view", "viewer") {
+		t.Fatalf("support scope did not read the stored project %d", supportProjectID)
+	}
+}
+
+// With nothing stored, the environment still answers: a deployment may pin the
+// project by hand, and that path must not regress into a 404.
+func TestSupportScopeFallsBackToTheEnvironmentWhenNothingIsStored(t *testing.T) {
+	_, router := newRolesEnvironment(t)
+	t.Setenv("SUPPORT_PROJECT_ID", fmt.Sprint(supportProjectID))
+
+	if matrix := readMatrix(t, router, "support", "default"); !matrix.granted(t, "models.alpha.view", "viewer") {
+		t.Fatal("support scope ignored SUPPORT_PROJECT_ID with no stored id")
+	}
+}
+
+// A deployment whose centry.platform_config was never created is a SCHEMA GAP,
+// not an outage. It must keep the 404 that names the variable an operator can
+// set, rather than an unactionable 503 — the table is created by the bootstrap
+// schema and by nothing in the versioned migration history, so its absence is a
+// real shape and not a hypothetical one.
+func TestSupportScopeStillNamesTheVariableWithNoPlatformConfigTable(t *testing.T) {
+	pool, router := newRolesEnvironment(t)
+	t.Setenv("SUPPORT_PROJECT_ID", "")
+	if _, err := pool.Exec(context.Background(), "DROP TABLE centry.platform_config"); err != nil {
+		t.Fatalf("drop centry.platform_config: %v", err)
+	}
+
+	recorder := adminDo(t, router, http.MethodGet, "/admin/permissions/support/default", nil)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("support GET status = %d, want 404 with no platform_config table (body %s)",
+			recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "SUPPORT_PROJECT_ID") {
+		t.Fatalf("404 body %q does not name the setting an operator can act on", body)
+	}
+}
+
+// The environment fallback still applies with the table gone, so a deployment
+// that pins the project by hand keeps working on a partially migrated schema.
+func TestSupportScopeUsesTheEnvironmentWithNoPlatformConfigTable(t *testing.T) {
+	pool, router := newRolesEnvironment(t)
+	t.Setenv("SUPPORT_PROJECT_ID", fmt.Sprint(supportProjectID))
+	if _, err := pool.Exec(context.Background(), "DROP TABLE centry.platform_config"); err != nil {
+		t.Fatalf("drop centry.platform_config: %v", err)
+	}
+
+	if matrix := readMatrix(t, router, "support", "default"); !matrix.granted(t, "models.alpha.view", "viewer") {
+		t.Fatal("support scope refused the environment fallback with no platform_config table")
+	}
+}
+
+// storeSupportProjectID writes the key the admin Features page and the support
+// bootstrapper both write.
+func storeSupportProjectID(t *testing.T, pool *pgxpool.Pool, projectID int) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+INSERT INTO centry.platform_config (section, key, value)
+VALUES ($1, $2, $3::text::jsonb)
+ON CONFLICT (section, key) DO UPDATE SET value = EXCLUDED.value`,
+		platformconfig.SectionSupportAssistant,
+		platformconfig.KeySupportProjectID,
+		fmt.Sprint(projectID)); err != nil {
+		t.Fatalf("store support project id: %v", err)
 	}
 }
 

@@ -86,8 +86,12 @@ jobs:
           command -v yq >/dev/null || { sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq; }
       - name: Check elitea-main env vars are settable by its Helm chart
         run: |
+          # elitea-main is a component of the one platform chart now, so its
+          # env and secrets maps live under the `main` key rather than at the
+          # values root.
+          CHART_VALUES_PREFIX=main \
           services/elitea-llm-gateway/scripts/env-drift-check.sh \
-            elitea-main deploy/helm/elitea-main deploy/helm/elitea-main/env-drift-allowlist.txt \
+            elitea-main deploy/helm/elitea deploy/helm/elitea/env-drift-allowlist.txt \
             services/elitea-main/internal services/elitea-main/cmd
 
   lint:

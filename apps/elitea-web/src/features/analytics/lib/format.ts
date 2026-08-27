@@ -35,3 +35,26 @@ export function fmtDuration(ms: number | null | undefined): string {
  * the baseline's column header in place for later backend enrichment.
  */
 export const UNAVAILABLE_METRIC = '–';
+
+/**
+ * Formats an ISO-8601 instant as a short local date-time, or an em dash when
+ * there is nothing to format.
+ *
+ * The dash here is NOT `UNAVAILABLE_METRIC`'s meaning. That constant marks a
+ * figure this platform has no producer for; this marks a value that is simply
+ * missing from one row — a member the request log has a count for but no
+ * timestamp, which a malformed row could produce. Rendering `Invalid Date` is
+ * the thing being avoided.
+ */
+export function fmtTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || value === '') return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}

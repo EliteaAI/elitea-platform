@@ -103,9 +103,28 @@ creates them from `0-0` as a bootstrap user that can do nothing else.
 `WorkloadSessionsRepository` exposes no registration endpoint and no fallback
 allowlist: a worker's calls are authorized against a row in
 `elitea_runtime.workload_sessions` matching its certificate identity, session id
-and producer id, all three checked in one query. Nothing in the repository
-inserts that row — the deployment control plane must, which for this stack is
-`standalone-stack.sh seed-runtime`.
+and producer id, all three checked in one query. No product code inserts that
+row — the deployment control plane must, and each deployment has its own:
+
+| Deployment | Provisioned by |
+|---|---|
+| compose / standalone | `standalone-stack.sh seed-runtime` |
+| Helm / Kubernetes | the `runtimeSession` hook Job in `deploy/helm/elitea-worker-python` |
+
+The Helm path reads the identity out of the worker's own
+`agent-worker-client.crt` rather than taking it as a value, so the row cannot
+name an identity the worker does not present. It also re-stamps `expires_at` on
+every upgrade, which matters more than it looks: the column is `NOT NULL`, the
+verifier requires `issued_at <= now() < expires_at AND revoked_at IS NULL`, and
+nothing else ever writes this table — so a cluster that is provisioned once and
+never upgraded goes dark on a timer.
+
+**A missing row fails closed and silently.** Every `ClaimCommand` is refused,
+elitea-main logs nothing on its control plane, and the worker durably
+quarantines each refused command under `{spool_root}/quarantine.v1` — so the
+affected turns are lost even after the row is added, and the worker needs a
+restart. The tell is `execution_jobs` rows sitting at `DISPATCHED` /
+`NOT_STARTED` with `execution_claims` empty.
 
 ## Verifying it
 

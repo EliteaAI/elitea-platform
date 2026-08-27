@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	v2skillpublish "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skillpublish"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	v2social "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	v2toolkits "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/toolkits"
 	v2tracing "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tracing"
@@ -228,18 +230,25 @@ type RouterConfig struct {
 	CurrentConfigurationMutation  http.Handler
 	CurrentIndexStart             http.Handler
 	CurrentAgentStart             http.Handler
-	CurrentAgentCancel            http.Handler
-	CurrentIndexCancel            http.Handler
-	CurrentIndexMeta              http.Handler
-	CurrentIndexMetaDelete        http.Handler
-	CurrentIndexScheduleUpdate    http.Handler
-	CurrentIndexScheduleDelete    http.Handler
-	CurrentNotifications          http.Handler
-	CurrentNotificationEvents     http.Handler
-	CurrentModelCatalog           http.Handler
-	CurrentModelDefault           http.Handler
-	LLMProxy                      http.Handler
-	LLMProjectResolver            apimw.PersonalProjectResolver
+	// SupportAssistantStart is the agent-execution use case the support
+	// assistant's predict route delegates to — the SAME use case
+	// CurrentAgentStart's route drives, not a second one. Left nil, the predict
+	// route answers 503 and the rest of the support surface still works
+	// (history stays readable), which is the honest degrade for a deployment
+	// that runs no agent execution.
+	SupportAssistantStart      v2support.StartUseCase
+	CurrentAgentCancel         http.Handler
+	CurrentIndexCancel         http.Handler
+	CurrentIndexMeta           http.Handler
+	CurrentIndexMetaDelete     http.Handler
+	CurrentIndexScheduleUpdate http.Handler
+	CurrentIndexScheduleDelete http.Handler
+	CurrentNotifications       http.Handler
+	CurrentNotificationEvents  http.Handler
+	CurrentModelCatalog        http.Handler
+	CurrentModelDefault        http.Handler
+	LLMProxy                   http.Handler
+	LLMProjectResolver         apimw.PersonalProjectResolver
 	// GatewayProxy is the mTLS streaming reverse proxy to elitea-llm-gateway-svc
 	// (BF0.9c). When non-nil, it is mounted at /llm with Auth+Project middleware
 	// in the production router.
@@ -319,6 +328,37 @@ func newArtifactHandler(cfg RouterConfig) (h *v2artifacts.Handler, ok bool) {
 type bucketBootstrapRepoAdapter struct {
 	*dbrepos.ArtifactBucketsRepository
 	*dbrepos.ArtifactObjectsRepository
+}
+
+// supportProjectProvisioner adapts the project-create pipeline to the narrow
+// interface internal/api/v2/supportassistant declares.
+//
+// The narrowing is the point: the support assistant may create ONE project,
+// named by a constant, owned by the platform system identity, with default
+// limits. It cannot choose plugins, quotas or admin roles, because nothing about
+// bootstrapping a support project should be able to.
+type supportProjectProvisioner struct {
+	provisioner *projectprovisioning.Provisioner
+}
+
+func (p supportProjectProvisioner) Provision(
+	ctx context.Context, request v2support.ProvisionRequest,
+) (int64, error) {
+	result, err := p.provisioner.Provision(ctx, projectprovisioning.Request{
+		Name:    request.Name,
+		OwnerID: request.OwnerID,
+		// `elitea_core` is what the reference asks for
+		// (`projects_create_project(plugins=['elitea_core'])`), and it is the
+		// plugin list every chat-bearing project carries.
+		Plugins:     []string{"elitea_core"},
+		AdminEmails: []string{request.AdminEmail},
+		AdminRoles:  []string{"admin"},
+		Limits:      projectprovisioning.DefaultLimits(),
+	})
+	if err != nil {
+		return 0, err
+	}
+	return result.ProjectID, nil
 }
 
 // newProjectProvisioner builds the project-create pipeline (#333).
@@ -789,6 +829,30 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		return apimw.RequireResolvedPermissions(
 			coreResolver, platformauth.PermissionModeDefault, permission)
 	}
+	// The configurations handler, built ONCE and mounted twice: on
+	// /api/v2/configurations for the project-scoped compatibility surface, and
+	// on /api/v2/admin/gateway/providers for the platform-wide provider surface
+	// (internal/api/v2/configurations/global_providers.go).
+	//
+	// One construction, so the vault sealer, the provider admission and the
+	// public project id cannot differ between the two. A second NewHandler is
+	// how one surface acquires a vault the other lacks and starts storing
+	// api_keys in plaintext rows every tenant can read.
+	//
+	// `WithPublicProjectID` had NO caller before this, and its own doc comment
+	// said so: the list response's `shared` block — the one that shows a project
+	// which platform credentials it may use — was empty in every default
+	// install, because the option was applied only inside a feature-flagged
+	// branch. It resolves from the same helper the Project middleware uses, so
+	// the two cannot disagree about which schema holds the shared rows.
+	configurationsHandler := v2configs.NewHandler(
+		cfg.Pool,
+		v2configs.WithPermissionResolver(coreResolver),
+		v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
+		v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
+		v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
+		v2configs.WithPublicProjectID(apimw.PublicProjectID()),
+	)
 	artifactHandler := cfg.ArtifactHandler
 	if artifactHandler == nil {
 		artifactHandler, _ = newArtifactHandler(cfg)
@@ -823,6 +887,22 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			PrincipalValidator:        cfg.PrincipalValidator,
 			ForwardedIdentityVerifier: cfg.Auth.ForwardedIdentityVerifier,
 			SessionSecret:             cfg.SessionSecret,
+		}))
+
+		// Maintenance mode, immediately AFTER authentication and before
+		// anything that does work.
+		//
+		// The ordering is load-bearing in both directions. It has to be after
+		// Auth, because the only caller it admits is one whose administration
+		// permissions can be resolved, and that needs a principal on the
+		// context. It has to be before the cutover router and the shadow
+		// comparator, because during a maintenance window a refused request must
+		// not be proxied to pylon or sampled for comparison — a window that
+		// stops elitea-main while traffic keeps reaching the legacy runtime is
+		// not a maintenance window.
+		r.Use(apimw.Maintenance(apimw.MaintenanceConfig{
+			Pool:     cfg.Pool,
+			Resolver: permissionResolver,
 		}))
 
 		if cfg.CutoverRouter != nil {
@@ -1400,6 +1480,26 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 						r.Mount("/", budgetAlertHandler.Routes())
 						governanceHandler.Register(r)
 						llmProxyHandler.Register(r)
+						// PLATFORM-WIDE provider credentials — the public
+						// project's shared `ai_credentials` rows, which the LLM
+						// gateway already resolves for every project (issue
+						// #316). See global_providers.go for why this is the
+						// same rows and the same handlers rather than a second
+						// credential model.
+						//
+						// It inherits this group's `configuration.governance`
+						// gate from the enclosing Group, which is correct for a
+						// surface whose four verbs take one permission — and is
+						// why it can be a Mount at all, unlike the project-scoped
+						// Routes() that needs five different strings.
+						r.Mount("/providers", configurationsHandler.GlobalProviderRoutes())
+						// PLATFORM-WIDE models — the other half. A credential
+						// authenticates; a model is what a caller addresses.
+						// Both are the public project's shared rows, and the
+						// gateway resolves a public model against public
+						// credentials ONLY, so the two surfaces are mounted
+						// together and global_models.go enforces that pairing.
+						r.Mount("/platform_models", configurationsHandler.GlobalModelRoutes())
 					})
 				})
 			})
@@ -1453,6 +1553,10 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// authenticated caller do to any project, and for the permission
 			// each route now takes.
 			//
+			// `configurationsHandler` is built at the top of this function and
+			// mounted twice — see its declaration for why one construction is
+			// load-bearing rather than tidy.
+			//
 			// The gates live inside the package, not on this mount, for the two
 			// reasons /secrets gives: the routes need five different strings, and
 			// a mount carries one middleware. `coreResolver` is used rather than
@@ -1460,13 +1564,7 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			// through cfg.ProjectPermissionResolver, exactly as the sibling
 			// groups below do; production leaves that field unset and both names
 			// are the same object.
-			r.Mount("/configurations", v2configs.NewHandler(
-				cfg.Pool,
-				v2configs.WithPermissionResolver(coreResolver),
-				v2configs.WithConnectionChecker(cfg.ConfigConnectionChecker),
-				v2configs.WithProviderAdmission(cfg.ConfigProviderAdmission),
-				v2configs.WithSecretSealer(configurationSecretSealer(cfg.Pool)),
-			).Routes())
+			r.Mount("/configurations", configurationsHandler.Routes())
 
 			// === Secrets ===
 			// Mounted under "/secrets" — the pylon PLUGIN name — while the
@@ -2575,10 +2673,50 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 			})
 
 			// === Support Assistant ===
-			r.Route("/support_assistant", func(r chi.Router) {
-				r.Get("/config/", coreHandler.SupportConfig)
-				r.Get("/config", coreHandler.SupportConfig)
-			})
+			//
+			// The in-app support widget: config, the caller's own support
+			// conversations, and one turn against the operator-chosen agent.
+			// See internal/api/v2/supportassistant for why no route here takes a
+			// {projectID} — the hidden support project is resolved from
+			// centry.platform_config and never from the request — and why the
+			// gates name `models.chat.*` rather than the reference's
+			// `models.support_assistant.*` strings, which this catalogue has
+			// never seeded.
+			//
+			// The subrouter carries its OWN gates (Handler.Routes), because the
+			// project they resolve against is one the router does not know: it
+			// comes out of the section this handler reads.
+			{
+				// Mounted UNCONDITIONALLY, including without a pool.
+				//
+				// The widget asks `GET /support_assistant/config` on every page
+				// load and treats a non-answer as a failure, so the route has to
+				// exist on every deployment. With no pool the handler reads no
+				// configuration, resolves the assistant as disabled, and answers
+				// that question truthfully — the same degrade the branch that
+				// used to sit here achieved with a hardcoded stub, minus the
+				// second implementation of one boolean.
+				supportOptions := []v2support.Option{
+					v2support.WithPermissionResolver(coreResolver),
+				}
+				if cfg.ConvsRepo != nil {
+					supportOptions = append(supportOptions, v2support.WithChatStore(cfg.ConvsRepo))
+				}
+				if cfg.SupportAssistantStart != nil {
+					supportOptions = append(supportOptions, v2support.WithStartUseCase(cfg.SupportAssistantStart))
+				}
+				// The SAME provisioner the project-create route uses. The
+				// hidden support project is provisioned by the pipeline every
+				// other project goes through — tenant schema, RBAC roles,
+				// secrets vault, buckets — because a project assembled by a
+				// second, simpler path is exactly the half-provisioned project
+				// the support routes would then 500 against.
+				if provisioner, ok := newProjectProvisioner(cfg); ok {
+					supportOptions = append(supportOptions,
+						v2support.WithProvisioner(supportProjectProvisioner{provisioner}))
+				}
+				r.Mount("/support_assistant", v2support.NewHandler(cfg.Pool, supportOptions...).Routes())
+			}
 
 			// === Webhooks ===
 			//

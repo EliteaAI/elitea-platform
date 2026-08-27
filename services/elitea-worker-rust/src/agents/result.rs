@@ -100,6 +100,11 @@ impl AgentResultBinding {
             request_content_digest: Some(digest(self.request_content_digest)),
             terminal_state: terminal_state_value(terminal_state),
             result_artifact: Some(artifact_reference(artifact)),
+            // Main can now persist attachment text that a worker consumed, but
+            // the Rust worker does not yet own the attachment read/write path.
+            // Keep the protocol field explicit and empty until that platform
+            // boundary is wired end to end.
+            attachment_contents: Vec::new(),
         }))
     }
 }

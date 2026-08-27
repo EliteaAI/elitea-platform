@@ -8,6 +8,8 @@ import { useNavigate, useParams } from '@tanstack/react-router';
 import { t } from '@/shared/i18n';
 import { BaseTab } from '@/shared/ui/BaseTab';
 import { BaseTabs } from '@/shared/ui/BaseTabs';
+import { EntityListRail, RAIL_CONTENT_WIDTH, useEntityRailVisible } from '@/shared/ui/EntityRail';
+import { useSidebarCollapsedStore } from '@/widgets/sidebar';
 
 import { isPublicAgentsProject } from './lib/isPublicAgentsProject';
 import { useHasAdminPermission } from './lib/useHasAdminPermission';
@@ -33,6 +35,12 @@ const tabPanelSx: SxProps<Theme> = {
   minHeight: 0,
   overflowY: 'auto',
 };
+
+/** `CARD_LIST_WIDTH` (`apps/elitea-ui/src/common/constants.js:511`) — the list shrinks by exactly the rail's width while the rail is on screen, and reclaims it when the rail collapses. */
+const contentWidthSx = (railVisible: boolean): SxProps<Theme> => ({ width: railVisible ? RAIL_CONTENT_WIDTH : '100%' });
+
+/** The four public tabs (`latest`/`my-liked`/`trending`) plus `admin` are the ones the baseline pins to "Trending Authors" (`RightInfoPanel` picks per-project elsewhere; `PrivateAgentsList.jsx:141-151` hard-codes it for Admin). */
+const TRENDING_AUTHOR_TABS: readonly string[] = ['latest', 'my-liked', 'trending', 'admin'];
 
 interface AgentsRouteParams {
   readonly tab?: string;
@@ -63,6 +71,20 @@ interface AgentsRouteParams {
  *    picker) — see `Trending.tsx`'s own doc comment: the backing
  *    `trend_start_period` filter has no server-side support at all, so
  *    there is nothing for a working date picker to control.
+ *
+ * **The rail is real; the tag FILTER on this page is not — disclosed.** The
+ * "Tags" panel lists this project's real tags and writes the selection into
+ * the shell-wide `tags[]` search param (linkable, restored on reload), but
+ * no application list narrows by it, because elitea-main cannot support it
+ * at either end: the applications repo never populates a row's `tags` on a
+ * list response (`internal/infra/db/repos/applications.go` — the field is
+ * absent, and the version maps hardcode `"tags": []any{}`), and the `tags`
+ * request param the handler does read into `ListRequest.Tags`
+ * (`internal/api/v2/applications/handler.go:108`) is consumed by nothing.
+ * Filtering client-side over rows that carry no tags would empty the list on
+ * the first chip click — a worse lie than an unfiltered one. `pages/skills`
+ * DOES filter for real (skills rows carry their tags), which is what this
+ * looks like once the server catches up.
  */
 export function Applications(): ReactNode {
   const navigate = useNavigate();
@@ -70,6 +92,7 @@ export function Applications(): ReactNode {
   const projectId = useSelectedProjectId();
   const isPublicProject = isPublicAgentsProject(projectId);
   const hasAdminPermission = useHasAdminPermission(isPublicProject ? projectId : undefined);
+  const navRailCollapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const totals = useApplicationsData(projectId, hasAdminPermission);
   const tabs = useApplicationTabs(isPublicProject, totals, hasAdminPermission);
 
@@ -88,6 +111,8 @@ export function Applications(): ReactNode {
     if (nextTab === undefined) return;
     void navigate({ to: '/agents/$tab', params: { tab: nextTab.value } });
   };
+
+  const railVisible = useEntityRailVisible(navRailCollapsed);
 
   return (
     <Box sx={pageSx}>
@@ -110,8 +135,13 @@ export function Applications(): ReactNode {
         sx={tabPanelSx}
         role="tabpanel"
       >
-        {selectedIndex !== -1 ? visibleTabs[selectedIndex]?.content : null}
+        <Box sx={contentWidthSx(railVisible)}>{selectedIndex !== -1 ? visibleTabs[selectedIndex]?.content : null}</Box>
       </Box>
+      <EntityListRail
+        projectId={projectId}
+        navRailCollapsed={navRailCollapsed}
+        preferTrendingAuthors={TRENDING_AUTHOR_TABS.includes(params.tab ?? '')}
+      />
     </Box>
   );
 }

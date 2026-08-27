@@ -33,6 +33,8 @@
 #   deploy/scripts/standalone-stack.sh seed-runtime
 #   deploy/scripts/standalone-stack.sh seed-llm            # offline mock
 #   OPENAI_API_KEY=sk-... deploy/scripts/standalone-stack.sh seed-llm   # real provider
+#   LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 LLM_MODEL=Qwen/Qwen3-8B \
+#     deploy/scripts/standalone-stack.sh seed-llm                       # self-hosted
 #   deploy/scripts/standalone-stack.sh seed-index          # index plane (#93)
 set -euo pipefail
 
@@ -111,6 +113,10 @@ resolve_embedding_model() {
   local provider="$1" name
   case "$provider" in
     mock)    name="${LLM_EMBEDDING_MODEL:-vllm/E2E-MOCK-EMBEDDING}" ;;
+    # A self-hosted chat server usually serves no embeddings model, and naming
+    # one that does not exist is worse than naming none: `seed-index` would
+    # write a row the gateway cannot resolve. Opt in with LLM_EMBEDDING_MODEL.
+    vllm)    name="${LLM_EMBEDDING_MODEL:-}" ;;
     open_ai) name="${LLM_EMBEDDING_MODEL:-text-embedding-3-small}" ;;
     # Anthropic serves no embeddings API, so there is no default to seed. Set
     # LLM_EMBEDDING_MODEL to name a model some other provider serves.
@@ -119,7 +125,7 @@ resolve_embedding_model() {
     # `seed-index` calls this function first, so the same refusal must live
     # here too. Without it a typed LLM_PROVIDER makes `seed-index` seed no
     # name at all, and the operator sees only a missing row.
-    *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$provider')." >&2
+    *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$provider')." >&2
        exit 1 ;;
   esac
   # The mock wire name must carry the provider prefix, for the same reason as
@@ -309,9 +315,38 @@ SQL
         API_KEY="mock-key-not-used"; MODEL="${LLM_MODEL:-E2E-MOCK-MODEL}"
         API_BASE="http://llm-mock:8090"; CRED_TYPE="vllm"
         ;;
+      vllm)
+        # A REAL self-hosted OpenAI-compatible server (vLLM, Ollama, LM Studio,
+        # TGI…) at an address on the operator's own network. Same credential
+        # class as `mock` and for the same load-bearing reason — bifrost lifts
+        # its SSRF guard only for the self-hosted classes (account.go:235), so a
+        # private address MUST be seeded as `vllm`; an `open_ai` credential
+        # pointing at 192.168.x.x is refused by the dialer whatever the
+        # allowlist says.
+        #
+        # LLM_API_BASE carries NO /v1 — bifrost appends /v1/chat/completions
+        # itself. Passing the /v1 the server's own docs show produces
+        # /v1/v1/chat/completions and a 404 that looks like a routing bug.
+        #
+        # LLM_API_KEY is optional because most self-hosted servers ignore it,
+        # but it cannot be EMPTY: the guard below treats an empty key as
+        # "operator forgot to pass one" and refuses.
+        API_KEY="${LLM_API_KEY:-not-used-by-self-hosted}"; KEY_VAR="LLM_API_KEY"
+        MODEL="${LLM_MODEL:-}"; API_BASE="${LLM_API_BASE:-}"; CRED_TYPE="vllm"
+        if [ -z "$API_BASE" ] || [ -z "$MODEL" ]; then
+          echo "ERROR: LLM_PROVIDER=vllm needs LLM_API_BASE and LLM_MODEL." >&2
+          echo "       e.g. LLM_PROVIDER=vllm LLM_API_BASE=http://192.168.1.10:8000 \\" >&2
+          echo "            LLM_MODEL=Qwen/Qwen3-8B $0 seed-llm" >&2
+          echo "       LLM_API_BASE must NOT end in /v1 — bifrost appends it." >&2
+          exit 1
+        fi
+        case "$API_BASE" in
+          */v1|*/v1/) echo "ERROR: strip the trailing /v1 from LLM_API_BASE ('$API_BASE')." >&2; exit 1 ;;
+        esac
+        ;;
       open_ai)   API_KEY="${OPENAI_API_KEY:-}";    KEY_VAR="OPENAI_API_KEY";    MODEL="${LLM_MODEL:-gpt-4o-mini}"; API_BASE=""; CRED_TYPE="open_ai" ;;
       anthropic) API_KEY="${ANTHROPIC_API_KEY:-}"; KEY_VAR="ANTHROPIC_API_KEY"; MODEL="${LLM_MODEL:-claude-sonnet-4-5}"; API_BASE=""; CRED_TYPE="anthropic" ;;
-      *) echo "ERROR: LLM_PROVIDER must be mock, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
+      *) echo "ERROR: LLM_PROVIDER must be mock, vllm, open_ai or anthropic (got '$PROVIDER')." >&2; exit 1 ;;
     esac
     # One resolver, shared with `seed-index`. Read the block above the `case`.
     EMBEDDING_MODEL="$(resolve_embedding_model "$PROVIDER")"
@@ -319,7 +354,7 @@ SQL
       echo "ERROR: \$$KEY_VAR is empty. Usage: $KEY_VAR=... $0 seed-llm" >&2
       exit 1
     fi
-    if [ "$PROVIDER" = "mock" ]; then
+    if [ "$PROVIDER" = "mock" ] || [ "$PROVIDER" = "vllm" ]; then
       # The wire name must carry the provider prefix. bifrost resolves the
       # provider from the model string alone (ParseModelString) with an EMPTY
       # default, so a bare `E2E-MOCK-MODEL` reaches core with no provider and
@@ -539,6 +574,29 @@ SQL
     fi
 
     echo "→ Seeded. Model alias: $MODEL"
+
+    # A re-seed with a DIFFERENT model name adds a row; it does not replace the
+    # one already there (the upsert keys on the model name). Everything that
+    # resolves "the" chat model takes `ORDER BY id LIMIT 1`, so the FIRST model
+    # ever seeded keeps winning and the re-seed changes nothing a consumer will
+    # read — silently, while this step prints success.
+    #
+    # Printed rather than repaired: a project holding several models is legal and
+    # some checks depend on it, so which one should win is the operator's call,
+    # not this script's. What is not acceptable is not saying so.
+    for CHECK_PROJECT in $TARGET_PROJECTS; do
+      RESOLVED_MODEL="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+          psql -U elitea -d elitea -tAc \
+          "SELECT data->>'name' FROM p_${CHECK_PROJECT}.configuration
+            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+            ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+      if [ -n "$RESOLVED_MODEL" ] && [ "$RESOLVED_MODEL" != "$MODEL" ]; then
+        echo "   ! project ${CHECK_PROJECT} still resolves '${RESOLVED_MODEL}', NOT the model just seeded."
+        echo "     An id-ordered consumer keeps the earlier row. To make '${MODEL}' the one that wins:"
+        echo "       $COMPOSE_BIN $COMPOSE_F exec -T postgres psql -U elitea -d elitea -c \\"
+        echo "         \"DELETE FROM p_${CHECK_PROJECT}.configuration WHERE section='llm' AND type='llm_model' AND data->>'name' <> '${MODEL}'\""
+      fi
+    done
     # Name BOTH names (#380). A caller sends the catalogue name; the gateway
     # maps it onto the provider's own name before it dispatches. When the two
     # disagree the failure is a bare 404 that names only one of them, so print
@@ -550,6 +608,31 @@ SQL
       echo "   The gateway reports the name AFTER it splits the provider prefix,"
       echo "   so a 404 for '${EMBEDDING_MODEL#*/}' names this same row."
     else
+      # A self-hosted provider points the credential at a PRIVATE host, and the
+      # gateway refuses private egress unless that exact host:port is on its
+      # allowlist (SSRF guard). Nothing downstream says so: the turn runs, the
+      # agent starts, the model call comes back a bare
+      # `500 … EGRESS_HOST_NOT_ALLOWED`, and the UI shows an empty answer. The
+      # allowlist lives on the GATEWAY's environment, so seeding cannot set it —
+      # but it can say which value is now required, and whether it is missing.
+      if [ "$PROVIDER" = "vllm" ] || [ "$PROVIDER" = "ollama" ]; then
+        EGRESS_NEEDED="$(printf '%s' "$LLM_API_BASE" | sed -E 's#^https?://##; s#/.*$##')"
+        # `ENGINE` is only set inside `check`; derive it the same way here
+        # (the container engine is the first word of the compose command).
+        EGRESS_HAVE="$("${COMPOSE_BIN%% *}" inspect "${PROJECT}-elitea-llm-gateway-1" \
+            --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+            | sed -n 's/^GATEWAY_EGRESS_ALLOWLIST=//p')"
+        case ",${EGRESS_HAVE}," in
+          *",${EGRESS_NEEDED},"*)
+            echo "→ gateway egress already allows '${EGRESS_NEEDED}'." ;;
+          *)
+            echo "   ! the gateway does NOT allow egress to '${EGRESS_NEEDED}' (allowlist: '${EGRESS_HAVE:-<unset>}')."
+            echo "     Every turn will reach the model and come back 500 EGRESS_HOST_NOT_ALLOWED."
+            echo "     Restart the gateway with it allowed:"
+            echo "       GATEWAY_EGRESS_ALLOWLIST=\"${EGRESS_HAVE:-llm-mock:8090},${EGRESS_NEEDED}\" \\"
+            echo "         $0 up          # or: compose up -d --force-recreate elitea-llm-gateway" ;;
+        esac
+      fi
       echo "→ NO embedding model seeded: provider '$PROVIDER' serves no embeddings API."
       echo "   The embedding hop will answer 404 and '$0 check' will FAIL."
       echo "   Set LLM_EMBEDDING_MODEL to a model some provider serves, then"
@@ -1692,6 +1775,33 @@ except Exception as error:
         # client would fail hostname verification even if the name resolved.
         # The mock image is used purely as a python runtime with the runtime CA
         # available; --user 0:0 so it can read the 0600 signing key.
+        # Drive the turn with the model THIS STACK holds, not chat-smoke.py's
+        # compiled-in default.
+        #
+        # That default names the offline mock. On a stack seeded against any real
+        # provider no such model exists upstream, so every turn reached the model
+        # call and came back `404 the model does not exist` — which this check
+        # reported as "no streamed token chunk". That reads as "chat is broken"
+        # when chat is fine and the harness asked for a model nobody serves. Same
+        # shape as the hardcoded path that stopped gating: the value was right
+        # when it was written and nothing re-checked it.
+        #
+        # `ORDER BY id LIMIT 1` deliberately matches the other model resolvers in
+        # this script, so the check drives the row they would pick. NOTE that this
+        # makes a re-seed's model INVISIBLE here: `seed-llm` upserts on the model
+        # NAME, so seeding a DIFFERENT model ADDS a row and the first one seeded
+        # still wins by id. `seed-llm` now says so when it happens, rather than
+        # reporting a re-seed that changed nothing a consumer will read.
+        CHAT_SMOKE_MODEL="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
+            psql -U elitea -d elitea -tAc \
+            "SELECT data->>'name' FROM p_${CHAT_PROJECT}.configuration
+              WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
+              ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+        if [ -n "$CHAT_SMOKE_MODEL" ]; then
+          echo "  · driving the turn with this stack's chat model '${CHAT_SMOKE_MODEL}'"
+        else
+          echo "  · no chat model row in p_${CHAT_PROJECT}; using chat-smoke.py's default"
+        fi
         set +e
         $ENGINE run --rm --network "$NETWORK" \
           -v "${RUNTIME_CERTS}:/m:ro" \
@@ -1703,7 +1813,8 @@ except Exception as error:
           --pat-uuid "$CHAT_PAT" \
           --signing-key /m/auth-pat-signing-key \
           --user-id "$CHAT_USER" \
-          --project "$CHAT_PROJECT"
+          --project "$CHAT_PROJECT" \
+          ${CHAT_SMOKE_MODEL:+--model "$CHAT_SMOKE_MODEL"}
         smoke_status=$?
         set -e
         # chat-smoke.py's exit codes, counted rather than swallowed (#429).

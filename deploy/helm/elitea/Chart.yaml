@@ -1,0 +1,17 @@
+apiVersion: v2
+name: elitea
+description: >-
+  EliteA, as one chart. Installs the whole first-party platform — API, web,
+  scheduler, LLM gateway, agent worker, the runtime dispatch bus and the
+  telemetry collector — from a single values file, and externalizes the
+  commodity infrastructure (PostgreSQL, Redis, NATS, object storage) behind one
+  connection contract.
+type: application
+
+# No dependencies, deliberately. Every component is a template directory in this
+# chart, so there is nothing to vendor, no charts/ to build before installing
+# from a clone, and no `global:` indirection between a setting and the thing it
+# configures. NATS is not bundled either: it is commodity infrastructure this
+# chart points at rather than owns.
+version: 0.1.0
+appVersion: "0.1.0"

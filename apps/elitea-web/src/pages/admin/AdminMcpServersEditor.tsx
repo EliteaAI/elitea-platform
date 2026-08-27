@@ -163,6 +163,7 @@ function McpServerTable({
               </TableCell>
               <TableCell align="right">
                 <Button
+            variant="elitea" color="tertiary"
                   size="small"
                   onClick={() => {
                     onEdit(server);
@@ -172,9 +173,9 @@ function McpServerTable({
                   {t('pages.admin.mcpServers.edit', 'Edit')}
                 </Button>
                 <Button
+            variant="elitea" color="alarm"
                   size="small"
-                  color="error"
-                  onClick={() => {
+                                    onClick={() => {
                     onRemove(server);
                   }}
                   sx={{ textTransform: 'none' }}
@@ -287,7 +288,7 @@ export function AdminMcpServersEditor() {
       <Box>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           onClick={openCreate}
           sx={{ textTransform: 'none' }}
           data-testid="admin-mcp-servers-add"
@@ -343,6 +344,7 @@ export function AdminMcpServersEditor() {
         </DialogContent>
         <DialogActions>
           <Button
+            variant="elitea" color="tertiary"
             onClick={() => {
               setPendingDelete(undefined);
             }}
@@ -352,8 +354,7 @@ export function AdminMcpServersEditor() {
             {t('pages.admin.mcpServers.delete.cancel', 'Cancel')}
           </Button>
           <Button
-            color="error"
-            variant="contained"
+            variant="elitea" color="alarm"
             onClick={handleDelete}
             disabled={deleteMutation.isPending}
             sx={{ textTransform: 'none' }}

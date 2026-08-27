@@ -1,0 +1,61 @@
+{{- if and .Values.main.enabled .Values.agentStateMigrations.enabled }}
+{{- if not .Values.agentStateMigrations.databaseSecret.name }}
+{{- fail "agentStateMigrations.enabled=true needs agentStateMigrations.databaseSecret.name" }}
+{{- end }}
+{{- if not .Values.agentStateMigrations.databaseSecret.key }}
+{{- fail "agentStateMigrations.enabled=true needs agentStateMigrations.databaseSecret.key" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "elitea-main.fullname" . }}-agentstate-migrate
+  labels:
+    {{- include "elitea-main.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.agentStateMigrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.agentStateMigrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "elitea-main.name" . }}-agentstate-migrate
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- include "elitea.imagePullSecrets" (dict "local" .Values.main.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      {{- with .Values.main.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agentStateMigrations.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      restartPolicy: Never
+      containers:
+        - name: elitea-agentstate-migrate
+          image: "{{ .Values.main.migrations.image.repository | default .Values.main.image.repository }}:{{ .Values.main.migrations.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.main.image.pullPolicy }}
+          {{- with .Values.main.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["/elitea-migrate"]
+          args: ["-agentstate"]
+          env:
+            - name: AGENTSTATE_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.agentStateMigrations.databaseSecret.name }}
+                  key: {{ .Values.agentStateMigrations.databaseSecret.key }}
+                  optional: false
+          resources:
+            {{- toYaml .Values.agentStateMigrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}

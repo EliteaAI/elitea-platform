@@ -98,7 +98,7 @@ function AnalyticsToolsImpl({ projectId, dateFrom, dateTo }: AnalyticsToolsProps
   // this file's header) — only pre-aggregated `run_count`/`avg_duration_ms`/
   // `error_rate` — so there is nothing on the already-fetched rows to filter
   // by (contrast `AnalyticsUsers.tsx`, whose rows do carry `last_active_at`).
-  const { data, isFetching, isError } = useAnalyticsToolsListQuery(projectId, { dateFrom, dateTo });
+  const { data, isFetching, isError, error } = useAnalyticsToolsListQuery(projectId, { dateFrom, dateTo });
   const items = useMemo(() => data?.items ?? [], [data]);
 
   const chartData = useMemo(
@@ -133,7 +133,7 @@ function AnalyticsToolsImpl({ projectId, dateFrom, dateTo }: AnalyticsToolsProps
   // drill-down branch, so a failing LIST query never yanks the user out of
   // a detail screen that owns its own query and Back button.
   if (isError) {
-    return <AnalyticsLoadError />;
+    return <AnalyticsLoadError error={error} />;
   }
 
   const columns: readonly EntityTableColumn[] = [

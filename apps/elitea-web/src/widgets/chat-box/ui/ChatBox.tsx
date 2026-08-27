@@ -14,17 +14,16 @@
  * imports sideways across those features — legal for widgets/, forbidden
  * for features/ (R-L1, `.dependency-cruiser.cjs`'s `no-sideways-features`).
  */
-import type { ComponentRef } from 'react';
+import type { ComponentRef, Ref } from 'react';
 import { memo, useCallback, useEffect, useImperativeHandle, useRef } from 'react';
 
 import { Box } from '@mui/material';
 import { useNavBlockerStore } from '@/widgets/app-shell';
-import type { AttachmentButtonHandle, VoiceButtonHandle } from '@/widgets/chat';
+import type { AttachmentButtonHandle, PlusChatButtonEntitySubmenus, VoiceButtonHandle } from '@/widgets/chat';
 import { ChatConversationStarters, NewChatInput, voiceHooks } from '@/features/chat-input';
 import { useSocketClient } from '@/shared/api/socket/client';
 import { ChatMessageList, useDeleteMessageAlert } from '@/features/chat-messages';
 import { conversationApi } from '@/entities/conversation';
-import { DeleteEntityModal } from '@/shared/ui/DeleteEntityModal';
 import { t } from '@/shared/i18n';
 
 import {
@@ -37,12 +36,18 @@ import {
   deriveChatBoxIds,
   deriveChatBoxInputState,
   flattenChatBoxProps,
+  optField,
   resolveConversationStarters,
 } from './ChatBox.helpers';
-import type { ChatBoxActiveConversation, ChatBoxEditorCallbacks } from './ChatBox.helpers';
+import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
+import type { ChatBoxConversationProp } from './ChatBox.props';
+import { unwrapChatBoxConversation } from './ChatBox.props';
 import type { ChatBoxHandle } from './ChatBox.types';
 import { buildChatBoxInputSlots } from './ChatBoxInputSlots';
-import { ChatBoxPopups } from './ChatBoxPopups';
+import { buildChatBoxPopupsProps, ChatBoxPopups } from './ChatBoxPopups';
+import { ChatBoxDeleteModal } from './ChatBoxDeleteModal';
+import { ChatEmptyGreeting } from './ChatEmptyGreeting';
+import { chatColumnSx, chatShellSx } from './ChatBox.layout';
 import { useChatBoxData } from './hooks/useChatBoxData';
 import { useChatBoxState } from './hooks/useChatBoxState';
 import { useChatBoxHandlers } from './hooks/useChatBoxHandlers';
@@ -65,7 +70,10 @@ type NewChatInputHandle = ComponentRef<typeof NewChatInput>;
 
 /** @public Props for the ChatBox composition root. */
 export interface ChatBoxProps {
-  readonly activeConversation?: ChatBoxActiveConversation;
+  /** Host ref for the `ChatBoxHandle` (React 19 passes `ref` as a prop) — see `ChatBox.types.ts`. */
+  readonly ref?: Ref<ChatBoxHandle> | undefined;
+  /** Bundled to stay under the §3.5 component-props budget (one slot instead of two), which the `ref` prop above pushed this component over — see `ChatBox.props.ts`. */
+  readonly conversation?: ChatBoxConversationProp;
   readonly hidden?: boolean;
   readonly fromTheChat?: boolean;
   readonly projectId?: string | number;
@@ -76,13 +84,17 @@ export interface ChatBoxProps {
   readonly setChatHistory?: React.Dispatch<React.SetStateAction<readonly unknown[]>>;
   readonly conversationStarters?: readonly { id: string; text: string }[];
   readonly isAgentsPage?: boolean;
-  readonly isLoadingConversation?: boolean;
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly llm?: { readonly settings?: Readonly<Record<string, unknown>>; readonly onSetSettings?: (settings: Readonly<Record<string, unknown>>) => void };
   /** Bundled to stay under the §3.5 component-props budget (one slot instead of two). */
   readonly onDelete?: { readonly answer?: (messageId: string) => void; readonly all?: () => void };
-  /** Agent/pipeline editor open/close callbacks — see `ChatBox.helpers.ts`'s `buildAgentEditorProps`. Optional; falls back to the pre-existing no-ops. */
-  readonly editorCallbacks?: ChatBoxEditorCallbacks;
+  /** Host-supplied composer extension points, bundled to stay under the §3.5 component-props budget (one slot instead of two, as `onDelete` above); both pass straight through. */
+  readonly extensions?: {
+    /** Agent/pipeline editor open/close callbacks — see `ChatBox.helpers.ts`'s `buildAgentEditorProps`. Optional; falls back to the pre-existing no-ops. */
+    readonly editorCallbacks?: ChatBoxEditorCallbacks;
+    /** Real lists for the composer's "+" menu — see `processes/chat/model/usePlusMenuEntities.ts`, which is the only layer allowed to fetch them. */
+    readonly entitySubmenus?: PlusChatButtonEntitySubmenus;
+  };
 }
 
 export type { ChatBoxHandle };
@@ -92,7 +104,8 @@ export type { ChatBoxHandle };
 /* ------------------------------------------------------------------ */
 
 const ChatBoxInner = memo(function ChatBox({
-  activeConversation,
+  ref,
+  conversation,
   hidden = false,
   projectId,
   user,
@@ -100,14 +113,15 @@ const ChatBoxInner = memo(function ChatBox({
   setChatHistory,
   conversationStarters,
   isAgentsPage,
-  isLoadingConversation,
   llm,
   onDelete,
-  editorCallbacks,
+  extensions,
 }: ChatBoxProps) {
+  const { editorCallbacks, entitySubmenus } = extensions ?? {};
   const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
+  const { activeConversation, isLoadingConversation } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
 
@@ -290,23 +304,26 @@ const ChatBoxInner = memo(function ChatBox({
     stopStreamRef.current();
     streamingRef.current.stopStreaming();
   }, [stopStreamRef, streamingRef]);
-  useImperativeHandle(
-    chatInputRef as unknown as React.Ref<ChatBoxHandle>,
-    () => ({
-      onClear: () => { handleClearRef.current(); },
-      mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
-      stopAll: stopGeneration,
-    }),
-    [handleClearRef, stopGeneration],
-  );
+  // MUST target the host `ref`, never `chatInputRef` — see `ChatBox.types.ts`.
+  useImperativeHandle(ref, () => ({
+    onClear: () => { handleClearRef.current(); },
+    mentionUser: (c) => { chatInputRef.current?.setValue?.(`@${c} `); },
+    stopAll: stopGeneration,
+  }), [handleClearRef, stopGeneration]);
 
   // Early return
   if (hidden) return null;
 
+  // Empty-conversation layout mode — see `ChatBox.layout.ts`. Starters count
+  // as content: when the agent offers them the column is not visually empty,
+  // so the normal top-anchored layout stays.
+  const isEmptyConversation = messages.length === 0 && !state.shouldShowStarters;
+
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
-      <Box sx={{ flex: 1, minHeight: 0, px: 2 }}>
+    <Box sx={chatShellSx(isEmptyConversation)}>
+      <Box sx={chatColumnSx(isEmptyConversation)}>
         <ChatMessageList
+          emptyState={<ChatEmptyGreeting userName={userName} />}
           chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''}
           messageActions={{
             onCopyToClipboard: handleCopy,
@@ -330,28 +347,14 @@ const ChatBoxInner = memo(function ChatBox({
       </Box>
       <Box sx={{ p: 1 }}>
         <ChatBoxPopups
-          recommendations={{
-            show: state.showRecommendationList,
-            onSelectParticipant: (p) => { onChangeParticipant?.(p); state.setShowRecommendationList(false); },
-            onClose: () => state.setShowRecommendationList(false),
+          {...buildChatBoxPopupsProps({
+            state,
+            onChangeParticipant,
             existingParticipants: conversationParticipants ?? [],
             projectId: projectIdString,
-          }}
-          userMentions={{
-            isProcessingAtSymbol: state.keyDown.isProcessingAtSymbol,
-            hasOtherUsers: state.hasOtherUsers,
-            users: state.users,
-            atQuery: state.keyDown.atQuery,
             onSelectUser: handleSelectUserMention,
-            onClose: state.keyDown.stopProcessingAtSymbol,
-          }}
-          slash={state.slash}
-          skill={{
-            isActive: state.isSkillPhaseActive,
-            filteredItems: state.skill.filteredItems,
-            highlightedIndex: state.skill.highlightedIndex,
             onSelectTool: handleSelectSkillTool,
-          }}
+          })}
         />
         <NewChatInput
           ref={chatInputRef}
@@ -375,21 +378,18 @@ const ChatBoxInner = memo(function ChatBox({
             internalTools: { disabled: isInputLoading, tools: internalToolsButtonTools, onToolChange: handleInternalToolChange },
             model: { llmSettings, onSetLLMSettings, selectedModel: selectedLlmModel, onSelectModel: handleSelectModel, models: modelsList },
             refs: { attachmentButtonRef, voiceButtonRef, voiceInputRef: chatInputRef },
+            isAgentsPage: !!isAgentsPage,
+            // `onSelectParticipant` is supplied HERE, not by the composition
+            // root: picking an entity from the "+" menu makes it the active
+            // participant, and that is the same `onChangeParticipant` the
+            // recommendation list already calls with the same row shape.
+            entitySubmenus: { ...entitySubmenus, ...optField('onSelectParticipant', onChangeParticipant) },
+            participants: normalisedParticipants,
           })}
           refs={{ attachmentButtonRef, voiceButtonRef }}
         />
       </Box>
-      <DeleteEntityModal
-        open={deleteAlert.isOpen}
-        onClose={deleteAlert.closeDialog}
-        onConfirm={() => { void deleteAlert.confirmDelete(); }}
-        copy={{
-          title: deleteAlert.isAllMessages ? t('widgets.chatBox.clearChatTitle', 'Clear chat') : t('widgets.chatBox.deleteMessageTitle', 'Delete message'),
-          textContent: deleteAlert.confirmationMessage,
-        }}
-        content={{ inline: '' }}
-        data-testid="chat-delete-confirm-dialog"
-      />
+      <ChatBoxDeleteModal alert={deleteAlert} />
     </Box>
   );
 });

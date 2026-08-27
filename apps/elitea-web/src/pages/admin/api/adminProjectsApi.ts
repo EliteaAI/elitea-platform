@@ -1,9 +1,13 @@
 /**
  * REST client for the admin PROJECTS surface — unit A14, issue #200.
  *
- * Two reads and three writes reach a server; two more writes do not exist and
- * are not declared here at all — see `../Projects.tsx` for why project CREATE
- * and DELETE are rendered unavailable rather than wired to something.
+ * Two reads and three writes, all of which reach a server. Project CREATE and
+ * DELETE are two more writes, and they live next door in
+ * `./adminProjectProvisioningApi.ts` — a different endpoint family with a
+ * different response shape, split out when this module outgrew the file-length
+ * budget. Both invalidate `adminProjectsKeys.all`, which is exported for them
+ * and for that reason only: a second key namespace would be a cache the
+ * provisioning writes never refresh (#132).
  *
  * Not generated: `orval` builds from `v2.yaml`, which does not describe the
  * admin-panel routes. Handwritten in the same shape as `./adminUsersApi.ts` and
@@ -37,7 +41,7 @@ import { eliteaFetch } from '@/shared/api/generated/mutator';
 import { unwrapBody, unwrapListPage } from '@/shared/api/unwrap';
 
 /** Only `administration` has a handler, server-side and in pylon before it. */
-const ADMIN_MODE = 'administration';
+export const ADMIN_MODE = 'administration';
 
 /** The page's two tabs. The server filters on the same two words. */
 export type ProjectType = 'team' | 'personal';
@@ -105,7 +109,7 @@ export interface AdminProjectsQueryParams {
  * queries live under the same root for the same reason: adding an admin changes
  * BOTH the member list and the `admin_names` column of the listing.
  */
-const adminProjectsKeys = {
+export const adminProjectsKeys = {
   all: ['admin', 'projects'] as const,
   list: (params: AdminProjectsQueryParams) => ['admin', 'projects', 'list', params] as const,
   members: (projectId: number) => ['admin', 'projects', 'members', projectId] as const,
@@ -147,17 +151,29 @@ function readCounts(response: unknown): AdminProjectsPage['counts'] {
   };
 }
 
+/**
+ * One page of `GET /admin/projects/administration`, without a hook.
+ *
+ * Exported because the export control (see `useAdminProjectsPage`) has to walk
+ * EVERY page imperatively on click; going through `useQuery` there would mean
+ * either a second always-mounted query for data nobody renders, or a
+ * `limit: total` request whose size no server bound checks.
+ */
+export async function fetchAdminProjectsPage(
+  params: AdminProjectsQueryParams,
+): Promise<AdminProjectsPage> {
+  const response = await eliteaFetch<unknown>(buildListUrl(params));
+  const { rows, total } = unwrapListPage<AdminProjectRow>(response, 'adminProjects');
+  return { rows, total, counts: readCounts(response) };
+}
+
 /** `GET /admin/projects/administration` — one page of the project list. */
 export function useAdminProjects(
   params: AdminProjectsQueryParams,
 ): UseQueryResult<AdminProjectsPage, Error> {
   return useQuery({
     queryKey: adminProjectsKeys.list(params),
-    queryFn: async (): Promise<AdminProjectsPage> => {
-      const response = await eliteaFetch<unknown>(buildListUrl(params));
-      const { rows, total } = unwrapListPage<AdminProjectRow>(response, 'adminProjects');
-      return { rows, total, counts: readCounts(response) };
-    },
+    queryFn: () => fetchAdminProjectsPage(params),
   });
 }
 

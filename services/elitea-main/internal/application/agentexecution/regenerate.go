@@ -240,7 +240,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 		}
 		resolved.VersionDetails = frozen
 		start.QuestionID = request.RegenerationID
-		input, err := currentApplicationInput(start, resolved, suggestionPolicy, toolkitGuardrails)
+		input, err := currentApplicationInput(start, resolved, suggestionPolicy, toolkitGuardrails, nil)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -275,7 +275,7 @@ func (service *CurrentApplicationStartService) currentRegenerationInput(
 			return nil, nil, "", err
 		}
 		start.QuestionID = request.RegenerationID
-		input, err := currentAdhocInput(start, resolved, frozen, suggestionPolicy, toolkitGuardrails)
+		input, err := currentAdhocInput(start, resolved, frozen, suggestionPolicy, toolkitGuardrails, nil)
 		if err != nil {
 			return nil, nil, "", err
 		}

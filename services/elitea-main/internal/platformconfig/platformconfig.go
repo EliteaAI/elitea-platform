@@ -32,8 +32,12 @@ import (
 const (
 	SectionMCPConfiguration = "mcp_configuration"
 	SectionAgentPublishing  = "agent_publishing"
+	SectionSkillPublishing  = "skill_publishing"
 	SectionVoiceFeatures    = "voice_features"
 	SectionGuardrails       = "guardrails"
+	SectionDedicatedBanner  = "dedicated_banner"
+	SectionMaintenance      = "maintenance"
+	SectionSupportAssistant = "support_assistant"
 )
 
 // Field keys, for the same reason.
@@ -43,14 +47,44 @@ const (
 	KeyPublishBlocked             = "is_publish_blocked"
 	KeyPublishWhitelistProjectIDs = "publish_whitelist_project_ids"
 	KeyAgentCategories            = "agent_categories"
-	KeyVoiceEnabled               = "vite_voice_features_enabled"
-	KeyVoiceTemporarilyDisabled   = "vite_voice_features_temporarily_disabled"
+
+	// The skill-publishing guardrail is a SEPARATE section with its own three
+	// keys, exactly as the reference keeps it
+	// (`skill_publishing_guardrail` in elitea_core's admin_schema.json). It is
+	// not an alias of the agent trio: an operator who freezes agent publishing
+	// during an incident has not thereby frozen skill publishing, and the
+	// reference's own platform_settings endpoint publishes the two pairs
+	// independently for exactly that reason.
+	KeySkillPublishBlocked             = "is_skill_publish_blocked"
+	KeySkillPublishWhitelistProjectIDs = "skill_publish_whitelist_project_ids"
+	KeySkillCategories                 = "skill_categories"
+
+	KeyVoiceEnabled             = "vite_voice_features_enabled"
+	KeyVoiceTemporarilyDisabled = "vite_voice_features_temporarily_disabled"
 
 	KeyBlockedToolkits                = "blocked_toolkits"
 	KeyBlockedTools                   = "blocked_tools"
 	KeySensitiveTools                 = "sensitive_tools"
 	KeySensitiveActionCompanyName     = "sensitive_action_company_name"
 	KeySensitiveActionMessageTemplate = "sensitive_action_message_template"
+
+	KeyBannerEnabled     = "banner_enabled"
+	KeyBannerDismissible = "banner_dismissible"
+	KeyBannerIcon        = "banner_icon"
+	KeyBannerStyle       = "banner_style"
+	KeyBannerMessage     = "banner_message"
+
+	KeyMaintenanceEnabled = "maintenance_enabled"
+	KeyMaintenanceTitle   = "maintenance_title"
+	KeyMaintenanceMessage = "maintenance_message"
+
+	KeySupportAssistantEnabled = "support_assistant_enabled"
+	KeySupportProjectID        = "support_project_id"
+	KeySupportAgentProjectID   = "support_agent_project_id"
+	KeySupportAgentID          = "support_agent_id"
+	KeySupportWelcomeMessage   = "support_welcome_message"
+	KeySupportAssistantName    = "support_assistant_name"
+	KeySupportPlaceholder      = "support_placeholder"
 )
 
 // Values is one section's stored rows, decoded. A key ABSENT from the map has
@@ -141,6 +175,24 @@ func (v Values) Ints(key string) []int64 {
 		out = append(out, int64(number))
 	}
 	return out
+}
+
+// Int reads a single JSON number as an int64, reporting whether the key held
+// one. It is a two-value read rather than a fallback read because the callers
+// that need it — the support assistant's project and agent ids — have to tell
+// "the operator has not chosen a project yet" from "the operator chose project
+// 0", and a fallback collapses those into one answer.
+//
+// A non-integral number is ABSENT, not truncated, for the same reason Ints
+// skips one: agent 1.5 is not agent 1, and resolving it to a neighbouring row
+// would run somebody else's agent against every support conversation on the
+// platform.
+func (v Values) Int(key string) (int64, bool) {
+	number, ok := v[key].(float64)
+	if !ok || number != float64(int64(number)) {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 // String reads a string, falling back when the key is absent or holds something

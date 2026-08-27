@@ -17,7 +17,9 @@ export const MuiToggleButton: EliteaComponents['MuiToggleButton'] = {
       alignItems: 'center',
       justifyContent: 'center',
       marginLeft: 0,
-      padding: `${theme.spacing(0.375)} ${theme.spacing(1)}`,
+      // Baseline `TabGroupButton.jsx:139` is `0.375rem 0.5rem` = 6px 8px.
+      // `spacing(0.375)` is 3px — the vertical padding was half the baseline.
+      padding: theme.spacing(0.75, 1),
       textTransform: 'none',
       fontFamily: theme.typography.fontFamily,
       ...theme.typography.labelSmall,

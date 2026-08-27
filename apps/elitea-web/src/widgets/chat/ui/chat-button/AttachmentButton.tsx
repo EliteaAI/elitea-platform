@@ -1,9 +1,12 @@
+import type { ReactNode } from 'react';
 import { memo, forwardRef, useImperativeHandle, useRef, useCallback, useMemo, useState } from 'react';
 
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
+import type { Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
+import Typography from '@mui/material/Typography';
 
 import { t } from '@/shared/i18n';
 import { ATTACHMENT_LIMITS, getRemainingAttachmentCapacity, validateAttachmentFiles } from '@/shared/lib/attachments';
@@ -44,6 +47,11 @@ import { ATTACHMENT_LIMITS, getRemainingAttachmentCapacity, validateAttachmentFi
  *   - `attachments` — current list of attached files (used for count/size limit checks)
  *   - `limits` — optional overrides merged onto `ATTACHMENT_LIMITS`
  *   - `onError` — called with a human-readable message when files are rejected
+ *   - `showLabel` — render as a full-width MENU ROW (paperclip + "Attach files"
+ *     + a right-aligned "<n> left" counter) instead of the bare icon button.
+ *     Baseline prop of the same name (`AttachmentButton.jsx:34`); it is how the
+ *     "+" menu shows attachments as a one-click action with its remaining
+ *     capacity visible, rather than hiding the count in a hover tooltip.
  *
  * Imperative handle (`AttachmentButtonHandle`):
  *   - `onDrop(event)` — validates & dispatches dropped files to `onAttachFiles`
@@ -58,11 +66,12 @@ export interface AttachmentButtonProps {
   attachments?: readonly File[];
   limits?: Record<string, number>;
   onError?: (message: string) => void;
+  showLabel?: boolean;
 }
 
 export const AttachmentButton = memo(
   forwardRef<AttachmentButtonHandle, AttachmentButtonProps>(
-    ({ disableAttachments = false, attachments = [], onAttachFiles, limits, onError }, ref) => {
+    ({ disableAttachments = false, attachments = [], onAttachFiles, limits, onError, showLabel = false }, ref) => {
       const fileInputRef = useRef<HTMLInputElement>(null);
       const [isProcessing, setIsProcessing] = useState(false);
 
@@ -138,21 +147,33 @@ export const AttachmentButton = memo(
                   count: capacity.remainingAttachments,
                 });
 
+      // The row form carries the remaining count as visible text, so the
+      // tooltip that exists to surface it on the icon form is redundant there.
+      const control = showLabel ? (
+        <AttachmentMenuRow
+          isDisabled={isDisabled}
+          remaining={capacity.remainingAttachments}
+          onActivate={handleButtonClick}
+        />
+      ) : (
+        <Tooltip title={tooltipText} placement="top">
+          <Box component="span">
+            <IconButton
+              color="secondary"
+              aria-label={t('widgets.chat.attachmentButton.ariaLabel', 'attach files')}
+              disabled={isDisabled}
+              onClick={handleButtonClick}
+              sx={{ marginLeft: 0 }}
+            >
+              <AttachFileIcon fontSize="small" />
+            </IconButton>
+          </Box>
+        </Tooltip>
+      );
+
       return (
         <>
-          <Tooltip title={tooltipText} placement="top">
-            <Box component="span">
-              <IconButton
-                color="secondary"
-                aria-label={t('widgets.chat.attachmentButton.ariaLabel', 'attach files')}
-                disabled={isDisabled}
-                onClick={handleButtonClick}
-                sx={{ marginLeft: 0 }}
-              >
-                <AttachFileIcon fontSize="small" />
-              </IconButton>
-            </Box>
-          </Tooltip>
+          {control}
 
           {/* Hidden file input — only accept when attachments aren't disabled */}
           <input
@@ -171,3 +192,55 @@ export const AttachmentButton = memo(
 );
 
 AttachmentButton.displayName = 'AttachmentButton';
+
+/**
+ * The `showLabel` form: a full-width menu row instead of a bare icon button.
+ *
+ * Its own component rather than a branch inside `AttachmentButton`, because
+ * that component is already at the §3.5 cyclomatic-complexity-12 ceiling —
+ * the keyboard handler and the disabled-state branches tipped it to 14.
+ */
+function AttachmentMenuRow({ isDisabled, remaining, onActivate }: {
+  readonly isDisabled: boolean;
+  readonly remaining: number;
+  readonly onActivate: () => void;
+}): ReactNode {
+  return (
+    <Box
+      role="menuitem"
+      tabIndex={isDisabled ? -1 : 0}
+      aria-label={t('widgets.chat.attachmentButton.ariaLabel', 'attach files')}
+      aria-disabled={isDisabled}
+      data-testid="plus-menu-attachments"
+      onClick={isDisabled ? undefined : onActivate}
+      onKeyDown={(e) => {
+        if (isDisabled || (e.key !== 'Enter' && e.key !== ' ')) return;
+        e.preventDefault();
+        onActivate();
+      }}
+      sx={attachRowSx(isDisabled)}
+    >
+      <AttachFileIcon fontSize="small" />
+      <Typography variant="labelMedium" sx={{ flex: 1 }}>
+        {t('widgets.chat.attachmentButton.attachFilesLabel', 'Attach Files')}
+      </Typography>
+      <Typography variant="labelSmall" sx={{ color: 'text.disabled' }}>
+        {t('widgets.chat.attachmentButton.filesLeftCounter', '{{count}} left', { count: remaining })}
+      </Typography>
+    </Box>
+  );
+}
+
+/** The `showLabel` row's styling — matches the "+" menu's other rows (`PlusChatButton.parts.tsx`'s `rowSx`). */
+function attachRowSx(isDisabled: boolean) {
+  return (theme: Theme) => ({
+    display: 'flex',
+    alignItems: 'center',
+    gap: 1,
+    padding: '0.375rem 1rem',
+    height: '2.75rem',
+    cursor: isDisabled ? 'default' : 'pointer',
+    color: isDisabled ? theme.vars.palette.text.disabled : theme.vars.palette.text.secondary,
+    ...(isDisabled ? {} : { '&:hover': { backgroundColor: theme.vars.palette.action.hover } }),
+  });
+}

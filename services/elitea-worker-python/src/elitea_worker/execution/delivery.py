@@ -2319,6 +2319,13 @@ class AgentExecutionDeliveryProcessor(IndexIngestDeliveryProcessor):
                 immutable_version=f"sha256:{digest.hex()}",
                 byte_length=len(browser_result),
                 digest=digest,
+                # #607: whatever this turn extracted from its attachments, so
+                # elitea-main can persist it and the NEXT turn can see the file.
+                # Empty on every turn that carried no document, and empty for a
+                # document whose read failed. Reported on every terminal state,
+                # not only completion: a turn that pauses for HITL already paid
+                # for the read, and losing it would make the resume pay again.
+                attachment_contents=adapter.attachment_content_writebacks,
             )
         except _IndexProgressTransportFailure:
             raise

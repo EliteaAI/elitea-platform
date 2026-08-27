@@ -3,11 +3,15 @@ package conversations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +62,70 @@ type MessagesListResponse struct {
 	TotalPages int       `json:"total_pages"`
 }
 
+// MessagesQuery is the transcript window one GET
+// /messages/prompt_lib/{projectID}/{conversationID} asked for, resolved from
+// the query string before it reaches the repository.
+//
+// DEFECT #603: this route read `page`/`page_size` and nothing else, and no
+// caller has ever sent either. The web client builds the query string as
+// `{...params, limit, offset: page * pageSize}`
+// (apps/elitea-web/src/entities/conversation/api/messageApi.ts:59-63); the SPA
+// it was ported from does the same (frontends/EliteaUI/.../chat.api.js:24-32);
+// and pylon, the contract both were written against, read `limit` (default 10),
+// `offset` (default 0), `sort_by` (default created_at) and `sort_order`
+// (default desc) — legacy/plugins/elitea_core/api/v2/messages.py:71-107. So
+// every request collapsed onto this server's own defaults: page 1, size 50,
+// created_at DESC. Scrolling back re-fetched the same newest 50 groups
+// forever (useLoadMoreMessages.ts:96 sends offset=10,20,30…), and a caller
+// that asked for `sort_order=asc` (useChatPageData.ts:66,
+// usePlaybackConversation.ts:66) was served DESC.
+//
+// SortBy crosses this boundary UNVALIDATED on purpose: it names a column, so it
+// is concatenated into SQL rather than bound, and the allow-list that decides
+// what may be interpolated lives at that interpolation site
+// (repos.ConversationsRepo.ListMessages) where it cannot be bypassed by a
+// second caller of the interface.
+type MessagesQuery struct {
+	Limit     int
+	Offset    int
+	SortBy    string
+	SortOrder string
+
+	// Query is the free-text term a caller is searching the transcript for,
+	// matched against the text content of a group's items. Empty means "no
+	// filter" — NOT "match the empty string", which every group would satisfy.
+	//
+	// It is passed through raw. The repository decides what a match means and
+	// escapes the term for the pattern operator it uses; doing that here would
+	// bake one storage layer's pattern syntax into the HTTP boundary.
+	Query string
+}
+
+// AttachmentRef locates one stored attachment: the bucket it lives in and the
+// object name within it. Both come straight from the `chat_messages_attachment`
+// row (#606), where `name` already carries the `{conversationUUID}/` prefix the
+// upload path keys objects by — so this pair addresses the object directly,
+// with no reconstruction.
+type AttachmentRef struct {
+	Bucket string
+	Name   string
+}
+
+// DeleteMessageResult is what one message delete removed.
+//
+// Attachments are reported rather than deleted by the repository because the
+// bytes do not live in the database: the repository removes the ROWS, and only
+// the handler holds the object store. Reporting them is also what lets the
+// byte delete happen strictly AFTER the authorisation and last-message guards
+// have passed — see Handler.DeleteMessage for why that ordering is the point.
+type DeleteMessageResult struct {
+	// Deleted holds the UUIDs of every message group that went, newest first.
+	Deleted []string
+	// Attachments holds every stored attachment those groups carried. Empty
+	// unless the groups had attachment items.
+	Attachments []AttachmentRef
+}
+
 type Participant struct {
 	ID             int            `json:"id"`
 	EntityName     string         `json:"entity_name"`
@@ -72,7 +140,7 @@ type Repository interface {
 	Create(ctx context.Context, projectID string, conv Conversation) (Conversation, error)
 	Update(ctx context.Context, projectID, conversationID string, conv Conversation) (Conversation, error)
 	Delete(ctx context.Context, projectID, conversationID string) error
-	ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (MessagesListResponse, error)
+	ListMessages(ctx context.Context, projectID, conversationID string, query MessagesQuery) (MessagesListResponse, error)
 	ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
 	ListParticipants(ctx context.Context, projectID, conversationID string) ([]Participant, error)
 	AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error
@@ -91,7 +159,7 @@ type Repository interface {
 	UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	GetMessageByUUID(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	DeleteMessages(ctx context.Context, projectID, conversationID string) error
-	DeleteMessage(ctx context.Context, projectID, groupUID string) error
+	DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (DeleteMessageResult, error)
 }
 
 type Handler struct {
@@ -527,19 +595,84 @@ func (h *Handler) PostMessage(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const (
+	// Pylon's default page of a transcript is 10 groups
+	// (messages.py:73). The 50 this handler used instead was never observable
+	// — no caller sends page_size — so restoring the legacy number changes what
+	// a parameterless request returns, and nothing else.
+	defaultMessagesLimit = 10
+
+	// The cap the page_size branch already enforced, carried over onto `limit`.
+	// Pylon has no cap at all, but the ceiling matters more here than parity
+	// does: ListMessages runs one correlated string_agg subquery per group, so
+	// an uncapped limit lets an anonymous query string decide how much work the
+	// database does. 100 is not arbitrary either — it is exactly what the
+	// largest real caller asks for (usePlaybackConversation.ts:66 requests
+	// pageSize 100), so the cap binds nothing that exists today.
+	maxMessagesLimit = 100
+)
+
+// parseMessagesQuery resolves the transcript window from the query string.
+//
+// PRECEDENCE, and why it is this way round (#603): `limit`/`offset` are the
+// primary pair because they are the pair pylon defined and the pair every
+// client sends. `page`/`page_size` are read FIRST and then overwritten, which
+// makes limit/offset win whenever both are present, while leaving the
+// page/page_size pair fully functional for a caller that sends only it — this
+// server has advertised that pair for long enough that dropping it would be a
+// second silent break, and the sibling List handler on the same resource takes
+// limit/offset, so a client mixing the two is plausible.
+//
+// `page` is converted through the limit that is already resolved, so
+// page=3&limit=25 means offset 50, not offset 50-derived-from-some-other-size.
+func parseMessagesQuery(values url.Values) MessagesQuery {
+	query := MessagesQuery{
+		Limit:     defaultMessagesLimit,
+		SortBy:    "created_at",
+		SortOrder: "desc",
+	}
+
+	if pageSize, err := strconv.Atoi(values.Get("page_size")); err == nil && pageSize > 0 {
+		query.Limit = pageSize
+	}
+	if limit, err := strconv.Atoi(values.Get("limit")); err == nil && limit > 0 {
+		query.Limit = limit
+	}
+	if query.Limit > maxMessagesLimit {
+		query.Limit = maxMessagesLimit
+	}
+
+	if page, err := strconv.Atoi(values.Get("page")); err == nil && page > 1 {
+		query.Offset = (page - 1) * query.Limit
+	}
+	if offset, err := strconv.Atoi(values.Get("offset")); err == nil && offset > 0 {
+		query.Offset = offset
+	}
+
+	if sortBy := values.Get("sort_by"); sortBy != "" {
+		query.SortBy = sortBy
+	}
+	// Pylon read this as `request.args.get('query')` and applied it only when
+	// truthy (messages.py:71,86), so an explicit `query=` was the same as
+	// sending nothing. Same here.
+	query.Query = values.Get("query")
+	// Only the exact token `asc` flips the order. Pylon wrote this as
+	// `desc if sort_order == 'desc' else asc`, so under pylon ANY unrecognised
+	// value — a typo, an empty explicit `sort_order=` — silently reversed the
+	// transcript. The documented default is desc; an unrecognised value gets
+	// the documented default rather than the opposite of it.
+	if values.Get("sort_order") == "asc" {
+		query.SortOrder = "asc"
+	}
+
+	return query
+}
+
 func (h *Handler) ListMessages(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 50
-	}
 
-	resp, err := h.repo.ListMessages(r.Context(), projectID, conversationID, page, pageSize)
+	resp, err := h.repo.ListMessages(r.Context(), projectID, conversationID, parseMessagesQuery(r.URL.Query()))
 	if err != nil {
 		apierr.Write(w, err)
 		return
@@ -557,14 +690,153 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// DeleteMessage removes one message group and the user input it answers, and —
+// when the caller asks for it — the bytes of any attachment those groups
+// carried.
+//
+// The caller's identity is part of the request, not decoration: deleting a
+// message is authorised against the conversation's author and the group's own
+// author, so the repository cannot decide it without knowing who is asking.
+// An unauthenticated context yields an empty id, which the repository refuses —
+// the route already sits behind `models.chat.messages.delete`, so that state
+// should be unreachable, and failing closed is right if it ever is not.
+//
+// WHY THIS ANSWERS 200 WITH A BODY RATHER THAN 204. One request can remove TWO
+// groups — the reply named in the URL and the question it answers — and a
+// client that prunes only the id it asked for would leave the other message on
+// screen until a reload, which is worse than not pairing at all. Pylon told the
+// client through a per-group socket event (message.py:154-171); there is no
+// such channel on this route, so the response carries the fact instead. The
+// body names every group that is really gone, newest first, so a client can
+// prune exactly what the server removed rather than guessing at the pairing
+// rule — the pairing lives in one place, on the server.
+//
+// # `delete_attachment`, and the pylon ordering bug NOT reproduced
+//
+// Pylon removes an attachment's stored bytes only when the request carries a
+// `delete_attachment` query flag (message.py:103-107), and this keeps that
+// opt-in: a delete that silently destroyed uploaded files would be a bigger
+// surprise than one that leaves them for the retention sweeper.
+//
+// But pylon runs that loop BEFORE its "summarized message cannot be deleted"
+// and "only the last message" guards (message.py:103 vs :108-122), so a request
+// that goes on to answer 400 has ALREADY deleted the files. That is a defect,
+// not a contract, and it is not ported. Here the repository applies every guard
+// and commits first; the bytes are touched only once the delete is a fact.
+//
+// The cost of that ordering is the opposite failure: rows gone, bytes not. It
+// is the cheaper one, and it is bounded — the objects are still recorded in
+// `elitea_storage.objects`, so the retention sweeper still finds and expires
+// them. Deleting the bytes first and refusing afterwards, pylon's order, is
+// unrecoverable: the file is gone and the message still claims it.
 func (h *Handler) DeleteMessage(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	messageID := chi.URLParam(r, "messageID")
-	if err := h.repo.DeleteMessage(r.Context(), projectID, messageID); err != nil {
+	user, _ := auth.UserFromContext(r.Context())
+
+	result, err := h.repo.DeleteMessage(r.Context(), projectID, messageID, user.ID)
+	if err != nil {
 		apierr.Write(w, err)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+
+	// Presence, not value — pylon tests `'delete_attachment' in request.args`,
+	// so `?delete_attachment` with no value counts, and so does `=false`.
+	// Matching that literally matters more than tidiness: a client that has
+	// been sending the bare flag at pylon for years must keep working.
+	if _, asked := r.URL.Query()["delete_attachment"]; asked && len(result.Attachments) > 0 {
+		if err := h.deleteAttachmentObjects(r.Context(), projectID, result.Attachments); err != nil {
+			apierr.Write(w, err)
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": result.Deleted})
+}
+
+// deleteAttachmentObjects removes the stored bytes of attachments whose rows
+// have already gone, and then their `elitea_storage.objects` records.
+//
+// Bytes before records, for the same reason DeleteAttachments does it that way:
+// the record is what the retention sweeper walks, so dropping it first would
+// orphan the bytes from the only thing that could ever find them again.
+//
+// A `chat_messages_attachment` row and an `elitea_storage.objects` row are
+// independent — the first is the message's claim on a file, the second is the
+// storage layer's record of it — so an attachment may legitimately have no
+// object record here (an upload from before the S20a byte path, or a row pylon
+// wrote). A missing record is not an error: the bytes are deleted by ref, and
+// the record delete simply matches nothing.
+func (h *Handler) deleteAttachmentObjects(ctx context.Context, projectIDStr string, attachments []AttachmentRef) error {
+	if h.store == nil || h.attachments == nil {
+		// Nothing could have been stored in a deployment with no object store;
+		// same degradation writeAttachmentBytes and DeleteAttachments apply.
+		return nil
+	}
+	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
+	if err != nil || projectID <= 0 {
+		return apierr.BadRequest("invalid project id")
+	}
+
+	// Group by bucket: the object store addresses a bucket at a time, and an
+	// attachment row carries its own bucket, so one message group's items are
+	// not guaranteed to share one.
+	byBucket := map[string][]string{}
+	refs := map[string][]storage.ObjectRef{}
+	for _, attachment := range attachments {
+		if attachment.Bucket == "" || attachment.Name == "" {
+			continue
+		}
+		ref, err := storage.NewObjectRef(projectIDStr, attachment.Bucket, attachment.Name)
+		if err != nil {
+			// SURFACED, not skipped. Skipping here reported 200 — "the
+			// attachment was deleted" — for a file that is still stored, with
+			// nothing anywhere recording that the cleanup was incomplete, which
+			// is the one answer a delete must never give.
+			//
+			// Admission now refuses a name that cannot address an object
+			// (application/agentexecution/attachments.go,
+			// addressableObjectKey), so reaching this is a row written before
+			// that check or by another writer — a real inconsistency worth a
+			// 500 rather than a silent leak. The message rows are already gone
+			// by this point; the caller learns the bytes are not.
+			return apierr.Internal("stored attachment name " + strconv.Quote(attachment.Name) +
+				" cannot address an object: " + err.Error())
+		}
+		byBucket[attachment.Bucket] = append(byBucket[attachment.Bucket], attachment.Name)
+		refs[attachment.Bucket] = append(refs[attachment.Bucket], ref)
+	}
+
+	// Sorted, so the deletes happen in a defined order rather than whatever
+	// order Go's map iteration produces. A caller reading the failure message
+	// for "which object refused" gets the same answer twice for the same input.
+	buckets := make([]string, 0, len(refs))
+	for bucket := range refs {
+		buckets = append(buckets, bucket)
+	}
+	sort.Strings(buckets)
+	for _, bucket := range buckets {
+		bucketRefs := refs[bucket]
+		result, err := h.store.DeleteBatch(ctx, bucketRefs)
+		if err != nil {
+			return apierr.Internal("delete attachment bytes: " + err.Error())
+		}
+		if len(result.Failed) > 0 {
+			return apierr.Internal(fmt.Sprintf("delete attachment bytes: %d of %d objects failed, first %q: %v",
+				len(result.Failed), len(bucketRefs), result.Failed[0].Key, result.Failed[0].Err))
+		}
+		bucketID, err := h.attachments.LookupAttachmentBucket(ctx, projectID, bucket)
+		if errors.Is(err, storage.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return apierr.Internal("lookup attachment bucket: " + err.Error())
+		}
+		if err := h.attachments.DeleteAttachmentObjects(ctx, bucketID, byBucket[bucket]); err != nil {
+			return apierr.Internal("delete attachment metadata: " + err.Error())
+		}
+	}
+	return nil
 }
 
 func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request) {
@@ -851,14 +1123,141 @@ func (h *Handler) AddAttachments(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// DeleteAttachments removes a conversation's attachments: the stored bytes,
+// their elitea_storage.objects metadata rows, and finally the
+// chat_conversations.meta.attachments list that named them.
+//
+// DEFECT #599: this route used to strip the meta and nothing else. The
+// uploaded bytes and their metadata rows survived until the retention
+// sweeper eventually expired them, so "delete my attachments" forgot the
+// attachments without deleting them. Pylon's equivalent route removes the
+// bytes at the same moment (legacy/plugins/elitea_core/api/v2/
+// attachments.py:240, `mc.remove_file(bucket_name, filename)`); this is that
+// parity baseline.
 func (h *Handler) DeleteAttachments(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	conversationID := chi.URLParam(r, "conversationID")
+
+	// Bytes first, meta last. If the byte delete fails we must NOT strip the
+	// meta: the meta is the only thing left in the product that names those
+	// files, so stripping it after a failed delete produces exactly the state
+	// this defect is about — stored bytes nobody can see or retry deleting.
+	if err := h.deleteStoredAttachments(r.Context(), projectID, conversationID); err != nil {
+		apierr.Write(w, err)
+		return
+	}
 	if err := h.repo.DeleteAttachments(r.Context(), projectID, conversationID); err != nil {
 		apierr.Write(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// deleteStoredAttachments removes the object bytes and metadata rows
+// finalizeAttachment wrote for one conversation, and resolves the bucket the
+// same way finalizeAttachment does (policy first, defaultAttachmentBucketName
+// fallback) so the delete reads the same bucket the upload wrote.
+//
+// A returned error is meant to reach the client as a 500 rather than being
+// logged and swallowed: answering `{"ok": true}` for an attachment that is
+// still stored is the precise failure shape this change exists to remove.
+func (h *Handler) deleteStoredAttachments(ctx context.Context, projectIDStr, conversationID string) error {
+	// No database or object store configured: degrade to the historical
+	// metadata-only behaviour instead of failing the request, matching how
+	// writeAttachmentBytes degrades on the same two nil dependencies (see
+	// WithObjectStore/WithAttachmentStore). There are no bytes to delete in
+	// a deployment that could never have stored any.
+	if h.store == nil || h.attachments == nil {
+		return nil
+	}
+
+	projectID, err := strconv.ParseInt(projectIDStr, 10, 64)
+	if err != nil || projectID <= 0 {
+		return apierr.BadRequest("invalid project id")
+	}
+
+	bucketName, _, _, err := h.attachments.AttachmentPolicy(ctx, projectID)
+	if err != nil {
+		return apierr.Internal("get project storage policy: " + err.Error())
+	}
+	if bucketName == "" {
+		bucketName = defaultAttachmentBucketName
+	}
+
+	// Lookup, never create — a delete that mints a bucket row as a side
+	// effect is a worse outcome than the no-op it is standing in for. No
+	// bucket means nothing was ever stored for this project, which is a
+	// normal outcome here (meta-only attachments, or a conversation that
+	// never had an upload), not an error: skip cleanup, still strip the meta.
+	bucketID, err := h.attachments.LookupAttachmentBucket(ctx, projectID, bucketName)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return apierr.Internal("lookup attachment bucket: " + err.Error())
+	}
+
+	// REJECT LIKE METACHARACTERS IN THE PREFIX.
+	//
+	// ListAttachmentObjectKeys resolves to `key LIKE $prefix || '%'`
+	// (internal/db/queries/artifact_storage.sql:117), so `%` and `_` in the
+	// route parameter are WILDCARDS, not literals. A caller authorised for the
+	// project — this route sits behind models.chat.attachments.delete — could
+	// pass `%` as the conversation id and have the prefix become `%/`, which
+	// matches every key containing a slash: every conversation's attachments in
+	// the project, deleted in one request. `\` is rejected with them because it
+	// is the escape character the pattern would otherwise consume.
+	//
+	// Rejecting rather than escaping, because no legitimate identifier contains
+	// any of the three: finalizeAttachment builds the key from this same route
+	// parameter, and the values that reach it are conversation UUIDs and
+	// numeric ids. An escape would silently accept an identifier that cannot
+	// name a real conversation and then quietly match nothing.
+	if strings.ContainsAny(conversationID, `%_\`) {
+		return apierr.BadRequest("invalid conversation id")
+	}
+
+	// The recorded metadata rows are the source of truth for what to delete,
+	// NOT a listing of the object store. The bucket is shared by every
+	// conversation in the project, and an object in it with no metadata row
+	// was not written by finalizeAttachment — deriving the delete set from a
+	// store listing would let this route reach bytes it never recorded.
+	// finalizeAttachment keys every attachment `{conversationID}/{filename}`,
+	// so that prefix selects exactly this conversation's own objects.
+	keys, err := h.attachments.ListAttachmentObjectKeys(ctx, bucketID, conversationID+"/")
+	if err != nil {
+		return apierr.Internal("list attachment objects: " + err.Error())
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+
+	refs := make([]storage.ObjectRef, 0, len(keys))
+	for _, key := range keys {
+		ref, err := storage.NewObjectRef(projectIDStr, bucketName, key)
+		if err != nil {
+			return apierr.Internal("invalid stored attachment key " + strconv.Quote(key) + ": " + err.Error())
+		}
+		refs = append(refs, ref)
+	}
+
+	// Bytes BEFORE rows. If this fails, the rows must still name what is
+	// stored — dropping the rows first would orphan the bytes with nothing
+	// left pointing at them, and neither this route nor the retention sweeper
+	// (which walks the same rows) could ever find them again.
+	result, err := h.store.DeleteBatch(ctx, refs)
+	if err != nil {
+		return apierr.Internal("delete attachment bytes: " + err.Error())
+	}
+	if len(result.Failed) > 0 {
+		return apierr.Internal(fmt.Sprintf("delete attachment bytes: %d of %d objects failed, first %q: %v",
+			len(result.Failed), len(refs), result.Failed[0].Key, result.Failed[0].Err))
+	}
+
+	if err := h.attachments.DeleteAttachmentObjects(ctx, bucketID, keys); err != nil {
+		return apierr.Internal("delete attachment metadata: " + err.Error())
+	}
+	return nil
 }
 
 func (h *Handler) GetContextAnalytics(w http.ResponseWriter, r *http.Request) {

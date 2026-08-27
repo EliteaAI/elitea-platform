@@ -55,12 +55,12 @@ const tourCardHeaderStyles = (): Record<string, SxProps<Theme>> => ({
     flexShrink: 0,
     display: 'block',
   },
-  divider: ({ palette }) => ({
+  divider: (theme) => ({
     alignSelf: 'stretch',
     height: 0,
     borderBottom: '0.0625rem solid transparent',
     borderImageSlice: 1,
-    borderImageSource: palette.background?.interactiveTourPrompt?.dividerGradient,
+    borderImageSource: theme.vars.palette.background.interactiveTourPrompt.dividerGradient,
   }),
 }) as Record<string, SxProps<Theme>>;
 

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrate"
+	bootstrapschema "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/migrations"
 	platformmigrations "github.com/EliteaAI/elitea-platform/services/elitea-main/migrations"
 )
 
@@ -52,6 +53,18 @@ func main() {
 		exitError(fmt.Errorf("open database: %w", err))
 	}
 	defer pool.Close()
+
+	// The pylon-era schema FIRST, and only when the database does not already
+	// carry it. The histories below cannot run without it — shared/0030 has a
+	// foreign key to centry.project — so an empty database used to need a human
+	// with psql before this binary could do anything at all.
+	bootstrapped, err := migrate.Bootstrap(ctx, pool, bootstrapschema.Initial)
+	if err != nil {
+		exitError(err)
+	}
+	if bootstrapped {
+		slog.Info("applied the pylon-era schema to an empty database")
+	}
 
 	runner := migrate.New(pool, platformmigrations.Files)
 	if err := runner.ApplyShared(ctx); err != nil {

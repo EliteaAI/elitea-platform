@@ -426,3 +426,69 @@ func readCorpusFrame(t *testing.T, name string) *runtimev1.ExecutionOutputFrameV
 	}
 	return frame
 }
+
+// #607: field 16 reaches the domain, and a malformed entry costs its own entry
+// rather than the whole result -- the answer this frame carries must land.
+func TestAgentExecutionResultMapsAttachmentContentsAndDropsMalformedEntries(t *testing.T) {
+	digest := &runtimev1.DigestV1{
+		Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
+		Value:     bytes.Repeat([]byte{1}, 32),
+	}
+	good := []byte(`[{"type":"text","text":"Bucket: b","elitea_attachment":{"item_id":"x"}},{"type":"text","text":"EXTRACTED"}]`)
+	result, err := agentExecutionResultDomain(&runtimev1.AgentExecutionResultV1{
+		InputBundleId:           "bundle-1",
+		InputBundleDigest:       digest,
+		RequestEntryId:          "request-1",
+		RequestImmutableVersion: "version-1",
+		RequestContentDigest:    digest,
+		TerminalState:           runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED,
+		ResultArtifact: &runtimev1.AgentExecutionArtifactReferenceV1{
+			ArtifactId:       "artifact-1",
+			ImmutableVersion: "artifact-version-1",
+			MediaType:        outputapp.AgentResultMediaType,
+			ByteLength:       1,
+			Digest:           digest,
+			Classification:   outputapp.AgentResultClassification,
+		},
+		AttachmentContents: []*runtimev1.AgentExecutionAttachmentContentV1{
+			{ItemId: "50000000-0000-4000-8000-000000000001", Content: good},
+			// Not a uuid, and a nil entry the repeated field can legally carry.
+			{ItemId: "../../etc/passwd", Content: good},
+			nil,
+		},
+	})
+	if err != nil {
+		t.Fatalf("a malformed attachment entry failed the whole result: %v", err)
+	}
+	if len(result.AttachmentContents) != 1 ||
+		result.AttachmentContents[0].ItemID != "50000000-0000-4000-8000-000000000001" ||
+		string(result.AttachmentContents[0].Content) != string(good) {
+		t.Fatalf("attachment contents=%+v", result.AttachmentContents)
+	}
+}
+
+func TestAgentExecutionResultCarriesNoAttachmentContentsOnAnOrdinaryTurn(t *testing.T) {
+	digest := &runtimev1.DigestV1{
+		Algorithm: runtimev1.DigestAlgorithmV1_DIGEST_ALGORITHM_V1_SHA256,
+		Value:     bytes.Repeat([]byte{1}, 32),
+	}
+	result, err := agentExecutionResultDomain(&runtimev1.AgentExecutionResultV1{
+		InputBundleId:           "bundle-1",
+		InputBundleDigest:       digest,
+		RequestEntryId:          "request-1",
+		RequestImmutableVersion: "version-1",
+		RequestContentDigest:    digest,
+		TerminalState:           runtimev1.AgentExecutionTerminalStateV1_AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED,
+		ResultArtifact: &runtimev1.AgentExecutionArtifactReferenceV1{
+			ArtifactId:       "artifact-1",
+			ImmutableVersion: "artifact-version-1",
+			MediaType:        outputapp.AgentResultMediaType,
+			ByteLength:       1,
+			Digest:           digest,
+			Classification:   outputapp.AgentResultClassification,
+		},
+	})
+	if err != nil || result.AttachmentContents != nil {
+		t.Fatalf("result=%+v error=%v", result, err)
+	}
+}

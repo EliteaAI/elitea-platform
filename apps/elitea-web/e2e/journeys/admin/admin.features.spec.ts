@@ -303,8 +303,35 @@ adminTest(
     ]) {
       await expect(page.getByRole('button', { name: new RegExp(section) })).toBeVisible();
     }
-    // The unavailable ones are marked BEFORE they are opened.
-    await expect(page.getByText('Not available here').first()).toBeVisible();
+    /*
+     * THE MARKER IS ASSERTED AGAINST THE SERVER'S OWN ANSWER, not against a
+     * standing assumption that some section is withheld.
+     *
+     * This line used to read `expect(getByText('Not available here').first())
+     * .toBeVisible()`, which was true while `skill_publishing` and
+     * `support_assistant` were both withheld. #585 and #588 gave each of them a
+     * consumer, so the marker now renders zero times and the unconditional
+     * assertion fails — not because the page regressed, but because the product
+     * caught up with it.
+     *
+     * The property worth holding is the CORRESPONDENCE: the sidebar marks
+     * exactly those sections the server declares unavailable, however many that
+     * is. Asserting a count of zero when the server withholds nothing is a real
+     * assertion, not a vacuous one — it would catch the page marking a live
+     * section as unavailable.
+     */
+    const withheldCount = await page.evaluate(async () => {
+      const response = await fetch('/api/v2/admin/plugin_config_schemas/administration', {
+        credentials: 'include',
+      });
+      const body = (await response.json()) as {
+        sections?: { page?: string; unavailable_reason?: string }[];
+      };
+      return (body.sections ?? []).filter(
+        (section) => section.page === 'features' && Boolean(section.unavailable_reason),
+      ).length;
+    });
+    await expect(page.getByText('Not available here')).toHaveCount(withheldCount);
 
     await checkA11y(page);
   },
@@ -653,29 +680,75 @@ adminTest(
 /* ── the sections with no consumer ─────────────────────────────────────── */
 
 adminTest(
-  'J36i: a section with no consumer states its reason and refuses its write',
+  'J36i: a section with no consumer states its reason and refuses its write; a live one saves',
   async ({ page }) => {
     await openFeatures(page);
 
-    for (const section of ['Skill Publishing', 'Support Assistant']) {
-      await openSection(page, section);
+    /*
+     * THE WITHHELD SECTIONS ARE DISCOVERED, NOT NAMED.
+     *
+     * This loop used to hardcode two: `Skill Publishing` ("no publish endpoint,
+     * no catalog, no categories") and `Support Assistant` ("the widget has no
+     * render site"). Two branches then closed one gap each — #585 built the
+     * skill publishing pipeline, #588 built the support assistant — and each
+     * correctly deleted the OTHER name. Both were right when written; merged,
+     * neither name is left, and a hardcoded empty list is a test that asserts
+     * nothing and passes.
+     *
+     * Reading the schema keeps the assertion — "a withheld section states its
+     * reason and refuses its write" — true for however many sections are
+     * withheld, including none. Against a real server there is no fixture to
+     * stand one in, so zero is reported rather than passed over in silence.
+     */
+    const withheld = await page.evaluate(async () => {
+      const response = await fetch('/api/v2/admin/plugin_config_schemas/administration', {
+        credentials: 'include',
+      });
+      const body = (await response.json()) as {
+        sections?: { id: string; title: string; page?: string; unavailable_reason?: string }[];
+      };
+      return (body.sections ?? [])
+        .filter((section) => section.page === 'features' && Boolean(section.unavailable_reason))
+        .map((section) => ({ id: section.id, title: section.title }));
+    });
+
+    if (withheld.length === 0) {
+      // Not a failure: every Features section having a consumer is the goal.
+      // Logged so a reader of the run can tell "nothing to check" from
+      // "checked and fine".
+      // eslint-disable-next-line no-console -- the whole point is that this is visible in the run log
+      console.log('J36i: no Features section is withheld; the refusal half of this journey is inert');
+    }
+
+    for (const section of withheld) {
+      await openSection(page, section.title);
       const notice = page.getByTestId('admin-features-unavailable');
       await expect(notice).toBeVisible();
-      // The reason names the actual obstacle — a missing subsystem, or a widget
-      // with no render site — so an operator can tell "this platform cannot do
-      // that" from "that is switched off".
-      await expect(notice).toContainText(
-        /not implemented in this service|not mounted in this application/,
-      );
+      // The reason must name the actual obstacle, so an operator can tell
+      // "this platform cannot do that" from "that is switched off".
+      await expect(notice).not.toHaveText('');
       await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
     }
 
-    for (const section of ['skill_publishing', 'support_assistant']) {
+    for (const section of withheld.map((entry) => entry.id)) {
       const refused = await putValues(page, section, { anything: true });
       expect(refused.status, `${section} must refuse its write, not accept and discard it`).toBe(
         501,
       );
     }
+
+    // Skill Publishing used to be in both lists above. It is LIVE now — the
+    // publish endpoint, the public catalog and the categories route all exist
+    // (services/elitea-main/internal/api/v2/skillpublish) — so the assertion
+    // that matters is the opposite one: the section renders a form, and its
+    // write is accepted rather than refused.
+    await openSection(page, 'Skill Publishing');
+    await expect(page.getByTestId('admin-features-unavailable')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
+    const accepted = await putValues(page, 'skill_publishing', {
+      is_skill_publish_blocked: false,
+    });
+    expect(accepted.status, 'skill_publishing is implemented and must accept its write').toBe(200);
 
     await checkA11y(page);
   },

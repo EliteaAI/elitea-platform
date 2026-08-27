@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"reflect"
+	"strings"
+	"testing"
+)
 
 func TestCurrentConfigurationsConfigIsExplicitAndMinimal(t *testing.T) {
 	tests := []struct {
@@ -120,9 +124,70 @@ func TestCurrentConfigurationsConfigIsExplicitAndMinimal(t *testing.T) {
 				value, ok := test.values[name]
 				return value, ok
 			})
-			if (err != nil) != test.wantErr || got != test.want {
+			if (err != nil) != test.wantErr || !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("config=%+v error=%v; want=%+v wantErr=%v", got, err, test.want, test.wantErr)
 			}
 		})
+	}
+}
+
+// SECRETS_MASTER_KEY is the key the secrets handler wraps every project vault
+// key with. The Configurations runtime reads those vaults, so the same value
+// has to reach it: ELITEA_VAULT_MASTER_KEY_FILE is set by no chart under
+// deploy/, and with only that source the runtime opened wrapped rows as
+// unwrapped — GET /api/v2/configurations/models/{projectID} then answered 500
+// for every section while every configuration row was intact.
+func TestCurrentConfigurationsConfigCarriesTheSecretsMasterKey(t *testing.T) {
+	validKey := strings.Repeat("A", 43) + "="
+	base := map[string]string{
+		"ELITEA_CONFIGURATIONS_ENABLED": "true",
+		"ELITEA_AI_PROJECT_ID":          "1",
+	}
+	lookupOf := func(values map[string]string) func(string) (string, bool) {
+		return func(name string) (string, bool) {
+			value, ok := values[name]
+			return value, ok
+		}
+	}
+
+	values := map[string]string{"SECRETS_MASTER_KEY": validKey}
+	for name, value := range base {
+		values[name] = value
+	}
+	got, err := currentConfigurationsConfigFromEnv(lookupOf(values))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.VaultMasterKey) != validKey {
+		t.Fatalf("master key = %q; want the SECRETS_MASTER_KEY value", string(got.VaultMasterKey))
+	}
+
+	// A mistyped key must stop the process at startup, naming the variable.
+	// Accepting it would compose a loader that fails once per request instead,
+	// and the only visible symptom is an empty model picker.
+	values["SECRETS_MASTER_KEY"] = "not-a-fernet-key"
+	if _, err := currentConfigurationsConfigFromEnv(lookupOf(values)); err == nil {
+		t.Fatal("a malformed SECRETS_MASTER_KEY was accepted")
+	}
+
+	// Absent stays supported: that is the unwrapped shape a local stack seeds.
+	delete(values, "SECRETS_MASTER_KEY")
+	got, err = currentConfigurationsConfigFromEnv(lookupOf(values))
+	if err != nil || got.VaultMasterKey != nil {
+		t.Fatalf("config=%+v error=%v", got, err)
+	}
+}
+
+// The disabled path rejects every Configurations setting, but SECRETS_MASTER_KEY
+// is not one: it belongs to the secrets handler, which runs either way.
+func TestDisabledCurrentConfigurationsIgnoresTheSecretsMasterKey(t *testing.T) {
+	got, err := currentConfigurationsConfigFromEnv(func(name string) (string, bool) {
+		if name == "SECRETS_MASTER_KEY" {
+			return strings.Repeat("A", 43) + "=", true
+		}
+		return "", false
+	})
+	if err != nil || got.Enabled || got.VaultMasterKey != nil {
+		t.Fatalf("config=%+v error=%v", got, err)
 	}
 }

@@ -136,8 +136,8 @@ const tourCompleteCardStyles = (): Record<string, SxProps<Theme>> => ({
     width: '100%',
     paddingTop: '0.25rem',
   },
-  keepExploringLabel: ({ palette }) => ({
-    color: (palette.text?.secondary as string | undefined) ?? undefined,
+  keepExploringLabel: (theme) => ({
+    color: (theme.vars.palette.text.secondary as string | undefined) ?? undefined,
     textAlign: 'center',
   }),
   keepExploringList: {

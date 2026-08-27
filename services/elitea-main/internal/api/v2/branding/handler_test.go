@@ -62,23 +62,30 @@ func TestNewHandler_PackResolution(t *testing.T) {
 		wantAbsent   []string
 	}{
 		{
-			name:         "empty path serves built-in default",
+			// No deployment pack -> publish NOTHING, so the UI keeps its own
+			// compiled-in default pack (channel A). Serving the built-in
+			// DefaultPack here instead would WIN over channel A and repaint
+			// the whole app from its placeholder hue — see `noPackBody`.
+			name:         "empty path publishes no pack",
 			packPath:     func(t *testing.T) string { return "" },
-			wantContains: []string{`"id":"default"`, `"name":"Elitea"`},
+			wantContains: []string{"no deployment brand pack configured"},
+			wantAbsent:   []string{"window.elitea_brand", `"id":"default"`},
 		},
 		{
-			name: "missing file degrades to default",
+			name: "missing file degrades to no pack",
 			packPath: func(t *testing.T) string {
 				return filepath.Join(t.TempDir(), "does-not-exist.json")
 			},
-			wantContains: []string{`"id":"default"`, `"name":"Elitea"`},
+			wantContains: []string{"no deployment brand pack configured"},
+			wantAbsent:   []string{"window.elitea_brand"},
 		},
 		{
-			name: "invalid JSON degrades to default",
+			name: "invalid JSON degrades to no pack",
 			packPath: func(t *testing.T) string {
 				return writePack(t, []byte(`{"$schema": `))
 			},
-			wantContains: []string{`"id":"default"`},
+			wantContains: []string{"no deployment brand pack configured"},
+			wantAbsent:   []string{"window.elitea_brand"},
 		},
 		{
 			name: "schema-violating pack degrades whole, never partially merges",
@@ -88,18 +95,19 @@ func TestNewHandler_PackResolution(t *testing.T) {
 					section(m, "typography")["baseSize"] = 99 // out of [12,18]
 				}))
 			},
-			wantContains: []string{`"id":"default"`, `"name":"Elitea"`},
-			wantAbsent:   []string{"Acme AI"}, // no field of the invalid pack leaks
+			wantContains: []string{"no deployment brand pack configured"},
+			// no field of the invalid pack leaks — and nothing else does either
+			wantAbsent: []string{"Acme AI", "window.elitea_brand"},
 		},
 		{
-			name: "unknown top-level key degrades to default",
+			name: "unknown top-level key degrades to no pack",
 			packPath: func(t *testing.T) string {
 				return writePack(t, packJSON(t, func(m map[string]any) {
 					m["sneaky"] = true
 				}))
 			},
-			wantContains: []string{`"id":"default"`},
-			wantAbsent:   []string{"acme"},
+			wantContains: []string{"no deployment brand pack configured"},
+			wantAbsent:   []string{"acme", "window.elitea_brand"},
 		},
 		{
 			name:         "valid pack is served",

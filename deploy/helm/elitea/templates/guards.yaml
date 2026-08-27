@@ -1,0 +1,28 @@
+{{- /*
+  Combinations this chart refuses to install, checked here so `helm template`
+  runs every one of them on every values file.
+
+  These are not style checks. Each names a configuration that installs cleanly,
+  reports every pod Ready, and then fails silently at the first chat turn — the
+  failure mode this chart was consolidated to remove. A refusal at render time
+  costs an operator one message; the alternative costs them a debugging session
+  against a system that looks healthy.
+*/ -}}
+
+{{- if and .Values.worker.enabled (not .Values.main.runtime.enabled) }}
+{{- fail "worker.enabled=true needs main.runtime.enabled=true. The worker dials elitea-main's control, output and content listeners, and those exist only when the runtime plane is composed. Without them every chat turn is admitted over HTTP, never claimed, and durably quarantined by the worker — with nothing logged on either side. Set main.runtime.enabled=true (and its fileConfig.authConfig), or set worker.enabled=false." }}
+{{- end }}
+
+{{- if and .Values.worker.enabled (not .Values.runtimeRedis.enabled) }}
+{{- fail "worker.enabled=true needs runtimeRedis.enabled=true, unless you are pointing worker.runtime.redisUrl at a runtime Redis outside this release. The worker reads its commands from that bus and nothing else; with no bus it starts, reports Ready, and consumes nothing forever. Set runtimeRedis.enabled=true, or point worker.runtime.redisUrl elsewhere and set this guard's expectation by disabling the worker." }}
+{{- end }}
+
+{{- /*
+  NOT guarded: main.runtime.enabled with worker.enabled=false.
+  That combination looks like the one above but is a supported topology — an
+  agent worker running outside this release, authorized against
+  elitea_runtime.workload_sessions by something other than this chart's hook.
+  Refusing it would block a real deployment shape to catch a mistake the
+  operator has to make deliberately, and it broke this repo's own render tests,
+  which exercise elitea-main's runtime configuration on its own.
+*/ -}}

@@ -38,9 +38,14 @@
  *     section's fields as plaintext rows readable by every holder of
  *     `runtime.plugins`. So the value endpoints still refuse, and the editor is
  *     somewhere those rows are not involved.
- *   - **Banner** — a product setting the legacy UI received through
- *     `window.elitea_ui_config`. Unavailable for the narrower reason that
- *     nothing in this platform reads it YET.
+ *   - **Banner** — LIVE. It was unavailable for the narrower reason that
+ *     nothing in this platform read it YET, which was true twice over: the
+ *     legacy SPA took the banner from a BUILD-TIME `VITE_MAINTENANCE_BANNER`
+ *     variable, so the rows this form wrote were read by nothing in either
+ *     deployment. `platform_settings` now publishes them and
+ *     `widgets/app-shell` renders them, which also turns a redeploy into a
+ *     switch — the difference that matters for a control whose purpose is to
+ *     say something is happening right now.
  *   - **LLM Governance** — authored on its own page (`./GatewayGovernance.tsx`,
  *     `/admin/app/governance`), not here. It is the ONE section whose reason
  *     changed rather than whose status did: it was withheld because nothing
@@ -48,9 +53,18 @@
  *     enforce every enabled row. It stays unavailable HERE because a governance
  *     corpus is a list of scoped rows and this page is a flat form over one
  *     value document — the row editor is the only shape that can express it.
- *   - **Maintenance** and **Advanced** — a Pylon request hook and Pylon runtime
- *     introspection respectively. Both endpoints now answer 501 rather than
- *     200-with-empty.
+ *   - **Maintenance** — LIVE, and ENFORCED. It was withheld because the switch
+ *     "would toggle a setting nothing enforces": pylon's maintenance mode was a
+ *     request hook on a plugin runtime, and this service installs no hooks.
+ *     elitea-main's Maintenance middleware is the port — 503 for every caller
+ *     without administration access, the admin surface and the auth routes
+ *     exempt so the window stays reversible from inside itself.
+ *   - **Advanced** — GONE, not unavailable. Its subject is Pylon plugin
+ *     loading, which the target architecture removes on purpose, so there was
+ *     nothing to wait for. A withheld section is a promise that the capability
+ *     is coming; this was the one section that could never keep it, and a
+ *     permanent row saying "not available here" spends an operator's attention
+ *     on a control that will never exist.
  *   - **Service Descriptors** — a page of its own in this port, not yet done.
  *
  * ## What is left unavailable here is accurate
@@ -219,7 +233,7 @@ function SectionForm({ state }: { readonly state: AdminConfigurationPageState })
       <Box sx={{ display: 'flex', gap: '0.5rem' }}>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onDiscard}
           sx={{ textTransform: 'none' }}
@@ -228,7 +242,7 @@ function SectionForm({ state }: { readonly state: AdminConfigurationPageState })
         </Button>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onSave}
           sx={{ textTransform: 'none' }}

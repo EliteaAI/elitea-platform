@@ -62,6 +62,15 @@ type currentAgentTerminal struct {
 	FullMessage        *currentAgentFullMessage
 	HITLPause          *currentAgentHITLPause
 	AuthorizationPause *currentAgentAuthorizationPause
+	// AttachmentContents rides the terminal frame rather than being read back
+	// out of the durable node event the way FullMessage is (#607). It has to:
+	// the node event is the browser-facing `full_message`, and putting every
+	// attached file's text on it would ship the whole document to the UI on
+	// every turn -- the reason the proto rejected result_artifact as the
+	// carrier. So this is the one part of the terminal that is taken from the
+	// frame itself, already sanitised by
+	// outputapp.AcceptedAgentExecutionAttachmentContents.
+	AttachmentContents []outputapp.AgentExecutionAttachmentContent
 }
 
 type agentExecutionTerminalNodeEventQuerier interface {
@@ -97,6 +106,10 @@ type currentAgentTerminalWriter interface {
 		context.Context,
 		int64,
 	) (string, error)
+	UpdateCurrentAgentAttachmentContent(
+		context.Context,
+		sqlcgen.UpdateCurrentAgentAttachmentContentParams,
+	) (int64, error)
 }
 
 func (r *AgentExecutionResultsRepository) ProjectAgentExecution(ctx context.Context, projection outputapp.AgentExecutionProjection) (outputapp.ProjectionOutcome, error) {
@@ -243,7 +256,10 @@ func loadCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, projectID int
 		event.SIOEvent != projection.Expected.SIOEvent || event.ExecutionGeneration != projection.Expected.ClientExecutionGeneration {
 		return currentAgentTerminal{}, outputapp.ErrAgentExecutionResultMismatch
 	}
-	terminal := currentAgentTerminal{Cursor: *row.LastNodeCursor}
+	terminal := currentAgentTerminal{
+		Cursor:             *row.LastNodeCursor,
+		AttachmentContents: frame.Result.AttachmentContents,
+	}
 	switch frame.Result.TerminalState {
 	case outputapp.AgentExecutionTerminalCompleted:
 		if artifact.ArtifactID != "node-event:"+frame.Fence.ExecutionID+":full-message" || event.Type != "full_message" {
@@ -515,6 +531,11 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 	if err != nil {
 		return fmt.Errorf("load current agent invoked skills: %w", err)
 	}
+	if err := persistCurrentAgentAttachmentContents(
+		ctx, writer, int64(messageGroupID), terminal.AttachmentContents,
+	); err != nil {
+		return err
+	}
 	if terminal.FullMessage != nil && terminal.HITLPause == nil && terminal.AuthorizationPause == nil {
 		message := terminal.FullMessage
 		invokedSkills, err := mergeCurrentAgentInvokedSkills([]byte(existingSkills), message.InvokedSkills)
@@ -587,6 +608,58 @@ func persistCurrentAgentTerminal(ctx context.Context, tx sqlExecutor, expected o
 		return nil
 	}
 	return outputapp.ErrAgentExecutionResultMismatch
+}
+
+// persistCurrentAgentAttachmentContents writes back the text the worker
+// extracted from this turn's attachments (#607), inside the terminal
+// transaction and under the lock LockCurrentAgentResponseForTerminal already
+// took on the response group.
+//
+// IT RUNS FOR ALL THREE TERMINAL STATES, before the branch that separates them,
+// not only for a completed answer. A turn that pauses on HITL or on an MCP
+// authorization prompt has ALREADY read its attachments -- the extraction
+// happens while the agent builds its first message, long before an interrupt --
+// and the conversation it paused in is exactly the one that will ask a
+// follow-up question about the file. Persisting only on completion would drop
+// the text of every file attached to a turn that paused, which is the turn most
+// likely to be continued.
+//
+// A row that reports 0 rows affected is a NO-OP, not an error, and that is
+// deliberate. 0 rows means the SQL scope refused the id -- the item is not on
+// this turn's question group -- which is the protection working, and the
+// protection has already been applied by the time the count comes back. Turning
+// it into an error here would fail the terminal projection and lose the
+// assistant's answer over a row that was never written, i.e. hand a worker that
+// names a foreign id the power to destroy the turn it was running. The same
+// reasoning as AcceptedAgentExecutionAttachmentContents' drop rule, one layer
+// down. A real database error is still returned: that is the transaction being
+// unable to proceed, not a refused write.
+func persistCurrentAgentAttachmentContents(
+	ctx context.Context,
+	writer currentAgentTerminalWriter,
+	responseMessageGroupID int64,
+	contents []outputapp.AgentExecutionAttachmentContent,
+) error {
+	for _, entry := range contents {
+		itemID, err := currentPGUUID(entry.ItemID)
+		if err != nil {
+			// Unreachable: the acceptance rule already demands a canonical
+			// uuid. Skipping rather than failing keeps the invariant's one
+			// possible future violation from costing the answer.
+			continue
+		}
+		if _, err := writer.UpdateCurrentAgentAttachmentContent(
+			ctx,
+			sqlcgen.UpdateCurrentAgentAttachmentContentParams{
+				Content:                []byte(entry.Content),
+				ItemID:                 itemID,
+				ResponseMessageGroupID: responseMessageGroupID,
+			},
+		); err != nil {
+			return fmt.Errorf("persist current agent attachment content: %w", err)
+		}
+	}
+	return nil
 }
 
 func terminalWriteError(err error) error {

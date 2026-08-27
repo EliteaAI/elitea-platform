@@ -65,9 +65,55 @@ adminTest('J34: the sidebar marks what this deployment cannot configure', async 
 
   // Marked in the SIDEBAR, so the shape of what this deployment offers is
   // legible before the operator clicks anything.
-  const marks = page.getByText('Not available here');
+  //
+  // ENUMERATED, not counted. This was `count() > 5`, and a count cannot tell
+  // "a section became available with a consumer behind it" from "a section lost
+  // its mark by accident" — both move the number the same way. It is the same
+  // correction config_values_postgres_integration_test.go states for the live
+  // set on the server side, and the same reason: a section changing status has
+  // to be written down next to what justifies it.
+  //
+  // These five are marked because this platform genuinely cannot serve them
+  // HERE: three are Pylon plugin configuration, and two are authored on their
+  // own surfaces (LLM Governance at /admin/app/governance, Service Descriptors
+  // on its own page).
+  // SCOPED to the section list, not the page. The admin NAV RAIL carries its
+  // own "Service Descriptors" and "LLM Governance" entries, so an unscoped
+  // `getByRole('button', {name: /LLM Governance/})` matches two elements and
+  // Playwright's strict mode refuses it. The list declares
+  // `aria-label="Configuration sections"` precisely so it can be addressed.
+  const sections = page.getByRole('navigation', { name: 'Configuration sections' });
+  const marks = sections.getByText('Not available here');
   await expect(marks.first()).toBeVisible();
-  expect(await marks.count(), 'most Configuration sections remain unavailable').toBeGreaterThan(5);
+  await expect(marks).toHaveCount(5);
+  for (const section of [
+    'Observability',
+    'Runtime',
+    'Admin Panel',
+    'LLM Governance',
+    'Service Descriptors',
+  ]) {
+    await expect(
+      sections.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      `${section} is still not configurable here`,
+    ).toBeVisible();
+  }
+
+  // And the sections that LEFT that group are not marked. Asserting only the
+  // five above would pass on a build where Banner and Maintenance had silently
+  // reverted to refusing, since the count would still be right if something
+  // else had also changed.
+  for (const section of ['Banner', 'Maintenance', 'Guardrails', 'LLM Proxy', 'Authentication']) {
+    await expect(
+      sections.getByRole('button', { name: new RegExp(section) }).getByText('Not available here'),
+      `${section} is available and must not be marked`,
+    ).toHaveCount(0);
+  }
+
+  // Advanced is not marked either — it is GONE. Its subject is Pylon plugin
+  // loading, which the target architecture drops on purpose, so a permanent
+  // "not available here" row would be a promise that can never be kept.
+  await expect(sections.getByRole('button', { name: /Advanced/ })).toHaveCount(0);
 
   // Guardrails is NOT among them, and is the section the page lands on. The
   // count above cannot show that on its own: it would still pass if every
@@ -129,13 +175,19 @@ adminTest('J34b: the sections with no backend say so instead of showing a form',
 
   // Guardrails left this list when it gained consumers — see J34a;
   // Authentication left it when it gained a typed store and a login path that
-  // reads it — see J34f; and LiteLLM left it by ceasing to exist, replaced by
-  // the managed LLM Proxy section — see J34g.
+  // reads it — see J34f; LiteLLM left it by ceasing to exist, replaced by the
+  // managed LLM Proxy section — see J34g; and Banner and Maintenance left it
+  // by gaining, respectively, a renderer in the app shell and an enforcing
+  // middleware — see J34i and J34j.
   //
-  // Runtime replaces LiteLLM here. It has to be a section that is STILL
-  // unavailable, or this journey asserts a refusal that no longer happens and
-  // would pass only by never reaching the click.
-  for (const section of ['Runtime', 'Maintenance', 'Advanced']) {
+  // Advanced did not leave this list, it left the PAGE: its subject is Pylon
+  // plugin loading, which the target architecture removes deliberately, so the
+  // section is gone rather than permanently withheld.
+  //
+  // Every name here has to be a section that is STILL unavailable, or this
+  // journey asserts a refusal that no longer happens and would pass only by
+  // never reaching the click.
+  for (const section of ['Runtime', 'Admin Panel']) {
     await page.getByRole('button', { name: new RegExp(section) }).click();
     const notice = page.getByTestId('admin-configuration-unavailable');
     await expect(notice).toBeVisible();
@@ -282,6 +334,192 @@ adminTest('J34h: the LLM Proxy model catalogue is authorised and answers', async
   await expect(page.getByTestId('llm-proxy-add-price')).toBeVisible();
   await expect(page.getByTestId('llm-proxy-models-load-error')).toHaveCount(0);
   await expect(page.getByTestId('llm-proxy-models-error')).toHaveCount(0);
+
+  await checkA11y(page);
+});
+
+adminTest('J34i: the Banner section is an editable form, and the save round-trips', async ({ page }) => {
+  await openConfiguration(page);
+
+  const banner = page.getByRole('button', { name: /^Banner/ });
+  await expect(banner).toBeVisible();
+  // It left the unavailable list by acquiring a consumer: `platform_settings`
+  // publishes the resolved banner and `widgets/app-shell` renders it. Before
+  // that the legacy SPA took the banner from a BUILD-TIME environment variable,
+  // so this form wrote rows nothing anywhere read.
+  await expect(banner.getByText('Not available here')).toHaveCount(0);
+
+  await banner.click();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+
+  const message = page.getByRole('textbox', { name: 'Banner Message' });
+  await expect(message).toBeVisible();
+
+  // The round trip, and then back. Leaving the banner up would put a bar across
+  // the top of every screen for every journey that runs after this one —
+  // `describe.configure({mode: 'serial'})` means they share this deployment.
+  const raised = 'Journey 34 banner check.';
+  await message.fill(raised);
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByTestId('admin-configuration-saved')).toBeVisible();
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: /^Banner/ }).click();
+  // The value came back from the STORE, not from the form state that wrote it —
+  // a save that reported success and stored nothing looks identical until the
+  // reload.
+  await expect(page.getByRole('textbox', { name: 'Banner Message' })).toHaveValue(raised);
+
+  await page.getByRole('textbox', { name: 'Banner Message' }).fill('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByTestId('admin-configuration-saved')).toBeVisible();
+
+  await checkA11y(page);
+});
+
+adminTest('J34j: the Maintenance section is an editable form', async ({ page }) => {
+  await openConfiguration(page);
+
+  const maintenance = page.getByRole('button', { name: /Maintenance/ });
+  await expect(maintenance).toBeVisible();
+  await expect(maintenance.getByText('Not available here')).toHaveCount(0);
+
+  await maintenance.click();
+  await expect(page.getByTestId('admin-configuration-unavailable')).toHaveCount(0);
+  // `switch`, not `checkbox`. The form renders a boolean as MUI's Switch, whose
+  // input carries role="switch" — the idiom admin.features.spec.ts already uses
+  // for `Enable MCP`. A `checkbox` locator finds nothing and reads as "the form
+  // did not render", which is a different and much more alarming failure.
+  await expect(page.getByRole('switch', { name: 'Maintenance Mode' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Splash Message' })).toBeVisible();
+
+  // THE SWITCH IS NOT FLIPPED HERE, deliberately. Enabling it would make
+  // elitea-main answer 503 to every non-admin request on this deployment, and
+  // these journeys share one stack in serial — every later journey that signs in
+  // as anyone else would fail against a platform this test closed. The
+  // enforcement itself is covered where it can be covered in isolation:
+  // `internal/api/middleware/maintenance_internal_test.go` for who is admitted
+  // and what escapes the window, and `widgets/app-shell`'s tests for the splash
+  // replacing the shell and an exempt caller keeping the product.
+  await expect(page.getByRole('switch', { name: 'Maintenance Mode' })).not.toBeChecked();
+
+  await checkA11y(page);
+});
+
+adminTest('J34k: the LLM Proxy usage report is authorised and answers', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Usage' }).click();
+
+  // The screen LiteLLM's admin UI had and the Bifrost port lost — migration
+  // 0084 recorded the loss in its own header ("a meter and nothing else").
+  //
+  // Wait on a POSITIVE terminal state. The totals tiles render for a zero
+  // report as well as a busy one, so their presence proves the read COMPLETED,
+  // where asserting only the absence of the error test-ids would pass while the
+  // request was still in flight — absence read as success.
+  await expect(page.getByTestId('llm-proxy-usage-totals')).toBeVisible();
+  await expect(page.getByTestId('llm-proxy-usage-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-proxy-usage-error')).toHaveCount(0);
+
+  // Each breakdown is its own statement on the server: a section that failed
+  // must not be indistinguishable from one with no spend in it. On a fresh
+  // deployment the ledger is empty, so the explained empty state is the
+  // truthful branch and a table is the other; a per-section ERROR is neither.
+  for (const section of ['models', 'projects', 'members']) {
+    await expect(
+      page
+        .getByTestId(`llm-proxy-usage-${section}`)
+        .or(page.getByTestId(`llm-proxy-usage-${section}-empty`)),
+    ).toBeVisible();
+    await expect(page.getByTestId(`llm-proxy-usage-${section}-error`)).toHaveCount(0);
+  }
+
+  await checkA11y(page);
+});
+
+adminTest('J34l: platform providers are authored from the admin panel', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Providers & models' }).click();
+
+  // A PLATFORM provider is the public project's `shared = true` credential — the
+  // scope the gateway has resolved since issue #316 and that nothing could
+  // author from here. Wait on a POSITIVE terminal state: either the table or the
+  // explained empty state proves the read completed, where asserting only the
+  // absence of the error test-id would pass while the request was in flight.
+  await expect(
+    page.getByTestId('llm-providers-table').or(page.getByTestId('llm-providers-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('llm-providers-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-providers-add')).toBeVisible();
+
+  // NO CREDENTIAL IS PUBLISHED HERE. These journeys share one deployment in
+  // serial, and a platform provider resolves for every project on it — so a
+  // credential this test created would join the model resolution of every later
+  // journey, and a bogus one would make them fail in ways that point nowhere
+  // near this file. The write path's guards are covered where they can be
+  // covered in isolation: internal/api/v2/configurations/global_providers_test.go
+  // for the type allowlist, the forced `shared`, the body bound and the
+  // redaction, and LlmProxyProvidersPanel.test.tsx for the untouched-secret
+  // contract.
+  await page.getByTestId('llm-providers-add').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // The dialog offers a provider SELECT rather than a free-text type: the
+  // server refuses anything outside the gateway's set, and a text field would
+  // make that refusal the operator's first feedback.
+  await expect(page.getByTestId('llm-provider-type')).toBeVisible();
+  await expect(page.getByTestId('llm-provider-api_key')).toHaveValue('');
+  await page.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  // The MODELS half of the same tab. A model names a credential, so the two are
+  // one screen: the commonest mistake is a model naming a provider that is not
+  // there, and two screens would put the cause and the effect a click apart.
+  await expect(
+    page.getByTestId('platform-models-table').or(page.getByTestId('platform-models-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('platform-models-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('platform-models-add')).toBeVisible();
+
+  await checkA11y(page);
+});
+
+adminTest('J34m: the LLM Proxy request log is authorised and answers', async ({ page }) => {
+  await openConfiguration(page);
+  await page.getByRole('button', { name: /LLM Proxy/ }).click();
+  await page.getByRole('tab', { name: 'Logs' }).click();
+
+  // The tab the Usage report cannot be: a billing delta rides only a BILLED
+  // request, so a refusal never reaches the ledger Usage reads. This reads
+  // gateway.llm_request_logs, written by the gateway off the request path.
+  //
+  // Wait on a POSITIVE terminal state. The summary tiles render for an empty
+  // window as well as a busy one, so their presence proves the read COMPLETED —
+  // where asserting only the absence of the error test-ids would pass while the
+  // request was still in flight.
+  await expect(page.getByTestId('llm-logs-summary')).toBeVisible();
+  await expect(page.getByTestId('llm-logs-load-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-logs-error')).toHaveCount(0);
+  await expect(page.getByTestId('llm-logs-summary-error')).toHaveCount(0);
+
+  // Either rows or the explained empty state — both prove the page resolved.
+  await expect(
+    page.getByTestId('llm-logs-table').or(page.getByTestId('llm-logs-empty')),
+  ).toBeVisible();
+
+  // The one thing this screen must always say, whatever the window holds: it
+  // records no prompts and no responses, and has no column that could.
+  await expect(page.getByTestId('llm-logs-no-payload')).toBeVisible();
+
+  // The failures filter narrows SERVER-side; the page is capped there, so a
+  // client-side filter would silently exclude everything past the cap.
+  await page.getByRole('switch', { name: 'Failures only' }).click();
+  await expect(
+    page.getByTestId('llm-logs-table').or(page.getByTestId('llm-logs-empty')),
+  ).toBeVisible();
+  await expect(page.getByTestId('llm-logs-load-error')).toHaveCount(0);
 
   await checkA11y(page);
 });

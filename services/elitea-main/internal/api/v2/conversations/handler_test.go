@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,7 +24,7 @@ type mockRepo struct {
 	createFn                  func(ctx context.Context, projectID string, conv conversations.Conversation) (conversations.Conversation, error)
 	updateFn                  func(ctx context.Context, projectID, conversationID string, conv conversations.Conversation) (conversations.Conversation, error)
 	deleteFn                  func(ctx context.Context, projectID, conversationID string) error
-	listMessagesFn            func(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error)
+	listMessagesFn            func(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error)
 	addParticipantFn          func(ctx context.Context, projectID, conversationID string, body map[string]any) error
 	removeParticipantFn       func(ctx context.Context, projectID, conversationID, participantID string) error
 	updateEntitySettingsFn    func(ctx context.Context, projectID, conversationID, participantID string, settings map[string]any) error
@@ -41,8 +42,21 @@ type mockRepo struct {
 	getMessageByUUIDFn        func(ctx context.Context, projectID, messageUUID string) (map[string]any, error)
 	deleteMessagesFn          func(ctx context.Context, projectID, conversationID string) error
 	deleteMessageFn           func(ctx context.Context, projectID, groupUID string) error
-	listMessageGroupsFn       func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
-	listParticipantsFn        func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
+	// deleteMessageUserID records the identity the handler resolved from the
+	// request context and forwarded. Deleting a message is authorised against
+	// the caller, so a handler that dropped the identity would leave the
+	// repository unable to apply its rules — and would look exactly like a
+	// working handler to a test that only asserted the status code.
+	deleteMessageUserID string
+	// deleteMessageResult is what the repository reports it removed — one id
+	// for a lone group, two when the reply's paired question went with it.
+	deleteMessageResult []string
+	// deleteMessageAttachments is what the repository reports the deleted
+	// groups had stored, which the handler only acts on when the request asks
+	// for it with `delete_attachment`.
+	deleteMessageAttachments []conversations.AttachmentRef
+	listMessageGroupsFn      func(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error)
+	listParticipantsFn       func(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error)
 }
 
 func (m *mockRepo) List(ctx context.Context, projectID string, page, pageSize int) (conversations.ListResponse, error) {
@@ -65,8 +79,8 @@ func (m *mockRepo) Delete(ctx context.Context, projectID, conversationID string)
 	return m.deleteFn(ctx, projectID, conversationID)
 }
 
-func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
-	return m.listMessagesFn(ctx, projectID, conversationID, page, pageSize)
+func (m *mockRepo) ListMessages(ctx context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
+	return m.listMessagesFn(ctx, projectID, conversationID, query)
 }
 
 func (m *mockRepo) AddParticipant(ctx context.Context, projectID, conversationID string, body map[string]any) error {
@@ -153,11 +167,19 @@ func (m *mockRepo) DeleteMessages(ctx context.Context, projectID, conversationID
 	return nil
 }
 
-func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID string) error {
-	if m.deleteMessageFn != nil {
-		return m.deleteMessageFn(ctx, projectID, groupUID)
+func (m *mockRepo) DeleteMessage(ctx context.Context, projectID, groupUID, userID string) (conversations.DeleteMessageResult, error) {
+	m.deleteMessageUserID = userID
+	result := conversations.DeleteMessageResult{
+		Deleted:     m.deleteMessageResult,
+		Attachments: m.deleteMessageAttachments,
 	}
-	return nil
+	if result.Deleted == nil {
+		result.Deleted = []string{groupUID}
+	}
+	if m.deleteMessageFn != nil {
+		return result, m.deleteMessageFn(ctx, projectID, groupUID)
+	}
+	return result, nil
 }
 
 // newRouter mounts the handler under /projects/{projectID}/conversations to
@@ -502,12 +524,12 @@ func TestDelete_Error(t *testing.T) {
 
 func TestListMessages_Success(t *testing.T) {
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
+		listMessagesFn: func(_ context.Context, projectID, conversationID string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
 			return conversations.MessagesListResponse{
 				Items:    []conversations.Message{{ID: "m1", ConversationID: conversationID}},
 				Total:    1,
-				Page:     page,
-				PageSize: pageSize,
+				Page:     query.Offset/query.Limit + 1,
+				PageSize: query.Limit,
 			}, nil
 		},
 	}
@@ -530,30 +552,117 @@ func TestListMessages_Success(t *testing.T) {
 	}
 }
 
-func TestListMessages_DefaultPagination(t *testing.T) {
-	var gotPage, gotPageSize int
+// listMessagesQuery drives one request through the router and reports the
+// MessagesQuery the handler resolved from it.
+//
+// Every test below asserts on that value rather than on the response body,
+// because the parameters are exactly what #603 lost: the old handler read
+// `page`/`page_size`, the clients have always sent `limit`/`offset`, and every
+// response still looked structurally fine. No server test named a wire
+// parameter, so the two sides stayed internally consistent and neither could
+// see the other.
+func listMessagesQuery(t *testing.T, rawQuery string) conversations.MessagesQuery {
+	t.Helper()
+	var got conversations.MessagesQuery
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, _, _ string, page, pageSize int) (conversations.MessagesListResponse, error) {
-			gotPage = page
-			gotPageSize = pageSize
+		listMessagesFn: func(_ context.Context, _, _ string, query conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
+			got = query
 			return conversations.MessagesListResponse{}, nil
 		},
 	}
-	h := conversations.NewHandler(repo)
-	router := newRouter(h)
+	router := newRouter(conversations.NewHandler(repo))
 
-	req := httptest.NewRequest(http.MethodGet, "/projects/proj-1/conversations/conv-1/messages", nil)
+	target := "/projects/proj-1/conversations/conv-1/messages"
+	if rawQuery != "" {
+		target += "?" + rawQuery
+	}
 	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d, want 200", target, w.Code)
+	}
+	return got
+}
 
-	if gotPage != 1 || gotPageSize != 50 {
-		t.Errorf("expected page=1 pageSize=50, got page=%d pageSize=%d", gotPage, gotPageSize)
+// A request that names nothing gets pylon's defaults (messages.py:73-77), not
+// this server's invented page-1-of-50. The 50 was never reachable by any
+// caller, so nothing depends on it.
+func TestListMessages_DefaultPagination(t *testing.T) {
+	got := listMessagesQuery(t, "")
+	want := conversations.MessagesQuery{Limit: 10, Offset: 0, SortBy: "created_at", SortOrder: "desc"}
+	if got != want {
+		t.Errorf("no query string resolved to %+v, want %+v", got, want)
+	}
+}
+
+// The parameter names the clients actually put on the wire
+// (apps/elitea-web/src/entities/conversation/api/messageApi.ts:59-63). This is
+// the assertion whose absence made #603 invisible.
+func TestListMessages_ReadsLimitOffsetSortFromTheWire(t *testing.T) {
+	got := listMessagesQuery(t, "limit=25&offset=75&sort_by=updated_at&sort_order=asc")
+	want := conversations.MessagesQuery{Limit: 25, Offset: 75, SortBy: "updated_at", SortOrder: "asc"}
+	if got != want {
+		t.Errorf("limit/offset/sort request resolved to %+v, want %+v", got, want)
+	}
+}
+
+// The scroll-back orchestrator (useLoadMoreMessages.ts:96) walks the offset in
+// page-size steps. Each step has to reach the repository unchanged; the old
+// handler dropped all of them, so every step re-served the first window.
+func TestListMessages_OffsetAdvancesAcrossPages(t *testing.T) {
+	for _, offset := range []int{10, 20, 30} {
+		got := listMessagesQuery(t, fmt.Sprintf("limit=10&offset=%d", offset))
+		if got.Offset != offset {
+			t.Errorf("offset=%d resolved to Offset %d", offset, got.Offset)
+		}
+	}
+}
+
+// page/page_size is kept as a fallback so a caller that does send it — none
+// today, but this server advertised the pair — is not broken by the fix.
+func TestListMessages_PageAndPageSizeStillWorkAsAFallback(t *testing.T) {
+	got := listMessagesQuery(t, "page=3&page_size=25")
+	if got.Limit != 25 || got.Offset != 50 {
+		t.Errorf("page=3&page_size=25 resolved to limit %d offset %d, want 25 and 50", got.Limit, got.Offset)
+	}
+}
+
+// Precedence is explicit: limit/offset are the pair pylon defined and the pair
+// every client sends, so they win over page/page_size when both appear.
+func TestListMessages_LimitOffsetWinOverPageAndPageSize(t *testing.T) {
+	got := listMessagesQuery(t, "page=3&page_size=25&limit=5&offset=7")
+	if got.Limit != 5 || got.Offset != 7 {
+		t.Errorf("mixed request resolved to limit %d offset %d, want 5 and 7", got.Limit, got.Offset)
+	}
+}
+
+// The cap is the one the page_size branch already enforced. 100 is what the
+// largest real caller asks for (usePlaybackConversation.ts:66), so it binds
+// nothing that exists and bounds the per-group string_agg subquery for
+// everything else.
+func TestListMessages_LimitIsCapped(t *testing.T) {
+	if got := listMessagesQuery(t, "limit=100"); got.Limit != 100 {
+		t.Errorf("limit=100 resolved to %d, want 100 served intact", got.Limit)
+	}
+	if got := listMessagesQuery(t, "limit=5000"); got.Limit != 100 {
+		t.Errorf("limit=5000 resolved to %d, want the 100 cap", got.Limit)
+	}
+}
+
+// Junk must not silently reverse the transcript or zero the window: an
+// unparseable or non-positive value leaves the documented default standing.
+// (Pylon's `desc if sort_order == 'desc' else asc` did reverse it.)
+func TestListMessages_RejectsUnusableParameters(t *testing.T) {
+	got := listMessagesQuery(t, "limit=abc&offset=-5&sort_order=descending")
+	want := conversations.MessagesQuery{Limit: 10, Offset: 0, SortBy: "created_at", SortOrder: "desc"}
+	if got != want {
+		t.Errorf("unusable parameters resolved to %+v, want the defaults %+v", got, want)
 	}
 }
 
 func TestListMessages_Error(t *testing.T) {
 	repo := &mockRepo{
-		listMessagesFn: func(_ context.Context, _, _ string, _, _ int) (conversations.MessagesListResponse, error) {
+		listMessagesFn: func(_ context.Context, _, _ string, _ conversations.MessagesQuery) (conversations.MessagesListResponse, error) {
 			return conversations.MessagesListResponse{}, errRepo
 		},
 	}
@@ -590,6 +699,10 @@ func TestDeleteMessages_Success(t *testing.T) {
 // DeleteMessage (stub - no repo call)
 // ---------------------------------------------------------------------------
 
+// 200 with a body, not 204. One request can remove TWO groups — the reply named
+// in the URL and the question it answers — and the response is the only channel
+// telling the client which ones really went, so a body is the point of the
+// status change rather than an incidental consequence of it.
 func TestDeleteMessage_Success(t *testing.T) {
 	h := conversations.NewHandler(&mockRepo{})
 	router := newRouter(h)
@@ -598,8 +711,43 @@ func TestDeleteMessage_Success(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusNoContent {
-		t.Fatalf("expected 204, got %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, w.Body.String())
+	}
+	if len(body.Deleted) != 1 || body.Deleted[0] != "msg-1" {
+		t.Fatalf("deleted is %v, want [msg-1]", body.Deleted)
+	}
+}
+
+// When the repository removed the pair, both ids reach the client. A handler
+// that answered a bare 204, or that echoed only the requested id, would leave
+// the paired question on screen until a reload — the exact outcome pairing
+// exists to prevent.
+func TestDeleteMessage_ReportsThePairedGroupItRemoved(t *testing.T) {
+	repo := &mockRepo{deleteMessageResult: []string{"answer-uid", "question-uid"}}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/answer-uid", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var body struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if len(body.Deleted) != 2 || body.Deleted[0] != "answer-uid" || body.Deleted[1] != "question-uid" {
+		t.Fatalf("deleted is %v, want [answer-uid question-uid]", body.Deleted)
 	}
 }
 
@@ -1222,5 +1370,67 @@ func TestUpdateContextStrategy_Error(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", w.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The `query` wire parameter, and the identity DeleteMessage forwards
+// ---------------------------------------------------------------------------
+
+// The free-text search term has to survive the handler. It reaches the
+// repository raw — escaping it here would bake one storage layer's pattern
+// syntax into the HTTP boundary.
+func TestListMessages_ReadsQueryFromTheWire(t *testing.T) {
+	got := listMessagesQuery(t, "query=50%25+off")
+	if got.Query != "50% off" {
+		t.Fatalf("Query is %q, want %q — the term was dropped or mangled in transit", got.Query, "50% off")
+	}
+}
+
+// An explicit `query=` is the same as sending nothing, which is what pylon's
+// truthiness check did. The distinction matters: as a pattern the empty string
+// matches every group, so a cleared search box would look like a working filter
+// returning everything rather than a filter that is off.
+func TestListMessages_EmptyQueryParameterIsNoFilter(t *testing.T) {
+	for _, rawQuery := range []string{"", "query="} {
+		if got := listMessagesQuery(t, rawQuery); got.Query != "" {
+			t.Errorf("%q resolved to Query %q, want empty", rawQuery, got.Query)
+		}
+	}
+}
+
+// DeleteMessage is authorised against the caller, so the handler must resolve
+// the identity and hand it to the repository. A handler that dropped it would
+// still answer 204 here — which is exactly why this asserts the forwarded
+// value rather than the status code.
+func TestDeleteMessage_ForwardsTheCallerIdentity(t *testing.T) {
+	repo := &mockRepo{}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/msg-1", nil)
+	req = req.WithContext(auth.ContextWithUser(req.Context(), auth.User{ID: "user-1", Email: "test@test.com"}))
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if repo.deleteMessageUserID != "user-1" {
+		t.Fatalf("the repository was given caller %q, want %q", repo.deleteMessageUserID, "user-1")
+	}
+}
+
+// With no user on the context the handler forwards an empty id rather than
+// inventing one. The repository refuses that, so the route fails closed.
+func TestDeleteMessage_ForwardsAnEmptyIdentityWhenUnauthenticated(t *testing.T) {
+	repo := &mockRepo{}
+	router := newRouter(conversations.NewHandler(repo))
+
+	req := httptest.NewRequest(http.MethodDelete, "/projects/proj-1/conversations/conv-1/messages/msg-1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if repo.deleteMessageUserID != "" {
+		t.Fatalf("an unauthenticated request forwarded caller %q, want empty", repo.deleteMessageUserID)
 	}
 }

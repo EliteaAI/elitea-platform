@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/llmproxy"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/requestlog"
 )
 
 // NewRouter builds the chi router for the /llm surface, wiring each route to
@@ -19,7 +20,23 @@ import (
 // (/llm/v1/...) because elitea-main's reverse proxy preserves the path verbatim
 // (no StripPrefix); the gateway sees /llm/v1/... exactly as the client sent it.
 func NewRouter(h *llmproxy.Handler) http.Handler {
+	return NewRouterWithLog(h, nil)
+}
+
+// NewRouterWithLog is NewRouter with the per-request log attached.
+//
+// The recorder is applied as MIDDLEWARE on the router root rather than inside
+// each handler, which is what makes the log complete: every route below is
+// covered without being named, a route added later is covered without anyone
+// remembering, and the requests that never reach a handler — NotFound,
+// MethodNotAllowed, anything refused before dispatch — are covered too. Those
+// are frequently the ones an operator is looking for.
+//
+// A nil recorder is a pass-through, so a gateway with no database (the
+// supported bootstrap posture) pays nothing.
+func NewRouterWithLog(h *llmproxy.Handler, recorder *requestlog.Recorder) http.Handler {
 	r := chi.NewRouter()
+	r.Use(requestlog.Middleware(recorder))
 	r.NotFound(h.NotFound)
 	r.MethodNotAllowed(h.MethodNotAllowed)
 

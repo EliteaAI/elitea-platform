@@ -40,18 +40,29 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
+import { AnalyticsDailyPoint } from "./analyticsDailyPoint.zod";
+import { AnalyticsHealth } from "./analyticsHealth.zod";
 import { AnalyticsKpis } from "./analyticsKpis.zod";
 import { ModelUsage } from "./modelUsage.zod";
+import { UserActivity } from "./userActivity.zod";
 
 export const ProjectAnalytics = zod
   .object({
     kpis: AnalyticsKpis,
-    top_ai_users: zod.array(zod.looseObject({})),
-    daily_activity: zod.array(zod.looseObject({})),
+    top_ai_users: zod
+      .array(UserActivity)
+      .describe("The leaderboard, most calls first, capped at 10 rows."),
+    daily_activity: zod.array(AnalyticsDailyPoint),
     models: zod.array(ModelUsage),
+    models_truncated: zod
+      .boolean()
+      .describe(
+        "True when `models` was cut to the busiest N (provider, model) pairs. Stated rather than implied because the client SUMS that array to normalise its share column: a cut it cannot see makes every share a percentage of the subset rather than of the project, adding to 100% over part of the traffic, beside a kpis.llm_calls figure carrying the real total.\n",
+      ),
+    health: AnalyticsHealth.optional(),
   })
   .describe(
-    "NOTE(W2): Usage response map, internal\/api\/v2\/analytics\/handler.go:47-63.\n",
+    "The Overview tab's response, and the Health tab's — one fetch serves both. Answers 501 with `{error, code: no_data_source, detail}` on a deployment whose gateway request log is absent — a FINAL status, not a 500, so a client that retries transient failures does not ask twice for an answer the server has already refused.\n",
   );
 
 export type ProjectAnalytics = zod.input<typeof ProjectAnalytics>;

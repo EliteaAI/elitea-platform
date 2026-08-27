@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from google.protobuf.message import DecodeError
 
 from elitea.runtime.v1 import agent_pb2
 
+from elitea_worker.agents.attachments import (
+    AttachmentContentWriteback,
+    validate_input_attachments,
+)
 from elitea_worker.constants import MAX_AGENT_INPUT_BYTES
 from elitea_worker.execution.errors import InvalidInput, ResourceExhausted
 from elitea_worker.fixtures.bundle import parse_json_value
@@ -83,7 +88,13 @@ def request_from(
     invoked_skills = _json_list(message.invoked_skills, "invoked skills")
     applied_skills = _json_list(message.applied_skills, "applied skills")
     attached_skills = _json_list(message.attached_skills, "attached skills")
-    input_attachments = _json_list(message.input_attachments, "input attachments")
+    # #606: a JSON array was all this field ever had to be, because nothing
+    # consumed it. Now that the chunks go in front of a model, their shape is
+    # checked HERE — see elitea_worker.agents.attachments for the contract and
+    # for why an unknown chunk type is refused instead of forwarded.
+    input_attachments = validate_input_attachments(
+        _json_list(message.input_attachments, "input attachments")
+    )
     parallel_reconcile = _optional_json_object(
         message.parallel_reconcile, "parallel reconcile"
     )
@@ -180,7 +191,17 @@ def bind_result_artifact(
     immutable_version: str,
     byte_length: int,
     digest: bytes,
+    attachment_contents: Sequence[AttachmentContentWriteback] = (),
 ) -> agent_pb2.AgentExecutionResultV1:
+    """Bind the terminal artifact reference and any attachment write-back (#607).
+
+    ``attachment_contents`` arrives already budgeted by
+    ``attachment_content_writebacks``; this function only encodes it. The budget
+    is not re-applied here on purpose — two places deciding what fits is two
+    places that can disagree, and the one that knows which entries were dropped
+    is the one that can say so in a log.
+    """
+
     if (
         not artifact_id
         or not immutable_version
@@ -189,8 +210,18 @@ def bind_result_artifact(
         or len(digest) != 32
     ):
         raise InvalidInput("The agent result artifact binding is malformed.")
+    for writeback in attachment_contents:
+        if not writeback.item_id or not writeback.content:
+            raise InvalidInput("The agent attachment content binding is malformed.")
     request = result.request
     return agent_pb2.AgentExecutionResultV1(
+        attachment_contents=[
+            agent_pb2.AgentExecutionAttachmentContentV1(
+                item_id=writeback.item_id,
+                content=writeback.content,
+            )
+            for writeback in attachment_contents
+        ],
         input_bundle_id=request.input_bundle_id,
         input_bundle_digest=_digest(request.input_bundle_digest),
         request_entry_id=request.request_binding.entry_id,

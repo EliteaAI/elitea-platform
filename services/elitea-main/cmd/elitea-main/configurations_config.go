@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/base64"
 	"errors"
 	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 )
 
 const maxCurrentConfigurationsPathBytes = 4096
@@ -15,6 +18,13 @@ type currentConfigurationsConfig struct {
 	MutationEnabled    bool
 	PublicProjectID    int32
 	VaultMasterKeyFile string
+	// VaultMasterKey is the base64url-encoded SECRETS_MASTER_KEY, the key the
+	// secrets handler wraps every project vault key with. The Configurations
+	// runtime reads vaults that handler wrote, so it needs the same key; with
+	// only VaultMasterKeyFile — which no chart under deploy/ sets — it opened
+	// wrapped rows as if they were unwrapped and every model-catalogue read
+	// answered 500.
+	VaultMasterKey []byte
 	// AllowProjectOwnLLMs is product policy, not transport: it decides whether
 	// a project may define its own provider credentials and models instead of
 	// using only the shared public project's. It is enforced through the
@@ -80,6 +90,17 @@ func currentConfigurationsConfigFromEnv(
 		strings.ContainsAny(masterKeyFile, "\x00\r\n")) {
 		return currentConfigurationsConfig{}, errors.New("ELITEA_VAULT_MASTER_KEY_FILE is invalid")
 	}
+	// SECRETS_MASTER_KEY is validated but NOT required: the unwrapped shape is
+	// a real local one (deploy/scripts/standalone-stack.sh seeds it). It is
+	// read only on the enabled path, because the disabled path above rejects
+	// Configurations settings and this variable belongs to the secrets
+	// handler, which runs either way. The DISABLED path's chat-config loader
+	// needs the same key and reads it from the environment directly, through
+	// the helper below.
+	masterKey, err := encodedVaultMasterKeyFromEnv(lookup)
+	if err != nil {
+		return currentConfigurationsConfig{}, err
+	}
 	// ELITEA_LITELLM_BASE_URL and ELITEA_LITELLM_MASTER_KEY_FILE are gone with
 	// the facade they configured — there is no proxy deployment to address and
 	// no administration key to hold. Silently ignoring them is harmless
@@ -117,6 +138,44 @@ func currentConfigurationsConfigFromEnv(
 		MutationEnabled:     mutationEnabled,
 		PublicProjectID:     int32(parsed),
 		VaultMasterKeyFile:  masterKeyFile,
+		VaultMasterKey:      masterKey,
 		AllowProjectOwnLLMs: allowProjectOwnLLMs,
 	}, nil
+}
+
+// validEncodedFernetKey accepts exactly what
+// storage.NewPostgresSecretVaultLoader accepts: the 44-character base64url
+// encoding of a 32-byte key. Checking it here turns a mistyped key into a
+// startup error naming the variable, instead of a per-request 500 whose only
+// symptom is an empty model picker.
+func validEncodedFernetKey(value string) bool {
+	if len(value) != 44 {
+		return false
+	}
+	decoded, err := base64.URLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
+// encodedVaultMasterKeyFromEnv returns SECRETS_MASTER_KEY in the form the vault
+// loader takes, or nil when it is unset.
+//
+// THE ENCODING MATTERS. storage.NewPostgresSecretVaultLoader and
+// repos.NewCurrentSecretVaultRepository both validate the 44-character
+// base64url form, while v2secrets.MasterKeyFromEnv decodes the SAME variable to
+// the raw 32 bytes for the secrets handler. The two are not interchangeable: a
+// loader handed the raw form rejects it as an invalid key. This helper is the
+// one place that produces the loader's form, so both callers get the same
+// bytes from the same variable.
+func encodedVaultMasterKeyFromEnv(lookup func(string) (string, bool)) ([]byte, error) {
+	if lookup == nil {
+		return nil, errors.New("vault master key environment lookup is required")
+	}
+	value, present := lookup(v2secrets.MasterKeyEnvVar)
+	if !present || value == "" {
+		return nil, nil
+	}
+	if !validEncodedFernetKey(value) {
+		return nil, errors.New(v2secrets.MasterKeyEnvVar + " is invalid")
+	}
+	return []byte(value), nil
 }

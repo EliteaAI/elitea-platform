@@ -1,0 +1,89 @@
+/* ── Popup Message ── */
+
+.elitea-assistant-popup {
+  position: absolute;
+  bottom: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0.75rem 0.75rem 1.25rem;
+  border-radius: 1.5rem 1.5rem 1.5rem 0;
+  background: var(--elitea-assistant-popup-bg);
+  color: var(--elitea-assistant-popup-text);
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.5rem;
+  white-space: nowrap;
+  box-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.2);
+  animation: elitea-assistant-popup-in 0.3s ease-out;
+}
+
+.elitea-assistant-popup::before {
+  content: '';
+  position: absolute;
+  inset: -0.0625rem;
+  border-radius: inherit;
+  padding: 0.0625rem;
+  background: var(--elitea-assistant-popup-border);
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+.elitea-assistant-container--bottom-right .elitea-assistant-popup {
+  right: 2.5rem;
+  flex-direction: row-reverse;
+  padding: 0.75rem 1.25rem 0.75rem 0.75rem;
+  border-radius: 1.5rem 1.5rem 0 1.5rem;
+}
+
+.elitea-assistant-container--bottom-left .elitea-assistant-popup {
+  left: 2.5rem;
+}
+
+.elitea-assistant-popup-text {
+  user-select: none;
+}
+
+.elitea-assistant-popup-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--elitea-assistant-popup-close-bg);
+  color: var(--elitea-assistant-popup-text);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+
+.elitea-assistant-popup-close:hover {
+  background: var(--elitea-assistant-popup-close-hover-bg);
+}
+
+.elitea-assistant-popup-close svg {
+  width: 1rem;
+  height: 1rem;
+  fill: currentColor;
+}
+
+@keyframes elitea-assistant-popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

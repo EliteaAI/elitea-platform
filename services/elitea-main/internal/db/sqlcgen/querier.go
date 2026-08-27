@@ -215,6 +215,29 @@ type Querier interface {
 	InsertArtifactBucketExpiryNotification(ctx context.Context, arg InsertArtifactBucketExpiryNotificationParams) (int64, error)
 	InsertConfigurationLifecycleEvent(ctx context.Context, arg InsertConfigurationLifecycleEventParams) error
 	InsertCurrentAdhocTurn(ctx context.Context, arg InsertCurrentAdhocTurnParams) (InsertCurrentAdhocTurnRow, error)
+	// #606: one uploaded chat attachment, as an `attachment_message` item on the
+	// QUESTION group plus its 1:1 payload row.
+	//
+	// Both rows in ONE statement, via a data-modifying CTE, rather than two calls:
+	// chat_messages_attachment's primary key IS the item's id (0127 shares the
+	// key so the discriminator and the payload cannot disagree), so the payload
+	// insert must see the id the item insert generated. Doing it in one statement
+	// also means there is no window in which an `attachment_message` item exists
+	// with no payload — the shape ListMessageGroups treats as "no attachment row"
+	// and renders as nothing.
+	//
+	// order_index is supplied, not computed with count(*) the way
+	// InsertCurrentAgentTextItem does it: these items are written inside the
+	// admission transaction immediately after the question item, so the caller
+	// already knows the sequence (1, 2, ... — the question's text item holds 0,
+	// matching pylon's enumerate(attachments_info, start=1) at
+	// rpc/chat_all.py:303). A count(*) here would additionally re-read a table it
+	// is writing to, per attachment.
+	//
+	// `content` is cast to json, NOT jsonb: 0127 records why the deployed column
+	// is json (a shared table pylon also reads/writes, where jsonb's key
+	// reordering and whitespace normalisation would change the stored bytes).
+	InsertCurrentAgentAttachmentItem(ctx context.Context, arg InsertCurrentAgentAttachmentItemParams) error
 	InsertCurrentAgentTextContent(ctx context.Context, arg InsertCurrentAgentTextContentParams) error
 	InsertCurrentAgentTextItem(ctx context.Context, messageGroupID int64) (int32, error)
 	InsertCurrentApplicationTurn(ctx context.Context, arg InsertCurrentApplicationTurnParams) (InsertCurrentApplicationTurnRow, error)
@@ -343,8 +366,90 @@ type Querier interface {
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
+	// Chat history for this turn: one entry per prior message group, whose
+	// `content` is the group's items flattened into ONE LangChain content array.
+	//
+	// #606 part 3 added `attachment_message` to the items considered. Before it,
+	// this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+	// turn was invisible to the model even though its row existed: the transcript
+	// rendered it, the prompt did not mention it, and a follow-up question about
+	// that file had nothing to answer from.
+	//
+	// The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+	// attachment item's stored `content` LIST into the group's content array,
+	// in item order, alongside the text chunks -- it does not nest it, and does
+	// not append one object per file. That is why the per-item CROSS JOIN LATERAL
+	// emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+	// the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+	// items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+	// a group that has only text.
+	//
+	// WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+	// `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+	// column that is NULL for an attachment item, so it would drop every
+	// attachment chunk. The empty-text exclusion moves into the text branch's own
+	// WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+	// inner join's old refusal of a text item with no payload row), and an item
+	// that contributes no chunk simply produces no row. A group left with no
+	// chunks at all disappears from the subquery exactly as it used to when the
+	// FILTER made its `content` NULL, so the outer
+	// `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+	// ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+	// represent at all) now survives it.
+	//
+	// `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+	// it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+	// array. chat_history.py:70-74 carries a non-list fallback for exactly that
+	// data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+	// because `jsonb_array_elements` on a non-array raises 22023 and would fail
+	// the whole resolve; a NULL or `{}` content contributes nothing instead of
+	// injecting a chunk the model would have to read. The chunks are NOT
+	// validated beyond that: their shape is the worker's and the model's
+	// contract, and silently reshaping stored content here would make the
+	// projection disagree with what the transcript renders.
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationNestingNode(ctx context.Context, applicationVersionID int32) (ResolveCurrentApplicationNestingNodeRow, error)
+	// Chat history for this turn: one entry per prior message group, whose
+	// `content` is the group's items flattened into ONE LangChain content array.
+	//
+	// #606 part 3 added `attachment_message` to the items considered. Before it,
+	// this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+	// turn was invisible to the model even though its row existed: the transcript
+	// rendered it, the prompt did not mention it, and a follow-up question about
+	// that file had nothing to answer from.
+	//
+	// The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+	// attachment item's stored `content` LIST into the group's content array,
+	// in item order, alongside the text chunks -- it does not nest it, and does
+	// not append one object per file. That is why the per-item CROSS JOIN LATERAL
+	// emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+	// the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+	// items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+	// a group that has only text.
+	//
+	// WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+	// `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+	// column that is NULL for an attachment item, so it would drop every
+	// attachment chunk. The empty-text exclusion moves into the text branch's own
+	// WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+	// inner join's old refusal of a text item with no payload row), and an item
+	// that contributes no chunk simply produces no row. A group left with no
+	// chunks at all disappears from the subquery exactly as it used to when the
+	// FILTER made its `content` NULL, so the outer
+	// `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+	// ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+	// represent at all) now survives it.
+	//
+	// `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+	// it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+	// array. chat_history.py:70-74 carries a non-list fallback for exactly that
+	// data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+	// because `jsonb_array_elements` on a non-array raises 22023 and would fail
+	// the whole resolve; a NULL or `{}` content contributes nothing instead of
+	// injecting a chunk the model would have to read. The chunks are NOT
+	// validated beyond that: their shape is the worker's and the model's
+	// contract, and silently reshaping stored content here would make the
+	// projection disagree with what the transcript renders.
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
@@ -378,6 +483,62 @@ type Querier interface {
 	// filter would permanently exclude it after the first notice.
 	UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error)
 	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
+	// #607: persist the text the worker extracted from ONE of this turn's
+	// attachments, so a LATER turn sees the file's contents and not just its name.
+	//
+	// Pylon never needed this statement. It extracts at message-persist time and
+	// appends the text to the item it has in hand, in the same process and the same
+	// session (rpc/chat_all.py:344-377, with flag_modified(item, "content") at :376
+	// because the column is `json`). Here the reader is the worker and the writer is
+	// elitea-main, so the text comes back across a protocol
+	// (AgentExecutionResultV1.attachment_contents) and lands here, on the terminal
+	// path elitea-main already owns.
+	//
+	// MATCHED ON item.uuid, NOT ON (bucket, name). Attaching the same file twice in
+	// one conversation is an ordinary thing to do and produces two rows with
+	// identical bucket and name; a (bucket, name) match would write one file's text
+	// onto the other's row. `chat_message_items.uuid` is UNIQUE (0123), so this
+	// addresses at most one row.
+	//
+	// SCOPED IN SQL, NOT IN GO, AND THAT IS THE POINT. `item_id` arrives from a
+	// worker process over gRPC. Trusting it would let any worker holding a valid
+	// claim overwrite the content of ANY attachment row in the project by naming its
+	// id -- another user's conversation included -- and the Go side has no cheap way
+	// to prove otherwise without a second round trip it would then have to trust
+	// itself to have made. The join does the proving instead: the item must hang off
+	// the QUESTION group that `response_group` (the row
+	// LockCurrentAgentResponseForTerminal just locked, and which the caller reached
+	// only by matching message uuid + conversation uuid + task_id +
+	// meta.execution_generation) replies to. An id outside that one question matches
+	// nothing and the statement reports 0 rows.
+	//
+	// `reply_to_id` is the link, and it is written in the same statement that
+	// creates both groups (InsertCurrentApplicationTurn / InsertCurrentAdhocTurn),
+	// so it cannot be absent for a turn this path can reach.
+	//
+	// NO item_type PREDICATE, deliberately. `AND item.item_type =
+	// 'attachment_message'` reads like prudence and is dead code:
+	// chat_messages_attachment's primary key IS the item's id (0127), so the join
+	// to it already proves the item is an attachment and no payload row can exist
+	// under a `text_message` item. It was written, then removed, because no test
+	// could tell the two versions apart -- deleting the predicate left every case
+	// green, including the one that names the question's own text item. An
+	// unfalsifiable guard is worse than none: it invites the next reader to believe
+	// the write is checked in a way it is not.
+	//
+	// REPLACES `content` OUTRIGHT rather than appending a chunk. The value carried
+	// across the seam is the complete array the column is to hold -- the scaffold's
+	// header chunk, marker intact, plus the extracted text -- which is what makes a
+	// redelivered terminal frame rewrite the same bytes instead of appending the
+	// file's text a second time. An `||` append here would be idempotent only by
+	// accident.
+	//
+	// `content` is cast to json, NOT jsonb, for the reason 0127 records: the column
+	// is `json` because pylon reads and writes the same table, and jsonb's key
+	// reordering and whitespace normalisation would change the stored bytes -- which
+	// for this value includes the `elitea_attachment` marker a later turn's worker
+	// reads to decide the file has already been extracted.
+	UpdateCurrentAgentAttachmentContent(ctx context.Context, arg UpdateCurrentAgentAttachmentContentParams) (int64, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
 	UpsertArtifactObject(ctx context.Context, arg UpsertArtifactObjectParams) (EliteaStorageObject, error)
 	// ON CONFLICT DO UPDATE, not DO NOTHING: a retried chunk_index (client

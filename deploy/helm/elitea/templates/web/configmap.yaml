@@ -1,0 +1,15 @@
+{{- if .Values.web.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "elitea-web.fullname" . }}-config
+  labels:
+    {{- include "elitea-web.labels" . | nindent 4 }}
+data:
+  # Whole .Values.web.env map (same reasoning as the `main:` block). Note that
+  # only the five keys docker-entrypoint.sh reads reach the browser; extra keys
+  # set here are present in the container but never emitted into config.js.
+  {{- range $key, $value := .Values.web.env }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}
+{{- end }}

@@ -65,6 +65,8 @@ import (
 	"sort"
 	"strconv"
 
+	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
@@ -188,6 +190,35 @@ func (h *Handler) publishGuardrail(ctx context.Context) publishGuardrailState {
 	}
 }
 
+// skillPublishGuardrail is the same resolution over the SKILL section.
+//
+// Separate from `publishGuardrail` rather than parameterised by section id,
+// because the two sections do not share field keys either — the skill switch is
+// `is_skill_publish_blocked`, not `is_publish_blocked` — and a single function
+// taking three arguments to say "the other one" reads worse than two that each
+// say which they are.
+func (h *Handler) skillPublishGuardrail(ctx context.Context) publishGuardrailState {
+	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionSkillPublishing)
+	if err != nil {
+		return publishGuardrailState{}
+	}
+	return publishGuardrailState{
+		blocked:   values.Bool(platformconfig.KeySkillPublishBlocked, false),
+		whitelist: values.Ints(platformconfig.KeySkillPublishWhitelistProjectIDs),
+	}
+}
+
+// projectIDList returns a non-nil slice so an empty whitelist encodes as `[]`
+// rather than `null`. A client that has to distinguish those two — and this one
+// does, because "blocked with an empty whitelist" means blocked everywhere —
+// has been handed the server's problem.
+func projectIDList(ids []int64) []int64 {
+	if ids == nil {
+		return []int64{}
+	}
+	return ids
+}
+
 // extraAgentCategories returns the operator-configured categories.
 func (h *Handler) extraAgentCategories(ctx context.Context) []string {
 	values, err := platformconfig.Load(ctx, h.pool, platformconfig.SectionAgentPublishing)
@@ -222,4 +253,97 @@ func (h *Handler) blockedToolkits(ctx context.Context) []string {
 	}
 	sort.Strings(blocked)
 	return blocked
+}
+
+// announcements resolves the two platform-wide announcements PlatformSettings
+// carries — the notification banner and maintenance mode.
+//
+// Both are read HERE, on the endpoint the SPA already polls, rather than each
+// acquiring an endpoint of its own. That is what lets the app shell paint a
+// banner and the router paint a maintenance splash from state it is already
+// fetching, and it keeps the number of unauthenticated-adjacent reads at one.
+//
+// The maintenance state published here is the SAME state
+// `internal/api/middleware`'s Maintenance gate enforces, resolved from the same
+// rows. That matters more than it looks: the SPA must never be able to show
+// "everything is fine" while every request it makes is being refused, nor a
+// splash over a platform that is up. The two can still disagree for at most the
+// middleware's cache TTL, which is the price of not querying on every request
+// and is bounded by a compiled constant.
+//
+// `platform_settings` is on the middleware's allowlist precisely so this stays
+// readable during a window — see maintenanceAllowlist.
+//
+// Both reads are permissive, in the same direction and for the same reason as
+// every other read in this file: an unreadable store means no banner and no
+// maintenance, never an invented one.
+func (h *Handler) announcements(
+	ctx context.Context,
+) (platformconfig.Banner, platformconfig.Maintenance) {
+	banner, err := platformconfig.LoadBanner(ctx, h.pool)
+	if err != nil {
+		slog.ErrorContext(ctx, "platform_settings: banner read failed; reporting no banner", "err", err)
+		banner = platformconfig.Banner{}
+	}
+	maintenance, err := platformconfig.LoadMaintenance(ctx, h.pool)
+	if err != nil {
+		slog.ErrorContext(ctx, "platform_settings: maintenance read failed; reporting no maintenance",
+			"err", err)
+		maintenance = platformconfig.Maintenance{}
+	}
+	return banner, maintenance
+}
+
+// maintenancePayload marshals the maintenance state WITH the calling user's own
+// exemption.
+//
+// `bypass` is the field that keeps the SPA from having to reimplement the
+// middleware's rule. Without it a client knows only that the platform is in
+// maintenance, not whether ITS requests are being refused, and would have to
+// choose between two wrong behaviours: paint the splash for everyone — hiding
+// the product from the administrators who are the only people it still works
+// for, and who are the ones with a reason to be using it during a window — or
+// paint it for nobody and let an ordinary user watch every request fail with no
+// explanation.
+//
+// It is resolved from the SAME permission the middleware admits on, through the
+// same resolver, so the two cannot drift into telling a user different things.
+// A resolver error yields false, matching the middleware's own refusal
+// direction: a caller whose permissions could not be resolved is not admitted,
+// so telling them they were would be the client showing a working product over
+// an API that is refusing them.
+func (h *Handler) maintenancePayload(
+	ctx context.Context, state platformconfig.Maintenance,
+) map[string]any {
+	return map[string]any{
+		"enabled": state.Enabled,
+		"title":   state.Title,
+		"message": state.Message,
+		"bypass":  state.Enabled && h.holdsMaintenanceBypass(ctx),
+	}
+}
+
+// holdsMaintenanceBypass asks the permission model the middleware's question.
+func (h *Handler) holdsMaintenanceBypass(ctx context.Context) bool {
+	if h.permissionResolver == nil {
+		return false
+	}
+	principal, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return false
+	}
+	resolution, err := h.permissionResolver.ResolvePermissions(
+		ctx, principal, auth.PermissionModeAdministration, "",
+	)
+	if err != nil {
+		slog.ErrorContext(ctx, "platform_settings: maintenance bypass unresolved; reporting no bypass",
+			"err", err)
+		return false
+	}
+	for _, granted := range resolution.Permissions {
+		if granted == apimw.MaintenanceAdminPermission {
+			return true
+		}
+	}
+	return false
 }

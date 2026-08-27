@@ -16,6 +16,7 @@ import {
   isSkillValid,
   SkillEditorToolbar,
   SkillForm,
+  SkillPublishControls,
   useSkill,
   useSkillMutations,
   type SkillRecord,
@@ -23,6 +24,7 @@ import {
   type SkillWriteInput,
 } from '@/features/skills';
 import { hasBackendCapability } from '@/shared/config';
+import { usePermissionSet } from '@/widgets/sidebar';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { BaseModal } from '@/shared/ui/BaseModal';
@@ -75,6 +77,7 @@ interface SkillEditorHeaderProps {
   readonly onDiscard: () => void;
   readonly onDelete: () => void;
   readonly onExport: () => void;
+  readonly publishing: ReactNode;
 }
 
 function SkillEditorHeader(props: SkillEditorHeaderProps): ReactNode {
@@ -125,6 +128,7 @@ function SkillEditorHeader(props: SkillEditorHeaderProps): ReactNode {
         onDiscard={props.onDiscard}
         onDelete={props.onDelete}
         onExport={props.onExport}
+        publishing={props.publishing}
       />
     </Box>
   );
@@ -143,8 +147,11 @@ export function EditSkill(): ReactNode {
   const [versionOpen, setVersionOpen] = useState(false);
   const [versionName, setVersionName] = useState('');
   const [error, setError] = useState<string>();
+  const permissions = usePermissionSet(projectId);
 
   useEffect(() => setValue(initialValue), [initialValue]);
+
+
 
   // The test run POSTs `predict_llm`, which no router mounts, so the pane
   // stays hidden — see `shared/config/backendCapabilities`.
@@ -207,6 +214,16 @@ export function EditSkill(): ReactNode {
         onDiscard={() => setValue(initialValue)}
         onDelete={() => setDeleteOpen(true)}
         onExport={() => void doExport()}
+        publishing={
+          <SkillPublishControls
+            projectId={projectId}
+            skill={detail.data}
+            skillId={params.skillId}
+            versionId={params.version}
+            permissions={permissions}
+            onPublished={() => void detail.refetch()}
+          />
+        }
       />
       {error && <Typography role="alert">{error}</Typography>}
       <Box sx={contentSx}>

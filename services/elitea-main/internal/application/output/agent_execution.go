@@ -2,6 +2,7 @@ package output
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,6 +17,26 @@ const (
 	MaxAgentExecutionResultBytes = 64 * 1024
 	AgentResultMediaType         = "application/vnd.elitea.agent-execution-result.v1+json"
 	AgentResultClassification    = "tenant-confidential"
+
+	// MaxAgentExecutionAttachmentContentBytes is the aggregate ceiling on one
+	// terminal frame's attachment write-backs (#607). It restates the cap the
+	// WORKER already applies before it builds the frame --
+	// MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES in agents/attachments.py, cited by
+	// AgentExecutionResultV1.attachment_contents in
+	// libs/proto/elitea/runtime/v1/agent.proto -- on this side of the seam,
+	// because a worker's promise is not a bound: the frame arrives over gRPC
+	// from a process elitea-main does not control, and this is the only place
+	// that can refuse an over-size list before it reaches a transaction.
+	//
+	// 32 KiB, not the 64 KiB MaxAgentExecutionResultBytes the whole encoded
+	// result is held to. The proto records the measurement: the terminal
+	// AgentExecutionResultV1 is ~1 KiB today and the frame ceiling is 64 KiB,
+	// so half the frame is a list the worker chose to send and half stays
+	// headroom for the identity, digest and settlement fields that make the
+	// frame projectable at all. A write-back that crowded those out would turn
+	// a large attachment into a rejected TURN, which is precisely the trade the
+	// proto rejected when it chose this carrier over result_artifact.
+	MaxAgentExecutionAttachmentContentBytes = 32 * 1024
 )
 
 var (
@@ -61,6 +82,39 @@ func (s AgentExecutionTerminalState) Validate() error {
 	}
 }
 
+// AgentExecutionAttachmentContent is ONE `chat_messages_attachment` row's
+// enriched content, as the worker reported it (#607).
+//
+// ItemID is the `chat_message_items.uuid` the admission scaffold stamped into
+// the chunk's `elitea_attachment` marker
+// (application/agentexecution/attachments.go, attachmentContentScaffold), NOT
+// the (bucket, name) pair. The proto records why: the same file attached twice
+// in one conversation is ordinary and produces two rows with identical bucket
+// and name, so a (bucket, name) match would write one file's text onto the
+// other's row.
+//
+// Content is the COMPLETE value the column is to hold, not a delta: the
+// scaffold's own header chunk with its `elitea_attachment` marker intact --
+// that marker is what stops a later turn re-reading the file -- followed by the
+// extracted text as a second `{"type":"text"}` chunk. Storing the whole array
+// rather than appending here is what keeps this write idempotent: a redelivered
+// terminal frame rewrites the same bytes instead of appending the text twice.
+type AgentExecutionAttachmentContent struct {
+	ItemID  string
+	Content json.RawMessage
+}
+
+// Validate is the per-entry half of the rule; the list-level half (aggregate
+// size, duplicate ids) lives in AcceptedAgentExecutionAttachmentContents,
+// which is the only thing that should ever build this slice from a wire frame.
+func (a AgentExecutionAttachmentContent) Validate() error {
+	if !validAttachmentItemID(a.ItemID) || !validAttachmentContentChunks(a.Content) ||
+		len(a.Content) > MaxAgentExecutionAttachmentContentBytes {
+		return ErrInvalidAgentExecutionOutput
+	}
+	return nil
+}
+
 type AgentExecutionResult struct {
 	InputBundleID           string
 	InputBundleDigest       runtimedomain.Digest
@@ -69,6 +123,8 @@ type AgentExecutionResult struct {
 	RequestContentDigest    runtimedomain.Digest
 	TerminalState           AgentExecutionTerminalState
 	ResultArtifact          AgentExecutionArtifactReference
+	// AttachmentContents is empty on every ordinary turn (#607).
+	AttachmentContents []AgentExecutionAttachmentContent
 }
 
 func (r AgentExecutionResult) Validate() error {
@@ -76,6 +132,9 @@ func (r AgentExecutionResult) Validate() error {
 		!validIndexMetadata(r.RequestEntryID) || !validIndexMetadata(r.RequestImmutableVersion) ||
 		r.RequestContentDigest.IsZero() || r.TerminalState.Validate() != nil {
 		return ErrInvalidAgentExecutionOutput
+	}
+	if err := validateAgentExecutionAttachmentContents(r.AttachmentContents); err != nil {
+		return err
 	}
 	return r.ResultArtifact.Validate()
 }

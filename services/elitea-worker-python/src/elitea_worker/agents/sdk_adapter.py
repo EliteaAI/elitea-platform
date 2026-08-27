@@ -21,6 +21,17 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from elitea_worker.agents.attachments import (
+    ATTACHMENT_READ_TOOL_NAME,
+    ATTACHMENT_TOOLKIT_NAME,
+    ATTACHMENT_TOOLKIT_TYPE,
+    AttachmentContentWriteback,
+    attachment_content_writebacks,
+    attachment_message_chunks,
+    human_message_content,
+    pending_attachment_reads,
+    report_failed_attachment_reads,
+)
 from elitea_worker.agents.client_context import EliteaClientContext
 from elitea_worker.agents.configuration_registry import (
     ConfigurationRegistryShadow,
@@ -351,6 +362,10 @@ class EliteaSdkAgentAdapter:
         self._callbacks = list(callbacks or [])
         self._checkpoint_factory = checkpoint_factory
         self._project_id = project_id
+        # #607: what this turn's document reads produced, kept so the terminal
+        # result can report it back for persistence. One adapter is built per
+        # execution, so this is turn-scoped state and not a cache.
+        self._attachment_writebacks: list[AttachmentContentWriteback] = []
 
     @classmethod
     def from_context(
@@ -404,6 +419,7 @@ class EliteaSdkAgentAdapter:
                 version_details.get("meta"),
                 self._callbacks,
                 memory,
+                self._read_attachment_documents,
             )
 
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
@@ -449,6 +465,7 @@ class EliteaSdkAgentAdapter:
                 None,
                 self._callbacks,
                 memory,
+                self._read_attachment_documents,
             )
 
     def suggest_next_input(
@@ -497,6 +514,109 @@ class EliteaSdkAgentAdapter:
             # Exact current behavior: this optional follow-up cannot fail an
             # otherwise successful primary execution.
             return None
+
+    def _read_attachment_documents(
+        self,
+        payload: AgentExecutionPayload,
+        references: list[tuple[str, str]],
+    ) -> dict[tuple[str, str], str]:
+        """Read this turn's attached documents through the SDK artifact toolkit.
+
+        This is pylon's extraction step (rpc/chat_all.py:344-377 →
+        utils/attachments.py:429-497) with its Pylon transport removed. Pylon
+        goes through ``test_toolkit_tool_sio`` because its reader lives in
+        another process; the worker IS that process, so it makes the same
+        public SDK call the indexing adapter already makes
+        (``EliteaSdkIndexingAdapter.ingest``) — one batched
+        ``read_multiple_files`` per bucket, on the claim-scoped client.
+
+        ONE CALL PER BUCKET, not one per file. Pylon batches too, and it can
+        assume a single bucket because it resolves the project default itself
+        (utils/internal_tools.py:277-295). The worker takes the bucket from
+        each chunk's marker instead — it has no vault access — so files from
+        two buckets in one turn cost two calls rather than being silently read
+        from the wrong one.
+
+        NOTHING HERE MAY FAIL THE TURN. A bucket the platform cannot read, a
+        toolkit that will not instantiate, a file that no longer exists —
+        pylon logs each and continues (rpc/chat_all.py:384-386), because the
+        question may not even be about the file, and the header chunk still
+        tells the model the file exists and that read tools are available. The
+        single exception is a budget rejection: it is a policy outcome with no
+        recovery, and swallowing it here would only let the agent invocation
+        hit the same wall a moment later with the attachment silently dropped.
+        """
+
+        contents: dict[tuple[str, str], str] = {}
+        failures = 0
+        by_bucket: dict[str, list[str]] = {}
+        for bucket, name in references:
+            by_bucket.setdefault(bucket, []).append(name)
+        for bucket, names in by_bucket.items():
+            try:
+                outcome = self._client.test_toolkit_tool(
+                    toolkit_config={
+                        "type": ATTACHMENT_TOOLKIT_TYPE,
+                        "toolkit_name": ATTACHMENT_TOOLKIT_NAME,
+                        # Auto-injected, no toolkit entity in the database —
+                        # exactly as pylon builds it
+                        # (utils/attachments.py:454-461).
+                        "toolkit_id": None,
+                        "settings": {"bucket": bucket},
+                    },
+                    tool_name=ATTACHMENT_READ_TOOL_NAME,
+                    tool_params={"file_paths": list(names)},
+                    # The turn's own model, so the toolkit is built against the
+                    # model this turn is already authorized for rather than the
+                    # SDK's 'gpt-4o-mini' default, which a deployment need not
+                    # serve. The read tool never calls it: the LLM is only an
+                    # argument of toolkit instantiation.
+                    llm_model=_llm_kwargs(payload.llm).get("model"),
+                )
+            except Exception as error:
+                if _is_sdk_budget_exceeded(error):
+                    raise
+                failures += len(names)
+                continue
+            files = outcome.get("result") if isinstance(outcome, dict) else None
+            # `success: False` is RETURNED, not raised, for a toolkit or tool
+            # failure (SDK client.test_toolkit_tool), so an unchecked
+            # `.get("result")` would forward a refusal's payload as if it were
+            # the file's contents.
+            if (
+                not isinstance(outcome, dict)
+                or not outcome.get("success")
+                or not isinstance(files, dict)
+            ):
+                failures += len(names)
+                continue
+            for name in names:
+                text = files.get(name)
+                # A per-file read error arrives as its own string
+                # ("Error reading file: ...", SDK elitea_base.py:685-687) and
+                # pylon forwards it to the model unchanged: it is a truthful
+                # answer to "what is in this file". Only an absent or empty
+                # entry counts as a failure.
+                if isinstance(text, str) and text:
+                    contents[(bucket, name)] = text
+                else:
+                    failures += 1
+        report_failed_attachment_reads(failures)
+        # Composed here rather than in the caller because this is the only
+        # place that knows which reads succeeded. A file that could not be read
+        # contributes nothing: it has no text to persist, and leaving its row
+        # untouched is what lets a later turn try again.
+        self._attachment_writebacks = attachment_content_writebacks(
+            payload.input_attachments,
+            contents,
+        )
+        return contents
+
+    @property
+    def attachment_content_writebacks(self) -> list[AttachmentContentWriteback]:
+        """The enriched attachment rows this turn produced, if any (#607)."""
+
+        return list(self._attachment_writebacks)
 
     @contextmanager
     def _execution_memory(self):
@@ -575,9 +695,17 @@ def _require_initial_agent_kernel(payload: AgentExecutionPayload) -> None:
 
     hitl_resume = payload.hitl_resume or bool(payload.hitl_decisions)
     authorization_resume = _is_authorization_resume(payload)
+    # #606: input_attachments is no longer one of these. It was refused here
+    # because nothing consumed it, so a turn carrying a file would silently
+    # have answered without it — a refusal was the honest outcome. It now has
+    # a consumer: the chunks are spliced into the human message and documents
+    # are read through the SDK artifact toolkit
+    # (_invoke_initial_agent / agents/attachments.py), which is pylon's own
+    # behaviour (utils/chat_history.py:67-73, rpc/chat_all.py:344-377). The
+    # other three disjuncts keep refusing: each still names a path with no
+    # implementation behind it.
     if (
         payload.checkpoint_id
-        or payload.input_attachments
         or payload.parallel_reconcile is not None
         or payload.parallel_terminal_errors
     ):
@@ -731,6 +859,7 @@ def _invoke_initial_agent(
     application_meta: Any,
     callbacks: list[Any],
     memory: Any,
+    attachment_reader: Any = None,
 ) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage
 
@@ -742,7 +871,33 @@ def _invoke_initial_agent(
         and payload.hitl_value is not None
         else payload.user_input
     )
-    messages.append(HumanMessage(content=deepcopy(user_message_content)))
+    # #606: the turn's own attachments, spliced in after the user's content.
+    #
+    # Pylon does not send attachments as a separate field at all — it stores
+    # each one as a message item whose chunks the history projection FLATTENS
+    # into the message content list (utils/chat_history.py:67-73). The
+    # equivalent here is one content list: the user's text first, then the
+    # attachment chunks, which is the order the model reads them in.
+    #
+    # ``payload`` is not mutated. It is the frozen projection of an immutable
+    # input binding, and a retried or resumed command must rebuild the same
+    # message from the same bytes rather than from whatever a previous attempt
+    # spliced into it.
+    attachment_chunks: list[Any] = []
+    if payload.input_attachments:
+        extracted: dict[tuple[str, str], str] = {}
+        pending = pending_attachment_reads(payload.input_attachments)
+        if pending and attachment_reader is not None:
+            extracted = attachment_reader(payload, pending)
+        attachment_chunks = attachment_message_chunks(
+            payload.input_attachments,
+            extracted,
+        )
+    messages.append(
+        HumanMessage(
+            content=human_message_content(user_message_content, attachment_chunks)
+        )
+    )
     configurable: dict[str, Any] = {
         "thread_id": payload.thread_id or payload.conversation_id,
         "invoked_skills": deepcopy(payload.invoked_skills),

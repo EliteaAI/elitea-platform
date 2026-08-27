@@ -704,6 +704,41 @@
       }
     },
     {
+      // `src/widgets/support-assistant/vendor/**` is the PORTED SOURCE of
+      // `@eliteaai/elitea-assistant` — a widget written to embed in any host
+      // application, brought into this repo because the published package
+      // streams over socket.io and this platform serves SSE (see that
+      // directory's `lib/hooks/stream.hook.ts`).
+      //
+      // Two rules are switched off there, and ONLY these two. Everything else
+      // the linter asked for was FIXED rather than exempted: the barrel import
+      // cycles were broken by importing siblings directly, every literal string
+      // now goes through `@/shared/i18n`, the floating promises were marked, and
+      // the click-only affordances became real buttons.
+      //
+      //  - `elitea/no-raw-color`: the widget carries its OWN colour system, as a
+      //    set of CSS custom properties it computes from a light/dark theme and
+      //    an optional palette override (`vendor/theme/colors.theme.ts`). That
+      //    is what makes it an overlay that can sit on any host page rather than
+      //    a component of this app's MUI theme. Rewriting it onto
+      //    `theme.vars.palette.*` would be a redesign of the widget, not a lint
+      //    fix — and the floating assistant is deliberately not styled as part
+      //    of the page it floats over.
+      //
+      //  - `eslint/complexity` and `eslint/max-lines`: three functions exceed
+      //    the threshold — the streamed-frame reducer (`chat.hook.ts`, a switch
+      //    over the runtime's message vocabulary), `MessageItem`'s render
+      //    (nested state ternaries) and the transcript parser. Each is a flat
+      //    dispatch over a fixed vocabulary, where splitting the switch would
+      //    scatter one wire contract across several files for a metric.
+      "files": ["src/widgets/support-assistant/vendor/**"],
+      "rules": {
+        "elitea/no-raw-color": "off",
+        "eslint/complexity": "off",
+        "eslint/max-lines": "off"
+      }
+    },
+    {
       // TEMPORARY (Wave 2 — typescript type-aware rules disabled because
       // Wave-2 code predates strict typing):
       "files": [

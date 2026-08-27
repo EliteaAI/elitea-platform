@@ -595,7 +595,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 			return nil, nil, "", err
 		}
 		resolved.VersionDetails = frozen
-		input, err = currentApplicationInput(start, resolved, suggestionPolicy, toolkitGuardrails)
+		input, err = currentApplicationInput(start, resolved, suggestionPolicy, toolkitGuardrails, nil)
 		if err != nil {
 			return nil, nil, "", err
 		}
@@ -628,7 +628,7 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		if err != nil {
 			return nil, nil, "", err
 		}
-		input, err = currentAdhocInput(start, resolved, frozen, suggestionPolicy, toolkitGuardrails)
+		input, err = currentAdhocInput(start, resolved, frozen, suggestionPolicy, toolkitGuardrails, nil)
 		if err != nil {
 			return nil, nil, "", err
 		}

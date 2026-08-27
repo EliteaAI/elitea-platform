@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo } from 'react';
 import type { ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
@@ -7,34 +7,64 @@ import { useTheme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import { Area, AreaChart, ResponsiveContainer, Tooltip as RechartsTooltip, XAxis, YAxis } from 'recharts';
 
+import type { AnalyticsHealth as AnalyticsHealthData } from '@/shared/api/generated/model';
 import { t } from '@/shared/i18n';
-import { combineSx } from '@/shared/ui/lib/combineSx';
 
-import { EVENT_TYPE_COLORS } from '../lib/constants';
-import { fmtDuration, fmtNum } from '../lib/format';
-import { numField, strField } from '../lib/looseRecord';
+import { fmtNum } from '../lib/format';
 import { ChartTooltip } from './components/ChartTooltip';
+import { ErrorCodeTable, ModelHealthTable } from './components/HealthTables';
 
 /**
- * Ported from
- * `apps/elitea-ui/src/[fsd]/features/analytics/ui/AnalyticsHealth.jsx`.
+ * The Health tab.
  *
- * `health`/`dailyActivity` are genuinely unknown-shaped rows (see
- * `lib/looseRecord.ts`'s header) — `ProjectAnalytics` (the only response
- * `AnalyticsContainer` can source this from) has NO `health` field at all
- * (`src/shared/api/generated/model/projectAnalytics.zod.ts`:
- * `kpis`/`top_ai_users`/`daily_activity`/`models`, nothing else;
- * `internal/api/v2/analytics/handler.go`'s `Usage()` never writes a
- * `"health"` key). `health` is therefore always empty against the real
- * backend today, exactly as in the baseline (whose own `AnalyticsContainer`
- * passed `data.health` — a key that was never in ITS API response either).
- * This tab's "No health data available." empty state is consequently the
- * ALWAYS-observable state right now, faithfully reproduced rather than
- * hidden — a pre-existing baseline limitation, not a porting regression.
+ * ── IT COULD NEVER RENDER ANYTHING ──
+ *
+ * Two independent defects made this component's entire body unreachable for its
+ * whole life, and each hid the other:
+ *
+ *  1. `AnalyticsTabContent` rendered `<AnalyticsHealth dailyActivity={…} />` and
+ *     NEVER passed `health`. It defaulted to `[]` and the component returned
+ *     "No health data available." on `health.length === 0`, so every branch
+ *     below that guard was dead. There was nothing to pass: `ProjectAnalytics`
+ *     had no `health` field in the spec or in the Go handler, and neither did
+ *     the baseline SPA's response — this was ported faithfully, including the
+ *     part that never worked.
+ *  2. The trend chart read `errors` and `events` off each daily point through
+ *     the loose readers. Neither field has ever existed on any response, so
+ *     every point would have been `0` even had the chart been reachable — a
+ *     flat line at zero, which reads as "nothing failed" rather than as a bug.
+ *
+ * ── WHAT MAKES IT ANSWERABLE NOW ──
+ *
+ * `gateway.llm_request_logs` (shared migration 0099) is the only table in this
+ * platform that records a request that FAILED. The billing ledger is written
+ * from a billing delta, and a delta rides only a BILLED request, so a call
+ * refused by a budget, rejected by a policy, addressed to an unresolvable model
+ * or failed upstream never reaches it — a health view built over the ledger
+ * would list successes and no failures, the opposite of what this tab is for.
+ *
+ * The loose `numField`/`strField` readers are gone, as they went from
+ * `AnalyticsOverview`. They were not merely unnecessary: reading a field that
+ * does not exist through them yields `0`, so the compiler could not see either
+ * defect above and neither could a test that only checked the component
+ * rendered.
+ *
+ * ── WHAT IT STILL CANNOT SHOW ──
+ *
+ * The old table was "Health by Event Type", over an `event_type` column of
+ * `centry.audit_events` — a table this service cannot write and does not read.
+ * There is no event-type dimension in the request log and none is invented
+ * here; the table is keyed by (provider, model, streaming) instead, which is
+ * what the data source actually has.
  */
 export interface AnalyticsHealthProps {
-  readonly health?: readonly Readonly<Record<string, unknown>>[];
-  readonly dailyActivity?: readonly Readonly<Record<string, unknown>>[];
+  /**
+   * Absent when the repository could not build the block. An idle project has a
+   * health object with zero totals, which is a different and true statement —
+   * so this renders "no data" only for the first case, and real zeros for the
+   * second.
+   */
+  readonly health?: AnalyticsHealthData | undefined;
 }
 
 const cardSx = (theme: Theme) => ({
@@ -68,104 +98,71 @@ const emptyStateSx = (theme: Theme) => ({
 
 const emptyTextSx = (theme: Theme) => ({ color: theme.vars.palette.text.metrics });
 
-const headerRowSx = (theme: Theme) => ({
-  display: 'flex',
-  padding: `${theme.spacing(1)} ${theme.spacing(1.5)}`,
-  borderBottom: `1px solid ${theme.vars.palette.border.table}`,
-  gap: theme.spacing(1),
+const totalsRowSx = (theme: Theme) => ({
+  display: 'grid',
+  gridTemplateColumns: 'repeat(auto-fit, minmax(9rem, 1fr))',
+  gap: theme.spacing(2),
 });
 
-const headerCellSx = (theme: Theme) => ({
-  fontSize: theme.typography.labelSmall.fontSize,
-  fontWeight: 600,
+const totalLabelSx = (theme: Theme) => ({
   color: theme.vars.palette.text.metrics,
-  textTransform: 'uppercase',
+  fontSize: theme.typography.labelSmall.fontSize,
 });
 
-const rowSx = (theme: Theme) => ({
-  display: 'flex',
-  padding: `${theme.spacing(1)} ${theme.spacing(1.5)}`,
-  borderBottom: `1px solid ${theme.vars.palette.border.table}`,
-  gap: theme.spacing(1),
-  '&:hover': { backgroundColor: theme.vars.palette.background.conversation.hover },
-});
 
-const cellValueSx = (theme: Theme) => ({
-  fontSize: theme.typography.bodyMedium.fontSize,
-  color: theme.vars.palette.text.secondary,
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-});
 
-interface ErrorTrendPoint {
-  readonly date: string;
-  readonly errors: number;
-  readonly events: number;
-}
+
 
 /**
- * `health.map(...)` read `strField`/`numField` calls directly inside JSX in
- * an earlier draft — `i18next/no-literal-string` (R-T3, `mode: "jsx-only"`)
- * flags a raw string LITERAL ARGUMENT to any non-`t`/`i18n` callee found
- * anywhere inside a JSX subtree, not only JSX text/attribute positions, so
- * `strField(row, 'event_type')` written inline in the returned JSX tripped
- * it even though `'event_type'` is a wire field name, not user-visible copy.
- * Every other loose-row transform in this feature (`errorTrend` right
- * below, `AnalyticsOverview`'s `dailyActivity`/`topAiUsers`) already does
- * this extraction in a `useMemo` BEFORE the `return`, outside any JSX —
- * this interface/derivation follows the same, already-established pattern.
+ * The KPI strip. Three figures, and each is a count the request log measured
+ * rather than a rate derived from something else.
  */
-interface HealthRow {
-  readonly eventType: string;
-  readonly total: number;
-  readonly errors: number;
-  readonly errorRatePercent: number;
-  readonly avgDurationMs: number;
+function HealthTotals({ health }: { readonly health: AnalyticsHealthData }): ReactNode {
+  const theme = useTheme();
+  const danger = health.error_rate > 5;
+  return (
+    <Box sx={totalsRowSx}>
+      <Box sx={cardSx}>
+        <Typography variant="labelSmall" sx={totalLabelSx}>
+          {t('analytics.health.totalRequests', 'REQUESTS')}
+        </Typography>
+        <Typography variant="headingMedium">{fmtNum(health.requests)}</Typography>
+      </Box>
+      <Box sx={cardSx}>
+        <Typography variant="labelSmall" sx={totalLabelSx}>
+          {t('analytics.health.totalErrors', 'ERRORS')}
+        </Typography>
+        <Typography
+          variant="headingMedium"
+          sx={{ color: health.errors > 0 ? theme.vars.palette.status.rejected : undefined }}
+        >
+          {fmtNum(health.errors)}
+        </Typography>
+      </Box>
+      <Box sx={cardSx}>
+        <Typography variant="labelSmall" sx={totalLabelSx}>
+          {t('analytics.health.totalErrorRate', 'ERROR RATE')}
+        </Typography>
+        <Typography
+          variant="headingMedium"
+          sx={{ color: danger ? theme.vars.palette.status.rejected : undefined }}
+        >
+          {`${health.error_rate.toFixed(1)}%`}
+        </Typography>
+      </Box>
+    </Box>
+  );
 }
 
-function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealthProps): ReactNode {
+function AnalyticsHealthImpl({ health }: AnalyticsHealthProps): ReactNode {
   const theme = useTheme();
   const axisStroke = theme.vars.palette.text.primary;
   const axisTickStyle = { fill: axisStroke, fontSize: theme.typography.labelSmall.fontSize };
 
-  const errorTrend = useMemo<ErrorTrendPoint[]>(
-    () =>
-      dailyActivity.map((point) => ({
-        date: strField(point, 'date'),
-        errors: numField(point, 'errors'),
-        events: numField(point, 'events'),
-      })),
-    [dailyActivity],
-  );
-
-  const healthRows = useMemo<HealthRow[]>(
-    () =>
-      health.map((row) => ({
-        eventType: strField(row, 'event_type'),
-        total: numField(row, 'total'),
-        errors: numField(row, 'errors'),
-        // `error_rate` is a 0-1 fraction (same field family as
-        // `AgentAnalytics.error_rate`/`ToolAnalytics.error_rate`,
-        // `internal/domain/analytics/types.go:22-37`; `health` rows
-        // themselves have no formal schema — see this file's header
-        // comment — but the backend never emits `health` today, so this
-        // is forward-looking parity with the sibling tabs), not a 0-100
-        // percentage — must be scaled ×100 for display/threshold
-        // comparisons, matching this feature's other fraction→percent
-        // readouts (e.g. `ModelUsageTable.tsx`'s `share.toFixed(1)}%`,
-        // and the already-fixed `AnalyticsAgents.tsx`/`AnalyticsTools.tsx`
-        // `errorRatePercent` handling). Previously stored and compared/
-        // rendered the raw fraction directly, so the `> 5` "unhealthy"
-        // threshold could never trigger and a real 20% error rate
-        // displayed as "0.2%".
-        errorRatePercent: numField(row, 'error_rate') * 100,
-        avgDurationMs: numField(row, 'avg_duration_ms'),
-      })),
-    [health],
-  );
-
-  if (health.length === 0) {
+  // ABSENT, not empty. An idle project has a health object whose totals are
+  // zero — a real measurement — and only a repository that could not build the
+  // block leaves it undefined.
+  if (health === undefined) {
     return (
       <Box sx={emptyStateSx}>
         <Typography
@@ -180,7 +177,8 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: theme.spacing(2) }}>
-      {errorTrend.length > 0 && (
+      <HealthTotals health={health} />
+      {health.daily.length > 0 && (
         <Box sx={cardSx}>
           <Typography
             variant="labelMedium"
@@ -199,7 +197,16 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
               width="100%"
               height={240}
             >
-              <AreaChart data={errorTrend}>
+              {/*
+                The series are `requests` and `errors`, which the response
+                actually carries. They used to be `events` and `users`, read
+                loosely off a daily point that has never had either — so every
+                point resolved to 0 and the chart, had it ever been reachable,
+                would have drawn a flat line at zero. A flat line at zero reads
+                as "nothing failed", which is why the compiler seeing these
+                names matters more here than almost anywhere else in the tab.
+              */}
+              <AreaChart data={[...health.daily]}>
                 <XAxis
                   dataKey="date"
                   tick={axisTickStyle}
@@ -208,7 +215,7 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
                   tickLine={{ stroke: axisStroke }}
                 />
                 <YAxis
-                  yAxisId="events"
+                  yAxisId="requests"
                   tick={axisTickStyle}
                   axisLine={{ stroke: axisStroke }}
                   tickLine={{ stroke: axisStroke }}
@@ -222,9 +229,9 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
                 />
                 <RechartsTooltip content={<ChartTooltip />} />
                 <Area
-                  yAxisId="events"
+                  yAxisId="requests"
                   type="monotone"
-                  dataKey="events"
+                  dataKey="requests"
                   name={t('analytics.health.seriesTotalRequests', 'Total Requests')}
                   stroke={theme.vars.palette.status.draft}
                   fill={theme.vars.palette.status.draft}
@@ -246,70 +253,8 @@ function AnalyticsHealthImpl({ health = [], dailyActivity = [] }: AnalyticsHealt
           </Box>
         </Box>
       )}
-      <Box sx={cardSx}>
-        <Typography
-          variant="labelMedium"
-          sx={titleSx}
-        >
-          {t('analytics.health.tableTitle', 'Health by Event Type')}
-        </Typography>
-        <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', overflow: 'auto' }}>
-          <Box sx={headerRowSx}>
-            <Typography sx={combineSx(headerCellSx, { flex: 2 })}>
-              {t('analytics.health.columnEventType', 'Event Type')}
-            </Typography>
-            <Typography sx={combineSx(headerCellSx, { flex: 1 })}>
-              {t('analytics.health.columnTotal', 'Total')}
-            </Typography>
-            <Typography sx={combineSx(headerCellSx, { flex: 1 })}>
-              {t('analytics.health.columnErrors', 'Errors')}
-            </Typography>
-            <Typography sx={combineSx(headerCellSx, { flex: 1 })}>
-              {t('analytics.health.columnErrorRate', 'Error Rate')}
-            </Typography>
-            <Typography sx={combineSx(headerCellSx, { flex: 1 })}>
-              {t('analytics.health.columnAvgLatency', 'Avg Latency')}
-            </Typography>
-          </Box>
-          {healthRows.map((row, index) => (
-            <Box
-              key={`${row.eventType}-${index}`}
-              sx={rowSx}
-            >
-              <Box sx={combineSx(cellValueSx, { flex: 2, display: 'flex', alignItems: 'center', gap: 1 })}>
-                <Box
-                  sx={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: theme.vars.shape.radiusPill,
-                    backgroundColor: EVENT_TYPE_COLORS[row.eventType] ?? theme.vars.palette.status.draft,
-                    flexShrink: 0,
-                  }}
-                />
-                <Typography variant="bodySmall">{row.eventType}</Typography>
-              </Box>
-              <Typography sx={combineSx(cellValueSx, { flex: 1 })}>{fmtNum(row.total)}</Typography>
-              <Typography
-                sx={combineSx(cellValueSx, {
-                  flex: 1,
-                  color: row.errors > 0 ? theme.vars.palette.status.rejected : undefined,
-                })}
-              >
-                {row.errors}
-              </Typography>
-              <Typography
-                sx={combineSx(cellValueSx, {
-                  flex: 1,
-                  color: row.errorRatePercent > 5 ? theme.vars.palette.status.rejected : undefined,
-                })}
-              >
-                {row.errorRatePercent.toFixed(1)}%
-              </Typography>
-              <Typography sx={combineSx(cellValueSx, { flex: 1 })}>{fmtDuration(row.avgDurationMs)}</Typography>
-            </Box>
-          ))}
-        </Box>
-      </Box>
+      <ErrorCodeTable health={health} />
+      <ModelHealthTable health={health} />
     </Box>
   );
 }

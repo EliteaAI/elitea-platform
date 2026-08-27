@@ -135,7 +135,7 @@ export function LlmProxyAlertsPanel() {
 
       <Box>
         <Button
-          variant="contained"
+          variant="elitea" color="primary"
           disabled={!thresholdValid || save.isPending}
           onClick={() => save.mutate({ enabled, threshold_pct: parsed })}
           data-testid="llm-proxy-alerts-save"

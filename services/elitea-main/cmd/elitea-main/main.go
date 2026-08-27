@@ -36,6 +36,7 @@ import (
 	v2secrets "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 	socialapi "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/social"
+	v2support "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/supportassistant"
 	v2tags "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/tags"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/webhook"
 	configurationapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/configurations"
@@ -285,6 +286,33 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		}
 		principalValidator = authsvc.NewPrincipalValidator(pool)
 		forwardedIdentityVerifier = formGraph.ForwardedIdentityVerifier()
+		// The browser's `elitea_session` cookie, accepted on the notification
+		// routes composed below.
+		//
+		// Those routes carry a ForwardedIdentityVerifier and no SessionSecret, so
+		// apimw.Auth's cookie branch is inert on them and a browser has NO
+		// credential they accept. Composing them here also makes them non-nil,
+		// which SKIPS the OIDC-only arm further down that would have supplied the
+		// cookie — so a deployment configured with BOTH a form config and OIDC
+		// (this is the standalone stack) ends up strictly worse off than an
+		// OIDC-only one, on routes only a browser ever calls.
+		//
+		// The edge is what makes it unreachable rather than merely awkward:
+		// deploy/traefik/dynamic.yml STRIPS every inbound X-Auth-* header and runs
+		// no forwardAuth ("elitea-main authenticates the session cookie itself"),
+		// so forwarded identity never arrives and cannot be made to.
+		//
+		// Measured: GET /api/v2/notifications/notifications/prompt_lib/{id}
+		// answered `401 missing authorization header` to a browser holding a valid
+		// session, while the same request with a PAT answered 200.
+		//
+		// This is NOT a new trust decision. It is the same cookie, verified with
+		// the same APPLICATION_SECRET_KEY and the same PrincipalValidator that
+		// oidcSessionAuthConfig already applies to these exact routes; it only
+		// stops the form config from taking that credential away. Adding a
+		// credential cannot widen a route's authorization either — the
+		// per-project permission gate in front of each handler is unchanged.
+		formSessionSecret := os.Getenv("APPLICATION_SECRET_KEY")
 		currentProjectList, err = v2projects.NewCurrentProjectListRoute(
 			sqlcgen.New(pool),
 			apimw.AuthConfig{
@@ -344,6 +372,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             formSessionSecret,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)
@@ -361,6 +390,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             formSessionSecret,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)
@@ -678,6 +708,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			pool,
 			currentConfigurationsConfig.PublicProjectID,
 			currentConfigurationsConfig.VaultMasterKeyFile,
+			currentConfigurationsConfig.VaultMasterKey,
 		)
 		if err != nil {
 			return fmt.Errorf("compose current Configurations services: %w", err)
@@ -846,18 +877,38 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		// Reuse the Configurations runtime's loader when it exists, so a
 		// deployment that DOES set ELITEA_VAULT_MASTER_KEY_FILE keeps reading
 		// master-key-wrapped project keys. Without that chain the master-key
-		// file cannot be expressed at all today (currentConfigurationsConfig
-		// rejects it unless ELITEA_CONFIGURATIONS_ENABLED=true), so the
-		// unwrapped loader is the only reachable shape there — which is also
-		// the shape centry writes when SECRETS_MASTER_KEY is unset.
+		// FILE cannot be expressed at all today (currentConfigurationsConfig
+		// rejects it unless ELITEA_CONFIGURATIONS_ENABLED=true) — but
+		// SECRETS_MASTER_KEY can, and usually is, so the loader built below
+		// takes it. Only a deployment that sets neither gets the unwrapped
+		// shape, which is what centry writes with no master key at all.
 		chatConfigVaults := currentConfigurationsRoot.VaultLoader()
 		if chatConfigVaults == nil {
-			unwrapped, vaultErr := storage.NewPostgresSecretVaultLoader(pool, nil)
+			// SECRETS_MASTER_KEY, not nil. A nil key builds the UNWRAPPED
+			// opener, and the secrets handler writes every project vault key
+			// WRAPPED with that variable whenever it is set — so a nil here
+			// reproduces, on this branch, the exact ErrInvalidProjectKey the
+			// Configurations loader was just fixed for: an intact vault row
+			// that will not open, and a chat configuration read that fails for
+			// every project which has one.
+			//
+			// This branch is not hypothetical. deploy/docker-compose.yml
+			// MANDATES SECRETS_MASTER_KEY and sets no Configurations flag, so
+			// it is exactly the shape that lands here.
+			//
+			// The key is re-read rather than taken from `masterKey` above:
+			// that one is the raw 32 bytes for the secrets handler, and this
+			// loader validates the 44-character encoded form.
+			chatConfigMasterKey, keyErr := encodedVaultMasterKeyFromEnv(os.LookupEnv)
+			if keyErr != nil {
+				return fmt.Errorf("compose ungated chat configuration vault loader: %w", keyErr)
+			}
+			ungated, vaultErr := storage.NewPostgresSecretVaultLoader(pool, chatConfigMasterKey)
 			if vaultErr != nil {
 				return fmt.Errorf("compose ungated chat configuration vault loader: %w", vaultErr)
 			}
-			defer unwrapped.Destroy()
-			chatConfigVaults = unwrapped
+			defer ungated.Destroy()
+			chatConfigVaults = ungated
 		}
 		chatConfigReader, readerErr :=
 			promptcontextreadsapi.NewCurrentChatConfigVaultReader(chatConfigVaults)
@@ -906,6 +957,13 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 	var productionRuntime *api.ProductionRuntimeRoutes
 	var currentIndexStart http.Handler
 	var currentAgentStart http.Handler
+	// The support assistant's half of the agent-execution wiring. It is
+	// assigned ONLY inside the `publicRoutes.AgentStart != nil` guard below:
+	// assigning a nil concrete value to an interface variable yields a
+	// non-nil interface holding a nil pointer, and the router's `!= nil` check
+	// would then wire a use case whose first call panics — the typed-nil trap
+	// this service has already been bitten by on /healthz.
+	var supportAssistantStart v2support.StartUseCase
 	var currentAgentCancel http.Handler
 	var currentIndexCancel http.Handler
 	var currentIndexMeta http.Handler
@@ -1027,6 +1085,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 			}
 		}
 		if publicRoutes.AgentStart != nil {
+			supportAssistantStart = publicRoutes.AgentStart
 			currentAgentStart, err = agentexecutionapi.NewCurrentApplicationStartRoute(
 				publicRoutes.AgentStart,
 				apimw.AuthConfig{
@@ -1361,23 +1420,29 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 		CurrentConfigurationMutation:  currentConfigurationMutation,
 		CurrentIndexStart:             currentIndexStart,
 		CurrentAgentStart:             currentAgentStart,
-		CurrentAgentCancel:            currentAgentCancel,
-		CurrentIndexCancel:            currentIndexCancel,
-		CurrentIndexMeta:              currentIndexMeta,
-		CurrentIndexMetaDelete:        currentIndexMetaDelete,
-		CurrentIndexScheduleUpdate:    currentIndexScheduleUpdate,
-		CurrentIndexScheduleDelete:    currentIndexScheduleDelete,
-		CurrentNotifications:          currentNotifications,
-		CurrentNotificationEvents:     currentNotificationEvents,
-		CurrentModelCatalog:           currentModelCatalog,
-		CurrentModelDefault:           currentModelDefault,
-		GatewayProxy:                  gatewayProxy,
-		GatewayProjectResolver:        gatewayProjectResolver,
-		ConfigConnectionChecker:       configConnectionChecker,
-		GatewayStatus:                 gatewayStatus,
-		ConfigProviderAdmission:       configProviderAdmission,
-		ObjectStore:                   objectStore,
-		ProjectVectorStore:            projectVectorStore,
+		// The support assistant's predict route delegates to the SAME
+		// agent-execution use case CurrentAgentStart's HTTP route drives — not a
+		// second pipeline. A support turn is an ordinary agent run in a hidden
+		// project, and giving it its own executor is how the two would drift
+		// apart on tracing, budgets and cancellation.
+		SupportAssistantStart:      supportAssistantStart,
+		CurrentAgentCancel:         currentAgentCancel,
+		CurrentIndexCancel:         currentIndexCancel,
+		CurrentIndexMeta:           currentIndexMeta,
+		CurrentIndexMetaDelete:     currentIndexMetaDelete,
+		CurrentIndexScheduleUpdate: currentIndexScheduleUpdate,
+		CurrentIndexScheduleDelete: currentIndexScheduleDelete,
+		CurrentNotifications:       currentNotifications,
+		CurrentNotificationEvents:  currentNotificationEvents,
+		CurrentModelCatalog:        currentModelCatalog,
+		CurrentModelDefault:        currentModelDefault,
+		GatewayProxy:               gatewayProxy,
+		GatewayProjectResolver:     gatewayProjectResolver,
+		ConfigConnectionChecker:    configConnectionChecker,
+		GatewayStatus:              gatewayStatus,
+		ConfigProviderAdmission:    configProviderAdmission,
+		ObjectStore:                objectStore,
+		ProjectVectorStore:         projectVectorStore,
 		// Without AppsRepo, internal/api/router.go silently skips registering
 		// every /elitea_core/application(s)/* and /elitea_core/version(s)/*
 		// route, and creating an agent from the UI 404s (#115).

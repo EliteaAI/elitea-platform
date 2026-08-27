@@ -1,6 +1,8 @@
 {
-  "recordedAt": "2026-07-27",
+  "recordedAt": "2026-08-25",
   "synthetic": true,
-  "note": "Synthetic (unit S6): export-failure probe body.",
-  "body": { "error": "not found" }
+  "note": "Synthetic (unit S6): export-failure probe body. Re-verified under R-M4 against the two writers this route can reach: ExportImportGet's own not-found (eliteacore/handler.go:3147, {\"error\": \"application not found\"}) and pkg/apierr/apierr.go:47-52 — both a FLAT {\"error\": string}, as here. `exportMarkdown` (shared/lib/download.ts:124) returns {kind:'http', status} without reading the body, so this fixture's job is the schema.",
+  "body": {
+    "error": "not found"
+  }
 }

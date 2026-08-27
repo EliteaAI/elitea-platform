@@ -257,37 +257,21 @@ func TestNoComposeOverlayGivesTheKeyToOnlyOneService(t *testing.T) {
 	}
 }
 
-// The Kubernetes path must not be able to start a pod without the key. The
-// chart's other secrets are optional on purpose; this one cannot be, because an
-// absent key is not a downgrade here. It is a second row format.
-func TestPylonIndexerChartRequiresTheMasterKey(t *testing.T) {
-	path := repoPath(t, "deploy", "helm", "pylon-indexer", "values.yaml")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-
-	var values struct {
-		Secrets map[string]struct {
-			SecretName string `yaml:"secretName"`
-			Key        string `yaml:"key"`
-			Optional   *bool  `yaml:"optional"`
-		} `yaml:"secrets"`
-	}
-	if err := yaml.Unmarshal(raw, &values); err != nil {
-		t.Fatalf("parse %s: %v", path, err)
-	}
-
-	entry, ok := values.Secrets["SECRETS_MASTER_KEY"]
-	if !ok {
-		t.Fatal("the pylon-indexer chart cannot set SECRETS_MASTER_KEY; a Helm install would run " +
-			"pylon-indexer with no key while elitea-main has one")
-	}
-	if entry.SecretName == "" || entry.Key == "" {
-		t.Fatal("the SECRETS_MASTER_KEY entry names no Secret and key")
-	}
-	if entry.Optional == nil || *entry.Optional {
-		t.Error("SECRETS_MASTER_KEY is optional in the pylon-indexer chart; the pod must not start " +
-			"without it")
-	}
-}
+// TestPylonIndexerChartRequiresTheMasterKey WAS HERE, and it is gone with its
+// subject: deploy/helm/pylon-indexer no longer exists, because the platform
+// installs from one chart and Kubernetes never ran the Python indexer — the
+// Go runtime plane serves index ingest through the agent worker, on the same
+// stream and consumer group as agent execution.
+//
+// The invariant it guarded is NOT dropped where it still applies. pylon-indexer
+// remains a live service in deploy/docker-compose.yml and its image is still
+// built and published, so the compose path still has to hand both services ONE
+// key from the environment — which is exactly what
+// TestBaseComposeGivesBothServicesOneKeyFromTheEnvironment and
+// TestNoComposeOverlayGivesTheKeyToOnlyOneService above assert. An absent key
+// there is not a downgrade; it is a second row format in the vault.
+//
+// If a Kubernetes deployment of pylon-indexer is ever wanted again, restore it
+// as a component of deploy/helm/elitea and restore this assertion with it: an
+// image that ships with no way to deploy it is how the agent worker's chart
+// ended up maintained outside this repository in the first place.

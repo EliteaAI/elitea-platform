@@ -1890,6 +1890,42 @@ components:
             but non-interactive with an admin tooltip, which the button already
             renders (`tooltipAdminDisabled`) against a constant hardcoded to
             `false`.
+        is_publish_blocked:
+          type: boolean
+          description: >
+            The AGENT publishing guardrail, as authored on the admin Features
+            page (Agent Publishing) and enforced by
+            `POST /elitea_core/publish/prompt_lib/{project_id}/{version_id}`.
+            Published so the product UI can gate its Publish control on the same
+            answer the handler enforces, rather than rendering an enabled button
+            into a 403. Optional for the same reason as mcp_in_menu_enabled.
+        publish_whitelist_project_ids:
+          type: array
+          items:
+            type: integer
+          description: >
+            The projects that may still publish agents while the switch above is
+            on. An EMPTY list while blocked means nobody may publish — it is not
+            "no restrictions" — which is why the list is published rather than a
+            resolved boolean: a client that has it can also say why the control
+            is off.
+        is_skill_publish_blocked:
+          type: boolean
+          description: >
+            The SKILL publishing guardrail, authored on the admin Features page
+            (Skill Publishing) and enforced by
+            `POST /elitea_core/publish_skill/...`. Independent of
+            `is_publish_blocked`: the two are separate sections with separate
+            switches, and freezing one does not freeze the other. Admin
+            publishes from the public project itself are exempt from both.
+        skill_publish_whitelist_project_ids:
+          type: array
+          items:
+            type: integer
+          description: >
+            The projects that may still publish skills while the switch above is
+            on, with the same empty-list-means-nobody rule as the agent
+            whitelist.
         blocked_toolkits:
           type: array
           items:
@@ -1937,74 +1973,450 @@ components:
       type: object
       required: [enabled]
       properties:
-        enabled: { type: boolean }
+        enabled:
+          type: boolean
+          description: >
+            Whether the widget should render AT ALL. It is `true` only when the
+            operator enabled the section, a hidden support project exists, and a
+            support agent has been chosen — an assistant that cannot answer is
+            reported as disabled rather than as enabled-and-broken.
+        title: { type: string }
+        welcome_message: { type: string }
+        placeholder: { type: string }
+        support_project_id:
+          type: integer
+          format: int64
+          description: >
+            The hidden project support conversations live in. It is an OUTPUT
+            only, echoed so the widget can build the project-scoped execution
+            event-stream URL; no support route accepts a project from a client.
+        user:
+          $ref: '#/components/schemas/SupportAssistantUser'
       description: >
-        NOTE(W2): static stub, internal/api/v2/eliteacore/handler.go:2944-2946.
+        Only `enabled` is required. A disabled deployment answers `{"enabled":
+        false}` and NOTHING ELSE — no project id, no operator strings, no
+        identity — so a feature that is off is not also a disclosure channel.
+
+    SupportAssistantUser:
+      type: object
+      description: The CALLER's own identity, for the avatar beside their messages.
+      properties:
+        id: { type: integer, format: int64 }
+        name: { type: string }
+        avatar:
+          type: string
+          description: Empty when the user has no avatar, or when the lookup failed.
+
+    SupportConversation:
+      type: object
+      required: [id, uuid, name, author_id, source]
+      properties:
+        id: { type: integer, format: int64 }
+        uuid: { type: string, format: uuid }
+        name: { type: string }
+        is_private: { type: boolean }
+        author_id: { type: integer, format: int64 }
+        source:
+          type: string
+          description: Always `support` on this surface.
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): DB jsonb column `chat_conversations.meta`, re-emitted
+            verbatim (internal/api/v2/supportassistant/store.go:323). The
+            support routes WRITE a fixed document into it — `is_hidden`,
+            `conversation_type`, `internal_tools` — but the column is shared with
+            the chat surface, which stores a context-strategy block and whatever
+            else a conversation accumulates, so the key set is not fixed by this
+            feature and typing it here would describe only the rows this feature
+            created.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        message_groups_count: { type: integer }
+
+    SupportConversationList:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/SupportConversation' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+        has_more: { type: boolean }
+      description: >
+        The CALLER's conversations only. The support project is shared by every
+        user on the platform, so the listing is predicated on `author_id`; a
+        caller never sees another user's support transcript.
+
+    SupportConversationDetails:
+      allOf:
+        - $ref: '#/components/schemas/SupportConversation'
+        - type: object
+          properties:
+            message_groups:
+              type: array
+              description: >
+                The transcript, in the same message-group shape the chat surface
+                renders.
+              items:
+                type: object
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): the chat surface's own message-group document,
+                  produced verbatim by
+                  internal/infra/db/repos/conversations.go:947 and passed
+                  through unchanged. It is a map assembled per message
+                  ITEM TYPE — text, tool call, canvas, thinking step — so it has
+                  no fixed key set, and this facade deliberately does not
+                  reshape it: a support transcript and a chat transcript are the
+                  same rows, and a second schema for them would be a second
+                  thing to keep in step with the message model.
+            participants:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+                x-elitea-passthrough: >-
+                  NOTE(W2): internal/api/v2/conversations.Participant, produced
+                  by internal/infra/db/repos/conversations.go:136 and passed
+                  through unchanged. Its `entity_meta`, `meta` and
+                  `entity_settings` are
+                  jsonb columns whose contents differ per entity kind (user,
+                  application, llm), so the row is open by construction.
+
+    SupportAssistantContext:
+      type: object
+      description: >
+        The page context the widget collects — which screen the user is on, and
+        what they are looking at. Ported field-for-field from
+        legacy/plugins/support_assistant/models/pd/support.py.
+      properties:
+        assistant_name: { type: string }
+        assistant_version: { type: string }
+        project_id: { type: integer, format: int64 }
+        project_name: { type: string }
+        current_page: { type: string }
+        current_entity_type: { type: string }
+        current_entity_id: { type: integer, format: int64 }
+        current_entity_name: { type: string }
+        selected_provider: { type: string }
+        selected_model: { type: string }
+        meta:
+          type: object
+          additionalProperties: true
+          x-elitea-passthrough: >-
+            NOTE(W2): the reference's own free-form escape hatch
+            (legacy/plugins/support_assistant/models/pd/support.py:5's
+            `meta: Optional[Dict[str, Any]]`). It is CLIENT-SUPPLIED context
+            that the server never interprets — it is serialised into the text
+            the agent is given — so there is no key set to declare. Nothing is
+            authorized on it.
+
+    SupportPredictRequest:
+      type: object
+      required: [content, question_id]
+      properties:
+        content:
+          type: string
+          minLength: 1
+        question_id:
+          type: string
+          format: uuid
+          description: >
+            A lowercase UUID identifying THIS TURN, generated by the client. It
+            is required rather than server-generated because the execution
+            pipeline derives the turn's message identifiers from it
+            deterministically, which is what makes a retried POST resume the
+            same turn instead of billing a second agent run.
+        support_assistant_context:
+          $ref: '#/components/schemas/SupportAssistantContext'
+      description: >
+        Carries NO project, NO agent and NO LLM settings. The assistant answers
+        with the agent the OPERATOR chose; a client that could name one could run
+        any application in the support project against platform credentials.
+
+    SupportPredictResponse:
+      type: object
+      required: [execution_id, events_url]
+      properties:
+        task_id: { type: string }
+        execution_id: { type: string }
+        command_id: { type: string }
+        response_message_id: { type: string }
+        events_url:
+          type: string
+          description: >
+            The SSE stream to subscribe to for this turn, identical in shape to
+            the one the chat surface uses. The reference streamed this over
+            socket.io (`sio/support.py`); this service has no socket.io server.
+        created: { type: boolean }
 
     # ---- Analytics -------------------------------------------------------------
     AnalyticsKpis:
       type: object
-      required: [unique_users, total_project_users, ai_active_users,
-                 adoption_rate, llm_calls, tool_runs, chat_msgs, agent_runs]
+      # NOTHING IS REQUIRED. Which figures a deployment can report depends on
+      # what its corpus produces, and the whole point of the analytics rework
+      # (issue #303, and the 0099 request log that made half of it answerable)
+      # is that a figure with no producer is ABSENT rather than present and
+      # zero. A required list here would force the server to publish a zero for
+      # every gap, which is the defect the endpoint was rebuilt to stop making.
+      # A client renders an absent key as "no data", never as 0.
       properties:
-        unique_users: { type: number }
-        total_project_users: { type: number }
-        ai_active_users: { type: number }
-        adoption_rate: { type: number }
-        llm_calls: { type: number }
-        tool_runs: { type: number }
-        chat_msgs: { type: number }
-        agent_runs: { type: number }
+        ai_active_users:
+          type: number
+          description: >
+            Distinct identities that called a model in the window, from
+            gateway.llm_request_logs (shared migration 0099). CALLERS, not
+            members: it includes a removed member, a global administrator and a
+            service token, all of which are real usage and none of which appear
+            in total_project_users. It is therefore NOT the numerator of
+            adoption_rate — see active_project_members.
+        active_project_members:
+          type: number
+          description: >
+            The intersection of ai_active_users and the project's membership,
+            and the numerator of adoption_rate. Absent whenever
+            total_project_users is: the two are measured in one statement,
+            because a numerator and a denominator taken from two snapshots can
+            disagree.
+        total_project_users:
+          type: number
+          description: >
+            The project's distinct membership. ABSENT when the identity tables
+            (public.auth_core__user_role / auth_core__project_role) are not
+            present — they belong to another corpus, and an adoption rate over
+            an invented denominator is a percentage of nothing.
+        adoption_rate:
+          type: number
+          description: >
+            active_project_members / total_project_users, as a percentage to one
+            decimal. Absent whenever its denominator is, and for a project whose
+            membership is zero. It cannot exceed 100 — its numerator is a subset
+            of its denominator by construction, which the earlier
+            ai_active_users / total_project_users form was not (a project with
+            one member and three non-member callers reported 300).
+        llm_calls:
+          type: number
+          description: >
+            Requests the gateway served in the window. A real per-call count —
+            NOT the budget accumulator's count of billing periods, which
+            /analytics_costs is careful to publish as `rows`.
         total_tokens:
           type: number
-          description: Present only in the project-usage kpis block.
+          description: Prompt plus completion tokens, summed over the window.
+        unique_users:
+          type: number
+          description: >
+            NO PRODUCER. "Active in the project by any means" needs a source of
+            non-LLM activity, and centry.audit_events — the table that had one —
+            is READ-ONLY from this service. Never emitted today.
+        tool_runs:
+          type: number
+          description: >
+            NO PRODUCER. p_<id>.chat_message_trace_step records a tool_name but
+            no toolkit_id and covers chat turns only, so a count built from it
+            would silently exclude every tool call made outside a chat. Never
+            emitted today.
+        chat_msgs:
+          type: number
+          description: NO PRODUCER. Never emitted today.
+        agent_runs:
+          type: number
+          description: >
+            NO PRODUCER. It used to be emitted as a copy of llm_calls, which is
+            a LARGER claim than zero: it asserts that every LLM call is an agent
+            run. elitea_runtime.execution_jobs is project-scoped by two
+            different columns and records no token or duration figures. Never
+            emitted today.
         total_cost:
           type: number
-          description: Present only in the project-usage kpis block.
+          description: >
+            NOT EMITTED BY THIS ENDPOINT. Money has one producer
+            (gateway.llm_budget_accumulators) and one view of it
+            (/analytics_costs), which carries the scope rules that stop it
+            double-counting a user-scope row into its own project's total. A
+            second view here could disagree with the first.
       description: >
-        NOTE(W2): internal/api/v2/analytics/handler.go:48-59 (usage, includes
-        total_tokens/total_cost) and :78-82, 103-107, 128-132 (detail views,
-        8-key variant). Most values are hardwired 0 today.
+        The overview KPI block. Every key present is a figure the server
+        measured; every key absent is one nothing in this platform produces.
+        Source: internal/api/v2/analytics/handler.go's Usage.
 
     ModelUsage:
       type: object
-      required: [model, prompt_tokens, completion_tokens, total_cost, run_count]
+      required: [model, provider, prompt_tokens, completion_tokens, run_count]
       properties:
         model: { type: string }
+        provider: { type: string }
         prompt_tokens: { type: integer }
         completion_tokens: { type: integer }
-        total_cost: { type: number }
         run_count: { type: integer }
       description: >
-        NOTE(W2): internal/domain/analytics/types.go:14-20.
+        One (provider, model) pair's share of the window, from
+        gateway.llm_request_logs. There is NO total_cost: the accumulator that
+        holds money is keyed by (scope, scope_id, period) and carries no model
+        dimension, so a per-model cost cannot be derived from anything this
+        platform writes — and a zero would read as "this model was free".
+        Requests that never resolved a model are counted in kpis.llm_calls and
+        excluded here; a nameless bar on the chart is not something an operator
+        can act on.
+
+    AnalyticsHealth:
+      type: object
+      required: [requests, errors, error_rate, by_error_code, error_codes_truncated, by_model, daily]
+      properties:
+        requests:
+          type: integer
+          description: Requests the gateway served in the window, whatever happened to them.
+        errors:
+          type: integer
+          description: >
+            Requests that failed — status >= 400, the same predicate shared
+            migration 0099's partial index idx_llm_request_logs_errors is built
+            on. NOTHING ELSE IN THIS PLATFORM RECORDS THEM: the billing ledger
+            (gateway.llm_usage_events) is written from a billing delta, and a
+            delta rides only a BILLED request, so a call refused by a budget,
+            rejected by a policy, addressed to an unresolvable model or failed
+            upstream is absent from it entirely.
+        error_rate:
+          type: number
+          description: >
+            errors / requests, as a percentage to one decimal. 0 for a window
+            with no traffic — nothing failed — rather than absent or NaN.
+        by_error_code:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsErrorCodeCount' }
+        error_codes_truncated:
+          type: boolean
+          description: >
+            True when `by_error_code` was cut. It sits beside an UNCAPPED
+            `errors` total, so a silent cut leaves an operator reconciling the
+            two with failures belonging to no listed classification.
+        by_model:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsModelHealth' }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/AnalyticsDailyHealth' }
+      description: >
+        The Health tab's block, from gateway.llm_request_logs. Travels on the
+        usage response because AnalyticsContainer fetches /analytics for the
+        Overview and Health tabs alike. ABSENT — not empty — when the repository
+        could not build it: a block with zero totals is the true report of an
+        idle project, and reusing that shape for "we could not look" would make
+        the two indistinguishable.
+
+    AnalyticsErrorCodeCount:
+      type: object
+      required: [error_code, requests]
+      properties:
+        error_code:
+          type: string
+          description: >
+            The gateway's OWN classification, never an upstream string — 0099
+            has no column a provider's error text can reach, which is structural
+            rather than a policy: upstream errors routinely quote the offending
+            fragment of the request back, and a request is user-authored free
+            text. `unclassified` covers a failure the gateway returned without
+            assigning a code; those rows are reported rather than dropped, or
+            the breakdown would not account for every error the headline counts.
+        requests: { type: integer }
+
+    AnalyticsModelHealth:
+      type: object
+      required: [provider, model, streaming, requests, errors, error_rate, avg_duration_ms, p95_duration_ms]
+      properties:
+        provider: { type: string }
+        model: { type: string }
+        streaming:
+          type: boolean
+          description: >
+            PART OF THE KEY, not a column. 0099's own header records that a
+            streamed and a buffered request of the same model have very
+            different latency profiles and that averaging them makes both
+            unreadable — a streamed duration is the whole stream, seconds where
+            a buffered call is milliseconds. One row per model would report a
+            number describing neither, moving whenever the mix moved rather than
+            when the service did.
+        requests: { type: integer }
+        errors: { type: integer }
+        error_rate: { type: number }
+        avg_duration_ms:
+          type: number
+          description: Wall-clock milliseconds, handler start to response complete.
+        p95_duration_ms:
+          type: number
+          description: >
+            Reported alongside the mean because the mean is what hides the tail
+            an operator investigating "chat feels slow" came to look at.
+            percentile_cont, so a small group interpolates rather than jumping
+            to its slowest member.
+      description: >
+        One (provider, model, streaming) triple's reliability and latency.
+        Requests that never resolved a model are counted in the health totals
+        and excluded here — real traffic, but not a model's, and a nameless row
+        is not something an operator can act on.
+
+    AnalyticsDailyHealth:
+      type: object
+      required: [date, requests, errors]
+      properties:
+        date: { type: string, description: 'UTC day, YYYY-MM-DD.' }
+        requests: { type: integer }
+        errors: { type: integer }
+      description: >
+        One UTC day of the window. Days with no traffic are absent rather than
+        zero-filled, for the reason AnalyticsDailyPoint gives.
+
+    AnalyticsDailyPoint:
+      type: object
+      required: [date, llm_calls, total_tokens, active_users]
+      properties:
+        date: { type: string, description: 'UTC day, YYYY-MM-DD.' }
+        llm_calls: { type: integer }
+        total_tokens: { type: integer }
+        active_users: { type: integer }
+      description: >
+        One UTC day of the window. Days with no traffic are ABSENT rather than
+        zero-filled — the client knows the window it asked for and can draw the
+        gap itself, whereas a zero-filled day is indistinguishable from a day
+        the server failed to read.
 
     ProjectAnalytics:
       type: object
-      required: [kpis, top_ai_users, daily_activity, models]
+      required: [kpis, top_ai_users, daily_activity, models, models_truncated]
       properties:
         kpis: { $ref: '#/components/schemas/AnalyticsKpis' }
         top_ai_users:
           type: array
-          items:
-            type: object
-            x-elitea-passthrough: >-
-              NOTE(W2): always the empty array in the current handler
-              (internal/api/v2/analytics/handler.go:60) — element shape not
-              yet defined by the Go side. Channel-B fixture required before
-              the UI consumes elements (M1).
+          items: { $ref: '#/components/schemas/UserActivity' }
+          description: The leaderboard, most calls first, capped at 10 rows.
         daily_activity:
           type: array
-          items:
-            type: object
-            x-elitea-passthrough: >-
-              NOTE(W2): always the empty array
-              (internal/api/v2/analytics/handler.go:61) — see top_ai_users.
+          items: { $ref: '#/components/schemas/AnalyticsDailyPoint' }
         models:
           type: array
           items: { $ref: '#/components/schemas/ModelUsage' }
+        models_truncated:
+          type: boolean
+          description: >
+            True when `models` was cut to the busiest N (provider, model) pairs.
+            Stated rather than implied because the client SUMS that array to
+            normalise its share column: a cut it cannot see makes every share a
+            percentage of the subset rather than of the project, adding to 100%
+            over part of the traffic, beside a kpis.llm_calls figure carrying the
+            real total.
+        health:
+          $ref: '#/components/schemas/AnalyticsHealth'
       description: >
-        NOTE(W2): Usage response map,
-        internal/api/v2/analytics/handler.go:47-63.
+        The Overview tab's response, and the Health tab's — one fetch serves
+        both. Answers 501 with
+        `{error, code: no_data_source, detail}` on a deployment whose gateway
+        request log is absent — a FINAL status, not a 500, so a client that
+        retries transient failures does not ask twice for an answer the server
+        has already refused.
 
     AgentAnalytics:
       type: object
@@ -2031,13 +2443,24 @@ components:
 
     UserActivity:
       type: object
-      required: [user_id, email, run_count, last_active_at]
+      required: [user_id, email, run_count, total_tokens, last_active_at]
       properties:
         user_id: { type: string }
-        email: { type: string }
+        email:
+          type: string
+          description: >
+            EMPTY when the identity tables are absent. The row is still
+            reported: "user 41 made 900 calls" is useful without a display name,
+            and dropping it because a decoration could not be joined would
+            silently shrink the leaderboard.
+        name: { type: string }
         run_count: { type: integer }
+        total_tokens: { type: integer }
         last_active_at: { type: string, format: date-time }
-      description: NOTE(W2) internal/domain/analytics/types.go:39-44.
+      description: >
+        One member's LLM usage in the window, from gateway.llm_request_logs
+        grouped by user_id. Rows whose user_id is NULL — requests that resolved
+        no member — are excluded.
 
     AnalyticsAgentsList:
       type: object
@@ -2059,16 +2482,32 @@ components:
 
     AnalyticsUsersList:
       type: object
-      required: [items]
+      required: [items, truncated]
       properties:
         items:
           type: array
           items: { $ref: '#/components/schemas/UserActivity' }
-      description: NOTE(W2) internal/api/v2/analytics/handler.go:139.
+        truncated:
+          type: boolean
+          description: >
+            True when the list was cut to the busiest N callers. Stated rather
+            than implied, the way /analytics_costs states periods_truncated: the
+            client paginates and searches CLIENT-SIDE over this array, so a
+            silent cut would present the busiest N as the whole membership,
+            complete with a count label and a working pagination footer, and
+            nothing on either side could tell the difference.
+      description: >
+        The Users tab's list. Source — internal/api/v2/analytics/handler.go's
+        Users.
 
     AnalyticsDetailEnvelope:
       type: object
-      required: [entity_name, kpis, daily_usage]
+      # `kpis` is NOT required, and never was emitted: all three detail branches
+      # (analytics/handler.go's Agents/Tools/Users) answer without it, because
+      # the per-entity split they would need is the one dimension the request
+      # log does not carry. The spec declared it required anyway, so the
+      # contract asserted a block no server has ever sent.
+      required: [entity_name, daily_usage]
       properties:
         entity_name: { type: string }
         kpis: { $ref: '#/components/schemas/AnalyticsKpis' }
@@ -5317,14 +5756,31 @@ paths:
                 $ref: '#/components/schemas/PlatformSettings'
         '401': { $ref: '#/components/responses/401' }
 
+  # ---- Support assistant ------------------------------------------------------
+  #
+  # The in-app support widget. Served by internal/api/v2/supportassistant, which
+  # is a thin facade over the chat stack scoped to ONE HIDDEN PROJECT resolved
+  # from centry.platform_config.
+  #
+  # NO ROUTE BELOW TAKES A PROJECT. That is the surface's defining property: the
+  # project comes from operator configuration, never from the caller, which is
+  # what makes it impossible to aim a support route at another tenant. The
+  # conversation routes are additionally predicated on the caller being the
+  # conversation's author, because the project is shared by everybody.
   /support_assistant/config:
     get:
       operationId: getSupportAssistantConfig
       summary: Retrieve support assistant configuration
       description: |
-        NOTE(W2): static stub {"enabled": false},
-        internal/api/v2/eliteacore/handler.go:2944-2946.
-      tags: [admin]
+        The widget's first call on every page load, and the only route on this
+        surface with no permission gate.
+
+        It answers 200 with `{"enabled": false}` for an unauthenticated caller
+        and for every deployment that cannot serve the assistant. A 401 here
+        would be indistinguishable from a session expiry to a widget that mounts
+        in the app shell before a session necessarily exists, and there is
+        nothing to withhold: the disabled body is one boolean.
+      tags: [chat]
       responses:
         '200':
           description: Support assistant configuration
@@ -5332,7 +5788,123 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SupportAssistantConfig'
+
+  /support_assistant/conversations/:
+    get:
+      operationId: listSupportConversations
+      summary: List the caller's support conversations
+      tags: [chat]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+        - name: q
+          in: query
+          description: Case-insensitive substring match on the conversation name.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The caller's support conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversationList'
         '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '503':
+          description: >
+            The assistant is disabled, has no hidden project, or has no agent
+            chosen. Which of the three is deliberately not distinguished.
+    post:
+      operationId: createSupportConversation
+      summary: Open a new support conversation
+      tags: [chat]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 255 }
+      responses:
+        '201':
+          description: The created conversation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversation'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+
+  /support_assistant/conversation/{conversationUUID}:
+    parameters:
+      - name: conversationUUID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: getSupportConversation
+      summary: Read one support conversation and its transcript
+      description: |
+        Answers 404 both when the conversation does not exist and when it belongs
+        to another user. Distinguishing them would confirm that a UUID names a
+        real support conversation belonging to a real other person.
+      tags: [chat]
+      responses:
+        '200':
+          description: The conversation and its transcript
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportConversationDetails'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+  /support_assistant/predict/{conversationUUID}:
+    parameters:
+      - name: conversationUUID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: startSupportTurn
+      summary: Ask the support assistant one question
+      description: |
+        Attaches the operator-chosen agent to the conversation as a participant
+        if it is not already there, then starts one agent run and answers with
+        the SSE `events_url` to subscribe to.
+
+        This is the REST replacement for the reference's socket.io
+        `support_predict` event: this service streams over SSE, so the turn is
+        started over HTTP and answered on the same durable execution stream the
+        chat surface already consumes.
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SupportPredictRequest'
+      responses:
+        '200':
+          description: The run started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportPredictResponse'
+        '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '404': { $ref: '#/components/responses/404' }
+        '502':
+          description: The agent execution pipeline refused to start the run.
+        '503':
+          description: The assistant is not configured to answer.
 
   /branding/bootstrap.js:
     # NOTE(W3): served OUTSIDE the auth group — the SPA shell loads this
@@ -9090,11 +9662,13 @@ paths:
 
     get:
       operationId: listSkillCategories
-      summary: List the predefined skill categories available for publishing
+      summary: List the skill categories available for publishing
       description: |
-        The nine predefined categories, "Other" last. Admin-added extras
-        (the reference's `skill_publishing_guardrail.skill_categories`) are not
-        served: this platform's admin config schema has no such field.
+        The nine predefined categories plus any an administrator added on the
+        admin Features page (Skill Publishing -> Skill Categories), with
+        "Other" always last. `is_default` marks the built-ins, which cannot be
+        removed. Deduplication is case-insensitive and the first-seen spelling
+        wins, so re-typing a built-in does not create a second bucket.
       tags: [skills]
       responses:
         '200':

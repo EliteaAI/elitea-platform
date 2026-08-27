@@ -2,20 +2,36 @@
  * Ported from `apps/elitea-ui/src/components/Chat/ToolModal.jsx` — renders
  * a modal for viewing tool execution details.
  *
- * Port of `apps/elitea-ui/src/components/Chat/ToolModal.jsx`.
+ * The first pass rendered three stacked `<pre>` blocks in a `maxWidth="md"`
+ * dialog. This pass restores the baseline's real layout: a wide dialog
+ * whose body is a 50/50 horizontal split, `INPUT` on the left and `OUTPUT`
+ * on the right, each a read-only CodeMirror editor with a line-number
+ * gutter, a language selector and a copy button (see `ToolModalPane`).
+ *
+ * Deviations from the baseline:
+ *  - The split is a CSS grid, not `react-split`: the draggable gutter would
+ *    need a new runtime dependency (a toolchain-level decision, spec §2.5)
+ *    for a resize affordance, while the 50/50 layout itself is the part the
+ *    user actually sees. Resizing is a disclosed, deliberate gap.
+ *  - `toolAction.content` has no pane of its own (the baseline modal takes
+ *    `input`/`output` only). It is used as the OUTPUT text when the action
+ *    carries no `toolOutputs`, which is how `ActionView` already treats the
+ *    two fields for its own preview line.
  */
 import type { ReactNode } from 'react';
 
-import Box from '@mui/material/Box';
 import Dialog from '@mui/material/Dialog';
 import DialogContent from '@mui/material/DialogContent';
 import DialogTitle from '@mui/material/DialogTitle';
 import IconButton from '@mui/material/IconButton';
 import Typography from '@mui/material/Typography';
+import type { Theme } from '@mui/material/styles';
 
 import CloseIcon from '@mui/icons-material/Close';
 
 import { t } from '@/shared/i18n';
+
+import { ToolModalPane } from './ToolModalPane';
 
 /** @public Props for `ToolModal`. */
 export interface ToolModalProps {
@@ -35,28 +51,70 @@ export interface ToolModalProps {
   };
 }
 
+/** Strings pass through untouched; everything else is pretty-printed JSON (the baseline's own `input`/`output` shape). */
+function toEditorText(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value, null, 2);
+}
+
 /**
- * `ToolModal` — renders a detail modal for a tool execution,
- * showing inputs, outputs, and metadata.
+ * `"<type> - <name>"` when the action carries both (baseline
+ * `ToolModal.jsx:61`'s two-part title), otherwise whichever half exists.
+ */
+function toolModalTitle(type: string | undefined, name: string | undefined): string {
+  if (type && name) return `${type} - ${name}`;
+  return name || type || t('chatMessages.toolModal.defaultTitle', 'Tool Details');
+}
+
+const styles = {
+  paper: (theme: Theme) => ({
+    backgroundColor: theme.vars.palette.background.secondary,
+    border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
+    borderRadius: theme.vars.shape.radiusSm,
+    maxWidth: '75rem',
+    minHeight: '80vh',
+    maxHeight: '90vh',
+  }),
+  title: (theme: Theme) => ({
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: theme.spacing(3),
+    padding: theme.spacing(2, 4),
+    backgroundColor: theme.vars.palette.background.tabPanel,
+    borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
+  }),
+  content: (theme: Theme) => ({
+    padding: 0,
+    display: 'grid',
+    gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' },
+    columnGap: '0.0625rem',
+    backgroundColor: theme.vars.palette.border.lines,
+    overflow: 'hidden',
+    minHeight: 0,
+    flex: 1,
+  }),
+} as const;
+
+/**
+ * `ToolModal` — a wide detail modal for one tool execution, split
+ * `INPUT` | `OUTPUT` across two read-only code editors.
  */
 export function ToolModal({ open, onClose, toolAction }: ToolModalProps): ReactNode {
+  const inputText = toEditorText(toolAction.toolInputs);
+  const outputText = toEditorText(toolAction.toolOutputs ?? toolAction.content);
+
   return (
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="md"
+      maxWidth="xl"
       fullWidth
+      slotProps={{ paper: { sx: styles.paper } }}
     >
-      <DialogTitle
-        sx={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-        }}
-      >
-        <Typography variant="h6">
-          {toolAction.name || toolAction.type || 'Tool'}
-        </Typography>
+      <DialogTitle sx={styles.title}>
+        <Typography variant="h6">{toolModalTitle(toolAction.type, toolAction.name)}</Typography>
         <IconButton
           size="small"
           aria-label={t('common.closeAriaLabel', 'Close')}
@@ -65,73 +123,17 @@ export function ToolModal({ open, onClose, toolAction }: ToolModalProps): ReactN
           <CloseIcon />
         </IconButton>
       </DialogTitle>
-      <DialogContent>
-        {toolAction.toolInputs !== undefined && (
-          <Box sx={{ mb: 2 }}>
-            <Typography
-              variant="subtitle2"
-              sx={{ mb: 0.5, color: 'text.secondary' }}
-            >
-              Inputs
-            </Typography>
-            <Box
-              component="pre"
-              sx={{
-                fontFamily: 'monospace',
-                fontSize: '0.8rem',
-                p: 1,
-                backgroundColor: 'action.hover',
-                borderRadius: 1,
-                overflow: 'auto',
-              }}
-            >
-              {typeof toolAction.toolInputs === 'string'
-                ? toolAction.toolInputs
-                : JSON.stringify(toolAction.toolInputs, null, 2)}
-            </Box>
-          </Box>
-        )}
-        {toolAction.toolOutputs !== undefined && (
-          <Box sx={{ mb: 2 }}>
-            <Typography
-              variant="subtitle2"
-              sx={{ mb: 0.5, color: 'text.secondary' }}
-            >
-              Outputs
-            </Typography>
-            <Box
-              component="pre"
-              sx={{
-                fontFamily: 'monospace',
-                fontSize: '0.8rem',
-                p: 1,
-                backgroundColor: 'action.hover',
-                borderRadius: 1,
-                overflow: 'auto',
-              }}
-            >
-              {typeof toolAction.toolOutputs === 'string'
-                ? toolAction.toolOutputs
-                : JSON.stringify(toolAction.toolOutputs, null, 2)}
-            </Box>
-          </Box>
-        )}
-        {toolAction.content && (
-          <Box>
-            <Typography
-              variant="subtitle2"
-              sx={{ mb: 0.5, color: 'text.secondary' }}
-            >
-              Content
-            </Typography>
-            <Typography
-              variant="body2"
-              sx={{ whiteSpace: 'pre-wrap' }}
-            >
-              {toolAction.content}
-            </Typography>
-          </Box>
-        )}
+      <DialogContent sx={styles.content}>
+        <ToolModalPane
+          caption={t('chatMessages.toolModal.inputCaption', 'INPUT')}
+          value={inputText}
+          paneId="input"
+        />
+        <ToolModalPane
+          caption={t('chatMessages.toolModal.outputCaption', 'OUTPUT')}
+          value={outputText}
+          paneId="output"
+        />
       </DialogContent>
     </Dialog>
   );

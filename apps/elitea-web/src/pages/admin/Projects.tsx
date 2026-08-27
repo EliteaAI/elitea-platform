@@ -19,41 +19,50 @@
  *    `POST`/`PUT /admin/users/administration/{projectID}`, which answered 501
  *    before this unit because the handler treated `administration` as a
  *    project-less scope; the project id is in that path, so it is not.
- *  - **create project** and **delete project** — NOT implemented, and rendered
- *    unavailable with the reason on the page. See below.
+ *  - **create project** and **delete project** — real, and the last two to
+ *    become so. See below.
  *
- * The reference's Excel export is also rendered disabled with its reason: it
- * builds an .xlsx through a spreadsheet library this app does not depend on.
+ * The reference's export IS real here, and is the one place this port
+ * deliberately differs in FORMAT: it writes CSV, not .xlsx, because this app
+ * carries no spreadsheet dependency (see `./adminCsv`). The control says
+ * "Export to CSV" so it never promises a file type it does not produce.
  *
  * Nothing here is a button that no-ops.
  *
- * ## Why create and delete are unavailable rather than built
+ * ## Create and delete, and what changed
  *
- * Neither is one endpoint. `legacy/plugins/projects/utils/project_steps.py`
- * runs NINE steps to create a project — the row and its quota and statistics,
- * the object-storage buckets, the `p_<id>` tenant schema, the permission set,
- * a system user, that user's token, the vault secrets, a RabbitMQ vhost and
- * user, the InfluxDB databases — and deletion runs the same nine in reverse,
- * including `DROP SCHEMA p_<id> CASCADE`.
+ * Neither is one endpoint, and that is why both were withheld when this page
+ * was first ported. `legacy/plugins/projects/utils/project_steps.py` runs NINE
+ * steps to create a project — the row and its quota and statistics, the
+ * `p_<id>` tenant schema, the permission set, a system user, that user's token,
+ * the vault secrets, the object-storage buckets, the vector store — and
+ * deletion runs the same steps in reverse, ending in
+ * `DROP SCHEMA p_<id> CASCADE`. Half of that pipeline leaves orphaned
+ * infrastructure around irreversibly destroyed tenant data.
  *
- * So the question the issue asks — what should deleting a project do about the
- * tenant schema and data? — has a definite answer, and it is the reason not to
- * implement it here: dropping `p_<id>` is irreversible, and doing it from a Go
- * handler that does not also tear down the vault entry, the RabbitMQ vhost, the
- * Influx databases, the buckets and the system token would destroy the tenant's
- * data while leaving the infrastructure around it orphaned. Creation has the
- * mirror problem: a project row without its schema, secrets and system user is
- * a project every subsequent request fails against.
+ * That pipeline now exists, ported in full:
+ * `services/elitea-main/internal/application/projectprovisioning`. It runs the
+ * ordered steps, records one status per step, and COMPENSATES every attempted
+ * step in reverse when one fails — including the step that failed, because a
+ * step can fail halfway through its own work. Two of the legacy nine are
+ * deliberately not reproduced: the RabbitMQ vhost (AGENTS.md forbids the
+ * Arbiter transport) and the InfluxDB databases. Both are drops with reasons
+ * recorded in `steps.go`, not gaps.
  *
- * Provisioning is its own unit of work, not a side effect of porting a table.
- * Until it exists, both controls are rendered DISABLED with that reason in
- * their tooltip — visible on the page, not only in the tracker.
+ * So the question the issue asked — what should deleting a project do about the
+ * tenant schema and data? — is answered by the server, and this page's job is
+ * to make the answer legible before the fact: `./AdminProjectDeleteDialog.tsx`
+ * lists what is about to be destroyed, and reports which STEP failed when one
+ * does. A provisioning failure is a position in a pipeline, not a status code.
  *
  * ## Authorisation
  *
  * `window.admin_ui_config.permissions` is presentation state and never a gate —
- * see `./adminUiConfig`, and note that the Go handler injecting it HARDCODES
- * the list for every session. The listing is gated server-side on
+ * see `./adminUiConfig`. It does now carry the caller's REAL
+ * administration-mode permissions (the handler injecting it used to write a
+ * fixed 37-permission list for every session), which is what makes hiding the
+ * create and delete controls per operator meaningful rather than decorative.
+ * Meaningful, still not load-bearing. The listing is gated server-side on
  * `projects.projects.projects.view` and every write on its own permission,
  * resolved from `auth_core__user_role` per request. Projects are a tenancy
  * boundary: hiding a control here changes what an operator SEES, and a crafted
@@ -65,6 +74,7 @@ import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
 import Alert from '@mui/material/Alert';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
@@ -75,31 +85,26 @@ import { SimpleSearchBar } from '@/shared/ui/SimpleSearchBar';
 import { t } from '@/shared/i18n';
 import { DrawerPage } from '@/shared/ui/settings/DrawerPage';
 
+import { AdminProjectCreateDialog } from './AdminProjectCreateDialog';
+import { AdminProjectDeleteDialog } from './AdminProjectDeleteDialog';
 import { AdminProjectsTable } from './AdminProjectsTable';
 import { ProjectActivityDrawer } from './ProjectActivityDrawer';
 import { ProjectMemberDialog } from './ProjectMemberDialog';
 import { ADMIN_PROJECTS_PAGE_SIZE, useAdminProjectsPage } from './useAdminProjectsPage';
 
 
-/**
- * The one reason both provisioning controls carry. Written once so the page and
- * its tests cannot drift into two different explanations of the same gap.
- */
-const PROVISIONING_UNAVAILABLE = t(
-  'pages.admin.projects.provisioningUnavailable',
-  'Unavailable: creating or deleting a project provisions and tears down the tenant schema, object storage, vault secrets, the message-broker vhost and a system account. That pipeline has not been ported, and doing half of it would leave orphaned infrastructure or destroy tenant data.',
-);
-
 export function AdminProjects() {
   const state = useAdminProjectsPage();
 
-  const { total, page } = state;
+  const { total, page, provisioning } = state;
+  const selectedCount = provisioning.selectedProjects.length;
   const lastPage = total === 0 ? 0 : Math.ceil(total / ADMIN_PROJECTS_PAGE_SIZE) - 1;
   const firstShown = total === 0 ? 0 : page * ADMIN_PROJECTS_PAGE_SIZE + 1;
   const lastShown = Math.min((page + 1) * ADMIN_PROJECTS_PAGE_SIZE, total);
 
   const createLabel = t('pages.admin.projects.action.create', 'Create project');
   const deleteLabel = t('pages.admin.projects.action.delete', 'Delete projects');
+  const exportLabel = t('pages.admin.projects.action.export', 'Export to CSV');
 
   return (
     <DrawerPage sx={{ padding: '1rem 1.5rem', gap: '0.75rem' }}>
@@ -115,52 +120,96 @@ export function AdminProjects() {
         <Typography variant="h5" sx={{ fontWeight: 600 }}>
           {t('pages.admin.projects.title', 'Projects')}
         </Typography>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <SimpleSearchBar
-            value={state.search}
-            onChange={state.onSearchChange}
-            placeholder={t('pages.admin.projects.search', 'Search by name, ID or owner')}
-            data-testid="admin-projects-search"
-          />
+        {/*
+          The search box is the ONLY item allowed to shrink here. With every
+          child shrinkable, a narrow viewport takes the width out of the
+          buttons instead — their labels wrap to two lines inside a control
+          whose height is a fixed 1.75rem (MuiButton.root), and the text spills
+          out of the pill. The Users page shipped exactly that.
+        */}
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.5rem',
+            flex: '1 1 auto',
+            justifyContent: 'flex-end',
+            minWidth: 0,
+          }}
+        >
+          <Box sx={{ flex: '1 1 12rem', minWidth: '8rem', maxWidth: '20rem' }}>
+            <SimpleSearchBar
+              value={state.search}
+              onChange={state.onSearchChange}
+              placeholder={t('pages.admin.projects.search', 'Search by name, ID or owner')}
+              data-testid="admin-projects-search"
+            />
+          </Box>
 
           {/*
-            Create and delete. Both are DISABLED with the reason rather than
-            omitted, so the gap is visible where an operator looks for the
-            control — and never as a button that reports success. See this
-            file's header for what each would have to do.
-          */}
-          <Tooltip title={PROVISIONING_UNAVAILABLE}>
-            <span>
-              <Button variant="contained" size="small" startIcon={<AddIcon />} disabled>
-                {createLabel}
-              </Button>
-            </span>
-          </Tooltip>
-          <Tooltip title={PROVISIONING_UNAVAILABLE}>
-            <span>
-              <IconButton disabled aria-label={deleteLabel}>
-                <DeleteIcon fontSize="small" />
-              </IconButton>
-            </span>
-          </Tooltip>
+            Create and delete. Absent — not disabled — for an operator whose
+            resolved permissions do not carry them, which is the convention the
+            rest of this page already follows for the suspend and member
+            controls: "this user may not" and "this deployment cannot" render
+            identically, so the two can never disagree.
 
-          {/*
-            Export. admin_ui builds an .xlsx through a spreadsheet library that
-            elitea-web does not depend on, so there is nothing behind this
-            control yet — the same call the Users port made.
+            Delete is additionally disabled while nothing is selected. That is a
+            different kind of unavailable and it reads as one: the tooltip says
+            what to do about it.
           */}
-          <Tooltip
-            title={t(
-              'pages.admin.projects.action.exportUnavailable',
-              'Export is unavailable: the spreadsheet export has not been ported yet',
-            )}
-          >
+          {provisioning.onOpenCreate ? (
+            <Button
+              variant="elitea"
+              color="primary"
+              size="small"
+              startIcon={<AddIcon fontSize="small" />}
+              onClick={provisioning.onOpenCreate}
+              // flexShrink/nowrap from #587: every child of this row used to be
+              // shrinkable, so a narrow viewport took the width out of the
+              // button and wrapped its label out of a fixed-height pill. The
+              // search box is the only thing that may shrink.
+              sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+            >
+              {createLabel}
+            </Button>
+          ) : null}
+          {provisioning.onOpenDelete ? (
+            <Tooltip
+              title={
+                selectedCount === 0
+                  ? t('pages.admin.projects.action.deleteHint', 'Select the projects to delete')
+                  : deleteLabel
+              }
+            >
+              <span>
+                <IconButton
+                  aria-label={deleteLabel}
+                  color="error"
+                  disabled={selectedCount === 0}
+                  onClick={provisioning.onOpenDelete}
+                  sx={{ flexShrink: 0 }}
+                >
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
+          ) : null}
+
+          <Tooltip title={exportLabel}>
+            {/* `span`: a disabled button fires no events, so the tooltip needs
+                a wrapper to hang its listeners on while the export runs. */}
             <span>
               <IconButton
-                disabled
-                aria-label={t('pages.admin.projects.action.export', 'Export to Excel')}
+                onClick={state.onExport}
+                disabled={state.isExporting}
+                aria-label={exportLabel}
+                sx={{ flexShrink: 0 }}
               >
-                <FileDownloadOutlinedIcon fontSize="small" />
+                {state.isExporting ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <FileDownloadOutlinedIcon fontSize="small" />
+                )}
               </IconButton>
             </span>
           </Tooltip>
@@ -200,6 +249,8 @@ export function AdminProjects() {
             onOpenMembers={state.onOpenMembers}
             onOpenActivity={state.onOpenActivity}
             pendingIds={state.pendingIds}
+            selectedIds={provisioning.selectedIds}
+            onSelectionChange={provisioning.onSelectionChange}
           />
 
           <Box
@@ -214,10 +265,12 @@ export function AdminProjects() {
             <Typography variant="bodyMedium" color="text.secondary">
               {`${firstShown}–${lastShown} / ${total}`}
             </Typography>
-            <Button size="small" disabled={page === 0} onClick={state.onPreviousPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page === 0} onClick={state.onPreviousPage}>
               {t('pages.admin.projects.pagination.previous', 'Previous')}
             </Button>
-            <Button size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
+            <Button
+            variant="elitea" color="tertiary" size="small" disabled={page >= lastPage} onClick={state.onNextPage}>
               {t('pages.admin.projects.pagination.next', 'Next')}
             </Button>
           </Box>
@@ -226,6 +279,31 @@ export function AdminProjects() {
 
       <ProjectMemberDialog project={state.memberProject} onClose={state.onCloseMembers} />
       <ProjectActivityDrawer project={state.activityProject} onClose={state.onCloseActivity} />
+
+      <AdminProjectCreateDialog
+        open={provisioning.isCreateOpen}
+        isSaving={provisioning.isCreating}
+        serverError={provisioning.createError}
+        failure={provisioning.createFailure}
+        onClose={provisioning.onCloseCreate}
+        onSubmit={provisioning.onCreate}
+      />
+      {/*
+        Mounted only when something is selected. An empty confirmation dialog
+        would be a dialog whose "Delete permanently" button destroys nothing —
+        harmless, and exactly the kind of control that teaches an operator the
+        button is safe to press.
+      */}
+      {selectedCount > 0 ? (
+        <AdminProjectDeleteDialog
+          open={provisioning.isDeleteOpen}
+          projects={provisioning.selectedProjects}
+          isDeleting={provisioning.isDeleting}
+          failures={provisioning.deleteFailures}
+          onClose={provisioning.onCloseDelete}
+          onConfirm={provisioning.onConfirmDelete}
+        />
+      ) : null}
     </DrawerPage>
   );
 }

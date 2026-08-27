@@ -232,8 +232,8 @@ const tourCardStyles = (): Record<string, SxProps<Theme>> => ({
     justifyContent: 'space-between',
     paddingTop: '0.5rem',
   },
-  counter: ({ palette }) => ({
-    color: (palette.background?.interactiveTourPrompt?.counter as string | undefined) ?? undefined,
+  counter: (theme) => ({
+    color: (theme.vars.palette.background.interactiveTourPrompt.counter as string | undefined) ?? undefined,
   }),
   footerButtons: {
     display: 'flex',

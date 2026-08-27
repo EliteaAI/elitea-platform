@@ -16,8 +16,11 @@
  * PRODUCT GAPS deliberately NOT asserted around (verified 2026-08-08):
  *  - There is no pre-send attachment preview: ChatBox never passes
  *    `slots.attachmentList`, so `normalizeUserInputProps` renders null.
- *    The only pre-send signals the product emits are the attach button's
- *    tooltip counter and its disabled state — this file asserts those.
+ *    The only pre-send signals the product emits are the attach row's
+ *    remaining-capacity counter and its disabled state — this file asserts
+ *    those. (The counter used to live in a hover tooltip on a bare paperclip
+ *    button; on the chat surface that control is now the first row of the
+ *    "+" menu and the count is visible text on it.)
  *  - Upload PROGRESS PERCENT is dead in the chat page. `UserInputFooter`
  *    renders `<UploadProgressIndicator progress={isUploading ? uploadProgress
  *    : undefined}>`, but ChatBox.tsx never passes an `attachments` prop to
@@ -52,7 +55,7 @@ import { checkA11y } from '../../fixtures/axe';
 import { BASE_URL } from '../../../playwright.config';
 import { API_BASE, DEFAULT_PROJECT_ID, deleteConversation } from '../../fixtures/api';
 
-/** Exact accessible name of the attach control (AttachmentButton.tsx:147 + en.json:759). */
+/** Exact accessible name of the attach control (`AttachmentButton.tsx`'s `ariaLabel` + en.json). */
 const ATTACH_NAME = 'attach files';
 /** MAX_ATTACHMENTS (src/shared/lib/attachments.ts). */
 const MAX_ATTACHMENTS = 10;
@@ -62,13 +65,36 @@ const CHUNK_SIZE = 5 * 1024 * 1024;
 const uploadUrlRe = new RegExp(`/elitea_core/attachments/prompt_lib/${DEFAULT_PROJECT_ID}/(\\d+)$`);
 
 /**
- * The AttachmentButton's OWN hidden input — scoped to the button's own
- * container (button < Tooltip span < the footer div that also holds the
- * input), not to any file input that happens to exist on the shell.
+ * Opens the composer's "+" menu and returns the attach row inside it.
+ *
+ * On the chat surface the attach control is NOT a bare button in the footer
+ * any more — it is the first row of the "+" menu, which is what the product
+ * shows (`PlusChatButton`; baseline `NewChatInput.jsx`'s `fromTheChat`
+ * branch). It is a `menuitem`, not a `button`, because it sits inside a
+ * `role="menu"`, and it carries its remaining capacity as VISIBLE text
+ * rather than in a hover tooltip — so the capacity assertions below read the
+ * row instead of `getByRole('tooltip')`.
+ *
+ * The menu is left open: the hidden file input only exists while it is
+ * rendered, and nothing here closes it.
+ */
+async function openAttachRow(page: import('@playwright/test').Page) {
+  const plus = page.getByTestId('plus-menu-button');
+  await expect(plus).toBeEnabled({ timeout: 20_000 });
+  await plus.click();
+  const row = page.getByTestId('plus-menu-attachments');
+  await expect(row).toBeVisible();
+  return row;
+}
+
+/**
+ * The AttachmentButton's OWN hidden input — scoped to the attach row's own
+ * container (the row and the input are siblings in the component's fragment),
+ * not to any file input that happens to exist on the shell.
  */
 function attachInput(page: import('@playwright/test').Page) {
   return page
-    .getByRole('button', { name: ATTACH_NAME, exact: true })
+    .getByTestId('plus-menu-attachments')
     .locator('xpath=ancestor::div[1]')
     .locator('input[type="file"]');
 }
@@ -97,27 +123,25 @@ test('J12: attach a small file to a chat message', async ({ page }) => {
   try {
     await page.goto(BASE_URL + '/app/chat');
 
-    // The attach control, by its one stable handle: its accessible name.
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
-
     await checkA11y(page);
+
+    const attach = await openAttachRow(page);
+    await expect(attach).toHaveAttribute('aria-label', ATTACH_NAME);
 
     // Capacity counter BEFORE attaching — computed by
     // getRemainingAttachmentCapacity from the component's own state.
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS} files left`);
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS} left`);
 
-    // The hidden input is the button's own sibling inside the chat input.
+    // The hidden input is the attach row's own sibling inside the menu.
     const input = attachInput(page);
     await expect(input).toHaveCount(1);
     await input.setInputFiles(tmpFile);
 
     // The file really entered attachment state: remaining capacity drops by one.
-    // A build that swallowed the picked file keeps reporting 10.
-    await page.mouse.move(2, 2);
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS - 1} files left`);
+    // A build that swallowed the picked file keeps reporting 10. No hover
+    // choreography any more — the counter is visible text on the row, so it
+    // is readable without provoking a tooltip.
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS - 1} left`);
 
     // Arm the upload watcher BEFORE sending: the send creates the conversation
     // over REST first, then uploads into it (resolveConversationForSend →
@@ -204,17 +228,16 @@ test('J12b: attaching MAX_ATTACHMENTS files disables further attachment', async 
 
   try {
     await page.goto(BASE_URL + '/app/chat');
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
+    const attach = await openAttachRow(page);
 
     await attachInput(page).setInputFiles(files);
 
-    // isAtMaxCapacity → both the button and its input go disabled, and the
-    // tooltip switches to the max-attachments string.
-    await expect(attach).toBeDisabled();
+    // isAtMaxCapacity → the row goes disabled, its input with it, and the
+    // counter reads zero. `aria-disabled` rather than `toBeDisabled()`: a
+    // `menuitem` is a div, so there is no `disabled` DOM property to read.
+    await expect(attach).toHaveAttribute('aria-disabled', 'true');
     await expect(attachInput(page)).toBeDisabled();
-    await attach.hover({ force: true });
-    await expect(page.getByRole('tooltip')).toHaveText(`Max ${MAX_ATTACHMENTS} attachments`);
+    await expect(attach).toContainText('0 left');
 
     await checkA11y(page);
   } finally {
@@ -238,14 +261,12 @@ test('J13: attach a large file chunked upload with progress', async ({ page }) =
     });
 
     await page.goto(BASE_URL + '/app/chat');
-    const attach = page.getByRole('button', { name: ATTACH_NAME, exact: true });
-    await expect(attach).toBeEnabled({ timeout: 20_000 });
-
     await checkA11y(page);
 
+    const attach = await openAttachRow(page);
+
     await attachInput(page).setInputFiles(tmpFile);
-    await attach.hover();
-    await expect(page.getByRole('tooltip')).toHaveText(`${MAX_ATTACHMENTS - 1} files left`);
+    await expect(attach).toContainText(`${MAX_ATTACHMENTS - 1} left`);
 
     await send(page, 'autotest_attach large file journey');
 
@@ -513,9 +534,29 @@ test('J26.1: the notification SSE stream is mounted, and a dropped connection is
  * "1" in every fallback branch (#167). Every branch of that resolver is
  * membership-checked, which is what makes this assertion hold rather than
  * happening to hold on a single-project deployment.
+ *
+ * THE ADMISSION GATE APPLIES HERE TOO, and unlike J26.1 this journey cannot
+ * dodge it — the stream under test IS the sidebar's own.
+ *
+ * `events.go` admits four concurrent streams per principal and answers the
+ * fifth with 429 (see J26.1's header). The suite runs parallel workers as ONE
+ * persona and every page that reaches `/app/chat` mounts `NotificationButton`,
+ * so the member principal sits at the cap and a page that arrives mid-overlap
+ * is refused. Measured 2026-08-26 against the real stack: five pages on one
+ * context yield statuses `[200], [200], [200], [200], [429, 429]`. Run alone
+ * this test passed; run beside its neighbours it failed on `responses[0]`
+ * being 429, which reads exactly like a broken subscription and is not one.
+ *
+ * So the scenario re-attempts until a slot frees, exactly as J26.1 does, and
+ * each attempt starts from `about:blank` so the previous attempt's stream is
+ * released rather than competing with the next one. What it does NOT do is
+ * accept "429 or 200" — that would gut the assertion. A refusal only buys
+ * another attempt; the last attempt still has to produce a real 200, and a
+ * 403 (the #166/#167 regression this journey exists for) still fails, with
+ * its status named.
  */
 test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
 
   const requests: string[] = [];
   const failures: string[] = [];
@@ -538,15 +579,45 @@ test('J26.2: the sidebar live-push subscription connects', async ({ page }) => {
     }
   });
 
-  await page.goto(BASE_URL + '/app/chat');
+  const deadline = Date.now() + 45_000;
+  for (;;) {
+    // The assertions below read the LAST attempt only, so each attempt starts
+    // from an empty record. Same arrays throughout: the listeners above are
+    // bound once, to these.
+    requests.length = 0;
+    failures.length = 0;
+    responses.length = 0;
 
-  // The client half is live regardless: the sidebar really does open a stream.
-  // This part passes today and is what makes the failure below specific — the
-  // subscription exists, it just cannot be authorized.
-  await expect.poll(() => requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    await page.goto(BASE_URL + '/app/chat');
+
+    // The client half is live regardless: the sidebar really does open a
+    // stream. This part passes even when the stream is refused, and is what
+    // makes the assertions below specific — the subscription exists, the
+    // question is only whether it is authorized.
+    await expect.poll(() => requests.length, { timeout: 20_000 }).toBeGreaterThan(0);
+    // Wait for the attempt to SETTLE (admitted, refused, or dropped) rather
+    // than reading a stream that is still opening.
+    await expect
+      .poll(() => responses.length + failures.length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    // 403 is NOT retried: it is the regression this journey guards, it will
+    // not clear on a later attempt, and it should fail fast rather than burn
+    // the whole deadline first.
+    const status = responses[0]?.status;
+    if (status === 200 || status === 403 || Date.now() >= deadline) break;
+
+    // Drop this page's own stream before re-attempting, so the retry competes
+    // with the other workers only and not with itself.
+    await page.goto('about:blank');
+    await page.waitForTimeout(3_000);
+  }
 
   expect(failures, `the sidebar's notification stream was dropped: ${failures.join(', ')}`).toEqual([]);
-  await expect.poll(() => responses[0]?.status, { timeout: 15_000 }).toBe(200);
+  expect(
+    responses[0]?.status,
+    `sidebar stream statuses: ${responses.map((r) => r.status).join(', ') || 'none'} (429 means the per-principal stream cap stayed full for the whole deadline; 403 is the authorize() regression this journey guards)`,
+  ).toBe(200);
 });
 
 /**

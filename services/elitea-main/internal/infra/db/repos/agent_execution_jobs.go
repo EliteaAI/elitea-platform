@@ -722,7 +722,7 @@ func insertCurrentApplicationTurn(
 	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
 		return errors.New("current agent chat turn returned an invalid response binding")
 	}
-	return nil
+	return insertCurrentTurnAttachments(ctx, queries, row.QuestionMessageGroupID, turn.Attachments)
 }
 
 func insertCurrentAdhocTurn(
@@ -774,6 +774,74 @@ func insertCurrentAdhocTurn(
 	}
 	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
 		return errors.New("current ad-hoc agent chat turn returned an invalid response binding")
+	}
+	return insertCurrentTurnAttachments(ctx, queries, row.QuestionMessageGroupID, turn.Attachments)
+}
+
+// insertCurrentTurnAttachments writes the turn's uploaded files as
+// `attachment_message` items on the QUESTION group, in the SAME transaction
+// that just created that group (#606 part 2).
+//
+// WHY THE QUESTION GROUP, AND WHY HERE. Pylon attaches them to the user's
+// message (rpc/chat_all.py:285-320), which is what makes the transcript render
+// the file under the message the user sent it with; hanging them off the
+// streaming response group instead would attribute the user's upload to the
+// agent. And the admission transaction is the only place in this service where
+// a message group is created at all — the worker writes no chat rows — so
+// doing it anywhere else would mean a second transaction that can fail after
+// the turn is already admitted, leaving an admitted turn whose attachments
+// silently vanished.
+//
+// questionMessageGroupID comes back from the turn's own INSERT (its
+// response_group's reply_to_id, which IS the question group) rather than from a
+// follow-up SELECT on the question uuid: re-reading would be a second round
+// trip for an id the statement already produced, and would read through the
+// same uncommitted state anyway.
+//
+// order_index starts at 1: the question's text item holds 0
+// (InsertCurrentApplicationTurn/InsertCurrentAdhocTurn write it there), and
+// pylon enumerates its attachments from 1 for exactly that reason
+// (rpc/chat_all.py:303).
+func insertCurrentTurnAttachments(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	questionMessageGroupID *int32,
+	attachments []agentexecutionapp.CurrentTurnAttachment,
+) error {
+	if len(attachments) == 0 {
+		return nil
+	}
+	// A turn with attachments whose insert did not report a question group is
+	// a contradiction — the response group is created with reply_to_id set
+	// from the question group in the same statement — and must not degrade to
+	// "write no attachments", which is indistinguishable from a turn that had
+	// none. Fail the admission instead.
+	if questionMessageGroupID == nil || *questionMessageGroupID <= 0 {
+		return errors.New("current agent chat turn returned no question message group for its attachments")
+	}
+	for index, attachment := range attachments {
+		itemID, err := currentPGUUID(attachment.ItemID)
+		if err != nil {
+			return executionapp.ErrInvalidAdmission
+		}
+		orderIndex, ok := narrowRowID(int64(index) + 1)
+		if !ok {
+			return executionapp.ErrInvalidAdmission
+		}
+		if err := queries.InsertCurrentAgentAttachmentItem(
+			ctx,
+			sqlcgen.InsertCurrentAgentAttachmentItemParams{
+				ItemID:         itemID,
+				OrderIndex:     orderIndex,
+				MessageGroupID: *questionMessageGroupID,
+				Name:           attachment.Name,
+				Bucket:         attachment.Bucket,
+				AttachmentType: attachment.AttachmentType,
+				Content:        append([]byte(nil), attachment.Content...),
+			},
+		); err != nil {
+			return fmt.Errorf("insert current agent chat attachment item: %w", err)
+		}
 	}
 	return nil
 }

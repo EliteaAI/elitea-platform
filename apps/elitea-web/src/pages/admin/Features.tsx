@@ -48,20 +48,39 @@
  *     The Help Center's own read is unaffected — it calls a separate public
  *     route that has no notion of which admin page authored the row — and a Go
  *     test proves that rather than asserting it.
- *   - **Skill Publishing** — unavailable. There is no skill publish endpoint, no
- *     skill catalog and no skill categories surface in this service for the
- *     settings to govern.
- *   - **Support Assistant** — unavailable. Its switch has a wire
- *     (`GET /support_assistant/config`); what it does not have is a rendered
- *     consumer. `SupportAssistantWidget` has no render site anywhere in this app
- *     and documents that `@eliteaai/elitea-assistant` is not a dependency.
+ *   - **Skill Publishing** — live, and the last of the three to become so. It was
+ *     unavailable because the subsystem was absent: no publish endpoint, no
+ *     catalog, no categories route. `internal/api/v2/skillpublish` built all
+ *     three, and this section is the half that was still missing — the skill
+ *     guardrail was being enforced against the AGENT section's switch for want
+ *     of anywhere to author its own, and the catalog's category list was nine
+ *     hardcoded defaults. The block switch and whitelist are enforced in
+ *     `publish_skill`/`publish_skill_validate`; the categories are merged into
+ *     `GET /elitea_core/skill_categories/…`, which the publish dialog and the
+ *     public-catalog filter both read. One field inside it,
+ *     `skill_publish_validation_rules`, carries its own reason, exactly as the
+ *     agent section's does and for the same cause.
+ *   - **Support Assistant** — live, and it is the section whose reason this
+ *     unit's own doc comment used to hold up as the purest example of a flag
+ *     nothing reads. Both halves of that reason are now false:
+ *     `internal/api/v2/supportassistant` serves config, conversations and one
+ *     agent turn per question off these very rows, and `widgets/app-shell`
+ *     mounts `SupportAssistantWidget`, whose source is ported under
+ *     `widgets/support-assistant/vendor/` rather than taken as a dependency —
+ *     the published package streams over socket.io and this platform serves SSE.
  *   - **Voice Features** — unavailable, same shape: `VoiceControlButton` and
  *     `VoiceMiniPlayer` are exported from `features/chat-input` and imported by
  *     nothing, and the button hardcodes both flags as module constants.
  *
- * Rendering those last three as live switches is the failure this unit exists to
- * remove. A feature flag nothing reads is its purest form: unlike an empty
- * table, it leaves the operator believing a platform-wide switch was thrown.
+ * Rendering the one section that is still withheld as a live switch is the
+ * failure this unit exists to remove. A feature flag nothing reads is its purest
+ * form: unlike an empty table, it leaves the operator believing a platform-wide
+ * switch was thrown.
+ *
+ * FIVE OF THE SIX ARE NOW LIVE, which is worth noting because this page began as
+ * the opposite: three of six were withheld, and the count has only ever gone one
+ * way. Availability is still declared by the SERVER and rendered here; nothing
+ * on this page decides it.
  *
  * ## Authorisation
  *
@@ -136,7 +155,7 @@ function FeaturesSectionBody({ state }: { readonly state: AdminConfigurationPage
       <Box sx={{ display: 'flex', gap: '0.5rem' }}>
         <Button
           size="small"
-          variant="outlined"
+          variant="secondary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onDiscard}
           sx={{ textTransform: 'none' }}
@@ -145,7 +164,7 @@ function FeaturesSectionBody({ state }: { readonly state: AdminConfigurationPage
         </Button>
         <Button
           size="small"
-          variant="contained"
+          variant="elitea" color="primary"
           disabled={!state.isDirty || state.isSaving}
           onClick={state.onSave}
           sx={{ textTransform: 'none' }}

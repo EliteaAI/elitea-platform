@@ -21,6 +21,8 @@ const (
 	maxRedisPasswordBytes  = 512
 	maxRedisCAFileBytes    = 1 << 20
 	encodedFernetKeyBytes  = 44
+	// fernetMasterKeyBytes is what encodedFernetKeyBytes decodes to.
+	fernetMasterKeyBytes = 32
 )
 
 func loadEd25519PrivateKey(path string) (ed25519.PrivateKey, error) {
@@ -54,7 +56,7 @@ func loadOptionalFernetMasterKey(path string) ([]byte, error) {
 	var decoded [33]byte
 	n, decodeErr := base64.URLEncoding.Decode(decoded[:], contents)
 	clear(decoded[:])
-	if decodeErr != nil || n != 32 || len(contents) != encodedFernetKeyBytes {
+	if decodeErr != nil || n != fernetMasterKeyBytes || len(contents) != encodedFernetKeyBytes {
 		clear(contents)
 		return nil, errors.New("current secret-vault master key is not a Fernet key")
 	}

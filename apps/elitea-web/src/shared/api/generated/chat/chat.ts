@@ -53,14 +53,24 @@ import type {
 } from "@tanstack/react-query";
 
 import type {
+  CreateSupportConversationBody,
   ErrorResponse,
   GetMessageTraceParams,
   ListMessageTracesParams,
+  ListSupportConversationsParams,
   MessageTraceListing,
   MessageTraceStepDetail,
+  N400Response,
   N401Response,
   N403Response,
+  N404Response,
   N500Response,
+  SupportAssistantConfig,
+  SupportConversation,
+  SupportConversationDetails,
+  SupportConversationList,
+  SupportPredictRequest,
+  SupportPredictResponse,
 } from "../model";
 
 import { eliteaFetch } from ".././mutator";
@@ -84,6 +94,1102 @@ const withQueryKey = <T extends object, K>(
   }
   return result;
 };
+
+export type getSupportAssistantConfigResponse200 = {
+  data: SupportAssistantConfig;
+  status: 200;
+};
+
+export type getSupportAssistantConfigResponseSuccess =
+  getSupportAssistantConfigResponse200 & {
+    headers: Headers;
+  };
+export type getSupportAssistantConfigResponse =
+  getSupportAssistantConfigResponseSuccess;
+
+export const getGetSupportAssistantConfigUrl = () => {
+  return `/support_assistant/config`;
+};
+
+/**
+ * The widget's first call on every page load, and the only route on this
+ * surface with no permission gate.
+ *
+ * It answers 200 with `{"enabled": false}` for an unauthenticated caller
+ * and for every deployment that cannot serve the assistant. A 401 here
+ * would be indistinguishable from a session expiry to a widget that mounts
+ * in the app shell before a session necessarily exists, and there is
+ * nothing to withhold: the disabled body is one boolean.
+ * @summary Retrieve support assistant configuration
+ */
+export const getSupportAssistantConfig = async (
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getSupportAssistantConfigResponse> => {
+  return eliteaFetch<getSupportAssistantConfigResponse>(
+    getGetSupportAssistantConfigUrl(),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetSupportAssistantConfigQueryKey = () => {
+  return [`/support_assistant/config`] as const;
+};
+
+export const getGetSupportAssistantConfigQueryOptions = <
+  TData = Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+  TError = unknown,
+>(options?: {
+  query?: Partial<
+    UseQueryOptions<
+      Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+      TError,
+      TData
+    >
+  >;
+  request?: SecondParameter<typeof eliteaFetch>;
+}) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getGetSupportAssistantConfigQueryKey();
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getSupportAssistantConfig>>
+  > = ({ signal }) => getSupportAssistantConfig({ signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetSupportAssistantConfigQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getSupportAssistantConfig>>
+>;
+export type GetSupportAssistantConfigQueryError = unknown;
+
+export function useGetSupportAssistantConfig<
+  TData = Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+  TError = unknown,
+>(
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+          TError,
+          Awaited<ReturnType<typeof getSupportAssistantConfig>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetSupportAssistantConfig<
+  TData = Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+          TError,
+          Awaited<ReturnType<typeof getSupportAssistantConfig>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetSupportAssistantConfig<
+  TData = Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Retrieve support assistant configuration
+ */
+
+export function useGetSupportAssistantConfig<
+  TData = Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+  TError = unknown,
+>(
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportAssistantConfig>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetSupportAssistantConfigQueryOptions(options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type listSupportConversationsResponse200 = {
+  data: SupportConversationList;
+  status: 200;
+};
+
+export type listSupportConversationsResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type listSupportConversationsResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type listSupportConversationsResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type listSupportConversationsResponseSuccess =
+  listSupportConversationsResponse200 & {
+    headers: Headers;
+  };
+export type listSupportConversationsResponseError = (
+  | listSupportConversationsResponse401
+  | listSupportConversationsResponse403
+  | listSupportConversationsResponse503
+) & {
+  headers: Headers;
+};
+
+export type listSupportConversationsResponse =
+  | listSupportConversationsResponseSuccess
+  | listSupportConversationsResponseError;
+
+export const getListSupportConversationsUrl = (
+  params?: ListSupportConversationsParams,
+) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? "null" : String(value));
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0
+    ? `/support_assistant/conversations/?${stringifiedParams}`
+    : `/support_assistant/conversations/`;
+};
+
+/**
+ * @summary List the caller's support conversations
+ */
+export const listSupportConversations = async (
+  params?: ListSupportConversationsParams,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<listSupportConversationsResponse> => {
+  return eliteaFetch<listSupportConversationsResponse>(
+    getListSupportConversationsUrl(params),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getListSupportConversationsQueryKey = (
+  params?: ListSupportConversationsParams,
+) => {
+  return [
+    `/support_assistant/conversations/`,
+    ...(params ? [params] : []),
+  ] as const;
+};
+
+export const getListSupportConversationsQueryOptions = <
+  TData = Awaited<ReturnType<typeof listSupportConversations>>,
+  TError = N401Response | N403Response | void,
+>(
+  params?: ListSupportConversationsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSupportConversations>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ?? getListSupportConversationsQueryKey(params);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof listSupportConversations>>
+  > = ({ signal }) =>
+    listSupportConversations(params, { signal, ...requestOptions });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof listSupportConversations>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type ListSupportConversationsQueryResult = NonNullable<
+  Awaited<ReturnType<typeof listSupportConversations>>
+>;
+export type ListSupportConversationsQueryError =
+  N401Response | N403Response | void;
+
+export function useListSupportConversations<
+  TData = Awaited<ReturnType<typeof listSupportConversations>>,
+  TError = N401Response | N403Response | void,
+>(
+  params: undefined | ListSupportConversationsParams,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSupportConversations>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSupportConversations>>,
+          TError,
+          Awaited<ReturnType<typeof listSupportConversations>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListSupportConversations<
+  TData = Awaited<ReturnType<typeof listSupportConversations>>,
+  TError = N401Response | N403Response | void,
+>(
+  params?: ListSupportConversationsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSupportConversations>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof listSupportConversations>>,
+          TError,
+          Awaited<ReturnType<typeof listSupportConversations>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useListSupportConversations<
+  TData = Awaited<ReturnType<typeof listSupportConversations>>,
+  TError = N401Response | N403Response | void,
+>(
+  params?: ListSupportConversationsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSupportConversations>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary List the caller's support conversations
+ */
+
+export function useListSupportConversations<
+  TData = Awaited<ReturnType<typeof listSupportConversations>>,
+  TError = N401Response | N403Response | void,
+>(
+  params?: ListSupportConversationsParams,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof listSupportConversations>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getListSupportConversationsQueryOptions(params, options);
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type createSupportConversationResponse201 = {
+  data: SupportConversation;
+  status: 201;
+};
+
+export type createSupportConversationResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type createSupportConversationResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type createSupportConversationResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type createSupportConversationResponseSuccess =
+  createSupportConversationResponse201 & {
+    headers: Headers;
+  };
+export type createSupportConversationResponseError = (
+  | createSupportConversationResponse400
+  | createSupportConversationResponse401
+  | createSupportConversationResponse403
+) & {
+  headers: Headers;
+};
+
+export type createSupportConversationResponse =
+  | createSupportConversationResponseSuccess
+  | createSupportConversationResponseError;
+
+export const getCreateSupportConversationUrl = () => {
+  return `/support_assistant/conversations/`;
+};
+
+/**
+ * @summary Open a new support conversation
+ */
+export const createSupportConversation = async (
+  createSupportConversationBody?: CreateSupportConversationBody,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<createSupportConversationResponse> => {
+  return eliteaFetch<createSupportConversationResponse>(
+    getCreateSupportConversationUrl(),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(createSupportConversationBody),
+    },
+  );
+};
+
+export const getCreateSupportConversationQueryKey = (
+  createSupportConversationBody?: CreateSupportConversationBody,
+) => {
+  return [
+    "POST",
+    `/support_assistant/conversations/`,
+    createSupportConversationBody,
+  ] as const;
+};
+
+export const getCreateSupportConversationQueryOptions = <
+  TData = Awaited<ReturnType<typeof createSupportConversation>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  createSupportConversationBody?: CreateSupportConversationBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getCreateSupportConversationQueryKey(createSupportConversationBody);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof createSupportConversation>>
+  > = ({ signal }) =>
+    createSupportConversation(createSupportConversationBody, {
+      signal,
+      ...requestOptions,
+    });
+
+  return { queryKey, queryFn, ...queryOptions } as UseQueryOptions<
+    Awaited<ReturnType<typeof createSupportConversation>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type CreateSupportConversationQueryResult = NonNullable<
+  Awaited<ReturnType<typeof createSupportConversation>>
+>;
+export type CreateSupportConversationQueryError =
+  N400Response | N401Response | N403Response;
+
+export function useCreateSupportConversation<
+  TData = Awaited<ReturnType<typeof createSupportConversation>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  createSupportConversationBody: undefined | CreateSupportConversationBody,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSupportConversation>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createSupportConversation>>,
+          TError,
+          Awaited<ReturnType<typeof createSupportConversation>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateSupportConversation<
+  TData = Awaited<ReturnType<typeof createSupportConversation>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  createSupportConversationBody?: CreateSupportConversationBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSupportConversation>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof createSupportConversation>>,
+          TError,
+          Awaited<ReturnType<typeof createSupportConversation>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useCreateSupportConversation<
+  TData = Awaited<ReturnType<typeof createSupportConversation>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  createSupportConversationBody?: CreateSupportConversationBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Open a new support conversation
+ */
+
+export function useCreateSupportConversation<
+  TData = Awaited<ReturnType<typeof createSupportConversation>>,
+  TError = N400Response | N401Response | N403Response,
+>(
+  createSupportConversationBody?: CreateSupportConversationBody,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof createSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getCreateSupportConversationQueryOptions(
+    createSupportConversationBody,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type getSupportConversationResponse200 = {
+  data: SupportConversationDetails;
+  status: 200;
+};
+
+export type getSupportConversationResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type getSupportConversationResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type getSupportConversationResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type getSupportConversationResponseSuccess =
+  getSupportConversationResponse200 & {
+    headers: Headers;
+  };
+export type getSupportConversationResponseError = (
+  | getSupportConversationResponse401
+  | getSupportConversationResponse403
+  | getSupportConversationResponse404
+) & {
+  headers: Headers;
+};
+
+export type getSupportConversationResponse =
+  getSupportConversationResponseSuccess | getSupportConversationResponseError;
+
+export const getGetSupportConversationUrl = (conversationUUID: string) => {
+  return `/support_assistant/conversation/${conversationUUID}`;
+};
+
+/**
+ * Answers 404 both when the conversation does not exist and when it belongs
+ * to another user. Distinguishing them would confirm that a UUID names a
+ * real support conversation belonging to a real other person.
+ * @summary Read one support conversation and its transcript
+ */
+export const getSupportConversation = async (
+  conversationUUID: string,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<getSupportConversationResponse> => {
+  return eliteaFetch<getSupportConversationResponse>(
+    getGetSupportConversationUrl(conversationUUID),
+    {
+      ...options,
+      method: "GET",
+    },
+  );
+};
+
+export const getGetSupportConversationQueryKey = (conversationUUID: string) => {
+  return [`/support_assistant/conversation/${conversationUUID}`] as const;
+};
+
+export const getGetSupportConversationQueryOptions = <
+  TData = Awaited<ReturnType<typeof getSupportConversation>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  conversationUUID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getGetSupportConversationQueryKey(conversationUUID);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof getSupportConversation>>
+  > = ({ signal }) =>
+    getSupportConversation(conversationUUID, { signal, ...requestOptions });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: conversationUUID !== null && conversationUUID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof getSupportConversation>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type GetSupportConversationQueryResult = NonNullable<
+  Awaited<ReturnType<typeof getSupportConversation>>
+>;
+export type GetSupportConversationQueryError =
+  N401Response | N403Response | N404Response;
+
+export function useGetSupportConversation<
+  TData = Awaited<ReturnType<typeof getSupportConversation>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  conversationUUID: string,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportConversation>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getSupportConversation>>,
+          TError,
+          Awaited<ReturnType<typeof getSupportConversation>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetSupportConversation<
+  TData = Awaited<ReturnType<typeof getSupportConversation>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  conversationUUID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportConversation>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getSupportConversation>>,
+          TError,
+          Awaited<ReturnType<typeof getSupportConversation>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useGetSupportConversation<
+  TData = Awaited<ReturnType<typeof getSupportConversation>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  conversationUUID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Read one support conversation and its transcript
+ */
+
+export function useGetSupportConversation<
+  TData = Awaited<ReturnType<typeof getSupportConversation>>,
+  TError = N401Response | N403Response | N404Response,
+>(
+  conversationUUID: string,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof getSupportConversation>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getGetSupportConversationQueryOptions(
+    conversationUUID,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+export type startSupportTurnResponse200 = {
+  data: SupportPredictResponse;
+  status: 200;
+};
+
+export type startSupportTurnResponse400 = {
+  data: N400Response;
+  status: 400;
+};
+
+export type startSupportTurnResponse401 = {
+  data: N401Response;
+  status: 401;
+};
+
+export type startSupportTurnResponse403 = {
+  data: N403Response;
+  status: 403;
+};
+
+export type startSupportTurnResponse404 = {
+  data: N404Response;
+  status: 404;
+};
+
+export type startSupportTurnResponse502 = {
+  data: void;
+  status: 502;
+};
+
+export type startSupportTurnResponse503 = {
+  data: void;
+  status: 503;
+};
+
+export type startSupportTurnResponseSuccess = startSupportTurnResponse200 & {
+  headers: Headers;
+};
+export type startSupportTurnResponseError = (
+  | startSupportTurnResponse400
+  | startSupportTurnResponse401
+  | startSupportTurnResponse403
+  | startSupportTurnResponse404
+  | startSupportTurnResponse502
+  | startSupportTurnResponse503
+) & {
+  headers: Headers;
+};
+
+export type startSupportTurnResponse =
+  startSupportTurnResponseSuccess | startSupportTurnResponseError;
+
+export const getStartSupportTurnUrl = (conversationUUID: string) => {
+  return `/support_assistant/predict/${conversationUUID}`;
+};
+
+/**
+ * Attaches the operator-chosen agent to the conversation as a participant
+ * if it is not already there, then starts one agent run and answers with
+ * the SSE `events_url` to subscribe to.
+ *
+ * This is the REST replacement for the reference's socket.io
+ * `support_predict` event: this service streams over SSE, so the turn is
+ * started over HTTP and answered on the same durable execution stream the
+ * chat surface already consumes.
+ * @summary Ask the support assistant one question
+ */
+export const startSupportTurn = async (
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options?: Parameters<typeof eliteaFetch>[1],
+): Promise<startSupportTurnResponse> => {
+  return eliteaFetch<startSupportTurnResponse>(
+    getStartSupportTurnUrl(conversationUUID),
+    {
+      ...options,
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+      body: JSON.stringify(supportPredictRequest),
+    },
+  );
+};
+
+export const getStartSupportTurnQueryKey = (
+  conversationUUID: string,
+  supportPredictRequest?: SupportPredictRequest,
+) => {
+  return [
+    "POST",
+    `/support_assistant/predict/${conversationUUID}`,
+    supportPredictRequest,
+  ] as const;
+};
+
+export const getStartSupportTurnQueryOptions = <
+  TData = Awaited<ReturnType<typeof startSupportTurn>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof startSupportTurn>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+) => {
+  const { query: queryOptions, request: requestOptions } = options ?? {};
+
+  const queryKey =
+    queryOptions?.queryKey ??
+    getStartSupportTurnQueryKey(conversationUUID, supportPredictRequest);
+
+  const queryFn: QueryFunction<
+    Awaited<ReturnType<typeof startSupportTurn>>
+  > = ({ signal }) =>
+    startSupportTurn(conversationUUID, supportPredictRequest, {
+      signal,
+      ...requestOptions,
+    });
+
+  return {
+    queryKey,
+    queryFn,
+    enabled: conversationUUID !== null && conversationUUID !== undefined,
+    ...queryOptions,
+  } as UseQueryOptions<
+    Awaited<ReturnType<typeof startSupportTurn>>,
+    TError,
+    TData
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+};
+
+export type StartSupportTurnQueryResult = NonNullable<
+  Awaited<ReturnType<typeof startSupportTurn>>
+>;
+export type StartSupportTurnQueryError =
+  N400Response | N401Response | N403Response | N404Response | void;
+
+export function useStartSupportTurn<
+  TData = Awaited<ReturnType<typeof startSupportTurn>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options: {
+    query: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof startSupportTurn>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof startSupportTurn>>,
+          TError,
+          Awaited<ReturnType<typeof startSupportTurn>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): DefinedUseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStartSupportTurn<
+  TData = Awaited<ReturnType<typeof startSupportTurn>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof startSupportTurn>>,
+        TError,
+        TData
+      >
+    > &
+      Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof startSupportTurn>>,
+          TError,
+          Awaited<ReturnType<typeof startSupportTurn>>
+        >,
+        "initialData"
+      >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+export function useStartSupportTurn<
+  TData = Awaited<ReturnType<typeof startSupportTurn>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof startSupportTurn>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+};
+/**
+ * @summary Ask the support assistant one question
+ */
+
+export function useStartSupportTurn<
+  TData = Awaited<ReturnType<typeof startSupportTurn>>,
+  TError = N400Response | N401Response | N403Response | N404Response | void,
+>(
+  conversationUUID: string,
+  supportPredictRequest: SupportPredictRequest,
+  options?: {
+    query?: Partial<
+      UseQueryOptions<
+        Awaited<ReturnType<typeof startSupportTurn>>,
+        TError,
+        TData
+      >
+    >;
+    request?: SecondParameter<typeof eliteaFetch>;
+  },
+  queryClient?: QueryClient,
+): UseQueryResult<TData, TError> & {
+  queryKey: DataTag<QueryKey, TData, TError>;
+} {
+  const queryOptions = getStartSupportTurnQueryOptions(
+    conversationUUID,
+    supportPredictRequest,
+    options,
+  );
+
+  const query = useQuery(queryOptions, queryClient) as UseQueryResult<
+    TData,
+    TError
+  > & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
 
 export type listMessageTracesResponse200 = {
   data: MessageTraceListing;

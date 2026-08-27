@@ -8,22 +8,18 @@
  * `flex` definitions, matching `./AdminUsersTable` and the project-level
  * `features/settings/ui/users/UsersTable.tsx`.
  *
- * ## Three affordances the reference has and this does not wire
+ * ## Row selection feeds the one destructive control on the page
  *
- * Row selection, bulk delete and single delete all exist there and all feed the
- * same `DELETE /projects/project/administration/{id}`, which elitea-main does
- * not serve. Deleting a project is not one endpoint anyway: it tears down the
- * tenant schema, the object-storage buckets, the vault secrets, the RabbitMQ
- * vhost, the InfluxDB databases and the project's system user and token
- * (legacy/plugins/projects/utils/project_steps.py, run in reverse). Half of
- * that pipeline would leave orphaned infrastructure around an irreversibly
- * dropped `p_<id>` schema.
+ * The checkbox column exists to arm `Projects.tsx`'s bulk delete, which reaches
+ * `DELETE /projects/project/administration/{id}` — the provisioning pipeline in
+ * reverse, ending in `DROP SCHEMA p_<id> CASCADE`. Selection is therefore
+ * rendered ONLY when the page passes `onSelectionChange`, which it does only
+ * for an operator whose config advertises the delete permission. An operator
+ * who cannot delete gets no checkboxes rather than checkboxes that arm nothing.
  *
- * So there is no checkbox column and no delete button — not a disabled one
- * either: a per-row disabled bin on every row of a page whose whole delete path
- * is absent is noise, and the reason belongs once, on the page, where
- * `Projects.tsx` states it. What IS rendered disabled-with-a-reason is the
- * page-level control the operator would go looking for.
+ * There is deliberately no per-row bin. One destructive path, one confirmation
+ * dialog, one place that lists what is about to be destroyed — a second entry
+ * point would be a second chance to skip that list.
  */
 import BlockOutlinedIcon from '@mui/icons-material/BlockOutlined';
 import CheckCircleOutlinedIcon from '@mui/icons-material/CheckCircleOutlined';
@@ -35,13 +31,19 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 import { useTheme } from '@mui/material/styles';
-import type { GridColDef, GridRenderCellParams, GridSortModel } from '@mui/x-data-grid';
+import type {
+  GridColDef,
+  GridRenderCellParams,
+  GridRowSelectionModel,
+  GridSortModel,
+} from '@mui/x-data-grid';
 import { DataGrid } from '@mui/x-data-grid';
 import { memo, useMemo } from 'react';
 
 import { t } from '@/shared/i18n';
 
-import type { AdminProjectRow, ProjectStatus } from './api/adminProjectsApi';
+import { PROJECT_STATUS_COLOUR, projectStatusLabel } from './adminProjectsStatus';
+import type { AdminProjectRow } from './api/adminProjectsApi';
 
 export interface AdminProjectsTableProps {
   projects: readonly AdminProjectRow[];
@@ -56,28 +58,10 @@ export interface AdminProjectsTableProps {
   onOpenActivity: (project: AdminProjectRow) => void;
   /** Ids whose mutation is in flight — their per-row controls are disabled. */
   pendingIds: ReadonlySet<number>;
-}
-
-/**
- * The chip colour per status. `status` is a real server field derived from
- * `suspended` and `create_success` — unlike the admin Users reference page's
- * `status`, which no response has ever carried.
- */
-const STATUS_COLOUR: Record<ProjectStatus, 'success' | 'warning' | 'error'> = {
-  active: 'success',
-  suspended: 'warning',
-  failed: 'error',
-};
-
-function statusLabel(status: ProjectStatus): string {
-  switch (status) {
-    case 'suspended':
-      return t('pages.admin.projects.status.suspended', 'Suspended');
-    case 'failed':
-      return t('pages.admin.projects.status.failed', 'Failed');
-    case 'active':
-      return t('pages.admin.projects.status.active', 'Active');
-  }
+  /** The currently selected ids. Meaningless without `onSelectionChange`. */
+  selectedIds: readonly number[];
+  /** Absent ⇒ no checkbox column at all (this user may not delete). */
+  onSelectionChange: ((ids: number[]) => void) | undefined;
 }
 
 /** The admin list is joined for display; the tooltip carries the whole set. */
@@ -106,8 +90,18 @@ export const AdminProjectsTable = memo(function AdminProjectsTable({
   onOpenMembers,
   onOpenActivity,
   pendingIds,
+  selectedIds,
+  onSelectionChange,
 }: AdminProjectsTableProps) {
   const theme = useTheme();
+
+  // MUI X 9's selection model is `{type, ids}`, not the flat id array v7 took.
+  // Derived from the page's state rather than held here, so the toolbar's
+  // "delete N" count and the ticked boxes cannot disagree.
+  const selectionModel: GridRowSelectionModel = useMemo(
+    () => ({ type: 'include', ids: new Set<string | number>(selectedIds) }),
+    [selectedIds],
+  );
 
   const sortModel: GridSortModel = useMemo(
     () => (sortField ? [{ field: sortField, sort: sortDirection }] : []),
@@ -162,8 +156,8 @@ export const AdminProjectsTable = memo(function AdminProjectsTable({
           <Chip
             size="small"
             variant="outlined"
-            color={STATUS_COLOUR[params.row.status]}
-            label={statusLabel(params.row.status)}
+            color={PROJECT_STATUS_COLOUR[params.row.status]}
+            label={projectStatusLabel(params.row.status)}
           />
         ),
       },
@@ -254,6 +248,11 @@ export const AdminProjectsTable = memo(function AdminProjectsTable({
       rowHeight={48}
       hideFooter
       getRowId={(row: AdminProjectRow) => row.id}
+      checkboxSelection={onSelectionChange !== undefined}
+      rowSelectionModel={selectionModel}
+      onRowSelectionModelChange={(model: GridRowSelectionModel) => {
+        onSelectionChange?.(Array.from(model.ids).map((id) => Number(id)));
+      }}
       sortingMode="server"
       sortModel={sortModel}
       onSortModelChange={(model: GridSortModel) => {

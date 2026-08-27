@@ -1,0 +1,42 @@
+/*
+ * THE GOOGLE FONTS @import IS REMOVED.
+ *
+ * The published widget opens with
+ * `@import url('https://fonts.googleapis.com/css2?family=Montserrat…')`, which
+ * is right for a widget embedded in an arbitrary host page: it cannot assume
+ * the host loaded anything. Inside this app it is wrong twice over — it makes
+ * every page of a self-hosted deployment fetch from a third-party origin (the
+ * finding `scripts/theme-gate.mjs`'s external-origins check exists to catch),
+ * and an air-gapped install would simply render a fallback face after a
+ * timeout.
+ *
+ * The family below is UNCHANGED. Montserrat is already this app's face — see
+ * `shared/ui/settings/SettingsDrawer.tsx` and `widgets/sidebar`'s
+ * `ProjectAvatar` — so the widget inherits whatever the deployment loads for
+ * the rest of the UI, and the `sans-serif` fallback is what it always was.
+ */
+
+.elitea-assistant-container {
+  position: fixed;
+  z-index: 2147483647;
+  font-family: 'Montserrat', sans-serif;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+
+.elitea-assistant-container *,
+.elitea-assistant-container *::before,
+.elitea-assistant-container *::after {
+  box-sizing: border-box;
+}
+
+.elitea-assistant-container--bottom-right {
+  bottom: 0.75rem;
+  right: 1.09375rem;
+}
+
+.elitea-assistant-container--bottom-left {
+  bottom: 0.75rem;
+  left: 1.09375rem;
+}

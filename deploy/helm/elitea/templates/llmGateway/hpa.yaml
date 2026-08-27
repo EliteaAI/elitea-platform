@@ -1,0 +1,46 @@
+{{- if .Values.llmGateway.enabled }}
+{{- if .Values.llmGateway.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "elitea-llm-gateway.fullname" . }}
+  labels:
+    {{- include "elitea-llm-gateway.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "elitea-llm-gateway.fullname" . }}
+  minReplicas: {{ .Values.llmGateway.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.llmGateway.autoscaling.maxReplicas }}
+  metrics:
+    # Custom /llm SSE-connection metric — CPU/memory is a poor autoscaling signal
+    # for I/O-bound streaming (design §9.5). Scale when the average number of
+    # concurrent /llm SSE connections per replica approaches the tuned provider
+    # Concurrency budget. Requires the Prometheus Adapter (or equivalent) to
+    # surface `{{ .Values.llmGateway.autoscaling.sseConnectionMetric }}` as a Pods metric.
+    - type: Pods
+      pods:
+        metric:
+          name: {{ .Values.llmGateway.autoscaling.sseConnectionMetric }}
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.llmGateway.autoscaling.targetSSEConnectionsPerPod | quote }}
+  behavior:
+    scaleUp:
+      # React quickly to connection surges but avoid thrash.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+    scaleDown:
+      # Long window: in-flight LLM streams can run ~120s; do not scale a pod away
+      # from under active streams. Aligns with terminationGracePeriodSeconds.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+{{- end }}
+{{- end }}

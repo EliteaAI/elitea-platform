@@ -82,11 +82,42 @@ export interface DeleteMessageFromConversationParams {
   readonly conversationId?: string | number;
 }
 
-export async function deleteMessageFromConversation(params: DeleteMessageFromConversationParams): Promise<unknown> {
-  return fetchData<unknown>(`/elitea_core/message/prompt_lib/${String(params.projectId)}/${String(params.id)}`, { method: 'DELETE' });
+/**
+ * What the server reports it actually removed.
+ *
+ * One request can delete TWO message groups: the answer named in the URL and
+ * the question it replies to, which the server pairs and removes together. The
+ * route therefore answers 200 with this body rather than the 204 it used to,
+ * because a caller that pruned only the id it asked for would leave the paired
+ * question on screen until a reload — worse than not pairing at all.
+ *
+ * `deleted` holds message-group UUIDs, newest first. It is the SERVER'S list,
+ * not a prediction: the pairing rule lives on the server, so a client that
+ * re-derived it here would be a second copy to keep in step.
+ */
+export interface DeleteMessageResponse {
+  readonly deleted: readonly string[];
 }
 
-export function useDeleteMessageFromConversationMutation(): UseMutationResult<unknown, unknown, DeleteMessageFromConversationParams> {
+/**
+ * Deletes one message group and returns every group id that really went.
+ *
+ * The fallback to `[params.id]` is for a server that still answers 204 (body
+ * `undefined`) or that omits the field: the id the caller named was certainly
+ * deleted — the request succeeded — so pruning it is right, and the caller gets
+ * the old single-message behaviour instead of pruning nothing at all.
+ */
+export async function deleteMessageFromConversation(params: DeleteMessageFromConversationParams): Promise<DeleteMessageResponse> {
+  const body = await fetchData<Partial<DeleteMessageResponse> | undefined>(
+    `/elitea_core/message/prompt_lib/${String(params.projectId)}/${String(params.id)}`,
+    { method: 'DELETE' },
+  );
+  const deleted = body?.deleted;
+  if (!Array.isArray(deleted) || deleted.length === 0) return { deleted: [String(params.id)] };
+  return { deleted: deleted.map(String) };
+}
+
+export function useDeleteMessageFromConversationMutation(): UseMutationResult<DeleteMessageResponse, unknown, DeleteMessageFromConversationParams> {
   return useMutation({ mutationFn: deleteMessageFromConversation });
 }
 

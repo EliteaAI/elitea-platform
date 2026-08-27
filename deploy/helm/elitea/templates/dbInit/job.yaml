@@ -1,0 +1,144 @@
+{{- if .Values.dbInit.enabled }}
+{{- $d := .Values.dbInit }}
+# The two things elitea-migrate cannot do for itself, because both need rights
+# the migrating role does not have.
+#
+# WHAT IS NOT HERE, DELIBERATELY. The pylon-era schema (001_initial.sql) used to
+# be applied by this Job from a copy carried in the chart. It is not any more:
+# elitea-migrate embeds it and applies it itself when the database does not
+# carry it. That removed a second source of truth held in step by a CI gate, and
+# it removed an ownership hand-over that this Job had to perform and could get
+# wrong — whoever applies that SQL owns the objects, the histories then ALTER
+# them, and only the owner may. Applied by an administrator from out here, the
+# chain died at shared/0041 with "must be owner of table project"; applied by
+# the migrating role inside the binary, ownership is right by construction.
+#
+# What remains needs an ADMINISTRATOR and so cannot move into that binary:
+#
+#   1. CREATE DATABASE for the agent-state store the worker's LangGraph
+#      checkpointer opens. A separate database, not a schema, because that is
+#      the connection-string shape the checkpointer uses. Without it the worker
+#      claims an execution, runs the agent, and then fails delivery with "The
+#      durable agent checkpoint store is unavailable".
+#   2. CREATE EXTENSION vector, into public, where the index plane's unqualified
+#      DDL needs it. No migration creates it, so nothing else will.
+#
+# Both are idempotent, and an already-prepared database costs two queries.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: elitea-db-init
+  labels:
+    {{- include "elitea.labels" . | nindent 4 }}
+    app.kubernetes.io/component: db-init
+  annotations:
+    # BEFORE the migration (weight 0). The migration no longer DEPENDS on this
+    # Job for the schema, but the agent-state database has to exist before the
+    # worker starts, and doing both database preparations in one place keeps the
+    # ordering obvious. Argo ignores helm.sh/hook-weight when its own hook
+    # annotation is present, so the wave states the same thing in its dialect.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-20"
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ $d.backoffLimit }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "elitea.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      restartPolicy: Never
+      {{- include "elitea.imagePullSecrets" (dict "local" $d.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $d.runAsUser }}
+        runAsGroup: {{ $d.runAsGroup }}
+        fsGroup: {{ $d.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: db-init
+          image: "{{ $d.image.repository }}:{{ $d.image.tag }}"
+          imagePullPolicy: {{ $d.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          env:
+            # An ADMIN DSN: CREATE DATABASE and CREATE EXTENSION are exactly the
+            # rights the application role does not have, which is why this names
+            # its own secret rather than reusing `postgresql`.
+            - name: PGURL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "dbInit.database.existingSecret is required (it needs CREATE DATABASE and CREATE EXTENSION rights)" $d.database.existingSecret }}
+                  key: {{ required "dbInit.database.key is required" $d.database.key }}
+            - name: AGENT_STATE_DB
+              value: {{ required "dbInit.agentStateDatabase is required" $d.agentStateDatabase | quote }}
+            - name: APP_ROLE
+              value: {{ $d.appRole | quote }}
+            - name: WAIT_ATTEMPTS
+              value: {{ $d.waitAttempts | quote }}
+            - name: WAIT_INTERVAL
+              value: {{ $d.waitIntervalSeconds | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              # Wait for the server. On a fresh install the operator's cluster
+              # may still be electing a primary.
+              attempt=0
+              until psql "$PGURL" -Atqc 'SELECT 1' >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "$attempt" -ge "$WAIT_ATTEMPTS" ]; then
+                  echo "ERROR: PostgreSQL did not answer after $WAIT_ATTEMPTS attempts." >&2
+                  psql "$PGURL" -Atqc 'SELECT 1' || true
+                  exit 1
+                fi
+                echo "  waiting for PostgreSQL ($attempt/$WAIT_ATTEMPTS)…"
+                sleep "$WAIT_INTERVAL"
+              done
+
+              # The DSN names the platform database; the agent-state one is
+              # created beside it on the same server.
+              ADMIN_URL="$(printf '%s' "$PGURL" | sed -E 's#(/)[^/?]+(\?|$)#\1postgres\2#')"
+
+              # 1. `psql -c CREATE DATABASE` cannot run inside a transaction and
+              #    has no IF NOT EXISTS, so existence is checked first.
+              if [ "$(psql "$ADMIN_URL" -Atqc \
+                    "SELECT 1 FROM pg_database WHERE datname = '$AGENT_STATE_DB'")" != "1" ]; then
+                psql "$ADMIN_URL" -v ON_ERROR_STOP=1 \
+                  -c "CREATE DATABASE \"$AGENT_STATE_DB\"${APP_ROLE:+ OWNER \"$APP_ROLE\"}"
+                echo "created database $AGENT_STATE_DB"
+              else
+                echo "database $AGENT_STATE_DB already present"
+              fi
+
+              # 2. the vector type, on the default search_path.
+              psql "$PGURL" -v ON_ERROR_STOP=1 \
+                -c "CREATE EXTENSION IF NOT EXISTS vector SCHEMA public"
+
+              echo "database prepared"
+          resources:
+            {{- toYaml $d.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with $d.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $d.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -344,3 +344,18 @@ func appendCurrentSecretFieldSegment(parent []string, field string) []string {
 	path[len(parent)] = field
 	return path
 }
+
+// IsCurrentSecretReference reports whether a stored value is a
+// `{{secret.NAME}}` reference rather than a literal.
+//
+// Exported for the admin global provider surface, which lists rows in a schema
+// EVERY project can read. Sealing makes the reference the redaction — a write
+// through this platform never leaves an api_key in the row — but a row imported
+// from a legacy deployment predates that guarantee, and an admin listing is
+// exactly where such a value would be handed to a browser. The listing asks this
+// so it can redact what is not already a reference, rather than trusting that
+// every row it reads was written by a path that seals.
+func IsCurrentSecretReference(value string) bool {
+	_, ok := currentSecretReferenceName(value)
+	return ok
+}

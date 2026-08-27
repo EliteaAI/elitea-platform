@@ -61,14 +61,31 @@ import { AdminNavFooter } from './AdminNavFooter';
 import { AdminNavHeader } from './AdminNavHeader';
 import { activeAdminNavItemId, visibleAdminNavGroups, type AdminNavItem } from './adminNavItems';
 import {
+  COLLAPSED_SIDE_BAR_WIDTH_REM,
+  SIDE_BAR_WIDTH_REM,
+} from '@/shared/ui/layout/sidebarWidth';
+
+import {
   readPersistedAdminNavCollapsed,
   useAdminNavCollapsedStore,
   writePersistedAdminNavCollapsed,
 } from './adminNavCollapsed';
 
-/** The reference's two widths, unchanged. */
-const ADMIN_NAV_WIDTH = '13.75rem';
-const ADMIN_NAV_COLLAPSED_WIDTH = '3.75rem';
+/**
+ * The rail's two widths — the SAME two the main app's rail uses.
+ *
+ * These were `13.75rem`/`3.75rem` (220/60px) while the main rail was 208/72,
+ * and the commit that introduced `sidebarWidth.ts` to unify them only ever
+ * changed one side: this file kept its own literals, so the two rails still
+ * disagreed and the shared rem exports had no consumer at all. The dead-code
+ * gate is what surfaced that — the constants were unused because the wiring
+ * was never finished, not because they were surplus.
+ *
+ * Both rails now read the baseline's own numbers (216/64,
+ * `apps/elitea-ui/src/common/constants.js:51,53`).
+ */
+const ADMIN_NAV_WIDTH = SIDE_BAR_WIDTH_REM;
+const ADMIN_NAV_COLLAPSED_WIDTH = COLLAPSED_SIDE_BAR_WIDTH_REM;
 
 export function AdminNav(): ReactNode {
   const collapsed = useAdminNavCollapsedStore((state) => state.collapsed);
@@ -225,6 +242,19 @@ function AdminNavLink({ item, active, collapsed }: AdminNavLinkProps): ReactNode
         sx={(theme: Theme) => ({
           padding: '0.5rem',
           height: '2rem',
+          // MUI's own ListItemButton root sets `flex-grow: 1` — it is built for
+          // a row inside a List. Here the items sit in a COLUMN whose first
+          // group is `flex: 1` (so the second group bottom-aligns), and on the
+          // column's main axis that grow makes every item absorb a share of the
+          // leftover height. `height: '2rem'` above then never holds: flex-grow
+          // resolves the main size and the declared height is only a basis, so
+          // the rail rendered as evenly-spread items with large gaps between
+          // them rather than a compact 2rem list.
+          //
+          // Pinned here rather than in the container: the container's `flex: 1`
+          // is deliberate and load-bearing for the bottom-aligned group.
+          flexGrow: 0,
+          flexShrink: 0,
           borderRadius: theme.vars.shape.radiusMd,
           boxSizing: 'border-box',
           justifyContent: collapsed ? 'center' : 'flex-start',

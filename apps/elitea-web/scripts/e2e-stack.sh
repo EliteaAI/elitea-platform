@@ -767,6 +767,25 @@ CROSS JOIN (VALUES
     ('models.chat.conversation.details'),
     ('models.chat.messages.create'),
     ('models.chat.folders.get'),
+    -- The notification bell mounts on EVERY page, including chat, and its poll
+    -- and its SSE stream both resolve this string against the project in the
+    -- URL — which, for this persona, is its PERSONAL project, not project 1.
+    --
+    -- Hand-listed for the same reason `index_meta.details` below is, but the
+    -- mechanism is worth stating because it is counter-intuitive: project 1
+    -- already carries this pair as an override (see the grant near the top of
+    -- this file), and shared/0090's backfill deliberately SKIPS any
+    -- (role, permission) pair that some project already overrides — it cannot
+    -- tell "never delivered" from "deliberately revoked here". So granting it on
+    -- project 1 is precisely what stops it reaching this project, and adding it
+    -- to the central corpus would not help either.
+    --
+    -- Measured symptom when absent: the bell's poll is refused on every page,
+    -- and because `http.ts` escalated a 401 into re-auth, the whole app became
+    -- an unbreakable login redirect loop. The client no longer escalates a
+    -- background poll's 401, but the permission is still what the bell needs to
+    -- work rather than merely fail quietly.
+    ('models.notifications.notifications.list'),
     -- #93 Surface A. `tool.patch` is the index-start route's own permission
     -- (`internal/api/v2/indexing/route.go:15`); the rest are what the browser
     -- needs to REACH the run control — list the toolkits, open one, read and

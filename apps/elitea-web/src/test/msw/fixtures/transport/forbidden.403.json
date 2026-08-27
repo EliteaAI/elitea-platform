@@ -1,6 +1,8 @@
 {
-  "recordedAt": "2026-07-26",
+  "recordedAt": "2026-08-25",
   "synthetic": true,
   "note": "Synthetic (unit F4): 403 body for the §5.4 behaviour-2 path (401/403 → re-auth flow).",
-  "body": { "error": "forbidden" }
+  "body": {
+    "error": "forbidden"
+  }
 }

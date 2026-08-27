@@ -1,0 +1,131 @@
+{{- if .Values.main.enabled }}
+{{- /*
+  The database secret, resolved once for every component that reads it.
+  An explicit `secrets.DATABASE_URL` under this component wins and is taken
+  WHOLE — `hasKey` rather than a field-wise merge, so an entry that names a
+  secret can never be completed with a key from somewhere else and end up
+  pointing at a database nobody chose.
+*/ -}}
+{{- $secrets := .Values.main.secrets | default dict }}
+{{- $pg := .Values.postgresql | default dict }}
+{{- if and $pg.existingSecret (not (hasKey $secrets "DATABASE_URL")) }}
+{{- $secrets = merge (deepCopy $secrets) (dict "DATABASE_URL" (dict "secretName" $pg.existingSecret "key" (required "postgresql.key is required when postgresql.existingSecret is set" $pg.key))) }}
+{{- end }}
+{{- if .Values.main.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "elitea-main.fullname" . }}-migrate
+  labels:
+    {{- include "elitea-main.labels" . | nindent 4 }}
+  annotations:
+    # Ordering guarantee: pre-install/pre-upgrade hooks are applied and
+    # AWAITED before Helm touches any of the release's normal manifests,
+    # including this chart's Deployment (see helm.sh/hook docs — hooks run
+    # outside the normal apply order, and Helm blocks the release until the
+    # hook Job reaches Complete). New/updated pods therefore never roll
+    # against a schema they don't expect; if the migration fails, this Job
+    # returns non-zero, Helm aborts the release, and the Deployment is never
+    # touched — the previous generation of pods keeps serving.
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    # Same policy as deploy/helm/nats-bootstrap's hook Job, for the same
+    # reason: delete the PREVIOUS run right before the next one is created
+    # (keeps the Job name reusable release-over-release, since a Job's pod
+    # template is immutable), but leave a FAILED Job in place — don't delete
+    # on failure — so `kubectl describe job` / `kubectl logs` on THIS
+    # release's failed attempt still work after the release aborts. It only
+    # gets cleaned up by the next successful install/upgrade attempt.
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.main.migrations.backoffLimit }}
+  # Bounded so a wedged migration (e.g. DB unreachable, a long lock held by
+  # another migration attempt) does not hang the whole release indefinitely.
+  activeDeadlineSeconds: {{ .Values.main.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        # Deliberately NOT elitea-main.selectorLabels: templates/service.yaml
+        # selects on exactly {app.kubernetes.io/name: <name>, .../instance},
+        # the same two keys selectorLabels sets — a migrate pod carrying them
+        # unchanged would be picked up as a live Service endpoint even though
+        # this container never listens on port 8080. The "-migrate" suffix on
+        # `name` keeps this pod out of that selector while it runs.
+        app.kubernetes.io/name: {{ include "elitea-main.name" . }}-migrate
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      {{- include "elitea.imagePullSecrets" (dict "local" .Values.main.imagePullSecrets "global" .Values.image.pullSecrets) | nindent 6 }}
+      {{- with .Values.main.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # NOT the chart's ServiceAccount, unless the operator names one.
+      #
+      # This Job is a pre-install/pre-upgrade hook, and the chart's
+      # ServiceAccount is an ordinary resource. Hooks are applied BEFORE the
+      # release's own objects, so on a FIRST install that ServiceAccount does
+      # not exist yet and the Job cannot create a pod at all:
+      #
+      #   Error creating: pods "elitea-main-migrate-" is forbidden:
+      #     error looking up service account elitea/elitea-main: not found
+      #
+      # The Job then burns its backoffLimit and the release fails. On an
+      # upgrade the ServiceAccount survives from the previous sync, so this is
+      # invisible until somebody installs the chart from nothing — which is
+      # exactly what happened.
+      #
+      # The migration needs no Kubernetes API access: it opens DATABASE_URL and
+      # applies SQL. So it runs as the namespace default ServiceAccount, and
+      # migrations.serviceAccountName exists for the deployment that must name
+      # one anyway — cloud IAM database auth binds a role to an SA.
+      {{- with .Values.main.migrations.serviceAccountName }}
+      serviceAccountName: {{ . }}
+      {{- end }}
+      restartPolicy: Never
+      containers:
+        - name: elitea-migrate
+          # Same image/tag as the Deployment by default (services/elitea-main's
+          # single Containerfile builds both /elitea-main and /elitea-migrate
+          # into one image) — override via migrations.image.* only for the rare
+          # case of pinning the migration step independently.
+          image: "{{ .Values.main.migrations.image.repository | default .Values.main.image.repository }}:{{ .Values.main.migrations.image.tag | default .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.main.image.pullPolicy }}
+          {{- with .Values.main.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["/elitea-migrate"]
+          args:
+            {{- toYaml .Values.main.migrations.args | nindent 12 }}
+          # Same values as templates/deployment.yaml's elitea-main container
+          # (DATABASE_URL etc., S17-style plaintext today), but rendered
+          # directly from .Values.main.env rather than via configMapRef: this Job
+          # is a pre-install/pre-upgrade hook, which Helm runs BEFORE any of
+          # the release's normal manifests — including templates/configmap.yaml
+          # — exist. envFrom-ing that ConfigMap here would leave the pod stuck
+          # in CreateContainerConfigError on every fresh `helm install`.
+          env:
+            {{- range $key, $value := .Values.main.env }}
+            {{- if not (hasKey $secrets $key) }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- range $name, $ref := $secrets }}
+            - name: {{ $name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName }}
+                  key: {{ $ref.key }}
+                  optional: {{ $ref.optional | default false }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.main.migrations.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

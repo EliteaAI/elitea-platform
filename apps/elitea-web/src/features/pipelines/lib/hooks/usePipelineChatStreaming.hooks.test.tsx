@@ -112,6 +112,44 @@ describe('usePipelineChatStreaming', () => {
     expect(onInfo).toHaveBeenCalledWith('The message has been deleted');
   });
 
+  // The server removes an answer together with the question it replies to and
+  // names both. Pruning only the requested id leaves that question on screen
+  // until a reload. Same contract as the agents hook, which shares this adapter.
+  it('onDeleteMessage removes every group the server reports it deleted', async () => {
+    const socket = createTestSocketClient();
+    const deleteMessage = vi.fn().mockResolvedValue({ deleted: ['answer', 'question'] });
+    let history: ChatHistoryMessage[] = [
+      { id: 'question', role: 'user' },
+      { id: 'answer', role: 'assistant' },
+      { id: 'keep', role: 'assistant' },
+    ];
+    const setChatHistory = vi.fn((update: ChatHistoryMessage[] | ((prev: ChatHistoryMessage[]) => ChatHistoryMessage[])) => {
+      history = typeof update === 'function' ? update(history) : update;
+    });
+
+    const { result } = renderHook(() =>
+      usePipelineChatStreaming({
+        socket,
+        adapter: baseAdapter({ deleteMessage }),
+        projectId: 'p1',
+        pipelineName: 'My Pipeline',
+        pipelineVersionDetails: undefined,
+        pipelineParticipant: null,
+        activeConversation: { id: 1, chat_history: [] },
+        activeParticipantId: undefined,
+        chatHistoryRef: { current: history },
+        setChatHistory,
+        setActiveConversation: () => {},
+      }),
+    );
+
+    await act(async () => {
+      await result.current.onDeleteMessage('answer');
+    });
+
+    expect(history).toEqual([{ id: 'keep', role: 'assistant' }]);
+  });
+
   it('onDeleteMessage surfaces an error via onError and does not touch chat history on failure', async () => {
     const socket = createTestSocketClient();
     const deleteMessage = vi.fn().mockResolvedValue({ error: new Error('nope') });

@@ -9,6 +9,7 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
 )
 
 type Handler struct {
@@ -211,18 +212,59 @@ func (h *Handler) RuntimeRemote(w http.ResponseWriter, _ *http.Request) {
 // all. Unit A14 replaces them with a real read and a real write over
 // `centry.moderation_state` — see internal/api/v2/moderation/requests.go.
 
-// Maintenance was registered on BOTH verbs pointing at the same handler, so the
-// PUT discarded its body and the GET reported `enabled: false` unconditionally —
-// a maintenance switch that always read "off" and never turned on.
+// Maintenance reports the resolved maintenance state, `GET /admin/maintenance/{mode}`.
 //
-// pylon's maintenance mode is a request hook installed on the bootstrap plugin's
-// persisted state, serving a 503 splash to every user whose administration-mode
-// roles do not include admin (legacy/plugins/bootstrap/tools/splash.py). Nothing
-// in this service installs such a hook. Reporting "maintenance is off" when the
-// deployment cannot enter maintenance at all is the same conflation `Tasks` was
-// corrected for.
-func (h *Handler) Maintenance(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]any{"error": maintenanceSplashUnavailable})
+// # History, because both previous answers were wrong in different ways
+//
+// It was first registered on BOTH verbs pointing at one handler, so the PUT
+// discarded its body and the GET reported `enabled: false` unconditionally — a
+// switch that always read "off" and could never be turned on. Unit A14 replaced
+// that with a 501 saying pylon's maintenance mode is a request hook this service
+// does not install, which was true then and is the sentence the Configuration
+// section has now earned its way out of: `internal/api/middleware`'s Maintenance
+// middleware enforces the switch.
+//
+// # Why this is READ-ONLY
+//
+// The state is AUTHORED on the admin Configuration page's Maintenance section,
+// which stores it in `centry.platform_config` like every other section on that
+// page, and this endpoint reads the same rows the middleware reads. A second
+// write path for one boolean is how a switch acquires two sources of truth that
+// disagree — and the parity argument for keeping the PUT is weak, because
+// pylon's PUT took `splash_template` HTML, which this port deliberately does not
+// have (see maintenanceSection).
+//
+// The route therefore answers 405 on PUT rather than 501: the capability exists,
+// this is not where it is exercised, and the reason names where it is.
+//
+// `pylon_id` is not marshalled. The reference returned it because maintenance
+// was per-pylon state and an operator had to know WHICH runtime they had just
+// taken down. Here it is one platform-wide row, and inventing an id for a
+// process that has none would restate a topology this platform does not have.
+func (h *Handler) Maintenance(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPut {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"error": "maintenance mode is authored on the admin Configuration page's Maintenance section, " +
+				"which writes the same rows this endpoint reads",
+		})
+		return
+	}
+
+	state, err := platformconfig.LoadMaintenance(r.Context(), h.pool)
+	if err != nil {
+		// NOT permissive, unlike the middleware's own read. An operator asking
+		// this endpoint whether the platform is in maintenance must never be
+		// told "no" by a failed query — that is the answer they would act on.
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "failed to read the maintenance state",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": state.Enabled,
+		"title":   state.Title,
+		"message": state.Message,
+	})
 }
 
 // arbiterTaskNodeUnavailable is what `/admin/tasks` and `/admin/active_tasks`

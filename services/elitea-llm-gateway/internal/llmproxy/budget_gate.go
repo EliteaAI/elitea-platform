@@ -18,6 +18,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/requestlog"
+
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/cost"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/failmode"
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/policy"
@@ -560,6 +562,16 @@ const (
 // the period bounds, the ledger dimensions, the drain guard, the member scope,
 // the soft alert — is identical for every basis. A second copy of that path is
 // a second place for the money to go missing.
+// recordLoggedUsage attaches the request's token counts to the log.
+//
+// Called from updateUsageUnits, which every billed surface reaches — the same
+// argument mapModel's enrichment makes for provider and model. Tokens are
+// enrichment and not the record itself: a request that failed before the
+// provider answered has none, and zero is the honest value there.
+func recordLoggedUsage(ctx context.Context, units cost.Units) {
+	requestlog.FromContext(ctx).SetTokens(units.InputTokens, units.OutputTokens)
+}
+
 func (h *Handler) updateUsageUnits(
 	ctx context.Context,
 	surface billingSurface,
@@ -569,6 +581,11 @@ func (h *Handler) updateUsageUnits(
 	projectIDStr string,
 	userIDStr string,
 ) billOutcome {
+	// BEFORE the billable check: a request whose tokens are known but which
+	// this deployment does not bill (no budget gate wired) still used them, and
+	// the log is about what happened rather than about what was charged.
+	recordLoggedUsage(ctx, u)
+
 	if h.budgetGate == nil || h.costCalc == nil {
 		return billNotBillable
 	}

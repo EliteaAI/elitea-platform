@@ -602,6 +602,88 @@ func (x *AgentExecutionArtifactReferenceV1) GetClassification() string {
 	return ""
 }
 
+// AgentExecutionAttachmentContentV1 returns ONE attachment item's enriched
+// content so the platform can persist what the worker extracted (#607).
+//
+// Pylon extracts a document's text once, at message-persist time, and stores
+// it: rpc/chat_all.py:344-377 reads the files through the SDK artifact toolkit
+// and appends the text as a second `{"type": "text"}` chunk of the item's
+// `content`, with `flag_modified(item, "content")` at :376. Every later turn is
+// then pure DB — utils/chat_history.py:67-73 extends the stored chunks straight
+// into the message and re-reads nothing.
+//
+// Here the two halves live in different services: only the worker can reach the
+// artifact toolkit, and only elitea-main can write `chat_messages_attachment`.
+// This message is the seam. The worker fills it for the attachments it actually
+// enriched; elitea-main writes `content` onto the named row on the terminal
+// path it already owns. Without it, a file attached two turns ago is invisible
+// to the model and every turn re-pays the extraction.
+type AgentExecutionAttachmentContentV1 struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The `chat_message_items` row to write, taken from the `item_id` the
+	// admission scaffold stamps into the chunk's `elitea_attachment` marker
+	// (attachments.go, attachmentContentScaffold).
+	//
+	// NOT (bucket, name). The same file attached twice in one conversation is an
+	// ordinary thing for a user to do and produces two rows with identical bucket
+	// and name, so a (bucket, name) match would silently write one file's text
+	// onto the other's row. The item id is exact.
+	ItemId string `protobuf:"bytes,1,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// One complete UTF-8 JSON ARRAY of LangChain content chunks: exactly the
+	// value `chat_messages_attachment.content` is to hold, not a delta. It is the
+	// admission scaffold's own header chunk — marker included, byte-for-byte —
+	// followed by the extracted text as a second `{"type": "text"}` chunk, which
+	// is the shape pylon's extraction step leaves behind and the shape the
+	// worker's own reader recognises as "already extracted".
+	Content       []byte `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentExecutionAttachmentContentV1) Reset() {
+	*x = AgentExecutionAttachmentContentV1{}
+	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentExecutionAttachmentContentV1) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentExecutionAttachmentContentV1) ProtoMessage() {}
+
+func (x *AgentExecutionAttachmentContentV1) ProtoReflect() protoreflect.Message {
+	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentExecutionAttachmentContentV1.ProtoReflect.Descriptor instead.
+func (*AgentExecutionAttachmentContentV1) Descriptor() ([]byte, []int) {
+	return file_elitea_runtime_v1_agent_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *AgentExecutionAttachmentContentV1) GetItemId() string {
+	if x != nil {
+		return x.ItemId
+	}
+	return ""
+}
+
+func (x *AgentExecutionAttachmentContentV1) GetContent() []byte {
+	if x != nil {
+		return x.Content
+	}
+	return nil
+}
+
 // AgentExecutionResultV1 references the exact current task result. Thinking,
 // token, tool, HITL, MCP and child events are separate non-terminal NodeEventV1
 // frames; a large final task result is never materialized on Redis or gRPC.
@@ -614,13 +696,44 @@ type AgentExecutionResultV1 struct {
 	RequestContentDigest    *DigestV1                          `protobuf:"bytes,5,opt,name=request_content_digest,json=requestContentDigest,proto3" json:"request_content_digest,omitempty"`
 	TerminalState           AgentExecutionTerminalStateV1      `protobuf:"varint,6,opt,name=terminal_state,json=terminalState,proto3,enum=elitea.runtime.v1.AgentExecutionTerminalStateV1" json:"terminal_state,omitempty"`
 	ResultArtifact          *AgentExecutionArtifactReferenceV1 `protobuf:"bytes,7,opt,name=result_artifact,json=resultArtifact,proto3" json:"result_artifact,omitempty"`
-	unknownFields           protoimpl.UnknownFields
-	sizeCache               protoimpl.SizeCache
+	// Enriched attachment content to persist, one entry per attachment whose text
+	// this turn actually read (#607). Absent for every turn that carried no
+	// document, and absent for a document whose read failed — a failed read has
+	// no text to persist and must leave the row as admission wrote it.
+	//
+	// INLINE, and deliberately so. The two candidate carriers were measured:
+	//
+	//   - This frame. `max_output_frame_bytes` is 64 KiB
+	//     (runtimecomposition/composition.go's maxOutputFrameBytes, and the
+	//     worker's own _V1_OUTPUT_FRAME_BYTES); a terminal
+	//     AgentExecutionResultV1 frame measures ~1 KiB today, so ~62 KiB is free.
+	//   - `result_artifact`, which is not an object-store blob but the terminal
+	//     NodeEventV1 itself — elitea-main re-reads its bytes from
+	//     `agent_execution_node_events` and checks them against the digest here
+	//     (repos/agent_execution_results.go, loadCurrentAgentTerminal). That event
+	//     is capped at 60 KiB of JSON (worker protocol/node_event.py), so it is
+	//     no roomier than this frame. It was REJECTED for two other reasons: it
+	//     is the browser-facing `full_message` event, so riding it would ship
+	//     every attached file's full text to the UI on every turn; and an
+	//     over-size event RAISES, which would turn a large attachment into a
+	//     failed turn.
+	//
+	// So neither carrier is large, and the honest consequence is a cap rather
+	// than a pretence that a whole PDF fits. The worker measures this list before
+	// it builds the frame and DROPS whole entries that do not fit
+	// (agents/attachments.py, MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES). A dropped
+	// entry degrades exactly to today's behaviour: the turn still succeeds, the
+	// model still sees the text this turn, and only the persistence is skipped.
+	// An entry is never truncated — a partial chunk that still claims to be the
+	// file is worse than no chunk, because nothing downstream can tell.
+	AttachmentContents []*AgentExecutionAttachmentContentV1 `protobuf:"bytes,16,rep,name=attachment_contents,json=attachmentContents,proto3" json:"attachment_contents,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *AgentExecutionResultV1) Reset() {
 	*x = AgentExecutionResultV1{}
-	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[3]
+	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -632,7 +745,7 @@ func (x *AgentExecutionResultV1) String() string {
 func (*AgentExecutionResultV1) ProtoMessage() {}
 
 func (x *AgentExecutionResultV1) ProtoReflect() protoreflect.Message {
-	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[3]
+	mi := &file_elitea_runtime_v1_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +758,7 @@ func (x *AgentExecutionResultV1) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentExecutionResultV1.ProtoReflect.Descriptor instead.
 func (*AgentExecutionResultV1) Descriptor() ([]byte, []int) {
-	return file_elitea_runtime_v1_agent_proto_rawDescGZIP(), []int{3}
+	return file_elitea_runtime_v1_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AgentExecutionResultV1) GetInputBundleId() string {
@@ -693,6 +806,13 @@ func (x *AgentExecutionResultV1) GetTerminalState() AgentExecutionTerminalStateV
 func (x *AgentExecutionResultV1) GetResultArtifact() *AgentExecutionArtifactReferenceV1 {
 	if x != nil {
 		return x.ResultArtifact
+	}
+	return nil
+}
+
+func (x *AgentExecutionResultV1) GetAttachmentContents() []*AgentExecutionAttachmentContentV1 {
+	if x != nil {
+		return x.AttachmentContents
 	}
 	return nil
 }
@@ -773,7 +893,10 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\vbyte_length\x18\x04 \x01(\x04R\n" +
 	"byteLength\x123\n" +
 	"\x06digest\x18\x05 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x06digest\x12&\n" +
-	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"\x84\x04\n" +
+	"\x0eclassification\x18\x06 \x01(\tR\x0eclassificationJ\x04\b\a\x10\x10\"\\\n" +
+	"!AgentExecutionAttachmentContentV1\x12\x17\n" +
+	"\aitem_id\x18\x01 \x01(\tR\x06itemId\x12\x18\n" +
+	"\acontent\x18\x02 \x01(\fR\acontentJ\x04\b\x03\x10\x10\"\xf1\x04\n" +
 	"\x16AgentExecutionResultV1\x12&\n" +
 	"\x0finput_bundle_id\x18\x01 \x01(\tR\rinputBundleId\x12K\n" +
 	"\x13input_bundle_digest\x18\x02 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x11inputBundleDigest\x12(\n" +
@@ -781,7 +904,8 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x19request_immutable_version\x18\x04 \x01(\tR\x17requestImmutableVersion\x12Q\n" +
 	"\x16request_content_digest\x18\x05 \x01(\v2\x1b.elitea.runtime.v1.DigestV1R\x14requestContentDigest\x12W\n" +
 	"\x0eterminal_state\x18\x06 \x01(\x0e20.elitea.runtime.v1.AgentExecutionTerminalStateV1R\rterminalState\x12]\n" +
-	"\x0fresult_artifact\x18\a \x01(\v24.elitea.runtime.v1.AgentExecutionArtifactReferenceV1R\x0eresultArtifactJ\x04\b\b\x10\x10*\xa4\x02\n" +
+	"\x0fresult_artifact\x18\a \x01(\v24.elitea.runtime.v1.AgentExecutionArtifactReferenceV1R\x0eresultArtifact\x12e\n" +
+	"\x13attachment_contents\x18\x10 \x03(\v24.elitea.runtime.v1.AgentExecutionAttachmentContentV1R\x12attachmentContentsJ\x04\b\b\x10\x10J\x04\b\x11\x10 *\xa4\x02\n" +
 	"\x1dAgentExecutionTerminalStateV1\x121\n" +
 	"-AGENT_EXECUTION_TERMINAL_STATE_V1_UNSPECIFIED\x10\x00\x12/\n" +
 	"+AGENT_EXECUTION_TERMINAL_STATE_V1_COMPLETED\x10\x01\x121\n" +
@@ -802,26 +926,28 @@ func file_elitea_runtime_v1_agent_proto_rawDescGZIP() []byte {
 }
 
 var file_elitea_runtime_v1_agent_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_elitea_runtime_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_elitea_runtime_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_elitea_runtime_v1_agent_proto_goTypes = []any{
 	(AgentExecutionTerminalStateV1)(0),        // 0: elitea.runtime.v1.AgentExecutionTerminalStateV1
 	(*AgentExecutionCommandV1)(nil),           // 1: elitea.runtime.v1.AgentExecutionCommandV1
 	(*AgentExecutionInputV1)(nil),             // 2: elitea.runtime.v1.AgentExecutionInputV1
 	(*AgentExecutionArtifactReferenceV1)(nil), // 3: elitea.runtime.v1.AgentExecutionArtifactReferenceV1
-	(*AgentExecutionResultV1)(nil),            // 4: elitea.runtime.v1.AgentExecutionResultV1
-	(*DigestV1)(nil),                          // 5: elitea.runtime.v1.DigestV1
+	(*AgentExecutionAttachmentContentV1)(nil), // 4: elitea.runtime.v1.AgentExecutionAttachmentContentV1
+	(*AgentExecutionResultV1)(nil),            // 5: elitea.runtime.v1.AgentExecutionResultV1
+	(*DigestV1)(nil),                          // 6: elitea.runtime.v1.DigestV1
 }
 var file_elitea_runtime_v1_agent_proto_depIdxs = []int32{
-	5, // 0: elitea.runtime.v1.AgentExecutionArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
-	5, // 1: elitea.runtime.v1.AgentExecutionResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
-	5, // 2: elitea.runtime.v1.AgentExecutionResultV1.request_content_digest:type_name -> elitea.runtime.v1.DigestV1
+	6, // 0: elitea.runtime.v1.AgentExecutionArtifactReferenceV1.digest:type_name -> elitea.runtime.v1.DigestV1
+	6, // 1: elitea.runtime.v1.AgentExecutionResultV1.input_bundle_digest:type_name -> elitea.runtime.v1.DigestV1
+	6, // 2: elitea.runtime.v1.AgentExecutionResultV1.request_content_digest:type_name -> elitea.runtime.v1.DigestV1
 	0, // 3: elitea.runtime.v1.AgentExecutionResultV1.terminal_state:type_name -> elitea.runtime.v1.AgentExecutionTerminalStateV1
 	3, // 4: elitea.runtime.v1.AgentExecutionResultV1.result_artifact:type_name -> elitea.runtime.v1.AgentExecutionArtifactReferenceV1
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 5: elitea.runtime.v1.AgentExecutionResultV1.attachment_contents:type_name -> elitea.runtime.v1.AgentExecutionAttachmentContentV1
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_elitea_runtime_v1_agent_proto_init() }
@@ -837,7 +963,7 @@ func file_elitea_runtime_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_elitea_runtime_v1_agent_proto_rawDesc), len(file_elitea_runtime_v1_agent_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   4,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

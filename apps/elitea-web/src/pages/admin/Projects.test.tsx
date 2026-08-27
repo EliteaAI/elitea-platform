@@ -11,11 +11,16 @@
  *     A control that renders but sends nothing is the class #130/#180 shipped;
  *     asserting only that a button exists would not catch it.
  *  3. Every control with NO server behind it is disabled with a stated reason —
- *     and the reason is the real one, not a placeholder.
- *  4. The two writes are absent entirely when the permission is absent, and
- *     absent means "not rendered", not "rendered and ignored".
+ *     and the reason is the real one, not a placeholder. Only the Excel export
+ *     is in that state now; create and delete left it when the provisioning
+ *     pipeline landed (#333).
+ *  4. Every write is absent entirely when its permission is absent, and absent
+ *     means "not rendered", not "rendered and ignored". Create and delete are
+ *     gated on their OWN permissions, not on the suspend one.
+ *  5. Delete cannot fire on a mis-click, and says by name what it is about to
+ *     destroy. It is the only irreversible control on the page.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -118,7 +123,35 @@ function useAdminProjectHandlers(): void {
       recorded.push({ method: 'PUT-member', url: request.url, body: await request.json() });
       return HttpResponse.json({ msg: 'roles updated' });
     }),
+    // Provisioning. NOT on the `/admin/...` family: create and delete belong to
+    // the projects handler, which drives the step pipeline.
+    http.post('*/projects/project/administration', async ({ request }) => {
+      recorded.push({ method: 'POST-create', url: request.url, body: await request.json() });
+      return HttpResponse.json(
+        { id: 99, steps: [{ step: 'project_model', initialized: true, ok: true, msg: '' }], rollback_steps: [] },
+        { status: 201 },
+      );
+    }),
+    http.delete('*/projects/project/administration/*', ({ request }) => {
+      recorded.push({ method: 'DELETE-project', url: request.url, body: null });
+      return HttpResponse.json({ steps: [] });
+    }),
   );
+}
+
+/** Every permission the page's controls read, for the default-granted case. */
+const ALL_PROJECT_PERMISSIONS = [
+  'projects.projects.projects.view',
+  'projects.projects.projects.edit',
+  'projects.projects.project.create',
+  'projects.projects.project.delete',
+];
+
+/** Tick one project's selection checkbox, by the name in its row. */
+async function selectRow(user: ReturnType<typeof userEvent.setup>, name: string): Promise<void> {
+  const row = dataRows().find((candidate) => within(candidate).queryByText(name) !== null);
+  if (!row) throw new Error(`no row for ${name}`);
+  await user.click(within(row).getByRole('checkbox'));
 }
 
 /** The permission list the Go adminui handler injects for a valid session. */
@@ -139,13 +172,16 @@ function dataRows(): HTMLElement[] {
 beforeEach(() => {
   recorded = [];
   configureGeneratedClient({ baseUrl: '/api/v2' });
-  grantAdminUiPermissions(['projects.projects.projects.view', 'projects.projects.projects.edit']);
+  grantAdminUiPermissions(ALL_PROJECT_PERMISSIONS);
   useAdminProjectHandlers();
 });
 
 afterEach(() => {
   resetGeneratedClient();
   delete window.admin_ui_config;
+  // The export tests stub URL.createObjectURL and anchor clicks; leaking those
+  // into a later file would make its downloads silently no-op.
+  vi.restoreAllMocks();
 });
 
 describe('Admin › Projects', () => {
@@ -241,43 +277,255 @@ describe('Admin › Projects', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 
-  it('renders create and delete DISABLED, with the provisioning reason attached', async () => {
-    renderAdminRoute(<AdminProjects />);
-    await screen.findByText('atlas');
+  describe('create', () => {
+    it('POSTs the pylon create body, and sends neither an owner nor a role', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
 
-    const create = screen.getByRole('button', { name: 'Create project' });
-    const remove = screen.getByRole('button', { name: 'Delete projects' });
-    expect(create).toBeDisabled();
-    expect(remove).toBeDisabled();
+      await user.click(screen.getByRole('button', { name: 'Create project' }));
+      await user.type(await screen.findByRole('textbox', { name: 'Project name' }), 'cygnus');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
 
-    // The reason must be the REAL one. A disabled control with a vague label is
-    // the same dead end as a control that no-ops, one step earlier.
-    const reason = create.parentElement?.getAttribute('aria-label') ?? '';
-    const tooltip = create.closest('[title]')?.getAttribute('title') ?? reason;
-    expect(`${tooltip}`).toMatch(/tenant schema/i);
+      await waitFor(() => expect(writes()).toHaveLength(1));
+      expect(writes()[0]!.method).toBe('POST-create');
+      expect(writes()[0]!.url).toContain('/projects/project/administration');
+      // Owner and role are server-side facts. A body carrying either would be a
+      // privilege decision made in a form — the server ignores both, and this
+      // asserts the client does not try.
+      expect(writes()[0]!.body).toEqual({ name: 'cygnus', project_admin_email: [] });
+    });
+
+    it('refuses an empty name without a round trip', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await user.click(screen.getByRole('button', { name: 'Create project' }));
+      await user.click(await screen.findByRole('button', { name: 'Create' }));
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(writes()).toHaveLength(0);
+    });
+
+    it('names the STEP that failed, not just that something did', async () => {
+      server.use(
+        http.post('*/projects/project/administration', () =>
+          HttpResponse.json(
+            {
+              steps: [
+                { step: 'project_model', initialized: true, ok: true, msg: '' },
+                {
+                  step: 'project_schema',
+                  initialized: true,
+                  ok: false,
+                  msg: 'step project_schema did not complete',
+                },
+              ],
+              rollback_steps: [],
+            },
+            { status: 500 },
+          ),
+        ),
+      );
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await user.click(screen.getByRole('button', { name: 'Create project' }));
+      await user.type(await screen.findByRole('textbox', { name: 'Project name' }), 'cygnus');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+
+      // The step list lives ONLY on the rejected response's body. A client that
+      // kept the status and dropped the body would reduce "the tenant schema
+      // step failed" to a bare 500.
+      expect(await screen.findByText(/project_schema/)).toBeInTheDocument();
+      // The steps that SUCCEEDED are not reported: nine green lines bury the
+      // one red one.
+      expect(screen.queryByText(/project_model/)).not.toBeInTheDocument();
+    });
+
+    it('separates a failed ROLLBACK from a failed forward step', async () => {
+      server.use(
+        http.post('*/projects/project/administration', () =>
+          HttpResponse.json(
+            {
+              // The SAME step name in both lists, which is what the server
+              // really emits: compensate() undoes every attempted step,
+              // including the one that failed.
+              steps: [
+                {
+                  step: 'project_schema',
+                  initialized: true,
+                  ok: false,
+                  msg: 'step project_schema did not complete',
+                },
+              ],
+              rollback_steps: [
+                {
+                  step: 'project_schema',
+                  initialized: true,
+                  ok: false,
+                  msg: 'step project_schema was not started, because the project row is still there',
+                },
+              ],
+            },
+            { status: 500 },
+          ),
+        ),
+      );
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await user.click(screen.getByRole('button', { name: 'Create project' }));
+      await user.type(await screen.findByRole('textbox', { name: 'Project name' }), 'cygnus');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+
+      // Two headings, because the two call for opposite operator actions: a
+      // forward failure is already cleaned up, a rollback failure is
+      // infrastructure left behind. Flattening them into one list loses that.
+      expect(await screen.findByText(/Provisioning stopped at/)).toBeInTheDocument();
+      expect(screen.getByText(/Cleanup did not finish/)).toBeInTheDocument();
+      expect(screen.getByText(/did not complete/)).toBeInTheDocument();
+      expect(screen.getByText(/was not started/)).toBeInTheDocument();
+    });
   });
 
-  it('issues no create or delete request even when the click is forced through', async () => {
-    // `pointerEventsCheck: 0` deliberately bypasses the `pointer-events: none`
-    // a disabled MUI button carries, so this asserts the STRONGER property:
-    // there is no handler behind either control, not merely that the pointer
-    // cannot reach it. A future edit that enables the button without wiring it
-    // fails here rather than shipping a control that silently no-ops.
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderAdminRoute(<AdminProjects />);
-    await screen.findByText('atlas');
+  describe('delete', () => {
+    it('is disabled until something is selected', async () => {
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
 
-    await user.click(screen.getByRole('button', { name: 'Create project' }));
-    await user.click(screen.getByRole('button', { name: 'Delete projects' }));
+      expect(screen.getByRole('button', { name: 'Delete projects' })).toBeDisabled();
+    });
 
-    expect(writes()).toHaveLength(0);
+    it('sends nothing until the confirmation word is typed', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await selectRow(user, 'atlas');
+      await user.click(screen.getByRole('button', { name: 'Delete projects' }));
+
+      // The dialog must list what it is about to destroy, by name.
+      const list = await screen.findByTestId('admin-projects-delete-list');
+      expect(within(list).getByText('atlas (ID: 41)')).toBeInTheDocument();
+
+      // Armed only by the typed word. This is the one control on the page whose
+      // effect cannot be undone, so a mis-click must not be enough.
+      expect(screen.getByRole('button', { name: 'Delete permanently' })).toBeDisabled();
+      expect(writes()).toHaveLength(0);
+    });
+
+    it('DELETEs each selected project once the word is typed', async () => {
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await selectRow(user, 'atlas');
+      await selectRow(user, 'borealis');
+      await user.click(screen.getByRole('button', { name: 'Delete projects' }));
+
+      await user.type(
+        await screen.findByRole('textbox', { name: 'Type DELETE to confirm' }),
+        'DELETE',
+      );
+      await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+      // One request per project: there is no batch route.
+      await waitFor(() => expect(writes()).toHaveLength(2));
+      expect(writes().map((entry) => entry.method)).toEqual(['DELETE-project', 'DELETE-project']);
+      expect(writes()[0]!.url).toContain('/projects/project/administration/41');
+      expect(writes()[1]!.url).toContain('/projects/project/administration/42');
+    });
+
+    it('reports the projects it could not delete, by name', async () => {
+      server.use(
+        http.delete('*/projects/project/administration/42', () =>
+          HttpResponse.json({ steps: [] }, { status: 500 }),
+        ),
+      );
+      const user = userEvent.setup();
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      await selectRow(user, 'atlas');
+      await selectRow(user, 'borealis');
+      await user.click(screen.getByRole('button', { name: 'Delete projects' }));
+      await user.type(
+        await screen.findByRole('textbox', { name: 'Type DELETE to confirm' }),
+        'DELETE',
+      );
+      await user.click(screen.getByRole('button', { name: 'Delete permanently' }));
+
+      // A refusal on one must not spare the rest, and "three of five" is the
+      // only honest report when it happens.
+      expect(await screen.findByText(/borealis:/)).toBeInTheDocument();
+      expect(screen.queryByText(/atlas:/)).not.toBeInTheDocument();
+    });
   });
 
-  it('renders export disabled with its own, different reason', async () => {
+  /**
+   * The export used to be a disabled button; asserting only that it is now
+   * ENABLED would pass against a control that downloads an empty file. These
+   * two assert the file's actual bytes and that a refusal is surfaced — the
+   * "renders but sends nothing" class this file exists to fence.
+   */
+  it('exports every row the current filter selects, as CSV', async () => {
+    const user = userEvent.setup();
+    let exported: Blob | undefined;
+    vi.spyOn(URL, 'createObjectURL').mockImplementation((blob: Blob | MediaSource) => {
+      exported = blob as Blob;
+      return 'blob:mock-url';
+    });
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+
     renderAdminRoute(<AdminProjects />);
     await screen.findByText('atlas');
 
-    expect(screen.getByRole('button', { name: 'Export to Excel' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+
+    // The UTF-8 BOM is what makes Excel decode the file as UTF-8, so it is
+    // asserted on the BYTES: `Blob.text()` strips a leading BOM per spec, and
+    // an assertion on the decoded string would pass without it.
+    const bytes = new Uint8Array(await exported!.arrayBuffer());
+    expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
+
+    const lines = (await exported!.text()).split('\r\n');
+    expect(lines[0]).toBe('Name,ID,Owner,Admins,Status');
+    // The joined admin list carries a comma, so the cell has to be quoted.
+    expect(lines[1]).toBe('atlas,41,Ada Owner,"Bo Admin, Cy Admin",Active');
+    // Status is the server's derived field — the same reading the chip makes.
+    expect(lines[2]).toBe('borealis,42,Bea Owner,,Suspended');
+    expect(lines[3]).toBe('cirrus,43,,,Failed');
+
+    // The export walks the LIST endpoint, filtered by the active tab.
+    const exportRead = recorded.filter((entry) => entry.url.includes('/admin/projects/')).at(-1)!;
+    expect(exportRead.url).toContain('project_type=team');
+    // 100, not a bigger number: the admin handler ignores a `limit` above 100
+    // and silently serves 20, which the walk would read as the last page.
+    expect(exportRead.url).toContain('limit=100');
+  });
+
+  it('reports a refused export instead of downloading an empty file', async () => {
+    const user = userEvent.setup();
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    renderAdminRoute(<AdminProjects />);
+    await screen.findByText('atlas');
+
+    server.use(
+      http.get('*/admin/projects/administration', () =>
+        HttpResponse.json({ error: 'insufficient permissions' }, { status: 403 }),
+      ),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Export to CSV' }));
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(clickSpy).not.toHaveBeenCalled();
   });
 
   describe('without the project-write permission', () => {
@@ -301,6 +549,31 @@ describe('Admin › Projects', () => {
       await screen.findByText('atlas');
 
       expect(screen.getAllByRole('button', { name: 'Project activity' })).not.toHaveLength(0);
+    });
+
+    it('renders neither provisioning control, nor the selection they arm', async () => {
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      // `projects.projects.projects.edit` is granted in this block's parent and
+      // NOT here — but even with it, create and delete are gated on their own
+      // permissions. Suspending is reversible and dropping a schema is not, so
+      // the two must not travel together.
+      expect(screen.queryByRole('button', { name: 'Create project' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Delete projects' })).not.toBeInTheDocument();
+      expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    });
+
+    it('shows create without delete when only create is granted', async () => {
+      grantAdminUiPermissions([
+        'projects.projects.projects.view',
+        'projects.projects.project.create',
+      ]);
+      renderAdminRoute(<AdminProjects />);
+      await screen.findByText('atlas');
+
+      expect(screen.getByRole('button', { name: 'Create project' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Delete projects' })).not.toBeInTheDocument();
     });
   });
 

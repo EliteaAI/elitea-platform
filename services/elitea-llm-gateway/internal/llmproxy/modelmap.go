@@ -21,6 +21,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/requestlog"
+
 	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/account"
 )
 
@@ -214,6 +216,21 @@ func (h *Handler) mapModel(
 	provider *schemas.ModelProvider,
 	model *string,
 ) bool {
+	// Attach the resolved pair to the request log on the way out, whichever
+	// branch below returns.
+	//
+	// HERE rather than in each handler: every dialect that dispatches passes
+	// through this function, so one deferred call covers chat, completions,
+	// embeddings, responses, messages, images, audio and realtime. The
+	// alternative is a list of seventeen call sites that has to stay complete,
+	// which is the shape of defect this codebase keeps finding.
+	//
+	// Deferred so it records what was RESOLVED rather than what was requested:
+	// the mapping rewrites both arguments, and the resolved name is the one the
+	// provider actually saw.
+	defer func() {
+		requestlog.FromContext(ctx).SetModel(string(*provider), *model)
+	}()
 	if h.models == nil {
 		publishRequestModel(ctx, *model)
 		// No model map is not an exemption from governance: a deployment that

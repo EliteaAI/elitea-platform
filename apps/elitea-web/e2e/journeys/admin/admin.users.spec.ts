@@ -169,6 +169,68 @@ adminTest('J28: suspending a user is written to the database and survives a relo
   ).toBeVisible({ timeout: 15_000 });
 });
 
+adminTest('J34: the activity drawer reads the audit trail scoped to one user', async ({ page }) => {
+  // The clicked row's id, resolved INDEPENDENTLY of the drawer. Reading it back
+  // out of the drawer's own request instead would be circular: a drawer wired
+  // to `users[0]` would query for the wrong person AND head itself with that
+  // same wrong person, and every assertion below would agree with itself.
+  const listing = await page.request.get(
+    `${BASE_URL}/api/v2/admin/auth_users/administration?limit=100&offset=0&search=${SEEDED_MEMBER}`,
+  );
+  expect(listing.status(), 'the listing must answer before the drawer can be checked').toBe(200);
+  const listed = (await listing.json()) as { rows?: { id: number; email: string }[] };
+  const expectedId = listed.rows?.find((entry) => entry.email === SEEDED_MEMBER)?.id;
+  expect(expectedId, `${SEEDED_MEMBER} must be a seeded row`).toBeGreaterThan(0);
+
+  await page.goto(BASE_URL + '/admin/app/users', { waitUntil: 'domcontentloaded' });
+  const row = page.getByRole('row').filter({ hasText: SEEDED_MEMBER });
+  await expect(row).toHaveCount(1, { timeout: 20_000 });
+
+  // The drawer reuses the deployment-wide audit endpoints. Its queries must
+  // carry THIS row's user id — a drawer that dropped it would show the whole
+  // platform's traces under one person's name, and the rows would look
+  // perfectly plausible. This control shipped DISABLED until the per-user view
+  // was ported, so "it is enabled and it queries" is the claim under test.
+  const traceListing = page.waitForResponse(
+    (r) =>
+      r.url().includes('/elitea_core/audit_traces/administration') && r.request().method() === 'GET',
+  );
+  await row.getByRole('button', { name: 'User activity' }).click();
+
+  const traceResponse = await traceListing;
+  expect(traceResponse.status(), 'the audit read must be authorised server-side').toBe(200);
+
+  // Against the id the LISTING gave, not against the drawer's own heading —
+  // that is what rules out a drawer pinned to the first row, or to nothing.
+  // Compared as a parsed parameter, never as a substring of the URL: `user_id=1`
+  // is a substring of `user_id=12`, so `toContain` would accept a query pinned
+  // to a different account whose id merely starts with these digits.
+  const userId = new URL(traceResponse.url()).searchParams.get('user_id');
+  expect(userId, 'the listing must be scoped to the clicked user').toBe(String(expectedId));
+  await expect(page.getByText(`(ID: ${userId})`)).toBeVisible({ timeout: 15_000 });
+
+  // The heatmap is drawn over the same window as the table beneath it, so it
+  // must carry the same pin; a chart filtered differently from its table is a
+  // lie about the same data.
+  const heatmap = page.waitForResponse((r) =>
+    r.url().includes('/elitea_core/audit_trace_heatmap/administration'),
+  );
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  const heatmapResponse = await heatmap;
+  expect(heatmapResponse.status()).toBe(200);
+  expect(new URL(heatmapResponse.url()).searchParams.get('user_id')).toBe(userId);
+
+  // Spans is the strictly per-user view: with `user_id` pinned, a TRACE is any
+  // trace containing one of this user's spans, so it can carry somebody else's.
+  const spanListing = page.waitForResponse(
+    (r) => r.url().includes('/elitea_core/audit/administration') && r.request().method() === 'GET',
+  );
+  await page.getByRole('tab', { name: 'Spans' }).click();
+  const spanResponse = await spanListing;
+  expect(spanResponse.status()).toBe(200);
+  expect(new URL(spanResponse.url()).searchParams.get('user_id')).toBe(userId);
+});
+
 /*
  * The listing is an authorisation boundary, not a UI-visibility one.
  *
@@ -219,10 +281,17 @@ adminTest.describe('member persona', () => {
  *    every other journey in this suite;
  *    `TestAuthUsersDeleteRemovesTheUser` covers it, re-reading through the
  *    product's own GET handler.
- *  - user activity and Excel export — both are rendered DISABLED with a stated
- *    reason (the per-user activity view is unported; no spreadsheet
- *    dependency). See `src/pages/admin/Users.test.tsx`, which asserts the
- *    disabled state.
+ *  - export. It is REAL now (CSV, not the reference's .xlsx — see
+ *    `src/pages/admin/adminUsersCsv.ts`), but the bytes it produces are
+ *    asserted where they can be read: `Users.test.tsx` reads the downloaded
+ *    Blob, and `adminUsersCsv.test.ts` covers quoting and formula-injection
+ *    neutralisation. A browser download in Playwright would re-assert the
+ *    same file through a much slower path.
+ *  - the activity drawer's ROWS. J34 covers the queries and their scoping,
+ *    and `src/pages/admin/UserActivityDrawer.test.tsx` covers the drawer's own
+ *    state — but neither asserts what comes back: `centry.audit_events` is
+ *    written by the legacy tracing plugin, so a seeded stack can have zero
+ *    rows for a persona and an empty table would be the correct answer.
  *  - the nine other admin sections (Projects, Secrets, Roles, …). Not ported
  *    yet — issue #200 lists them. Audit Trail HAS since landed; journey 29
  *    (`admin.audit-trail.spec.ts`) covers it.

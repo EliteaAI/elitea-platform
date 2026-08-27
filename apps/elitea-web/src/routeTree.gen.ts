@@ -40,13 +40,16 @@ import { Route as ShellPipelinesTabRouteImport } from './routes/_shell/pipelines
 import { Route as ShellPipelinesCreateRouteImport } from './routes/_shell/pipelines/create'
 import { Route as ShellSettingsIndexRouteImport } from './routes/_shell/settings/index'
 import { Route as ShellSettingsTabRouteImport } from './routes/_shell/settings/$tab'
+import { Route as ShellSettingsAiPersonalityRouteImport } from './routes/_shell/settings/ai-personality'
 import { Route as ShellSettingsAnalyticsRouteImport } from './routes/_shell/settings/analytics'
 import { Route as ShellSettingsCreateConfigurationRouteImport } from './routes/_shell/settings/create-configuration'
 import { Route as ShellSettingsCreatePersonalTokenRouteImport } from './routes/_shell/settings/create-personal-token'
 import { Route as ShellSettingsEnvironmentRouteImport } from './routes/_shell/settings/environment'
+import { Route as ShellSettingsMemoryRouteImport } from './routes/_shell/settings/memory'
 import { Route as ShellSettingsModelConfigurationRouteImport } from './routes/_shell/settings/model-configuration'
 import { Route as ShellSettingsNotificationsRouteImport } from './routes/_shell/settings/notifications'
 import { Route as ShellSettingsPersonalizationRouteImport } from './routes/_shell/settings/personalization'
+import { Route as ShellSettingsPreferencesRouteImport } from './routes/_shell/settings/preferences'
 import { Route as ShellSettingsProjectParamsRouteImport } from './routes/_shell/settings/project-params'
 import { Route as ShellSettingsPromptsRouteImport } from './routes/_shell/settings/prompts'
 import { Route as ShellSettingsSecretsRouteImport } from './routes/_shell/settings/secrets'
@@ -239,6 +242,12 @@ const ShellSettingsTabRoute = ShellSettingsTabRouteImport.update({
   path: '/$tab',
   getParentRoute: () => ShellSettingsRouteRoute,
 } as any)
+const ShellSettingsAiPersonalityRoute =
+  ShellSettingsAiPersonalityRouteImport.update({
+    id: '/ai-personality',
+    path: '/ai-personality',
+    getParentRoute: () => ShellSettingsRouteRoute,
+  } as any)
 const ShellSettingsAnalyticsRoute = ShellSettingsAnalyticsRouteImport.update({
   id: '/analytics',
   path: '/analytics',
@@ -262,6 +271,11 @@ const ShellSettingsEnvironmentRoute =
     path: '/environment',
     getParentRoute: () => ShellSettingsRouteRoute,
   } as any)
+const ShellSettingsMemoryRoute = ShellSettingsMemoryRouteImport.update({
+  id: '/memory',
+  path: '/memory',
+  getParentRoute: () => ShellSettingsRouteRoute,
+} as any)
 const ShellSettingsModelConfigurationRoute =
   ShellSettingsModelConfigurationRouteImport.update({
     id: '/model-configuration',
@@ -278,6 +292,12 @@ const ShellSettingsPersonalizationRoute =
   ShellSettingsPersonalizationRouteImport.update({
     id: '/personalization',
     path: '/personalization',
+    getParentRoute: () => ShellSettingsRouteRoute,
+  } as any)
+const ShellSettingsPreferencesRoute =
+  ShellSettingsPreferencesRouteImport.update({
+    id: '/preferences',
+    path: '/preferences',
     getParentRoute: () => ShellSettingsRouteRoute,
   } as any)
 const ShellSettingsProjectParamsRoute =
@@ -498,13 +518,16 @@ export interface FileRoutesByFullPath {
   '/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
   '/pipelines/create': typeof ShellPipelinesCreateRoute
   '/settings/$tab': typeof ShellSettingsTabRoute
+  '/settings/ai-personality': typeof ShellSettingsAiPersonalityRoute
   '/settings/analytics': typeof ShellSettingsAnalyticsRoute
   '/settings/create-configuration': typeof ShellSettingsCreateConfigurationRouteWithChildren
   '/settings/create-personal-token': typeof ShellSettingsCreatePersonalTokenRoute
   '/settings/environment': typeof ShellSettingsEnvironmentRoute
+  '/settings/memory': typeof ShellSettingsMemoryRoute
   '/settings/model-configuration': typeof ShellSettingsModelConfigurationRoute
   '/settings/notifications': typeof ShellSettingsNotificationsRoute
   '/settings/personalization': typeof ShellSettingsPersonalizationRoute
+  '/settings/preferences': typeof ShellSettingsPreferencesRoute
   '/settings/project-params': typeof ShellSettingsProjectParamsRoute
   '/settings/prompts': typeof ShellSettingsPromptsRoute
   '/settings/secrets': typeof ShellSettingsSecretsRoute
@@ -571,13 +594,16 @@ export interface FileRoutesByTo {
   '/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
   '/pipelines/create': typeof ShellPipelinesCreateRoute
   '/settings/$tab': typeof ShellSettingsTabRoute
+  '/settings/ai-personality': typeof ShellSettingsAiPersonalityRoute
   '/settings/analytics': typeof ShellSettingsAnalyticsRoute
   '/settings/create-configuration': typeof ShellSettingsCreateConfigurationRouteWithChildren
   '/settings/create-personal-token': typeof ShellSettingsCreatePersonalTokenRoute
   '/settings/environment': typeof ShellSettingsEnvironmentRoute
+  '/settings/memory': typeof ShellSettingsMemoryRoute
   '/settings/model-configuration': typeof ShellSettingsModelConfigurationRoute
   '/settings/notifications': typeof ShellSettingsNotificationsRoute
   '/settings/personalization': typeof ShellSettingsPersonalizationRoute
+  '/settings/preferences': typeof ShellSettingsPreferencesRoute
   '/settings/project-params': typeof ShellSettingsProjectParamsRoute
   '/settings/prompts': typeof ShellSettingsPromptsRoute
   '/settings/secrets': typeof ShellSettingsSecretsRoute
@@ -647,13 +673,16 @@ export interface FileRoutesById {
   '/_shell/pipelines/$tab': typeof ShellPipelinesTabRouteWithChildren
   '/_shell/pipelines/create': typeof ShellPipelinesCreateRoute
   '/_shell/settings/$tab': typeof ShellSettingsTabRoute
+  '/_shell/settings/ai-personality': typeof ShellSettingsAiPersonalityRoute
   '/_shell/settings/analytics': typeof ShellSettingsAnalyticsRoute
   '/_shell/settings/create-configuration': typeof ShellSettingsCreateConfigurationRouteWithChildren
   '/_shell/settings/create-personal-token': typeof ShellSettingsCreatePersonalTokenRoute
   '/_shell/settings/environment': typeof ShellSettingsEnvironmentRoute
+  '/_shell/settings/memory': typeof ShellSettingsMemoryRoute
   '/_shell/settings/model-configuration': typeof ShellSettingsModelConfigurationRoute
   '/_shell/settings/notifications': typeof ShellSettingsNotificationsRoute
   '/_shell/settings/personalization': typeof ShellSettingsPersonalizationRoute
+  '/_shell/settings/preferences': typeof ShellSettingsPreferencesRoute
   '/_shell/settings/project-params': typeof ShellSettingsProjectParamsRoute
   '/_shell/settings/prompts': typeof ShellSettingsPromptsRoute
   '/_shell/settings/secrets': typeof ShellSettingsSecretsRoute
@@ -723,13 +752,16 @@ export interface FileRouteTypes {
     | '/pipelines/$tab'
     | '/pipelines/create'
     | '/settings/$tab'
+    | '/settings/ai-personality'
     | '/settings/analytics'
     | '/settings/create-configuration'
     | '/settings/create-personal-token'
     | '/settings/environment'
+    | '/settings/memory'
     | '/settings/model-configuration'
     | '/settings/notifications'
     | '/settings/personalization'
+    | '/settings/preferences'
     | '/settings/project-params'
     | '/settings/prompts'
     | '/settings/secrets'
@@ -796,13 +828,16 @@ export interface FileRouteTypes {
     | '/pipelines/$tab'
     | '/pipelines/create'
     | '/settings/$tab'
+    | '/settings/ai-personality'
     | '/settings/analytics'
     | '/settings/create-configuration'
     | '/settings/create-personal-token'
     | '/settings/environment'
+    | '/settings/memory'
     | '/settings/model-configuration'
     | '/settings/notifications'
     | '/settings/personalization'
+    | '/settings/preferences'
     | '/settings/project-params'
     | '/settings/prompts'
     | '/settings/secrets'
@@ -871,13 +906,16 @@ export interface FileRouteTypes {
     | '/_shell/pipelines/$tab'
     | '/_shell/pipelines/create'
     | '/_shell/settings/$tab'
+    | '/_shell/settings/ai-personality'
     | '/_shell/settings/analytics'
     | '/_shell/settings/create-configuration'
     | '/_shell/settings/create-personal-token'
     | '/_shell/settings/environment'
+    | '/_shell/settings/memory'
     | '/_shell/settings/model-configuration'
     | '/_shell/settings/notifications'
     | '/_shell/settings/personalization'
+    | '/_shell/settings/preferences'
     | '/_shell/settings/project-params'
     | '/_shell/settings/prompts'
     | '/_shell/settings/secrets'
@@ -1147,6 +1185,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSettingsTabRouteImport
       parentRoute: typeof ShellSettingsRouteRoute
     }
+    '/_shell/settings/ai-personality': {
+      id: '/_shell/settings/ai-personality'
+      path: '/ai-personality'
+      fullPath: '/settings/ai-personality'
+      preLoaderRoute: typeof ShellSettingsAiPersonalityRouteImport
+      parentRoute: typeof ShellSettingsRouteRoute
+    }
     '/_shell/settings/analytics': {
       id: '/_shell/settings/analytics'
       path: '/analytics'
@@ -1175,6 +1220,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSettingsEnvironmentRouteImport
       parentRoute: typeof ShellSettingsRouteRoute
     }
+    '/_shell/settings/memory': {
+      id: '/_shell/settings/memory'
+      path: '/memory'
+      fullPath: '/settings/memory'
+      preLoaderRoute: typeof ShellSettingsMemoryRouteImport
+      parentRoute: typeof ShellSettingsRouteRoute
+    }
     '/_shell/settings/model-configuration': {
       id: '/_shell/settings/model-configuration'
       path: '/model-configuration'
@@ -1194,6 +1246,13 @@ declare module '@tanstack/react-router' {
       path: '/personalization'
       fullPath: '/settings/personalization'
       preLoaderRoute: typeof ShellSettingsPersonalizationRouteImport
+      parentRoute: typeof ShellSettingsRouteRoute
+    }
+    '/_shell/settings/preferences': {
+      id: '/_shell/settings/preferences'
+      path: '/preferences'
+      fullPath: '/settings/preferences'
+      preLoaderRoute: typeof ShellSettingsPreferencesRouteImport
       parentRoute: typeof ShellSettingsRouteRoute
     }
     '/_shell/settings/project-params': {
@@ -1461,13 +1520,16 @@ const ShellSettingsCreateConfigurationRouteWithChildren =
 
 interface ShellSettingsRouteRouteChildren {
   ShellSettingsTabRoute: typeof ShellSettingsTabRoute
+  ShellSettingsAiPersonalityRoute: typeof ShellSettingsAiPersonalityRoute
   ShellSettingsAnalyticsRoute: typeof ShellSettingsAnalyticsRoute
   ShellSettingsCreateConfigurationRoute: typeof ShellSettingsCreateConfigurationRouteWithChildren
   ShellSettingsCreatePersonalTokenRoute: typeof ShellSettingsCreatePersonalTokenRoute
   ShellSettingsEnvironmentRoute: typeof ShellSettingsEnvironmentRoute
+  ShellSettingsMemoryRoute: typeof ShellSettingsMemoryRoute
   ShellSettingsModelConfigurationRoute: typeof ShellSettingsModelConfigurationRoute
   ShellSettingsNotificationsRoute: typeof ShellSettingsNotificationsRoute
   ShellSettingsPersonalizationRoute: typeof ShellSettingsPersonalizationRoute
+  ShellSettingsPreferencesRoute: typeof ShellSettingsPreferencesRoute
   ShellSettingsProjectParamsRoute: typeof ShellSettingsProjectParamsRoute
   ShellSettingsPromptsRoute: typeof ShellSettingsPromptsRoute
   ShellSettingsSecretsRoute: typeof ShellSettingsSecretsRoute
@@ -1479,14 +1541,17 @@ interface ShellSettingsRouteRouteChildren {
 
 const ShellSettingsRouteRouteChildren: ShellSettingsRouteRouteChildren = {
   ShellSettingsTabRoute: ShellSettingsTabRoute,
+  ShellSettingsAiPersonalityRoute: ShellSettingsAiPersonalityRoute,
   ShellSettingsAnalyticsRoute: ShellSettingsAnalyticsRoute,
   ShellSettingsCreateConfigurationRoute:
     ShellSettingsCreateConfigurationRouteWithChildren,
   ShellSettingsCreatePersonalTokenRoute: ShellSettingsCreatePersonalTokenRoute,
   ShellSettingsEnvironmentRoute: ShellSettingsEnvironmentRoute,
+  ShellSettingsMemoryRoute: ShellSettingsMemoryRoute,
   ShellSettingsModelConfigurationRoute: ShellSettingsModelConfigurationRoute,
   ShellSettingsNotificationsRoute: ShellSettingsNotificationsRoute,
   ShellSettingsPersonalizationRoute: ShellSettingsPersonalizationRoute,
+  ShellSettingsPreferencesRoute: ShellSettingsPreferencesRoute,
   ShellSettingsProjectParamsRoute: ShellSettingsProjectParamsRoute,
   ShellSettingsPromptsRoute: ShellSettingsPromptsRoute,
   ShellSettingsSecretsRoute: ShellSettingsSecretsRoute,

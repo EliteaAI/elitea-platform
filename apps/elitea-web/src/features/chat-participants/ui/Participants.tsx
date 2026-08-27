@@ -93,6 +93,7 @@ export const Participants = memo(
     resolveToolkitIcon,
     isMcpVisible = false,
     renderContextBudget,
+    conversationId,
     maxVisibleUsers = 5,
     isSmallWindow = false,
     selectedManager,
@@ -104,9 +105,16 @@ export const Participants = memo(
     // the collapsed icon-strip is a large-screen-only affordance.
     const showTitle = !collapsed || isSmallWindow;
     const showCollapsedParticipants = collapsed && !isSmallWindow;
+    // An ELEMENT, not a component reference. `ParticipantsLayout` types this
+    // slot as `React.ReactNode` and renders `{header.collapseIcon}` directly,
+    // so handing it the component threw "Objects are not valid as a React
+    // child (found: object with keys {$$typeof, type, compare})" — the memo
+    // wrapper MUI puts around its icons — and took the whole rail down. It
+    // never surfaced because nothing mounted this subtree; the crash arrived
+    // with the first call site, not with the code.
     const collapseIcon = collapsed
-      ? KeyboardDoubleArrowLeftIcon
-      : KeyboardDoubleArrowRightIcon;
+      ? <KeyboardDoubleArrowLeftIcon fontSize="small" />
+      : <KeyboardDoubleArrowRightIcon fontSize="small" />;
 
     // -----------------------------------------------------------------------
     // Group participants by type
@@ -229,6 +237,7 @@ export const Participants = memo(
           resolveToolkitIcon,
         }}
         renderContextBudget={renderContextBudget}
+        conversationId={conversationId}
       />
     );
   },

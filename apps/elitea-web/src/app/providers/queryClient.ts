@@ -34,10 +34,29 @@ function httpStatusOf(error: unknown): number | undefined {
  *
  * 408 (Request Timeout) and 429 (Too Many Requests) are excluded: both are 4xx
  * codes that explicitly invite the caller to try again.
+ *
+ * 501 (Not Implemented) is INCLUDED despite being a 5xx, and it is the one
+ * exception to "5xx is transient". The rest of the 5xx range describes a server
+ * that failed to do something it does support — a dropped connection, an
+ * unhandled panic, an upstream timeout — and a second attempt can genuinely
+ * land on a healthy replica. 501 is the server stating that the functionality
+ * does not exist here, which is a property of the deployment and not of the
+ * attempt. RFC 9110 §15.6.2 puts it exactly that way, and it is the only 5xx
+ * the spec describes as a statement about capability rather than about this
+ * request's fate.
+ *
+ * It is not academic. `/elitea_core/analytics*` answers 501 with
+ * `{code: "no_data_source"}` on a deployment whose gateway request log is
+ * absent — the figures have no producer there and never will until one ships.
+ * Treated as transient, each of the four Analytics tabs asked twice: a HAR of
+ * one page load against elitea.technicaldomain.xyz holds eight requests, four
+ * of them retries of an answer the server had already finished giving, each
+ * costing the user a second of backoff before the screen could say anything.
  */
 function isFinalClientAnswer(error: unknown): boolean {
   const status = httpStatusOf(error);
   if (status === undefined) return false;
+  if (status === 501) return true;
   return status >= 400 && status < 500 && status !== 408 && status !== 429;
 }
 
