@@ -103,6 +103,39 @@ func idPredicate(conversationID string) (predicate string, ok bool) {
 	return "", false
 }
 
+// resolveConversationID maps whichever identifier form a route carries onto the
+// numeric primary key the child tables actually hold.
+//
+// DEFECT #599: every conversation child table — chat_message_group,
+// chat_messages, chat_participant_mapping, chat_selected_conversations — keys
+// on `conversation_id integer`, a FK to chat_conversations.id. The repository
+// passed the raw route parameter into those comparisons, but the routes are
+// not uniform: /messages/prompt_lib/{projectID}/{conversationID} is called
+// with the conversation UUID (apps/elitea-web .../messageApi.ts), while
+// /participants/... is called with the numeric id. Comparing an integer column
+// to a UUID makes Postgres raise `invalid input syntax for type integer`, so
+// ListMessages returned an empty transcript for every conversation and
+// DeleteMessages answered 500. Resolving here, once, means both forms address
+// the same row and no caller has to know which form its route uses.
+//
+// An identifier that is neither form, or that names no conversation, is a 404:
+// no row can ever carry it.
+func (r *ConversationsRepo) resolveConversationID(ctx context.Context, projectID, conversationID string) (int64, error) {
+	predicate, ok := idPredicate(conversationID)
+	if !ok {
+		return 0, apierr.NotFound("conversation not found")
+	}
+	q := fmt.Sprintf(`SELECT c.id FROM %q.chat_conversations c WHERE %s`, schema(projectID), predicate)
+	var id int64
+	if err := r.pool.QueryRow(ctx, q, conversationID).Scan(&id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, apierr.NotFound("conversation not found")
+		}
+		return 0, fmt.Errorf("conversations: resolve conversation id: %w", err)
+	}
+	return id, nil
+}
+
 func (r *ConversationsRepo) Get(ctx context.Context, projectID, conversationID string) (conversations.Conversation, error) {
 	s := schema(projectID)
 	predicate, ok := idPredicate(conversationID)
@@ -135,6 +168,10 @@ func (r *ConversationsRepo) Get(ctx context.Context, projectID, conversationID s
 
 func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, conversationID string) ([]conversations.Participant, error) {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return nil, err
+	}
 	q := fmt.Sprintf(`
 		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings
 		FROM %q.chat_participant_mapping pm
@@ -142,7 +179,7 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 		WHERE pm.conversation_id = $1
 		ORDER BY pm.id`, s, s)
 
-	rows, err := r.pool.Query(ctx, q, conversationID)
+	rows, err := r.pool.Query(ctx, q, id)
 	if err != nil {
 		return []conversations.Participant{}, nil
 	}
@@ -226,7 +263,11 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 		}
 	}
 
-	args = append(args, conversationID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return conversations.Conversation{}, err
+	}
+	args = append(args, id)
 	// `author_id` and `folder_id` are returned so the PUT response describes
 	// the same conversation the GET does. Omitting author_id was #128 defect
 	// 6: every update answered with `"created_by": ""`, so a client that
@@ -238,11 +279,10 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 	var c conversations.Conversation
 	var authorID int
 	var folderID *string
-	err := r.pool.QueryRow(ctx, q, args...).Scan(
+	if err := r.pool.QueryRow(ctx, q, args...).Scan(
 		&c.ID, &c.Name, &c.UUID, &authorID, &folderID, &c.CreatedAt, &c.UpdatedAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
+	); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return conversations.Conversation{}, apierr.NotFound("conversation not found")
 		}
 		return conversations.Conversation{}, fmt.Errorf("conversations: update: %w", err)
@@ -255,25 +295,29 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 
 func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationID string) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	// Delete dependent records first; propagate any failure.
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete participant mapping: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete message groups: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s), conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete messages: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete selected conversations: %w", err)
 	}
-	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_conversation_summaries WHERE conversation_id = $1`, s), conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_conversation_summaries WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete summaries: %w", err)
 	}
 
 	q := fmt.Sprintf(`DELETE FROM %q.chat_conversations WHERE id = $1`, s)
-	ct, err := r.pool.Exec(ctx, q, conversationID)
+	ct, err := r.pool.Exec(ctx, q, id)
 	if err != nil {
 		return fmt.Errorf("conversations: delete: %w", err)
 	}
@@ -386,6 +430,11 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 		entitySettings = []byte("{}")
 	}
 
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
+
 	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("conversations: add participant: %w", err)
@@ -420,7 +469,7 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 	// Column inference matches the unique key under either name.
 	mapping := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
 		VALUES ($1, $2, $3::jsonb) ON CONFLICT (participant_id, conversation_id) DO NOTHING`, s)
-	if _, err := transaction.Exec(ctx, mapping, conversationID, participantID, entitySettings); err != nil {
+	if _, err := transaction.Exec(ctx, mapping, id, participantID, entitySettings); err != nil {
 		return fmt.Errorf("conversations: add participant mapping: %w", err)
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -431,8 +480,12 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 
 func (r *ConversationsRepo) RemoveParticipant(ctx context.Context, projectID, conversationID, participantID string) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	q := fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s)
-	if _, err := r.pool.Exec(ctx, q, conversationID, participantID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, id, participantID); err != nil {
 		return fmt.Errorf("conversations: remove participant: %w", err)
 	}
 	return nil
@@ -440,9 +493,13 @@ func (r *ConversationsRepo) RemoveParticipant(ctx context.Context, projectID, co
 
 func (r *ConversationsRepo) UpdateEntitySettings(ctx context.Context, projectID, conversationID, participantID string, settings map[string]any) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	data, _ := json.Marshal(settings)
 	q := fmt.Sprintf(`UPDATE %q.chat_participant_mapping SET entity_settings = $1 WHERE conversation_id = $2 AND participant_id = $3`, s)
-	if _, err := r.pool.Exec(ctx, q, data, conversationID, participantID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, data, id, participantID); err != nil {
 		return fmt.Errorf("conversations: update entity settings: %w", err)
 	}
 	return nil
@@ -461,13 +518,17 @@ func (r *ConversationsRepo) BatchUpdateEntitySettings(ctx context.Context, proje
 
 func (r *ConversationsRepo) SelectConversation(ctx context.Context, projectID, conversationID, userID string) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	// Schema: id, user_id, conversation_id (no unique on user_id, so delete+insert)
 	delQ := fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE user_id = $1`, s)
 	if _, err := r.pool.Exec(ctx, delQ, userID); err != nil {
 		return fmt.Errorf("conversations: select conversation delete old: %w", err)
 	}
 	insQ := fmt.Sprintf(`INSERT INTO %q.chat_selected_conversations (conversation_id, user_id) VALUES ($1, $2)`, s)
-	if _, err := r.pool.Exec(ctx, insQ, conversationID, userID); err != nil {
+	if _, err := r.pool.Exec(ctx, insQ, id, userID); err != nil {
 		return fmt.Errorf("conversations: select conversation insert: %w", err)
 	}
 	return nil
@@ -727,10 +788,10 @@ func (r *ConversationsRepo) GetMessageByUUID(ctx context.Context, projectID, mes
 		"id":                    groupID,
 		"uuid":                  groupUUID,
 		"author_participant_id": authorPID,
-		"sent_to_id":           sentToID,
-		"reply_to_id":          replyToID,
-		"meta":                 meta,
-		"message_items":        items,
+		"sent_to_id":            sentToID,
+		"reply_to_id":           replyToID,
+		"meta":                  meta,
+		"message_items":         items,
 	}
 
 	return result, nil
@@ -738,9 +799,13 @@ func (r *ConversationsRepo) GetMessageByUUID(ctx context.Context, projectID, mes
 
 func (r *ConversationsRepo) UpdateAttachmentStorage(ctx context.Context, projectID, conversationID string, body map[string]any) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb) WHERE id = $2`, s)
-	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update attachment storage: %w", err)
 	}
 	return nil
@@ -748,9 +813,13 @@ func (r *ConversationsRepo) UpdateAttachmentStorage(ctx context.Context, project
 
 func (r *ConversationsRepo) AddAttachments(ctx context.Context, projectID, conversationID string, body map[string]any) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachments}', $1::jsonb) WHERE id = $2`, s)
-	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: add attachments: %w", err)
 	}
 	return nil
@@ -758,8 +827,12 @@ func (r *ConversationsRepo) AddAttachments(ctx context.Context, projectID, conve
 
 func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, conversationID string) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = (COALESCE(meta, '{}')::jsonb - 'attachments') WHERE id = $1`, s)
-	if _, err := r.pool.Exec(ctx, q, conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, id); err != nil {
 		return fmt.Errorf("conversations: delete attachments: %w", err)
 	}
 	return nil
@@ -767,6 +840,10 @@ func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, co
 
 func (r *ConversationsRepo) GetContextAnalytics(ctx context.Context, projectID, conversationID string) (map[string]any, error) {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Get message count and conversation meta (contains context_strategy + context_analytics)
 	q := fmt.Sprintf(`
@@ -776,7 +853,7 @@ func (r *ConversationsRepo) GetContextAnalytics(ctx context.Context, projectID, 
 
 	var metaRaw string
 	var msgCount int
-	if err := r.pool.QueryRow(ctx, q, conversationID).Scan(&metaRaw, &msgCount); err != nil {
+	if err := r.pool.QueryRow(ctx, q, id).Scan(&metaRaw, &msgCount); err != nil {
 		return r.defaultContextStatus(), nil
 	}
 
@@ -847,9 +924,13 @@ func (r *ConversationsRepo) defaultContextStatus() map[string]any {
 
 func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID, conversationID string, body map[string]any) error {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
 	data, _ := json.Marshal(body)
 	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
-	if _, err := r.pool.Exec(ctx, q, data, conversationID); err != nil {
+	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update context strategy: %w", err)
 	}
 	return nil
@@ -857,10 +938,40 @@ func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID
 
 func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conversationID string) error {
 	s := schema(projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.chat_messages WHERE conversation_id = $1`, s)
-	_, err := r.pool.Exec(ctx, q, conversationID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return err
+	}
+
+	// DEFECT #599: this used to delete from `chat_messages`, which no
+	// migration in this repository creates — the transcript lives in
+	// chat_message_group -> chat_message_items -> chat_messages_text
+	// (migrations/tenant/0123_agent_chat_message_tables.sql), the same graph
+	// ListMessages reads. On a clean install the statement raised 42P01, so
+	// clearing a conversation answered 500; where pylon had created the legacy
+	// table it succeeded and cleared nothing the user could see. Deleting the
+	// group graph is what "clear this conversation's messages" means.
+	//
+	// chat_messages_text and chat_messages_context cascade from
+	// chat_message_items, and chat_message_trace_step cascades from
+	// chat_message_group, so two statements cover the whole subtree.
+	transaction, err := r.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("conversations: delete messages: %w", err)
+	}
+	defer func() { _ = transaction.Rollback(ctx) }()
+
+	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items
+		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE conversation_id = $1)`, s, s)
+	if _, err := transaction.Exec(ctx, items, id); err != nil {
+		return fmt.Errorf("conversations: delete message items: %w", err)
+	}
+	groups := fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s)
+	if _, err := transaction.Exec(ctx, groups, id); err != nil {
+		return fmt.Errorf("conversations: delete message groups: %w", err)
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return fmt.Errorf("conversations: delete messages commit: %w", err)
 	}
 	return nil
 }
@@ -878,10 +989,19 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, conversationID string, page, pageSize int) (conversations.MessagesListResponse, error) {
 	s := schema(projectID)
 
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return conversations.MessagesListResponse{}, err
+	}
+
+	// Every failure below propagates. Returning an empty, SUCCESSFUL response
+	// instead — what this method used to do — is what turned the #599 type
+	// error into apparent data loss: a broken query and an empty conversation
+	// became indistinguishable, so nobody saw a failure to investigate.
 	var total int
 	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_message_group WHERE conversation_id = $1`, s)
-	if err := r.pool.QueryRow(ctx, countQ, conversationID).Scan(&total); err != nil {
-		return conversations.MessagesListResponse{Items: []conversations.Message{}, Total: 0, Page: page, PageSize: pageSize}, nil
+	if err := r.pool.QueryRow(ctx, countQ, id).Scan(&total); err != nil {
+		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: count messages: %w", err)
 	}
 
 	offset := (page - 1) * pageSize
@@ -900,19 +1020,21 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		ORDER BY mg.created_at DESC
 		LIMIT $2 OFFSET $3`, s, s, s, s)
 
-	rows, err := r.pool.Query(ctx, q, conversationID, pageSize, offset)
+	rows, err := r.pool.Query(ctx, q, id, pageSize, offset)
 	if err != nil {
-		return conversations.MessagesListResponse{Items: []conversations.Message{}, Total: 0, Page: page, PageSize: pageSize}, nil
+		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
 	}
 	defer rows.Close()
 
-	var items []conversations.Message
+	items := []conversations.Message{}
 	for rows.Next() {
 		var m conversations.Message
 		var meta []byte
 		var entityName string
+		// A scan failure used to `continue`, so an unreadable row silently
+		// dropped a message out of the transcript.
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt, &m.Content); err != nil {
-			continue
+			return conversations.MessagesListResponse{}, fmt.Errorf("conversations: scan message: %w", err)
 		}
 		if meta != nil {
 			_ = json.Unmarshal(meta, &m.Metadata) // best-effort: DB column is trusted JSON
@@ -926,8 +1048,8 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		m.ContentType = "text"
 		items = append(items, m)
 	}
-	if items == nil {
-		items = []conversations.Message{}
+	if err := rows.Err(); err != nil {
+		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: list messages: %w", err)
 	}
 
 	totalPages := total / pageSize
@@ -946,6 +1068,10 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 
 func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, conversationID string, limit int, sortOrder string) ([]map[string]any, error) {
 	s := schema(projectID)
+	id, err := r.resolveConversationID(ctx, projectID, conversationID)
+	if err != nil {
+		return nil, err
+	}
 
 	order := "DESC"
 	if sortOrder == "asc" {
@@ -961,7 +1087,7 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		ORDER BY mg.created_at %s
 		LIMIT $2`, s, order)
 
-	rows, err := r.pool.Query(ctx, q, conversationID, limit)
+	rows, err := r.pool.Query(ctx, q, id, limit)
 	if err != nil {
 		return []map[string]any{}, nil
 	}
@@ -997,9 +1123,9 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 			"uuid":                  uuid,
 			"author_participant_id": authorParticipantID,
 			"meta":                  metaObj,
-			"is_streaming":         isStreaming,
-			"created_at":           createdAt.Format("2006-01-02 15:04:05.999999"),
-			"message_items":        []map[string]any{},
+			"is_streaming":          isStreaming,
+			"created_at":            createdAt.Format("2006-01-02 15:04:05.999999"),
+			"message_items":         []map[string]any{},
 		}
 		if sentToID != nil {
 			group["sent_to_id"] = *sentToID
@@ -1053,8 +1179,8 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 			}
 
 			item := map[string]any{
-				"id":         itemID,
-				"item_type":  itemType,
+				"id":          itemID,
+				"item_type":   itemType,
 				"order_index": orderIndex,
 			}
 
