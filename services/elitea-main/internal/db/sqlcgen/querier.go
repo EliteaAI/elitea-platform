@@ -483,6 +483,62 @@ type Querier interface {
 	// filter would permanently exclude it after the first notice.
 	UpdateArtifactBucketRetention(ctx context.Context, arg UpdateArtifactBucketRetentionParams) (EliteaStorageBucket, error)
 	UpdateArtifactBucketTags(ctx context.Context, arg UpdateArtifactBucketTagsParams) (EliteaStorageBucket, error)
+	// #607: persist the text the worker extracted from ONE of this turn's
+	// attachments, so a LATER turn sees the file's contents and not just its name.
+	//
+	// Pylon never needed this statement. It extracts at message-persist time and
+	// appends the text to the item it has in hand, in the same process and the same
+	// session (rpc/chat_all.py:344-377, with flag_modified(item, "content") at :376
+	// because the column is `json`). Here the reader is the worker and the writer is
+	// elitea-main, so the text comes back across a protocol
+	// (AgentExecutionResultV1.attachment_contents) and lands here, on the terminal
+	// path elitea-main already owns.
+	//
+	// MATCHED ON item.uuid, NOT ON (bucket, name). Attaching the same file twice in
+	// one conversation is an ordinary thing to do and produces two rows with
+	// identical bucket and name; a (bucket, name) match would write one file's text
+	// onto the other's row. `chat_message_items.uuid` is UNIQUE (0123), so this
+	// addresses at most one row.
+	//
+	// SCOPED IN SQL, NOT IN GO, AND THAT IS THE POINT. `item_id` arrives from a
+	// worker process over gRPC. Trusting it would let any worker holding a valid
+	// claim overwrite the content of ANY attachment row in the project by naming its
+	// id -- another user's conversation included -- and the Go side has no cheap way
+	// to prove otherwise without a second round trip it would then have to trust
+	// itself to have made. The join does the proving instead: the item must hang off
+	// the QUESTION group that `response_group` (the row
+	// LockCurrentAgentResponseForTerminal just locked, and which the caller reached
+	// only by matching message uuid + conversation uuid + task_id +
+	// meta.execution_generation) replies to. An id outside that one question matches
+	// nothing and the statement reports 0 rows.
+	//
+	// `reply_to_id` is the link, and it is written in the same statement that
+	// creates both groups (InsertCurrentApplicationTurn / InsertCurrentAdhocTurn),
+	// so it cannot be absent for a turn this path can reach.
+	//
+	// NO item_type PREDICATE, deliberately. `AND item.item_type =
+	// 'attachment_message'` reads like prudence and is dead code:
+	// chat_messages_attachment's primary key IS the item's id (0127), so the join
+	// to it already proves the item is an attachment and no payload row can exist
+	// under a `text_message` item. It was written, then removed, because no test
+	// could tell the two versions apart -- deleting the predicate left every case
+	// green, including the one that names the question's own text item. An
+	// unfalsifiable guard is worse than none: it invites the next reader to believe
+	// the write is checked in a way it is not.
+	//
+	// REPLACES `content` OUTRIGHT rather than appending a chunk. The value carried
+	// across the seam is the complete array the column is to hold -- the scaffold's
+	// header chunk, marker intact, plus the extracted text -- which is what makes a
+	// redelivered terminal frame rewrite the same bytes instead of appending the
+	// file's text a second time. An `||` append here would be idempotent only by
+	// accident.
+	//
+	// `content` is cast to json, NOT jsonb, for the reason 0127 records: the column
+	// is `json` because pylon reads and writes the same table, and jsonb's key
+	// reordering and whitespace normalisation would change the stored bytes -- which
+	// for this value includes the `elitea_attachment` marker a later turn's worker
+	// reads to decide the file has already been extracted.
+	UpdateCurrentAgentAttachmentContent(ctx context.Context, arg UpdateCurrentAgentAttachmentContentParams) (int64, error)
 	UpdateCurrentIndexScheduleToolkitMeta(ctx context.Context, arg UpdateCurrentIndexScheduleToolkitMetaParams) (int64, error)
 	UpsertArtifactObject(ctx context.Context, arg UpsertArtifactObjectParams) (EliteaStorageObject, error)
 	// ON CONFLICT DO UPDATE, not DO NOTHING: a retried chunk_index (client

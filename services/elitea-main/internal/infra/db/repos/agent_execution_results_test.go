@@ -2,12 +2,15 @@ package repos
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	outputapp "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/output"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/db/sqlcgen"
+	runtimedomain "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/domain/runtime"
 )
 
 type currentAgentTerminalWriterStub struct {
@@ -15,6 +18,9 @@ type currentAgentTerminalWriterStub struct {
 	existingSkills string
 	hitl           sqlcgen.FinalizeCurrentAgentHITLPauseParams
 	full           sqlcgen.FinalizeCurrentAgentFullMessageParams
+	attachments    []sqlcgen.UpdateCurrentAgentAttachmentContentParams
+	attachmentRows int64
+	attachmentErr  error
 }
 
 func (s *currentAgentTerminalWriterStub) LockCurrentAgentResponseForTerminal(
@@ -33,6 +39,17 @@ func (s *currentAgentTerminalWriterStub) InsertCurrentAgentTextContent(
 	sqlcgen.InsertCurrentAgentTextContentParams,
 ) error {
 	return nil
+}
+
+func (s *currentAgentTerminalWriterStub) UpdateCurrentAgentAttachmentContent(
+	_ context.Context,
+	arg sqlcgen.UpdateCurrentAgentAttachmentContentParams,
+) (int64, error) {
+	s.attachments = append(s.attachments, arg)
+	if s.attachmentErr != nil {
+		return 0, s.attachmentErr
+	}
+	return s.attachmentRows, nil
 }
 
 func (s *currentAgentTerminalWriterStub) FinalizeCurrentAgentFullMessage(
@@ -338,4 +355,205 @@ func hitlMetadataForInterruptsForTest(t *testing.T, interrupts []map[string]any)
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+// #607: the terminal transaction writes back the text the worker extracted, on
+// the response group it just locked, alongside the assistant's own text.
+func TestPersistCurrentAgentTerminalWritesBackAttachmentContentOnEveryTerminalState(t *testing.T) {
+	content := json.RawMessage(
+		`[{"type":"text","text":"Bucket: chat-attachments","elitea_attachment":{"item_id":"50000000-0000-4000-8000-000000000001"}},` +
+			`{"type":"text","text":"EXTRACTED TEXT"}]`,
+	)
+	contents := []outputapp.AgentExecutionAttachmentContent{
+		{ItemID: "50000000-0000-4000-8000-000000000001", Content: content},
+	}
+	// A completed answer and a HITL pause both get the write-back: a paused
+	// turn has ALREADY read its attachments, and it is the turn most likely to
+	// be continued with a follow-up question about the file.
+	for name, terminal := range map[string]currentAgentTerminal{
+		"completed": {
+			AttachmentContents: contents,
+			FullMessage: &currentAgentFullMessage{
+				Content: "done", ThreadID: "thread-1",
+				References: json.RawMessage(`[]`), InvokedSkills: json.RawMessage(`[]`),
+			},
+		},
+		"paused on HITL": {
+			AttachmentContents: contents,
+			HITLPause: &currentAgentHITLPause{
+				ThreadID:      "thread-1",
+				Interrupt:     json.RawMessage(`{"interrupt_id":"interrupt-1"}`),
+				Interrupts:    json.RawMessage(`[{"interrupt_id":"interrupt-1"}]`),
+				InvokedSkills: json.RawMessage(`[]`),
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			writer := &currentAgentTerminalWriterStub{existingSkills: `[]`, attachmentRows: 1}
+			if err := persistCurrentAgentTerminal(
+				t.Context(), writer, outputapp.ExpectedAgentExecution{}, terminal,
+			); err != nil {
+				t.Fatal(err)
+			}
+			if len(writer.attachments) != 1 {
+				t.Fatalf("attachment writes = %+v", writer.attachments)
+			}
+			written := writer.attachments[0]
+			// The response group id the lock returned, so the SQL scope has
+			// the turn to check the item against.
+			if written.ResponseMessageGroupID != 17 {
+				t.Fatalf("response message group = %d", written.ResponseMessageGroupID)
+			}
+			if written.ItemID != mustCurrentPGUUID(t, "50000000-0000-4000-8000-000000000001") {
+				t.Fatalf("item id = %+v", written.ItemID)
+			}
+			// Byte-for-byte: the `elitea_attachment` marker in the header
+			// chunk is what stops a later turn re-reading the file.
+			if string(written.Content) != string(content) {
+				t.Fatalf("content = %s", written.Content)
+			}
+		})
+	}
+}
+
+func TestPersistCurrentAgentTerminalWithoutAttachmentContentWritesNothingBack(t *testing.T) {
+	writer := &currentAgentTerminalWriterStub{existingSkills: `[]`, attachmentRows: 1}
+	if err := persistCurrentAgentTerminal(
+		t.Context(), writer, outputapp.ExpectedAgentExecution{}, currentAgentTerminal{
+			FullMessage: &currentAgentFullMessage{
+				Content: "done", ThreadID: "thread-1",
+				References: json.RawMessage(`[]`), InvokedSkills: json.RawMessage(`[]`),
+			},
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	// An ordinary turn carries no write-back at all; it must not cost a
+	// statement inside the terminal transaction.
+	if len(writer.attachments) != 0 {
+		t.Fatalf("attachment writes = %+v", writer.attachments)
+	}
+	if writer.full.ThreadID != "thread-1" {
+		t.Fatalf("the answer was not finalized: %+v", writer.full)
+	}
+}
+
+// A refused write-back must not cost the user the answer. 0 rows is the SQL
+// scope declining an item that is not on this turn's question group -- the
+// protection working, after it has already worked.
+func TestPersistCurrentAgentTerminalTreatsARefusedAttachmentWriteAsANoOp(t *testing.T) {
+	writer := &currentAgentTerminalWriterStub{existingSkills: `[]`, attachmentRows: 0}
+	err := persistCurrentAgentTerminal(
+		t.Context(), writer, outputapp.ExpectedAgentExecution{}, currentAgentTerminal{
+			AttachmentContents: []outputapp.AgentExecutionAttachmentContent{{
+				ItemID:  "50000000-0000-4000-8000-000000000001",
+				Content: json.RawMessage(`[{"type":"text","text":"A"}]`),
+			}},
+			FullMessage: &currentAgentFullMessage{
+				Content: "done", ThreadID: "thread-1",
+				References: json.RawMessage(`[]`), InvokedSkills: json.RawMessage(`[]`),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("a refused write-back failed the terminal projection: %v", err)
+	}
+	if len(writer.attachments) != 1 || writer.full.ThreadID != "thread-1" {
+		t.Fatalf("writes=%+v full=%+v", writer.attachments, writer.full)
+	}
+}
+
+// A DATABASE error is different: the transaction cannot proceed, so it must not
+// be swallowed into a half-written terminal.
+func TestPersistCurrentAgentTerminalFailsOnAnAttachmentWriteDatabaseError(t *testing.T) {
+	writer := &currentAgentTerminalWriterStub{
+		existingSkills: `[]`, attachmentErr: errors.New("connection reset"),
+	}
+	err := persistCurrentAgentTerminal(
+		t.Context(), writer, outputapp.ExpectedAgentExecution{}, currentAgentTerminal{
+			AttachmentContents: []outputapp.AgentExecutionAttachmentContent{{
+				ItemID:  "50000000-0000-4000-8000-000000000001",
+				Content: json.RawMessage(`[{"type":"text","text":"A"}]`),
+			}},
+			FullMessage: &currentAgentFullMessage{
+				Content: "done", ThreadID: "thread-1",
+				References: json.RawMessage(`[]`), InvokedSkills: json.RawMessage(`[]`),
+			},
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "connection reset") {
+		t.Fatalf("error = %v", err)
+	}
+	if writer.full.ThreadID != "" {
+		t.Fatalf("the terminal was finalized after a failed write-back: %+v", writer.full)
+	}
+}
+
+type terminalNodeEventStub struct {
+	scriptedExecutor
+	row sqlcgen.GetAgentExecutionTerminalNodeEventRow
+}
+
+func (s *terminalNodeEventStub) GetAgentExecutionTerminalNodeEvent(
+	context.Context,
+	sqlcgen.GetAgentExecutionTerminalNodeEventParams,
+) (sqlcgen.GetAgentExecutionTerminalNodeEventRow, error) {
+	return s.row, nil
+}
+
+// #607: the write-back list is the ONE part of the terminal that comes from the
+// frame rather than from the durable node event, so this pins the wiring that
+// carries it. The node event deliberately cannot carry it -- it is the
+// browser-facing `full_message`, and riding it would ship every attached file's
+// full text to the UI on every turn -- so if this assignment is dropped, every
+// other test in the chain still passes and nothing is ever written.
+func TestLoadCurrentAgentTerminalCarriesTheFramesAttachmentContents(t *testing.T) {
+	event := []byte(`{"type":"full_message","stream_id":"stream-1","message_id":"message-1",` +
+		`"content":"done","references":[],"sio_event":"sio-1","execution_generation":"generation-1",` +
+		`"response_metadata":{"thread_id":"thread-1"}}`)
+	digest := runtimedomain.SHA256(event)
+	cursor := int64(7)
+	contents := []outputapp.AgentExecutionAttachmentContent{{
+		ItemID:  "50000000-0000-4000-8000-000000000001",
+		Content: json.RawMessage(`[{"type":"text","text":"A"},{"type":"text","text":"EXTRACTED TEXT"}]`),
+	}}
+	projection := outputapp.AgentExecutionProjection{
+		Expected: outputapp.ExpectedAgentExecution{
+			ClientStreamID: "stream-1", ClientMessageID: "message-1",
+			SIOEvent: "sio-1", ClientExecutionGeneration: "generation-1",
+		},
+		Frame: outputapp.AgentExecutionFrame{
+			Sequence: 5,
+			Fence:    runtimedomain.Fence{ExecutionID: "execution-1", Generation: 1},
+			Result: outputapp.AgentExecutionResult{
+				TerminalState: outputapp.AgentExecutionTerminalCompleted,
+				ResultArtifact: outputapp.AgentExecutionArtifactReference{
+					ArtifactID:       "node-event:execution-1:full-message",
+					ImmutableVersion: "sha256:" + hex.EncodeToString(digest[:]),
+					ByteLength:       uint64(len(event)),
+					Digest:           digest,
+				},
+				AttachmentContents: contents,
+			},
+		},
+	}
+	stub := &terminalNodeEventStub{row: sqlcgen.GetAgentExecutionTerminalNodeEventRow{
+		LastNodeCursor:      &cursor,
+		LastNodeSequence:    4,
+		LastNodeEventBytes:  event,
+		LastNodeEventDigest: digest[:],
+	}}
+
+	terminal, err := loadCurrentAgentTerminal(t.Context(), stub, 1, projection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.FullMessage == nil || terminal.FullMessage.Content != "done" {
+		t.Fatalf("terminal=%+v", terminal)
+	}
+	if len(terminal.AttachmentContents) != 1 ||
+		terminal.AttachmentContents[0].ItemID != contents[0].ItemID ||
+		string(terminal.AttachmentContents[0].Content) != string(contents[0].Content) {
+		t.Fatalf("attachment contents=%+v", terminal.AttachmentContents)
+	}
 }
