@@ -4,31 +4,19 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/application/personalproject"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 )
 
 // rowQuerier is the minimal subset of *pgxpool.Pool the resolver needs. It lets
 // tests substitute a fake without a live database.
 type rowQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
-// PersonalProjectEnsurer creates the caller's personal project when they have
-// none. Satisfied by internal/application/personalproject.Ensurer.
-//
-// It is here as well as on `/social/author` because the two are the only
-// readers of "the caller's personal project", and only one of them is on the
-// SPA's path. A PAT-only caller — the SDK, a scheduled job, a scripted client —
-// never requests `/social/author`, so hooking that endpoint alone left those
-// callers with no personal project and `/llm` answering `project_not_resolved`
-// forever, with no way to recover. pylon triggers the same work for every
-// authenticated request.
-type PersonalProjectEnsurer interface {
-	EnsureAsync(userID int64)
 }
 
 // DBPersonalProjectResolver resolves a user's personal project id from Postgres,
@@ -42,7 +30,15 @@ type DBPersonalProjectResolver struct {
 	pool rowQuerier
 	// ensurer is optional; a nil one makes this resolver read-only, which is
 	// what it always was.
-	ensurer PersonalProjectEnsurer
+	//
+	// It is here as well as on `/social/author` because the two are the only
+	// readers of "the caller's personal project", and only one of them is on
+	// the SPA's path. A PAT-only caller — the SDK, a scheduled job, a scripted
+	// client — never requests `/social/author`, so hooking that endpoint alone
+	// left those callers with no personal project and `/llm` answering
+	// `project_not_resolved` forever. pylon triggers the same work for every
+	// authenticated request.
+	ensurer personalproject.AsyncEnsurer
 }
 
 // NewDBPersonalProjectResolver builds a resolver backed by the given pool.
@@ -54,7 +50,7 @@ func NewDBPersonalProjectResolver(pool *pgxpool.Pool) *DBPersonalProjectResolver
 // project it could not find. See PersonalProjectEnsurer for why this reader
 // needs it and not only `/social/author`.
 func (r *DBPersonalProjectResolver) WithPersonalProjectEnsurer(
-	ensurer PersonalProjectEnsurer,
+	ensurer personalproject.AsyncEnsurer,
 ) *DBPersonalProjectResolver {
 	if r == nil {
 		return nil
@@ -68,15 +64,34 @@ func (r *DBPersonalProjectResolver) WithPersonalProjectEnsurer(
 // blocks and never changes this call's answer: provisioning applies a tenant
 // migration corpus, so the caller that triggered it is told "no personal
 // project" and a later call gets the id.
-func (r *DBPersonalProjectResolver) ensure(userID string) {
+//
+// THE ID COMES FROM `auth.User.OwningUserID`, not from a parse of the string
+// this resolver was handed. That accessor is this repository's answer to "which
+// auth_core__user owns this principal": it prefers the validated `UserID` field
+// and refuses a principal whose id is a TOKEN id. `/social/author` applies it
+// before asking for the same work, and the two readers must not judge the same
+// principal by different rules — `project_user_<token id>` would name a
+// project belonging to whichever account happened to share that number.
+//
+// The resolver is asked about a plain string, so the two are reconciled rather
+// than assumed equal: nothing is provisioned unless the id under resolution IS
+// the caller's owning user.
+func (r *DBPersonalProjectResolver) ensure(ctx context.Context, userID string) {
 	if r.ensurer == nil {
 		return
 	}
-	uid, err := strconv.ParseInt(userID, 10, 32)
-	if err != nil || uid <= 0 {
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
 		return
 	}
-	r.ensurer.EnsureAsync(uid)
+	owning, ok := user.OwningUserID()
+	if !ok || owning <= 0 {
+		return
+	}
+	if strconv.FormatInt(owning, 10) != strings.TrimSpace(userID) {
+		return
+	}
+	r.ensurer.EnsureAsync(owning)
 }
 
 // PersonalProjectID implements PersonalProjectResolver.
@@ -133,7 +148,7 @@ func (r *DBPersonalProjectResolver) resolveWithoutNamedProject(
 	if err != nil || projectID != 0 {
 		return projectID, err
 	}
-	r.ensure(userID)
+	r.ensure(ctx, userID)
 	return 0, nil
 }
 

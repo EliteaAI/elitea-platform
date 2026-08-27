@@ -72,6 +72,18 @@ type Provisioner interface {
 	Deprovision(ctx context.Context, projectID int64) (projectprovisioning.Result, error)
 }
 
+// AsyncEnsurer is the half of *Ensurer a request path holds: ask for the
+// caller's personal project, do not wait for it.
+//
+// Declared here rather than again at each consumer. `/social/author` and
+// api/middleware's project resolver are the two readers of "the caller's
+// personal project" and both need exactly this one method, so a copy in each
+// bought nothing and cost two doc comments that had to keep agreeing. A nil
+// value is a working no-op, which is why neither consumer branches on it.
+type AsyncEnsurer interface {
+	EnsureAsync(userID int64)
+}
+
 // NamePrefix is pylon's PROJECT_PERSONAL_NAME_TEMPLATE
 // (legacy/plugins/projects/constants.py:13) without its id.
 //
@@ -155,9 +167,12 @@ type Ensurer struct {
 	// they would queue up on the advisory lock behind the first.
 	inFlight sync.Map
 
-	// slots is the concurrency budget maxConcurrentProvisions describes. A
-	// buffered channel rather than a worker pool: the goroutine that waits here
-	// holds nothing while it waits, which is the entire point.
+	// slots is the concurrency budget maxConcurrentProvisions describes.
+	//
+	// NewEnsurer is the only thing that makes it, and both entry points check
+	// it: `Ensurer` is exported with unexported fields, so `&Ensurer{}` compiles
+	// outside this package, and a send on its nil channel would block forever —
+	// leaking a goroutine and leaving that user marked in-flight for good.
 	slots chan struct{}
 }
 
@@ -213,21 +228,35 @@ func NewEnsurer(pool *pgxpool.Pool, provisioner Provisioner, options ...Option) 
 // outcome the same way the SPA does — by asking for the personal project id
 // again.
 //
-// A nil receiver is a no-op, so a composition that could not build an ensurer
-// needs no branch at the call site.
+// IT DROPS RATHER THAN QUEUES. The slot is taken here, before any goroutine
+// exists, and a full budget abandons the attempt instead of waiting for one.
+// That is safe precisely because nothing is waiting on the result: the SPA
+// polls `/social/author` every five seconds and the dropped attempt is simply
+// made again on the next poll. Blocking instead would let a burst of first
+// logins pile fifty goroutines onto a one-deep budget, each holding its
+// in-flight marker — and therefore suppressing its own later polls — while it
+// waited tens of minutes for its turn.
+//
+// A nil receiver, and an Ensurer built without NewEnsurer, are both no-ops, so
+// a composition that could not build one needs no branch at the call site.
 func (e *Ensurer) EnsureAsync(userID int64) {
-	if e == nil {
+	if e == nil || e.slots == nil {
 		return
 	}
 	if _, running := e.inFlight.LoadOrStore(userID, struct{}{}); running {
 		return
 	}
+	select {
+	case e.slots <- struct{}{}:
+	default:
+		// The budget is full. Release the in-flight marker so the caller's next
+		// poll is a fresh attempt rather than a no-op against a user nobody is
+		// provisioning.
+		e.inFlight.Delete(userID)
+		return
+	}
 	go func() {
 		defer e.inFlight.Delete(userID)
-		// Wait for a slot BEFORE the timeout starts. A goroutine queued behind
-		// another user's provisioning holds no connection and no deadline; one
-		// whose clock started at spawn time could expire before it ever ran.
-		e.slots <- struct{}{}
 		defer func() { <-e.slots }()
 		// context.Background(), not the request's: the request that triggered
 		// this is answered long before provisioning finishes, and cancelling
@@ -250,7 +279,7 @@ func (e *Ensurer) EnsureAsync(userID int64) {
 // is the same answer resolvePersonalProjectID gives, and the same skip
 // private_projects.py's process_visitor makes.
 func (e *Ensurer) Ensure(ctx context.Context, userID int64) (int64, error) {
-	if e == nil || e.pool == nil || e.provisioner == nil {
+	if e == nil || e.pool == nil || e.provisioner == nil || e.slots == nil {
 		return 0, ErrNotConfigured
 	}
 	if userID <= 0 {
@@ -358,6 +387,13 @@ func (e *Ensurer) ensureLocked(ctx context.Context, userID int64, accountKey int
 	// caller-supplied free text on `POST /projects` and carries no unique
 	// index, so without it this branch would delete a project somebody else
 	// made and named `project_user_<this caller>`.
+	// EVERY such row, not the first: existingProjects reads them all because
+	// duplicates are possible, and a survivor would still be RETURNED by
+	// resolvePersonalProjectID — its first branch matches name and membership
+	// and does not filter on create_success, so a member row with a lower id
+	// than the project provisioned below would be reported to the SPA as a
+	// project whose `p_<id>` schema does not exist.
+	remaining := candidates[:0:0]
 	for _, candidate := range candidates {
 		if candidate.owned && !candidate.created {
 			e.logger.WarnContext(ctx, "removing an unfinished personal project before recreating it",
@@ -365,18 +401,24 @@ func (e *Ensurer) ensureLocked(ctx context.Context, userID int64, accountKey int
 			if _, err := e.provisioner.Deprovision(ctx, candidate.id); err != nil {
 				return 0, fmt.Errorf("personalproject: remove unfinished project %d: %w", candidate.id, err)
 			}
-			break
+			continue
 		}
+		remaining = append(remaining, candidate)
 	}
 
-	// Anything still standing under this name belongs to somebody else. It is
+	// Anything STILL STANDING under this name belongs to somebody else. It is
 	// left alone and a new row is provisioned beside it: the resolver selects
 	// on membership, so the row created below is the one it will answer with,
 	// and the alternative is leaving this caller with no personal project at
 	// all for as long as the other row exists.
-	if len(candidates) != 0 {
+	//
+	// Gated on the survivors rather than on how many rows were READ: the
+	// ordinary self-repair path above has already deleted the caller's own
+	// unfinished row, and reporting a name squatter that does not exist sends
+	// an operator looking for one.
+	if len(remaining) != 0 {
 		e.logger.WarnContext(ctx, "a project of this name exists that the caller is not a member of",
-			"user_id", userID, "name", Name(userID), "existing", candidateIDs(candidates))
+			"user_id", userID, "name", Name(userID), "existing", candidateIDs(remaining))
 	}
 
 	result, err := e.provisioner.Provision(ctx, projectprovisioning.Request{

@@ -173,6 +173,13 @@ const Onboarding = memo(() => {
     setShowTour(true);
   }, [personalProjectId, startProgress]);
 
+  // Stable identity, so `AuthorUnavailable`'s memo can actually compare: an
+  // inline arrow here would be a new prop on every render and the memo would
+  // never hit. Same shape as the other handlers on this page.
+  const handleRetryAuthor = useCallback(() => {
+    void authorQuery.refetch();
+  }, [authorQuery]);
+
   const handleJumpIn = () => {
     // Disclosed, not silently dropped: useTrackEvent('onboarding_jump_in') is
     // called by the old page here — analytics gap.
@@ -302,7 +309,7 @@ const Onboarding = memo(() => {
             {!showTour && author?.id === undefined && (
               <Box sx={styles.loadingContainer}>
                 {authorQuery.isError ? (
-                  <AuthorUnavailable onRetry={() => void authorQuery.refetch()} />
+                  <AuthorUnavailable onRetry={handleRetryAuthor} />
                 ) : (
                   <CircularProgress aria-label={t('pages.onboarding.loadingAriaLabel', 'Loading…')} />
                 )}

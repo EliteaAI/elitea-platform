@@ -652,25 +652,6 @@ func compressJSONResponses() func(http.Handler) http.Handler {
 // of the routes registered here have not been assigned an exact legacy route
 // policy, but real deployments need them anyway (#243).
 func newProductionRouter(cfg RouterConfig) chi.Router {
-	// The project-create pipeline, built ONCE and shared by every mount that
-	// needs it: the projects route, the support assistant, and the two readers
-	// of "the caller's personal project" below.
-	//
-	// It used to be built per call site. Three Provisioner values over one
-	// pool, each with its own vault handler and bootstrappers, is the shape the
-	// configurations handler in this file already warns about — "Building two
-	// would let the write path and the read path disagree about which pool they
-	// are on" — and an option added at one site and not the others would give
-	// them three different behaviours for no visible reason.
-	projectProvisioner, projectProvisionerOK := newProjectProvisioner(cfg)
-	// The personal-project ensurer over that one provisioner. Nil when the
-	// composition has no pool, which every consumer tolerates.
-	var personalProjects *personalproject.Ensurer
-	if projectProvisionerOK {
-		if ensurer, err := personalproject.NewEnsurer(cfg.Pool, projectProvisioner); err == nil {
-			personalProjects = ensurer
-		}
-	}
 	if cfg.AuthClient == nil {
 		cfg.AuthClient = cfg.Auth.Client
 	}
@@ -688,6 +669,33 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 	}
 	if cfg.SAMLHandler == nil {
 		cfg.SAMLHandler = cfg.Auth.SAMLHandler
+	}
+
+	// The project-create pipeline, built ONCE and shared by every mount that
+	// needs it: the projects route, the support assistant, and the two readers
+	// of "the caller's personal project" below.
+	//
+	// It used to be built per call site. Three Provisioner values over one
+	// pool, each with its own vault handler and bootstrappers, is the shape the
+	// configurations handler in this file already warns about — "Building two
+	// would let the write path and the read path disagree about which pool they
+	// are on" — and an option added at one site and not the others would give
+	// them three different behaviours for no visible reason.
+	//
+	// BELOW the defaulting above, not before it. It reads cfg.Pool,
+	// cfg.ObjectStore and cfg.ProjectVectorStore, none of which that block
+	// fills in today — but the block is where such a line WOULD go, and a
+	// provisioner built from an unresolved field answers `ok = false`, which
+	// switches project creation, the support assistant and personal-project
+	// provisioning off together and reports nothing.
+	projectProvisioner, projectProvisionerOK := newProjectProvisioner(cfg)
+	// The personal-project ensurer over that one provisioner. Nil when the
+	// composition has no pool, which every consumer tolerates.
+	var personalProjects *personalproject.Ensurer
+	if projectProvisionerOK {
+		if ensurer, err := personalproject.NewEnsurer(cfg.Pool, projectProvisioner); err == nil {
+			personalProjects = ensurer
+		}
 	}
 	if cfg.SessionSecret == "" {
 		cfg.SessionSecret = cfg.Auth.SessionSecret

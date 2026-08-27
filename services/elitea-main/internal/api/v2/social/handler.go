@@ -19,18 +19,13 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
-// PersonalProjectEnsurer creates the caller's personal project when they have
-// none. Satisfied by internal/application/personalproject.Ensurer.
-//
-// EnsureAsync returns immediately: provisioning applies a whole tenant
-// migration corpus, and this is a read endpoint the SPA polls. See GetAuthor.
-type PersonalProjectEnsurer interface {
-	EnsureAsync(userID int64)
-}
-
 type Handler struct {
-	pool            *pgxpool.Pool
-	personalProject PersonalProjectEnsurer
+	pool *pgxpool.Pool
+	// personalProject creates the caller's personal project when they have
+	// none. EnsureAsync returns immediately: provisioning applies a whole
+	// tenant migration corpus, and this is a read endpoint the SPA polls. See
+	// GetAuthor.
+	personalProject personalproject.AsyncEnsurer
 }
 
 // Option configures a Handler at construction time.
@@ -44,7 +39,7 @@ type Option func(*Handler)
 // project nothing will create. It is an option only because a composition
 // without a database pool cannot build one — the same gate the project-create
 // route uses.
-func WithPersonalProjectEnsurer(ensurer PersonalProjectEnsurer) Option {
+func WithPersonalProjectEnsurer(ensurer personalproject.AsyncEnsurer) Option {
 	return func(h *Handler) { h.personalProject = ensurer }
 }
 

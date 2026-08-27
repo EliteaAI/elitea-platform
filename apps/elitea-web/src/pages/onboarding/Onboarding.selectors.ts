@@ -12,7 +12,7 @@
  * `personalProjectIdOf` performs, and for the same reason (`eliteaFetch`
  * throws on non-2xx, so the 401 arm is unreachable at this read site).
  */
-interface AuthorProfile {
+export interface AuthorProfile {
   readonly id?: string;
   readonly name?: string;
   readonly email?: string;
