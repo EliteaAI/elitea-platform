@@ -50,7 +50,18 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 # v2 plugin, this machine has podman.
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
+# shellcheck source=lib/seeded-driver.sh
+. "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
 detect_compose_bin
+
+# The one-SQL-string reader `resolve_seeded_driver` calls, in the same shape
+# sdk-client-check.sh and embedding-path-check.sh already define for
+# themselves. `|| true` keeps a failing read from aborting the caller under
+# `set -e`: an empty answer is a state those checks report on, not a crash.
+standalone_psql_read() {
+  $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+    psql -U elitea -d elitea -tAc "$1" 2>/dev/null | tr -d '\r' || true
+}
 
 PORT="${STANDALONE_PORT:-8084}"
 
@@ -1283,50 +1294,11 @@ PY
     # made this check permanently SKIPPED even on a correctly seeded stack.
     #
     # AND IT MUST BE THE SEEDED CALLER, not merely A caller with a personal
-    # project. `ORDER BY t.user_id LIMIT 1` used to name the seeded persona by
-    # accident: nothing in this stack created a personal project for anybody
-    # else, so the persona was the only candidate. elitea-main now provisions
-    # the caller's personal project when it has none
-    # (internal/application/personalproject), and THIS SCRIPT triggers it — the
-    # #326 edge check above calls /social/author as the lowest-id PAT owner,
-    # dev@elitea.ai. Measured: that gave user 1 a brand-new empty project 2,
-    # which then won this ORDER BY and made every assertion below read a
-    # project seed-llm never touched ("project 2 holds no chat model row",
-    # while the seeded rows sat in 90003/90106).
-    #
-    # So the candidate is chosen by the thing the assertions are actually
-    # about: whose personal project HOLDS the seeded chat model row. The first
-    # candidate is kept as the fallback, so a stack with no seeded row still
-    # names a project in its failure message instead of `p_.`.
-    LLM_CANDIDATES="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -U elitea -d elitea -tAc \
-        "SELECT t.uuid || ' ' || p.id
-           FROM public.auth_core__token t
-           JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
-           JOIN public.auth_core__project_user_role pur
-             ON pur.project_id = p.id AND pur.user_id = t.user_id
-          WHERE t.uuid IS NOT NULL
-          ORDER BY t.user_id" 2>/dev/null | tr -d '\r')"
-    LLM_PROBE_ROW=""
-    while IFS= read -r llm_candidate; do
-      [ -n "$llm_candidate" ] || continue
-      [ -n "$LLM_PROBE_ROW" ] || LLM_PROBE_ROW="$llm_candidate"
-      llm_candidate_project="$(printf '%s' "$llm_candidate" | awk '{print $2}')"
-      # `</dev/null` is load-bearing: `compose exec -T` inherits this loop's
-      # stdin, which is the heredoc below, and would swallow the remaining
-      # candidates after the first iteration.
-      llm_candidate_model="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-          psql -U elitea -d elitea -tAc \
-          "SELECT 1 FROM p_${llm_candidate_project}.configuration
-            WHERE section = 'llm' AND type = 'llm_model' AND status_ok = true
-            LIMIT 1" </dev/null 2>/dev/null | tr -d '[:space:]')"
-      if [ -n "$llm_candidate_model" ]; then
-        LLM_PROBE_ROW="$llm_candidate"
-        break
-      fi
-    done <<EOF
-$LLM_CANDIDATES
-EOF
+    # project. See deploy/scripts/lib/seeded-driver.sh for why the obvious
+    # `ORDER BY t.user_id LIMIT 1` stopped naming the seeded persona, and why
+    # the selection lives there rather than in each of the three scripts that
+    # need it.
+    LLM_PROBE_ROW="$(resolve_seeded_driver standalone_psql_read)"
     LLM_PROBE="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $1}')"
     LLM_PROJECT="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $2}')"
     if [ -z "$LLM_PROBE" ]; then

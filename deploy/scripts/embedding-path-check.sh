@@ -48,6 +48,8 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
+# shellcheck source=lib/seeded-driver.sh
+. "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
 detect_compose_bin
 
 ENGINE="${COMPOSE_BIN%% *}"
@@ -69,17 +71,12 @@ psql_read() {
     psql -U elitea -d elitea -tAc "$1" 2>/dev/null | tr -d '\r' || true
 }
 
-# The driver: a PAT whose user OWNS a personal project. The /llm hop resolves
-# the credential from that project, so a caller without one reports
-# `project_not_resolved` — a true statement about the wrong caller.
-DRIVER="$(psql_read "SELECT t.uuid || ' ' || p.id
-   FROM public.auth_core__token t
-   JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
-   JOIN public.auth_core__project_user_role pur
-     ON pur.project_id = p.id AND pur.user_id = t.user_id
-  WHERE t.uuid IS NOT NULL
-  ORDER BY t.user_id
-  LIMIT 1")"
+# The driver: a PAT whose user OWNS a personal project AND whose project holds
+# the seeded chat model. The /llm hop resolves the credential from that project,
+# so a caller without one reports `project_not_resolved` — a true statement
+# about the wrong caller. Selected by deploy/scripts/lib/seeded-driver.sh, which
+# every LLM check shares; read it for why the id ordering alone stopped working.
+DRIVER="$(resolve_seeded_driver psql_read)"
 DRIVER_PAT="$(printf '%s' "$DRIVER" | awk '{print $1}')"
 DRIVER_PROJECT="$(printf '%s' "$DRIVER" | awk '{print $2}')"
 [ -n "$DRIVER_PAT" ] || abort "no PAT owning a personal project. Run: deploy/scripts/standalone-stack.sh seed-runtime"
