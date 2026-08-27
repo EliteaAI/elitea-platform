@@ -1,8 +1,9 @@
 from elitea.runtime.v1 import common_pb2 as _common_pb2
+from google.protobuf.internal import containers as _containers
 from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Mapping as _Mapping
+from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
@@ -128,8 +129,16 @@ class AgentExecutionArtifactReferenceV1(_message.Message):
     classification: str
     def __init__(self, artifact_id: _Optional[str] = ..., immutable_version: _Optional[str] = ..., media_type: _Optional[str] = ..., byte_length: _Optional[int] = ..., digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., classification: _Optional[str] = ...) -> None: ...
 
+class AgentExecutionAttachmentContentV1(_message.Message):
+    __slots__ = ("item_id", "content")
+    ITEM_ID_FIELD_NUMBER: _ClassVar[int]
+    CONTENT_FIELD_NUMBER: _ClassVar[int]
+    item_id: str
+    content: bytes
+    def __init__(self, item_id: _Optional[str] = ..., content: _Optional[bytes] = ...) -> None: ...
+
 class AgentExecutionResultV1(_message.Message):
-    __slots__ = ("input_bundle_id", "input_bundle_digest", "request_entry_id", "request_immutable_version", "request_content_digest", "terminal_state", "result_artifact")
+    __slots__ = ("input_bundle_id", "input_bundle_digest", "request_entry_id", "request_immutable_version", "request_content_digest", "terminal_state", "result_artifact", "attachment_contents")
     INPUT_BUNDLE_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_BUNDLE_DIGEST_FIELD_NUMBER: _ClassVar[int]
     REQUEST_ENTRY_ID_FIELD_NUMBER: _ClassVar[int]
@@ -137,6 +146,7 @@ class AgentExecutionResultV1(_message.Message):
     REQUEST_CONTENT_DIGEST_FIELD_NUMBER: _ClassVar[int]
     TERMINAL_STATE_FIELD_NUMBER: _ClassVar[int]
     RESULT_ARTIFACT_FIELD_NUMBER: _ClassVar[int]
+    ATTACHMENT_CONTENTS_FIELD_NUMBER: _ClassVar[int]
     input_bundle_id: str
     input_bundle_digest: _common_pb2.DigestV1
     request_entry_id: str
@@ -144,4 +154,5 @@ class AgentExecutionResultV1(_message.Message):
     request_content_digest: _common_pb2.DigestV1
     terminal_state: AgentExecutionTerminalStateV1
     result_artifact: AgentExecutionArtifactReferenceV1
-    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., request_entry_id: _Optional[str] = ..., request_immutable_version: _Optional[str] = ..., request_content_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., terminal_state: _Optional[_Union[AgentExecutionTerminalStateV1, str]] = ..., result_artifact: _Optional[_Union[AgentExecutionArtifactReferenceV1, _Mapping]] = ...) -> None: ...
+    attachment_contents: _containers.RepeatedCompositeFieldContainer[AgentExecutionAttachmentContentV1]
+    def __init__(self, input_bundle_id: _Optional[str] = ..., input_bundle_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., request_entry_id: _Optional[str] = ..., request_immutable_version: _Optional[str] = ..., request_content_digest: _Optional[_Union[_common_pb2.DigestV1, _Mapping]] = ..., terminal_state: _Optional[_Union[AgentExecutionTerminalStateV1, str]] = ..., result_artifact: _Optional[_Union[AgentExecutionArtifactReferenceV1, _Mapping]] = ..., attachment_contents: _Optional[_Iterable[_Union[AgentExecutionAttachmentContentV1, _Mapping]]] = ...) -> None: ...

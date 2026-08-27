@@ -22,14 +22,25 @@ from elitea.runtime.v1 import agent_pb2
 
 from elitea_sdk.runtime.exceptions import BudgetExceededError
 
+from elitea_worker.agents.attachments import (
+    MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES,
+    attachment_content_writebacks,
+    pending_attachment_reads,
+    validate_input_attachments,
+)
 from elitea_worker.agents.sdk_adapter import EliteaSdkAgentAdapter, SdkBudgetExceeded
 from elitea_worker.execution.errors import InvalidInput, UnsupportedCapability
-from elitea_worker.handlers.agent import AgentExecutionKind
-from elitea_worker.protocol.agent import AGENT_INPUT_SCHEMA_REVISION, request_from
+from elitea_worker.handlers.agent import AgentExecutionKind, AgentExecutionResult
+from elitea_worker.protocol.agent import (
+    AGENT_INPUT_SCHEMA_REVISION,
+    bind_result_artifact,
+    request_from,
+)
 
 
 _BUCKET = "chat-attachments"
 _NAME = "8f1c/report.pdf"
+_ITEM_ID = "3f2a51d0-0000-4000-8000-000000000001"
 _HEADER_TEXT = (
     f"Bucket: {_BUCKET}\n"
     f"Filename: {_NAME}\n"
@@ -48,27 +59,28 @@ def _document_chunk(
     bucket: str = _BUCKET,
     name: str = _NAME,
     needs_extraction: bool = True,
+    item_id: str | None = _ITEM_ID,
 ) -> dict[str, Any]:
     """The exact scaffold the Go admission path writes.
 
     services/elitea-main/internal/application/agentexecution/attachments.go,
     ``attachmentContentScaffold`` — a text chunk plus the namespaced
-    ``elitea_attachment`` marker naming the object to read.
+    ``elitea_attachment`` marker naming the object to read and, since #607, the
+    id of the row that owns it.
     """
 
-    return {
-        "type": "text",
-        "text": _HEADER_TEXT,
-        "elitea_attachment": {
-            "needs_content_extraction": needs_extraction,
-            "bucket": bucket,
-            "name": name,
-            "filepath": f"/{bucket}/{name}",
-        },
+    marker: dict[str, Any] = {
+        "needs_content_extraction": needs_extraction,
+        "bucket": bucket,
+        "name": name,
+        "filepath": f"/{bucket}/{name}",
     }
+    if item_id is not None:
+        marker["item_id"] = item_id
+    return {"type": "text", "text": _HEADER_TEXT, "elitea_attachment": marker}
 
 
-def _payload(
+def _request(
     *,
     attachments: list[Any] | None = None,
     user_input: Any = "summarise it",
@@ -113,7 +125,11 @@ def _payload(
         request_entry_id="agent-request",
         request_immutable_version="v1",
         request_content_digest=b"r" * 32,
-    ).payload
+    )
+
+
+def _payload(**kwargs):
+    return _request(**kwargs).payload
 
 
 class _Executor:
@@ -154,6 +170,7 @@ def _adapter(client: _Client) -> EliteaSdkAgentAdapter:
     adapter._client = client  # type: ignore[attr-defined]
     adapter._memory = "checkpoint-store"  # type: ignore[attr-defined]
     adapter._callbacks = []  # type: ignore[attr-defined]
+    adapter._attachment_writebacks = []  # type: ignore[attr-defined]
     return adapter
 
 
@@ -351,21 +368,6 @@ def test_the_adhoc_constructor_splices_attachments_too() -> None:
             ],
             id="oversized-reference",
         ),
-        pytest.param(
-            [
-                {
-                    "type": "text",
-                    "text": "x",
-                    "elitea_attachment": {
-                        "needs_content_extraction": True,
-                        "bucket": _BUCKET,
-                        "name": _NAME,
-                        "surprise": 1,
-                    },
-                }
-            ],
-            id="unsupported-marker-field",
-        ),
         pytest.param([_document_chunk()] * 129, id="above-the-admission-cap"),
     ],
 )
@@ -524,3 +526,278 @@ def test_a_budget_rejection_during_extraction_stays_a_policy_outcome() -> None:
 
     with pytest.raises(SdkBudgetExceeded):
         _adapter(client).execute_application(payload)
+
+
+# ── #607: reporting the extracted text back ───────────────────────────────────
+
+
+_OTHER_ITEM_ID = "3f2a51d0-0000-4000-8000-000000000002"
+
+
+def _writebacks(client: _Client, payload) -> list[Any]:
+    """Run one turn and return what it asks the platform to persist."""
+
+    adapter = _adapter(client)
+    adapter.execute_application(payload)
+    return adapter.attachment_content_writebacks
+
+
+def _stored_content(writeback: Any) -> Any:
+    return json.loads(writeback.content.decode("utf-8"))
+
+
+def test_enriched_content_is_reported_against_the_item_that_owns_the_row() -> None:
+    """The identity is ``item_id``, and the value is the whole content array.
+
+    The same file attached twice is the case that decides this. Pylon never had
+    to name a row — producer and consumer were one process — but here two rows
+    share a bucket and a name, so only the item id distinguishes them
+    (attachments.go, attachmentContentScaffold). The stored value is the
+    scaffold plus one appended text chunk, which is what pylon's
+    ``content.append`` + ``flag_modified`` leaves behind
+    (legacy/plugins/elitea_core/rpc/chat_all.py:366-377).
+    """
+
+    client = _Client(_read_result({_NAME: "PAGE ONE"}))
+    first = _document_chunk()
+    second = _document_chunk(item_id=_OTHER_ITEM_ID)
+
+    writebacks = _writebacks(client, _payload(attachments=[first, second]))
+
+    assert [entry.item_id for entry in writebacks] == [_ITEM_ID, _OTHER_ITEM_ID]
+    for entry, chunk in zip(writebacks, (first, second)):
+        assert _stored_content(entry) == [
+            chunk,
+            {"type": "text", "text": "PAGE ONE"},
+        ]
+
+
+def test_the_reported_content_keeps_the_marker_the_model_never_sees() -> None:
+    """Two different consumers, two different values, from one chunk.
+
+    The model gets the chunk with ``elitea_attachment`` stripped; the row gets
+    it intact, because the row is the one admission wrote and the only intended
+    difference is the appended text. An ``item_id`` in a prompt would be an
+    internal row identity handed to a provider for no reason.
+    """
+
+    client = _Client(_read_result({_NAME: "PAGE ONE"}))
+    adapter = _adapter(client)
+    payload = _payload(attachments=[_document_chunk()])
+
+    adapter.execute_application(payload)
+
+    model_chunks = _human_content(client)
+    assert all(
+        "elitea_attachment" not in chunk and _ITEM_ID not in json.dumps(chunk)
+        for chunk in model_chunks
+    )
+    stored = _stored_content(adapter.attachment_content_writebacks[0])
+    assert stored[0]["elitea_attachment"]["item_id"] == _ITEM_ID
+
+
+def test_a_failed_read_reports_nothing_and_leaves_the_row_alone() -> None:
+    """No text, no write-back — so a later turn tries the read again.
+
+    Reporting an empty or header-only array here would look like a successful
+    extraction that found nothing, and the row would never be retried.
+    """
+
+    client = _Client({"success": False, "error": "bucket is unavailable"})
+
+    writebacks = _writebacks(client, _payload(attachments=[_document_chunk()]))
+
+    assert writebacks == []
+    assert _human_content(client) == [
+        {"type": "text", "text": "summarise it"},
+        {"type": "text", "text": _HEADER_TEXT},
+    ]
+
+
+def test_an_already_extracted_attachment_is_not_written_back_again() -> None:
+    """The stored shape is recognised, so a replayed turn writes nothing."""
+
+    client = _Client(None)
+    payload = _payload(
+        attachments=[_document_chunk(), {"type": "text", "text": "PAGE ONE"}]
+    )
+
+    assert _writebacks(client, payload) == []
+    assert client.tool_calls == []
+
+
+def test_a_marker_without_an_item_id_reports_nothing() -> None:
+    """An unnamed row is skipped, never guessed at from bucket and name."""
+
+    client = _Client(_read_result({_NAME: "PAGE ONE"}))
+    payload = _payload(attachments=[_document_chunk(item_id=None)])
+
+    assert _writebacks(client, payload) == []
+    assert _human_content(client)[-1] == {"type": "text", "text": "PAGE ONE"}
+
+
+def test_an_over_budget_attachment_is_dropped_and_the_turn_still_succeeds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The cap degrades to the behaviour before #607, and never past it.
+
+    ``MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES`` is 32 KiB against a 64 KiB
+    terminal output frame (``maxOutputFrameBytes``/``_V1_OUTPUT_FRAME_BYTES``).
+    Over it, the entry is dropped WHOLE: the model still saw the text this turn,
+    and no truncated chunk is left in the database claiming to be the file.
+    """
+
+    huge = "x" * (40 * 1024)
+    client = _Client(_read_result({_NAME: huge}))
+    payload = _payload(attachments=[_document_chunk()])
+
+    with caplog.at_level(logging.INFO, logger="elitea_worker.agents.attachments"):
+        writebacks = _writebacks(client, payload)
+
+    assert writebacks == []
+    assert _human_content(client)[-1] == {"type": "text", "text": huge}
+    assert "write-back dropped for 1 file(s)" in caplog.text
+
+
+def test_a_smaller_attachment_still_fits_after_an_over_budget_one() -> None:
+    """Over-budget entries are SKIPPED, not a stop signal.
+
+    Stopping at the first oversize file would make what gets remembered depend
+    on attachment order, which the user chose for unrelated reasons.
+    """
+
+    other = "9a2b/notes.txt"
+    client = _Client(
+        _read_result({_NAME: "x" * (40 * 1024), other: "SHORT NOTE"})
+    )
+    payload = _payload(
+        attachments=[
+            _document_chunk(),
+            _document_chunk(name=other, item_id=_OTHER_ITEM_ID),
+        ]
+    )
+
+    writebacks = _writebacks(client, payload)
+
+    assert [entry.item_id for entry in writebacks] == [_OTHER_ITEM_ID]
+    assert _stored_content(writebacks[0])[1] == {
+        "type": "text",
+        "text": "SHORT NOTE",
+    }
+
+
+def test_the_write_back_round_trips_through_the_terminal_result() -> None:
+    """Encode, serialize, parse — and stay inside the frame it has to fit.
+
+    The budget is only meaningful if the encoded result is measured against the
+    64 KiB output frame the transport actually enforces
+    (transport/output_grpc.py raises ResourceExhausted above it), so this
+    asserts the serialized payload with a full report on it, not the JSON.
+    """
+
+    client = _Client(_read_result({_NAME: "PAGE ONE" * 1024}))
+    request = _request(attachments=[_document_chunk()])
+    adapter = _adapter(client)
+    adapter.execute_application(request.payload)
+
+    bound = bind_result_artifact(
+        AgentExecutionResult(request=request, sdk_result={"result": "current"}),
+        artifact_id="node-event:exec-1:full-message",
+        immutable_version="v1",
+        byte_length=123,
+        digest=b"d" * 32,
+        attachment_contents=adapter.attachment_content_writebacks,
+    )
+    encoded = bound.SerializeToString(deterministic=True)
+    decoded = agent_pb2.AgentExecutionResultV1()
+    decoded.ParseFromString(encoded)
+
+    assert [(entry.item_id, entry.content) for entry in decoded.attachment_contents] == [
+        (entry.item_id, entry.content)
+        for entry in adapter.attachment_content_writebacks
+    ]
+    assert json.loads(decoded.attachment_contents[0].content.decode("utf-8"))[1] == {
+        "type": "text",
+        "text": "PAGE ONE" * 1024,
+    }
+    assert len(encoded) <= MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES + 4096
+
+
+@pytest.mark.parametrize(
+    "attachments",
+    [
+        pytest.param([], id="no-attachments"),
+        pytest.param(
+            [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}],
+            id="image-without-a-marker",
+        ),
+        pytest.param(
+            [_document_chunk(needs_extraction=False)],
+            id="marker-that-does-not-ask",
+        ),
+    ],
+)
+def test_a_chunk_with_nothing_to_extract_is_never_written_back(attachments) -> None:
+    """Absent means "nothing to do", never "work out what this is".
+
+    Called directly rather than through a turn, because the interesting inputs
+    are ones no read is attempted for — an image carries its own bytes, and an
+    inert marker asked for nothing — so a turn would never reach this function
+    with them and could not tell a correct skip from a missing one. The
+    extracted map is deliberately NON-EMPTY: a write-back must come from the
+    chunk that asked for the read, not from whatever text happens to be around.
+
+    Bound as well as counted, because the consequence that matters is that the
+    field stays absent on the wire for an ordinary turn.
+    """
+
+    writebacks = attachment_content_writebacks(
+        attachments, {(_BUCKET, _NAME): "PAGE ONE"}
+    )
+    bound = bind_result_artifact(
+        AgentExecutionResult(request=_request(), sdk_result={"result": "current"}),
+        artifact_id="node-event:exec-1:full-message",
+        immutable_version="v1",
+        byte_length=123,
+        digest=b"d" * 32,
+        attachment_contents=writebacks,
+    )
+
+    assert writebacks == []
+    assert list(bound.attachment_contents) == []
+
+
+def test_marker_with_an_unknown_field_is_ignored_not_refused() -> None:
+    """A marker field this worker does not know must not fail the turn.
+
+    elitea-main and this worker deploy independently. If an unrecognised marker
+    field were refused, every field ever added on the Go side would break every
+    attachment turn against a worker that had not shipped yet — `item_id` (#607)
+    is exactly that case. The marker is stripped before the model sees the
+    chunk, so an unknown field cannot change the prompt; there is nothing to
+    protect by refusing it.
+
+    Note this is deliberately NOT symmetric with the chunk-`type` check, which
+    does refuse: a type decides what the model is shown.
+    """
+
+    chunks = validate_input_attachments(
+        [
+            {
+                "type": "text",
+                "text": "Bucket: b\nFilename: n",
+                "elitea_attachment": {
+                    "needs_content_extraction": True,
+                    "bucket": "chat-attachments",
+                    "name": "conv/report.pdf",
+                    "filepath": "/chat-attachments/conv/report.pdf",
+                    "item_id": "3f2a51d0-0000-4000-8000-000000000001",
+                    "a_field_from_a_newer_elitea_main": {"nested": True},
+                },
+            }
+        ]
+    )
+
+    assert len(chunks) == 1
+    # And the fields it DOES know still drive extraction.
+    assert pending_attachment_reads(chunks) != []

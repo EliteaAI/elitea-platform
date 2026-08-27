@@ -108,6 +108,42 @@ message AgentExecutionArtifactReferenceV1 {
   reserved 7 to 15;
 }
 
+// AgentExecutionAttachmentContentV1 returns ONE attachment item's enriched
+// content so the platform can persist what the worker extracted (#607).
+//
+// Pylon extracts a document's text once, at message-persist time, and stores
+// it: rpc/chat_all.py:344-377 reads the files through the SDK artifact toolkit
+// and appends the text as a second `{"type": "text"}` chunk of the item's
+// `content`, with `flag_modified(item, "content")` at :376. Every later turn is
+// then pure DB — utils/chat_history.py:67-73 extends the stored chunks straight
+// into the message and re-reads nothing.
+//
+// Here the two halves live in different services: only the worker can reach the
+// artifact toolkit, and only elitea-main can write `chat_messages_attachment`.
+// This message is the seam. The worker fills it for the attachments it actually
+// enriched; elitea-main writes `content` onto the named row on the terminal
+// path it already owns. Without it, a file attached two turns ago is invisible
+// to the model and every turn re-pays the extraction.
+message AgentExecutionAttachmentContentV1 {
+  // The `chat_message_items` row to write, taken from the `item_id` the
+  // admission scaffold stamps into the chunk's `elitea_attachment` marker
+  // (attachments.go, attachmentContentScaffold).
+  //
+  // NOT (bucket, name). The same file attached twice in one conversation is an
+  // ordinary thing for a user to do and produces two rows with identical bucket
+  // and name, so a (bucket, name) match would silently write one file's text
+  // onto the other's row. The item id is exact.
+  string item_id = 1;
+  // One complete UTF-8 JSON ARRAY of LangChain content chunks: exactly the
+  // value `chat_messages_attachment.content` is to hold, not a delta. It is the
+  // admission scaffold's own header chunk — marker included, byte-for-byte —
+  // followed by the extracted text as a second `{"type": "text"}` chunk, which
+  // is the shape pylon's extraction step leaves behind and the shape the
+  // worker's own reader recognises as "already extracted".
+  bytes content = 2;
+  reserved 3 to 15;
+}
+
 // AgentExecutionResultV1 references the exact current task result. Thinking,
 // token, tool, HITL, MCP and child events are separate non-terminal NodeEventV1
 // frames; a large final task result is never materialized on Redis or gRPC.
@@ -120,4 +156,36 @@ message AgentExecutionResultV1 {
   AgentExecutionTerminalStateV1 terminal_state = 6;
   AgentExecutionArtifactReferenceV1 result_artifact = 7;
   reserved 8 to 15;
+  // Enriched attachment content to persist, one entry per attachment whose text
+  // this turn actually read (#607). Absent for every turn that carried no
+  // document, and absent for a document whose read failed — a failed read has
+  // no text to persist and must leave the row as admission wrote it.
+  //
+  // INLINE, and deliberately so. The two candidate carriers were measured:
+  //
+  //   * This frame. `max_output_frame_bytes` is 64 KiB
+  //     (runtimecomposition/composition.go's maxOutputFrameBytes, and the
+  //     worker's own _V1_OUTPUT_FRAME_BYTES); a terminal
+  //     AgentExecutionResultV1 frame measures ~1 KiB today, so ~62 KiB is free.
+  //   * `result_artifact`, which is not an object-store blob but the terminal
+  //     NodeEventV1 itself — elitea-main re-reads its bytes from
+  //     `agent_execution_node_events` and checks them against the digest here
+  //     (repos/agent_execution_results.go, loadCurrentAgentTerminal). That event
+  //     is capped at 60 KiB of JSON (worker protocol/node_event.py), so it is
+  //     no roomier than this frame. It was REJECTED for two other reasons: it
+  //     is the browser-facing `full_message` event, so riding it would ship
+  //     every attached file's full text to the UI on every turn; and an
+  //     over-size event RAISES, which would turn a large attachment into a
+  //     failed turn.
+  //
+  // So neither carrier is large, and the honest consequence is a cap rather
+  // than a pretence that a whole PDF fits. The worker measures this list before
+  // it builds the frame and DROPS whole entries that do not fit
+  // (agents/attachments.py, MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES). A dropped
+  // entry degrades exactly to today's behaviour: the turn still succeeds, the
+  // model still sees the text this turn, and only the persistence is skipped.
+  // An entry is never truncated — a partial chunk that still claims to be the
+  // file is worse than no chunk, because nothing downstream can tell.
+  repeated AgentExecutionAttachmentContentV1 attachment_contents = 16;
+  reserved 17 to 31;
 }

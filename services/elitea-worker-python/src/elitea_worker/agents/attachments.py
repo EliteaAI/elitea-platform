@@ -41,7 +41,8 @@ side by side:
         "needs_content_extraction": true,
         "bucket":   "chat-attachments",
         "name":     "<conversation-uuid>/report.pdf",
-        "filepath": "/chat-attachments/<conversation-uuid>/report.pdf"
+        "filepath": "/chat-attachments/<conversation-uuid>/report.pdf",
+        "item_id":  "<uuid of the chat_message_items row>"
       }
     }
 
@@ -62,7 +63,36 @@ Consequences this module depends on:
 The marker is STRIPPED before the chunk reaches the model, which is what the Go
 comment says the worker is expected to do. Nothing is lost — the header text
 already states bucket, filename and filepath in prose — and no provider has to
-be trusted to ignore an unknown key on a content chunk.
+be trusted to ignore an unknown key on a content chunk. ``item_id`` in
+particular is an internal row identity and never reaches a prompt.
+
+## Reporting the extracted text back (#607)
+
+Extraction here is per-INVOKE; pylon's is per-PERSIST. Pylon reads each file
+once, appends the text to the item's stored ``content`` and calls
+``flag_modified(item, "content")`` (rpc/chat_all.py:366-377), so every later
+turn is pure DB (utils/chat_history.py:67-73). The worker cannot do that — it
+has no connection to the chat tables — so it returns what it enriched on the
+terminal result and elitea-main performs the write. Until that write happens, a
+file attached two turns ago reaches the model as its name and nothing else, and
+every turn that does carry a file re-pays the read.
+
+``attachment_content_writebacks`` builds that report. Two properties are worth
+stating because both are load-bearing:
+
+  * The row is named by ``item_id``, never by ``(bucket, name)``. The same file
+    attached twice in one conversation is an ordinary thing for a user to do and
+    yields two rows with identical bucket and name; a ``(bucket, name)`` match
+    would write one file's text onto the other's row and nothing downstream
+    could tell.
+  * The reported value is the WHOLE content array, and it keeps the marker on
+    the header chunk. It is the admission scaffold plus one appended text
+    chunk — the same value pylon's ``content.append`` leaves behind — so the
+    stored row stays recognisable to this module's own already-extracted check
+    on a later turn.
+
+The report is CAPPED, because both available carriers are small. See
+``MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES``.
 
 ## Why an unknown chunk `type` is REFUSED rather than passed through
 
@@ -85,8 +115,10 @@ paid mid-turn.
 
 from __future__ import annotations
 
+import json
 import logging
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any
 
 from elitea_worker.execution.errors import InvalidInput
@@ -108,8 +140,31 @@ ATTACHMENT_TOOLKIT_NAME = "Attachments"
 ATTACHMENT_READ_TOOL_NAME = "read_multiple_files"
 
 _ADMITTED_CHUNK_TYPES = frozenset({"text", "image_url"})
-_ADMITTED_MARKER_FIELDS = frozenset(
-    {ATTACHMENT_MARKER_EXTRACT_FIELD, "bucket", "name", "filepath"}
+ATTACHMENT_MARKER_ITEM_ID_FIELD = "item_id"
+
+# The fields this worker KNOWS. An unrecognised one is ignored, not refused —
+# and that asymmetry with _ADMITTED_CHUNK_TYPES above is deliberate.
+#
+# A chunk `type` decides what the MODEL is shown, so forwarding one this worker
+# does not understand would silently change the prompt; refusing is right there.
+# A marker field decides nothing of the sort: the whole marker is stripped
+# before the chunk reaches the model, and its only job is to drive extraction.
+#
+# Refusing an unknown field would instead make elitea-main and this worker
+# undeployable apart. `item_id` is the proof: it was added to the marker on the
+# elitea-main side (#607), and a worker with a strict set would answer
+# INVALID_INPUT to EVERY attachment turn until it shipped too — a version
+# coupling with no safety bought, in a system whose two halves deploy
+# independently. The set stays as documentation of what is understood, and as
+# the guard on the fields that ARE read below.
+_KNOWN_MARKER_FIELDS = frozenset(
+    {
+        ATTACHMENT_MARKER_EXTRACT_FIELD,
+        "bucket",
+        "name",
+        "filepath",
+        ATTACHMENT_MARKER_ITEM_ID_FIELD,
+    }
 )
 
 # varchar(256) each side in migrations/tenant/0127, and the Go admission path
@@ -125,6 +180,54 @@ _MAX_ATTACHMENT_FIELD_BYTES = 256
 # independent policy: raising the Go cap without raising this one turns a large
 # but legitimate turn into an admission refusal.
 MAX_INPUT_ATTACHMENT_CHUNKS = 128
+
+# The whole write-back report's budget, MEASURED against the carrier rather than
+# guessed at (#607).
+#
+# The report rides inline on AgentExecutionResultV1, and the terminal output
+# frame is capped at 64 KiB on both sides — `maxOutputFrameBytes` in
+# services/elitea-main/internal/runtimecomposition/composition.go and
+# `_V1_OUTPUT_FRAME_BYTES` in elitea_worker/config.py. A terminal agent frame
+# with no report on it serializes to ~1 KiB, so ~62 KiB is genuinely free; 32
+# KiB takes half of that and leaves the rest to the frame's own variable-length
+# identity strings. Over-limit is not a soft failure on that path — the output
+# session RAISES ResourceExhausted (transport/output_grpc.py) — so the budget is
+# spent here, before the frame is built, and is deliberately not maximal.
+#
+# The rejected alternative was riding `result_artifact`. That reference is not
+# an object-store blob: it is the terminal NodeEventV1 itself, whose bytes
+# elitea-main re-reads from its own table and checks against the digest
+# (repos/agent_execution_results.go, loadCurrentAgentTerminal). It is capped at
+# 60 KiB (protocol/node_event.py), so it is no roomier; it is the BROWSER-facing
+# `full_message` event, so riding it would push every attached file's full text
+# to the UI on every turn; and an over-size event raises, which would turn a
+# large attachment into a failed turn.
+#
+# BEHAVIOUR AT THE CAP: whole entries are dropped, never truncated, and the turn
+# is unaffected. A dropped entry degrades exactly to the behaviour before #607 —
+# the model still saw the text this turn, only the persistence is skipped, and
+# the next turn carrying that file reads it again. A truncated chunk would be
+# worse than no chunk: it would sit in the row claiming to be the file, and
+# neither the model nor a later reader could tell that it is not.
+MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES = 32 * 1024
+
+# Protobuf framing for one repeated AgentExecutionAttachmentContentV1: the
+# entry's own tag and length prefix plus the two field tags and their length
+# prefixes. Counted in so the budget bounds the encoded frame contribution and
+# not merely the JSON inside it.
+_WRITEBACK_ENTRY_OVERHEAD_BYTES = 16
+
+
+@dataclass(frozen=True, slots=True)
+class AttachmentContentWriteback:
+    """One attachment row's enriched content, ready for the terminal result.
+
+    ``content`` is already encoded, because the byte length is what the budget
+    is spent in and measuring it twice invites the two measurements to drift.
+    """
+
+    item_id: str
+    content: bytes
 
 
 def validate_input_attachments(value: list[Any]) -> list[Any]:
@@ -212,6 +315,82 @@ def attachment_message_chunks(
     return chunks
 
 
+def attachment_content_writebacks(
+    input_attachments: list[Any],
+    extracted: dict[tuple[str, str], str] | None = None,
+) -> list[AttachmentContentWriteback]:
+    """The enriched rows to persist, in first-seen order and within budget.
+
+    Contributes an entry ONLY for an attachment this turn actually enriched, so
+    three cases report nothing and each for its own reason:
+
+      * a chunk with no marker, or a marker that does not ask for extraction —
+        there was nothing to do;
+      * a header already followed by its text — the row holds that text
+        already, so rewriting it would be a no-op write on every later turn;
+      * a read that FAILED — there is no text, and the row must be left exactly
+        as admission wrote it so a later turn tries again rather than storing a
+        confident empty answer.
+
+    A marker with no usable ``item_id`` is also skipped rather than guessed at.
+    The turn is unaffected either way: this function only decides what gets
+    remembered, never what the model was shown.
+    """
+
+    contents = extracted or {}
+    writebacks: list[AttachmentContentWriteback] = []
+    budget = MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES
+    dropped = 0
+    for index, chunk in enumerate(input_attachments):
+        reference = _extraction_reference(input_attachments, index, chunk)
+        if reference is None:
+            continue
+        marker = chunk.get(ATTACHMENT_MARKER_KEY)
+        item_id = (
+            marker.get(ATTACHMENT_MARKER_ITEM_ID_FIELD)
+            if isinstance(marker, dict)
+            else None
+        )
+        if not _bounded_reference_text(item_id):
+            continue
+        text = contents.get(reference)
+        if not isinstance(text, str) or not text:
+            continue
+        content = _encoded_attachment_content(chunk, text)
+        cost = (
+            len(content)
+            + len(item_id.encode("utf-8"))
+            + _WRITEBACK_ENTRY_OVERHEAD_BYTES
+        )
+        if cost > budget:
+            # Skipped, not stopped: a later smaller attachment can still fit,
+            # and the order the survivors are reported in stays the order they
+            # were attached in.
+            dropped += 1
+            continue
+        budget -= cost
+        writebacks.append(AttachmentContentWriteback(item_id=item_id, content=content))
+    report_dropped_attachment_writebacks(dropped)
+    return writebacks
+
+
+def _encoded_attachment_content(chunk: Any, text: str) -> bytes:
+    """The whole content array for one row: the scaffold, then its text.
+
+    The header chunk goes back UNMODIFIED — marker included — because the row
+    being written is the one admission created and the only intended difference
+    is the appended chunk. Stripping the marker here would quietly change what
+    a replayed or re-read turn sees in the database, which is a second effect
+    nobody asked this function for.
+    """
+
+    return json.dumps(
+        [deepcopy(chunk), {"type": "text", "text": text}],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
 def human_message_content(
     user_input: str | list[Any],
     attachment_chunks: list[Any],
@@ -256,6 +435,25 @@ def report_failed_attachment_reads(count: int) -> None:
         )
 
 
+def report_dropped_attachment_writebacks(count: int) -> None:
+    """Record that N enriched attachments were too large to report back.
+
+    A count only, for the same reason ``report_failed_attachment_reads`` keeps
+    one: filenames and buckets are tenant data. This is not an error path — the
+    turn succeeded and the model saw the text — so it is logged at INFO, but it
+    is logged, because a deployment where it happens constantly is a deployment
+    where ``MAX_ATTACHMENT_CONTENT_WRITEBACK_BYTES`` is the wrong number and
+    nothing else would say so.
+    """
+
+    if count > 0:
+        _LOG.info(
+            "agent input attachment content write-back dropped for %d file(s) "
+            "over the terminal result budget",
+            count,
+        )
+
+
 def _validate_marker(marker: Any) -> None:
     """Admit only the marker object the admission path documents."""
 
@@ -263,12 +461,12 @@ def _validate_marker(marker: Any) -> None:
         return
     if not isinstance(marker, dict):
         raise InvalidInput("The agent input attachment marker must be an object.")
-    if set(marker) - _ADMITTED_MARKER_FIELDS:
-        raise InvalidInput("The agent input attachment marker has unsupported fields.")
+    # Unknown fields are ignored; see _KNOWN_MARKER_FIELDS for why this is not
+    # symmetric with the chunk-type check.
     needs_extraction = marker.get(ATTACHMENT_MARKER_EXTRACT_FIELD, False)
     if not isinstance(needs_extraction, bool):
         raise InvalidInput("The agent input attachment marker flag must be boolean.")
-    for field in ("bucket", "name", "filepath"):
+    for field in ("bucket", "name", "filepath", ATTACHMENT_MARKER_ITEM_ID_FIELD):
         present = marker.get(field)
         if present is not None and not _bounded_reference_text(present):
             raise InvalidInput("The agent input attachment reference is malformed.")

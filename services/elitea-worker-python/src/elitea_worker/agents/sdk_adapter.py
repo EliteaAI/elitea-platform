@@ -25,6 +25,8 @@ from elitea_worker.agents.attachments import (
     ATTACHMENT_READ_TOOL_NAME,
     ATTACHMENT_TOOLKIT_NAME,
     ATTACHMENT_TOOLKIT_TYPE,
+    AttachmentContentWriteback,
+    attachment_content_writebacks,
     attachment_message_chunks,
     human_message_content,
     pending_attachment_reads,
@@ -360,6 +362,10 @@ class EliteaSdkAgentAdapter:
         self._callbacks = list(callbacks or [])
         self._checkpoint_factory = checkpoint_factory
         self._project_id = project_id
+        # #607: what this turn's document reads produced, kept so the terminal
+        # result can report it back for persistence. One adapter is built per
+        # execution, so this is turn-scoped state and not a cache.
+        self._attachment_writebacks: list[AttachmentContentWriteback] = []
 
     @classmethod
     def from_context(
@@ -596,7 +602,21 @@ class EliteaSdkAgentAdapter:
                 else:
                     failures += 1
         report_failed_attachment_reads(failures)
+        # Composed here rather than in the caller because this is the only
+        # place that knows which reads succeeded. A file that could not be read
+        # contributes nothing: it has no text to persist, and leaving its row
+        # untouched is what lets a later turn try again.
+        self._attachment_writebacks = attachment_content_writebacks(
+            payload.input_attachments,
+            contents,
+        )
         return contents
+
+    @property
+    def attachment_content_writebacks(self) -> list[AttachmentContentWriteback]:
+        """The enriched attachment rows this turn produced, if any (#607)."""
+
+        return list(self._attachment_writebacks)
 
     @contextmanager
     def _execution_memory(self):

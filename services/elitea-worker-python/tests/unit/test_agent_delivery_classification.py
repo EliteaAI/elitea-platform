@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 
 from elitea_worker.execution import delivery
 from elitea_worker.execution.delivery import _is_mcp_dependency_failure
@@ -75,3 +77,41 @@ def test_agent_execution_classifies_a_budget_rejection_before_any_fault() -> Non
         "a budget rejection must be answered before the dependency and internal arms"
     )
     assert "raise ResourceExhausted() from None" in source
+
+
+def test_the_agent_terminal_binds_the_attachment_write_back_from_the_adapter() -> None:
+    """#607: the two correct halves have to actually be joined here.
+
+    ``attachment_content_writebacks`` is exercised directly in
+    tests/unit/test_agent_attachments.py and ``bind_result_artifact`` encodes
+    whatever it is handed, so both halves can be right while the composition
+    root passes nothing and every attachment silently stops being persisted —
+    with no test anywhere going red.
+
+    This is a SOURCE-SHAPE gate for the same reason the budget-ordering one
+    above is: driving ``_execute_resolved`` needs the whole claim, control,
+    output and spool harness, and there is no agent fixture for it. It is
+    weaker than a behavioural test — it cannot prove the value is correct, only
+    that the terminal binding still reads it off the adapter that produced it.
+    """
+
+    tree = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(
+                delivery.AgentExecutionDeliveryProcessor._execute_resolved
+            )
+        )
+    )
+    bindings = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "bind_agent_result_artifact"
+    ]
+    assert len(bindings) == 1, "the agent terminal result binding moved or multiplied"
+    wired = {
+        keyword.arg: ast.unparse(keyword.value)
+        for keyword in bindings[0].keywords
+    }
+    assert wired.get("attachment_contents") == "adapter.attachment_content_writebacks"
