@@ -104,7 +104,6 @@ export { hasPlaybackConversation, isPinnedConversation, sortConversations } from
 export { createDraftConversation } from './lib/normalise';
 
 export type { ConversationWire } from './api/conversationApi';
-export type { DeleteMessageResponse } from './api/messageApi';
 
 /** Conversation + message CRUD (`../api/conversationApi.ts`, `../api/messageApi.ts`) — TanStack hooks (`use*`) and their underlying plain-async fetchers, bundled. */
 export const conversationApi = {

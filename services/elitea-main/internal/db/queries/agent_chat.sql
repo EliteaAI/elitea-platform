@@ -238,6 +238,46 @@ LEFT JOIN LATERAL (
                           AND jsonb_typeof(
                                   COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
                               ) = 'array'
+                          -- ONLY THE FOUR NEWEST ATTACHMENTS CONTRIBUTE THEIR
+                          -- CONTENT, and this bound is load-bearing rather than
+                          -- tasteful.
+                          --
+                          -- #607 stores up to 32 KiB of extracted text per
+                          -- attachment. This projection feeds chat_history,
+                          -- chat_history is the agent input bundle, and the
+                          -- WORKER fetches that bundle under a 256 KiB ceiling
+                          -- (content_max_body_bytes -> _V1_INPUT_CONTENT_BYTES,
+                          -- serve.py:982; it raises above it,
+                          -- transport/input_content.py:169,250,260). elitea-main
+                          -- allows 1 MiB (MaxAgentExecutionInputBytes), so
+                          -- nothing on this side would have refused the frame
+                          -- first. Unbounded, a user who attached ~8 documents
+                          -- over a session pushed the bundle past 256 KiB and
+                          -- then EVERY further turn in that conversation failed
+                          -- — unrecoverably, because history only grows, so the
+                          -- conversation had to be abandoned.
+                          --
+                          -- Four newest x 32 KiB = 128 KiB worst case, half the
+                          -- worker's ceiling, leaving the rest to the text of
+                          -- the conversation itself.
+                          --
+                          -- NEWEST rather than oldest: a follow-up question is
+                          -- about the file just attached. An older attachment
+                          -- still appears in the transcript and still carries
+                          -- its header chunk here (only the CONTENT is
+                          -- withheld), so the model is told the file exists and
+                          -- that read tools are available — the pre-#607
+                          -- behaviour, which is the right thing to degrade to.
+                          AND (
+                              SELECT count(*)
+                              FROM chat_message_items AS newer_item
+                              JOIN chat_message_group AS newer_group
+                                ON newer_group.id = newer_item.message_group_id
+                              WHERE newer_group.conversation_id = conversation.id
+                                AND newer_item.item_type = 'attachment_message'
+                                AND (newer_group.created_at, newer_group.id, newer_item.order_index, newer_item.id)
+                                  > (message_group.created_at, message_group.id, message_item.order_index, message_item.id)
+                          ) < 4
                          THEN message_attachment.content::jsonb
                          ELSE '[]'::jsonb
                      END
@@ -584,6 +624,46 @@ LEFT JOIN LATERAL (
                           AND jsonb_typeof(
                                   COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
                               ) = 'array'
+                          -- ONLY THE FOUR NEWEST ATTACHMENTS CONTRIBUTE THEIR
+                          -- CONTENT, and this bound is load-bearing rather than
+                          -- tasteful.
+                          --
+                          -- #607 stores up to 32 KiB of extracted text per
+                          -- attachment. This projection feeds chat_history,
+                          -- chat_history is the agent input bundle, and the
+                          -- WORKER fetches that bundle under a 256 KiB ceiling
+                          -- (content_max_body_bytes -> _V1_INPUT_CONTENT_BYTES,
+                          -- serve.py:982; it raises above it,
+                          -- transport/input_content.py:169,250,260). elitea-main
+                          -- allows 1 MiB (MaxAgentExecutionInputBytes), so
+                          -- nothing on this side would have refused the frame
+                          -- first. Unbounded, a user who attached ~8 documents
+                          -- over a session pushed the bundle past 256 KiB and
+                          -- then EVERY further turn in that conversation failed
+                          -- — unrecoverably, because history only grows, so the
+                          -- conversation had to be abandoned.
+                          --
+                          -- Four newest x 32 KiB = 128 KiB worst case, half the
+                          -- worker's ceiling, leaving the rest to the text of
+                          -- the conversation itself.
+                          --
+                          -- NEWEST rather than oldest: a follow-up question is
+                          -- about the file just attached. An older attachment
+                          -- still appears in the transcript and still carries
+                          -- its header chunk here (only the CONTENT is
+                          -- withheld), so the model is told the file exists and
+                          -- that read tools are available — the pre-#607
+                          -- behaviour, which is the right thing to degrade to.
+                          AND (
+                              SELECT count(*)
+                              FROM chat_message_items AS newer_item
+                              JOIN chat_message_group AS newer_group
+                                ON newer_group.id = newer_item.message_group_id
+                              WHERE newer_group.conversation_id = conversation.id
+                                AND newer_item.item_type = 'attachment_message'
+                                AND (newer_group.created_at, newer_group.id, newer_item.order_index, newer_item.id)
+                                  > (message_group.created_at, message_group.id, message_item.order_index, message_item.id)
+                          ) < 4
                          THEN message_attachment.content::jsonb
                          ELSE '[]'::jsonb
                      END

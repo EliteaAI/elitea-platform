@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -788,16 +789,34 @@ func (h *Handler) deleteAttachmentObjects(ctx context.Context, projectIDStr stri
 		}
 		ref, err := storage.NewObjectRef(projectIDStr, attachment.Bucket, attachment.Name)
 		if err != nil {
-			// A row whose name cannot address an object is not a reason to
-			// fail the delete — the message is already gone. Skip it; the
-			// retention sweeper still owns the bytes.
-			continue
+			// SURFACED, not skipped. Skipping here reported 200 — "the
+			// attachment was deleted" — for a file that is still stored, with
+			// nothing anywhere recording that the cleanup was incomplete, which
+			// is the one answer a delete must never give.
+			//
+			// Admission now refuses a name that cannot address an object
+			// (application/agentexecution/attachments.go,
+			// addressableObjectKey), so reaching this is a row written before
+			// that check or by another writer — a real inconsistency worth a
+			// 500 rather than a silent leak. The message rows are already gone
+			// by this point; the caller learns the bytes are not.
+			return apierr.Internal("stored attachment name " + strconv.Quote(attachment.Name) +
+				" cannot address an object: " + err.Error())
 		}
 		byBucket[attachment.Bucket] = append(byBucket[attachment.Bucket], attachment.Name)
 		refs[attachment.Bucket] = append(refs[attachment.Bucket], ref)
 	}
 
-	for bucket, bucketRefs := range refs {
+	// Sorted, so the deletes happen in a defined order rather than whatever
+	// order Go's map iteration produces. A caller reading the failure message
+	// for "which object refused" gets the same answer twice for the same input.
+	buckets := make([]string, 0, len(refs))
+	for bucket := range refs {
+		buckets = append(buckets, bucket)
+	}
+	sort.Strings(buckets)
+	for _, bucket := range buckets {
+		bucketRefs := refs[bucket]
 		result, err := h.store.DeleteBatch(ctx, bucketRefs)
 		if err != nil {
 			return apierr.Internal("delete attachment bytes: " + err.Error())

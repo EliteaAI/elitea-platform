@@ -202,7 +202,7 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if request.InteractionUUID != "" {
 		questionMeta, _ = json.Marshal(map[string]string{"interaction_uuid": request.InteractionUUID})
 	}
-	attachments, err := currentTurnAttachments(request.QuestionID, request.Attachments)
+	attachments, err := currentTurnAttachments(request.QuestionID, request.ConversationUUID, request.Attachments)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}

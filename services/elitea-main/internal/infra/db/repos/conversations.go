@@ -1535,8 +1535,18 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		WHERE mi.message_group_id = ANY($1)
 		ORDER BY mi.message_group_id, mi.order_index`, s, s, s)
 
+	// PROPAGATED, not swallowed. `if err == nil { ... }` returned every group
+	// with an empty `message_items` and a 200, which a caller cannot tell from
+	// groups that genuinely have no items — the #599 defect class, in the
+	// function that now also joins chat_messages_attachment. A database where
+	// tenant 0127 has not run answers 42P01 here, and reporting that as "this
+	// conversation has no messages" is how the original defect stayed invisible
+	// for as long as it did.
 	itemRows, err := r.pool.Query(ctx, itemQ, groupIDs)
-	if err == nil {
+	if err != nil {
+		return nil, fmt.Errorf("conversations: list message items: %w", err)
+	}
+	{
 		defer itemRows.Close()
 		// Index groups by id for fast lookup
 		groupIndex := map[int]int{}
@@ -1554,9 +1564,11 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 			var attachmentName, attachmentBucket, attachmentType *string
 			var attachmentContent []byte
 
+			// A scan failure used to `continue`, silently dropping one message
+			// from the transcript.
 			if err := itemRows.Scan(&itemID, &groupID, &itemType, &orderIndex, &itemMeta, &textContent,
 				&attachmentName, &attachmentBucket, &attachmentType, &attachmentContent); err != nil {
-				continue
+				return nil, fmt.Errorf("conversations: scan message item: %w", err)
 			}
 
 			item := map[string]any{
@@ -1582,6 +1594,12 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 				items := groups[idx]["message_items"].([]map[string]any)
 				groups[idx]["message_items"] = append(items, item)
 			}
+		}
+		// A mid-iteration failure ends the loop without ever reporting itself,
+		// which is the same "short transcript, HTTP 200" outcome by another
+		// route.
+		if err := itemRows.Err(); err != nil {
+			return nil, fmt.Errorf("conversations: list message items: %w", err)
 		}
 	}
 

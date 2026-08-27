@@ -61,11 +61,18 @@ func TestAttachmentKindIsPylonsTypeNotAMIMEType(t *testing.T) {
 	}
 }
 
+// testConversationUUID is the conversation these fixtures belong to. Every
+// attachment name carries it as a prefix because that is what the upload path
+// writes and what currentTurnAttachments now REQUIRES: a name outside this
+// conversation is refused, so a caller cannot name another conversation's file
+// and have the worker read it into this one.
+const testConversationUUID = "7c9e1a52-0f3b-4c8d-9b21-5d6e4f8a1c30"
+
 func TestCurrentTurnAttachmentsNumbersItemsFromOneAndScaffoldsContent(t *testing.T) {
 	const questionID = "ee92ccbd-3312-4c72-b20b-fddf224e7c0e"
-	attachments, err := currentTurnAttachments(questionID, []CurrentTurnAttachmentRef{
-		{Bucket: "chat-attachments", Name: "conv/report.pdf"},
-		{Bucket: "chat-attachments", Name: "conv/shot.png"},
+	attachments, err := currentTurnAttachments(questionID, testConversationUUID, []CurrentTurnAttachmentRef{
+		{Bucket: "chat-attachments", Name: testConversationUUID + "/report.pdf"},
+		{Bucket: "chat-attachments", Name: testConversationUUID + "/shot.png"},
 	})
 	if err != nil || len(attachments) != 2 {
 		t.Fatalf("attachments=%+v err=%v", attachments, err)
@@ -100,8 +107,8 @@ func TestCurrentTurnAttachmentsNumbersItemsFromOneAndScaffoldsContent(t *testing
 	text, _ := chunks[0]["text"].(string)
 	for _, want := range []string{
 		"Bucket: chat-attachments",
-		"Filename: conv/report.pdf",
-		"filepath: /chat-attachments/conv/report.pdf",
+		"Filename: " + testConversationUUID + "/report.pdf",
+		"filepath: /chat-attachments/" + testConversationUUID + "/report.pdf",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("scaffold %q missing %q", text, want)
@@ -110,7 +117,7 @@ func TestCurrentTurnAttachmentsNumbersItemsFromOneAndScaffoldsContent(t *testing
 }
 
 func TestCurrentTurnAttachmentsProducesNothingForATurnWithNoFiles(t *testing.T) {
-	attachments, err := currentTurnAttachments("ee92ccbd-3312-4c72-b20b-fddf224e7c0e", nil)
+	attachments, err := currentTurnAttachments("ee92ccbd-3312-4c72-b20b-fddf224e7c0e", testConversationUUID, nil)
 	if err != nil || attachments != nil {
 		t.Fatalf("attachments=%+v err=%v", attachments, err)
 	}
@@ -128,7 +135,7 @@ func TestCurrentApplicationTurnValidateRejectsUnstorableAttachments(t *testing.T
 	}
 	good := CurrentTurnAttachment{
 		ItemID: currentTurnUUID(base.QuestionID, "attachment-item-1"),
-		Name:   "conv/report.pdf", Bucket: "chat-attachments",
+		Name:   testConversationUUID + "/report.pdf", Bucket: "chat-attachments",
 		AttachmentType: AttachmentKindDocument,
 		Content:        json.RawMessage(`[{"type":"text","text":"x"}]`),
 	}

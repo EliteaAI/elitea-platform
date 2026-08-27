@@ -187,10 +187,11 @@ func TestCurrentTurnInputAttachmentsFlattensMultiChunkContent(t *testing.T) {
 func TestAttachmentScaffoldMarksOnlyDocumentsForContentExtraction(t *testing.T) {
 	attachments, err := currentTurnAttachments(
 		"ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+		testConversationUUID,
 		[]CurrentTurnAttachmentRef{
-			{Bucket: "chat-attachments", Name: "conv/report.pdf"},
-			{Bucket: "chat-attachments", Name: "conv/shot.png"},
-			{Bucket: "chat-attachments", Name: "conv/diagram.svg"},
+			{Bucket: "chat-attachments", Name: testConversationUUID + "/report.pdf"},
+			{Bucket: "chat-attachments", Name: testConversationUUID + "/shot.png"},
+			{Bucket: "chat-attachments", Name: testConversationUUID + "/diagram.svg"},
 		},
 	)
 	if err != nil || len(attachments) != 3 {
@@ -202,8 +203,8 @@ func TestAttachmentScaffoldMarksOnlyDocumentsForContentExtraction(t *testing.T) 
 	}
 	if marker["needs_content_extraction"] != true ||
 		marker["bucket"] != "chat-attachments" ||
-		marker["name"] != "conv/report.pdf" ||
-		marker["filepath"] != "/chat-attachments/conv/report.pdf" {
+		marker["name"] != testConversationUUID+"/report.pdf" ||
+		marker["filepath"] != "/chat-attachments/"+testConversationUUID+"/report.pdf" {
 		t.Fatalf("marker=%+v", marker)
 	}
 	// The item id is what lets the worker name EXACTLY the row it enriched
@@ -261,4 +262,65 @@ func newCurrentAttachmentAdmissionStub() *currentApplicationAdmissionStub {
 		ExecutionID: "execution-attachments", CommandID: "command-attachments",
 		Created: true, AdmittedAt: admittedAt, Deadline: admittedAt.Add(time.Minute),
 	}}
+}
+
+// A file that belongs to a DIFFERENT conversation is refused.
+//
+// `filepath` comes from the browser, so without this the name is whatever the
+// caller typed: another user's conversation key is just
+// `{other-conversation-uuid}/file.pdf`, and admitting it would have the worker
+// read that file through the artifact toolkit and splice its text into a
+// conversation the caller was never granted. The upload path keys every object
+// `{conversationID}/{sanitised name}`, so the prefix IS "this was uploaded
+// here".
+func TestCurrentTurnAttachmentsRefusesAnotherConversationsFile(t *testing.T) {
+	const otherConversation = "1f2e3d4c-5b6a-4978-8695-a4b3c2d1e0f9"
+	for _, name := range []string{
+		otherConversation + "/report.pdf",
+		"report.pdf",
+		"chat-attachments/report.pdf",
+	} {
+		if _, err := currentTurnAttachments(
+			"ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			testConversationUUID,
+			[]CurrentTurnAttachmentRef{{Bucket: "chat-attachments", Name: name}},
+		); err == nil {
+			t.Errorf("name %q outside the conversation was admitted", name)
+		}
+	}
+}
+
+// A name the storage layer could never address is refused at admission, so no
+// row is stored whose bytes the delete path cannot remove.
+func TestCurrentTurnAttachmentsRefusesAnUnaddressableKey(t *testing.T) {
+	for _, name := range []string{
+		testConversationUUID + "/../escape.pdf",
+		testConversationUUID + "/./report.pdf",
+		testConversationUUID + "//report.pdf",
+		testConversationUUID + "/report.pdf/",
+	} {
+		if _, err := currentTurnAttachments(
+			"ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			testConversationUUID,
+			[]CurrentTurnAttachmentRef{{Bucket: "chat-attachments", Name: name}},
+		); err == nil {
+			t.Errorf("un-addressable name %q was admitted", name)
+		}
+	}
+}
+
+// The classification must not depend on the host's MIME database.
+func TestAttachmentKindClassifiesWithoutTheHostMIMEDatabase(t *testing.T) {
+	for name, want := range map[string]string{
+		"a.bmp":  AttachmentKindImage,
+		"a.tiff": AttachmentKindImage,
+		"a.heic": AttachmentKindImage,
+		"a.png":  AttachmentKindImage,
+		"a.SVG":  AttachmentKindDocument,
+		"a.pdf":  AttachmentKindDocument,
+	} {
+		if got := AttachmentKind(name); got != want {
+			t.Errorf("AttachmentKind(%q)=%q want %q", name, got, want)
+		}
+	}
 }

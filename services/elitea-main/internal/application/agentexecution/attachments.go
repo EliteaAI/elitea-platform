@@ -19,7 +19,6 @@ package agentexecution
 import (
 	"bytes"
 	"encoding/json"
-	"mime"
 	"path"
 	"strconv"
 	"strings"
@@ -165,12 +164,54 @@ func ParseAttachmentFilepath(filepath string) (CurrentTurnAttachmentRef, bool) {
 // item's attachment_type disagree about what an image is after any future
 // edit to either copy.
 func AttachmentKind(fileName string) string {
-	mediaType := mime.TypeByExtension(path.Ext(fileName))
-	if strings.HasPrefix(mediaType, "image/") &&
-		!strings.HasSuffix(strings.ToLower(fileName), ".svg") {
+	if _, image := attachmentImageExtensions[strings.ToLower(path.Ext(fileName))]; image {
 		return AttachmentKindImage
 	}
 	return AttachmentKindDocument
+}
+
+// addressableObjectKey restates the rules internal/infra/storage's validateKey
+// applies, because this layer may not import infra and the two must agree: a
+// name admitted here becomes an object key, and DeleteMessage later hands it to
+// storage.NewObjectRef. A name that passes here and fails there is a row whose
+// bytes nothing can delete — NewObjectRef errors, the cleanup skips it, and the
+// route still answers 200 as though the file were gone.
+//
+// Only the rules that can differ are restated; length and control characters
+// are already checked by ParseAttachmentFilepath.
+func addressableObjectKey(key string) bool {
+	if strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") ||
+		strings.Contains(key, "//") {
+		return false
+	}
+	for _, segment := range strings.Split(key, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// attachmentImageExtensions is the explicit table this classification uses
+// instead of mime.TypeByExtension.
+//
+// mime.TypeByExtension consults the HOST: Go seeds a small builtin table and
+// then loads /etc/mime.types and friends at init. That made the answer depend
+// on the image the service happens to run in — in a minimal container carrying
+// no MIME database, `.bmp`, `.tiff` and `.heic` all resolved to "" and were
+// classified as documents, so the scaffold asked the worker to extract TEXT
+// from binary image data, and the same file classified differently on a
+// developer machine that does have the file. A classification that decides
+// whether a file is read as prose must not vary by base image.
+//
+// `.svg` is deliberately ABSENT: it is an image by MIME and a document here,
+// which is pylon's own carve-out (utils/attachments.py:140-169) — it is markup,
+// so its text is worth extracting and it is not something a vision model
+// should be handed.
+var attachmentImageExtensions = map[string]struct{}{
+	".png": {}, ".jpg": {}, ".jpeg": {}, ".gif": {}, ".webp": {},
+	".bmp": {}, ".tif": {}, ".tiff": {}, ".heic": {}, ".heif": {},
+	".avif": {}, ".ico": {},
 }
 
 // attachmentContentScaffold is the creation-time `content` chunk, in pylon's
@@ -241,8 +282,26 @@ func attachmentContentScaffold(ref CurrentTurnAttachmentRef, kind, itemID string
 // a retried start for the same question_id must address the same rows, so the
 // identity of an attachment item is a function of the turn, not of when the
 // retry happened.
+// currentTurnAttachments builds this turn's attachment items, refusing any
+// reference that does not belong to conversationUUID.
+//
+// THE CONVERSATION PREFIX IS AN AUTHORISATION CHECK, not tidiness. `filepath`
+// arrives from the browser in `payload.attachments`, and until this check the
+// only validation was shape: a caller could name ANY object in any bucket it
+// could spell — another user's conversation key is just
+// `{other-conversation-uuid}/file.pdf` — and the worker would read those bytes
+// through the artifact toolkit and splice them into the model's context, in a
+// conversation the caller was never granted.
+//
+// The upload endpoint is the only thing that writes these objects and it keys
+// every one of them `{conversationID}/{sanitised name}`
+// (api/v2/conversations/attachments.go, finalizeAttachment), so requiring that
+// prefix is exactly "this file was uploaded to this conversation". Anything
+// else was not put there by this conversation's upload path and has no business
+// being read into it.
 func currentTurnAttachments(
 	questionID string,
+	conversationUUID string,
 	refs []CurrentTurnAttachmentRef,
 ) ([]CurrentTurnAttachment, error) {
 	if len(refs) == 0 {
@@ -255,6 +314,18 @@ func currentTurnAttachments(
 	for index, ref := range refs {
 		if ref.Bucket == "" || ref.Name == "" ||
 			len(ref.Bucket) > maxAttachmentFieldBytes || len(ref.Name) > maxAttachmentFieldBytes {
+			return nil, ErrInvalidCurrentAgentStart
+		}
+		if !validUUID(conversationUUID) ||
+			!strings.HasPrefix(ref.Name, conversationUUID+"/") {
+			return nil, ErrInvalidCurrentAgentStart
+		}
+		// The name is also the object key and the value DeleteMessage hands to
+		// storage.NewObjectRef. Admitting one that key validation would reject
+		// (`..`, `//`, a trailing slash) stored a row whose bytes the delete
+		// path could never address: it fails NewObjectRef, skips, and answers
+		// 200 as though the file had been removed.
+		if !addressableObjectKey(ref.Name) {
 			return nil, ErrInvalidCurrentAgentStart
 		}
 		kind := AttachmentKind(ref.Name)
