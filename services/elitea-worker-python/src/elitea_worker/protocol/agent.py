@@ -8,6 +8,7 @@ from google.protobuf.message import DecodeError
 
 from elitea.runtime.v1 import agent_pb2
 
+from elitea_worker.agents.attachments import validate_input_attachments
 from elitea_worker.constants import MAX_AGENT_INPUT_BYTES
 from elitea_worker.execution.errors import InvalidInput, ResourceExhausted
 from elitea_worker.fixtures.bundle import parse_json_value
@@ -83,7 +84,13 @@ def request_from(
     invoked_skills = _json_list(message.invoked_skills, "invoked skills")
     applied_skills = _json_list(message.applied_skills, "applied skills")
     attached_skills = _json_list(message.attached_skills, "attached skills")
-    input_attachments = _json_list(message.input_attachments, "input attachments")
+    # #606: a JSON array was all this field ever had to be, because nothing
+    # consumed it. Now that the chunks go in front of a model, their shape is
+    # checked HERE — see elitea_worker.agents.attachments for the contract and
+    # for why an unknown chunk type is refused instead of forwarded.
+    input_attachments = validate_input_attachments(
+        _json_list(message.input_attachments, "input attachments")
+    )
     parallel_reconcile = _optional_json_object(
         message.parallel_reconcile, "parallel reconcile"
     )

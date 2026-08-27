@@ -150,6 +150,47 @@ JOIN chat_participants AS target_participant
 JOIN application_versions AS application_version
   ON application_version.id = (target_mapping.entity_settings ->> 'version_id')::integer
  AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
+-- Chat history for this turn: one entry per prior message group, whose
+-- `content` is the group's items flattened into ONE LangChain content array.
+--
+-- #606 part 3 added `attachment_message` to the items considered. Before it,
+-- this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+-- turn was invisible to the model even though its row existed: the transcript
+-- rendered it, the prompt did not mention it, and a follow-up question about
+-- that file had nothing to answer from.
+--
+-- The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+-- attachment item's stored `content` LIST into the group's content array,
+-- in item order, alongside the text chunks -- it does not nest it, and does
+-- not append one object per file. That is why the per-item CROSS JOIN LATERAL
+-- emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+-- the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+-- items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+-- a group that has only text.
+--
+-- WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+-- `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+-- column that is NULL for an attachment item, so it would drop every
+-- attachment chunk. The empty-text exclusion moves into the text branch's own
+-- WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+-- inner join's old refusal of a text item with no payload row), and an item
+-- that contributes no chunk simply produces no row. A group left with no
+-- chunks at all disappears from the subquery exactly as it used to when the
+-- FILTER made its `content` NULL, so the outer
+-- `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+-- ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+-- represent at all) now survives it.
+--
+-- `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+-- it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+-- array. chat_history.py:70-74 carries a non-list fallback for exactly that
+-- data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+-- because `jsonb_array_elements` on a non-array raises 22023 and would fail
+-- the whole resolve; a NULL or `{}` content contributes nothing instead of
+-- injecting a chunk the model would have to read. The chunks are NOT
+-- validated beyond that: their shape is the worker's and the model's
+-- contract, and silently reshaping stored content here would make the
+-- projection disagree with what the transcript renders.
 LEFT JOIN LATERAL (
     SELECT jsonb_agg(
                jsonb_build_object(
@@ -167,17 +208,41 @@ LEFT JOIN LATERAL (
                    ELSE 'assistant'
                END AS role,
                jsonb_agg(
-                   jsonb_build_object('type', 'text', 'text', message_text.content)
-                   ORDER BY message_item.order_index, message_item.id
-               ) FILTER (WHERE message_text.content <> '') AS content
+                   item_chunk.chunk
+                   ORDER BY message_item.order_index, message_item.id,
+                            item_chunk.chunk_index
+               ) AS content
         FROM chat_message_group AS message_group
         JOIN chat_participants AS author
           ON author.id = message_group.author_participant_id
         JOIN chat_message_items AS message_item
           ON message_item.message_group_id = message_group.id
-         AND message_item.item_type = 'text_message'
-        JOIN chat_messages_text AS message_text
+         AND message_item.item_type IN ('text_message', 'attachment_message')
+        LEFT JOIN chat_messages_text AS message_text
           ON message_text.id = message_item.id
+        LEFT JOIN chat_messages_attachment AS message_attachment
+          ON message_attachment.id = message_item.id
+        CROSS JOIN LATERAL (
+            SELECT jsonb_build_object(
+                       'type', 'text', 'text', message_text.content
+                   ) AS chunk,
+                   0 AS chunk_index
+            WHERE message_item.item_type = 'text_message'
+              AND COALESCE(message_text.content, '') <> ''
+            UNION ALL
+            SELECT attachment_chunk.value,
+                   attachment_chunk.ordinality::integer
+            FROM jsonb_array_elements(
+                     CASE
+                         WHEN message_item.item_type = 'attachment_message'
+                          AND jsonb_typeof(
+                                  COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
+                              ) = 'array'
+                         THEN message_attachment.content::jsonb
+                         ELSE '[]'::jsonb
+                     END
+                 ) WITH ORDINALITY AS attachment_chunk(value, ordinality)
+        ) AS item_chunk
         WHERE message_group.conversation_id = conversation.id
           AND message_group.created_at < COALESCE(
               (
@@ -431,6 +496,47 @@ LEFT JOIN LATERAL (
           AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
     ) AS current_tool
 ) AS current_tools ON TRUE
+-- Chat history for this turn: one entry per prior message group, whose
+-- `content` is the group's items flattened into ONE LangChain content array.
+--
+-- #606 part 3 added `attachment_message` to the items considered. Before it,
+-- this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+-- turn was invisible to the model even though its row existed: the transcript
+-- rendered it, the prompt did not mention it, and a follow-up question about
+-- that file had nothing to answer from.
+--
+-- The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+-- attachment item's stored `content` LIST into the group's content array,
+-- in item order, alongside the text chunks -- it does not nest it, and does
+-- not append one object per file. That is why the per-item CROSS JOIN LATERAL
+-- emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+-- the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+-- items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+-- a group that has only text.
+--
+-- WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+-- `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+-- column that is NULL for an attachment item, so it would drop every
+-- attachment chunk. The empty-text exclusion moves into the text branch's own
+-- WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+-- inner join's old refusal of a text item with no payload row), and an item
+-- that contributes no chunk simply produces no row. A group left with no
+-- chunks at all disappears from the subquery exactly as it used to when the
+-- FILTER made its `content` NULL, so the outer
+-- `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+-- ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+-- represent at all) now survives it.
+--
+-- `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+-- it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+-- array. chat_history.py:70-74 carries a non-list fallback for exactly that
+-- data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+-- because `jsonb_array_elements` on a non-array raises 22023 and would fail
+-- the whole resolve; a NULL or `{}` content contributes nothing instead of
+-- injecting a chunk the model would have to read. The chunks are NOT
+-- validated beyond that: their shape is the worker's and the model's
+-- contract, and silently reshaping stored content here would make the
+-- projection disagree with what the transcript renders.
 LEFT JOIN LATERAL (
     SELECT jsonb_agg(
                jsonb_build_object(
@@ -448,17 +554,41 @@ LEFT JOIN LATERAL (
                    ELSE 'assistant'
                END AS role,
                jsonb_agg(
-                   jsonb_build_object('type', 'text', 'text', message_text.content)
-                   ORDER BY message_item.order_index, message_item.id
-               ) FILTER (WHERE message_text.content <> '') AS content
+                   item_chunk.chunk
+                   ORDER BY message_item.order_index, message_item.id,
+                            item_chunk.chunk_index
+               ) AS content
         FROM chat_message_group AS message_group
         JOIN chat_participants AS author
           ON author.id = message_group.author_participant_id
         JOIN chat_message_items AS message_item
           ON message_item.message_group_id = message_group.id
-         AND message_item.item_type = 'text_message'
-        JOIN chat_messages_text AS message_text
+         AND message_item.item_type IN ('text_message', 'attachment_message')
+        LEFT JOIN chat_messages_text AS message_text
           ON message_text.id = message_item.id
+        LEFT JOIN chat_messages_attachment AS message_attachment
+          ON message_attachment.id = message_item.id
+        CROSS JOIN LATERAL (
+            SELECT jsonb_build_object(
+                       'type', 'text', 'text', message_text.content
+                   ) AS chunk,
+                   0 AS chunk_index
+            WHERE message_item.item_type = 'text_message'
+              AND COALESCE(message_text.content, '') <> ''
+            UNION ALL
+            SELECT attachment_chunk.value,
+                   attachment_chunk.ordinality::integer
+            FROM jsonb_array_elements(
+                     CASE
+                         WHEN message_item.item_type = 'attachment_message'
+                          AND jsonb_typeof(
+                                  COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
+                              ) = 'array'
+                         THEN message_attachment.content::jsonb
+                         ELSE '[]'::jsonb
+                     END
+                 ) WITH ORDINALITY AS attachment_chunk(value, ordinality)
+        ) AS item_chunk
         WHERE message_group.conversation_id = conversation.id
           AND message_group.created_at < COALESCE(
               (
@@ -679,7 +809,20 @@ WHERE response.uuid = sqlc.arg(response_message_id)::uuid
       SELECT 1
       FROM chat_message_items AS unsupported_question_item
       WHERE unsupported_question_item.message_group_id = question.id
-        AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
+        -- #606: `attachment_message` is in this allow-list because admission WRITES
+        -- those items onto the question group. Before #606 nothing could produce one,
+        -- so its absence here meant "a pylon-era question this path cannot serve";
+        -- after #606 it meant "any turn that carried a file can never be resumed or
+        -- regenerated" — this gate refusing rows the admission it follows had just
+        -- created.
+        --
+        -- Same reasoning as the historical_group gates, and the same limit: allowing
+        -- it is not a claim that the file is re-sent on a resume, only that its
+        -- presence must not make the turn unresumable. The RESPONSE-side gate below
+        -- stays strict, because nothing here writes attachment items onto a response
+        -- group — pylon does, for agent-produced files
+        -- (events/message_stream.py:107-120), and that is genuinely unported.
+        AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message', 'attachment_message')
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1082,7 +1225,10 @@ WITH resolved AS MATERIALIZED (
           SELECT 1
           FROM chat_message_items AS unsupported_question_item
           WHERE unsupported_question_item.message_group_id = question.id
-            AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
+            -- See ResolveCurrentContinuation's question gate (#606): admission writes
+            -- `attachment_message` items onto the question group, so excluding them here
+            -- made every turn that carried a file unregeneratable.
+            AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message', 'attachment_message')
       )
       AND NOT EXISTS (
           SELECT 1

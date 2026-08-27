@@ -48,6 +48,55 @@ const (
 	// letting Postgres raise 22001 keeps a client-supplied value from turning
 	// the whole admission into a 500.
 	maxAttachmentFieldBytes = 256
+
+	// attachmentExtractionMarkerKey names the "this document still needs its
+	// text extracted" marker, carried as a SIBLING KEY of the scaffold text
+	// chunk:
+	//
+	//     {
+	//       "type": "text",
+	//       "text": "Bucket: ...\nFilename: ...\nfilepath: /b/n\n...",
+	//       "elitea_attachment": {
+	//         "needs_content_extraction": true,
+	//         "bucket":   "chat-attachments",
+	//         "name":     "<conversation-uuid>/report.pdf",
+	//         "filepath": "/chat-attachments/<conversation-uuid>/report.pdf"
+	//       }
+	//     }
+	//
+	// The key is present ONLY on `document` chunks. An image never carries it
+	// (pylon's ImageToModelProcessor sets no such flag —
+	// utils/attachments.py:183-225), so "key absent" means "nothing to do",
+	// which is the reading a worker gets right by default.
+	//
+	// WHY A MARKER EXISTS AT ALL. Pylon flags the same thing, but it never has
+	// to persist the flag: DocumentToModelProcessor returns
+	// `needs_content_extraction: True` alongside the content list
+	// (utils/attachments.py:313-321) and rpc/chat_all.py:340-374 consumes it in
+	// the SAME python process, moments later, from the object it just built.
+	// Here the producer and the consumer are different services separated by a
+	// database row and a runtime command, so the flag has to travel: either
+	// inside `content`, or as a new column. `content` was chosen because it is
+	// the only thing that reaches BOTH consumers — the worker gets the current
+	// turn's chunks through InputAttachments, and a prior turn's chunks through
+	// the chat-history projection, and neither carries the item's other columns.
+	//
+	// WHY A SIBLING OBJECT RATHER THAN A SENTINEL IN `text`. The worker needs
+	// the bucket and the name to fetch the file. They are already printed in
+	// `text`, but recovering them from there means parsing prose that exists to
+	// be READ BY A MODEL and is expected to change wording; a nested object
+	// survives any rewording, survives the `json`->`jsonb` round trip the
+	// history projection performs (it is a plain object of strings and one
+	// bool — no duplicate keys, no key order to preserve), and is removable
+	// with one delete.
+	//
+	// WHY IT IS SAFE IF IT LEAKS. A chunk that reaches a model with this key
+	// still IS a valid `{"type":"text","text":...}` chunk; the extra key is
+	// inert metadata under an obviously-namespaced name, not an instruction, so
+	// the worst case is an ignored field rather than a malformed message or a
+	// prompt the model tries to obey. The worker is expected to strip the key
+	// once it has acted on it.
+	attachmentExtractionMarkerKey = "elitea_attachment"
 )
 
 // CurrentTurnAttachmentRef is one attachment exactly as the client addressed
@@ -135,9 +184,11 @@ func AttachmentKind(fileName string) string {
 //   - The extracted document TEXT. Pylon appends it as a SECOND chunk from a
 //     separate processing step that runs after the items are created
 //     (rpc/chat_all.py:369-377), reading each file through the SDK. That step
-//     has no Go equivalent yet and belongs to the worker/SDK port, not to an
-//     admission transaction that must not perform IO against object storage
-//     while holding the runtime execution rows.
+//     runs in the WORKER, not here: an admission transaction must not perform
+//     IO against object storage while holding the runtime execution rows.
+//     Which chunks it must do that for is not something the worker can infer
+//     from the text, so the scaffold says so explicitly — see
+//     attachmentExtractionMarkerKey below.
 //   - For an image, pylon's ImageToModelProcessor also emits an `image_url`
 //     chunk (utils/attachments.py:183-225) carrying base64 bytes. Producing it
 //     requires reading the object, so an image gets the same single text chunk
@@ -147,7 +198,7 @@ func AttachmentKind(fileName string) string {
 // when it has computed the content and found none; this is a partial payload
 // that names where the file lives, and a later extraction step appending to it
 // is exactly what pylon does.
-func attachmentContentScaffold(ref CurrentTurnAttachmentRef) json.RawMessage {
+func attachmentContentScaffold(ref CurrentTurnAttachmentRef, kind string) json.RawMessage {
 	filepath := "/" + ref.Bucket + "/" + ref.Name
 	text := strings.Join([]string{
 		"Bucket: " + ref.Bucket,
@@ -158,9 +209,18 @@ func attachmentContentScaffold(ref CurrentTurnAttachmentRef) json.RawMessage {
 		"If embedded content is provided below, please review it first - the full text is already included.",
 		"File reading tools are available if needed for specific operations (search, partial access), but prefer embedded content when available.",
 	}, "\n")
-	encoded, err := json.Marshal([]map[string]string{{"type": "text", "text": text}})
+	chunk := map[string]any{"type": "text", "text": text}
+	if kind == AttachmentKindDocument {
+		chunk[attachmentExtractionMarkerKey] = map[string]any{
+			"needs_content_extraction": true,
+			"bucket":                   ref.Bucket,
+			"name":                     ref.Name,
+			"filepath":                 filepath,
+		}
+	}
+	encoded, err := json.Marshal([]map[string]any{chunk})
 	if err != nil {
-		// Unreachable: the value is a []map[string]string of finite strings.
+		// Unreachable: the value is a map of finite strings and bools.
 		return json.RawMessage(`[]`)
 	}
 	return encoded
@@ -190,15 +250,56 @@ func currentTurnAttachments(
 			len(ref.Bucket) > maxAttachmentFieldBytes || len(ref.Name) > maxAttachmentFieldBytes {
 			return nil, ErrInvalidCurrentAgentStart
 		}
+		kind := AttachmentKind(ref.Name)
 		attachments = append(attachments, CurrentTurnAttachment{
 			ItemID:         currentTurnUUID(questionID, "attachment-item-"+strconv.Itoa(index+1)),
 			Name:           ref.Name,
 			Bucket:         ref.Bucket,
-			AttachmentType: AttachmentKind(ref.Name),
-			Content:        attachmentContentScaffold(ref),
+			AttachmentType: kind,
+			Content:        attachmentContentScaffold(ref, kind),
 		})
 	}
 	return attachments, nil
+}
+
+// currentTurnInputAttachments is the runtime input's `input_attachments`: the
+// CONCATENATION of every attachment's `content` chunks, in item order.
+//
+// WHY CONCATENATED AND FLAT, rather than one entry per file. This value has
+// exactly one consumer — the worker splices it into the human message's
+// multimodal content list — and one meaning to match: pylon builds the current
+// turn's message the same way its chat-history projection builds a prior turn's
+// (utils/chat_history.py:67-73 EXTENDS an attachment item's content list into
+// the group's content array). Nesting per-file would make the current turn and
+// every earlier turn two different shapes for the same thing, and the model
+// sees them side by side in one request.
+//
+// It is built from the CurrentTurnAttachment values the caller already holds —
+// the same slice the admission transaction is about to write — rather than
+// re-derived from the refs or read back after the insert. Re-deriving would let
+// what was sent to the worker and what was stored drift apart silently; reading
+// back would be a query for bytes already in memory, inside the start path.
+//
+// `[]` for no attachments: an empty list is what the worker's protocol has
+// always been handed here, and it is what "this turn attached nothing" means.
+func currentTurnInputAttachments(attachments []CurrentTurnAttachment) []byte {
+	chunks := []json.RawMessage{}
+	for _, attachment := range attachments {
+		var attachmentChunks []json.RawMessage
+		if err := json.Unmarshal(attachment.Content, &attachmentChunks); err != nil {
+			// Not reachable through currentTurnAttachments, whose content is
+			// always a marshalled array; skipping rather than failing keeps a
+			// malformed payload from refusing a turn whose TEXT is fine.
+			continue
+		}
+		chunks = append(chunks, attachmentChunks...)
+	}
+	encoded, err := json.Marshal(chunks)
+	if err != nil {
+		// Unreachable: every element is already valid JSON.
+		return []byte(`[]`)
+	}
+	return encoded
 }
 
 // validCurrentTurnAttachments is the Validate() half, re-checked on the struct

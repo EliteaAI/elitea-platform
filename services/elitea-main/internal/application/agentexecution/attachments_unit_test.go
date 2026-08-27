@@ -87,14 +87,17 @@ func TestCurrentTurnAttachmentsNumbersItemsFromOneAndScaffoldsContent(t *testing
 	// The scaffold is pylon's document shape: an ARRAY of chunks with exactly
 	// one text chunk naming bucket, filename and filepath. Not an empty array
 	// — that would claim content was computed and found to be none.
-	var chunks []map[string]string
+	// map[string]any, not map[string]string: a document chunk also carries the
+	// extraction marker, which is a nested object (see
+	// attachmentExtractionMarkerKey).
+	var chunks []map[string]any
 	if err := json.Unmarshal(attachments[0].Content, &chunks); err != nil {
 		t.Fatalf("content=%s err=%v", attachments[0].Content, err)
 	}
 	if len(chunks) != 1 || chunks[0]["type"] != "text" {
 		t.Fatalf("chunks=%+v", chunks)
 	}
-	text := chunks[0]["text"]
+	text, _ := chunks[0]["text"].(string)
 	for _, want := range []string{
 		"Bucket: chat-attachments",
 		"Filename: conv/report.pdf",

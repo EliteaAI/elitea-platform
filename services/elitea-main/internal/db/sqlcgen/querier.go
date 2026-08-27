@@ -366,8 +366,90 @@ type Querier interface {
 	ReplaceCurrentDeletedLLMApplicationReferences(ctx context.Context, arg ReplaceCurrentDeletedLLMApplicationReferencesParams) (ReplaceCurrentDeletedLLMApplicationReferencesRow, error)
 	RequestCurrentIndexIngestCancellation(ctx context.Context, arg RequestCurrentIndexIngestCancellationParams) (bool, error)
 	ResetCurrentAgentResponse(ctx context.Context, arg ResetCurrentAgentResponseParams) (ResetCurrentAgentResponseRow, error)
+	// Chat history for this turn: one entry per prior message group, whose
+	// `content` is the group's items flattened into ONE LangChain content array.
+	//
+	// #606 part 3 added `attachment_message` to the items considered. Before it,
+	// this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+	// turn was invisible to the model even though its row existed: the transcript
+	// rendered it, the prompt did not mention it, and a follow-up question about
+	// that file had nothing to answer from.
+	//
+	// The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+	// attachment item's stored `content` LIST into the group's content array,
+	// in item order, alongside the text chunks -- it does not nest it, and does
+	// not append one object per file. That is why the per-item CROSS JOIN LATERAL
+	// emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+	// the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+	// items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+	// a group that has only text.
+	//
+	// WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+	// `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+	// column that is NULL for an attachment item, so it would drop every
+	// attachment chunk. The empty-text exclusion moves into the text branch's own
+	// WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+	// inner join's old refusal of a text item with no payload row), and an item
+	// that contributes no chunk simply produces no row. A group left with no
+	// chunks at all disappears from the subquery exactly as it used to when the
+	// FILTER made its `content` NULL, so the outer
+	// `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+	// ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+	// represent at all) now survives it.
+	//
+	// `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+	// it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+	// array. chat_history.py:70-74 carries a non-list fallback for exactly that
+	// data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+	// because `jsonb_array_elements` on a non-array raises 22023 and would fail
+	// the whole resolve; a NULL or `{}` content contributes nothing instead of
+	// injecting a chunk the model would have to read. The chunks are NOT
+	// validated beyond that: their shape is the worker's and the model's
+	// contract, and silently reshaping stored content here would make the
+	// projection disagree with what the transcript renders.
 	ResolveCurrentAdhocTurn(ctx context.Context, arg ResolveCurrentAdhocTurnParams) (ResolveCurrentAdhocTurnRow, error)
 	ResolveCurrentApplicationNestingNode(ctx context.Context, applicationVersionID int32) (ResolveCurrentApplicationNestingNodeRow, error)
+	// Chat history for this turn: one entry per prior message group, whose
+	// `content` is the group's items flattened into ONE LangChain content array.
+	//
+	// #606 part 3 added `attachment_message` to the items considered. Before it,
+	// this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+	// turn was invisible to the model even though its row existed: the transcript
+	// rendered it, the prompt did not mention it, and a follow-up question about
+	// that file had nothing to answer from.
+	//
+	// The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+	// attachment item's stored `content` LIST into the group's content array,
+	// in item order, alongside the text chunks -- it does not nest it, and does
+	// not append one object per file. That is why the per-item CROSS JOIN LATERAL
+	// emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+	// the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+	// items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+	// a group that has only text.
+	//
+	// WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+	// `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+	// column that is NULL for an attachment item, so it would drop every
+	// attachment chunk. The empty-text exclusion moves into the text branch's own
+	// WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+	// inner join's old refusal of a text item with no payload row), and an item
+	// that contributes no chunk simply produces no row. A group left with no
+	// chunks at all disappears from the subquery exactly as it used to when the
+	// FILTER made its `content` NULL, so the outer
+	// `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+	// ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+	// represent at all) now survives it.
+	//
+	// `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+	// it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+	// array. chat_history.py:70-74 carries a non-list fallback for exactly that
+	// data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+	// because `jsonb_array_elements` on a non-array raises 22023 and would fail
+	// the whole resolve; a NULL or `{}` content contributes nothing instead of
+	// injecting a chunk the model would have to read. The chunks are NOT
+	// validated beyond that: their shape is the worker's and the model's
+	// contract, and silently reshaping stored content here would make the
+	// projection disagree with what the transcript renders.
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)

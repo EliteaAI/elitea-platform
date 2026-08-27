@@ -215,7 +215,9 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
-	input, err := currentApplicationInput(request, target, suggestionPolicy, toolkitGuardrails)
+	input, err := currentApplicationInput(
+		request, target, suggestionPolicy, toolkitGuardrails, attachments,
+	)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
@@ -252,11 +254,18 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	}, nil
 }
 
+// attachments are the turn's own uploaded files, whose content chunks become
+// `input_attachments`. Callers that are RE-running an already-admitted question
+// (regenerate.go, continue.go) pass nil on purpose: that question's attachment
+// items are already rows on its message group, so they reach the model through
+// the chat-history projection (internal/db/queries/agent_chat.sql), and sending
+// them here as well would put every chunk in the request twice.
 func currentApplicationInput(
 	request CurrentApplicationStartRequest,
 	target CurrentApplicationTarget,
 	nextInputSuggestion json.RawMessage,
 	toolkitGuardrails json.RawMessage,
+	attachments []CurrentTurnAttachment,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	skills, err := projectCurrentApplicationSkills(request.UserInput, target.VersionDetails)
 	if err != nil {
@@ -295,7 +304,8 @@ func currentApplicationInput(
 		ExecutionGeneration: &executionGeneration, Meta: []byte(`{}`),
 		ConversationId: &conversationID, ContextSettings: []byte(`{}`),
 		InvokedSkills: skills.invoked, AppliedSkills: skills.applied,
-		AttachedSkills: skills.attached, InputAttachments: []byte(`[]`),
+		AttachedSkills:    skills.attached,
+		InputAttachments:  currentTurnInputAttachments(attachments),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 		ToolkitGuardrails:   bytes.Clone(toolkitGuardrails),

@@ -142,7 +142,13 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
-	input, err := currentAdhocInput(request, target, frozen, suggestionPolicy, toolkitGuardrails)
+	attachments, err := currentTurnAttachments(request.QuestionID, request.Attachments)
+	if err != nil {
+		return CurrentApplicationStartOutcome{}, err
+	}
+	input, err := currentAdhocInput(
+		request, target, frozen, suggestionPolicy, toolkitGuardrails, attachments,
+	)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, fmt.Errorf("build current ad-hoc execution input: %w", err)
 	}
@@ -151,10 +157,6 @@ func (service *CurrentApplicationStartService) StartCurrentAdhoc(
 	questionMeta := json.RawMessage(`{}`)
 	if request.InteractionUUID != "" {
 		questionMeta, _ = json.Marshal(map[string]string{"interaction_uuid": request.InteractionUUID})
-	}
-	attachments, err := currentTurnAttachments(request.QuestionID, request.Attachments)
-	if err != nil {
-		return CurrentApplicationStartOutcome{}, err
 	}
 	projectID := strconv.FormatInt(request.ProjectID, 10)
 	actorID := strconv.FormatInt(request.ActorUserID, 10)
@@ -265,12 +267,15 @@ func currentAdhocLLMSettings(source json.RawMessage) (map[string]any, error) {
 	return result, nil
 }
 
+// attachments: see currentApplicationInput's note on why the regenerate and
+// resume paths pass nil.
 func currentAdhocInput(
 	request CurrentAdhocStartRequest,
 	target CurrentAdhocTarget,
 	frozen json.RawMessage,
 	nextInputSuggestion json.RawMessage,
 	toolkitGuardrails json.RawMessage,
+	attachments []CurrentTurnAttachment,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	var snapshot map[string]any
 	if err := decodeCurrentJSON(frozen, &snapshot); err != nil {
@@ -317,7 +322,8 @@ func currentAdhocInput(
 		Meta: []byte(`{}`), ConversationId: &conversationID, Persona: persona,
 		ContextSettings: []byte(`{}`), InvokedSkills: []byte(`[]`),
 		AppliedSkills: []byte(`[]`), AttachedSkills: []byte(`[]`),
-		InputAttachments: []byte(`[]`), ParallelReconcile: []byte(`null`),
+		InputAttachments:       currentTurnInputAttachments(attachments),
+		ParallelReconcile:      []byte(`null`),
 		ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion:    bytes.Clone(nextInputSuggestion),
 		ToolkitGuardrails:      bytes.Clone(toolkitGuardrails),

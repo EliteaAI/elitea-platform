@@ -319,3 +319,78 @@ func TestPostgresATurnAfterAnAttachmentIsStillAdmitted(t *testing.T) {
 		t.Fatalf("a conversation that carried an attachment refuses its next turn: %v", err)
 	}
 }
+
+// Regeneration and reset must survive a turn that carried a file.
+//
+// This is the SECOND regression #606 introduced by writing attachment items,
+// and it is the same shape as the admission-gate one: `ResolveCurrentRegeneration`
+// and `ResetCurrentAgentResponse` both refuse a question group holding any item
+// whose type is outside an allow-list. `attachment_message` was outside it only
+// because nothing could produce one, so once admission started writing them
+// every turn that carried a file became unregeneratable — the gate refusing
+// rows the admission it follows had just created.
+//
+// The RESPONSE-side gate in both queries stays strict on purpose: nothing here
+// writes attachment items onto a response group. Pylon does, for agent-produced
+// files (events/message_stream.py:107-120), and that is genuinely unported.
+//
+// Remove `attachment_message` from either question allow-list and this fails
+// with pgx.ErrNoRows.
+func TestPostgresRegenerationSurvivesAnAttachmentTurn(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	seedCurrentAgentContinuationSchema(t, pool)
+	tx := beginCurrentAgentAttachmentTx(t, pool)
+	queries := sqlcgen.New(tx)
+
+	turn := agentexecutionapp.CurrentApplicationTurn{
+		ProjectID: 1, ActorUserID: 11, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41,
+		ConversationUUID:  "10000000-0000-4000-8000-000000000031",
+		QuestionID:        "20000000-0000-4000-8000-000000000031",
+		QuestionItemID:    "30000000-0000-4000-8000-000000000031",
+		ResponseMessageID: "40000000-0000-4000-8000-000000000031",
+		QuestionMeta:      json.RawMessage(`{}`), UserInput: "regenerate this",
+		Attachments: currentAgentAttachmentFixtures(t, "20000000-0000-4000-8000-000000000031"),
+	}
+	if err := insertCurrentApplicationTurn(t.Context(), queries, "execution-attach-5", turn); err != nil {
+		t.Fatal(err)
+	}
+	responseID := mustCurrentPGUUID(t, turn.ResponseMessageID)
+	completePostgresCurrentApplicationTurn(t, tx, responseID, "an answer about the file")
+
+	binding, err := queries.ResolveCurrentRegeneration(
+		t.Context(),
+		sqlcgen.ResolveCurrentRegenerationParams{
+			ActorUserID: 11, ProjectID: 1, ResponseMessageID: responseID,
+		},
+	)
+	if err != nil {
+		t.Fatalf("a turn that carried a file cannot be regenerated: %v", err)
+	}
+	if binding.UserInput != "regenerate this" {
+		t.Fatalf("binding=%+v", binding)
+	}
+
+	// The reset query needs the whole turn identity, not just the response —
+	// passing a partial params struct makes it answer ErrNoRows for reasons
+	// that have nothing to do with attachments, which would make this test
+	// pass against a broken gate for the wrong reason.
+	if _, err := queries.ResetCurrentAgentResponse(
+		t.Context(),
+		sqlcgen.ResetCurrentAgentResponseParams{
+			TargetParticipantID:  21,
+			ApplicationVersionID: 41,
+			ApplicationID:        31,
+			ConversationUuid:     mustCurrentPGUUID(t, turn.ConversationUUID),
+			ResponseMessageID:    responseID,
+			QuestionID:           mustCurrentPGUUID(t, turn.QuestionID),
+			ActorUserID:          11,
+			RegenerationKind:     "application",
+			ProjectID:            1,
+			ExecutionGeneration:  turn.QuestionID,
+			ExecutionID:          "execution-attach-5-regen",
+		},
+	); err != nil {
+		t.Fatalf("a turn that carried a file cannot be reset: %v", err)
+	}
+}
