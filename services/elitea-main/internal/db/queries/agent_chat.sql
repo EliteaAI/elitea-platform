@@ -150,6 +150,47 @@ JOIN chat_participants AS target_participant
 JOIN application_versions AS application_version
   ON application_version.id = (target_mapping.entity_settings ->> 'version_id')::integer
  AND application_version.application_id = (target_participant.entity_meta ->> 'id')::integer
+-- Chat history for this turn: one entry per prior message group, whose
+-- `content` is the group's items flattened into ONE LangChain content array.
+--
+-- #606 part 3 added `attachment_message` to the items considered. Before it,
+-- this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+-- turn was invisible to the model even though its row existed: the transcript
+-- rendered it, the prompt did not mention it, and a follow-up question about
+-- that file had nothing to answer from.
+--
+-- The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+-- attachment item's stored `content` LIST into the group's content array,
+-- in item order, alongside the text chunks -- it does not nest it, and does
+-- not append one object per file. That is why the per-item CROSS JOIN LATERAL
+-- emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+-- the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+-- items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+-- a group that has only text.
+--
+-- WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+-- `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+-- column that is NULL for an attachment item, so it would drop every
+-- attachment chunk. The empty-text exclusion moves into the text branch's own
+-- WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+-- inner join's old refusal of a text item with no payload row), and an item
+-- that contributes no chunk simply produces no row. A group left with no
+-- chunks at all disappears from the subquery exactly as it used to when the
+-- FILTER made its `content` NULL, so the outer
+-- `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+-- ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+-- represent at all) now survives it.
+--
+-- `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+-- it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+-- array. chat_history.py:70-74 carries a non-list fallback for exactly that
+-- data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+-- because `jsonb_array_elements` on a non-array raises 22023 and would fail
+-- the whole resolve; a NULL or `{}` content contributes nothing instead of
+-- injecting a chunk the model would have to read. The chunks are NOT
+-- validated beyond that: their shape is the worker's and the model's
+-- contract, and silently reshaping stored content here would make the
+-- projection disagree with what the transcript renders.
 LEFT JOIN LATERAL (
     SELECT jsonb_agg(
                jsonb_build_object(
@@ -167,17 +208,81 @@ LEFT JOIN LATERAL (
                    ELSE 'assistant'
                END AS role,
                jsonb_agg(
-                   jsonb_build_object('type', 'text', 'text', message_text.content)
-                   ORDER BY message_item.order_index, message_item.id
-               ) FILTER (WHERE message_text.content <> '') AS content
+                   item_chunk.chunk
+                   ORDER BY message_item.order_index, message_item.id,
+                            item_chunk.chunk_index
+               ) AS content
         FROM chat_message_group AS message_group
         JOIN chat_participants AS author
           ON author.id = message_group.author_participant_id
         JOIN chat_message_items AS message_item
           ON message_item.message_group_id = message_group.id
-         AND message_item.item_type = 'text_message'
-        JOIN chat_messages_text AS message_text
+         AND message_item.item_type IN ('text_message', 'attachment_message')
+        LEFT JOIN chat_messages_text AS message_text
           ON message_text.id = message_item.id
+        LEFT JOIN chat_messages_attachment AS message_attachment
+          ON message_attachment.id = message_item.id
+        CROSS JOIN LATERAL (
+            SELECT jsonb_build_object(
+                       'type', 'text', 'text', message_text.content
+                   ) AS chunk,
+                   0 AS chunk_index
+            WHERE message_item.item_type = 'text_message'
+              AND COALESCE(message_text.content, '') <> ''
+            UNION ALL
+            SELECT attachment_chunk.value,
+                   attachment_chunk.ordinality::integer
+            FROM jsonb_array_elements(
+                     CASE
+                         WHEN message_item.item_type = 'attachment_message'
+                          AND jsonb_typeof(
+                                  COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
+                              ) = 'array'
+                          -- ONLY THE FOUR NEWEST ATTACHMENTS CONTRIBUTE THEIR
+                          -- CONTENT, and this bound is load-bearing rather than
+                          -- tasteful.
+                          --
+                          -- #607 stores up to 32 KiB of extracted text per
+                          -- attachment. This projection feeds chat_history,
+                          -- chat_history is the agent input bundle, and the
+                          -- WORKER fetches that bundle under a 256 KiB ceiling
+                          -- (content_max_body_bytes -> _V1_INPUT_CONTENT_BYTES,
+                          -- serve.py:982; it raises above it,
+                          -- transport/input_content.py:169,250,260). elitea-main
+                          -- allows 1 MiB (MaxAgentExecutionInputBytes), so
+                          -- nothing on this side would have refused the frame
+                          -- first. Unbounded, a user who attached ~8 documents
+                          -- over a session pushed the bundle past 256 KiB and
+                          -- then EVERY further turn in that conversation failed
+                          -- — unrecoverably, because history only grows, so the
+                          -- conversation had to be abandoned.
+                          --
+                          -- Four newest x 32 KiB = 128 KiB worst case, half the
+                          -- worker's ceiling, leaving the rest to the text of
+                          -- the conversation itself.
+                          --
+                          -- NEWEST rather than oldest: a follow-up question is
+                          -- about the file just attached. An older attachment
+                          -- still appears in the transcript and still carries
+                          -- its header chunk here (only the CONTENT is
+                          -- withheld), so the model is told the file exists and
+                          -- that read tools are available — the pre-#607
+                          -- behaviour, which is the right thing to degrade to.
+                          AND (
+                              SELECT count(*)
+                              FROM chat_message_items AS newer_item
+                              JOIN chat_message_group AS newer_group
+                                ON newer_group.id = newer_item.message_group_id
+                              WHERE newer_group.conversation_id = conversation.id
+                                AND newer_item.item_type = 'attachment_message'
+                                AND (newer_group.created_at, newer_group.id, newer_item.order_index, newer_item.id)
+                                  > (message_group.created_at, message_group.id, message_item.order_index, message_item.id)
+                          ) < 4
+                         THEN message_attachment.content::jsonb
+                         ELSE '[]'::jsonb
+                     END
+                 ) WITH ORDINALITY AS attachment_chunk(value, ordinality)
+        ) AS item_chunk
         WHERE message_group.conversation_id = conversation.id
           AND message_group.created_at < COALESCE(
               (
@@ -259,7 +364,29 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: `attachment_message` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. `attachment_message`
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- `canvas_message` and `context_message` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR historical_item.item_type = 'context_message'
         )
   );
@@ -409,6 +536,47 @@ LEFT JOIN LATERAL (
           AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) = '[]'::jsonb
     ) AS current_tool
 ) AS current_tools ON TRUE
+-- Chat history for this turn: one entry per prior message group, whose
+-- `content` is the group's items flattened into ONE LangChain content array.
+--
+-- #606 part 3 added `attachment_message` to the items considered. Before it,
+-- this LATERAL joined `text_message` alone, so a file attached in an EARLIER
+-- turn was invisible to the model even though its row existed: the transcript
+-- rendered it, the prompt did not mention it, and a follow-up question about
+-- that file had nothing to answer from.
+--
+-- The rule is pylon's, not an invention: chat_history.py:67-73 EXTENDS an
+-- attachment item's stored `content` LIST into the group's content array,
+-- in item order, alongside the text chunks -- it does not nest it, and does
+-- not append one object per file. That is why the per-item CROSS JOIN LATERAL
+-- emits chunk ROWS rather than a per-item array: `jsonb_agg` over the rows is
+-- the flattening, and one ORDER BY (order_index, id, chunk_index) then orders
+-- items and, within an item, its chunks -- the pre-#606 ordering unchanged for
+-- a group that has only text.
+--
+-- WHY THE JOINS BECAME LEFT JOINS AND THE FILTER BECAME A WHERE. The old
+-- `FILTER (WHERE message_text.content <> '')` cannot survive: it tests a
+-- column that is NULL for an attachment item, so it would drop every
+-- attachment chunk. The empty-text exclusion moves into the text branch's own
+-- WHERE (`COALESCE(message_text.content, '') <> ''`, which also preserves the
+-- inner join's old refusal of a text item with no payload row), and an item
+-- that contributes no chunk simply produces no row. A group left with no
+-- chunks at all disappears from the subquery exactly as it used to when the
+-- FILTER made its `content` NULL, so the outer
+-- `jsonb_array_length(...) > 0` gate keeps behaving identically -- while an
+-- ATTACHMENT-ONLY group (no text item, which the pre-#606 shape could not
+-- represent at all) now survives it.
+--
+-- `content` IS `json`, NOT `jsonb` (migrations/tenant/0127 records why), and
+-- it is nullable with a pylon-era default of `'{}'::json` -- an OBJECT, not an
+-- array. chat_history.py:70-74 carries a non-list fallback for exactly that
+-- data. Here the CASE demands `jsonb_typeof(...) = 'array'` before expanding,
+-- because `jsonb_array_elements` on a non-array raises 22023 and would fail
+-- the whole resolve; a NULL or `{}` content contributes nothing instead of
+-- injecting a chunk the model would have to read. The chunks are NOT
+-- validated beyond that: their shape is the worker's and the model's
+-- contract, and silently reshaping stored content here would make the
+-- projection disagree with what the transcript renders.
 LEFT JOIN LATERAL (
     SELECT jsonb_agg(
                jsonb_build_object(
@@ -426,17 +594,81 @@ LEFT JOIN LATERAL (
                    ELSE 'assistant'
                END AS role,
                jsonb_agg(
-                   jsonb_build_object('type', 'text', 'text', message_text.content)
-                   ORDER BY message_item.order_index, message_item.id
-               ) FILTER (WHERE message_text.content <> '') AS content
+                   item_chunk.chunk
+                   ORDER BY message_item.order_index, message_item.id,
+                            item_chunk.chunk_index
+               ) AS content
         FROM chat_message_group AS message_group
         JOIN chat_participants AS author
           ON author.id = message_group.author_participant_id
         JOIN chat_message_items AS message_item
           ON message_item.message_group_id = message_group.id
-         AND message_item.item_type = 'text_message'
-        JOIN chat_messages_text AS message_text
+         AND message_item.item_type IN ('text_message', 'attachment_message')
+        LEFT JOIN chat_messages_text AS message_text
           ON message_text.id = message_item.id
+        LEFT JOIN chat_messages_attachment AS message_attachment
+          ON message_attachment.id = message_item.id
+        CROSS JOIN LATERAL (
+            SELECT jsonb_build_object(
+                       'type', 'text', 'text', message_text.content
+                   ) AS chunk,
+                   0 AS chunk_index
+            WHERE message_item.item_type = 'text_message'
+              AND COALESCE(message_text.content, '') <> ''
+            UNION ALL
+            SELECT attachment_chunk.value,
+                   attachment_chunk.ordinality::integer
+            FROM jsonb_array_elements(
+                     CASE
+                         WHEN message_item.item_type = 'attachment_message'
+                          AND jsonb_typeof(
+                                  COALESCE(message_attachment.content::jsonb, 'null'::jsonb)
+                              ) = 'array'
+                          -- ONLY THE FOUR NEWEST ATTACHMENTS CONTRIBUTE THEIR
+                          -- CONTENT, and this bound is load-bearing rather than
+                          -- tasteful.
+                          --
+                          -- #607 stores up to 32 KiB of extracted text per
+                          -- attachment. This projection feeds chat_history,
+                          -- chat_history is the agent input bundle, and the
+                          -- WORKER fetches that bundle under a 256 KiB ceiling
+                          -- (content_max_body_bytes -> _V1_INPUT_CONTENT_BYTES,
+                          -- serve.py:982; it raises above it,
+                          -- transport/input_content.py:169,250,260). elitea-main
+                          -- allows 1 MiB (MaxAgentExecutionInputBytes), so
+                          -- nothing on this side would have refused the frame
+                          -- first. Unbounded, a user who attached ~8 documents
+                          -- over a session pushed the bundle past 256 KiB and
+                          -- then EVERY further turn in that conversation failed
+                          -- — unrecoverably, because history only grows, so the
+                          -- conversation had to be abandoned.
+                          --
+                          -- Four newest x 32 KiB = 128 KiB worst case, half the
+                          -- worker's ceiling, leaving the rest to the text of
+                          -- the conversation itself.
+                          --
+                          -- NEWEST rather than oldest: a follow-up question is
+                          -- about the file just attached. An older attachment
+                          -- still appears in the transcript and still carries
+                          -- its header chunk here (only the CONTENT is
+                          -- withheld), so the model is told the file exists and
+                          -- that read tools are available — the pre-#607
+                          -- behaviour, which is the right thing to degrade to.
+                          AND (
+                              SELECT count(*)
+                              FROM chat_message_items AS newer_item
+                              JOIN chat_message_group AS newer_group
+                                ON newer_group.id = newer_item.message_group_id
+                              WHERE newer_group.conversation_id = conversation.id
+                                AND newer_item.item_type = 'attachment_message'
+                                AND (newer_group.created_at, newer_group.id, newer_item.order_index, newer_item.id)
+                                  > (message_group.created_at, message_group.id, message_item.order_index, message_item.id)
+                          ) < 4
+                         THEN message_attachment.content::jsonb
+                         ELSE '[]'::jsonb
+                     END
+                 ) WITH ORDINALITY AS attachment_chunk(value, ordinality)
+        ) AS item_chunk
         WHERE message_group.conversation_id = conversation.id
           AND message_group.created_at < COALESCE(
               (
@@ -561,7 +793,29 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
             statement_timestamp()
         )
         AND (
-            historical_item.item_type IN ('attachment_message', 'canvas_message')
+            -- #606: `attachment_message` is NOT here any more, and that
+            -- removal is load-bearing rather than tidying.
+            --
+            -- This gate refuses a conversation whose history contains an item
+            -- type this parity slice cannot serve. `attachment_message`
+            -- belonged in it only because nothing in this service could
+            -- produce one, so the type meant "a pylon-era conversation".
+            -- Admission now WRITES those items, so leaving it here made the
+            -- gate read its own output: the turn carrying the file was
+            -- admitted and the NEXT turn on that conversation was refused.
+            -- Attaching a file ended the conversation.
+            --
+            -- Allowing it is not a claim that the attachment reaches the
+            -- model. It does not: input_attachments is still hardcoded empty
+            -- (application/agentexecution/{start,adhoc}.go) and no document
+            -- text is extracted. It is a claim that a follow-up turn is in
+            -- EXACTLY the position it was in before #606 — proceeding without
+            -- the file — which is strictly better than refusing it outright.
+            --
+            -- `canvas_message` and `context_message` stay: both change what
+            -- the model must be shown, so serving a turn without them would
+            -- answer a different conversation than the one on screen.
+            historical_item.item_type = 'canvas_message'
             OR (
                 historical_item.item_type = 'context_message'
                 AND NOT EXISTS (
@@ -635,7 +889,20 @@ WHERE response.uuid = sqlc.arg(response_message_id)::uuid
       SELECT 1
       FROM chat_message_items AS unsupported_question_item
       WHERE unsupported_question_item.message_group_id = question.id
-        AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
+        -- #606: `attachment_message` is in this allow-list because admission WRITES
+        -- those items onto the question group. Before #606 nothing could produce one,
+        -- so its absence here meant "a pylon-era question this path cannot serve";
+        -- after #606 it meant "any turn that carried a file can never be resumed or
+        -- regenerated" — this gate refusing rows the admission it follows had just
+        -- created.
+        --
+        -- Same reasoning as the historical_group gates, and the same limit: allowing
+        -- it is not a claim that the file is re-sent on a resume, only that its
+        -- presence must not make the turn unresumable. The RESPONSE-side gate below
+        -- stays strict, because nothing here writes attachment items onto a response
+        -- group — pylon does, for agent-produced files
+        -- (events/message_stream.py:107-120), and that is genuinely unported.
+        AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message', 'attachment_message')
   )
   AND NOT EXISTS (
       SELECT 1
@@ -1038,7 +1305,10 @@ WITH resolved AS MATERIALIZED (
           SELECT 1
           FROM chat_message_items AS unsupported_question_item
           WHERE unsupported_question_item.message_group_id = question.id
-            AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message')
+            -- See ResolveCurrentContinuation's question gate (#606): admission writes
+            -- `attachment_message` items onto the question group, so excluding them here
+            -- made every turn that carried a file unregeneratable.
+            AND unsupported_question_item.item_type NOT IN ('text_message', 'context_message', 'attachment_message')
       )
       AND NOT EXISTS (
           SELECT 1
@@ -1158,7 +1428,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- `attachment_message` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR historical_item.item_type = 'context_message'
             )
       )
@@ -1208,10 +1482,11 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            sqlc.arg(execution_id)::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group;
 
 -- name: LockCurrentAgentResponseForTerminal :one
@@ -1404,7 +1679,11 @@ WITH resolved AS MATERIALIZED (
             ON historical_item.message_group_id = historical_group.id
           WHERE historical_group.conversation_id = conversation.id
             AND (
-                historical_item.item_type IN ('attachment_message', 'canvas_message')
+                -- See ResolveCurrentApplicationTurn's gate for why
+                -- `attachment_message` is absent here (#606): admission writes
+                -- those items now, so gating on them refused every turn after
+                -- the one that carried a file.
+                historical_item.item_type = 'canvas_message'
                 OR (
                     historical_item.item_type = 'context_message'
                     AND NOT EXISTS (
@@ -1468,8 +1747,120 @@ WITH resolved AS MATERIALIZED (
            clock_timestamp() + interval '1 second',
            sqlc.arg(execution_id)::text
     FROM question_group
-    RETURNING id, uuid
+    RETURNING id, uuid, reply_to_id
 )
 SELECT response_group.id AS response_message_group_id,
-       response_group.uuid AS response_message_id
+       response_group.uuid AS response_message_id,
+       response_group.reply_to_id AS question_message_group_id
 FROM response_group;
+
+-- name: InsertCurrentAgentAttachmentItem :exec
+-- #606: one uploaded chat attachment, as an `attachment_message` item on the
+-- QUESTION group plus its 1:1 payload row.
+--
+-- Both rows in ONE statement, via a data-modifying CTE, rather than two calls:
+-- chat_messages_attachment's primary key IS the item's id (0127 shares the
+-- key so the discriminator and the payload cannot disagree), so the payload
+-- insert must see the id the item insert generated. Doing it in one statement
+-- also means there is no window in which an `attachment_message` item exists
+-- with no payload — the shape ListMessageGroups treats as "no attachment row"
+-- and renders as nothing.
+--
+-- order_index is supplied, not computed with count(*) the way
+-- InsertCurrentAgentTextItem does it: these items are written inside the
+-- admission transaction immediately after the question item, so the caller
+-- already knows the sequence (1, 2, ... — the question's text item holds 0,
+-- matching pylon's enumerate(attachments_info, start=1) at
+-- rpc/chat_all.py:303). A count(*) here would additionally re-read a table it
+-- is writing to, per attachment.
+--
+-- `content` is cast to json, NOT jsonb: 0127 records why the deployed column
+-- is json (a shared table pylon also reads/writes, where jsonb's key
+-- reordering and whitespace normalisation would change the stored bytes).
+WITH item AS (
+    INSERT INTO chat_message_items (
+        uuid, item_type, order_index, meta, message_group_id
+    )
+    VALUES (
+        sqlc.arg(item_id)::uuid,
+        'attachment_message',
+        sqlc.arg(order_index)::integer,
+        '{}'::jsonb,
+        sqlc.arg(message_group_id)::integer
+    )
+    RETURNING id
+)
+INSERT INTO chat_messages_attachment (id, name, bucket, attachment_type, content)
+SELECT item.id,
+       sqlc.arg(name)::text,
+       sqlc.arg(bucket)::text,
+       sqlc.arg(attachment_type)::text,
+       sqlc.arg(content)::json
+FROM item;
+
+-- name: UpdateCurrentAgentAttachmentContent :execrows
+-- #607: persist the text the worker extracted from ONE of this turn's
+-- attachments, so a LATER turn sees the file's contents and not just its name.
+--
+-- Pylon never needed this statement. It extracts at message-persist time and
+-- appends the text to the item it has in hand, in the same process and the same
+-- session (rpc/chat_all.py:344-377, with flag_modified(item, "content") at :376
+-- because the column is `json`). Here the reader is the worker and the writer is
+-- elitea-main, so the text comes back across a protocol
+-- (AgentExecutionResultV1.attachment_contents) and lands here, on the terminal
+-- path elitea-main already owns.
+--
+-- MATCHED ON item.uuid, NOT ON (bucket, name). Attaching the same file twice in
+-- one conversation is an ordinary thing to do and produces two rows with
+-- identical bucket and name; a (bucket, name) match would write one file's text
+-- onto the other's row. `chat_message_items.uuid` is UNIQUE (0123), so this
+-- addresses at most one row.
+--
+-- SCOPED IN SQL, NOT IN GO, AND THAT IS THE POINT. `item_id` arrives from a
+-- worker process over gRPC. Trusting it would let any worker holding a valid
+-- claim overwrite the content of ANY attachment row in the project by naming its
+-- id -- another user's conversation included -- and the Go side has no cheap way
+-- to prove otherwise without a second round trip it would then have to trust
+-- itself to have made. The join does the proving instead: the item must hang off
+-- the QUESTION group that `response_group` (the row
+-- LockCurrentAgentResponseForTerminal just locked, and which the caller reached
+-- only by matching message uuid + conversation uuid + task_id +
+-- meta.execution_generation) replies to. An id outside that one question matches
+-- nothing and the statement reports 0 rows.
+--
+-- `reply_to_id` is the link, and it is written in the same statement that
+-- creates both groups (InsertCurrentApplicationTurn / InsertCurrentAdhocTurn),
+-- so it cannot be absent for a turn this path can reach.
+--
+-- NO item_type PREDICATE, deliberately. `AND item.item_type =
+-- 'attachment_message'` reads like prudence and is dead code:
+-- chat_messages_attachment's primary key IS the item's id (0127), so the join
+-- to it already proves the item is an attachment and no payload row can exist
+-- under a `text_message` item. It was written, then removed, because no test
+-- could tell the two versions apart -- deleting the predicate left every case
+-- green, including the one that names the question's own text item. An
+-- unfalsifiable guard is worse than none: it invites the next reader to believe
+-- the write is checked in a way it is not.
+--
+-- REPLACES `content` OUTRIGHT rather than appending a chunk. The value carried
+-- across the seam is the complete array the column is to hold -- the scaffold's
+-- header chunk, marker intact, plus the extracted text -- which is what makes a
+-- redelivered terminal frame rewrite the same bytes instead of appending the
+-- file's text a second time. An `||` append here would be idempotent only by
+-- accident.
+--
+-- `content` is cast to json, NOT jsonb, for the reason 0127 records: the column
+-- is `json` because pylon reads and writes the same table, and jsonb's key
+-- reordering and whitespace normalisation would change the stored bytes -- which
+-- for this value includes the `elitea_attachment` marker a later turn's worker
+-- reads to decide the file has already been extracted.
+UPDATE chat_messages_attachment AS attachment
+SET content = sqlc.arg(content)::json
+FROM chat_message_items AS item
+JOIN chat_message_group AS question_group
+  ON question_group.id = item.message_group_id
+JOIN chat_message_group AS response_group
+  ON response_group.reply_to_id = question_group.id
+WHERE attachment.id = item.id
+  AND item.uuid = sqlc.arg(item_id)::uuid
+  AND response_group.id = sqlc.arg(response_message_group_id)::bigint;

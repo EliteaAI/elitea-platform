@@ -41,6 +41,9 @@ type CurrentApplicationTurn struct {
 	ResponseMessageID    string
 	QuestionMeta         json.RawMessage
 	UserInput            string
+	// Attachments are the `attachment_message` items written onto the QUESTION
+	// group in the same transaction (#606). Empty for a turn with no files.
+	Attachments []CurrentTurnAttachment
 }
 
 func (turn CurrentApplicationTurn) Validate() error {
@@ -49,7 +52,8 @@ func (turn CurrentApplicationTurn) Validate() error {
 		!validUUID(turn.ConversationUUID) || !validUUID(turn.QuestionID) ||
 		!validUUID(turn.QuestionItemID) || !validUUID(turn.ResponseMessageID) ||
 		!validCurrentAgentText(turn.UserInput, maxCurrentAgentUserInputBytes) ||
-		!validJSONObject(turn.QuestionMeta) {
+		!validJSONObject(turn.QuestionMeta) ||
+		!validCurrentTurnAttachments(turn.Attachments) {
 		return ErrInvalidCurrentAgentStart
 	}
 	return nil
@@ -61,6 +65,7 @@ func (turn *CurrentApplicationTurn) Clone() *CurrentApplicationTurn {
 	}
 	clone := *turn
 	clone.QuestionMeta = bytes.Clone(turn.QuestionMeta)
+	clone.Attachments = cloneCurrentTurnAttachments(turn.Attachments)
 	return &clone
 }
 
@@ -103,6 +108,10 @@ type CurrentApplicationStartRequest struct {
 	QuestionID          string
 	UserInput           string
 	InteractionUUID     string
+	// Attachments carries `payload.attachments` from the start body: the
+	// files the composer uploaded before sending, already split into
+	// (bucket, name) by the route. #606.
+	Attachments []CurrentTurnAttachmentRef
 }
 
 func (request CurrentApplicationStartRequest) Validate() error {
@@ -193,6 +202,10 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if request.InteractionUUID != "" {
 		questionMeta, _ = json.Marshal(map[string]string{"interaction_uuid": request.InteractionUUID})
 	}
+	attachments, err := currentTurnAttachments(request.QuestionID, request.ConversationUUID, request.Attachments)
+	if err != nil {
+		return CurrentApplicationStartOutcome{}, err
+	}
 	suggestionPolicy := service.resolveNextInputSuggestionPolicy(
 		ctx,
 		request.ProjectID,
@@ -202,7 +215,9 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
-	input, err := currentApplicationInput(request, target, suggestionPolicy, toolkitGuardrails)
+	input, err := currentApplicationInput(
+		request, target, suggestionPolicy, toolkitGuardrails, attachments,
+	)
 	if err != nil {
 		return CurrentApplicationStartOutcome{}, err
 	}
@@ -227,7 +242,7 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 			ApplicationVersionID: target.ApplicationVersionID,
 			QuestionID:           request.QuestionID, QuestionItemID: questionItemID,
 			ResponseMessageID: responseMessageID, QuestionMeta: questionMeta,
-			UserInput: request.UserInput,
+			UserInput: request.UserInput, Attachments: attachments,
 		},
 	})
 	if err != nil {
@@ -239,11 +254,18 @@ func (service *CurrentApplicationStartService) StartCurrentApplication(
 	}, nil
 }
 
+// attachments are the turn's own uploaded files, whose content chunks become
+// `input_attachments`. Callers that are RE-running an already-admitted question
+// (regenerate.go, continue.go) pass nil on purpose: that question's attachment
+// items are already rows on its message group, so they reach the model through
+// the chat-history projection (internal/db/queries/agent_chat.sql), and sending
+// them here as well would put every chunk in the request twice.
 func currentApplicationInput(
 	request CurrentApplicationStartRequest,
 	target CurrentApplicationTarget,
 	nextInputSuggestion json.RawMessage,
 	toolkitGuardrails json.RawMessage,
+	attachments []CurrentTurnAttachment,
 ) (*runtimev1.AgentExecutionInputV1, error) {
 	skills, err := projectCurrentApplicationSkills(request.UserInput, target.VersionDetails)
 	if err != nil {
@@ -282,7 +304,8 @@ func currentApplicationInput(
 		ExecutionGeneration: &executionGeneration, Meta: []byte(`{}`),
 		ConversationId: &conversationID, ContextSettings: []byte(`{}`),
 		InvokedSkills: skills.invoked, AppliedSkills: skills.applied,
-		AttachedSkills: skills.attached, InputAttachments: []byte(`[]`),
+		AttachedSkills:    skills.attached,
+		InputAttachments:  currentTurnInputAttachments(attachments),
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 		ToolkitGuardrails:   bytes.Clone(toolkitGuardrails),

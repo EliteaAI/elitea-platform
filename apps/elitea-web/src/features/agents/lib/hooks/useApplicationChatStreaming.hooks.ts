@@ -169,8 +169,14 @@ export function useApplicationChatStreaming(params: UseApplicationChatStreamingP
         );
         return;
       }
+      // Prune every group the SERVER says it removed, not just the one we
+      // named. A delete takes the answer AND the question it replies to, so a
+      // single-id filter would leave an orphaned question rendered until a
+      // reload. `deleted` is absent from an adapter that cannot report it, in
+      // which case the requested id is still known to be gone.
+      const removed = new Set<string>(result.deleted?.map(String) ?? [String(messageIdToDelete)]);
       setChatHistory((prev) => {
-        const updated = prev.filter((msg) => msg.id !== messageIdToDelete);
+        const updated = prev.filter((msg) => !removed.has(String(msg.id)));
         callback?.();
         return updated;
       });

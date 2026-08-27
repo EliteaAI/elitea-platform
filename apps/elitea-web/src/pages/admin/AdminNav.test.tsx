@@ -376,7 +376,17 @@ describe('active route', () => {
     const router = createAdminRouter();
     await router.load();
     expect(router.state.matches.map((match) => match.routeId)).toEqual(['__root__', '/secrets']);
-  });
+    // 30s, not vitest's 5s default. `router.load()` here is not a stub: it
+    // resolves the REAL route tree and pulls in the matched page's module
+    // graph, which is the whole point of the test — a synthetic match shape
+    // would not notice TanStack changing what it puts in `matches`. That
+    // import costs a second or two warm, and several under the coverage
+    // instrumentation CI runs it with, so the default budget failed this
+    // sharded job while the same test passed on its own (issue: the shard
+    // reported `Test timed out in 5000ms` at 5006ms). The assertion is
+    // unchanged; only the time it is allowed to take is stated deliberately
+    // instead of inherited.
+  }, 30_000);
 
   it('marks nothing when no nav item owns the route', () => {
     // Better than defaulting to the first item: a nav claiming you are on a page

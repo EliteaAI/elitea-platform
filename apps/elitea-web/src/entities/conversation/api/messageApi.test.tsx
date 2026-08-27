@@ -73,8 +73,33 @@ describe('useMessageListQuery', () => {
 
 describe('deleteMessageFromConversation', () => {
   it('DELETEs elitea_core/message/prompt_lib/{projectId}/{id}', async () => {
-    server.use(http.delete(`${BASE}/elitea_core/message/prompt_lib/7/m1`, () => HttpResponse.json({})));
-    await expect(deleteMessageFromConversation({ projectId: 7, id: 'm1' })).resolves.toEqual({});
+    server.use(http.delete(`${BASE}/elitea_core/message/prompt_lib/7/m1`, () => HttpResponse.json({ deleted: ['m1'] })));
+    await expect(deleteMessageFromConversation({ projectId: 7, id: 'm1' })).resolves.toEqual({ deleted: ['m1'] });
+  });
+
+  // One delete removes the answer AND the question it replies to. Both ids have
+  // to reach the caller, or it prunes half of what the server removed and the
+  // question stays on screen until a reload.
+  it('returns every group id the server reports it deleted', async () => {
+    server.use(
+      http.delete(`${BASE}/elitea_core/message/prompt_lib/7/answer-uid`, () =>
+        HttpResponse.json({ deleted: ['answer-uid', 'question-uid'] })),
+    );
+    await expect(deleteMessageFromConversation({ projectId: 7, id: 'answer-uid' })).resolves.toEqual({
+      deleted: ['answer-uid', 'question-uid'],
+    });
+  });
+
+  // A server that still answers 204, or omits the field, must not make the
+  // caller prune nothing: the id it named certainly went, because the request
+  // succeeded.
+  it.each([
+    ['204 No Content', () => new HttpResponse(null, { status: 204 })],
+    ['a body with no deleted field', () => HttpResponse.json({})],
+    ['an empty deleted list', () => HttpResponse.json({ deleted: [] })],
+  ])('falls back to the requested id given %s', async (_label, responder) => {
+    server.use(http.delete(`${BASE}/elitea_core/message/prompt_lib/7/m1`, responder));
+    await expect(deleteMessageFromConversation({ projectId: 7, id: 'm1' })).resolves.toEqual({ deleted: ['m1'] });
   });
 });
 

@@ -72,7 +72,7 @@ func TestListMessagesFindsTheTranscriptByConversationUUID(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	_, conversationUUID := seedTranscript(t, repo)
 
-	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, 1, 50)
+	resp, err := repo.ListMessages(context.Background(), "1", conversationUUID, wholeTranscript())
 	if err != nil {
 		t.Fatalf("list messages by UUID: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestListMessagesFindsTheTranscriptByNumericID(t *testing.T) {
 	repo := NewConversationsRepo(pool)
 	numericID, _ := seedTranscript(t, repo)
 
-	resp, err := repo.ListMessages(context.Background(), "1", numericID, 1, 50)
+	resp, err := repo.ListMessages(context.Background(), "1", numericID, wholeTranscript())
 	if err != nil {
 		t.Fatalf("list messages by numeric id: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestListMessagesRejectsAnUnknownConversation(t *testing.T) {
 		"e0ac9d1e-06e4-4d3f-9e39-1f3a1c7f6d55",
 		"not-an-identifier",
 	} {
-		if _, err := repo.ListMessages(context.Background(), "1", identifier, 1, 50); err == nil {
+		if _, err := repo.ListMessages(context.Background(), "1", identifier, wholeTranscript()); err == nil {
 			t.Errorf("listing messages for %q succeeded, want an error", identifier)
 		}
 	}
@@ -142,7 +142,7 @@ func TestDeleteMessagesClearsTheTranscriptByConversationUUID(t *testing.T) {
 		t.Fatalf("delete messages by conversation UUID: %v", err)
 	}
 
-	resp, err := repo.ListMessages(ctx, "1", conversationUUID, 1, 50)
+	resp, err := repo.ListMessages(ctx, "1", conversationUUID, wholeTranscript())
 	if err != nil {
 		t.Fatalf("list messages after delete: %v", err)
 	}

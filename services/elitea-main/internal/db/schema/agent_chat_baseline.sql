@@ -98,6 +98,37 @@ CREATE TABLE chat_messages_context (
     id integer PRIMARY KEY REFERENCES chat_message_items(id) ON DELETE CASCADE
 );
 
+-- Chat attachment payload child, the third 1:1 sibling of chat_messages_text
+-- and chat_messages_context above. This is a SQLC compiler input only: the
+-- tenant migration chain owns the real DDL, in
+-- migrations/tenant/0127_chat_message_attachment_items.sql (#606 option 1),
+-- and this declaration must never be read as the definition of the table.
+--
+-- Column-for-column identical to 0127, which in turn is MEASURED from the
+-- pg_catalog dump of the live legacy database
+-- (testdata/postgres/legacy-centry-catalog.json, schema p_1) rather than
+-- transcribed from pylon's SQLAlchemy model. Two details that look like
+-- oversights here are load-bearing and are copied deliberately:
+--
+--   * `content` is `json`, NOT `jsonb`. The deployed column is `json`, and in
+--     a deployment where pylon and this service both touch the row, `jsonb`
+--     would normalise whitespace, reorder keys and drop duplicates, so the
+--     bytes read back would not be the bytes written. 0127 records the same
+--     reasoning at length.
+--   * There is no index beyond the primary key, because the deployed table has
+--     none and the only access path is a join on `id` from chat_message_items.
+--
+-- The item_type discriminator that selects this payload is the literal
+-- `attachment_message` (elitea_core/models/message_items/attachment.py:15-17
+-- `polymorphic_identity`), NOT `attachment`.
+CREATE TABLE chat_messages_attachment (
+    id integer PRIMARY KEY REFERENCES chat_message_items(id) ON DELETE CASCADE,
+    name varchar(256) NOT NULL,
+    bucket varchar(256) NOT NULL,
+    attachment_type varchar(256) NOT NULL,
+    content json
+);
+
 -- Current application/tool ownership projection used only to keep admission
 -- queries type-checked. The tenant schema lifecycle continues to own this
 -- already-existing table; this compiler input is not a migration.

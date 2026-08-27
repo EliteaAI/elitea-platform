@@ -1615,7 +1615,7 @@
             "path": "/elitea_core/message/prompt_lib/{projectId}/{id}",
             "operationId": null,
             "source": "handwritten",
-            "responseSchema": "unknown",
+            "responseSchema": "DeleteMessageResponse",
             "fixture": null,
             "usedBy": [
                 "entities/conversation"

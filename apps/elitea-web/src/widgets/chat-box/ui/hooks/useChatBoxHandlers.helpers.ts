@@ -52,7 +52,15 @@ export interface ChatBoxHandlerDeps {
   /** Uploads pending attachments once the target conversation is known, before `chat_predict` is emitted. */
   readonly uploadAttachments?: (conversationId: string | number, attachments: readonly File[]) => Promise<{ readonly success: boolean; readonly uploaded: readonly UploadedAttachmentOutcome[] }>;
   readonly triggerRegenerate?: (params: Parameters<typeof conversationApi.regenerate>[0]) => Promise<unknown>;
-  readonly triggerDeleteMessage?: (params: Parameters<typeof conversationApi.deleteMessage>[0]) => Promise<unknown>;
+  /**
+   * Returns what the server actually deleted, not `unknown`: one delete can
+   * remove the answer AND the question it replies to, and `deleteAnswer` prunes
+   * that set. Typed `unknown` — as it was — the ids are silently unreachable
+   * and the paired question stays on screen with nothing failing to compile.
+   */
+  readonly triggerDeleteMessage?: (
+    params: Parameters<typeof conversationApi.deleteMessage>[0],
+  ) => Promise<Awaited<ReturnType<typeof conversationApi.deleteMessage>> | undefined>;
   readonly triggerDeleteAllMessages?: (params: Parameters<typeof conversationApi.deleteAllMessages>[0]) => Promise<unknown>;
   /** Available for a future stop-from-handlers call site; `streaming.stopStreaming` already covers the live NewChatInput stop button. */
   readonly triggerStopChatTask?: (params: Parameters<typeof conversationApi.stopTask>[0]) => Promise<unknown>;

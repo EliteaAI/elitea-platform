@@ -190,5 +190,22 @@ func TestEmbeddedHistoriesHaveExpectedHeads(t *testing.T) {
 	tenant, err := LoadManifest(platformmigrations.Files, ScopeTenant)
 	require.NoError(t, err)
 	// 125: tenant/0125_entity_tool_mapping_entity_id.sql.
-	require.EqualValues(t, 125, Head(tenant))
+	//
+	// 126: tenant/0126_chat_folders_and_selected_conversations.sql, which gives
+	// the ledgered corpus the conversation-folder objects that until now existed
+	// only in the dev bootstrap — chat_conversation_folders,
+	// chat_conversations.folder_id and attachment_participant_id, and
+	// chat_selected_conversations. 0123 declared a chat_conversations that was a
+	// strict SUBSET of the deployed one because it mirrored the sqlc COMPILER
+	// projection, which is a projection of the queries and not of the schema.
+	// The corpus could therefore not rebuild the shape every deployment runs,
+	// and the repository test template — built from the corpus alone — could not
+	// execute a single line of folder SQL.
+	//
+	// 127: tenant/0127_chat_message_attachment_items.sql, which takes ownership
+	// of chat_messages_attachment (#606). Its absence was why an uploaded chat
+	// attachment was conversation-scoped only, with no association to the
+	// message it was sent with: it never rendered inline in the transcript, and
+	// pylon's per-message attachment cleanup had nothing to iterate.
+	require.EqualValues(t, 127, Head(tenant))
 }

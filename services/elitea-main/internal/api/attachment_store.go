@@ -104,6 +104,39 @@ func (a *attachmentRepoAdapter) RequireAttachmentBucket(ctx context.Context, pro
 	return 0, err
 }
 
+// LookupAttachmentBucket is RequireAttachmentBucket's read-only twin: it
+// resolves the bucket id and, when there is no such bucket, propagates the
+// repository's storage.ErrNotFound untouched instead of creating one. The
+// delete path is its only caller and must not be able to mint a bucket row
+// for a project that never uploaded an attachment.
+func (a *attachmentRepoAdapter) LookupAttachmentBucket(ctx context.Context, projectID int64, bucketName string) (int64, error) {
+	row, err := a.buckets.GetBucket(ctx, projectID, bucketName)
+	if err != nil {
+		return 0, err
+	}
+	return row.ID, nil
+}
+
+// ListAttachmentObjectKeys projects the objects repository's rows down to the
+// keys alone — the delete path needs nothing else off the row, and returning
+// the full ObjectRow would drag dbrepos types across the interface boundary
+// that this whole adapter exists to keep closed (see the header comment).
+func (a *attachmentRepoAdapter) ListAttachmentObjectKeys(ctx context.Context, bucketID int64, keyPrefix string) ([]string, error) {
+	rows, err := a.objects.ListObjects(ctx, bucketID, keyPrefix)
+	if err != nil {
+		return nil, err
+	}
+	keys := make([]string, len(rows))
+	for i, row := range rows {
+		keys[i] = row.Key
+	}
+	return keys, nil
+}
+
+func (a *attachmentRepoAdapter) DeleteAttachmentObjects(ctx context.Context, bucketID int64, keys []string) error {
+	return a.objects.DeleteObjects(ctx, bucketID, keys)
+}
+
 func (a *attachmentRepoAdapter) RecordAttachmentObject(ctx context.Context, bucketID int64, key string, byteLength int64, mediaType string, expiresAt *time.Time) error {
 	_, err := a.objects.UpsertObject(ctx, dbrepos.NewObjectInput{
 		BucketID:   bucketID,

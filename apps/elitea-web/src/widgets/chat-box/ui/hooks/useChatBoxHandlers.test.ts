@@ -338,3 +338,70 @@ describe('continueTokenLimit / resumeMcpFlow — the same silent stub', () => {
     expect(history.read()[0]?.exception).toBeDefined();
   });
 });
+
+/**
+ * `deleteAnswer` — the ONLY delete path that makes a real network call, and
+ * until now the only one with no test at all.
+ *
+ * The server deletes an answer together with the question it replies to and
+ * names both groups in its response. This handler used to filter on the single
+ * id it passed in, so the paired question stayed rendered until the next
+ * refetch — and nothing failed to compile when the contract changed, because
+ * `triggerDeleteMessage` was typed `Promise<unknown>`.
+ */
+describe('useChatBoxHandlers — deleteAnswer', () => {
+  const seeded: readonly ChatMessage[] = [
+    { id: 'question', role: ROLES.User, content: 'why?' } as ChatMessage,
+    { id: 'answer', role: ROLES.Assistant, content: 'because' } as ChatMessage,
+    { id: 'keep', role: ROLES.Assistant, content: 'unrelated' } as ChatMessage,
+  ];
+
+  it('prunes every group the server reports it deleted', async () => {
+    const history = makeHistory(seeded);
+    const triggerDeleteMessage = vi.fn().mockResolvedValue({ deleted: ['answer', 'question'] });
+    const handlers = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: seeded,
+      triggerDeleteMessage,
+    }));
+
+    await handlers.deleteAnswer('answer');
+
+    expect(triggerDeleteMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 'answer' }));
+    expect(history.read().map((item) => item.id)).toEqual(['keep']);
+  });
+
+  // A server that still answers 204, or omits the field, must not make the
+  // handler prune nothing: the id it named certainly went.
+  it.each([
+    ['an empty deleted list', { deleted: [] }],
+    ['a body with no deleted field', {}],
+    ['no body at all', undefined],
+  ])('falls back to the requested id given %s', async (_label, resolved) => {
+    const history = makeHistory(seeded);
+    const handlers = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: seeded,
+      triggerDeleteMessage: vi.fn().mockResolvedValue(resolved),
+    }));
+
+    await handlers.deleteAnswer('answer');
+
+    expect(history.read().map((item) => item.id)).toEqual(['question', 'keep']);
+  });
+
+  // A failed delete must leave the transcript alone. Pruning optimistically
+  // would hide a message the server still holds.
+  it('leaves the history untouched when the delete fails', async () => {
+    const history = makeHistory(seeded);
+    const handlers = useChatBoxHandlers(makeDeps({
+      setChatHistory: history.setChatHistory,
+      chatHistory: seeded,
+      triggerDeleteMessage: vi.fn().mockRejectedValue(new Error('nope')),
+    }));
+
+    await handlers.deleteAnswer('answer');
+
+    expect(history.read().map((item) => item.id)).toEqual(['question', 'answer', 'keep']);
+  });
+});

@@ -708,11 +708,44 @@ func agentExecutionResultDomain(result *runtimev1.AgentExecutionResultV1) (outpu
 			Digest:           artifactDigest,
 			Classification:   artifact.GetClassification(),
 		},
+		// #607. Absent on every ordinary turn. The entries are handed to the
+		// domain's acceptance rule rather than being validated here, and that
+		// rule DROPS what it refuses instead of failing the result -- the
+		// reasoning is in AcceptedAgentExecutionAttachmentContents, and the
+		// short form is that this frame carries the assistant's answer and a
+		// bad attachment write-back must not cost the user that answer.
+		//
+		// Nothing is copied out of the proto message beyond the two scalars: a
+		// `nil` entry in the repeated field is mapped to a zero-value struct,
+		// which the acceptance rule then drops like any other malformed entry,
+		// so a nil never has to be special-cased into a panic here.
+		AttachmentContents: outputapp.AcceptedAgentExecutionAttachmentContents(
+			agentExecutionAttachmentContentsDomain(result.GetAttachmentContents()),
+		),
 	}
 	if err := mapped.Validate(); err != nil {
 		return outputapp.AgentExecutionResult{}, err
 	}
 	return mapped, nil
+}
+
+func agentExecutionAttachmentContentsDomain(
+	entries []*runtimev1.AgentExecutionAttachmentContentV1,
+) []outputapp.AgentExecutionAttachmentContent {
+	if len(entries) == 0 {
+		return nil
+	}
+	mapped := make([]outputapp.AgentExecutionAttachmentContent, 0, len(entries))
+	for _, entry := range entries {
+		mapped = append(mapped, outputapp.AgentExecutionAttachmentContent{
+			ItemID: entry.GetItemId(),
+			// GetContent() aliases the decoded frame's buffer; the acceptance
+			// rule clones what it keeps, so nothing that reaches a transaction
+			// still points at protobuf-owned memory.
+			Content: entry.GetContent(),
+		})
+	}
+	return mapped
 }
 
 func indexIngestSummaryDomain(summary *runtimev1.IndexIngestSummaryV1) (outputapp.IndexIngestSummary, error) {
