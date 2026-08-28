@@ -39,11 +39,6 @@ func tenantSchema(projectID string) (string, error) {
 	return tenantschema.Quote(projectID)
 }
 
-// isNumericProjectID reports whether projectID is a plain decimal project id.
-// Tenant schemas are named p_{project_id} where project_id is
-// centry.project.id, an integer — nothing else is a project id.
-func isNumericProjectID(projectID string) bool { return tenantschema.Valid(projectID) }
-
 // isNumericRowID reports whether an id path parameter is a plain decimal row
 // id. Row ids reach SQL as bind parameters, so a non-numeric one is not an
 // injection risk — it is simply an id that cannot exist, and PostgreSQL would

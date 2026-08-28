@@ -117,10 +117,10 @@ func (p postgresToolSource) agentTools(ctx context.Context, schema string) ([]To
 	}
 	rows, err := p.handler.pool.Query(ctx, fmt.Sprintf(`
 		SELECT DISTINCT ON (application.id) application.id, application.name, COALESCE(application.description, '')
-		FROM %[1]q.applications AS application
-		JOIN %[1]q.application_versions AS version ON version.application_id = application.id
-		JOIN %[1]q.application_version_tag_association AS association ON association.version_id = version.id
-		JOIN %[1]q.tags AS tag ON tag.id = association.tag_id
+		FROM %[1]s.applications AS application
+		JOIN %[1]s.application_versions AS version ON version.application_id = application.id
+		JOIN %[1]s.application_version_tag_association AS association ON association.version_id = version.id
+		JOIN %[1]s.tags AS tag ON tag.id = association.tag_id
 		WHERE tag.name = 'mcp'
 		ORDER BY application.id`, schema))
 	if err != nil {
@@ -164,8 +164,8 @@ func (p postgresToolSource) agentToolForVersion(ctx context.Context, schema stri
 	var name, description string
 	err := p.handler.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT application.name, COALESCE(application.description, '')
-		FROM %[1]q.application_versions AS version
-		JOIN %[1]q.applications AS application ON application.id = version.application_id
+		FROM %[1]s.application_versions AS version
+		JOIN %[1]s.applications AS application ON application.id = version.application_id
 		WHERE version.id = $1`, schema), versionID).Scan(&name, &description)
 	if err != nil {
 		if isNoRows(err) {

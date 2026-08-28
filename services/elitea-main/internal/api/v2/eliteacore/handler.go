@@ -611,10 +611,6 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
-	s, schemaOK := tenantSchema(w, projectID)
-	if !schemaOK {
-		return
-	}
 	ctx := r.Context()
 
 	// The publishing guardrail, enforced.
@@ -634,6 +630,18 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": "publishing is blocked on this deployment",
 		})
+		return
+	}
+
+	// The tenant schema is resolved AFTER the guardrail, and the order matters.
+	// A blocked deployment must answer 403 for every caller, including one who
+	// sends a project id this service cannot parse. Resolving the schema first
+	// answers such a caller with 400, which tells them their id was the problem
+	// and not the block — and it makes "is publishing blocked?" answerable by
+	// the shape of the URL. TestGuardrailRefusesAProjectIdItCannotParse pins
+	// this order.
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
 		return
 	}
 

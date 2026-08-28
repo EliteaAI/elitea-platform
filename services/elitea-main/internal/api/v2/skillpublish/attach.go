@@ -106,8 +106,8 @@ func (h *Handler) AttachPublicSkill(w http.ResponseWriter, r *http.Request) {
 		var owned bool
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`
 			SELECT EXISTS(
-				SELECT 1 FROM %[1]q.application_versions av
-				JOIN %[1]q.applications a ON a.id = av.application_id
+				SELECT 1 FROM %[1]s.application_versions av
+				JOIN %[1]s.applications a ON a.id = av.application_id
 				WHERE av.id = $1 AND COALESCE(av.agent_type, '') <> 'pipeline')`, schema),
 			agentVersionID).Scan(&owned) // a failed check leaves owned=false → reported as not found
 		if !owned {
@@ -269,9 +269,9 @@ func (h *Handler) AgentsWithSkill(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT DISTINCT a.id, a.name, av.id, COALESCE(a.meta::text, '{}')
-		FROM %[1]q.entity_skill_mapping m
-		JOIN %[1]q.application_versions av ON av.id = m.entity_version_id
-		JOIN %[1]q.applications a ON a.id = av.application_id
+		FROM %[1]s.entity_skill_mapping m
+		JOIN %[1]s.application_versions av ON av.id = m.entity_version_id
+		JOIN %[1]s.applications a ON a.id = av.application_id
 		WHERE m.skill_id = ANY($1) AND m.entity_type = $2
 		ORDER BY a.id, av.id`, schema), lineage, entityTypeAgent)
 	if err != nil {

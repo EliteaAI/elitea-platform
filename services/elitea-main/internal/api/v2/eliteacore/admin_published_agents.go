@@ -142,10 +142,10 @@ SELECT app.id,
                        'published_at', to_char(version.created_at, 'YYYY-MM-DD"T"HH24:MI:SS'),
                        'published_by', version.meta -> 'published_by')
                    ORDER BY version.created_at DESC, version.id DESC)
-            FROM %[1]q.application_versions version
+            FROM %[1]s.application_versions version
             WHERE version.application_id = app.id AND version.status = 'published')::text,
            '[]')
-FROM %[1]q.applications app
+FROM %[1]s.applications app
 WHERE %[2]s
 ORDER BY %[3]s DESC, app.id DESC
 LIMIT $1 OFFSET $2`, schema, publishedPredicate, orderColumn), limit, offset)
@@ -212,10 +212,4 @@ func positiveQueryInt(r *http.Request, name string, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-// publicProjectIDForAdmin resolves the public project the catalogue lives in,
-// the same way every other public read in this package does.
-func publicProjectIDForAdmin() string {
-	return publicProjectIDOrDefault()
 }

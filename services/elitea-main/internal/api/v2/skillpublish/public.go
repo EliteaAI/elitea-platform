@@ -61,9 +61,9 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 	if category := strings.TrimSpace(query.Get("category")); category != "" {
 		args = append(args, category)
 		conditions = append(conditions, fmt.Sprintf(`EXISTS (
-			SELECT 1 FROM %[1]q.skill_versions v
-			JOIN %[1]q.skill_version_tag_association a ON a.version_id = v.id
-			JOIN %[1]q.tags t ON t.id = a.tag_id
+			SELECT 1 FROM %[1]s.skill_versions v
+			JOIN %[1]s.skill_version_tag_association a ON a.version_id = v.id
+			JOIN %[1]s.tags t ON t.id = a.tag_id
 			WHERE v.skill_id = sk.id AND v.status = 'published' AND t.name = $%[2]d)`, schema, len(args)))
 	}
 	if tagIDs := parseIDList(query.Get("tags")); len(tagIDs) > 0 {
@@ -72,8 +72,8 @@ func (h *Handler) PublicSkills(w http.ResponseWriter, r *http.Request) {
 		for _, tagID := range tagIDs {
 			args = append(args, tagID)
 			conditions = append(conditions, fmt.Sprintf(`EXISTS (
-				SELECT 1 FROM %[1]q.skill_versions v
-				JOIN %[1]q.skill_version_tag_association a ON a.version_id = v.id
+				SELECT 1 FROM %[1]s.skill_versions v
+				JOIN %[1]s.skill_version_tag_association a ON a.version_id = v.id
 				WHERE v.skill_id = sk.id AND v.status = 'published' AND a.tag_id = $%[2]d)`, schema, len(args)))
 		}
 	}
