@@ -59,6 +59,22 @@ export interface AuthContext {
   /** Mirrors `useSelector(state => state.user)` (old app). */
   readonly getUser: () => AuthUser | undefined;
   /**
+   * Re-reads the signed-in user, so a guard stops judging on a session that
+   * was captured before something changed about it.
+   *
+   * The one thing that does change mid-session is `personal_project_id`: it is
+   * empty for a brand-new account until the server finishes provisioning that
+   * account's personal project, and `pages/onboarding` is the screen that
+   * waits for it. Without this, the session keeps the boot-time answer for the
+   * whole session, `decideIndexRoute` keeps redirecting to `/onboarding`, and
+   * a user who HAS just been given a project is sent back to wait for it.
+   *
+   * Optional: `stubAuthContext` below cannot refresh anything, and every
+   * consumer treats its absence as "no refresh available" rather than
+   * branching on which context it got.
+   */
+  readonly refreshSession?: () => Promise<void>;
+  /**
    * Mirrors `useSelectedProjectId()` (old app: `project?.id || (personal_project_id
    * ? undefined : '')`) — NOT "falls back to `personal_project_id`'s value". When
    * `project.id` is unset but a personal project exists, the real baseline returns

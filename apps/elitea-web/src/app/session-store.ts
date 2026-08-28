@@ -370,5 +370,13 @@ function resolveSelectedProjectId(): string | undefined {
 /** Stable AuthContext backed by the zustand store — passed to RouterProvider. */
 export const sessionAuthContext: AuthContext = {
   getUser: () => useSessionStore.getState().user,
+  /**
+   * `AuthContext.refreshSession` — see that field's contract for why a guard
+   * needs it. It re-runs the whole boot probe rather than only re-reading
+   * `/social/author`, because the permission list is read for the personal
+   * project and a session that learned its project without its permissions
+   * would leave `requirePermission` deferring for the rest of the session.
+   */
+  refreshSession: () => useSessionStore.getState().fetchSession(),
   getSelectedProjectId: resolveSelectedProjectId,
 };

@@ -50,7 +50,18 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 # v2 plugin, this machine has podman.
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
+# shellcheck source=lib/seeded-driver.sh
+. "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
 detect_compose_bin
+
+# The one-SQL-string reader `resolve_seeded_driver` calls, in the same shape
+# sdk-client-check.sh and embedding-path-check.sh already define for
+# themselves. `|| true` keeps a failing read from aborting the caller under
+# `set -e`: an empty answer is a state those checks report on, not a crash.
+standalone_psql_read() {
+  $COMPOSE_BIN $COMPOSE_F exec -T postgres \
+    psql -U elitea -d elitea -tAc "$1" 2>/dev/null | tr -d '\r' || true
+}
 
 PORT="${STANDALONE_PORT:-8084}"
 
@@ -1281,16 +1292,13 @@ PY
     # dev@elitea.ai, who has none, and the hop then reports
     # `project_not_resolved` — a true statement about the wrong caller, which
     # made this check permanently SKIPPED even on a correctly seeded stack.
-    LLM_PROBE_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
-        psql -U elitea -d elitea -tAc \
-        "SELECT t.uuid || ' ' || p.id
-           FROM public.auth_core__token t
-           JOIN centry.project p ON p.name = 'project_user_' || t.user_id::text
-           JOIN public.auth_core__project_user_role pur
-             ON pur.project_id = p.id AND pur.user_id = t.user_id
-          WHERE t.uuid IS NOT NULL
-          ORDER BY t.user_id
-          LIMIT 1" 2>/dev/null | tr -d '\r')"
+    #
+    # AND IT MUST BE THE SEEDED CALLER, not merely A caller with a personal
+    # project. See deploy/scripts/lib/seeded-driver.sh for why the obvious
+    # `ORDER BY t.user_id LIMIT 1` stopped naming the seeded persona, and why
+    # the selection lives there rather than in each of the three scripts that
+    # need it.
+    LLM_PROBE_ROW="$(resolve_seeded_driver standalone_psql_read)"
     LLM_PROBE="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $1}')"
     LLM_PROJECT="$(printf '%s' "$LLM_PROBE_ROW" | awk '{print $2}')"
     if [ -z "$LLM_PROBE" ]; then
@@ -1730,6 +1738,14 @@ except Exception as error:
     # start route's permission IN it. That project — not project 1 — is where
     # the turn runs, because the /llm hop resolves the caller's PERSONAL project
     # to find the credential (#290).
+    #
+    # The permission join is what keeps this probe pointed at the SEEDED
+    # persona now that elitea-main provisions a personal project for any caller
+    # that lacks one (internal/application/personalproject). Such a project
+    # carries project ROLES and no auth_core__project_role_permission rows —
+    # projectprovisioning writes roles only, on purpose — so it cannot match
+    # here. Read that alongside the LLM probe above, which had no permission
+    # join and did start picking those projects.
     CHAT_ROW="$($COMPOSE_BIN $COMPOSE_F exec -T postgres \
         psql -U elitea -d elitea -tAc \
         "SELECT t.uuid || ' ' || t.user_id || ' ' || p.id
