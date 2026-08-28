@@ -105,8 +105,7 @@ function buildMeta(metaWire: Record<string, unknown> | null | undefined): Partic
     ...optField('name', readStr(metaWire, 'name')),
     ...optField('userName', readStr(metaWire, 'user_name')),
     ...optField('userAvatar', readStr(metaWire, 'user_avatar')),
-    ...optField('isContainer', typeof metaWire['is_container'] === 'boolean' ? metaWire['is_container'] : undefined),
-    ...optField('mcp', typeof metaWire['mcp'] === 'boolean' ? metaWire['mcp'] : undefined),
+    ...optField('isContainer', typeof metaWire['is_container'] === 'boolean' ? metaWire['is_container'] : undefined), ...optField('mcp', typeof metaWire['mcp'] === 'boolean' ? metaWire['mcp'] : undefined),
   };
 }
 
@@ -122,11 +121,9 @@ function buildEntitySettings(entitySettingsWire: Record<string, unknown> | null 
     ...('variables' in entitySettingsWire ? { variables: entitySettingsWire['variables'] } : {}),
     ...('icon_meta' in entitySettingsWire ? { iconMeta: entitySettingsWire['icon_meta'] } : {}),
     ...optField('toolkitType', readStr(entitySettingsWire, 'toolkit_type')),
-    ...optField('agentType', readStr(entitySettingsWire, 'agent_type')),
-    ...optField('mcpServerUrl', readStr(entitySettingsWire, 'mcp_server_url')),
+    ...optField('agentType', readStr(entitySettingsWire, 'agent_type')), ...optField('mcpServerUrl', readStr(entitySettingsWire, 'mcp_server_url')),
   };
 }
-
 export function toParticipant(raw: unknown): Participant | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const wire = raw as Record<string, unknown>;
