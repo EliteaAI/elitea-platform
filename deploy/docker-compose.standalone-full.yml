@@ -428,6 +428,9 @@ services:
     environment:
       GATEWAY_HTTP_ADDR: ":8083"
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      # Keep the gateway and Main on one vault-key source. Empty preserves the
+      # unwrapped E2E seed; a restored deployment can supply its existing key.
+      SECRETS_MASTER_KEY: "${SECRETS_MASTER_KEY-}"
       # MUST match elitea-main's value below: it keys the HMAC over the
       # X-Elitea-Project-Id / X-Elitea-User-Id / X-Elitea-Tenant-Id headers that
       # elitea-main signs and the gateway verifies.
@@ -597,6 +600,9 @@ services:
       target: e2e
     environment:
       DATABASE_URL: "postgres://elitea:elitea@postgres:5432/elitea?sslmode=disable"
+      # Keep the gateway and Main on one vault-key source. Empty preserves the
+      # unwrapped E2E seed; a restored deployment can supply its existing key.
+      SECRETS_MASTER_KEY: "${SECRETS_MASTER_KEY-}"
       REDIS_URL: "redis:6379"
       SHADOW_ENABLED: "false"
       LEGACY_URL: ""
