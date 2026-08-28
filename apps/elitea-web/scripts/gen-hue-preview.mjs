@@ -27,9 +27,11 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { hueOf, rehue } from '../src/shared/brand/color.ts';
+import { compareGenerated } from './lib/generated-drift.mjs';
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACK = JSON.parse(
@@ -224,10 +226,59 @@ function rampTable() {
   return rows.join('\n');
 }
 
+function parseArgs(argv) {
+  const opts = { check: false };
+  for (const arg of argv) {
+    if (arg === '--check') {
+      opts.check = true;
+    } else if (arg === '--help' || arg === '-h') {
+      console.log('usage: gen-hue-preview.mjs [--check]');
+      process.exit(0);
+    } else {
+      console.error(`gen-hue-preview: unknown argument: ${arg}`);
+      process.exit(2);
+    }
+  }
+  return opts;
+}
+
+/**
+ * --check mode (issue #490): compare the committed
+ * parity/brand-hue-preview.html with what this run renders, and write
+ * nothing. An absent committed file and an empty render are both failures —
+ * see scripts/lib/generated-drift.mjs.
+ */
+function runCheck(out, rendered) {
+  let actual = null;
+  try {
+    actual = readFileSync(out, 'utf8');
+  } catch {
+    actual = null;
+  }
+  const result = compareGenerated([
+    { path: 'apps/elitea-web/parity/brand-hue-preview.html', expected: rendered, actual },
+  ]);
+  if (!result.ok) {
+    console.error('gen-hue-preview: --check FAIL');
+    for (const failure of result.failures) console.error(`  ${failure}`);
+    console.error('  command: node scripts/gen-hue-preview.mjs');
+    process.exit(1);
+  }
+  console.log(`gen-hue-preview: --check OK — ${out} matches the generator output`);
+}
+
 function main() {
+  const opts = parseArgs(process.argv.slice(2));
   assertIdentity();
   const out = join(APP_DIR, 'parity/brand-hue-preview.html');
-  writeFileSync(out, render(), 'utf8');
+  const rendered = render();
+
+  if (opts.check) {
+    runCheck(out, rendered);
+    return;
+  }
+
+  writeFileSync(out, rendered, 'utf8');
   console.log(`gen-hue-preview: wrote ${out}`);
   console.log('\n--- ramp table for parity/brand-hue-map.md ---\n');
   console.log(rampTable());

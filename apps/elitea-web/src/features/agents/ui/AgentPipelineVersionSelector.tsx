@@ -3,21 +3,44 @@ import { useCallback, useMemo, useState } from 'react';
 
 import CheckIcon from '@mui/icons-material/Check';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import Box from '@mui/material/Box';
 import CircularProgress from '@mui/material/CircularProgress';
 import IconButton from '@mui/material/IconButton';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
-import type { SxProps, Theme } from '@mui/material/styles';
 import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
+import { isSetDefaultDisabled } from '@/entities/version';
 import { t } from '@/shared/i18n';
 import { combineSx } from '@/shared/ui/lib/combineSx';
 import { RefreshIcon } from '@/shared/ui/icons/refresh-icon';
 
 import type { AgentPipelineVersionOption } from '../lib/types';
+
+import {
+  contentWrapperSx,
+  defaultMarkerSx,
+  dropdownIconInvalidSx,
+  dropdownIconSx,
+  menuItemSx,
+  menuListSx,
+  menuPaperSx,
+  refreshIconStyle,
+  rowEndSx,
+  selectedCheckIconSx,
+  selectedMenuItemSx,
+  selectorSx,
+  setDefaultIconSx,
+  setDefaultItemSx,
+  versionHeaderSx,
+  versionHeaderTitleSx,
+  versionTextInvalidSx,
+  versionTextSx,
+  warningIconSx,
+} from './AgentPipelineVersionSelector.styles';
 
 const LATEST_VERSION_NAME = 'base';
 
@@ -73,6 +96,32 @@ export interface AgentPipelineVersionSelectorProps {
   readonly onRefreshVersions?: (() => void) | undefined;
   readonly isSwitchingVersion?: boolean | undefined;
   readonly onSelectVersion: (version: AgentPipelineVersionOption) => void;
+  /**
+   * #147 — the "set as default" item, baseline `entities/version/lib/
+   * helpers/version.helpers.jsx:11-84` + `ApplicationVersionSelect.jsx:36,
+   * 239`. It acts on the version the menu currently marks as selected, and
+   * the row that IS the default carries a "Default" marker.
+   *
+   * **Deliberately one command item, not a pin button on every row.** The
+   * baseline puts an `onClick` pin INSIDE each option row. Here each row is
+   * a `MenuItem` (`role="menuitem"`, a widget role), so a button inside one
+   * is axe's `nested-interactive` — impact "serious", and a rule the E2E
+   * `checkA11y` fixture does NOT disable. `secondaryAction`, MUI's answer
+   * for the same problem in `features/artifacts`' `BucketSidebar`, exists on
+   * `ListItem` and not on `MenuItem`. A command item reaches every version
+   * in the same two steps (pick the version, then pin it), stays reachable
+   * from the keyboard, and needs no ARIA exception. The baseline's pin is
+   * also revealed on row HOVER only, which no keyboard user and no journey
+   * test can reach — that is a large part of why #147 stayed invisible.
+   *
+   * Caller-owned, like `onSelectVersion`: this component opens no dialog and
+   * sends no request, it only reports which version was picked. Omit
+   * `onSetDefaultVersion` and the item is not rendered at all — that is how
+   * the read-only viewer and the tool card (`ToolCardBody`) keep the plain
+   * version list they had.
+   */
+  readonly defaultVersionId?: number | undefined;
+  readonly onSetDefaultVersion?: ((version: AgentPipelineVersionOption) => void) | undefined;
 }
 
 interface DisplayVersion extends AgentPipelineVersionOption {
@@ -135,16 +184,63 @@ function renderTrigger(params: { displayText: string; isInvalid: boolean; isSwit
   );
 }
 
+/**
+ * #147's command item — see the `onSetDefaultVersion` prop doc for why the
+ * affordance is one item here and a per-row pin in the baseline.
+ *
+ * Eligibility is `entities/version`'s promoted `isSetDefaultDisabled`, whose
+ * own doc comment cites the baseline's `disableSetAsADefault` (already the
+ * default, no default recorded yet and this is the "base" fallback, or the
+ * version is published). That selector was written for `VersionSummary`
+ * (string ids, from the normalised entity layer) and this menu's option
+ * carries a numeric id, so the row is ADAPTED rather than the rule copied —
+ * a second, drifting definition of "which versions may be pinned" is
+ * exactly the cost this app has already paid elsewhere.
+ */
+function renderSetDefaultItem(params: {
+  selectedVersion: DisplayVersion | undefined;
+  defaultVersionId: number | undefined;
+  onSetDefaultVersion: ((version: AgentPipelineVersionOption) => void) | undefined;
+}): ReactNode {
+  const { selectedVersion, defaultVersionId, onSetDefaultVersion } = params;
+  if (onSetDefaultVersion === undefined || selectedVersion === undefined) return null;
+  const disabled = isSetDefaultDisabled(
+    {
+      id: String(selectedVersion.id),
+      name: selectedVersion.name,
+      status: selectedVersion.status ?? '',
+      agentType: '',
+      createdAt: selectedVersion.created_at ?? '',
+    },
+    defaultVersionId === undefined ? undefined : String(defaultVersionId),
+  );
+  return (
+    <MenuItem
+      data-testid="agent-version-set-default"
+      disabled={disabled}
+      onClick={() => onSetDefaultVersion(selectedVersion)}
+      sx={setDefaultItemSx}
+    >
+      <PushPinOutlinedIcon sx={setDefaultIconSx} />
+      <Typography variant="bodyMedium">{t('agents.versionSelector.setDefault', 'Set as default')}</Typography>
+    </MenuItem>
+  );
+}
+
 function renderMenu(params: {
   anchorEl: HTMLElement | null;
   onClose: () => void;
   isRefreshingVersions: boolean;
   onRefresh: (event: MouseEvent) => void;
   displayVersions: readonly DisplayVersion[];
-  selectedVersionId: number | undefined;
+  selectedVersion: DisplayVersion | undefined;
   onVersionClick: (version: DisplayVersion) => () => void;
+  defaultVersionId: number | undefined;
+  onSetDefaultVersion: ((version: AgentPipelineVersionOption) => void) | undefined;
 }): ReactNode {
-  const { anchorEl, onClose, isRefreshingVersions, onRefresh, displayVersions, selectedVersionId, onVersionClick } = params;
+  const { anchorEl, onClose, isRefreshingVersions, onRefresh, displayVersions, selectedVersion, onVersionClick } = params;
+  const { defaultVersionId, onSetDefaultVersion } = params;
+  const selectedVersionId = selectedVersion?.id;
   return (
     <Menu
       anchorEl={anchorEl}
@@ -187,10 +283,23 @@ function renderMenu(params: {
             sx={isSelected ? selectedMenuItemSx : menuItemSx}
           >
             <Typography variant="bodyMedium">{formatVersionDisplayText(version)}</Typography>
-            {isSelected && <CheckIcon sx={selectedCheckIconSx} />}
+            <Box sx={rowEndSx}>
+              {version.id === defaultVersionId && (
+                <Typography
+                  variant="labelSmall"
+                  data-testid="agent-version-default-marker"
+                  sx={defaultMarkerSx}
+                >
+                  {t('agents.versionSelector.defaultMarker', 'Default')}
+                </Typography>
+              )}
+              {isSelected && <CheckIcon sx={selectedCheckIconSx} />}
+            </Box>
           </MenuItem>
         );
       })}
+
+      {renderSetDefaultItem({ selectedVersion, defaultVersionId, onSetDefaultVersion })}
     </Menu>
   );
 }
@@ -203,6 +312,8 @@ export function AgentPipelineVersionSelector({
   onRefreshVersions,
   isSwitchingVersion = false,
   onSelectVersion,
+  defaultVersionId,
+  onSetDefaultVersion,
 }: AgentPipelineVersionSelectorProps): ReactNode {
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
 
@@ -239,10 +350,35 @@ export function AgentPipelineVersionSelector({
     [onSelectVersion],
   );
 
+  /*
+   * #147 — the menu closes BEFORE the caller is told. The caller answers this
+   * with a confirm dialog, and leaving an open `Menu` behind it stacks two
+   * focus traps: the dialog takes focus, `Escape` then closes whichever the
+   * browser considers topmost, and a keyboard user can end up inside a menu
+   * they cannot see past the modal.
+   */
+  const handleSetDefaultClick = useCallback(
+    (version: AgentPipelineVersionOption) => {
+      setAnchorEl(null);
+      onSetDefaultVersion?.(version);
+    },
+    [onSetDefaultVersion],
+  );
+
   const content = (
     <Box sx={contentWrapperSx}>
       {renderTrigger({ displayText, isInvalid: isInvalidVersionReference, isSwitching: isSwitchingVersion, disabled, isOpen: !!anchorEl, onClick: handleClick })}
-      {renderMenu({ anchorEl, onClose: handleClose, isRefreshingVersions, onRefresh: handleRefresh, displayVersions, selectedVersionId: selectedVersion?.id, onVersionClick: handleVersionClick })}
+      {renderMenu({
+        anchorEl,
+        onClose: handleClose,
+        isRefreshingVersions,
+        onRefresh: handleRefresh,
+        displayVersions,
+        selectedVersion,
+        onVersionClick: handleVersionClick,
+        defaultVersionId,
+        onSetDefaultVersion: onSetDefaultVersion === undefined ? undefined : handleSetDefaultClick,
+      })}
     </Box>
   );
 
@@ -258,71 +394,3 @@ export function AgentPipelineVersionSelector({
     </Tooltip>
   );
 }
-
-const contentWrapperSx: SxProps<Theme> = { display: 'inline-flex', alignItems: 'center', width: 'auto', mt: 0, position: 'relative' };
-
-const selectorSx: SxProps<Theme> = (theme: Theme) => ({
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '0.25rem',
-  cursor: 'pointer',
-  padding: '0rem',
-  '&:hover .agents-version-text': { color: theme.vars.palette.text.createButton },
-  '&:hover .agents-dropdown-icon': { color: theme.vars.palette.text.createButton },
-});
-
-const warningIconSx: SxProps<Theme> = (theme: Theme) => ({ width: '0.875rem', height: '0.875rem', color: theme.vars.palette.warning.main, mr: '0.25rem', flexShrink: 0 });
-
-const versionTextBaseSx = {
-  overflow: 'hidden',
-  textOverflow: 'ellipsis',
-  whiteSpace: 'nowrap',
-  maxWidth: '7.5rem',
-  flexShrink: 1,
-} as const;
-
-const versionTextSx: SxProps<Theme> = (theme: Theme) => ({ ...versionTextBaseSx, color: theme.vars.palette.text.primary });
-const versionTextInvalidSx: SxProps<Theme> = (theme: Theme) => ({ ...versionTextBaseSx, color: theme.vars.palette.warning.main });
-
-const dropdownIconBaseSx = { width: '1rem', height: '1rem', transition: 'transform 0.2s ease-in-out', flexShrink: 0 } as const;
-const dropdownIconSx: SxProps<Theme> = (theme: Theme) => ({ ...dropdownIconBaseSx, color: theme.vars.palette.text.primary });
-const dropdownIconInvalidSx: SxProps<Theme> = (theme: Theme) => ({ ...dropdownIconBaseSx, color: theme.vars.palette.warning.main });
-
-/** Passed via `Menu`'s own `slotProps.paper.sx` (a real, documented MUI slot) instead of an outer `sx`-based `'& .MuiPaper-root'` selector — R-T6 bans `.Mui<Component>-<slot>` selectors outside `shared/brand/mui-overrides/`. */
-const menuPaperSx: SxProps<Theme> = (theme: Theme) => ({
-  borderRadius: theme.vars.shape.radiusMd,
-  border: `0.0625rem solid ${theme.vars.palette.border.lines}`,
-  background: theme.vars.palette.background.secondary,
-  boxShadow: theme.vars.palette.boxShadow.default,
-  minWidth: '15rem',
-  maxWidth: '17.5rem',
-  maxHeight: '12.5rem',
-  overflow: 'hidden',
-});
-
-/** Baseline's own `'& .MuiList-root'` override on the menu (R-T6-banned selector shape here) — carried via `Menu`'s `slotProps.list.sx` instead, mirroring `menuPaperSx`'s slot-based approach above. Without this the list has no scrollable region of its own and overflowing version entries are silently clipped by `menuPaperSx`'s `overflow: 'hidden'`. */
-const menuListSx: SxProps<Theme> = {
-  padding: '0 0 0.25rem',
-  maxHeight: '11.5rem',
-  overflowY: 'auto',
-};
-
-const versionHeaderSx: SxProps<Theme> = (theme: Theme) => ({
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  padding: '0.25rem 0.75rem 0.25rem 1.25rem',
-  borderBottom: `0.0625rem solid ${theme.vars.palette.border.lines}`,
-  minHeight: '1.75rem',
-  marginBottom: '0.25rem',
-});
-
-const versionHeaderTitleSx: SxProps<Theme> = (theme: Theme) => ({ color: theme.vars.palette.text.default, textTransform: 'uppercase' });
-
-const menuItemBaseSx = { padding: '0.5rem 1.25rem', minHeight: '2.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between' } as const;
-const menuItemSx: SxProps<Theme> = (theme: Theme) => ({ ...menuItemBaseSx, color: theme.vars.palette.text.secondary, cursor: 'pointer' });
-const selectedMenuItemSx: SxProps<Theme> = (theme: Theme) => ({ ...menuItemBaseSx, fontWeight: 500, color: theme.vars.palette.text.secondary, background: theme.vars.palette.background.conversation.selected, cursor: 'default' });
-
-const selectedCheckIconSx: SxProps<Theme> = (theme: Theme) => ({ width: '1rem', height: '1rem', color: theme.vars.palette.text.secondary, ml: 1 });
-
-const refreshIconStyle = { width: '0.75rem', height: '0.75rem' };

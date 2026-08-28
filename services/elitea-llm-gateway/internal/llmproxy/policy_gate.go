@@ -72,7 +72,12 @@ func WithGovernancePolicy(src PolicySource, limiter *policy.Limiter, usage Budge
 	return func(h *Handler) {
 		h.policy = src
 		h.rateLimiter = limiter
-		h.budgetUsage = usage
+		// usage rides the budget plane: it is the one collaborator here that
+		// comes from the NATS budget path, so a late install has to publish it
+		// with the gate (budget_plane.go). The assignment is unconditional —
+		// the option runs at construction, where a nil usage means the same
+		// "no reader" it always did.
+		h.mutateBudget(func(bp *budgetPlane) { bp.usage = usage })
 	}
 }
 
@@ -180,13 +185,14 @@ func (h *Handler) routingPick() func(total float64) float64 {
 // resolves to 0 rather than to an error, because a routing rule must not fail
 // a request.
 func (h *Handler) budgetFractionFunc(ctx context.Context, projectID int) func() float64 {
-	if h.budgetUsage == nil || projectID < 0 {
+	usage := h.budget().usage
+	if usage == nil || projectID < 0 {
 		return nil
 	}
 	return func() float64 {
 		readCtx, cancel := context.WithTimeout(ctx, budgetGateTimeout)
 		defer cancel()
-		frac, ok := h.budgetUsage.BudgetFraction(
+		frac, ok := usage.BudgetFraction(
 			readCtx, projectID, budgetScopeProject, strconv.Itoa(projectID), billingPeriodStart(time.Now()))
 		if !ok {
 			return 0

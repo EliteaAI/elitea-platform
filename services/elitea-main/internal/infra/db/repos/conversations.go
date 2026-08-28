@@ -28,7 +28,7 @@ func (r *ConversationsRepo) List(ctx context.Context, projectID string, page, pa
 	s := schema(projectID)
 
 	var total int
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_conversations`, s)
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.chat_conversations`, s)
 	if err := r.pool.QueryRow(ctx, countQ).Scan(&total); err != nil {
 		return conversations.ListResponse{Items: []conversations.Conversation{}, Total: 0, Page: page, PageSize: pageSize}, nil
 	}
@@ -36,8 +36,8 @@ func (r *ConversationsRepo) List(ctx context.Context, projectID string, page, pa
 	offset := (page - 1) * pageSize
 	q := fmt.Sprintf(`
 		SELECT c.id::text, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.created_at, COALESCE(c.updated_at, c.created_at),
-			(SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-		FROM %q.chat_conversations c
+			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+		FROM %s.chat_conversations c
 		ORDER BY c.updated_at DESC NULLS LAST, c.created_at DESC
 		LIMIT $1 OFFSET $2`, s, s)
 
@@ -126,7 +126,7 @@ func (r *ConversationsRepo) resolveConversationID(ctx context.Context, projectID
 	if !ok {
 		return 0, apierr.NotFound("conversation not found")
 	}
-	q := fmt.Sprintf(`SELECT c.id FROM %q.chat_conversations c WHERE %s`, schema(projectID), predicate)
+	q := fmt.Sprintf(`SELECT c.id FROM %s.chat_conversations c WHERE %s`, schema(projectID), predicate)
 	var id int64
 	if err := r.pool.QueryRow(ctx, q, conversationID).Scan(&id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -146,8 +146,8 @@ func (r *ConversationsRepo) Get(ctx context.Context, projectID, conversationID s
 
 	q := fmt.Sprintf(`
 		SELECT c.id::text, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.folder_id::text, c.created_at, COALESCE(c.updated_at, c.created_at),
-			(SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-		FROM %q.chat_conversations c WHERE %s`, s, s, predicate)
+			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+		FROM %s.chat_conversations c WHERE %s`, s, s, predicate)
 
 	var c conversations.Conversation
 	var authorID int
@@ -175,8 +175,8 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	}
 	q := fmt.Sprintf(`
 		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings
-		FROM %q.chat_participant_mapping pm
-		JOIN %q.chat_participants p ON p.id = pm.participant_id
+		FROM %s.chat_participant_mapping pm
+		JOIN %s.chat_participants p ON p.id = pm.participant_id
 		WHERE pm.conversation_id = $1
 		ORDER BY pm.id`, s, s)
 
@@ -228,7 +228,7 @@ func (r *ConversationsRepo) Create(ctx context.Context, projectID string, conv c
 	}
 
 	q := fmt.Sprintf(`
-		INSERT INTO %q.chat_conversations (name, author_id, is_private, meta, source)
+		INSERT INTO %s.chat_conversations (name, author_id, is_private, meta, source)
 		VALUES ($1, $2, true, '{}'::jsonb, 'api')
 		RETURNING id::text, name, uuid::text, created_at, COALESCE(updated_at, created_at)`, s)
 
@@ -273,7 +273,7 @@ func (r *ConversationsRepo) Update(ctx context.Context, projectID, conversationI
 	// the same conversation the GET does. Omitting author_id was #128 defect
 	// 6: every update answered with `"created_by": ""`, so a client that
 	// refreshed its cache from the mutation response lost the owner.
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET %s WHERE id = $%d
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET %s WHERE id = $%d
 		RETURNING id::text, name, COALESCE(uuid::text, ''), author_id, folder_id::text, created_at, COALESCE(updated_at, created_at)`,
 		s, setClauses, argIdx)
 
@@ -329,21 +329,21 @@ func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationI
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
-	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_participant_mapping WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete participant mapping: %w", err)
 	}
-	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_items
-		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE conversation_id = $1)`, s, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_message_items
+		WHERE message_group_id IN (SELECT id FROM %s.chat_message_group WHERE conversation_id = $1)`, s, s), id); err != nil {
 		return fmt.Errorf("conversations: delete message items: %w", err)
 	}
-	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_message_group WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete message groups: %w", err)
 	}
-	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
+	if _, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_selected_conversations WHERE conversation_id = $1`, s), id); err != nil {
 		return fmt.Errorf("conversations: delete selected conversations: %w", err)
 	}
 
-	q := fmt.Sprintf(`DELETE FROM %q.chat_conversations WHERE id = $1`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.chat_conversations WHERE id = $1`, s)
 	ct, err := transaction.Exec(ctx, q, id)
 	if err != nil {
 		return fmt.Errorf("conversations: delete: %w", err)
@@ -381,7 +381,7 @@ func (r *ConversationsRepo) Delete(ctx context.Context, projectID, conversationI
 // one entity. The web client sends a number, so the split does not happen
 // today. A numeric cast here would fail on a non-numeric id, which this
 // endpoint does not reject.
-const participantIdentityQuery = `SELECT id FROM %q.chat_participants
+const participantIdentityQuery = `SELECT id FROM %s.chat_participants
 	WHERE entity_name = $1::text
 	  AND CASE $1::text
 	        WHEN 'llm'   THEN entity_meta->>'model_name' IS NOT DISTINCT FROM $2::jsonb->>'model_name'
@@ -475,7 +475,7 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 	err = transaction.QueryRow(ctx,
 		fmt.Sprintf(participantIdentityQuery, s), entityName, entityMeta).Scan(&participantID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		insert := fmt.Sprintf(`INSERT INTO %q.chat_participants (uuid, entity_name, entity_meta, meta)
+		insert := fmt.Sprintf(`INSERT INTO %s.chat_participants (uuid, entity_name, entity_meta, meta)
 			VALUES (gen_random_uuid(), $1, $2::jsonb, $3::json) RETURNING id`, s)
 		if err = transaction.QueryRow(ctx, insert,
 			entityName, entityMeta, participantDisplayMeta(entityName, entityMetaMap),
@@ -497,7 +497,7 @@ func (r *ConversationsRepo) AddParticipant(ctx context.Context, projectID, conve
 	// generated name is different. On such a database the statement failed with
 	// SQLSTATE 42704 (undefined_object), so adding a participant answered 500.
 	// Column inference matches the unique key under either name.
-	mapping := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
+	mapping := fmt.Sprintf(`INSERT INTO %s.chat_participant_mapping (conversation_id, participant_id, entity_settings)
 		VALUES ($1, $2, $3::jsonb) ON CONFLICT (participant_id, conversation_id) DO NOTHING`, s)
 	if _, err := transaction.Exec(ctx, mapping, id, participantID, entitySettings); err != nil {
 		return fmt.Errorf("conversations: add participant mapping: %w", err)
@@ -514,7 +514,7 @@ func (r *ConversationsRepo) RemoveParticipant(ctx context.Context, projectID, co
 	if err != nil {
 		return err
 	}
-	q := fmt.Sprintf(`DELETE FROM %q.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.chat_participant_mapping WHERE conversation_id = $1 AND participant_id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, id, participantID); err != nil {
 		return fmt.Errorf("conversations: remove participant: %w", err)
 	}
@@ -528,7 +528,7 @@ func (r *ConversationsRepo) UpdateEntitySettings(ctx context.Context, projectID,
 		return err
 	}
 	data, _ := json.Marshal(settings)
-	q := fmt.Sprintf(`UPDATE %q.chat_participant_mapping SET entity_settings = $1 WHERE conversation_id = $2 AND participant_id = $3`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_participant_mapping SET entity_settings = $1 WHERE conversation_id = $2 AND participant_id = $3`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id, participantID); err != nil {
 		return fmt.Errorf("conversations: update entity settings: %w", err)
 	}
@@ -553,11 +553,11 @@ func (r *ConversationsRepo) SelectConversation(ctx context.Context, projectID, c
 		return err
 	}
 	// Schema: id, user_id, conversation_id (no unique on user_id, so delete+insert)
-	delQ := fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE user_id = $1`, s)
+	delQ := fmt.Sprintf(`DELETE FROM %s.chat_selected_conversations WHERE user_id = $1`, s)
 	if _, err := r.pool.Exec(ctx, delQ, userID); err != nil {
 		return fmt.Errorf("conversations: select conversation delete old: %w", err)
 	}
-	insQ := fmt.Sprintf(`INSERT INTO %q.chat_selected_conversations (conversation_id, user_id) VALUES ($1, $2)`, s)
+	insQ := fmt.Sprintf(`INSERT INTO %s.chat_selected_conversations (conversation_id, user_id) VALUES ($1, $2)`, s)
 	if _, err := r.pool.Exec(ctx, insQ, id, userID); err != nil {
 		return fmt.Errorf("conversations: select conversation insert: %w", err)
 	}
@@ -566,7 +566,7 @@ func (r *ConversationsRepo) SelectConversation(ctx context.Context, projectID, c
 
 func (r *ConversationsRepo) DeselectConversation(ctx context.Context, projectID, userID string) error {
 	s := schema(projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.chat_selected_conversations WHERE user_id = $1`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.chat_selected_conversations WHERE user_id = $1`, s)
 	if _, err := r.pool.Exec(ctx, q, userID); err != nil {
 		return fmt.Errorf("conversations: deselect conversation: %w", err)
 	}
@@ -597,8 +597,8 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 
 	// 1. Fetch the existing text message item
 	q := fmt.Sprintf(`SELECT mi.id, mi.order_index, mt.content
-		FROM %q.chat_message_items mi
-		JOIN %q.chat_messages_text mt ON mt.id = mi.id
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_messages_text mt ON mt.id = mi.id
 		WHERE mi.id = $1 AND mi.message_group_id = $2`, s, s)
 
 	var oldItemID, orderIndex int
@@ -623,20 +623,20 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 	}
 
 	// 3. Delete old text item (cascades from chat_messages_text)
-	delTextQ := fmt.Sprintf(`DELETE FROM %q.chat_messages_text WHERE id = $1`, s)
+	delTextQ := fmt.Sprintf(`DELETE FROM %s.chat_messages_text WHERE id = $1`, s)
 	if _, err := r.pool.Exec(ctx, delTextQ, oldItemID); err != nil {
 		return nil, fmt.Errorf("delete old text item: %w", err)
 	}
-	delItemQ := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE id = $1`, s)
+	delItemQ := fmt.Sprintf(`DELETE FROM %s.chat_message_items WHERE id = $1`, s)
 	if _, err := r.pool.Exec(ctx, delItemQ, oldItemID); err != nil {
 		return nil, fmt.Errorf("delete old message item: %w", err)
 	}
 
 	// 4. Insert new items with proper ordering
 	newOrder := orderIndex
-	insertItemQ := fmt.Sprintf(`INSERT INTO %q.chat_message_items (uuid, item_type, order_index, meta, message_group_id)
+	insertItemQ := fmt.Sprintf(`INSERT INTO %s.chat_message_items (uuid, item_type, order_index, meta, message_group_id)
 		VALUES (gen_random_uuid(), $1, $2, '{}'::jsonb, $3) RETURNING id, uuid::text`, s)
-	insertTextQ := fmt.Sprintf(`INSERT INTO %q.chat_messages_text (id, content) VALUES ($1, $2)`, s)
+	insertTextQ := fmt.Sprintf(`INSERT INTO %s.chat_messages_text (id, content) VALUES ($1, $2)`, s)
 
 	if preContent != "" {
 		var preID int
@@ -662,14 +662,14 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 	newOrder++
 
 	// Insert canvas record
-	insertCanvasQ := fmt.Sprintf(`INSERT INTO %q.chat_messages_canvas (id, name, canvas_type) VALUES ($1, $2, $3)`, s)
+	insertCanvasQ := fmt.Sprintf(`INSERT INTO %s.chat_messages_canvas (id, name, canvas_type) VALUES ($1, $2, $3)`, s)
 	_, err = r.pool.Exec(ctx, insertCanvasQ, canvasItemID, name, canvasType)
 	if err != nil {
 		return nil, fmt.Errorf("insert canvas record: %w", err)
 	}
 
 	// Insert canvas version
-	insertVersionQ := fmt.Sprintf(`INSERT INTO %q.chat_canvas_versions (canvas_content, code_language, canvas_item_id)
+	insertVersionQ := fmt.Sprintf(`INSERT INTO %s.chat_canvas_versions (canvas_content, code_language, canvas_item_id)
 		VALUES ($1, $2, $3) RETURNING id, created_at`, s)
 	var versionID int
 	var versionCreatedAt time.Time
@@ -692,7 +692,7 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 	}
 
 	// 5. Re-order any existing items that were before the old item
-	reorderQ := fmt.Sprintf(`UPDATE %q.chat_message_items
+	reorderQ := fmt.Sprintf(`UPDATE %s.chat_message_items
 		SET order_index = order_index + 100
 		WHERE message_group_id = $1 AND id != $2 AND order_index < $3`, s)
 	if _, err := r.pool.Exec(ctx, reorderQ, messageGroupID, canvasItemID, orderIndex); err != nil {
@@ -722,7 +722,7 @@ func (r *ConversationsRepo) CreateCanvas(ctx context.Context, projectID string, 
 
 func (r *ConversationsRepo) GetCanvas(ctx context.Context, projectID, canvasID string) (map[string]any, error) {
 	s := schema(projectID)
-	q := fmt.Sprintf(`SELECT id, name, created_at FROM %q.chat_conversations WHERE id = $1`, s)
+	q := fmt.Sprintf(`SELECT id, name, created_at FROM %s.chat_conversations WHERE id = $1`, s)
 	var id, name string
 	var createdAt time.Time
 	if err := r.pool.QueryRow(ctx, q, canvasID).Scan(&id, &name, &createdAt); err != nil {
@@ -737,7 +737,7 @@ func (r *ConversationsRepo) GetCanvas(ctx context.Context, projectID, canvasID s
 func (r *ConversationsRepo) UpdateCanvas(ctx context.Context, projectID, canvasID string, body map[string]any) error {
 	s := schema(projectID)
 	name, _ := body["name"].(string)
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET name = $1, updated_at = now() WHERE id = $2`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET name = $1, updated_at = now() WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, name, canvasID); err != nil {
 		return fmt.Errorf("conversations: update canvas: %w", err)
 	}
@@ -749,7 +749,7 @@ func (r *ConversationsRepo) GetMessageByUUID(ctx context.Context, projectID, mes
 
 	// Get message group by UUID
 	q := fmt.Sprintf(`SELECT mg.id, mg.uuid::text, mg.author_participant_id, mg.sent_to_id, mg.reply_to_id, mg.meta
-		FROM %q.chat_message_group mg WHERE mg.uuid::text = $1`, s)
+		FROM %s.chat_message_group mg WHERE mg.uuid::text = $1`, s)
 
 	var groupID int
 	var groupUUID string
@@ -772,9 +772,9 @@ func (r *ConversationsRepo) GetMessageByUUID(ctx context.Context, projectID, mes
 		COALESCE(mt.content, '') as text_content,
 		COALESCE(mc.name, '') as canvas_name,
 		COALESCE(mc.canvas_type, '') as canvas_type
-		FROM %q.chat_message_items mi
-		LEFT JOIN %q.chat_messages_text mt ON mt.id = mi.id
-		LEFT JOIN %q.chat_messages_canvas mc ON mc.id = mi.id
+		FROM %s.chat_message_items mi
+		LEFT JOIN %s.chat_messages_text mt ON mt.id = mi.id
+		LEFT JOIN %s.chat_messages_canvas mc ON mc.id = mi.id
 		WHERE mi.message_group_id = $1
 		ORDER BY mi.order_index ASC`, s, s, s)
 
@@ -834,7 +834,7 @@ func (r *ConversationsRepo) UpdateAttachmentStorage(ctx context.Context, project
 		return err
 	}
 	data, _ := json.Marshal(body)
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb) WHERE id = $2`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb) WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update attachment storage: %w", err)
 	}
@@ -848,7 +848,7 @@ func (r *ConversationsRepo) AddAttachments(ctx context.Context, projectID, conve
 		return err
 	}
 	data, _ := json.Marshal(body)
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachments}', $1::jsonb) WHERE id = $2`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachments}', $1::jsonb) WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: add attachments: %w", err)
 	}
@@ -861,7 +861,7 @@ func (r *ConversationsRepo) DeleteAttachments(ctx context.Context, projectID, co
 	if err != nil {
 		return err
 	}
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = (COALESCE(meta, '{}')::jsonb - 'attachments') WHERE id = $1`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = (COALESCE(meta, '{}')::jsonb - 'attachments') WHERE id = $1`, s)
 	if _, err := r.pool.Exec(ctx, q, id); err != nil {
 		return fmt.Errorf("conversations: delete attachments: %w", err)
 	}
@@ -878,8 +878,8 @@ func (r *ConversationsRepo) GetContextAnalytics(ctx context.Context, projectID, 
 	// Get message count and conversation meta (contains context_strategy + context_analytics)
 	q := fmt.Sprintf(`
 		SELECT COALESCE(c.meta, '{}')::text,
-			(SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = c.id)
-		FROM %q.chat_conversations c WHERE c.id = $1`, s, s)
+			(SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = c.id)
+		FROM %s.chat_conversations c WHERE c.id = $1`, s, s)
 
 	var metaRaw string
 	var msgCount int
@@ -959,7 +959,7 @@ func (r *ConversationsRepo) UpdateContextStrategy(ctx context.Context, projectID
 		return err
 	}
 	data, _ := json.Marshal(body)
-	q := fmt.Sprintf(`UPDATE %q.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
+	q := fmt.Sprintf(`UPDATE %s.chat_conversations SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{context_strategy}', $1::jsonb) WHERE id = $2`, s)
 	if _, err := r.pool.Exec(ctx, q, data, id); err != nil {
 		return fmt.Errorf("conversations: update context strategy: %w", err)
 	}
@@ -991,12 +991,12 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 	}
 	defer func() { _ = transaction.Rollback(ctx) }()
 
-	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items
-		WHERE message_group_id IN (SELECT id FROM %q.chat_message_group WHERE conversation_id = $1)`, s, s)
+	items := fmt.Sprintf(`DELETE FROM %s.chat_message_items
+		WHERE message_group_id IN (SELECT id FROM %s.chat_message_group WHERE conversation_id = $1)`, s, s)
 	if _, err := transaction.Exec(ctx, items, id); err != nil {
 		return fmt.Errorf("conversations: delete message items: %w", err)
 	}
-	groups := fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE conversation_id = $1`, s)
+	groups := fmt.Sprintf(`DELETE FROM %s.chat_message_group WHERE conversation_id = $1`, s)
 	if _, err := transaction.Exec(ctx, groups, id); err != nil {
 		return fmt.Errorf("conversations: delete message groups: %w", err)
 	}
@@ -1012,7 +1012,7 @@ func (r *ConversationsRepo) DeleteMessages(ctx context.Context, projectID, conve
 //
 // DEFECT #602: this used to read
 //
-//	DELETE FROM %q.chat_messages WHERE group_uid = $1
+//	DELETE FROM %s.chat_messages WHERE group_uid = $1
 //
 // which could not work on ANY deployment. `chat_messages` does not exist on a
 // database this repository provisioned (42P01), and on a legacy pylon database,
@@ -1107,17 +1107,17 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 			COALESCE(author.entity_meta->>'id', ''),
 			COALESCE(mg.meta #>> '{context,included}', 'true'),
 			NOT EXISTS (
-				SELECT 1 FROM %q.chat_message_group later
+				SELECT 1 FROM %s.chat_message_group later
 				WHERE later.conversation_id = mg.conversation_id
 				  AND (later.created_at, later.id) > (mg.created_at, mg.id)
 			),
 			paired.id,
 			COALESCE(paired.uuid::text, ''),
 			COALESCE(paired.meta #>> '{context,included}', 'true')
-		FROM %q.chat_message_group mg
-		JOIN %q.chat_conversations conv ON conv.id = mg.conversation_id
-		JOIN %q.chat_participants author ON author.id = mg.author_participant_id
-		LEFT JOIN %q.chat_message_group paired ON paired.id = mg.reply_to_id
+		FROM %s.chat_message_group mg
+		JOIN %s.chat_conversations conv ON conv.id = mg.conversation_id
+		JOIN %s.chat_participants author ON author.id = mg.author_participant_id
+		LEFT JOIN %s.chat_message_group paired ON paired.id = mg.reply_to_id
 		WHERE mg.uuid = $1::uuid`, s, s, s, s, s)
 
 	var groupID int64
@@ -1175,8 +1175,8 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	// place a disagreement between them would show up as silent data loss.
 	attachmentQ := fmt.Sprintf(`
 		SELECT att.bucket, att.name
-		FROM %q.chat_message_items mi
-		JOIN %q.chat_messages_attachment att ON att.id = mi.id
+		FROM %s.chat_message_items mi
+		JOIN %s.chat_messages_attachment att ON att.id = mi.id
 		WHERE mi.message_group_id = ANY($1) AND mi.item_type = 'attachment_message'
 		ORDER BY mi.message_group_id, mi.order_index`, s, s)
 	attachmentRows, err := transaction.Query(ctx, attachmentQ, doomed)
@@ -1199,7 +1199,7 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	// chat_message_items does not cascade from chat_message_group, so the items
 	// go first. chat_messages_text/_context/_attachment cascade from the items,
 	// and chat_message_trace_step cascades from the group.
-	items := fmt.Sprintf(`DELETE FROM %q.chat_message_items WHERE message_group_id = ANY($1)`, s)
+	items := fmt.Sprintf(`DELETE FROM %s.chat_message_items WHERE message_group_id = ANY($1)`, s)
 	if _, err := transaction.Exec(ctx, items, doomed); err != nil {
 		return result, fmt.Errorf("conversations: delete message items: %w", err)
 	}
@@ -1208,13 +1208,13 @@ func (r *ConversationsRepo) DeleteMessage(ctx context.Context, projectID, groupU
 	// are NOT themselves doomed is what lets these rows go without failing the
 	// FK; the reply between the two doomed groups needs no detaching, because
 	// both disappear in the same statement.
-	detach := fmt.Sprintf(`UPDATE %q.chat_message_group SET reply_to_id = NULL
+	detach := fmt.Sprintf(`UPDATE %s.chat_message_group SET reply_to_id = NULL
 		WHERE reply_to_id = ANY($1) AND NOT (id = ANY($1))`, s)
 	if _, err := transaction.Exec(ctx, detach, doomed); err != nil {
 		return result, fmt.Errorf("conversations: detach message replies: %w", err)
 	}
 
-	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.chat_message_group WHERE id = ANY($1)`, s), doomed)
+	ct, err := transaction.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.chat_message_group WHERE id = ANY($1)`, s), doomed)
 	if err != nil {
 		return result, fmt.Errorf("conversations: delete message: %w", err)
 	}
@@ -1270,8 +1270,8 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	if query.Query != "" {
 		pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query.Query)
 		filter = fmt.Sprintf(` AND EXISTS (
-			SELECT 1 FROM %q.chat_message_items mi
-			JOIN %q.chat_messages_text mt ON mt.id = mi.id
+			SELECT 1 FROM %s.chat_message_items mi
+			JOIN %s.chat_messages_text mt ON mt.id = mi.id
 			WHERE mi.message_group_id = mg.id
 			  AND mi.item_type = 'text_message'
 			  AND mt.content ILIKE $%%d ESCAPE '\')`, s, s)
@@ -1288,7 +1288,7 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		countFilter = fmt.Sprintf(filter, 2)
 		countArgs = append(countArgs, filterArgs...)
 	}
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.chat_message_group mg WHERE mg.conversation_id = $1%s`, s, countFilter)
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.chat_message_group mg WHERE mg.conversation_id = $1%s`, s, countFilter)
 	if err := r.pool.QueryRow(ctx, countQ, countArgs...).Scan(&total); err != nil {
 		return conversations.MessagesListResponse{}, fmt.Errorf("conversations: count messages: %w", err)
 	}
@@ -1355,12 +1355,12 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 			p.entity_name, mg.meta, mg.created_at,
 			COALESCE((
 				SELECT string_agg(mt.content, E'\n' ORDER BY mi.order_index)
-				FROM %q.chat_message_items mi
-				JOIN %q.chat_messages_text mt ON mt.id = mi.id
+				FROM %s.chat_message_items mi
+				JOIN %s.chat_messages_text mt ON mt.id = mi.id
 				WHERE mi.message_group_id = mg.id AND mi.item_type = 'text_message'
 			), '')
-		FROM %q.chat_message_group mg
-		JOIN %q.chat_participants p ON p.id = mg.author_participant_id
+		FROM %s.chat_message_group mg
+		JOIN %s.chat_participants p ON p.id = mg.author_participant_id
 		WHERE mg.conversation_id = $1%s
 		ORDER BY %s
 		LIMIT $2 OFFSET $3`, s, s, s, s, pageFilter, orderBy)
@@ -1439,7 +1439,7 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		SELECT mg.id, COALESCE(mg.uuid::text, ''), mg.author_participant_id,
 			mg.sent_to_id, mg.reply_to_id, mg.meta, mg.is_streaming,
 			mg.created_at, mg.updated_at, mg.task_id
-		FROM %q.chat_message_group mg
+		FROM %s.chat_message_group mg
 		WHERE mg.conversation_id = $1
 		ORDER BY mg.created_at %s
 		LIMIT $2`, s, order)
@@ -1529,9 +1529,9 @@ func (r *ConversationsRepo) ListMessageGroups(ctx context.Context, projectID, co
 		SELECT mi.id, mi.message_group_id, mi.item_type, mi.order_index, mi.meta,
 			COALESCE(mt.content, ''),
 			ma.name, ma.bucket, ma.attachment_type, ma.content
-		FROM %q.chat_message_items mi
-		LEFT JOIN %q.chat_messages_text mt ON mt.id = mi.id
-		LEFT JOIN %q.chat_messages_attachment ma ON ma.id = mi.id
+		FROM %s.chat_message_items mi
+		LEFT JOIN %s.chat_messages_text mt ON mt.id = mi.id
+		LEFT JOIN %s.chat_messages_attachment ma ON ma.id = mi.id
 		WHERE mi.message_group_id = ANY($1)
 		ORDER BY mi.message_group_id, mi.order_index`, s, s, s)
 

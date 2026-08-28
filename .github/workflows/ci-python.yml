@@ -243,10 +243,14 @@ jobs:
       # clone-verify-cherry-pick recipe into two files that drift.
       #
       # The version MUST match ci-gateway.yml: the gateway is a standalone
-      # module on Go 1.26.4, deliberately outside the root go.work.
+      # module on the Go 1.26 series, deliberately outside the root go.work.
+      # Name the SERIES, not the patch. go.mod states a floor, and the image
+      # builds from `golang:1.26-alpine`, which moves with the series.
+      # scripts/ci/check-gateway-toolchain.sh holds this pin, the Containerfile
+      # tag and ci-gateway.yml together.
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.4"
+          go-version: "1.26"
           cache-dependency-path: services/elitea-llm-gateway/go.sum
 
       - name: Install current binary indexing prerequisites

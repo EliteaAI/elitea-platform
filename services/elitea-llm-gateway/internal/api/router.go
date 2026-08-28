@@ -37,6 +37,17 @@ func NewRouter(h *llmproxy.Handler) http.Handler {
 func NewRouterWithLog(h *llmproxy.Handler, recorder *requestlog.Recorder) http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestlog.Middleware(recorder))
+	// ISSUE #164: hop-marker detection, mounted on the ROOT for the same
+	// reason the request log is — every route below is covered without being
+	// named, a route added later is covered without anyone remembering, and
+	// the paths that never reach a handler (NotFound, MethodNotAllowed, the
+	// realtime upgrade) are covered too. A routing loop does not agree to use
+	// only the routes somebody remembered to annotate.
+	//
+	// It runs AFTER the request log so a refused re-entry is still recorded,
+	// and BEFORE every handler so a loop is contained before dispatch. An
+	// unarmed marker (no GATEWAY_HOP_SECRET) makes it a pass-through.
+	r.Use(h.HopGuard)
 	r.NotFound(h.NotFound)
 	r.MethodNotAllowed(h.MethodNotAllowed)
 

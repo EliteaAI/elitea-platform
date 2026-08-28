@@ -72,6 +72,12 @@ func TestDevelopmentFlagsRejectLegacyBootstrapWhenAuthenticationIsConfigured(t *
 			if err == nil || !strings.Contains(err.Error(), "ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA") {
 				t.Fatalf("error = %v, want a refusal naming ELITEA_DEV_BOOTSTRAP_LEGACY_SCHEMA", err)
 			}
+			// A refusal with no alternative is what sent an operator to psql
+			// with 001_initial.sql against a production database (#556). The
+			// message must name the binary that does this for a deployment.
+			if !strings.Contains(err.Error(), "elitea-migrate") {
+				t.Fatalf("the refusal does not name the supported path: %v", err)
+			}
 			if bootstrap {
 				t.Fatal("bootstrap reported as requested despite the refusal; run() would migrate a real database")
 			}

@@ -38,8 +38,8 @@
 #
 # The last line reports how many assertions RAN and how many failed. A run that
 # skips its assertions is a FAILURE here, not a pass: the expected count is
-# fixed, and a lower count exits non-zero. Read that line, not the exit code
-# alone.
+# DERIVED from this file, and any other number exits non-zero. Read that line,
+# not the exit code alone.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -50,6 +50,8 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
 # shellcheck source=lib/seeded-driver.sh
 . "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
+# shellcheck source=../../scripts/lib/assertion-floor.sh
+. "${REPO_ROOT}/scripts/lib/assertion-floor.sh"
 detect_compose_bin
 
 ENGINE="${COMPOSE_BIN%% *}"
@@ -58,7 +60,14 @@ RUNTIME_CERTS="${REPO_ROOT}/deploy/certs/runtime"
 
 # Every assertion this script is meant to make. A run that makes fewer has
 # skipped one, and a skipped assertion proves nothing.
-EXPECTED_ASSERTIONS=13
+#
+# DERIVED from this file, not written down (issue #534). A number an author
+# states is true only when the pull request merges: an assertion added by a
+# later merge, with the number left alone, makes the floor under-count in
+# silence for ever. Each assertion below holds exactly one accepting arm, so
+# the accepting arms are the assertions. Read scripts/lib/assertion-floor.sh.
+ASSERTION_SITE_PATTERN='(^|[^[:alnum:]_])pass[[:space:]]+"'
+EXPECTED_ASSERTIONS="$(derive_assertion_floor "$0" "$ASSERTION_SITE_PATTERN")"
 
 ran=0
 failed=0

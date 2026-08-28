@@ -29,14 +29,20 @@ package llmproxy
 //     (streamSettler.settleEarly) which waits up to the grace period for the
 //     authoritative usage chunk, then cancels.
 //
-// What is deliberately NOT here: any estimate. If the trailer does not arrive,
-// NOTHING is billed and a budget.unbilled_stream event is emitted instead. An
-// observed-output-bytes estimate on the money path was the second rejected
-// attempt: it contradicts the standing "no estimate ever reaches a billed
-// amount" rule, over-bills inline-base64 multimodal by orders of magnitude,
-// and cannot tell a clean close from a disconnect. observedOutBytes
-// below is an OBSERVABILITY dimension on the loss event only; it must never
-// reach a cost calculation.
+// What is deliberately NOT here: any estimate. An observed-output-bytes
+// estimate on the money path was the second rejected attempt: it contradicts
+// the standing "no estimate ever reaches a billed amount" rule, over-bills
+// inline-base64 multimodal by orders of magnitude, and cannot tell a clean
+// close from a disconnect. observedOutBytes below is an OBSERVABILITY dimension
+// on the loss event only; it must never reach a cost calculation.
+//
+// When no trailer arrives the settler falls back ONE step, to the provider's
+// own accumulated count at the cut (accumulatedUsage, issue #79). That is a
+// provider-reported measure of work done, not a guess, so the no-estimate rule
+// stands. It is a FLOOR on the real usage, so a stream billed that way STILL
+// publishes budget.unbilled_stream. Below that floor — a count that is
+// indistinguishable from a provider placeholder, or no count at all — NOTHING
+// is billed and the loss event is all that happens.
 
 import (
 	"context"
@@ -109,7 +115,28 @@ const (
 	// because it is a gateway-side loss, not a provider-side one — alarm on it
 	// separately.
 	lossReasonBillingRefused = "billing_refused"
+	// lossReasonPartialProviderUsage: no terminal trailer arrived, so the
+	// stream settled from the provider's accumulated count at the cut (issue
+	// #79). Money WAS billed on this one — the event stays because a partial
+	// count is a FLOOR, not the total: the difference is unknown and unbilled.
+	// Billing something is not the same as billing correctly, and only this
+	// event keeps that gap visible.
+	lossReasonPartialProviderUsage = "partial_provider_usage"
 )
+
+// placeholderOutputTokens is the output count a provider reports before it
+// generates anything. Anthropic's message_start (and the Bedrock-Anthropic
+// twin, on both dialects) carries input_tokens plus output_tokens: 1, and
+// accumulateAnthropicResponsesUsage MAX-merges usage while the real
+// output_tokens arrives exactly once, in message_delta, at the very end. A
+// mid-stream cut therefore sees the message_start value unchanged.
+//
+// An accumulated count at or below this floor is INDISTINGUISHABLE from that
+// placeholder, so it is not evidence of work done and is never billed. The
+// cost of the rule is one output token on a provider that really did stop
+// after one; the cost of dropping it is an ~89% underbill across the whole
+// Anthropic dialect, reported as a successful bill (issue #79).
+const placeholderOutputTokens = 1
 
 // nextChunk reads the next chunk from a stream channel while also watching the
 // client. It returns more=false when the provider closed the channel OR the
@@ -325,6 +352,14 @@ type streamSettler struct {
 	gotUsage         bool
 	observedOutBytes int64
 	settled          bool
+	// chanClosed records that the provider channel reached closure. It gates
+	// the read of the accumulated-usage handle in accumulatedUsage(): the
+	// handle is a pointer the provider goroutine mutates IN PLACE, and every
+	// bifrost provider closes the channel from that same goroutine, after its
+	// last write (`defer { HandleStreamCancellation...; CloseStream }`). The
+	// close is therefore the only happens-before edge that makes the read
+	// safe. Without this gate the money path carries a data race.
+	chanClosed bool
 }
 
 // newChatSettler builds the settler for the OpenAI chat SSE dialect.
@@ -377,9 +412,48 @@ func (s *streamSettler) observe(c *schemas.BifrostStreamChunk) {
 	}
 }
 
+// accumulatedUsage reads the provider's own count of the tokens it had already
+// processed when the gateway cut the stream (issue #79).
+//
+// Source. The count comes from the context handle
+// (schemas.BifrostContextKeyStreamAccumulatedUsage), which every streaming
+// provider registers once and mutates in place, and which the gateway already
+// owns. It is deliberately NOT read from the cancellation chunk: bifrost
+// delivers that chunk with `select { case ch <- chunk: ; case <-ctx.Done(): }`
+// against the context the gateway has ALREADY cancelled — which is what
+// produced the chunk — so both cases are ready and Go picks at random. Sourcing
+// money from that select bills roughly half of the cut streams (measured: 19 of
+// 40). The handle is deterministic.
+//
+// Safety. The handle is read ONLY after the channel closed. See chanClosed.
+//
+// Evidence, not estimate. These are provider-reported counts of work the
+// provider did, so they do not breach the no-estimate rule (DECISIONS.md,
+// Money). A count at or below the placeholder floor is rejected, because it
+// reports no work at all — see placeholderOutputTokens.
+func (s *streamSettler) accumulatedUsage() (int64, int64, bool) {
+	if !s.chanClosed || s.ctx == nil {
+		return 0, 0, false
+	}
+	u, ok := s.ctx.Value(schemas.BifrostContextKeyStreamAccumulatedUsage).(*schemas.BifrostLLMUsage)
+	if !ok || u == nil {
+		return 0, 0, false
+	}
+	in, out := int64(u.PromptTokens), int64(u.CompletionTokens)
+	if in < 0 || out < 0 {
+		// A negative count is a provider or decode fault, never a bill.
+		return 0, 0, false
+	}
+	if out <= placeholderOutputTokens {
+		return 0, 0, false
+	}
+	return in, out, true
+}
+
 // settleClean settles a stream whose channel the SSE loop consumed to closure.
 // The producer is finished, so there is nothing left to drain: bill the
-// authoritative usage if the trailer arrived, else meter the loss.
+// authoritative usage if the trailer arrived, else fall through to report(),
+// which tries the provider's accumulated count and meters what it cannot bill.
 //
 // Note this path is also reached when a disconnect happens to surface as a
 // channel close rather than a write error. That is fine and needs no
@@ -391,6 +465,9 @@ func (s *streamSettler) settleClean() {
 		return // defence in depth: a stream is billed at most once
 	}
 	s.settled = true
+	// The SSE loop consumed the channel to closure, so the producer has
+	// finished. That is the happens-before edge accumulatedUsage() needs.
+	s.chanClosed = true
 	s.sc.cancel()
 	if s.gotUsage {
 		// Billing is already async (spawnBillingGoroutine); nothing blocks here.
@@ -525,6 +602,9 @@ func (s *streamSettler) drain(grace time.Duration) string {
 		select {
 		case chunk, ok := <-s.ch:
 			if !ok {
+				// The producer has unwound. Record the happens-before edge
+				// accumulatedUsage() needs before any return below.
+				s.chanClosed = true
 				// Distinguish "the producer finished inside the grace" from
 				// "we cut it off and it then unwound": both close the channel,
 				// but only the first means the grace was sufficient. Collapsing
@@ -569,7 +649,24 @@ func (s *streamSettler) drain(grace time.Duration) string {
 
 // report settles the stream: bill the provider's numbers, or meter the loss.
 // There is no third option — an estimate never reaches this path.
+//
+// Precedence of billable evidence is strict, and it only ever moves UP:
+//
+//	terminal trailer  >  provider-accumulated partial  >  nothing
+//
+// The partial is consulted ONLY when no trailer arrived, so a recovered
+// trailer always wins and can never be overwritten downward (issue #79).
 func (s *streamSettler) report(reason, outcome string) {
+	partial := false
+	if !s.gotUsage {
+		if in, out, ok := s.accumulatedUsage(); ok {
+			s.in, s.out, s.gotUsage, partial = in, out, true, true
+			s.h.logger.Info(s.loop+": no trailer; settling from the provider's accumulated count at the cut",
+				"provider", s.provider, "model", s.model, "project_id", s.projectID,
+				"reason", reason, "drain_outcome", outcome,
+				"input_tokens", s.in, "output_tokens", s.out)
+		}
+	}
 	if s.gotUsage {
 		// We recovered the authoritative numbers — but the increment can still
 		// be refused (graceful shutdown already set billingClosing). If that
@@ -578,20 +675,37 @@ func (s *streamSettler) report(reason, outcome string) {
 		// (gateway-review blocker 1, reproduced on the deploy path).
 		switch s.h.updateUsage(context.Background(), s.provider, s.model, s.in, s.out, s.projectID, s.userID) {
 		case billBilled:
+			if partial {
+				// Billed, and STILL reported. A partial count is a floor on
+				// the real usage, so the remainder is an underbill of unknown
+				// size. Suppressing the event here is what turned the first
+				// attempt at issue #79 into an invisible ~89% underbill.
+				s.reportPartialBill(reason, outcome)
+			}
 			return
 		case billNotBillable:
 			// Nothing was billable in the first place (no gate wired, no
 			// resolvable project, zero-priced model). Not a loss — do NOT
-			// alarm, or the one signal that detects real loss drowns.
+			// alarm, or the one signal that detects real loss drowns. That
+			// holds for a partial too: no money moved, so there is no gap.
 			return
 		case billRefused:
 		}
 		s.h.logger.Warn(s.loop+": provider usage recovered but the billing increment was refused; spend dropped",
 			"provider", s.provider, "model", s.model, "project_id", s.projectID,
-			"reason", reason, "drain_outcome", outcome,
+			"reason", reason, "drain_outcome", outcome, "partial", partial,
 			"input_tokens", s.in, "output_tokens", s.out)
-		s.h.publishUnbilledStreamEvent(s.projectID, s.provider, s.model,
-			lossReasonBillingRefused, outcome, s.observedOutBytes)
+		s.h.publishStreamLossEvent(unbilledStreamPayload{
+			ProjectID:           s.projectID,
+			Provider:            s.provider,
+			Model:               s.model,
+			Reason:              lossReasonBillingRefused,
+			DrainOutcome:        outcome,
+			ObservedOutputBytes: s.observedOutBytes,
+			ExitReason:          reason,
+			PartialInputTokens:  partialOnly(partial, s.in),
+			PartialOutputTokens: partialOnly(partial, s.out),
+		})
 		return
 	}
 	s.h.logger.Warn(s.loop+": stream ended with no provider usage; response unbilled",
@@ -599,6 +713,33 @@ func (s *streamSettler) report(reason, outcome string) {
 		"reason", reason, "drain_outcome", outcome,
 		"observed_output_bytes", s.observedOutBytes)
 	s.h.publishUnbilledStreamEvent(s.projectID, s.provider, s.model, reason, outcome, s.observedOutBytes)
+}
+
+// reportPartialBill records a stream that WAS billed, but only from the
+// provider's accumulated count at the cut. It rides budget.unbilled_stream so
+// an operator who alarms on that event sees it, and carries its own `reason`
+// so the two cases stay separable on a dashboard.
+func (s *streamSettler) reportPartialBill(reason, outcome string) {
+	s.h.publishStreamLossEvent(unbilledStreamPayload{
+		ProjectID:           s.projectID,
+		Provider:            s.provider,
+		Model:               s.model,
+		Reason:              lossReasonPartialProviderUsage,
+		DrainOutcome:        outcome,
+		ObservedOutputBytes: s.observedOutBytes,
+		ExitReason:          reason,
+		PartialInputTokens:  s.in,
+		PartialOutputTokens: s.out,
+	})
+}
+
+// partialOnly returns n when the settlement came from a partial count, else 0.
+// It keeps the partial token fields empty on every event that is not one.
+func partialOnly(partial bool, n int64) int64 {
+	if !partial {
+		return 0
+	}
+	return n
 }
 
 // slotLimiter bounds a pool of long-lived slots both globally and per project.
@@ -705,6 +846,19 @@ type unbilledStreamPayload struct {
 	Reason              string `json:"reason"`
 	DrainOutcome        string `json:"drain_outcome"`
 	ObservedOutputBytes int64  `json:"observed_output_bytes"`
+
+	// ExitReason carries the stream's exit trigger on the events whose Reason
+	// reports HOW the stream settled instead (partial_provider_usage,
+	// billing_refused). It is empty on the plain loss events, where Reason is
+	// already the exit trigger.
+	ExitReason string `json:"exit_reason,omitempty"`
+	// PartialInputTokens and PartialOutputTokens are the provider-accumulated
+	// counts a stream settled from when no terminal trailer arrived (issue
+	// #79). They are a FLOOR on the real usage, never the total — the
+	// remainder is unknown and stays unbilled, which is what makes this event
+	// necessary even on a stream that WAS billed. Zero on every other event.
+	PartialInputTokens  int64 `json:"partial_input_tokens,omitempty"`
+	PartialOutputTokens int64 `json:"partial_output_tokens,omitempty"`
 }
 
 // publishUnbilledStreamEvent emits budget.unbilled_stream onto gateway.events.*
@@ -712,28 +866,37 @@ type unbilledStreamPayload struct {
 // (issue #9 acceptance criterion: "the loss is explicitly metered and alarmed").
 // Best-effort: a publish failure is logged, never fatal — the WARN log remains.
 func (h *Handler) publishUnbilledStreamEvent(projectID, provider, model, reason, outcome string, outBytes int64) {
-	if h.opsEvents == nil {
-		return
-	}
-	// Normalise the identity exactly like the billing path does: projectID
-	// comes from a header, and every sibling money/event path routes it through
-	// parseProjectID before use. An unresolvable project has no budget row and
-	// nothing to attribute, so there is nothing to publish.
-	pid := parseProjectID(projectID)
-	if pid < 0 {
-		h.logger.Warn("unbilled-stream event: unresolvable project id; loss not attributable",
-			"project_id", projectID, "provider", provider, "model", model, "reason", reason)
-		return
-	}
-	scopeID := strconv.Itoa(pid)
-	payload, err := json.Marshal(unbilledStreamPayload{
-		ProjectID:           scopeID,
+	h.publishStreamLossEvent(unbilledStreamPayload{
+		ProjectID:           projectID,
 		Provider:            provider,
 		Model:               model,
 		Reason:              reason,
 		DrainOutcome:        outcome,
 		ObservedOutputBytes: outBytes,
 	})
+}
+
+// publishStreamLossEvent publishes one budget.unbilled_stream body. It is the
+// shared body of publishUnbilledStreamEvent and the partial-bill event, so
+// both normalise the project id and bound the publish the same way.
+func (h *Handler) publishStreamLossEvent(p unbilledStreamPayload) {
+	pub := h.budget().ops
+	if pub == nil {
+		return
+	}
+	// Normalise the identity exactly like the billing path does: projectID
+	// comes from a header, and every sibling money/event path routes it through
+	// parseProjectID before use. An unresolvable project has no budget row and
+	// nothing to attribute, so there is nothing to publish.
+	pid := parseProjectID(p.ProjectID)
+	if pid < 0 {
+		h.logger.Warn("unbilled-stream event: unresolvable project id; loss not attributable",
+			"project_id", p.ProjectID, "provider", p.Provider, "model", p.Model, "reason", p.Reason)
+		return
+	}
+	scopeID := strconv.Itoa(pid)
+	p.ProjectID = scopeID
+	payload, err := json.Marshal(p)
 	if err != nil {
 		h.logger.Warn("unbilled-stream event: marshal payload failed", "err", err)
 		return
@@ -751,7 +914,7 @@ func (h *Handler) publishUnbilledStreamEvent(projectID, provider, model, reason,
 	// Detached context: the request context is cancelled by now, by design.
 	pubCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	if err := h.opsEvents.PublishOpsEvent(pubCtx, env); err != nil {
+	if err := pub.PublishOpsEvent(pubCtx, env); err != nil {
 		h.logger.Warn("unbilled-stream event: publish failed", "project_id", scopeID, "err", err)
 	}
 }

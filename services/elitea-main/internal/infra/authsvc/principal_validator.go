@@ -16,6 +16,10 @@ import (
 
 var ErrPrincipalInactive = auth.ErrPrincipalInactive
 
+// ErrPrincipalUnavailable marks a refusal the principal STORE caused, rather
+// than one the principal caused (#537). Every caller must answer 5xx for it.
+var ErrPrincipalUnavailable = auth.ErrPrincipalUnavailable
+
 type principalQueries interface {
 	GetActivePATPrincipalByID(
 		context.Context,
@@ -111,9 +115,20 @@ func principalDatabaseID(value string) (int32, bool) {
 	return int32(id), true
 }
 
+// principalValidationError separates the two answers PostgreSQL gives.
+//
+// pgx.ErrNoRows is the store answering: no active row of this kind, so the
+// principal may not act. Every other error is the store NOT answering — a pool
+// timeout, a cancelled context, a dropped connection — and the principal was
+// never read. The second case carries ErrPrincipalUnavailable so the caller
+// answers 5xx and not 401 (#537).
+//
+// The cause is kept in the chain for the log line. It must not reach the
+// client: the message names the store, and the store's message can name a
+// host, a database, or a query.
 func principalValidationError(kind string, err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrPrincipalInactive
 	}
-	return fmt.Errorf("authsvc: validate active %s: %w", kind, err)
+	return fmt.Errorf("authsvc: validate active %s: %w: %w", kind, ErrPrincipalUnavailable, err)
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,109 @@ func TestPinMatchesTheWorkerLockFile(t *testing.T) {
 			t.Fatalf("patch revision %d differs: %s names %s, sdk-pin.json verified %s",
 				i, pin.LockFile, lock.Source.PatchRevisions[i], want)
 		}
+	}
+}
+
+// ── The pin states CONTENT, not only identity (#567) ─────────────────────────
+
+// TestThePinStatesTheContentTheGatesRead is the regression test for #567.
+//
+// Both compatibility tiers identified the SDK checkout by `git rev-parse HEAD`
+// alone. That answers WHICH commit is checked out, not WHAT the working tree
+// holds, so a dirty checkout kept the pinned HEAD and an operator could mint a
+// green pin from a run that measured other bytes. `git rev-parse` also walks UP
+// to an enclosing repository, so a hand-authored directory inside a pinned
+// clone reports the pinned revision too.
+//
+// The fix is a content list. This test fails when that list is dropped or
+// emptied, because both gates then hash nothing and pass for any tree.
+func TestThePinStatesTheContentTheGatesRead(t *testing.T) {
+	pin, err := Load()
+	if err != nil {
+		t.Fatalf("sdk-pin.json is not usable: %v", err)
+	}
+	if len(pin.VerifiedAgainst.Contents) == 0 {
+		t.Fatal("verified_against.contents is empty. A revision names which commit is " +
+			"checked out, not what the tree holds, so the gates would accept a dirty " +
+			"checkout again (#567).")
+	}
+	for _, entry := range pin.VerifiedAgainst.Contents {
+		if entry.Path == "" || entry.SHA256 == "" {
+			t.Fatalf("contents entry %+v carries an empty field", entry)
+		}
+	}
+}
+
+// TestParseRefusesAPinTheGatesCannotActOn states each shape that would make the
+// content check vacuous or unsafe, and sees it refused. A validator that only
+// ever runs on the one good file in the tree is a validator nobody has watched
+// fail.
+func TestParseRefusesAPinTheGatesCannotActOn(t *testing.T) {
+	const (
+		revision = `"b5113a129329b85d23c2d5c2bf55f18e307414ec"`
+		patches  = `["5c9409779ac0a55f8bf74f6ef438977089187a14"]`
+		digest   = "510969b0fdd1b153ba96bc1e3673b6e3d2c7ceed95c7196d5a18b0511fd3273d"
+	)
+	document := func(contents string) []byte {
+		return []byte(`{"lock_file":"lock.json","verified_against":{"revision":` +
+			revision + `,"patch_revisions":` + patches + `,"contents":` + contents + `}}`)
+	}
+
+	good := document(`[{"path":"elitea_sdk/runtime/exceptions.py","sha256":"` + digest + `"}]`)
+	if _, err := parse(good); err != nil {
+		t.Fatalf("a well-formed pin was refused: %v", err)
+	}
+
+	for _, testCase := range []struct {
+		name     string
+		contents string
+		why      string
+	}{
+		{
+			name:     "absent",
+			contents: `null`,
+			why:      "a gate with no file to hash passes for every checkout",
+		},
+		{
+			name:     "empty",
+			contents: `[]`,
+			why:      "the same hole, written as a list",
+		},
+		{
+			name:     "no path",
+			contents: `[{"path":"","sha256":"` + digest + `"}]`,
+			why:      "a digest with no file names nothing to compare",
+		},
+		{
+			name:     "absolute path",
+			contents: `[{"path":"/etc/passwd","sha256":"` + digest + `"}]`,
+			why:      "a gate must hash a file inside the SDK checkout",
+		},
+		{
+			name:     "path leaves the checkout",
+			contents: `[{"path":"elitea_sdk/../../secret.py","sha256":"` + digest + `"}]`,
+			why:      "the same escape, written with a parent segment",
+		},
+		{
+			name:     "short digest",
+			contents: `[{"path":"a.py","sha256":"510969b0"}]`,
+			why:      "a truncated digest matches nothing any hashing tool prints",
+		},
+		{
+			name:     "upper-case digest",
+			contents: `[{"path":"a.py","sha256":"` + strings.ToUpper(digest) + `"}]`,
+			why:      "the gates compare digests as strings",
+		},
+		{
+			name:     "one file listed twice",
+			contents: `[{"path":"a.py","sha256":"` + digest + `"},{"path":"a.py","sha256":"` + digest + `"}]`,
+			why:      "two digests for one file cannot both hold",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := parse(document(testCase.contents)); err == nil {
+				t.Fatalf("parse accepted contents %s — %s", testCase.contents, testCase.why)
+			}
+		})
 	}
 }

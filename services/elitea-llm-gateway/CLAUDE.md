@@ -17,6 +17,22 @@ because each was a real bug found across 3 review rounds.
   path. Prices are **per-1M tokens** (guard the 1000× denomination bug).
 - Use `math/big` where an int64 multiply could overflow; guard `big.Int.Int64()`
   with `IsInt64()`.
+- **A cut stream settles from the provider's ACCUMULATED count, read off the
+  context handle** (`schemas.BifrostContextKeyStreamAccumulatedUsage`,
+  `streamSettler.accumulatedUsage`, issue #79). Three rules hold that path
+  together, and each one was a real defect first:
+  1. Read the HANDLE, never the cancellation chunk. bifrost delivers that chunk
+     with a `select` against a context the gateway has already cancelled, so
+     both cases are ready and delivery is a coin flip (~half the streams).
+  2. Reject a count at or below `placeholderOutputTokens`. Anthropic's
+     `message_start` reports `output_tokens: 1` before it generates anything,
+     and the accumulator MAX-merges, so a mid-stream cut sees that value
+     unchanged. Billing it is an ~89% underbill reported as a success.
+  3. A partial bill STILL publishes `budget.unbilled_stream`, with reason
+     `partial_provider_usage`. A partial count is a floor, not the total.
+  Precedence is terminal trailer > partial > nothing, and it only moves up.
+  Read the handle ONLY after the provider closed the channel: the provider
+  mutates it in place, and the close is the sole happens-before edge.
 
 ## Enforcement policy (do not weaken without a human)
 - **Fail CLOSED** on a budget-store / Postgres read error while NATS is up — never
@@ -24,6 +40,17 @@ because each was a real bug found across 3 review rounds.
 - Budget gate runs **before** the provider on EVERY /llm endpoint (chat,
   responses, text, embeddings, images, messages). Adding a new endpoint? It MUST
   call checkBudget before dispatch and updateUsage after.
+- **Read the budget path with `h.budget()`, ONCE per operation.** The gate, the
+  price calculator, both event publishers and the `budget_used` reader are one
+  immutable value behind one `atomic.Pointer`
+  (`internal/llmproxy/budget_plane.go`), because a gateway that boots during a
+  NATS outage installs them later, while it serves traffic (issue #315). Do NOT
+  add a plain `Handler` field for anything on that path, and do NOT load the
+  plane twice in one operation — pass the snapshot down, as `admissionVerdictFor`
+  and `spawnBillingGoroutine` do. `InstallBudgetEnforcement` installs ONCE: it
+  refuses a nil gate and refuses to replace one. Keep both refusals; they are
+  what makes the snapshots safe and what stops a transport error from turning
+  enforcement off.
 - The model a caller sends is **mapped to the provider's own model name before
   dispatch** (`mapModel`, internal/llmproxy/modelmap.go). Adding a new endpoint
   that carries a model? It MUST call `mapModel` after the decode and BEFORE
@@ -91,6 +118,15 @@ because each was a real bug found across 3 review rounds.
   the one refusal whose code is not the OpenAI canonical one; the project
   ceiling keeps `insufficient_quota` because the cutover gate asserts it and the
   SDK resolves an unknown code to the project scope.
+- **Every ceiling that refuses sends a soft alert first.** `trySoftAlert` is
+  scope-generic (issue #510): pass `scope` + `scopeID`, and run it for the
+  member ceiling as well as the project one. Give each scope its OWN
+  pre-increment snapshot; the crossing test compares that scope's before with
+  that scope's after. Add a new ceiling? It MUST get a crossing check too.
+  Publish the event on the PROJECT's subject for every scope —
+  `PublishSoftAlertEvent` builds `gateway.events.project.<id>.events` from its
+  first argument, so a member scope_id there reaches nobody. Put which budget
+  crossed in the payload (`scope`, `scope_id`, `user_id`).
 
 ## Security / trust boundary
 - **CORS does not apply to a WebSocket handshake.** `/llm/v1/realtime` is the
@@ -102,6 +138,24 @@ because each was a real bug found across 3 review rounds.
   Strip client-supplied Cookie/Authorization/X-Api-Key/X-Auth-*/X-Elitea-* before
   proxying; the gateway sees only edge-signed identity.
 - Never log credentials/tokens/master keys or a URL containing userinfo (redact).
+- **The hop marker is the loop detector; the loop breaker is not** (issue #164).
+  The gateway sets `X-Elitea-Llm-Hop` on every outbound provider request
+  (`internal/account`) and refuses an inbound request that carries this
+  deployment's own marker (`internal/llmproxy/hopguard.go`, mounted on the
+  ROUTER ROOT in `internal/api/router.go`). Keep three rules:
+  1. Key it from `GATEWAY_HOP_SECRET` ONLY. Never use `GATEWAY_IDENTITY_SECRET`
+     and never derive one from the other. The marker goes to every upstream, and
+     a provider `api_base` is tenant-authored.
+  2. Keep detection STATELESS. Read the header, compare it, refuse that request,
+     record nothing. Any upstream can harvest the marker, so a refusal that fed
+     a counter or opened a circuit would become a cross-tenant denial of
+     service.
+  3. Mount it on the router root, not per route. A loop can aim at a path the
+     gateway does not serve, and a 404 never reaches admission.
+  The browser edges delete every other `X-Elitea-*` name; this one is exempt on
+  purpose. `mustForwardHeaders` in `services/elitea-main/tests/deployedge/
+  edge_identity_strip_test.go` holds the exemption, and
+  `internal/hopmarker/path_pin_test.go` fails when the two modules drift.
 
 ## Wiring (the bug class that recurred 3×)
 - Any lifecycle method (Start/Drain/DrainBilling/Close) that must run to be

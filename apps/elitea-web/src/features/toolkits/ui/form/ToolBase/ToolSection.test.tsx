@@ -1,7 +1,11 @@
+import type { ReactElement } from 'react';
+
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
-import { renderWithTheme } from '@/shared/ui/lib/testTheme';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+
+import { renderWithTheme as renderWithThemeOnly } from '@/shared/ui/lib/testTheme';
 
 import { ToolSection } from './ToolSection';
 import type { ToolErrors } from './types';
@@ -25,6 +29,20 @@ function baseFormState(overrides: Partial<{ toolErrors: ToolErrors }> = {}) {
     showValidation: false,
     setToolErrors: vi.fn(),
   };
+}
+
+/**
+ * #441 wired the secret field to the real secret list and permission list,
+ * so a secret-kind field now runs two TanStack queries. `renderWithTheme`
+ * supplies a theme only, so every render below adds a throwaway
+ * `QueryClient`. No handler is registered on purpose: these tests assert the
+ * field's own markup, not its data, and an unhandled request simply leaves
+ * both queries empty. `SecretFieldInput.permission.test.tsx` owns the
+ * data-dependent assertions.
+ */
+function renderWithTheme(ui: ReactElement): ReturnType<typeof renderWithThemeOnly> {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderWithThemeOnly(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
 describe('ToolSection', () => {

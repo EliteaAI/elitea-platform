@@ -184,6 +184,64 @@ func TestStorePreparedIndexIngestDoesNotRedeliverWinnerAfterAuthority(t *testing
 	}
 }
 
+// TestStorePreparedIndexIngestReturnsWinnerAfterCompetingPublisherPublished
+// pins the window that lost one publish attempt. This publisher signs while a
+// competitor stores, appends and publishes the same command, so the job is
+// DISPATCHED when this publisher reaches the envelope CAS. No worker holds
+// authority yet, so the durable winner stays returnable. A refusal here is
+// reported to the dispatcher as success: the publisher drops its append and
+// its publish attempt without an error.
+func TestStorePreparedIndexIngestReturnsWinnerAfterCompetingPublisherPublished(t *testing.T) {
+	winner := repositoryPreparedEnvelope("index-winner")
+	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
+		winner.Bytes, winner.Digest[:], winner.SignatureProfile, winner.KeyID,
+		true, false, false, false, "DISPATCHED",
+	}}}}
+	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := repository.StorePreparedIndexIngest(
+		context.Background(),
+		"index-outbox-1",
+		repositoryPreparedEnvelope("held-signer"),
+	)
+	if err != nil {
+		t.Fatalf("held competing signer error = %v, want the durable winner", err)
+	}
+	if selected.Envelope.Digest != winner.Digest || string(selected.Envelope.Bytes) != string(winner.Bytes) || !selected.Published {
+		t.Fatalf("held competing signer did not receive the published winner: %+v", selected)
+	}
+	if len(executor.execCalls) != 0 {
+		t.Fatal("held competing signer replaced the durable winner")
+	}
+}
+
+// TestStorePreparedIndexIngestRefusesNewEnvelopeAfterDispatch keeps the
+// envelope CAS a one-shot selection. A dispatched job already selected its
+// durable winner, so a candidate that finds no stored envelope must not store
+// a second signature.
+func TestStorePreparedIndexIngestRefusesNewEnvelopeAfterDispatch(t *testing.T) {
+	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{
+		nil, nil, int32(0), "",
+		false, false, false, false, "DISPATCHED",
+	}}}}
+	repository, err := newCommandOutboxRepository(&scriptedStore{scriptedExecutor: executor}, "runtime:index:commands")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.StorePreparedIndexIngest(
+		context.Background(),
+		"index-outbox-1",
+		repositoryPreparedEnvelope("held-signer"),
+	); !errors.Is(err, ErrPendingIndexIngestDispatchNotFound) {
+		t.Fatalf("dispatched job without a stored winner error = %v, want not found", err)
+	}
+	if len(executor.execCalls) != 0 {
+		t.Fatal("dispatched job stored a second index signature")
+	}
+}
+
 func TestLoadPreparedIndexIngestDoesNotRedeliverAfterAuthority(t *testing.T) {
 	winner := repositoryPreparedEnvelope("index-winner")
 	executor := &scriptedExecutor{rowResults: []scriptedRow{{values: []any{

@@ -1365,6 +1365,16 @@ components:
     VersionTag:
       type: object
       properties:
+        id:
+          type: integer
+          description: >
+            NOTE(#345): the `tags` row this association points at. The
+            applications handler emits it on every version-detail read
+            (versionTags, internal/api/v2/applications/handler.go). The
+            export and fork echoes project name and data only, so it is
+            optional. A write ignores it: the handler matches a tag by name,
+            the same way pylon does
+            (legacy/plugins/elitea_core/utils/application_utils.py:219-226).
         name:
           type: string
           nullable: true
@@ -1379,6 +1389,9 @@ components:
         there) and Fork's response echo (:2431-2438), which builds entries
         from unvalidated client maps: a fork payload tag without a name
         yields {"name": null, ...}. Hence name is nullable and not required.
+        NOTE(#345): the same shape is now also the WRITE shape — `tags` on
+        VersionWriteRequest refs this schema, matching pylon's own
+        PromptTagUpdateModel (name, optional data, optional id).
 
     ApplicationVersionDetail:
       type: object
@@ -1602,6 +1615,16 @@ components:
         variables:
           type: array
           items: { $ref: '#/components/schemas/VersionVariable' }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/VersionTag' }
+          description: >
+            NOTE(#345): the version's topical tags. Send the key to replace
+            the stored set; an empty array removes every association row.
+            Omit the key to leave the stored set alone. Each entry is matched
+            by `name`: an existing `tags` row is reused, a new name creates
+            one. Only the PUT (UpdateVersion) writes them — the two create
+            paths still ignore the key, exactly as they ignore `meta`.
         meta:
           allOf: [{ $ref: '#/components/schemas/VersionMeta' }]
         pipeline_settings:
@@ -1615,8 +1638,9 @@ components:
       x-elitea-passthrough: >-
         NOTE(W2): decoded into map[string]any; the handlers read
         name/agent_type/instructions/welcome_message/llm_settings/
-        conversation_starters/variables/meta/pipeline_settings and ignore the
-        rest (internal/api/v2/applications/handler.go:700-781, 828-887).
+        conversation_starters/variables/tags/meta/pipeline_settings and
+        ignore the rest (internal/api/v2/applications/handler.go:700-781,
+        828-887).
 
     SetDefaultVersionRequest:
       type: object
@@ -4545,6 +4569,53 @@ components:
         (internal/api/v2/toolkits/handler.go:526-534). Repository failures are
         returned as a safe 500 error rather than an indistinguishable empty
         successful listing.
+
+    ToolkitTool:
+      type: object
+      required: [id, name, type]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        description: { type: string }
+      description: >
+        NOTE(#440): one row of the two tool-catalogue reads. The Go type is
+        `toolkits.Tool` (internal/api/v2/toolkits/handler.go:21-28). Both
+        queries select the same four columns of `p_{project_id}.elitea_tools`:
+        `id`, `name`, `type` and `COALESCE(description, '')` (:1086-1116).
+        `id` is a JSON string because the struct field is a string. The column
+        itself is the table's `id SERIAL`
+        (internal/infra/db/migrations/001_initial.sql:435-447).
+
+        `description` is optional. The struct tag carries `omitempty`, so an
+        empty column value removes the key.
+
+        TWO STRUCT FIELDS ARE ABSENT ON PURPOSE. `toolkits.Tool` also declares
+        `owner_id` and `settings`. `scanTools` (:1121-1135) assigns neither,
+        and both tags carry `omitempty`, so neither key can reach a client of
+        these two operations. Do not add them here: a contract that promises a
+        key the handler never writes sends the client to look for data that
+        does not exist. The other producer of the same struct is `ForkToolkit`,
+        which this document does not describe.
+
+    ToolkitToolsPayload:
+      type: object
+      required: [tools, total]
+      properties:
+        tools:
+          type: array
+          items: { $ref: '#/components/schemas/ToolkitTool' }
+        total: { type: integer }
+      description: >
+        NOTE(#440): the `{tools, total}` envelope that both tool-catalogue
+        reads write (internal/api/v2/toolkits/handler.go:522, 544). `total` is
+        `len(tools)` of the SAME response, not a page count: neither operation
+        pages. Both keys are always present, so an absent `tools` key is a
+        transport fault, not an empty catalogue.
+
+        AN EMPTY LIST IS A RESULT, NOT A FAULT (#381). A failed read gives 500
+        and a named reason. Only a toolkit with no tools gives 200 and an empty
+        array. Render the two apart.
 
     # ---- MCP (issue 252) ---------------------------------------------------
 
@@ -10523,6 +10594,115 @@ paths:
               schema:
                 $ref: '#/components/schemas/ToolkitInstance'
         '400': { $ref: '#/components/responses/400' }
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  # NOTE(#440): the TOOL CATALOGUE of a toolkit — two reads that answer
+  # "which tools may this toolkit run?". Both routes have always been mounted
+  # (internal/api/router.go:1911-1914, behind the
+  # `models.applications.tool.details` permission). Until issue #440 no client
+  # called either one, and this document did not describe them, so
+  # `apps/elitea-web` reaches them through the hand-written
+  # `src/entities/toolkit/api/toolkitToolsApi.ts` and records both in
+  # `src/shared/api/endpoints.manifest.json`.
+  #
+  # THE TWO ARE NOT INTERCHANGEABLE. `toolkit_available_tools` takes a saved
+  # toolkit INSTANCE id and reads the rows mapped to it. `toolkit_discover_tools`
+  # takes a toolkit TYPE name and reads every row of that type in the project.
+  # A tool picker uses the first when the toolkit is saved, and the second
+  # while the toolkit is still being created and has no id.
+  /elitea_core/toolkit_available_tools/prompt_lib/{project_id}/{toolkit_id}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_id
+        in: path
+        required: true
+        schema: { type: string }
+        description: >
+          The saved toolkit instance. The handler reads the segment and passes
+          it straight to the query as `entity_version_id`
+          (internal/api/v2/toolkits/handler.go:513, 1086-1101), so it is a
+          string here, like the `{toolkitID}` chi placeholder it fills.
+
+    get:
+      operationId: listToolkitAvailableTools
+      summary: List the tools that one toolkit instance has
+      description: |
+        NOTE(#440): internal/api/v2/toolkits/handler.go:511-523
+        (AvailableTools) calling pgRepo.AvailableTools (:1086-1101). The query
+        joins `entity_tool_mapping` to `elitea_tools` on the toolkit id.
+        Registered at internal/api/router.go:1911-1912.
+
+        GUARDRAILS FILTER THE RESULT. `filterBlockedTools`
+        (internal/api/v2/toolkits/guardrails.go:120-132) drops every row whose
+        TYPE this deployment blocks. The response stays 200 and the count
+        follows the filtered list, because a blocked type is not a tool the
+        caller may run.
+
+        A LOST READ IS NOT AN EMPTY CATALOGUE (#381). Any repository fault —
+        a dead pool, a missing tenant schema, a bad row, a row set that ends
+        early — gives 500 with `{"error": "available tools read failed"}`. The
+        driver detail goes to the log only. A toolkit with no tools gives 200
+        and an empty array.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: The tools this toolkit instance has
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitToolsPayload'
+        '401': { $ref: '#/components/responses/401' }
+        '403': { $ref: '#/components/responses/403' }
+        '500': { $ref: '#/components/responses/500' }
+
+  /elitea_core/toolkit_discover_tools/prompt_lib/{project_id}/{toolkit_type}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectId'
+      - name: toolkit_type
+        in: path
+        required: true
+        schema: { type: string }
+        description: >
+          A toolkit type name, for example `github` or `openapi`. The handler
+          matches it against the `type` column exactly
+          (internal/api/v2/toolkits/handler.go:1105-1116). An unknown type is
+          not an error: it selects no rows and gives an empty list.
+
+    post:
+      operationId: discoverToolkitTools
+      summary: List the tools that one toolkit type offers in a project
+      description: |
+        NOTE(#440): internal/api/v2/toolkits/handler.go:527-545 (DiscoverTools)
+        calling pgRepo.DiscoverTools (:1105-1116). Registered at
+        internal/api/router.go:1913-1914.
+
+        POST WITH NO BODY. The handler reads both arguments from the URL and
+        never opens the request body. pylon declares the verb, so the route
+        keeps it. Send no payload; the handler discards one.
+
+        A BLOCKED TYPE IS REFUSED, NOT EMPTIED. The type sits in the URL, so
+        `refuseBlockedToolkitType`
+        (internal/api/v2/toolkits/guardrails.go:82-97) answers 403 and NAMES
+        the type: `{"error": "toolkit type \"<name>\" is blocked by this
+        deployment's guardrails"}`. "This deployment blocks this type" and
+        "this project holds no toolkit of this type" are different facts, and
+        an operator who reads a bare 403 goes to the roles page instead of the
+        guardrail rule. `filterBlockedTools` then drops any surviving blocked
+        row from the list, exactly as it does for the read above.
+
+        A LOST READ IS NOT AN EMPTY CATALOGUE (#381). A repository fault gives
+        500 with `{"error": "discover tools read failed"}`, for the same reason
+        `listToolkitAvailableTools` does.
+      tags: [toolkits]
+      responses:
+        '200':
+          description: The tools of this type that the project holds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolkitToolsPayload'
         '401': { $ref: '#/components/responses/401' }
         '403': { $ref: '#/components/responses/403' }
         '500': { $ref: '#/components/responses/500' }

@@ -10,11 +10,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -81,6 +83,15 @@ func WithNATSConnector(fn natsConnector) Option {
 	return func(o *options) { o.natsConnect = fn }
 }
 
+// ErrNATSNotConfigured is returned by RedialNATS when GATEWAY_NATS_URL is
+// unset. A NATS-less deployment is a deliberate posture, not a fault, so a
+// caller must not retry it.
+var ErrNATSNotConfigured = errors.New("server: NATS is not configured")
+
+// ErrServerClosed is returned by RedialNATS after Close. It stops a background
+// re-dial from opening a connection that nothing will ever close.
+var ErrServerClosed = errors.New("server: closed")
+
 // Server owns the embedded bifrost/core client and the HTTP server that
 // fronts the /llm surface.
 type Server struct {
@@ -88,7 +99,17 @@ type Server struct {
 	core   *bifrost.Bifrost
 	http   *http.Server
 	logger *slog.Logger
+
+	// natsConnect is the connector New used. It is kept so a re-dial goes
+	// through the SAME seam a test injects (issue #315).
+	natsConnect natsConnector
+
+	// natsMu guards nats and closed. The client is dialled once in New, but a
+	// gateway that started without one re-dials in the background, so the field
+	// has a writer that runs while /readyz and the shutdown path read it.
+	natsMu sync.Mutex
 	nats   NATSClient // nil when GATEWAY_NATS_URL is unset (NATS disabled)
+	closed bool
 }
 
 // New initialises bifrost/core with the injected slog/OTel logger and the
@@ -161,11 +182,12 @@ func New(ctx context.Context, cfg config.Config, logger *slog.Logger, level *slo
 	}
 
 	return &Server{
-		cfg:    cfg,
-		core:   core,
-		http:   srv,
-		logger: logger,
-		nats:   natsClient,
+		cfg:         cfg,
+		core:        core,
+		http:        srv,
+		logger:      logger,
+		natsConnect: o.natsConnect,
+		nats:        natsClient,
 	}, nil
 }
 
@@ -176,7 +198,49 @@ func (s *Server) Core() *bifrost.Bifrost { return s.core }
 // NATS exposes the budget-path client to downstream governance wiring (the
 // GovernanceStore + tiered-hybrid FSM added by later BF0.4 subtasks). It is
 // nil when NATS is disabled or was unreachable at startup; callers MUST nil-check.
-func (s *Server) NATS() NATSClient { return s.nats }
+func (s *Server) NATS() NATSClient {
+	s.natsMu.Lock()
+	defer s.natsMu.Unlock()
+	return s.nats
+}
+
+// RedialNATS opens the budget-path client again, and reports the live client
+// when one is already connected.
+//
+// It exists because New dials EXACTLY ONCE, and nats.go only resurrects a
+// connection that succeeded at least once: a failed initial dial leaves the
+// client nil for the life of the process, so budget enforcement never comes
+// back on its own (issues #304, #315). A caller polls this method, and installs
+// enforcement on the running handler when it returns a client.
+//
+// It never opens a second connection: the whole method holds one mutex, and a
+// caller that arrives after another succeeded gets the same client back.
+func (s *Server) RedialNATS(ctx context.Context) (NATSClient, error) {
+	if s.cfg.NATSURL == "" {
+		return nil, ErrNATSNotConfigured
+	}
+	s.natsMu.Lock()
+	defer s.natsMu.Unlock()
+	if s.closed {
+		return nil, ErrServerClosed
+	}
+	if s.nats != nil {
+		return s.nats, nil
+	}
+	nc, err := s.natsConnect(ctx, natsinfra.Config{
+		URL:                s.cfg.NATSURL,
+		Name:               s.cfg.ServiceName,
+		CBFailureThreshold: s.cfg.CBFailureThreshold,
+		CBOpenDuration:     s.cfg.CBOpenDuration,
+		Replicas:           s.cfg.NATSReplicas,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("server: re-dial NATS: %w", err)
+	}
+	s.nats = nc
+	s.logger.Info("NATS budget path reconnected", "url", redactURL(s.cfg.NATSURL), "replicas", s.cfg.NATSReplicas)
+	return nc, nil
+}
 
 // ListenAndServe starts the HTTP server. When TLSCertFile and TLSKeyFile are
 // both configured it switches to TLS; if TLSCAFile is also set the server
@@ -305,6 +369,11 @@ func (s *Server) ShutdownHTTP(ctx context.Context) error {
 // store's persist drain — so no increment lands on a closed connection.
 // Idempotent enough for the shutdown path (Close is only called once).
 func (s *Server) Close() {
+	s.natsMu.Lock()
+	defer s.natsMu.Unlock()
+	// closed stops a background re-dial from opening a connection after this
+	// point: nothing would ever close it.
+	s.closed = true
 	if s.nats != nil {
 		s.nats.Close()
 	}

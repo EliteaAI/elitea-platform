@@ -21,8 +21,27 @@
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 
+import { checkFloors } from './lib/gate-floor.mjs';
+
 const ROUTES = 'src/routes';
 const OUT = 'parity/route-wiring-map.json';
+
+/*
+ * Floor on the walked route set (issue #528).
+ *
+ * `--check` compares the emitted bytes against the committed artifact, so it
+ * proves only that the two agree. A run that walks NO route emits
+ * `total: 0, routes: []`, and the writer branch accepts that. Commit it once
+ * and `--check` agrees with it forever, at zero routes.
+ *
+ * A renamed `src/routes` covers one vector by accident — `walk` throws. A
+ * changed file filter, an added skip, or a route tree that moves one level
+ * deeper does not throw. It just walks less.
+ *
+ * Measured on 2026-08-28: 79 routes (53 wired, 25 unreviewed, 1
+ * parity-dead-code).
+ */
+const MIN_ROUTES = 60;
 
 /**
  * status values:
@@ -83,7 +102,7 @@ const RESOLUTION = {
   '_shell/settings/create-configuration.tsx': ['pages/credentials/CreateCredential', 'CreateCredential', ['context', 'credentialType', 'configurationMode', 'onCreated', 'onCancelled', 'onTypeChosen'], 'wired', '`credentialType` comes from the ROUTE-064 child match, same shape as its /credentials twin.'],
   '_shell/settings/edit-configuration.$credential_uid.tsx': ['pages/credentials/EditCredential', 'EditCredential', ['context', 'credentialUid', 'configurationMode', 'onSaved', 'onDiscarded'], 'wired', 'ROUTE-065. Param is $credential_uid, NOT $uid — "the MOUNTED route wins".'],
   '_shell/settings/secrets.tsx': ['pages/settings/Secrets', 'SecretsContent', ['shouldCreate', 'search', 'onSearchChange'], 'wired', 'Renders SecretsContent AND a RouteShell heading. Also passes search="" / onSearchChange={() => {}} — the search control is dead. Route must own search state.'],
-  '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'wired', 'Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).'],
+  '_shell/settings/model-configuration.tsx': ['pages/settings/AIConfiguration', 'AIConfiguration', ['projectId'], 'wired', 'Renders AIConfiguration AND a RouteShell heading. The ModelConfiguration layer (issue #80) is now composed inside AIConfiguration.'],
 
   // ---- skills (A3, issue #23) ----
   '_shell/skills/$tab.tsx': ['pages/skills/Skills', 'Skills', [], 'wired', ''],
@@ -356,6 +375,17 @@ const out = {
   byDomain: rows.reduce((a, r) => ({ ...a, [r.domain]: (a[r.domain] ?? 0) + 1 }), {}),
   routes: rows,
 };
+
+// The floor runs before either branch. An empty walk emits an empty map, and
+// an empty map committed once makes `--check` agree with itself forever.
+const floors = checkFloors('build-route-wiring-map', [
+  { subject: `route files walked under ${ROUTES}`, observed: rows.length, floor: MIN_ROUTES },
+]);
+for (const line of floors.lines) console.log(line);
+if (!floors.ok) {
+  console.error(floors.error);
+  process.exit(5);
+}
 
 const json = `${JSON.stringify(out, null, 2)}\n`;
 if (process.argv.includes('--check')) {

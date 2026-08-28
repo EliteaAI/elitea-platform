@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
@@ -108,8 +109,11 @@ func (h *Handler) PlatformSettings(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	if h.pool != nil && projectID != "" {
 		ctx := r.Context()
-		s := fmt.Sprintf("p_%s", projectID)
-		q := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE type = 'environment_settings' LIMIT 1`, s)
+		s, schemaOK := tenantSchema(w, projectID)
+		if !schemaOK {
+			return
+		}
+		q := fmt.Sprintf(`SELECT data FROM %s.configuration WHERE type = 'environment_settings' LIMIT 1`, s)
 		var data []byte
 		if err := h.pool.QueryRow(ctx, q).Scan(&data); err == nil && len(data) > 0 {
 			var dbSettings map[string]any
@@ -253,9 +257,12 @@ func (h *Handler) ProjectContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 
-	q := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE type = 'project_context' LIMIT 1`, s)
+	q := fmt.Sprintf(`SELECT data FROM %s.configuration WHERE type = 'project_context' LIMIT 1`, s)
 	var data []byte
 	err := h.pool.QueryRow(ctx, q).Scan(&data)
 	if err != nil || len(data) == 0 {
@@ -284,18 +291,21 @@ func (h *Handler) UpdateProjectContext(w http.ResponseWriter, r *http.Request) {
 
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 
 	dataBytes, _ := json.Marshal(map[string]any{"content": body.Content, "enabled": body.Enabled})
 
 	q := fmt.Sprintf(`
-		INSERT INTO %q.configuration (elitea_title, label, type, data, section, status_ok, created_at)
+		INSERT INTO %s.configuration (elitea_title, label, type, data, section, status_ok, created_at)
 		VALUES ('project_context_' || $1, 'Project Context', 'project_context', $2, 'project_context', true, NOW())
 		ON CONFLICT (elitea_title) WHERE type = 'project_context'
 		DO UPDATE SET data = $2`, s)
 	_, err := h.pool.Exec(ctx, q, projectID, dataBytes)
 	if err != nil {
-		q2 := fmt.Sprintf(`UPDATE %q.configuration SET data = $1 WHERE type = 'project_context'`, s)
+		q2 := fmt.Sprintf(`UPDATE %s.configuration SET data = $1 WHERE type = 'project_context'`, s)
 		_, _ = h.pool.Exec(ctx, q2, dataBytes) // fallback update; ignore error, best-effort
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"content": body.Content, "enabled": body.Enabled})
@@ -303,10 +313,13 @@ func (h *Handler) UpdateProjectContext(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) SearchOptions(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
-	q := fmt.Sprintf(`SELECT name FROM %q.tags ORDER BY name`, s)
+	q := fmt.Sprintf(`SELECT name FROM %s.tags ORDER BY name`, s)
 	rows, err := h.pool.Query(ctx, q)
 
 	tags := make([]string, 0)
@@ -455,13 +468,16 @@ func (h *Handler) Roles(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ChatConfig(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	// Get configured LLM integrations as available models
 	q := fmt.Sprintf(`
 		SELECT elitea_title, type, data
-		FROM %q.configuration
+		FROM %s.configuration
 		WHERE section = 'llm' AND status_ok = true
 		ORDER BY created_at`, s)
 
@@ -563,19 +579,20 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 			schemas = append(schemas, s)
 		}
 		schemaRows.Close()
-		for _, s := range schemas {
+		for _, name := range schemas {
+			s := catalogueSchema(name)
 			var cnt int
 			// Each Scan failure leaves cnt=0, which is safe for counting
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s.applications a WHERE a.owner_id = $1 AND NOT EXISTS (SELECT 1 FROM %s.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalApps += cnt
 			cnt = 0
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %q.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s.applications a WHERE a.owner_id = $1 AND EXISTS (SELECT 1 FROM %s.application_versions v WHERE v.application_id = a.id AND v.agent_type = 'pipeline')`, s, s), authorID).Scan(&cnt)
 			totalPipelines += cnt
 			cnt = 0
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s.elitea_tools WHERE author_id = $1`, s), authorID).Scan(&cnt)
 			totalToolkits += cnt
 			cnt = 0
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %q.prompt_collections WHERE author_id = $1`, s), authorID).Scan(&cnt)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s.prompt_collections WHERE author_id = $1`, s), authorID).Scan(&cnt)
 			totalCollections += cnt
 		}
 	}
@@ -595,7 +612,6 @@ func (h *Handler) Author(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
 	// The publishing guardrail, enforced.
@@ -615,6 +631,18 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{
 			"error": "publishing is blocked on this deployment",
 		})
+		return
+	}
+
+	// The tenant schema is resolved AFTER the guardrail, and the order matters.
+	// A blocked deployment must answer 403 for every caller, including one who
+	// sends a project id this service cannot parse. Resolving the schema first
+	// answers such a caller with 400, which tells them their id was the problem
+	// and not the block — and it makes "is publishing blocked?" answerable by
+	// the shape of the URL. TestGuardrailRefusesAProjectIdItCannotParse pins
+	// this order.
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
 		return
 	}
 
@@ -652,7 +680,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	var appID int
 	var vName, vStatus, agentType string
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT application_id, name, status, COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus, &agentType)
+		`SELECT application_id, name, status, COALESCE(agent_type, '') FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus, &agentType)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
 		return
@@ -669,7 +697,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	// Pre-check: does a version with this name already exist for this application?
 	var nameExists bool
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
+		`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND name = $2)`, s),
 		appID, body.VersionName).Scan(&nameExists) // failure leaves nameExists=false, safe to continue
 	if nameExists {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -712,7 +740,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 	var llmSettingsStr *string
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmSettingsStr) // failure leaves nil, safe
+		`SELECT llm_settings::text FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&llmSettingsStr) // failure leaves nil, safe
 	if llmSettingsStr != nil {
 		var llmSettings map[string]any
 		_ = json.Unmarshal([]byte(*llmSettingsStr), &llmSettings) // DB jsonb column; malformed means empty map
@@ -769,14 +797,14 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 		metaOverlay = fmt.Sprintf(`{"source_version_id": "%s", "category": "%s"}`, versionID, body.Category)
 	}
 	cloneQ := fmt.Sprintf(`
-		INSERT INTO %q.application_versions
+		INSERT INTO %s.application_versions
 			(application_id, name, status, author_id, llm_settings, instructions,
 			 conversation_starters, welcome_message, agent_type, meta, pipeline_settings)
 		SELECT application_id, $2, 'published', author_id, llm_settings, instructions,
 			   conversation_starters, welcome_message, agent_type,
 			   COALESCE(meta, '{}'::jsonb) || $3::jsonb,
 			   pipeline_settings
-		FROM %q.application_versions WHERE id = $1
+		FROM %s.application_versions WHERE id = $1
 		RETURNING id`, s, s)
 
 	// A publish is all-or-nothing, for the reason ForkAgent is
@@ -816,9 +844,9 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	// same agent, and the chat read joins `entity_id` to that application
 	// (internal/db/queries/agent_chat.sql:107).
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+		INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 		SELECT $2, entity_id, entity_type, tool_id, selected_tools
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent tool attachments"})
 		return
 	}
@@ -836,9 +864,9 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	// because the same read LEFT JOINs it for the skill instructions — dropping it
 	// publishes a named skill with an empty body.
 	if _, err := tx.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+		INSERT INTO %s.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
 		SELECT $2, entity_type, skill_id, skill_version_id
-		FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
+		FROM %s.entity_skill_mapping WHERE entity_version_id = $1`, s, s), versionID, cloneID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to publish agent skill attachments"})
 		return
 	}
@@ -849,7 +877,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Embed sub-agents: clone application_tools of type 'application' recursively
-	h.embedSubAgents(ctx, s, versionID, cloneID)
+	h.embedSubAgents(ctx, s, projectID, versionID, cloneID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"public_agent_id":   strconv.Itoa(appID),
@@ -862,7 +890,7 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 // deleteEmbeddedSubAgents removes embedded sub-agent applications referenced by application_tools on versionID.
 func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, versionID string) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT settings::text FROM %q.application_tools
+		SELECT settings::text FROM %s.application_tools
 		WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
 	if err != nil {
 		return
@@ -886,27 +914,27 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 		// Recursively delete sub-agents of this embedded agent
 		var eVerID string
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status = 'embedded' LIMIT 1`, schema), eAppID).Scan(&eVerID) // failure leaves eVerID empty, safe
+			`SELECT id FROM %s.application_versions WHERE application_id = $1 AND status = 'embedded' LIMIT 1`, schema), eAppID).Scan(&eVerID) // failure leaves eVerID empty, safe
 		if eVerID != "" {
 			h.deleteEmbeddedSubAgents(ctx, schema, eVerID)
 		}
 		// Delete in FK-safe order: tools → versions → application
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id IN (SELECT id FROM %q.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_versions WHERE application_id = $1`, schema), eAppID)
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.applications WHERE id = $1`, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_tools WHERE application_version_id IN (SELECT id FROM %s.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_versions WHERE application_id = $1`, schema), eAppID)
+		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.applications WHERE id = $1`, schema), eAppID)
 	}
 	// Clean up application_tools entries on this version
-	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
 }
 
 // embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
 // For each sub-agent tool, it creates a new embedded application+version, copies the
 // tool and skill attachments of that sub-agent onto the embedded version, and links it.
-func (h *Handler) embedSubAgents(ctx context.Context, schema string, sourceVersionID string, targetVersionID int) {
-	h.embedSubAgentsRecursive(ctx, schema, sourceVersionID, targetVersionID, 0)
+func (h *Handler) embedSubAgents(ctx context.Context, schema, projectID string, sourceVersionID string, targetVersionID int) {
+	h.embedSubAgentsRecursive(ctx, schema, projectID, sourceVersionID, targetVersionID, 0)
 }
 
-func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, sourceVersionID string, targetVersionID int, depth int) {
+func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID string, sourceVersionID string, targetVersionID int, depth int) {
 	if depth > 5 {
 		return
 	}
@@ -914,11 +942,11 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 	// Look up the parent published app ID (the application that owns targetVersionID)
 	var parentAppID int
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT application_id FROM %q.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID) // failure leaves parentAppID=0
+		`SELECT application_id FROM %s.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID) // failure leaves parentAppID=0
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT name, type, settings::text
-		FROM %q.application_tools
+		FROM %s.application_tools
 		WHERE application_version_id = $1 AND type = 'application'`, schema), sourceVersionID)
 	if err != nil {
 		return
@@ -948,7 +976,7 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		// Skip pipeline sub-agents — they cannot be published/embedded
 		var subAgentType string
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT COALESCE(agent_type, '') FROM %q.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType) // failure leaves subAgentType empty
+			`SELECT COALESCE(agent_type, '') FROM %s.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType) // failure leaves subAgentType empty
 		if subAgentType == "pipeline" {
 			continue
 		}
@@ -956,9 +984,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		// Clone the sub-agent application
 		var embeddedAppID int
 		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.applications (name, description, owner_id)
+			INSERT INTO %s.applications (name, description, owner_id)
 			SELECT name, description, owner_id
-			FROM %q.applications WHERE id = $1
+			FROM %s.applications WHERE id = $1
 			RETURNING id`, schema, schema), ref.appID).Scan(&embeddedAppID)
 		if err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent application clone failed",
@@ -967,11 +995,13 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 			continue
 		}
 
-		// Clone the sub-agent version as 'embedded', adding source and parent metadata
-		projectID := strings.TrimPrefix(schema, "p_")
+		// Clone the sub-agent version as 'embedded', adding source and parent metadata.
+		// projectID is the caller's validated project id. It is NOT recovered
+		// from schema: schema is a quoted identifier, so trimming the "p_"
+		// prefix off it would leave the quotes in source_project_id.
 		var embeddedVerID int
 		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.application_versions
+			INSERT INTO %s.application_versions
 				(application_id, name, status, author_id, llm_settings, instructions,
 				 conversation_starters, welcome_message, agent_type, meta, pipeline_settings)
 			SELECT $1, name, 'embedded', author_id, llm_settings, instructions,
@@ -984,7 +1014,7 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 					   'parent_published_version_id', $7::text
 				   ),
 				   pipeline_settings
-			FROM %q.application_versions WHERE id = $2
+			FROM %s.application_versions WHERE id = $2
 			RETURNING id`, schema, schema),
 			embeddedAppID, ref.versionID, ref.versionID, ref.appID, projectID,
 			strconv.Itoa(parentAppID), strconv.Itoa(targetVersionID)).Scan(&embeddedVerID)
@@ -1003,9 +1033,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		// and the log is the only channel that can report the loss. See the
 		// pull request for issue #406 for the full reasoning.
 		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+			INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 			SELECT $2, $3, entity_type, tool_id, selected_tools
-			FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
+			FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
 			ref.versionID, embeddedVerID, embeddedAppID); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: tool attachment copy failed",
 				"schema", schema, "source_version_id", ref.versionID,
@@ -1026,9 +1056,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		// because the same read LEFT JOINs it for the skill instructions — dropping
 		// it embeds a named skill with an empty body.
 		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+			INSERT INTO %s.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
 			SELECT $2, entity_type, skill_id, skill_version_id
-			FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, schema, schema),
+			FROM %s.entity_skill_mapping WHERE entity_version_id = $1`, schema, schema),
 			ref.versionID, embeddedVerID); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: skill attachment copy failed",
 				"schema", schema, "source_version_id", ref.versionID,
@@ -1042,7 +1072,7 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		}
 		settingsJSON, _ := json.Marshal(embeddedSettings)
 		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
+			INSERT INTO %s.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, schema),
 			targetVersionID, ref.name, settingsJSON); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent link failed",
@@ -1051,14 +1081,17 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema string, so
 		}
 
 		// Recursively embed sub-agents of this sub-agent
-		h.embedSubAgentsRecursive(ctx, schema, ref.versionID, embeddedVerID, depth+1)
+		h.embedSubAgentsRecursive(ctx, schema, projectID, ref.versionID, embeddedVerID, depth+1)
 	}
 }
 
 func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var body struct {
@@ -1071,7 +1104,7 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 	var metaStr string
 	var authorID *int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT status, COALESCE(meta::text, '{}'), author_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&status, &metaStr, &authorID)
+		`SELECT status, COALESCE(meta::text, '{}'), author_id FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&status, &metaStr, &authorID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
 		return
@@ -1085,21 +1118,21 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 
 		// Revert to draft
 		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET status = 'draft' WHERE id = $1`, s), versionID) // best-effort revert
+			`UPDATE %s.application_versions SET status = 'draft' WHERE id = $1`, s), versionID) // best-effort revert
 	case "draft":
 		// Unpublish via the source draft version: find all published clones and delete them
 		var appID int
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT application_id FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID) // failure leaves appID=0
+			`SELECT application_id FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&appID) // failure leaves appID=0
 		var hasPublished bool
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND status IN ('published', 'embedded') AND id != $2)`, s), appID, versionID).Scan(&hasPublished) // failure leaves hasPublished=false
+			`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND status IN ('published', 'embedded') AND id != $2)`, s), appID, versionID).Scan(&hasPublished) // failure leaves hasPublished=false
 		if !hasPublished {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
 			return
 		}
 		pubRows, _ := h.pool.Query(ctx, fmt.Sprintf(
-			`SELECT id FROM %q.application_versions WHERE application_id = $1 AND status IN ('published','embedded') AND id != $2`, s), appID, versionID)
+			`SELECT id FROM %s.application_versions WHERE application_id = $1 AND status IN ('published','embedded') AND id != $2`, s), appID, versionID)
 		if pubRows != nil {
 			var pubVerIDs []string
 			for pubRows.Next() {
@@ -1115,7 +1148,7 @@ func (h *Handler) Unpublish(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET status = 'draft' WHERE application_id = $1 AND status IN ('published', 'embedded')`, s), appID) // best-effort revert
+			`UPDATE %s.application_versions SET status = 'draft' WHERE application_id = $1 AND status IN ('published', 'embedded')`, s), appID) // best-effort revert
 	default:
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "version is not published"})
 		return
@@ -1132,7 +1165,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	var vName, vStatus string
 	var appID int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT application_id, name, status FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus)
+		`SELECT application_id, name, status FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&appID, &vName, &vStatus)
 	if err != nil {
 		return nil, 0
 	}
@@ -1144,7 +1177,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	// Check version name collision
 	var nameExists bool
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND name = $2)`, s),
+		`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND name = $2)`, s),
 		appID, versionName).Scan(&nameExists) // failure leaves nameExists=false, safe
 	if nameExists {
 		criticalIssues = append(criticalIssues, map[string]any{"rule": "version_name_exists_in_source", "field": "version_name", "issue": "version name already exists", "source": "deterministic"})
@@ -1167,7 +1200,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	}
 	subAgentRows, saErr := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT at.name, at.settings::text
-		FROM %q.application_tools at
+		FROM %s.application_tools at
 		WHERE at.application_version_id = $1 AND at.type = 'application'`, s), versionID)
 	var subAgents []subAgentInfo
 	if saErr == nil {
@@ -1181,8 +1214,8 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			saAppID := fmt.Sprintf("%v", settings["application_id"])
 			saVerID := fmt.Sprintf("%v", settings["version_id"])
 			var saAppName, saVerName, saAgentType string
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %q.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %q.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %s.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %s.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
 			subAgents = append(subAgents, subAgentInfo{name: name, appID: saAppID, versionID: saVerID, appName: saAppName, verName: saVerName, agentType: saAgentType})
 		}
 		subAgentRows.Close()
@@ -1204,7 +1237,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 				return
 			}
 			rows2, err2 := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT settings::text FROM %q.application_tools
+				SELECT settings::text FROM %s.application_tools
 				WHERE application_version_id = $1 AND type = 'application'`, s), verID)
 			if err2 != nil {
 				return
@@ -1283,11 +1316,11 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	var conversationStarters []byte
 	var tagCount, toolCount int
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COALESCE(instructions, ''), COALESCE(welcome_message, ''), COALESCE(conversation_starters::text, '[]')::bytea FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&instructions, &welcomeMsg, &conversationStarters) // failure leaves empty strings
+		`SELECT COALESCE(instructions, ''), COALESCE(welcome_message, ''), COALESCE(conversation_starters::text, '[]')::bytea FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&instructions, &welcomeMsg, &conversationStarters) // failure leaves empty strings
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s), versionID).Scan(&toolCount) // failure leaves toolCount=0
+		`SELECT COUNT(*) FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, s), versionID).Scan(&toolCount) // failure leaves toolCount=0
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.application_version_tag_association WHERE version_id = $1`, s), versionID).Scan(&tagCount) // failure leaves tagCount=0
+		`SELECT COUNT(*) FROM %s.application_version_tag_association WHERE version_id = $1`, s), versionID).Scan(&tagCount) // failure leaves tagCount=0
 
 	// Parse conversation_starters
 	var starters []string
@@ -1337,7 +1370,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 				return
 			}
 			saRows, saErr2 := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT at.settings::text FROM %q.application_tools at
+				SELECT at.settings::text FROM %s.application_tools at
 				WHERE at.application_version_id = $1 AND at.type = 'application'`, s), verID)
 			if saErr2 != nil {
 				return
@@ -1362,8 +1395,8 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			saRows.Close()
 			for _, ref := range saRefs {
 				var saAppName, saVerName, saAgentType, saInstr, saDesc string
-				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %q.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
-				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %q.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %s.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %s.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
 				if saAgentType == "pipeline" {
 					continue
 				}
@@ -1393,7 +1426,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 	// Check LLM model is from an accessible project
 	var llmStr *string
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT llm_settings::text FROM %q.application_versions WHERE id = $1`, s), versionID).Scan(&llmStr) // failure leaves nil, safe
+		`SELECT llm_settings::text FROM %s.application_versions WHERE id = $1`, s), versionID).Scan(&llmStr) // failure leaves nil, safe
 	if llmStr != nil {
 		var llm map[string]any
 		_ = json.Unmarshal([]byte(*llmStr), &llm) // DB jsonb column; malformed means empty map
@@ -1450,7 +1483,10 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	// Parse body for version_name
@@ -1486,7 +1522,7 @@ func (h *Handler) PublishValidate(w http.ResponseWriter, r *http.Request) {
 	// Check version exists
 	var exists bool
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1)`, s), versionID).Scan(&exists) // failure leaves exists=false, returns 404
+		`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE id = $1)`, s), versionID).Scan(&exists) // failure leaves exists=false, returns 404
 	if !exists {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "version not found"})
 		return
@@ -1505,9 +1541,12 @@ func (h *Handler) VersionValidator(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	applicationID := chi.URLParam(r, "applicationID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
-	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE id = $1 AND application_id = $2)`, s)
+	q := fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE id = $1 AND application_id = $2)`, s)
 	var valid bool
 	_ = h.pool.QueryRow(ctx, q, versionID, applicationID).Scan(&valid) // failure leaves valid=false, which is correct (not found)
 	writeJSON(w, http.StatusOK, map[string]any{"valid": valid})
@@ -1526,11 +1565,8 @@ func (h *Handler) PublicApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicProjectID := os.Getenv("PUBLIC_PROJECT_ID")
-	if publicProjectID == "" {
-		publicProjectID = "1"
-	}
-	schema := fmt.Sprintf("p_%s", publicProjectID)
+	publicProjectID := publicProjectIDOrDefault()
+	schema := publicTenantSchema()
 
 	categoryFilter := r.URL.Query().Get("category")
 	var queryArgs []any
@@ -1548,8 +1584,8 @@ func (h *Handler) PublicApplications(w http.ResponseWriter, r *http.Request) {
 		SELECT a.id, a.name, COALESCE(a.description, ''),
 			av.id as version_id, av.name as version_name, av.agent_type,
 			COALESCE(av.meta::text, '{}')
-		FROM %q.applications a
-		JOIN %q.application_versions av ON av.application_id = a.id
+		FROM %s.applications a
+		JOIN %s.application_versions av ON av.application_id = a.id
 		WHERE av.status = 'published'
 		AND COALESCE(av.meta->>'status', '') != 'embedded'`+categoryClause+`
 		ORDER BY a.id DESC
@@ -1583,18 +1619,15 @@ func (h *Handler) PublicApplications(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request, ctx context.Context, applicationID string) {
 	versionName := chi.URLParam(r, "versionName")
-	publicProjectID := os.Getenv("PUBLIC_PROJECT_ID")
-	if publicProjectID == "" {
-		publicProjectID = "1"
-	}
-	schema := fmt.Sprintf("p_%s", publicProjectID)
+	publicProjectID := publicProjectIDOrDefault()
+	schema := publicTenantSchema()
 
 	// Find the application and its published version
 	var appName, appDesc string
 	var appID int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT id, name, COALESCE(description, '')
-		FROM %q.applications WHERE id = $1`, schema), applicationID).Scan(&appID, &appName, &appDesc)
+		FROM %s.applications WHERE id = $1`, schema), applicationID).Scan(&appID, &appName, &appDesc)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
 		return
@@ -1608,7 +1641,7 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 				COALESCE(welcome_message, ''), COALESCE(llm_settings::text, '{}'),
 				COALESCE(meta::text, '{}'), COALESCE(conversation_starters::text, '[]'),
 				COALESCE(pipeline_settings::text, '{}'), author_id
-			FROM %q.application_versions
+			FROM %s.application_versions
 			WHERE application_id = $1 AND name = $2 AND status = 'published'`, schema)
 	} else {
 		versionQuery = fmt.Sprintf(`
@@ -1616,7 +1649,7 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 				COALESCE(welcome_message, ''), COALESCE(llm_settings::text, '{}'),
 				COALESCE(meta::text, '{}'), COALESCE(conversation_starters::text, '[]'),
 				COALESCE(pipeline_settings::text, '{}'), author_id
-			FROM %q.application_versions
+			FROM %s.application_versions
 			WHERE application_id = $1 AND status = 'published'
 			ORDER BY id DESC LIMIT 1`, schema)
 	}
@@ -1654,8 +1687,8 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	toolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT etm.id, etm.tool_id, etm.entity_type, COALESCE(etm.selected_tools::text, '{}'),
 			t.name, t.type, t.settings
-		FROM %q.entity_tool_mapping etm
-		LEFT JOIN %q.elitea_tools t ON t.id = etm.tool_id
+		FROM %s.entity_tool_mapping etm
+		LEFT JOIN %s.elitea_tools t ON t.id = etm.tool_id
 		WHERE etm.entity_version_id = $1`, schema, schema), vID)
 	if err == nil {
 		defer toolRows.Close()
@@ -1695,7 +1728,7 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 	// Fetch application_tools (sub-agent references)
 	appToolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT id, name, type, settings::text
-		FROM %q.application_tools
+		FROM %s.application_tools
 		WHERE application_version_id = $1`, schema), vID)
 	if err == nil {
 		defer appToolRows.Close()
@@ -1769,13 +1802,16 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	items := make([]map[string]any, 0)
 
 	// Get skill mappings
-	q := fmt.Sprintf(`SELECT skill_id FROM %q.entity_skill_mapping WHERE entity_version_id = $1`, s)
+	q := fmt.Sprintf(`SELECT skill_id FROM %s.entity_skill_mapping WHERE entity_version_id = $1`, s)
 	rows, err := h.pool.Query(ctx, q, versionID)
 	if err == nil {
 		defer rows.Close()
@@ -1789,7 +1825,7 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get tool mappings
-	q2 := fmt.Sprintf(`SELECT tool_id FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, s)
+	q2 := fmt.Sprintf(`SELECT tool_id FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, s)
 	rows2, err := h.pool.Query(ctx, q2, versionID)
 	if err == nil {
 		defer rows2.Close()
@@ -1809,7 +1845,10 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 	projectID := chi.URLParam(r, "projectID")
 	appID := chi.URLParam(r, "appID")
 	versionID := chi.URLParam(r, "versionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var body map[string]any
@@ -1827,7 +1866,7 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 		pVerStr := fmt.Sprintf("%v", parentVerID)
 		var verStatus string
 		err := h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT status FROM %q.application_versions WHERE id = $1`, s), pVerStr).Scan(&verStatus)
+			`SELECT status FROM %s.application_versions WHERE id = $1`, s), pVerStr).Scan(&verStatus)
 		if err == nil && (verStatus == "published" || verStatus == "embedded") {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"error": "Cannot change relation on a published version. Unpublish first.",
@@ -1840,7 +1879,7 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 		// Check for duplicate relation
 		var exists bool
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`
-			SELECT EXISTS(SELECT 1 FROM %q.application_tools
+			SELECT EXISTS(SELECT 1 FROM %s.application_tools
 			WHERE application_version_id = $1 AND type = 'application'
 			AND settings->>'application_id' = $2
 			AND settings->>'version_id' = $3)`, s),
@@ -1861,13 +1900,13 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 		settingsJSON, _ := json.Marshal(toolSettings)
 
 		q := fmt.Sprintf(`
-			INSERT INTO %q.application_tools (application_version_id, name, type, settings)
+			INSERT INTO %s.application_tools (application_version_id, name, type, settings)
 			VALUES ($1, $2, 'application', $3)`, s)
 		_, _ = h.pool.Exec(ctx, q, parentVerID, toolName, settingsJSON) // best-effort insert
 	} else {
 		// Remove relation
 		q := fmt.Sprintf(`
-			DELETE FROM %q.application_tools
+			DELETE FROM %s.application_tools
 			WHERE application_version_id = $1
 			AND settings->>'application_id' = $2
 			AND settings->>'version_id' = $3`, s)
@@ -1883,13 +1922,16 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 
 func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	q := fmt.Sprintf(`
 		SELECT a.id, a.name, COALESCE(a.description, ''), COUNT(sl.id) as likes
-		FROM %q.applications a
-		LEFT JOIN %q.social_likes sl ON sl.entity_id = a.id AND sl.entity_name = 'application'
+		FROM %s.applications a
+		LEFT JOIN %s.social_likes sl ON sl.entity_id = a.id AND sl.entity_name = 'application'
 		GROUP BY a.id, a.name, a.description
 		ORDER BY likes DESC
 		LIMIT 10`, s, s)
@@ -1915,10 +1957,13 @@ func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) Feedbacks(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
-	q := fmt.Sprintf(`SELECT id, entity_name, entity_id, user_id, rating, COALESCE(comment, ''), created_at FROM %q.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
+	q := fmt.Sprintf(`SELECT id, entity_name, entity_id, user_id, rating, COALESCE(comment, ''), created_at FROM %s.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
 	rows, err := h.pool.Query(ctx, q)
 	items := make([]map[string]any, 0)
 	if err == nil {
@@ -1950,11 +1995,14 @@ func (h *Handler) UpdateAttachmentStorage(w http.ResponseWriter, r *http.Request
 	}
 
 	toolkitID, _ := body["toolkit_id"].(string)
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`
-		UPDATE %q.application_versions
+		UPDATE %s.application_versions
 		SET meta = jsonb_set(COALESCE(meta, '{}')::jsonb, '{attachment_storage}', $1::jsonb)
 		WHERE id = $2`, s),
 		fmt.Sprintf(`{"toolkit_id":"%s"}`, toolkitID), versionID)
@@ -2212,7 +2260,10 @@ func (h *Handler) ListUploadedIcons(w http.ResponseWriter, _ *http.Request) {
 func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	versionID := chi.URLParam(r, "versionId")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var iconMeta map[string]any
@@ -2223,7 +2274,7 @@ func (h *Handler) UpdateIcon(w http.ResponseWriter, r *http.Request) {
 
 	// Update meta.icon_meta on the version
 	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.application_versions SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('icon_meta', $2::jsonb) WHERE id = $1`, s),
+		`UPDATE %s.application_versions SET meta = COALESCE(meta, '{}'::jsonb) || jsonb_build_object('icon_meta', $2::jsonb) WHERE id = $1`, s),
 		versionID, mustJSON(iconMeta)) // best-effort update
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -2238,12 +2289,15 @@ func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 
 	// Clear icon_meta from all versions referencing this icon
 	if h.pool != nil {
 		_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-			`UPDATE %q.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
+			`UPDATE %s.application_versions SET meta = jsonb_set(meta, '{icon_meta}', '{}'::jsonb) WHERE meta->'icon_meta'->>'name' = $1`, s), name) // best-effort clear
 	}
 
 	// Best-effort remove — Delete is documented idempotent (S1 errors.go),
@@ -2259,18 +2313,22 @@ func (h *Handler) DeleteIcon(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
-
 	ctx := r.Context()
 
-	// Checked before the body, because it is the handler's own precondition
-	// and not the caller's fault. It shared a branch with an empty entity list
-	// and answered 201, so an import that could reach no database at all
-	// reported that it had imported everything (#505).
+	// Checked before the body AND before the project id, because it is the
+	// handler's own precondition and not the caller's fault. It shared a
+	// branch with an empty entity list and answered 201, so an import that
+	// could reach no database at all reported that it had imported
+	// everything (#505).
 	if h.pool == nil {
-		slog.ErrorContext(ctx, "import: "+importWriteFailed, "schema", s)
+		slog.ErrorContext(ctx, "import: "+importWriteFailed)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
 		return
 	}
 
@@ -2410,7 +2468,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 
 		var appID int
 		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.applications (name, description, owner_id)
+			INSERT INTO %s.applications (name, description, owner_id)
 			VALUES ($1, $2, $3) RETURNING id`, s),
 			name, desc, userID).Scan(&appID)
 		if err != nil {
@@ -2468,7 +2526,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 
 			var vID int
 			err = h.pool.QueryRow(ctx, fmt.Sprintf(`
-				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
+				INSERT INTO %s.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
 				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID)
 			if err != nil {
@@ -2694,7 +2752,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-						INSERT INTO %q.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
+						INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 						VALUES ($1, $2, 'application', $3, $4::jsonb)`, s),
 						vID, info.appID, toolID, selToolsJSON); err != nil {
 						slog.ErrorContext(ctx, "import: tool link insert failed",
@@ -2790,13 +2848,20 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 // TypeError inside the wizard and stopped it. They now carry `index` and `msg`,
 // which is the shape the import already writes and the wizard already maps.
 func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
 	ctx := r.Context()
 
+	// The pool is the handler's own precondition, so it is checked before the
+	// project id: a handler that cannot write must report that, not blame the
+	// caller for the path segment.
 	if h.pool == nil {
-		slog.ErrorContext(ctx, "fork: "+importWriteFailed, "schema", s)
+		slog.ErrorContext(ctx, "fork: "+importWriteFailed)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": importWriteFailed})
+		return
+	}
+
+	projectID := chi.URLParam(r, "projectID")
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
 		return
 	}
 
@@ -2846,7 +2911,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 
 		var appID int
 		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.applications (name, description, owner_id)
+			INSERT INTO %s.applications (name, description, owner_id)
 			VALUES ($1, $2, $3) RETURNING id`, s),
 			name, desc, userID).Scan(&appID)
 		if err != nil {
@@ -2957,7 +3022,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			// every version failed answered 201 and produced an agent with no
 			// version at all.
 			if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-				INSERT INTO %q.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
+				INSERT INTO %s.application_versions (application_id, name, status, agent_type, instructions, welcome_message, llm_settings, conversation_starters, author_id, meta, pipeline_settings)
 				VALUES ($1, $2, 'draft', $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, '{}'::jsonb) RETURNING id`, s),
 				appID, vName, agentType, instructions, welcomeMsg, llmJSON, startersJSON, userID, metaJSON).Scan(&vID); err != nil {
 				slog.ErrorContext(ctx, "fork: application version insert failed",
@@ -2983,7 +3048,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					varName, _ := varMap["name"].(string)
 					varValue, _ := varMap["value"].(string)
 					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-						INSERT INTO %q.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
+						INSERT INTO %s.application_variables (application_version_id, name, value) VALUES ($1, $2, $3)`, s),
 						vID, varName, varValue); err != nil {
 						slog.ErrorContext(ctx, "fork: application variable insert failed",
 							"schema", s, "version_id", vID, "variable", varName, "error", err)
@@ -3014,7 +3079,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					var tagID int
 					// Upsert tag
 					if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-						INSERT INTO %q.tags (name, data) VALUES ($1, $2::jsonb)
+						INSERT INTO %s.tags (name, data) VALUES ($1, $2::jsonb)
 						ON CONFLICT (name) DO UPDATE SET data = EXCLUDED.data
 						RETURNING id`, s), tagName, tagDataJSON).Scan(&tagID); err != nil {
 						slog.ErrorContext(ctx, "fork: tag upsert failed",
@@ -3026,7 +3091,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 						continue
 					}
 					if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-						INSERT INTO %q.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+						INSERT INTO %s.application_version_tag_association (version_id, tag_id) VALUES ($1, $2)
 						ON CONFLICT DO NOTHING`, s), vID, tagID); err != nil {
 						slog.ErrorContext(ctx, "fork: tag association insert failed",
 							"schema", s, "version_id", vID, "tag", tagName, "error", err)
@@ -3135,14 +3200,29 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 
 	projectID := chi.URLParam(r, "projectID")
 	entityID := chi.URLParam(r, "entityID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	// entityID is a row id, and it leaves this handler again in the
+	// Content-Disposition filename of the `as_file` and markdown branches.
+	// Refuse anything that is not a plain decimal id HERE, so caller text
+	// never reaches a response header at all. The answer is the 404 this
+	// handler already gave such an id: the query binds entityID against an
+	// integer column, so a non-numeric one raised a driver error that the
+	// read below reported as "application not found". The status is
+	// unchanged; only the point of refusal moves.
+	if !tenantschema.Valid(entityID) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
+		return
+	}
 
 	var name, desc, appUUID string
 	var ownerID int
 	var sharedID, sharedOwnerID *int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT name, COALESCE(description, ''), uuid::text, owner_id, shared_id, shared_owner_id
-		FROM %q.applications WHERE id = $1`, s), entityID).Scan(&name, &desc, &appUUID, &ownerID, &sharedID, &sharedOwnerID)
+		FROM %s.applications WHERE id = $1`, s), entityID).Scan(&name, &desc, &appUUID, &ownerID, &sharedID, &sharedOwnerID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
 		return
@@ -3155,7 +3235,7 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 	appType := "agent"
 	var hasPipeline bool
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s),
+		`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s),
 		entityID).Scan(&hasPipeline); err != nil {
 		slog.ErrorContext(ctx, "export: "+exportReadFailed,
 			"schema", s, "application_id", entityID, "read", "application type", "error", err)
@@ -3236,7 +3316,15 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 
 	if strings.EqualFold(r.URL.Query().Get("as_file"), "true") {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="elitea_export_%s.json"`, entityID))
+		// entityID reaches this header from the URL, so it is caller text. Send
+		// it through the same helper the markdown export uses: it replaces the
+		// quote, the backslash and every control character, so the value cannot
+		// leave the quoted filename. `path.Base` drops a path the caller built
+		// out of separators. The markdown branch above did both and this one
+		// did neither (CodeQL go/reflected-xss, alerts 100 and 101, which name
+		// this parameter as the source).
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(
+			fmt.Sprintf("elitea_export_%s.json", entityID)))
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		_ = json.NewEncoder(w).Encode(result) // response writer; connection already committed
 		return
@@ -3430,9 +3518,12 @@ func (h *Handler) MCPOAuthProxy(w http.ResponseWriter, r *http.Request) {
 	clientSecret := body.ClientSecret
 
 	if h.pool != nil && body.ToolkitID != "" && (clientID == "" || clientSecret == "") {
-		s := fmt.Sprintf("p_%s", projectID)
+		s, schemaOK := tenantSchema(w, projectID)
+		if !schemaOK {
+			return
+		}
 		var settings []byte
-		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT settings FROM %q.elitea_tools WHERE id = $1`, s), body.ToolkitID).Scan(&settings) // failure leaves settings nil
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT settings FROM %s.elitea_tools WHERE id = $1`, s), body.ToolkitID).Scan(&settings) // failure leaves settings nil
 		if len(settings) > 0 {
 			var cfg map[string]any
 			_ = json.Unmarshal(settings, &cfg) // DB jsonb column; malformed means empty cfg
@@ -3754,7 +3845,10 @@ var defaultAgentCategories = []string{
 
 func (h *Handler) AgentCategories(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	// Merge defaults with admin-configured extras from guardrails config
@@ -3786,7 +3880,7 @@ func (h *Handler) AgentCategories(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	q := fmt.Sprintf(`SELECT data FROM %q.configuration WHERE section = 'publishing_guardrail' LIMIT 1`, s)
+	q := fmt.Sprintf(`SELECT data FROM %s.configuration WHERE section = 'publishing_guardrail' LIMIT 1`, s)
 	var data []byte
 	if err := h.pool.QueryRow(ctx, q).Scan(&data); err == nil && len(data) > 0 {
 		var cfg map[string]any
@@ -3832,13 +3926,16 @@ func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	entityType := chi.URLParam(r, "entityType")
 	entityID := chi.URLParam(r, "entityID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	user, _ := auth.UserFromContext(ctx)
 
 	q := fmt.Sprintf(`
-		INSERT INTO %q.social_pins (entity_name, entity_id, user_id)
+		INSERT INTO %s.social_pins (entity_name, entity_id, user_id)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (entity_name, entity_id, user_id) DO NOTHING`, s)
 	_, _ = h.pool.Exec(ctx, q, entityType, entityID, user.ID) // best-effort upsert
@@ -3849,12 +3946,15 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	entityType := chi.URLParam(r, "entityType")
 	entityID := chi.URLParam(r, "entityID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	user, _ := auth.UserFromContext(ctx)
 
-	q := fmt.Sprintf(`DELETE FROM %q.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
 	_, _ = h.pool.Exec(ctx, q, entityType, entityID, user.ID) // best-effort delete
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -3877,7 +3977,10 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	user, _ := auth.UserFromContext(r.Context())
@@ -3896,7 +3999,7 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 
 	var id int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.prompt_collections (name, description, owner_id, author_id, status, meta)
+		INSERT INTO %s.prompt_collections (name, description, owner_id, author_id, status, meta)
 		VALUES ($1, $2, $3, $3, 'active', '{}')
 		RETURNING id`, s), name, desc, userID).Scan(&id)
 	if err != nil {
@@ -3912,11 +4015,14 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(
-		`SELECT id, name, COALESCE(description, '') FROM %q.prompt_collections ORDER BY name`, s))
+		`SELECT id, name, COALESCE(description, '') FROM %s.prompt_collections ORDER BY name`, s))
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"rows": []any{}, "total": 0})
 		return
@@ -3941,7 +4047,10 @@ func (h *Handler) ListCollections(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	collectionID := chi.URLParam(r, "collectionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var id int
@@ -3951,7 +4060,7 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 		SELECT id, name, COALESCE(description, ''),
 			   COALESCE(applications::text, '[]')::bytea,
 			   COALESCE(datasources::text, '[]')::bytea
-		FROM %q.prompt_collections WHERE id = $1`, s), collectionID).Scan(
+		FROM %s.prompt_collections WHERE id = $1`, s), collectionID).Scan(
 		&id, &name, &desc, &appsJSON, &datasourcesJSON)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
@@ -3985,7 +4094,7 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 		}
 		var isPipeline bool
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT EXISTS(SELECT 1 FROM %q.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), eidInt).Scan(&isPipeline) // failure leaves isPipeline=false
+			`SELECT EXISTS(SELECT 1 FROM %s.application_versions WHERE application_id = $1 AND agent_type = 'pipeline')`, s), eidInt).Scan(&isPipeline) // failure leaves isPipeline=false
 		item := map[string]any{"id": strconv.Itoa(eidInt)}
 		if isPipeline {
 			pipelines = append(pipelines, item)
@@ -4012,7 +4121,10 @@ func (h *Handler) GetCollection(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	collectionID := chi.URLParam(r, "collectionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	var body map[string]any
@@ -4052,7 +4164,7 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 	// Read current applications JSON
 	var appsJSON []byte
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COALESCE(applications::text, '[]')::bytea FROM %q.prompt_collections WHERE id = $1`, s), collectionID).Scan(&appsJSON)
+		`SELECT COALESCE(applications::text, '[]')::bytea FROM %s.prompt_collections WHERE id = $1`, s), collectionID).Scan(&appsJSON)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
 		return
@@ -4087,7 +4199,7 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 
 	updatedJSON, _ := json.Marshal(apps)
 	_, _ = h.pool.Exec(ctx, fmt.Sprintf(
-		`UPDATE %q.prompt_collections SET applications = $1::jsonb WHERE id = $2`, s), string(updatedJSON), collectionID) // best-effort update
+		`UPDATE %s.prompt_collections SET applications = $1::jsonb WHERE id = $2`, s), string(updatedJSON), collectionID) // best-effort update
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":           collectionID,
@@ -4098,11 +4210,14 @@ func (h *Handler) PatchCollection(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteCollection(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	collectionID := chi.URLParam(r, "collectionID")
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	ctx := r.Context()
 
 	tag, err := h.pool.Exec(ctx, fmt.Sprintf(
-		`DELETE FROM %q.prompt_collections WHERE id = $1`, s), collectionID)
+		`DELETE FROM %s.prompt_collections WHERE id = $1`, s), collectionID)
 	if err != nil || tag.RowsAffected() == 0 {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "collection not found"})
 		return

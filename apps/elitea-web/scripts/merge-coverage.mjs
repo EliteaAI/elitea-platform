@@ -5,7 +5,7 @@ import coveragePkg from 'istanbul-lib-coverage';
 import { createContext } from 'istanbul-lib-report';
 import reports from 'istanbul-reports';
 
-const { createCoverageMap } = coveragePkg;
+const { createCoverageMap, createCoverageSummary } = coveragePkg;
 
 const root = process.cwd();
 const shardRoot = path.join(root, 'coverage-shards');
@@ -22,7 +22,69 @@ const globalThresholds = {
   functions: 75,
   branches: 70,
 };
-const fileThresholdRules = [];
+// PER-LAYER FLOORS — a ratchet, not an aspiration (issue #487).
+//
+// This list was `[]`. enforceThresholds() still walked every file looking for
+// a matching rule and found none, so matchesPattern() and the per-file half of
+// checkThreshold() ran for no file at all. The script READ as a per-layer gate
+// and applied only the four global floors. An empty list cannot report a
+// failure, which is the same class as #421.
+//
+// Two things changed with the numbers below.
+//
+// 1. The rules are now PER LAYER, not per file. Commit 3bcf318c deleted a
+//    per-FILE table (every single file under `src/pages/**` at 80% lines), and
+//    a per-file floor fails on the first thin module somebody adds. A layer
+//    aggregate holds the layer to a number the layer as a whole meets.
+//
+// 2. Each floor comes from a MEASUREMENT, not from a target. Every layer was
+//    measured on 2026-08-28 on this branch with:
+//
+//      npx vitest run --config vitest.config.ts --project node \
+//        --coverage.enabled=true --coverage.all=true \
+//        --coverage.include='src/<layer>/**/*.{ts,tsx}' \
+//        --coverage.reporter=json-summary src/<layer>
+//
+//    That command runs ONLY the layer's own tests, so each number is a LOWER
+//    BOUND on what the full sharded suite produces: more tests add hits and
+//    never remove them, and coverage.all=true fixes the denominator. The floor
+//    is the measured value rounded down, minus two points of slack. So no
+//    floor here can go red on the day it lands, and every one of them came
+//    from a real run rather than from a wish.
+//
+//                        measured (own tests only)      floor
+//    layer               lines  stmts  fns    branch    l/s/f/b
+//    shared/api          95.83  94.73  86.85  92.55     93/92/84/90
+//    shared/config       95.52  95.58  83.33  94.59     93/93/81/92
+//    shared/brand        99.75  99.56  98.75  93.22     97/97/96/91
+//    shared/lib          86.76  85.60  86.70  79.31     84/83/84/77
+//    entities            79.85  79.80  76.32  81.10     77/77/74/79
+//    features            84.56  83.28  81.91  75.84     82/81/79/73
+//    processes           88.02  86.24  77.77  78.94     86/84/75/76
+//    widgets             49.27  48.74  49.26  44.87     47/46/47/42
+//    pages               81.13  79.33  76.91  72.21     79/77/74/70
+//
+// RAISING THE RATCHET. `widgets` reads low because most of what exercises a
+// widget is a page test, and the measurement above ran neither. The
+// coverage-validation job prints each layer's REAL aggregate from the merged
+// shards on every run. Take those numbers and raise these floors — that is
+// what a ratchet is for. Lower one only with the measurement that justifies
+// it, in the pull request that lowers it.
+//
+// The list must never be empty again: enforceLayerThresholds() fails on an
+// empty list, and fails on any rule whose glob matches no file in the merged
+// coverage map (#426 — a check with no subject must fail, not pass).
+const layerThresholdRules = [
+  { pattern: 'src/shared/api/**', thresholds: { lines: 93, statements: 92, functions: 84, branches: 90 } },
+  { pattern: 'src/shared/config/**', thresholds: { lines: 93, statements: 93, functions: 81, branches: 92 } },
+  { pattern: 'src/shared/brand/**', thresholds: { lines: 97, statements: 97, functions: 96, branches: 91 } },
+  { pattern: 'src/shared/lib/**', thresholds: { lines: 84, statements: 83, functions: 84, branches: 77 } },
+  { pattern: 'src/entities/**', thresholds: { lines: 77, statements: 77, functions: 74, branches: 79 } },
+  { pattern: 'src/features/**', thresholds: { lines: 82, statements: 81, functions: 79, branches: 73 } },
+  { pattern: 'src/processes/**', thresholds: { lines: 86, statements: 84, functions: 75, branches: 76 } },
+  { pattern: 'src/widgets/**', thresholds: { lines: 47, statements: 46, functions: 47, branches: 42 } },
+  { pattern: 'src/pages/**', thresholds: { lines: 79, statements: 77, functions: 74, branches: 70 } },
+];
 
 async function main() {
   const shardFiles = await findCoverageFiles();
@@ -311,18 +373,7 @@ function enforceThresholds(coverageMap, skipValidation) {
   const failures = [];
 
   checkThreshold('Total coverage', summary, globalThresholds, failures);
-
-  for (const file of coverageMap.files()) {
-    const relative = path.relative(root, file).replace(/\\/g, '/');
-    const rule = fileThresholdRules.find((entry) => matchesPattern(relative, entry.pattern));
-    if (!rule) {
-      continue;
-    }
-
-    const fileCoverage = coverageMap.fileCoverageFor(file);
-    const fileSummary = getSummary(fileCoverage.toSummary());
-    checkThreshold(relative, fileSummary, rule.thresholds, failures);
-  }
+  enforceLayerThresholds(coverageMap, failures);
 
   if (failures.length > 0) {
     console.error('Coverage threshold failures:');
@@ -343,9 +394,89 @@ function getSummary(summary) {
   return summary;
 }
 
+/**
+ * Hold every layer in layerThresholdRules to its own aggregate floor.
+ *
+ * Two guards come before the numbers, because both were the actual defect
+ * rather than a hypothetical one:
+ *   • an EMPTY rule list is a failure. The list used to be empty, and the walk
+ *     over it reported success on every run (issue #487).
+ *   • a rule matching NO file is a failure. A layer that is renamed or moved
+ *     otherwise takes its floor with it silently, and the glob keeps reading
+ *     as a live gate (issue #426, and the same shape as the stale coverage
+ *     exclusions in #309).
+ */
+function enforceLayerThresholds(coverageMap, failures) {
+  if (layerThresholdRules.length === 0) {
+    failures.push(
+      'per-layer floors: the rule list is EMPTY, so this gate cannot report a failure.'
+        + ' Restore the measured floors, or delete the machinery — do not keep both.',
+    );
+    return;
+  }
+
+  const relatives = coverageMap.files().map((file) => ({ file, relative: layerPath(file) }));
+
+  console.log('Per-layer coverage (aggregate over the layer, floor in brackets):');
+  for (const rule of layerThresholdRules) {
+    const matched = relatives.filter((entry) => matchesPattern(entry.relative, rule.pattern));
+    if (matched.length === 0) {
+      failures.push(
+        `layer ${rule.pattern}: matches no file in the merged coverage map, so its floor gates nothing.`
+          + ' Point the glob at the layer\'s new location, or delete the rule.',
+      );
+      continue;
+    }
+
+    const layerSummary = getSummary(summariseFiles(coverageMap, matched.map((entry) => entry.file)));
+    const shown = ['lines', 'statements', 'functions', 'branches']
+      .map((key) => `${key} ${layerSummary[key].pct.toFixed(2)}% [${rule.thresholds[key]}%]`)
+      .join(', ');
+    console.log(`  ${rule.pattern}: ${matched.length} file(s) — ${shown}`);
+
+    checkThreshold(`layer ${rule.pattern}`, layerSummary, rule.thresholds, failures);
+  }
+}
+
+/**
+ * The path a layer glob is matched against.
+ *
+ * Normally `path.relative(cwd, key)` — the coverage map's keys are absolute
+ * paths written by the shard runner, and the coverage-validation job runs from
+ * apps/elitea-web on a workspace with the same layout.
+ *
+ * A coverage artifact produced under a DIFFERENT absolute root relativises to
+ * `../../…`, which matches no layer glob and would turn the whole gate red for
+ * a reason that is not coverage. Fall back to the `src/…` tail in that case,
+ * and say so, so the log states which form was used.
+ */
+function layerPath(file) {
+  const relative = path.relative(root, file).replace(/\\/g, '/');
+  if (!relative.startsWith('../')) {
+    return relative;
+  }
+  const normalised = file.replace(/\\/g, '/');
+  const index = normalised.lastIndexOf('/src/');
+  if (index === -1) {
+    return relative;
+  }
+  return normalised.slice(index + 1);
+}
+
+/** Aggregate the given files into one coverage summary. */
+function summariseFiles(coverageMap, files) {
+  const summary = createCoverageSummary();
+  for (const file of files) {
+    summary.merge(coverageMap.fileCoverageFor(file).toSummary());
+  }
+  return summary;
+}
+
 function matchesPattern(filePath, pattern) {
   if (pattern.endsWith('/**')) {
-    return filePath.startsWith(pattern.slice(0, -3));
+    // `slice(0, -2)` keeps the separator, so `src/shared/api/**` matches
+    // `src/shared/api/client.ts` and NOT a sibling named `src/shared/apiX.ts`.
+    return filePath.startsWith(pattern.slice(0, -2));
   }
   return filePath === pattern;
 }

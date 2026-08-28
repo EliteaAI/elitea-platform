@@ -713,6 +713,10 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 		MaxAge:           300,
 	}))
 	r.Use(apimw.RequestID)
+	// Response headers that stop a browser reading an API body as a document.
+	// Mounted here, in front of every route, because the per-handler copies
+	// covered only the routes somebody remembered (see the middleware doc).
+	r.Use(apimw.SecurityHeaders)
 	// Keep the raw socket peer available to any trust-aware proxy resolver.
 	// Generic RealIP processing before authentication would make X-Real-IP and
 	// X-Forwarded-For caller-controlled trust inputs.

@@ -4,6 +4,34 @@
  */
 import { toAbsoluteApiUrl, toOpenAiBaseUrl } from '@/shared/lib/api-url';
 
+/** One entry of the grouped option map that `getConfigurationOptions` builds. */
+type ConfigOption = {
+  label: string;
+  value: string;
+  group: string;
+  group_name: string;
+  capabilities: Record<string, boolean>;
+  originalModel?: Record<string, unknown>;
+};
+
+/**
+ * One row of `GET /configurations/models/{projectId}`.
+ *
+ * Every field is optional because the two backends do not send the same set.
+ * Pylon sends `id` and a nested `capabilities` map. elitea-main sends neither:
+ * its catalogue item carries `name`, `display_name`, `project_id`, `shared`,
+ * `default` and one boolean per capability
+ * (`services/elitea-main/internal/application/configurations/models.go`).
+ */
+type CatalogueModel = {
+  id?: string;
+  name?: string;
+  display_name?: string;
+  project_id?: string;
+  capabilities?: Record<string, boolean>;
+  supports_reasoning?: boolean;
+  supports_vision?: boolean;
+};
 
 export const removeDuplicateModels = <T extends { id?: string; name?: string; project_id?: string }>(
   models: T[] | undefined,
@@ -20,16 +48,102 @@ export const removeDuplicateModels = <T extends { id?: string; name?: string; pr
   });
 };
 
+/**
+ * The capability flags of one catalogue row, in the pylon `capabilities` shape.
+ *
+ * elitea-main DOES NOT SEND `capabilities`. It sends one boolean per capability
+ * at the top level of the item. Reading only `capabilities` therefore gave every
+ * model an empty flag set on this platform, so the chips were always absent.
+ * Read the pylon map when it is present, and fall back to the booleans this
+ * platform sends. A model with no capability set keeps an all-false map, which
+ * the filters below drop, so the section stays hidden.
+ */
+function toCapabilityMap(model: CatalogueModel): Record<string, boolean> {
+  if (model.capabilities && typeof model.capabilities === 'object') {
+    return model.capabilities;
+  }
+  return {
+    reasoning: model.supports_reasoning === true,
+    vision: model.supports_vision === true,
+  };
+}
+
+function optionLabelOf(model: CatalogueModel): string {
+  return model?.name || `Model ${model?.id || 'Unknown'}`;
+}
+
+function optionValueOf(model: CatalogueModel): string {
+  return model?.id || model?.name || 'unknown';
+}
+
+function optionGroupOf(model: CatalogueModel): string {
+  return model?.project_id || 'default';
+}
+
+/**
+ * Groups the model catalogue by owning project, one option per model.
+ * Ported from the baseline helper of the same name (`ModelConfiguration.jsx`
+ * feeds its result to `getModelCapabilities`).
+ */
+export const getConfigurationOptions = (
+  configurations: readonly CatalogueModel[] | undefined,
+): Record<string, ConfigOption[]> => {
+  const grouped: Record<string, ConfigOption[]> = {};
+  for (const model of configurations ?? []) {
+    const label = optionLabelOf(model);
+    const value = optionValueOf(model);
+    const groupName = `Project ${optionGroupOf(model)}`;
+    const group = grouped[groupName] ?? [];
+    grouped[groupName] = group;
+    if (group.some((item) => item.value === value || item.label === label)) {
+      continue;
+    }
+    group.push({
+      label,
+      value,
+      group: optionGroupOf(model),
+      group_name: groupName,
+      capabilities: toCapabilityMap(model),
+      originalModel: model,
+    });
+  }
+  return grouped;
+};
+
+/**
+ * The raw capability keys of the selected model.
+ *
+ * MATCH THE GROUP, NOT THE VALUE. A group holds one option per MODEL and the
+ * group id is the OWNING PROJECT (`getConfigurationOptions` above, and
+ * `useModelConfiguration`'s `configuration_uid: modelInfo.project_id`). This
+ * used to compare `group[0].value` — a model name — against the project id, so
+ * no group ever matched and the capability list was always empty.
+ *
+ * `project_id` arrives as a JSON number from elitea-main and as text elsewhere,
+ * so compare the two ids as text.
+ */
+function capabilityKeysOf(
+  options: Record<string, ConfigOption[]>,
+  configurationUid: string,
+  modelName: string,
+): string[] {
+  const groups = Object.values(options).filter((group) => group.length > 0);
+  const found = groups.find((group) => String(group[0]?.group) === String(configurationUid));
+  /* `value` is the model id where the backend sends one and the model name
+     where it does not. Accept the label too, so a payload that carries both
+     still matches the `model_name` the selection state holds. */
+  const option = found?.find((item) => item.value === modelName || item.label === modelName);
+  return Object.entries(option?.capabilities ?? {})
+    .filter(([, enabled]) => enabled)
+    .map(([key]) => key);
+}
+
 export const getModelCapabilities = (
-  options: Record<string, Array<{ value: string; capabilities?: Record<string, boolean> }>>,
+  options: Record<string, ConfigOption[]>,
   configurationUid: string,
   modelName: string,
 ): string[] => {
   if (!modelName) return [];
-
-  const groupedOptions = Object.values(options).filter((group) => group.length > 0);
-  const foundGroup = groupedOptions.find((groupedOption) => groupedOption[0]?.value === configurationUid);
-  const foundOption: Record<string, unknown> = foundGroup?.find((item) => item.value === modelName) || {};
 
   const capabilityMap: Record<string, string> = {
     chat_completion: 'Chat',
@@ -41,20 +155,9 @@ export const getModelCapabilities = (
     function_calling: 'Function Calling',
   };
 
-  const caps = foundOption.capabilities as Record<string, boolean> | undefined;
-
-  return Object.entries(caps || {})
-    .filter(([, value]) => value)
-    .map(([key]) => capabilityMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()));
-};
-
-type ConfigOption = {
-  label: string;
-  value: string;
-  group: string;
-  group_name: string;
-  capabilities?: Record<string, boolean> | undefined;
-  originalModel?: Record<string, unknown>;
+  return capabilityKeysOf(options, configurationUid, modelName).map(
+    (key) => capabilityMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase()),
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -92,30 +195,6 @@ const extractConfigName = (config: Record<string, unknown>): string => {
 };
 
 // ---------------------------------------------------------------------------
-// extractCapabilities — extracted from buildConfigurationData
-// ---------------------------------------------------------------------------
-
-/**
- * Extracts the capability key list from a model's configuration options.
- */
-const extractCapabilities = (
-  model: Record<string, unknown>,
-  configOptions: Record<string, ConfigOption[]>,
-): string[] => {
-  const groupedOptions = Object.values(configOptions).filter((g) => g.length > 0);
-  const foundGroup = groupedOptions.find(
-    (g) => g[0]?.group === model.configuration_uid,
-  );
-  const foundOption: Record<string, unknown> =
-    foundGroup?.find((item) => item.value === model.model_name) || {};
-
-  const caps = foundOption.capabilities as Record<string, boolean> | undefined;
-  return Object.entries(caps || {})
-    .filter(([, value]) => value)
-    .map(([key]) => key);
-};
-
-// ---------------------------------------------------------------------------
 // mapConfigToList — extracted from buildConfigurationData
 // ---------------------------------------------------------------------------
 
@@ -141,38 +220,6 @@ const mapConfigToList = (
 };
 
 // ---------------------------------------------------------------------------
-// configurationsToOptions — convert raw configs to grouped options
-// ---------------------------------------------------------------------------
-
-/**
- * Converts a flat list of configurations into a record grouped by
- * configuration_uid, suitable for extractCapabilities.
- */
-const configurationsToOptions = (
-  configs: Array<Record<string, unknown>>,
-): Record<string, ConfigOption[]> => {
-  const grouped: Record<string, ConfigOption[]> = {};
-  for (const cfg of configs) {
-    const uid = cfg.configuration_uid as string | undefined;
-    if (!uid) continue;
-    const option: ConfigOption = {
-      label: (cfg.display_name as string | undefined) ||
-        (cfg.elitea_title as string) ||
-        (cfg.name as string) ||
-        (cfg.label as string) ||
-        '',
-      value: cfg.configuration_uid as string,
-      group: cfg.configuration_uid as string,
-      group_name: cfg.configuration_name as string || '',
-      originalModel: cfg,
-    };
-    if (!grouped[uid]) grouped[uid] = [];
-    grouped[uid].push(option);
-  }
-  return grouped;
-};
-
-// ---------------------------------------------------------------------------
 // buildConfigurationData — orchestrator (complexity ≤ 8)
 // ---------------------------------------------------------------------------
 
@@ -195,8 +242,15 @@ export const buildConfigurationData = ({
   let capabilitiesList: string[] = [];
 
   if (uniqueConfigurations && model.model_name && model.configuration_uid) {
-    const configOptions = configurationsToOptions(uniqueConfigurations);
-    capabilitiesList = extractCapabilities(model, configOptions);
+    /* The SAME option map the chips read. It used to be a second, private
+       builder that grouped raw configuration rows by `configuration_uid` and
+       set `value` to that same uid, so it never matched a model name and the
+       copied payload always reported an empty `model_capabilities`. */
+    capabilitiesList = capabilityKeysOf(
+      getConfigurationOptions(uniqueConfigurations),
+      model.configuration_uid as string,
+      model.model_name as string,
+    );
   }
 
   return {

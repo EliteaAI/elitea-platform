@@ -16,15 +16,15 @@ import (
 
 // mockRepo implements contextmgr.Repository for testing.
 type mockRepo struct {
-	analytics  contextmgr.Analytics
-	analyticsErr error
-	summaries  []contextmgr.Summary
-	total      int
-	listErr    error
+	analytics     contextmgr.Analytics
+	analyticsErr  error
+	summaries     []contextmgr.Summary
+	total         int
+	listErr       error
 	createSummary contextmgr.Summary
-	createErr  error
-	updateErr  error
-	deleteErr  error
+	createErr     error
+	updateErr     error
+	deleteErr     error
 }
 
 func (m *mockRepo) GetAnalytics(_ context.Context, _, _ string) (contextmgr.Analytics, error) {

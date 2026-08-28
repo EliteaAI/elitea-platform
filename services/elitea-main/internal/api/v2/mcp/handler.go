@@ -108,13 +108,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
@@ -210,17 +211,18 @@ func (h *Handler) requireMCPEnabled(w http.ResponseWriter, r *http.Request) bool
 	return false
 }
 
-// projectSchema turns a URL segment into the tenant schema name.
+// projectSchema turns a URL segment into the tenant schema, QUOTED as a
+// PostgreSQL identifier and ready to interpolate with %s.
 //
-// Every query in this package interpolates the schema with %q, which quotes but
-// does not escape, so a segment that is not a plain positive integer must never
-// reach one. The router's patterns do not constrain the segment, so the check
-// lives here — the same reason `internal/api/v2/skillpublish` keeps its own
-// copy.
+// Every query in this package interpolates the schema into its statement text,
+// because a schema name cannot be bound as a parameter. A segment that is not
+// a plain decimal project id is refused here, and the name that does pass is
+// quoted with SQL rules rather than with %q, which quotes with Go rules and
+// lets an embedded quote close the identifier (issue #543).
 func projectSchema(raw string) (string, bool) {
-	value, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || value <= 0 {
+	quoted, err := tenantschema.Quote(raw)
+	if err != nil {
 		return "", false
 	}
-	return "p_" + raw, true
+	return quoted, true
 }

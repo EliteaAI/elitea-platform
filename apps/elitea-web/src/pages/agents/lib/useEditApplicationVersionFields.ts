@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
+import type { Tag } from '@/entities/tag';
 import type { ApplicationVersionDetail } from '@/shared/api/generated/model';
 
 /**
@@ -31,6 +32,16 @@ export interface EditApplicationVersionFields {
    * these switches are ordinary unsaved form state until Save.
    */
   readonly internalTools: readonly string[];
+  /**
+   * #345 — the version's topical tags. Held here with the other
+   * version-level fields for the same reason they are: they are ordinary
+   * unsaved form state until Save, and `applicationCreationSchema` does not
+   * validate them. Unlike the four above they do NOT arrive through
+   * `CreateAgentForm`'s path-based `onFieldChange` — the control is a slot
+   * the page owns, so it gets its own setter (`setTags`) instead of a case
+   * in `applyFieldChange`.
+   */
+  readonly tags: readonly Tag[];
 }
 
 export interface EditApplicationVersionFieldsState {
@@ -42,6 +53,8 @@ export interface EditApplicationVersionFieldsState {
    * the path list in two places.
    */
   readonly applyFieldChange: (path: string, value: unknown) => boolean;
+  /** Replaces the whole tag list — the shape `AgentTagEditor`'s `onChange` hands back (#345). */
+  readonly setTags: (tags: readonly Tag[]) => void;
   /** Feeds the page's `useUnsavedChangesNavBlocker` — RHF's own `isDirty` cannot see these fields (#133's create-page half made the same point). */
   readonly isDirty: boolean;
   /** Called after a successful save so the edits just persisted stop counting as unsaved (mirrors `form.reset(form.getValues())` on the RHF half). */
@@ -51,6 +64,20 @@ export interface EditApplicationVersionFieldsState {
 function toStringArray(value: unknown): readonly string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string');
+}
+
+/**
+ * The generated `VersionTag[]` (`{id?, name?, data?}` — the union of the
+ * applications read shape and the looser export/fork echoes) -> the
+ * `entities/tag` `Tag` the control binds to. A nameless entry is dropped:
+ * it cannot be stored (`tags.name` is NOT NULL) and has no label to show.
+ * `id` falls back to 0 only for the echo shapes that omit it; the
+ * applications version-detail read always sends the real `tags.id`.
+ */
+function toTags(version: ApplicationVersionDetail | undefined): readonly Tag[] {
+  return (version?.tags ?? [])
+    .filter((tag): tag is { id?: number; name: string; data?: unknown } => typeof tag.name === 'string' && tag.name !== '')
+    .map((tag) => ({ id: tag.id ?? 0, name: tag.name, data: tag.data ?? null }));
 }
 
 function fromVersion(version: ApplicationVersionDetail | undefined): EditApplicationVersionFields {
@@ -64,6 +91,7 @@ function fromVersion(version: ApplicationVersionDetail | undefined): EditApplica
     })),
     stepLimit: typeof metaRecord['step_limit'] === 'number' ? metaRecord['step_limit'] : undefined,
     internalTools: toStringArray(metaRecord['internal_tools']),
+    tags: toTags(version),
   };
 }
 
@@ -73,6 +101,11 @@ function areEqual(a: EditApplicationVersionFields, b: EditApplicationVersionFiel
   if (a.stepLimit !== b.stepLimit) return false;
   if (a.internalTools.length !== b.internalTools.length) return false;
   if (a.internalTools.some((name, index) => b.internalTools[index] !== name)) return false;
+  if (a.tags.length !== b.tags.length) return false;
+  // Compared by NAME, not by id: a tag the user just typed carries a
+  // placeholder id (`AgentTagEditor`), so an id comparison would report the
+  // page dirty forever after a save that stored that very tag.
+  if (a.tags.some((tag, index) => b.tags[index]?.name !== tag.name)) return false;
   if (a.variables.length !== b.variables.length) return false;
   return a.variables.every((variable, index) => {
     const other = b.variables[index];
@@ -137,9 +170,13 @@ export function useEditApplicationVersionFields(
     }
   }, []);
 
+  const setTags = useCallback((tags: readonly Tag[]) => {
+    setFields((previous) => ({ ...previous, tags }));
+  }, []);
+
   const markSaved = useCallback(() => setBaseline(fields), [fields]);
 
   const isDirty = useMemo(() => !areEqual(fields, baseline), [fields, baseline]);
 
-  return { fields, applyFieldChange, isDirty, markSaved };
+  return { fields, applyFieldChange, setTags, isDirty, markSaved };
 }

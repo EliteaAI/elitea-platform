@@ -36,6 +36,9 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/hopmarker"
+	"github.com/EliteaAI/elitea-platform/services/elitea-llm-gateway/internal/overhead"
 )
 
 // SelfReferentialCredentialReason is the rejection reason emitted when a
@@ -178,6 +181,11 @@ type EliteaAccount struct {
 	// taken from a request.
 	publicProjectID string
 
+	// hopMarker is the outbound half of hop-marker detection (issue #164).
+	// nil = unarmed: no marker header is added to any provider request and the
+	// gateway detects no loop. See GetConfigForProvider.
+	hopMarker *hopmarker.Marker
+
 	logger *slog.Logger
 }
 
@@ -215,6 +223,16 @@ type Config struct {
 	// This MUST be operator configuration. A request-supplied value would let a
 	// caller name any project as "public" and read its credentials.
 	PublicProjectID string
+	// HopMarker is the deployment's hop marker (issue #164). When armed, its
+	// value is added to EVERY outbound provider request so a request that
+	// routes back into this platform's /llm surface can be recognised as a
+	// re-entry and refused. nil leaves the outbound half unarmed.
+	//
+	// Setting it on every provider, and not only on the tenant-authored
+	// classes, is deliberate: the loop closes through whatever endpoint a
+	// credential names, and a provider class the marker skipped would be a
+	// class the guard cannot see.
+	HopMarker *hopmarker.Marker
 	// Logger is used for structured logging; never logs secret material. When
 	// nil, slog.Default is used.
 	Logger *slog.Logger
@@ -257,6 +275,7 @@ func New(cfg Config) (*EliteaAccount, error) {
 		selfOrigins:         origins,
 		egress:              egress,
 		publicProjectID:     cfg.PublicProjectID,
+		hopMarker:           cfg.HopMarker,
 		logger:              logger,
 	}, nil
 }
@@ -326,6 +345,27 @@ func (a *EliteaAccount) GetConfigForProvider(provider schemas.ModelProvider) (*s
 	case schemas.VLLM, schemas.Ollama:
 		cfg.NetworkConfig.AllowPrivateNetwork = a.egress.configured()
 	}
+
+	// ISSUE #164: the OUTBOUND half of hop-marker detection. bifrost applies
+	// NetworkConfig.ExtraHeaders to every request it sends for this provider
+	// (providers/utils.SetExtraHeaders / SetExtraHeadersHTTP), and it applies
+	// them BEFORE it signs a request, so an AWS SigV4 signature covers the
+	// marker instead of being invalidated by it.
+	//
+	// The marker rides EVERY provider, not only the classes whose api_base is
+	// tenant-authored. A loop closes through whichever endpoint a credential
+	// names, so a class the marker skipped would be a class the guard cannot
+	// see. The cost of that breadth is that the marker reaches api.openai.com
+	// and every other upstream, which is why it carries dedicated key material
+	// and why recognising a harvested copy refuses only the request that
+	// carries it — see internal/hopmarker.
+	//
+	// This method is called once per provider, without a context and without a
+	// key, so the value it returns cannot vary per project. That fits: the
+	// marker is a constant of the deployment.
+	if v := a.hopMarker.Value(); v != "" {
+		cfg.NetworkConfig.ExtraHeaders = map[string]string{hopmarker.Header: v}
+	}
 	return cfg, nil
 }
 
@@ -338,6 +378,20 @@ func (a *EliteaAccount) GetConfigForProvider(provider schemas.ModelProvider) (*s
 // header (design §5.3). With no project in context there is nothing to resolve
 // and zero keys are returned (core treats this as "no key for provider").
 func (a *EliteaAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+	// Issue #17: the BFF.9d overhead metric must count this work. bifrost/core
+	// calls this method from its provider worker, inside the router call, and
+	// it passes the caller's own BifrostContext. The /llm handler put an
+	// overhead.Meter on that context; the mark tells the handler how much of
+	// the request had elapsed when core held the key. Everything after the mark
+	// is the provider round-trip, which the metric excludes.
+	//
+	// The mark records on every return path. A refusal (a self-referential
+	// credential, a blocked egress host, a vault failure) costs the caller the
+	// same gateway time as a success. The Meter keeps the earliest mark, so a
+	// retry that arrives here after a provider call cannot inflate the value.
+	// A context with no Meter yields a nil *Meter, and the call is a no-op.
+	defer overhead.FromContext(ctx).MarkCredentialsResolved()
+
 	projectID := projectIDFromContext(ctx)
 	if projectID == "" {
 		return []schemas.Key{}, nil

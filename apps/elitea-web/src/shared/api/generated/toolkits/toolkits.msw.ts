@@ -49,6 +49,7 @@ import type {
   McpRegisteredServer,
   ToolkitInstance,
   ToolkitInstanceListResponse,
+  ToolkitToolsPayload,
   ToolkitTypeSchemas,
 } from "../model";
 
@@ -115,6 +116,44 @@ export const getCreateToolkitResponseMock = (
   meta: {},
   created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
   author_id: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getListToolkitAvailableToolsResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitToolsPayload, object>> = {},
+): ToolkitToolsPayload => ({
+  tools: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    description: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  total: faker.number.int(),
+  ...overrideResponse,
+});
+
+export const getDiscoverToolkitToolsResponseMock = (
+  overrideResponse: Partial<Extract<ToolkitToolsPayload, object>> = {},
+): ToolkitToolsPayload => ({
+  tools: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    description: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  total: faker.number.int(),
   ...overrideResponse,
 });
 
@@ -281,6 +320,58 @@ export const getCreateToolkitMockHandler = (
   );
 };
 
+export const getListToolkitAvailableToolsMockHandler = (
+  overrideResponse?:
+    | ToolkitToolsPayload
+    | ((
+        info: Parameters<Parameters<typeof http.get>[1]>[0],
+      ) => Promise<ToolkitToolsPayload> | ToolkitToolsPayload),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/elitea_core/toolkit_available_tools/prompt_lib/:projectId/:toolkitId",
+    async (info: Parameters<Parameters<typeof http.get>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListToolkitAvailableToolsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getDiscoverToolkitToolsMockHandler = (
+  overrideResponse?:
+    | ToolkitToolsPayload
+    | ((
+        info: Parameters<Parameters<typeof http.post>[1]>[0],
+      ) => Promise<ToolkitToolsPayload> | ToolkitToolsPayload),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post(
+    "*/elitea_core/toolkit_discover_tools/prompt_lib/:projectId/:toolkitType",
+    async (info: Parameters<Parameters<typeof http.post>[1]>[0]) => {
+      await delay(0);
+
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getDiscoverToolkitToolsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
 export const getListRegisteredMcpServersMockHandler = (
   overrideResponse?:
     | McpRegisteredServer[]
@@ -360,6 +451,8 @@ export const getToolkitsMock = () => [
   getListToolkitsMockHandler(),
   getListToolkitInstancesMockHandler(),
   getCreateToolkitMockHandler(),
+  getListToolkitAvailableToolsMockHandler(),
+  getDiscoverToolkitToolsMockHandler(),
   getListRegisteredMcpServersMockHandler(),
   getCallRegisteredMcpServerToolMockHandler(),
   getGetInternalMcpPatStatusMockHandler(),

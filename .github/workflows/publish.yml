@@ -150,32 +150,32 @@ jobs:
 
   # ── Job 2: Build each image on its native runner ────────────────────────────
   #
-  # VULNERABILITY SCAN — WHERE IT RUNS, AND WHY NOT HERE (issue #433)
+  # VULNERABILITY SCAN — WHERE IT RUNS (issues #433 and #501)
   #
-  #   DECISION: the images below are scanned by
-  #   .github/workflows/ci-image-scan.yml, not by a job inside this workflow.
-  #   That workflow builds every image in the matrix below, scans it with trivy
-  #   at HIGH,CRITICAL, and fails on any finding. It runs on every pull request
-  #   and every push to main that touches an image input, and again every day at
-  #   05:17 UTC. A release is cut from main, so the code it ships was scanned at
-  #   most 24 hours earlier.
+  #   The images below are scanned TWICE, by two gates with different subjects.
   #
-  #   RESIDUAL RISK, stated rather than hidden: a CVE published between the last
-  #   scan of main and this release ships. The window is bounded by the daily
-  #   run. A scan job here would shrink it to the length of one release, and it
-  #   would cost either a second build of all six images or a scan of images
-  #   that are already pushed. Issue #501 holds that work.
+  #   1. .github/workflows/ci-image-scan.yml scans a REBUILD of every image on
+  #      every pull request, on every push to main that touches an image input,
+  #      and daily at 05:17 UTC. That gate guards the merge.
   #
-  #   OWNER: Platform Engineering — the same owner the release parity audit
-  #   above names, because this is the same release gate register.
+  #   2. The `scan` job below scans the image THIS RELEASE PUSHED, before the
+  #      `manifest` job creates the `latest` tag. That gate guards the release.
   #
-  #   REVIEW BY: 2026-11-30. Re-read this then. If a release has shipped a
-  #   finding that the daily scan reported after the fact, close #501 by
-  #   building the gate here instead.
+  #   WHY BOTH. A release is cut from main, so gate 1 measured the release code
+  #   at most 24 hours earlier. A CVE published inside that window used to ship,
+  #   and the daily run reported it after the fact — the release did not stop.
+  #   Issue #501 held that gap; gate 2 closes it.
+  #
+  #   WHICH IMAGE GATE 2 READS. It pulls the tag this workflow pushed, so it
+  #   reads the artefact the release publishes and not a rebuild of it. The
+  #   alternative — build every image a second time to scan it — costs a second
+  #   build of seven images and still scans a different artefact.
   #
   #   The image list below is not free-form. ci-image-scan.yml reads it and
-  #   fails when it ships an image that no scan covers, so a seventh entry
-  #   cannot arrive unscanned in silence.
+  #   fails when it ships an image that no scan covers, so an eighth entry
+  #   cannot arrive unscanned in silence. It also compares its own scan matrix
+  #   with the `scan` matrix below, entry by entry, so the release gate cannot
+  #   quietly exempt an image or expect a target type the merge gate does not.
   #
   # elitea-worker-python was excluded here until this change, on the grounds
   # that "the worker plane it belongs to (worker_core / worker_client /
@@ -231,8 +231,10 @@ jobs:
           - name: pylon-indexer
             context: ./services/pylon-indexer
             dockerfile: ./services/pylon-indexer/Containerfile
-          # Standalone module on Go 1.26.4 — its Containerfile pins
-          # golang:1.26.4, so no runner-image bump is required here.
+          # Standalone module outside go.work. Its Containerfile builds from
+          # golang:1.26-alpine and carries its own toolchain, so no runner-image
+          # bump is required here. scripts/ci/check-gateway-toolchain.sh holds
+          # that tag and the ci-gateway.yml pin together (#506).
           - name: elitea-llm-gateway
             context: ./services/elitea-llm-gateway
             dockerfile: ./services/elitea-llm-gateway/Containerfile
@@ -292,10 +294,151 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.suffix }}
 
-  # ── Job 3: Merge platform digests into a single multi-arch manifest ──────────
+  # ── Job 3: Scan the images this release pushed ───────────────────────────────
+  #
+  # ISSUE #501. This workflow pushed six images that no job in it scanned. The
+  # merge gate had scanned main at most 24 hours earlier, so a CVE published
+  # inside that window shipped and the daily run reported it after the fact.
+  #
+  # WHERE IT SITS, AND WHY THERE. `manifest` needs this job, so a red scan stops
+  # BEFORE any `latest` or `<major>.<minor>` tag exists. `rollback` needs it too,
+  # so the platform tags the build job already pushed are deleted along with the
+  # release and the git tag. The images a consumer can resolve by a moving tag
+  # are therefore never images this gate refused.
+  #
+  # IT READS THE PUSHED IMAGE, NOT A REBUILD. The tag below is the one the build
+  # job pushed minutes ago, pulled back from the registry. The step prints the
+  # digest it scanned, so the log states which artefact the verdict is about.
+  #
+  # ONE PLATFORM. The report reads Go build metadata and OS package databases,
+  # and neither depends on the architecture; the two platform tags come from one
+  # source tree. ci-image-scan.yml states the same rule for the same reason.
+  #
+  # THE RULE LIVES IN ONE SCRIPT. scripts/ci/image-scan-gate.sh decides which
+  # report blocks, and ci-image-scan.yml runs that same file. It has three
+  # failures: no report, a report that never reached the application content,
+  # and any HIGH or CRITICAL finding. The first two block for EVERY image, the
+  # exempt ones included — a dead scan must not look like a clean scan.
+  # scripts/ci/image-scan-gate-test.sh drives every one of those arms with
+  # synthetic reports, so this gate is proved red rather than asserted.
+  #
+  # THE MATRIX IS NOT FREE-FORM. ci-image-scan.yml compares it with its own,
+  # entry by entry, and fails when they differ. So the release gate cannot
+  # exempt an image the merge gate blocks, and cannot expect a target type the
+  # merge gate does not.
+  scan:
+    name: Scan ${{ matrix.image.name }} (${{ matrix.image.blocking && 'blocking' || 'exempt, reports only' }})
+    needs: [release, build]
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    # Narrower than the workflow default: this job reads the tree and pulls
+    # images. It pushes nothing.
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      # One red image must not hide the state of the other six. rollback runs on
+      # failure() however this matrix ends, so a complete report costs nothing.
+      fail-fast: false
+      matrix:
+        image:
+          # `expect_type` is the trivy Result.Type the report MUST hold. Each
+          # value names the APPLICATION content, so a scan that reads the base
+          # layers and stops short fails instead of reading as clean. The values
+          # are MEASURED, and ci-image-scan.yml carries the same ones.
+          #
+          # `blocking: false` reports the finding count and does not stop the
+          # release. It never relaxes the threshold and never relaxes the
+          # dormancy guards. `.github/image-scan-exempt.txt` records the cause
+          # of each exemption and the issue that ends it.
+          - name: elitea-main
+            expect_type: gobinary
+            blocking: true
+          - name: elitea-scheduler
+            expect_type: gobinary
+            blocking: true
+          - name: elitea-ui
+            expect_type: alpine
+            blocking: true
+          - name: elitea-web
+            expect_type: alpine
+            blocking: true
+          - name: pylon-indexer
+            expect_type: python-pkg
+            blocking: false
+          - name: elitea-llm-gateway
+            expect_type: gobinary
+            blocking: true
+          - name: elitea-worker-python
+            expect_type: python-pkg
+            blocking: false
+
+    steps:
+      # The gate script is read from the released tree, not from the default
+      # branch, so the rule that judges this release is the rule this release
+      # carries.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.new_release_git_tag }}
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A pull that fails FAILS the job. "The image was not there" must never
+      # reach the gate as an empty report, which would read as a clean scan.
+      - name: Pull the image this release pushed
+        id: pull
+        run: |
+          set -euo pipefail
+          REF="${{ env.REGISTRY }}/${{ matrix.image.name }}:${{ needs.release.outputs.new_release_version }}-linux-amd64"
+          docker pull "$REF"
+          DIGEST="$(docker image inspect "$REF" --format '{{index .RepoDigests 0}}')"
+          if [ -z "$DIGEST" ]; then
+            echo "::error::pulled ${REF} and read no repository digest from it — the gate could not state which artefact it scanned"
+            exit 1
+          fi
+          echo "Scanning the pushed artefact ${DIGEST}"
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "- \`${{ matrix.image.name }}\` scanned at \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      # exit-code 0 on purpose: this step collects the report, and the step
+      # below is the gate. Splitting them lets the gate print every finding.
+      - name: Scan the pushed image
+        uses: aquasecurity/trivy-action@v0.36.0
+        env:
+          # Used only if trivy resolves the reference from the registry instead
+          # of the local daemon copy the step above pulled.
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: ${{ steps.pull.outputs.ref }}
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-report.json
+          exit-code: "0"
+
+      - name: Gate on HIGH and CRITICAL findings
+        run: |
+          bash scripts/ci/image-scan-gate.sh \
+            trivy-report.json \
+            "${{ matrix.image.name }}" \
+            "${{ matrix.image.expect_type }}" \
+            "${{ matrix.image.blocking }}"
+
+  # ── Job 4: Merge platform digests into a single multi-arch manifest ──────────
+  #
+  # `needs: scan` is what makes the gate above a RELEASE gate. Without it a
+  # refused image still gets a `latest` tag, and the scan becomes a report.
   manifest:
     name: Manifest ${{ matrix.image.name }}
-    needs: [release, build]
+    needs: [release, build, scan]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -335,7 +478,7 @@ jobs:
             "${IMAGE}:${VERSION}-linux-amd64" \
             "${IMAGE}:${VERSION}-linux-arm64"
 
-  # ── Job 4: Keyless cosign signing ───────────────────────────────────────────
+  # ── Job 5: Keyless cosign signing ───────────────────────────────────────────
   sign:
     name: Sign ${{ matrix.image.name }}
     needs: [release, manifest]
@@ -378,7 +521,7 @@ jobs:
 
           cosign sign --yes "${IMAGE}@${DIGEST}"
 
-  # ── Job 5: Package and push the Helm charts to the GHCR OCI registry ────────
+  # ── Job 6: Package and push the Helm charts to the GHCR OCI registry ────────
   # The images are only half of a release. Until this job existed, a consumer
   # could `docker pull ghcr.io/eliteaai/elitea-main:1.2.3` but had no way to
   # obtain the chart that deploys it other than cloning this repository at the
@@ -615,10 +758,15 @@ jobs:
           VERSION="${{ needs.release.outputs.new_release_version }}"
           helm show chart "oci://${REGISTRY}/charts/${{ matrix.chart }}" --version "$VERSION"
 
-  # ── Job 6: Rollback — delete release, tag, and images on failure ────────────
+  # ── Job 7: Rollback — delete release, tag, and images on failure ────────────
   rollback:
     name: Rollback
-    needs: [release, build, manifest, sign, chart]
+    # `scan` is on this list so a refused image is rolled back, not left in the
+    # registry. The build job pushed `<version>-linux-amd64` and
+    # `<version>-linux-arm64` before the scan ran, and the step below deletes
+    # both. Without this line the release would keep the platform tags of an
+    # image the release gate refused (#501).
+    needs: [release, build, scan, manifest, sign, chart]
     if: failure() && needs.release.outputs.new_release_published == 'true'
     runs-on: ubuntu-latest
     steps:

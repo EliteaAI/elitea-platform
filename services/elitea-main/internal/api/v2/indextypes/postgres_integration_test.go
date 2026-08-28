@@ -2,12 +2,14 @@ package indextypes_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -55,10 +57,7 @@ func TestCurrentIndexTypesHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 	}))
 	defer server.Close()
 
-	fixture, err := os.ReadFile("testdata/current_index_types_ui_response.json")
-	if err != nil {
-		t.Fatal(err)
-	}
+	fixture := currentIndexTypesUIFixture(t)
 
 	tests := []struct {
 		name       string
@@ -180,8 +179,28 @@ func TestCurrentIndexTypesHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 					body,
 				)
 			}
-			if test.wantStatus == http.StatusOK && string(body) != string(fixture) {
-				t.Fatalf("UI response drifted: %s", body)
+			if test.wantStatus == http.StatusOK {
+				// The body carries both halves since #394: the published
+				// `items`/`total` envelope beside the three Pylon maps. Read
+				// the maps back out and hold them to the pinned SDK fixture,
+				// and require the published half to be present.
+				var pylon handler.CurrentIndexTypes
+				if err := json.Unmarshal(body, &pylon); err != nil {
+					t.Fatalf("UI response does not decode: %v", err)
+				}
+				if !reflect.DeepEqual(pylon, fixture) {
+					t.Fatalf("UI response drifted: %s", body)
+				}
+				var published struct {
+					Items []map[string]any `json:"items"`
+					Total int              `json:"total"`
+				}
+				if err := json.Unmarshal(body, &published); err != nil {
+					t.Fatalf("published half does not decode: %v", err)
+				}
+				if len(published.Items) != 3 || published.Total != 3 {
+					t.Fatalf("published half missing: %s", body)
+				}
 			}
 			if strings.Contains(string(body), "tenant-one-canary") ||
 				strings.Contains(string(body), "tenant-two-canary") ||

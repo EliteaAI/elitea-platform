@@ -35,9 +35,32 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { checkFloors } from './lib/gate-floor.mjs';
+
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const INDEX = path.join(appRoot, 'parity/screenshot-index.json');
 const VISUAL_DIR = path.join(appRoot, 'e2e/visual');
+
+/*
+ * Floors (issue #528). Every number below is a plausibility bar, not a target.
+ *
+ * The gate reads three subject sets, and each one can go empty without any
+ * other check noticing:
+ *   - `index.shots` — rename the key, or ship `"shots": []`, and `wired` is
+ *     empty, `uncoveredRoutes` is empty, and the script prints "every wired
+ *     route has a spec" over nothing at all.
+ *   - the `wired` subset — change the `wiringStatus` value and the same thing
+ *     happens with the index still full.
+ *   - `e2e/snapshots` — `dirStats` reports 0 bytes for an absent directory, so
+ *     deleting every baseline met the size budget.
+ *
+ * Measured on 2026-08-28: 76 indexed shots, 53 of them `wired`, 38 committed
+ * baseline PNGs. Ordinary work moves those up. Lower a floor only together
+ * with the measured number that replaces it.
+ */
+const MIN_INDEXED_SHOTS = 60;
+const MIN_WIRED_SHOTS = 40;
+const MIN_BASELINE_FILES = 24;
 
 const index = JSON.parse(readFileSync(INDEX, 'utf8'));
 const shots = index.shots ?? [];
@@ -148,12 +171,45 @@ const coveredAll = shots.filter((s) => isCovered(s.route));
 
 const uncoveredRoutes = [...new Set(uncoveredWired.map((s) => s.route))].sort();
 
+/*
+ * Baseline weight tripwire — the counting half.
+ *
+ * PNGs do not delta-compress, so every revision of a baseline stores a full
+ * copy in history. The byte budget below guards the top end. `files` guards
+ * the bottom end: an absent or emptied `e2e/snapshots` reads as 0 bytes, which
+ * met the budget and passed.
+ */
+const SNAPSHOT_BUDGET_BYTES = 12 * 1024 * 1024;
+const SNAPSHOT_DIR = path.join(appRoot, 'e2e/snapshots');
+
+function dirStats(dir) {
+  if (!existsSync(dir)) return { files: 0, bytes: 0 };
+  let files = 0;
+  let bytes = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const inner = dirStats(p);
+      files += inner.files;
+      bytes += inner.bytes;
+    } else {
+      files += 1;
+      bytes += statSync(p).size;
+    }
+  }
+  return { files, bytes };
+}
+
+const snapshot = dirStats(SNAPSHOT_DIR);
+
 if (process.argv.includes('--json')) {
   console.log(JSON.stringify({
     totalShots: shots.length,
     coveredShots: coveredAll.length,
     wiredShots: wired.length,
     coveredWiredShots: coveredWired.length,
+    baselineFiles: snapshot.files,
+    baselineBytes: snapshot.bytes,
     uncoveredWiredRoutes: uncoveredRoutes,
     ok: uncoveredRoutes.length === 0,
   }, null, 2));
@@ -165,6 +221,19 @@ console.log(
   `check-visual-coverage: ${coveredAll.length}/${shots.length} indexed shots have a @visual spec ` +
   `(${coveredWired.length}/${wired.length} of the 'wired' ones, ${exemptWired.length} exempt).`,
 );
+
+// The floors come BEFORE the coverage verdict. An empty index makes that
+// verdict vacuously green, so the count has to be stated and refused first.
+const floors = checkFloors('check-visual-coverage', [
+  { subject: 'indexed shots in parity/screenshot-index.json', observed: shots.length, floor: MIN_INDEXED_SHOTS },
+  { subject: "indexed shots with wiringStatus 'wired'", observed: wired.length, floor: MIN_WIRED_SHOTS },
+  { subject: 'committed baseline files under e2e/snapshots', observed: snapshot.files, floor: MIN_BASELINE_FILES },
+]);
+for (const line of floors.lines) console.log(line);
+if (!floors.ok) {
+  console.error(floors.error);
+  process.exit(2);
+}
 
 // Exemptions are printed BEFORE the verdict, pass or fail, so they can never
 // read as covered.
@@ -182,7 +251,8 @@ if (uncoveredRoutes.length > 0) {
 }
 
 /*
- * Baseline weight tripwire.
+ * Baseline weight tripwire — the budget half. The count half runs above, with
+ * the other floors.
  *
  * PNGs do not delta-compress, so every revision of a baseline stores a full copy
  * in history. Today: 5 baselines, ~400KB, and full coverage of all 63 indexed
@@ -201,22 +271,11 @@ if (uncoveredRoutes.length > 0) {
  * If this fires, decide deliberately — prune, or adopt lfs with the pointer
  * hazard handled — rather than discovering the weight later.
  */
-const SNAPSHOT_BUDGET_BYTES = 12 * 1024 * 1024;
-const SNAPSHOT_DIR = path.join(appRoot, 'e2e/snapshots');
-
-function dirBytes(dir) {
-  if (!existsSync(dir)) return 0;
-  let total = 0;
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, entry.name);
-    total += entry.isDirectory() ? dirBytes(p) : statSync(p).size;
-  }
-  return total;
-}
-
-const snapshotBytes = dirBytes(SNAPSHOT_DIR);
+const snapshotBytes = snapshot.bytes;
 const mb = (n) => `${(n / 1024 / 1024).toFixed(2)}MB`;
-console.log(`check-visual-coverage: baselines occupy ${mb(snapshotBytes)} of a ${mb(SNAPSHOT_BUDGET_BYTES)} budget.`);
+console.log(
+  `check-visual-coverage: ${snapshot.files} baselines occupy ${mb(snapshotBytes)} of a ${mb(SNAPSHOT_BUDGET_BYTES)} budget.`,
+);
 if (snapshotBytes > SNAPSHOT_BUDGET_BYTES) {
   console.error(
     `check-visual-coverage: FAIL — e2e/snapshots is ${mb(snapshotBytes)}, over the ${mb(SNAPSHOT_BUDGET_BYTES)} budget.\n` +

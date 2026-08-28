@@ -24,3 +24,25 @@ SERVICE_VERSION
 # wired via the chart's `secrets:` block (valueFrom.secretKeyRef), so it is
 # chart-settable and no longer needs an allowlist exemption. Same for
 # GATEWAY_IDENTITY_SECRET.
+
+# Hop-marker key material (issue #164). The gateway stamps
+# internal/hopmarker.Header on every outbound provider request and refuses an
+# inbound request that already carries this deployment's own marker, which
+# contains a circular route on its first re-entry.
+#
+# Allowlisted because it is OPTIONAL and never silent. Empty leaves hop
+# detection unarmed, which is a supported posture, and main() states the mode
+# once at startup (logHopMarkerMode) — so the failure this gate exists to
+# prevent, a feature that is quietly dead in the deployed pod, cannot happen
+# here without a WARN line saying exactly that.
+#
+# It is a SEPARATE secret from GATEWAY_IDENTITY_SECRET and must never be
+# derived from it: the marker travels to every upstream, and a provider
+# api_base is tenant-authored.
+#
+# STILL OUTSTANDING: the chart offers no knob, so a default install boots
+# loudly UNARMED. Wiring `secrets.GATEWAY_HOP_SECRET` in
+# deploy/helm/elitea/values.yaml beside GATEWAY_IDENTITY_SECRET, with the same
+# value on every replica, is what arms a default install. Delete this entry
+# when that lands.
+GATEWAY_HOP_SECRET

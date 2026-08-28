@@ -6,13 +6,17 @@
  * separate function/file keeps its complexity from summing into the
  * component's own count). No behaviour change from the extraction.
  *
- * Real, disclosed gap (baseline: `useToolkitAvailableToolsQuery`,
- * `api/toolkits.js:515`) — no generated endpoint for dynamic MCP tool-name
- * discovery exists (confirmed against `shared/api/generated/toolkits/
- * toolkits.ts`'s full export list), the SAME gap the already-landed
- * `ui/select/LoopToolSelect.tsx`'s own doc comment documents. `functionOptions`
- * is therefore populated ONLY from an explicit `selectedToolkit.settings.
- * selected_tools` list.
+ * CORRECTED (#440): this comment used to say that no endpoint for dynamic
+ * tool-name discovery existed. It does exist. `internal/api/router.go`
+ * registers `toolkit_available_tools` (:1912) and `toolkit_discover_tools`
+ * (:1914), and `entities/toolkit`'s `toolkitTools.useToolkitTools` is the
+ * client for both — `ui/select/LoopToolSelect.tsx` already reads it.
+ *
+ * `functionOptions` here is still populated ONLY from an explicit
+ * `selectedToolkit.settings.selected_tools` list. That is now a WIRING gap
+ * in this deprecated node, not a missing endpoint: the work is to call the
+ * same hook and to render its `isError` as its own state, the way
+ * `LoopToolSelect.tsx` does.
  */
 import { useCallback, useMemo } from 'react';
 import type { ChangeEvent } from 'react';

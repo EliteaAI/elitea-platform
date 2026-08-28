@@ -1,8 +1,27 @@
 # Current `index_types` parity evidence
 
-Status: source-complete, production-composed behind the explicit default-off
-`ELITEA_INDEX_TYPES_ENABLED` gate, and integration-tested. It is not deployed;
-the live browser checkpoint remains open.
+Status: source-complete, production-composed behind the explicit
+`ELITEA_INDEX_TYPES_ENABLED` gate, integration-tested, and DEPLOYED by
+`deploy/helm/elitea/values-standalone.yaml` since issue #394. A default install
+still leaves the flag off, because the capability needs production
+authentication that install does not build. The live browser checkpoint remains
+open.
+
+## What #394 changed
+
+The route answered the three Pylon maps only. The published contract for the
+same path is `DocumentLoadersResponse` — `{items, total}` — so the generated
+`apps/elitea-web` client read a body with no `items` key, and
+`shared/api/unwrap.ts` reports that as an unrecognised shape. That drift is why
+the flag stayed dark in every deployment.
+
+The body now carries BOTH halves, the way #395 did it for the attached-skills
+read: `items` and `total` beside `document_types`, `image_types` and
+`code_types`. Each `items` entry names one category and lists that category's
+extensions, sorted, so the two halves are the same snapshot read twice and
+cannot disagree. Extra keys are contract-legal — `DocumentLoadersResponse` does
+not close its object, so a client generated from the published spec ignores
+what it did not ask for, and `api/openapi/v2.yaml` needs no edit.
 
 ## Observable contract
 
@@ -10,12 +29,12 @@ the live browser checkpoint remains open.
 | --- | --- | --- | --- |
 | HTTP route | `elitea_core/api/v2/index_types.py` registers `GET /api/v2/elitea_core/index_types/prompt_lib/{project_id}`. | `CurrentIndexTypesRoute` | Exact method, mode and path shape. |
 | Permission | `index_types.py` requires `models.applications.index_types.details` for project admin, editor and viewer roles. | `CurrentIndexTypesPermission`; existing PostgreSQL RBAC resolver | Exact permission; project membership, suspension and central-role non-inheritance are tested against PostgreSQL. |
-| Success body | The current handler returns `module.index_types` directly. | `CurrentIndexTypes` | Exact top-level `document_types`, `image_types`, `code_types` object. The incompatible prototype `{index_types:[...]}` shape is rejected by contract tests. |
+| Success body | The current handler returns `module.index_types` directly. | `CurrentIndexTypes` inside `currentIndexTypesResponse` | Exact top-level `document_types`, `image_types`, `code_types` maps, beside the published `items` and `total` keys (#394). The incompatible prototype `{index_types:[...]}` shape is rejected by contract tests. |
 | Snapshot producer | `indexer_worker/methods/indexer_file_loaders.py:file_loaders_request` projects `document_loaders_map`, `image_loaders_map`, and `code_loaders_map`/`code_extensions`. | `sync_index_types_snapshot.py` and `CurrentIndexTypesSnapshot` | Generated from the worker-lock SDK revision; 18 document, 5 image, and 42 code entries. No partial Go list. |
 | Image compatibility | The current producer reads `image_loaders_map`, not `image_loaders_map_converted`. | Generated snapshot excludes `.bmp` and `.svg`. | Exact current behavior. EliteaUI independently adds `.svg` in `fileTypes.js`; the API must not silently widen during this port. |
-| UI consumer | `EliteaUI/src/api/applications.js:getDocumentLoaders`, `hooks/useFileTypes.js`, and `slices/fileTypes.js` consume the three maps directly. | `testdata/current_index_types_ui_response.json` | Full unchanged-UI fixture is returned byte-for-byte by the Go route tests. |
+| UI consumer | `EliteaUI/src/api/applications.js:getDocumentLoaders`, `hooks/useFileTypes.js`, and `slices/fileTypes.js` consume the three maps directly. | `testdata/current_index_types_ui_response.json` | The three maps decode out of the response equal to the fixture. Byte-for-byte whole-body equality ended with #394, which added the published `items`/`total` keys the second shipped client needs. |
 | Tenant boundary | The payload is process-global, but access is project-scoped by the current decorator. | Auth and PostgreSQL permission resolution execute before snapshot read. | Cross-project membership, suspended project/user, wrong permission, viewer/editor, and platform-admin cases are integration-tested. |
-| Production ownership | The current Pylon handler remains the owner until an individual route is cut over. | `ELITEA_INDEX_TYPES_ENABLED` is strict and defaults to disabled; disabled composition registers no Go route, while enabled composition registers exactly the reviewed GET path. | Atomic ownership: the Go route either owns the exact path or falls through as absent. The incompatible prototype handler is never composed by `NewRouter`. |
+| Production ownership | The current Pylon handler remains the owner until an individual route is cut over. | `ELITEA_INDEX_TYPES_ENABLED` is strict and defaults to disabled; disabled composition registers no Go route, while enabled composition registers exactly the reviewed GET path. | Atomic ownership: the Go route either owns the exact path or falls through as absent. OFF is not free — `internal/api/router.go` then answers the path from the toolkits handler's static six-loader list, which no data backs. |
 
 ## Snapshot identity and bounds
 

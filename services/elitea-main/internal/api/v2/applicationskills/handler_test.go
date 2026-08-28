@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apimw "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/middleware"
 	handler "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/applicationskills"
@@ -61,6 +62,10 @@ func TestCurrentApplicationSkillsRoutePreservesExactCurrentContract(t *testing.T
 				VersionName:    "release",
 				VersionMissing: false,
 				IconMeta:       json.RawMessage(`{"url":"/icons/deploy.svg","type":"image/svg+xml"}`),
+				// A real timestamp on one row and the zero value on the
+				// other: `created_at` must come from the row, and the zero
+				// value must still marshal to a parseable instant.
+				CreatedAt: time.Date(2026, time.March, 4, 5, 6, 7, 0, time.UTC),
 			},
 			{
 				Name:           "review",
@@ -110,7 +115,20 @@ func TestCurrentApplicationSkillsRoutePreservesExactCurrentContract(t *testing.T
 		"10.0.0.8:43120",
 	))
 
-	want := "{\"skills\":[" +
+	// Both halves of the envelope, in one body (#395). `items` is the
+	// published SkillsList contract that apps/elitea-web reads; `skills` and
+	// `max_skills` are the Pylon keys apps/elitea-ui reads, unchanged.
+	want := "{\"items\":[" +
+		"{\"id\":\"17\",\"project_id\":\"7\",\"name\":\"deploy\"," +
+		"\"description\":\"Deploy safely\",\"type\":\"skill\",\"is_default\":false," +
+		"\"created_at\":\"2026-03-04T05:06:07Z\"," +
+		"\"updated_at\":\"0001-01-01T00:00:00Z\"}," +
+		"{\"id\":\"18\",\"project_id\":\"7\",\"name\":\"review\"," +
+		"\"description\":\"Review changes\",\"type\":\"skill\",\"is_default\":false," +
+		"\"created_at\":\"0001-01-01T00:00:00Z\"," +
+		"\"updated_at\":\"0001-01-01T00:00:00Z\"}]," +
+		"\"total\":2,\"page\":1,\"page_size\":2,\"total_pages\":1," +
+		"\"skills\":[" +
 		"{\"name\":\"deploy\",\"description\":\"Deploy safely\",\"skill_id\":17," +
 		"\"version_id\":19,\"version_name\":\"release\",\"version_missing\":false," +
 		"\"icon_meta\":{\"url\":\"/icons/deploy.svg\",\"type\":\"image/svg+xml\"}}," +
@@ -273,7 +291,7 @@ func TestCurrentApplicationSkillsRoutePreservesEmptyListAndSafeGenericFailure(
 		"10.0.0.8:43120",
 	))
 	if response.Code != http.StatusOK ||
-		response.Body.String() != "{\"skills\":[],\"max_skills\":5}\n" {
+		response.Body.String() != "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n" {
 		t.Fatalf("empty response status=%d body=%q", response.Code, response.Body.String())
 	}
 
@@ -399,7 +417,7 @@ func TestCurrentApplicationSkillsRouteAcceptsFlaskIntegerDomainAndBoundsPostgres
 				"10.0.0.8:43120",
 			))
 			if response.Code != http.StatusOK ||
-				response.Body.String() != "{\"skills\":[],\"max_skills\":5}\n" ||
+				response.Body.String() != "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n" ||
 				reader.calls != test.wantReaderCalls ||
 				reader.projectID != test.wantReaderProject ||
 				reader.appVersionID != test.wantReaderVersion {
@@ -576,4 +594,138 @@ func (function currentApplicationSkillsPeerVerifierFunc) VerifyForwardedIdentity
 	request *http.Request,
 ) error {
 	return function(request)
+}
+
+// TestCurrentApplicationSkillsRouteAnswersThePublishedSkillsListContract pins
+// the half of the envelope that made ELITEA_APPLICATION_SKILLS_ENABLED
+// unturnable (#395).
+//
+// The published contract for this path is SkillsList — {items, total, page,
+// page_size, total_pages} — in api/openapi/v2.yaml. apps/elitea-web reads it
+// through shared/api/unwrap.ts, which takes `items` first and reports any
+// other shape as unrecognised. So a body with only the Pylon keys renders as
+// "this agent version has no skills" while the route answers 200 with the
+// right rows, and turning the flag on broke the web client instead of fixing
+// it.
+//
+// The Pylon keys are asserted in the same test on purpose: correcting the
+// contract half must not cost the parity half, which apps/elitea-ui reads and
+// the edge cutover needs.
+func TestCurrentApplicationSkillsRouteAnswersThePublishedSkillsListContract(
+	t *testing.T,
+) {
+	versionID := int32(19)
+	reader := &currentApplicationSkillsReaderStub{
+		skills: []handler.CurrentApplicationSkill{
+			{
+				Name:           "deploy",
+				Description:    "Deploy safely",
+				SkillID:        17,
+				VersionID:      &versionID,
+				VersionName:    "release",
+				VersionMissing: false,
+				IconMeta:       json.RawMessage(`null`),
+				CreatedAt:      time.Date(2026, time.March, 4, 5, 6, 7, 0, time.UTC),
+			},
+		},
+	}
+	route := newCurrentApplicationSkillsRoute(
+		t,
+		reader,
+		currentApplicationSkillsPermissionResolverFunc(
+			func(
+				context.Context,
+				auth.User,
+				string,
+				string,
+			) (auth.PermissionResolution, error) {
+				return auth.PermissionResolution{
+					UserID:      11,
+					Permissions: []string{handler.CurrentApplicationSkillsPermission},
+				}, nil
+			},
+		),
+	)
+
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentApplicationSkillsRequest(
+		http.MethodGet,
+		"/api/v2/elitea_core/application_skills/prompt_lib/7/31",
+		true,
+		"10.0.0.8:43120",
+	))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v (%q)", err, response.Body.String())
+	}
+	// SkillsList declares these five keys required.
+	for _, key := range []string{"items", "total", "page", "page_size", "total_pages"} {
+		if _, present := body[key]; !present {
+			t.Fatalf(
+				"published SkillsList key %q missing; apps/elitea-web renders this as "+
+					"an empty skill list. body=%q",
+				key,
+				response.Body.String(),
+			)
+		}
+	}
+	// The Pylon keys apps/elitea-ui reads must survive beside them.
+	for _, key := range []string{"skills", "max_skills"} {
+		if _, present := body[key]; !present {
+			t.Fatalf("Pylon key %q lost from the parity envelope: %q", key, response.Body.String())
+		}
+	}
+
+	var envelope struct {
+		Items []struct {
+			ID          string `json:"id"`
+			ProjectID   string `json:"project_id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Type        string `json:"type"`
+			CreatedAt   string `json:"created_at"`
+		} `json:"items"`
+		Total      int `json:"total"`
+		Page       int `json:"page"`
+		PageSize   int `json:"page_size"`
+		TotalPages int `json:"total_pages"`
+		Skills     []struct {
+			SkillID int32 `json:"skill_id"`
+		} `json:"skills"`
+		MaxSkills int `json:"max_skills"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v", err)
+	}
+	if len(envelope.Items) != 1 || len(envelope.Skills) != 1 {
+		t.Fatalf("halves disagree: items=%d skills=%d", len(envelope.Items), len(envelope.Skills))
+	}
+	item := envelope.Items[0]
+	// The two halves project the same row, so the ids must agree.
+	if item.ID != "17" || envelope.Skills[0].SkillID != 17 {
+		t.Fatalf("item id=%q skills[0].skill_id=%d", item.ID, envelope.Skills[0].SkillID)
+	}
+	if item.ProjectID != "7" || item.Name != "deploy" ||
+		item.Description != "Deploy safely" || item.Type != "skill" ||
+		item.CreatedAt != "2026-03-04T05:06:07Z" {
+		t.Fatalf("item=%+v", item)
+	}
+	// One page, sized by the attached set — the same numbers
+	// SkillsRepo.ListForApplicationVersion answers on this path where the
+	// capability is off, so the same request gets the same body either way.
+	if envelope.Total != 1 || envelope.Page != 1 || envelope.PageSize != 1 ||
+		envelope.TotalPages != 1 || envelope.MaxSkills != 5 {
+		t.Fatalf(
+			"pagination total=%d page=%d page_size=%d total_pages=%d max=%d",
+			envelope.Total,
+			envelope.Page,
+			envelope.PageSize,
+			envelope.TotalPages,
+			envelope.MaxSkills,
+		)
+	}
 }

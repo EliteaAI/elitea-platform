@@ -3,11 +3,25 @@
 #
 # Checks:
 #   1. JSON is valid
-#   2. Required fields are present
+#   2. The rules manifest-schema.json states are met
 #   3. URLs are reachable (HEAD request for http/https, aws s3 ls for s3://)
 #
 # Usage:
 #   ./validate-manifest.sh [manifest.json]
+#
+# ── Why the schema is read, and not restated (issue #529) ────────────────────
+#
+# manifest-schema.json was a claim. Nothing opened it: neither entrypoint.sh
+# nor this script. The required-field lists, the MD5 format and the URL scheme
+# were written down HERE as well, so the schema and the validator could
+# disagree with no report at all. A schema nothing validates against is a
+# claim, not a check.
+#
+# Every rule below is READ from the schema now, in the same shape as the
+# derived assertion floors of #534: do not restate a value another file owns.
+# Change the schema and this script changes with it. Delete a rule from the
+# schema and this script FAILS, because a rule set that states nothing measures
+# nothing.
 #
 # Exit codes:
 #   0 — all checks pass
@@ -35,7 +49,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="${1:-manifest.json}"
+# The schema sits beside this script. Overridable so a caller can validate a
+# manifest against another revision of the rules.
+SCHEMA="${MANIFEST_SCHEMA:-${SCRIPT_DIR}/manifest-schema.json}"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -66,13 +84,61 @@ if ! jq empty "$MANIFEST" 2>/dev/null; then
 fi
 log_ok "Valid JSON"
 
-# --- Check 3: Required top-level fields ---
+# --- Check 3: The schema, and the rules it states ---
+if [ ! -f "$SCHEMA" ]; then
+    log_fail "Schema file not found: $SCHEMA"
+    log_fail "Every rule below comes from it, so this validator can measure nothing."
+    exit 1
+fi
+if ! jq empty "$SCHEMA" 2>/dev/null; then
+    log_fail "Invalid JSON in $SCHEMA"
+    exit 1
+fi
+log_ok "Schema read: $SCHEMA"
+
+# Read one rule out of the schema. An ABSENT rule is a failure, not an empty
+# set: a list with no entries checks nothing and reports a pass, which is the
+# fault this script exists to stop.
+schema_rule() {
+    local filter="$1"
+    local answer
+    answer="$(jq -r "$filter" "$SCHEMA" 2>/dev/null || true)"
+    if [ -z "$answer" ] || [ "$answer" = "null" ]; then
+        # STDERR, not log_fail. Every caller reads this function through a
+        # command substitution, which captures stdout — so a message written
+        # there would be swallowed and the operator would see an empty failure.
+        echo -e "${RED}✗${NC} The schema states no rule at '${filter}', so that rule is UNMEASURED: $SCHEMA" >&2
+        echo -e "${RED}✗${NC} A rule set that states nothing measures nothing." >&2
+        exit 1
+    fi
+    printf '%s' "$answer"
+}
+
+TOP_REQUIRED="$(schema_rule '.required[]')"
+MODEL_REQUIRED="$(schema_rule '.properties.models.items.required[]')"
+EXTRACT_REQUIRED="$(schema_rule '.properties.models.items.then.required[]')"
+VERSION_PATTERN="$(schema_rule '.properties.version.pattern')"
+URL_PATTERN="$(schema_rule '.properties.models.items.properties.url.pattern')"
+MD5_PATTERN="$(schema_rule '.properties.models.items.properties.md5.pattern')"
+
+# --- Check 4: Required top-level fields, as the schema lists them ---
+for field in $TOP_REQUIRED; do
+    if [ "$(jq -r --arg f "$field" 'has($f)' "$MANIFEST")" = "true" ]; then
+        log_ok "Required top-level field present: $field"
+    else
+        log_fail "Missing required top-level field '$field'"
+        ERRORS=$((ERRORS + 1))
+    fi
+done
+
 VERSION=$(jq -r '.version // empty' "$MANIFEST")
-if [ -z "$VERSION" ]; then
-    log_fail "Missing required field: version"
-    ERRORS=$((ERRORS + 1))
-else
-    log_ok "Version: $VERSION"
+if [ -n "$VERSION" ]; then
+    if echo "$VERSION" | grep -qE "$VERSION_PATTERN"; then
+        log_ok "Version: $VERSION"
+    else
+        log_fail "Version '$VERSION' does not match the schema pattern ${VERSION_PATTERN}"
+        ERRORS=$((ERRORS + 1))
+    fi
 fi
 
 MODELS_COUNT=$(jq '.models | length' "$MANIFEST")
@@ -83,44 +149,57 @@ else
     log_ok "Models count: $MODELS_COUNT"
 fi
 
-# --- Check 4: Per-model validation ---
+# --- Check 5: Per-model validation, against the schema's own lists ---
 for i in $(seq 0 $((MODELS_COUNT - 1))); do
     NAME=$(jq -r ".models[$i].name" "$MANIFEST")
     URL=$(jq -r ".models[$i].url" "$MANIFEST")
-    PATH_REL=$(jq -r ".models[$i].path" "$MANIFEST")
     MD5=$(jq -r ".models[$i].md5" "$MANIFEST")
     EXTRACT=$(jq -r ".models[$i].extract // false" "$MANIFEST")
-    EXTRACT_TARGET=$(jq -r ".models[$i].extract_target // empty" "$MANIFEST")
 
     echo ""
     echo "--- [$((i+1))/$MODELS_COUNT] $NAME ---"
 
-    # Required fields
-    if [ -z "$NAME" ] || [ "$NAME" = "null" ]; then
-        log_fail "  Missing 'name'"
-        ERRORS=$((ERRORS + 1))
-    fi
-
-    if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-        log_fail "  Missing 'url'"
-        ERRORS=$((ERRORS + 1))
+    # Required fields, as the schema lists them. A field added to the schema is
+    # checked from that moment, with no edit here.
+    url_missing=0
+    for field in $MODEL_REQUIRED; do
+        value="$(jq -r --arg f "$field" --argjson i "$i" '.models[$i][$f] // empty' "$MANIFEST")"
+        if [ -z "$value" ]; then
+            log_fail "  Missing '$field'"
+            ERRORS=$((ERRORS + 1))
+            if [ "$field" = "url" ]; then
+                url_missing=1
+            fi
+        fi
+    done
+    if [ "$url_missing" -eq 1 ]; then
+        # No URL, so no reachability check. REACHED falls short of the entry
+        # count, and the summary reports that as a failure.
         continue
     fi
 
-    if [ -z "$PATH_REL" ] || [ "$PATH_REL" = "null" ]; then
-        log_fail "  Missing 'path'"
+    # URL shape, from the schema's own pattern.
+    if echo "$URL" | grep -qE "$URL_PATTERN"; then
+        log_ok "  URL matches the schema pattern"
+    else
+        log_fail "  URL does not match the schema pattern ${URL_PATTERN}: $URL"
         ERRORS=$((ERRORS + 1))
     fi
 
-    # extract_target required when extract=true
-    if [ "$EXTRACT" = "true" ] && [ -z "$EXTRACT_TARGET" ]; then
-        log_fail "  extract=true but missing 'extract_target'"
-        ERRORS=$((ERRORS + 1))
+    # The schema states which fields extract=true adds.
+    if [ "$EXTRACT" = "true" ]; then
+        for field in $EXTRACT_REQUIRED; do
+            value="$(jq -r --arg f "$field" --argjson i "$i" '.models[$i][$f] // empty' "$MANIFEST")"
+            if [ -z "$value" ]; then
+                log_fail "  extract=true but '$field' is missing"
+                ERRORS=$((ERRORS + 1))
+            fi
+        done
     fi
 
-    # MD5 format check
+    # MD5 format, from the schema's own pattern.
     if [ "$MD5" != "null" ] && [ -n "$MD5" ]; then
-        if echo "$MD5" | grep -qE '^[a-f0-9]{32}$'; then
+        if echo "$MD5" | grep -qE "$MD5_PATTERN"; then
             log_ok "  MD5: $MD5"
         else
             log_fail "  Invalid MD5 format: $MD5"

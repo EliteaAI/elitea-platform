@@ -40,9 +40,9 @@ const exportReadFailed = "unable to read the application to export"
 func (h *Handler) exportedToolkits(ctx context.Context, schema, applicationID string) ([]map[string]any, map[int]string, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT DISTINCT t.id, t.name, t.type, COALESCE(t.settings::text, '{}')
-		FROM %q.entity_tool_mapping etm
-		JOIN %q.elitea_tools t ON t.id = etm.tool_id
-		JOIN %q.application_versions av ON av.id = etm.entity_version_id
+		FROM %s.entity_tool_mapping etm
+		JOIN %s.elitea_tools t ON t.id = etm.tool_id
+		JOIN %s.application_versions av ON av.id = etm.entity_version_id
 		WHERE av.application_id = $1`, schema, schema, schema), applicationID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query the toolkits of application %q in %q: %w", applicationID, schema, err)
@@ -192,7 +192,7 @@ func (h *Handler) exportedVersionRows(ctx context.Context, schema, applicationID
 			COALESCE(instructions, ''), COALESCE(welcome_message, ''),
 			COALESCE(llm_settings::text, '{}'), COALESCE(conversation_starters::text, '[]'),
 			COALESCE(meta::text, '{}'), COALESCE(uuid::text, ''), application_id, COALESCE(author_id, 0)
-		FROM %q.application_versions WHERE application_id = $1
+		FROM %s.application_versions WHERE application_id = $1
 		ORDER BY created_at`, schema), applicationID)
 	if err != nil {
 		return nil, fmt.Errorf("query the versions of application %q in %q: %w", applicationID, schema, err)
@@ -229,7 +229,7 @@ func (h *Handler) exportedVersionTools(
 ) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT tool_id, COALESCE(selected_tools::text, '[]')
-		FROM %q.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionID)
+		FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the toolkit references of version %d in %q: %w", versionID, schema, err)
 	}
@@ -259,7 +259,7 @@ func (h *Handler) exportedVersionTools(
 
 func (h *Handler) exportedVersionVariables(ctx context.Context, schema string, versionID int) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT name, COALESCE(value, '') FROM %q.application_variables
+		SELECT name, COALESCE(value, '') FROM %s.application_variables
 		WHERE application_version_id = $1 ORDER BY id`, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the variables of version %d in %q: %w", versionID, schema, err)
@@ -283,8 +283,8 @@ func (h *Handler) exportedVersionVariables(ctx context.Context, schema string, v
 func (h *Handler) exportedVersionTags(ctx context.Context, schema string, versionID int) ([]map[string]any, error) {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT t.name, COALESCE(t.data::text, '{}')
-		FROM %q.application_version_tag_association vta
-		JOIN %q.tags t ON t.id = vta.tag_id
+		FROM %s.application_version_tag_association vta
+		JOIN %s.tags t ON t.id = vta.tag_id
 		WHERE vta.version_id = $1`, schema, schema), versionID)
 	if err != nil {
 		return nil, fmt.Errorf("query the tags of version %d in %q: %w", versionID, schema, err)

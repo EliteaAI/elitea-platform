@@ -14,6 +14,8 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 // PositionGap is the spacing between two adjacent folders' positions. It
@@ -23,10 +25,10 @@ import (
 const PositionGap = 1_000_000
 
 type Folder struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"project_id"`
-	Name      string    `json:"name"`
-	ParentID  string    `json:"parent_id,omitempty"`
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+	Name      string `json:"name"`
+	ParentID  string `json:"parent_id,omitempty"`
 	// Position orders the sidebar, DESCENDING: the highest position renders
 	// first. That is the legacy ordering (`order_by(desc(position),
 	// created_at)`, folder.py:325-328) and the one the web client's own
@@ -148,7 +150,10 @@ func (h *Handler) loadConversations(ctx context.Context, r *http.Request, projec
 		return conversations, nil
 	}
 
-	schema := fmt.Sprintf("p_%s", projectID)
+	schema, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 
 	sortBy := r.URL.Query().Get("sort_by")
 	if sortBy == "" {
@@ -176,7 +181,7 @@ func (h *Handler) loadConversations(ctx context.Context, r *http.Request, projec
 		SELECT c.id, c.name, COALESCE(c.uuid::text, ''), c.author_id, c.folder_id,
 		       COALESCE((c.meta->>'is_pinned')::boolean, false) as is_pinned,
 		       c.created_at, c.updated_at
-		FROM %q.chat_conversations c
+		FROM %s.chat_conversations c
 		WHERE (c.meta->>'is_hidden' IS NULL OR c.meta->>'is_hidden' = 'false')
 		ORDER BY %s %s`, schema, orderCol, orderDir)
 
@@ -475,7 +480,13 @@ func (h *Handler) selectedConversationID(ctx context.Context, projectID string) 
 	if !ok || u.ID == "" || h.pool == nil {
 		return nil
 	}
-	q := fmt.Sprintf(`SELECT conversation_id FROM %q.chat_selected_conversations WHERE user_id = $1 LIMIT 1`, fmt.Sprintf("p_%s", projectID))
+	// A project id that identifies no schema selects no conversation, which is
+	// the same answer this helper already gives for "nothing selected".
+	schema, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil
+	}
+	q := fmt.Sprintf(`SELECT conversation_id FROM %s.chat_selected_conversations WHERE user_id = $1 LIMIT 1`, schema)
 	var selID int
 	if err := h.pool.QueryRow(ctx, q, u.ID).Scan(&selID); err != nil {
 		return nil
