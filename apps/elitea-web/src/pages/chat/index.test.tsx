@@ -23,7 +23,7 @@
 import type { ReactNode } from 'react';
 
 import { Outlet, RouterProvider, createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,7 +34,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { installTestEventSource } from '@/shared/api/sse/testing';
 import { server } from '@/test/setup';
 
-import ChatPage from './index';
+import ChatPage, { findActiveParticipantById } from './index';
 
 /*
  * The conversation-detail request is the observable proof that the page
@@ -48,6 +48,22 @@ const detailRequests: string[] = [];
 const BASE = '/api/v2';
 const PROJECT = '77';
 const CONVERSATION = '5';
+
+describe('findActiveParticipantById', () => {
+  const participants = [
+    { id: '2', entity_name: 'dummy' },
+    { id: '25', entity_name: 'toolkit' },
+    { id: '26', entity_name: 'application' },
+  ];
+
+  it('restores an application participant', () => {
+    expect(findActiveParticipantById(participants, '26')).toEqual(participants[2]);
+  });
+
+  it('rejects a stored toolkit participant', () => {
+    expect(findActiveParticipantById(participants, '25')).toBeUndefined();
+  });
+});
 
 function handlers() {
   return [
@@ -225,5 +241,55 @@ describe('ChatPage context budget slot', () => {
     await waitFor(() => expect(screen.queryByTestId('participants-container')).toBeTruthy(), { timeout: 5000 });
     expect(screen.queryByTestId('context-budget-panel')).toBeNull();
     expect(statusRequests).toHaveLength(0);
+  });
+});
+
+describe('ChatPage participant removal', () => {
+  it('removes an attached toolkit through the participant rail', async () => {
+    const deletedParticipants: string[] = [];
+    let toolkitAttached = true;
+    const toolkitParticipant = {
+      id: '25',
+      entity_name: 'toolkit',
+      entity_meta: { id: '20', name: 'rust_openapi_echo', project_id: PROJECT },
+      entity_settings: { toolkit_type: 'openapi' },
+    };
+
+    server.use(
+      http.get(`${BASE}/elitea_core/conversation/prompt_lib/${PROJECT}/${CONVERSATION}`, ({ request }) => {
+        detailRequests.push(request.url);
+        return HttpResponse.json({
+          id: CONVERSATION,
+          uuid: 'conversation-uuid-5',
+          name: 'A conversation',
+          participants: toolkitAttached ? [toolkitParticipant] : [],
+        });
+      }),
+      http.delete(
+        `${BASE}/elitea_core/participant/prompt_lib/${PROJECT}/${CONVERSATION}/:participantId`,
+        ({ params }) => {
+          deletedParticipants.push(String(params.participantId));
+          toolkitAttached = false;
+          return new HttpResponse(null, { status: 204 });
+        },
+      ),
+      http.get(`${BASE}/configurations/tts_voices/${PROJECT}`, () => HttpResponse.json({ items: [] })),
+      http.get(`${BASE}/elitea_core/context_analytics/prompt_lib/${PROJECT}/${CONVERSATION}`, () =>
+        HttpResponse.json({ current_tokens: 0, max_tokens: 0, message_groups_in_context: 0 }),
+      ),
+    );
+
+    renderAt(`/chat/${CONVERSATION}`);
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole('button', { name: 'Expand participants' }));
+    const toolkitName = await screen.findByText('rust_openapi_echo');
+    await user.hover(toolkitName);
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove toolkit' }));
+    await screen.findByText('Remove toolkit?');
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => expect(deletedParticipants).toEqual(['25']), { timeout: 5000 });
+    await waitFor(() => expect(screen.queryByText('rust_openapi_echo')).toBeNull(), { timeout: 5000 });
   });
 });

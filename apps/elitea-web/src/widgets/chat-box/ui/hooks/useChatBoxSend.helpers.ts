@@ -8,8 +8,12 @@ import type { UseChatBoxSendParams } from './useChatBoxSend';
 export function buildChatStreamContext(
   params: UseChatBoxSendParams,
 ): ChatStreamContext {
+  const target = resolveTargetParticipant(
+    params.activeParticipant,
+    params.participants,
+  );
   const participantId = (
-    params.activeParticipant as { id?: string | number } | undefined
+    target as { id?: string | number } | undefined
   )?.id;
   return {
     ...(participantId !== undefined
@@ -36,6 +40,10 @@ function isApplicationParticipant(participant: unknown): boolean {
   return name === 'application' || name === 'pipeline';
 }
 
+function isAdhocModelParticipant(participant: unknown): boolean {
+  return participantEntityName(participant) === 'dummy';
+}
+
 /** The execution-loop bound is not a provider/model parameter. */
 export function modelRequestSettings(
   settings: Readonly<Record<string, unknown>> | undefined,
@@ -59,7 +67,10 @@ export function positiveParticipantId(raw: unknown): number | undefined {
 }
 
 export function resolveTargetParticipant(activeParticipant: unknown, participants: readonly unknown[] | undefined): unknown {
-  if (activeParticipant !== undefined && activeParticipant !== null) return activeParticipant;
+  if (isApplicationParticipant(activeParticipant) || isAdhocModelParticipant(activeParticipant)) return activeParticipant;
+  if (participantEntityName(activeParticipant) === 'user') return activeParticipant;
+  const adhocModel = (participants ?? []).find(isAdhocModelParticipant);
+  if (activeParticipant !== undefined && activeParticipant !== null) return adhocModel;
   const applications = (participants ?? []).filter(isApplicationParticipant);
   return applications.length === 1 ? applications[0] : activeParticipant;
 }

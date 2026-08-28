@@ -1,5 +1,6 @@
 export { default as ChatBox } from './ui/ChatBox';
 export type { ChatBoxProps, ChatBoxHandle } from './ui/ChatBox';
+export { toParticipant } from './ui/ChatBox.helpers';
 export { useChatBoxData } from './ui';
 export type {
   UseChatBoxDataParams,

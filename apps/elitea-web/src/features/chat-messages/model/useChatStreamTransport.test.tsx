@@ -30,6 +30,7 @@ import type { ChatMessage } from "../lib/convertMessagesToChatHistory";
 const BASE = "/api/v2";
 const EVENTS_URL = "/api/v2/executions/7/exec-1/events";
 const MESSAGE_ID = "63c6d989-2860-5d68-9e3e-3587c63350d3";
+const QUESTION_ID = "62e87daa-1f18-4b82-9d70-69ed141c7d1f";
 const RESPONSE_MESSAGE_ID = "e3f5b0f2-8a3c-4d9a-9a1e-0c2b7f5d1a44";
 
 const globals = globalThis as unknown as Record<string, unknown>;
@@ -80,7 +81,11 @@ function harness(): {
 }
 
 function nodeEvent(payload: Record<string, unknown>): string {
-  return JSON.stringify({ message_id: MESSAGE_ID, ...payload });
+  // The live Rust/Main replay currently serialises its absent turn link as
+  // JSON null rather than omitting it. Keep that exact shape here: treating
+  // only `undefined` as absent passed locally while fresh responses still
+  // lost their regeneration identity in the browser.
+  return JSON.stringify({ message_id: MESSAGE_ID, question_id: null, ...payload });
 }
 
 beforeEach(() => {
@@ -129,7 +134,7 @@ const START = {
   projectId: 7,
   conversationUuid: "uuid-1",
   contract: "agent.execute.application.v1",
-  body: { question: "hi" },
+  body: { question: "hi", question_id: QUESTION_ID },
 };
 
 describe("useChatStreamTransport", () => {
@@ -175,6 +180,10 @@ describe("useChatStreamTransport", () => {
 
     expect(history.current).toHaveLength(1);
     expect(history.current[0]?.content).toBe("MOCK: chat smoke");
+    // The recorded frames carry `question_id: null`. The request still
+    // owns that identity, so the live answer must be regeneratable before a
+    // reload restores its persisted reply edge.
+    expect(history.current[0]?.questionId).toBe(QUESTION_ID);
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(history.current[0]?.isLoading).toBe(false);
   });

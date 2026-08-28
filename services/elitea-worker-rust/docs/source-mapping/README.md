@@ -345,9 +345,15 @@ Maintained current-UI integration reference:
   toolkit tables with or without `owner_id`.
 - Private-project rehearsal proved one OpenAPI tool call through the complete
   UI, Main, Redis, Rust, provider and persistence path. The same UI proved a
-  toolkit participant DELETE and POST without closing the submenu.
+  toolkit participant DELETE and POST without closing the submenu. A later
+  fresh tool response regenerated through `agent.regenerate.v1`, invoked the
+  provider tool again and survived reload. The live UI retains the admitted
+  request's question identity when replay frames carry `question_id: null`;
+  explicit event identity always wins.
 - New-conversation participant staging, current UI default-model assignment,
-  and generic OpenAPI additional headers remain explicit UI parity gaps.
+  generic OpenAPI additional headers, durable question identity for a
+  replay-only late attach, and completed tool-accordion restoration remain
+  explicit UI/protocol parity gaps.
 
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are

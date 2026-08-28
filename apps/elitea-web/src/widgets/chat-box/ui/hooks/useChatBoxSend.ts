@@ -182,6 +182,14 @@ export function useChatBoxSend(
       );
       const isApplicationTurn =
         resolveStartContract(target) === conversationApi.contracts.application;
+      if (
+        (target as { readonly entity_name?: unknown } | null | undefined)
+          ?.entity_name === "user"
+      )
+        return NO_STREAM_TRANSPORT;
+      const targetParticipantId = positiveParticipantId(
+        (target as { readonly id?: unknown } | null | undefined)?.id,
+      );
       const body = buildStartBody({
         conversationUuid,
         projectId: projectIdString,
@@ -190,10 +198,9 @@ export function useChatBoxSend(
         modelName: params.model?.name,
         isApplicationTurn,
         participantId:
-          positiveParticipantId(payload["participant_id"]) ??
-          positiveParticipantId(
-            (target as { readonly id?: unknown } | null | undefined)?.id,
-          ),
+          (isApplicationTurn
+            ? positiveParticipantId(payload["participant_id"])
+            : undefined) ?? targetParticipantId,
       });
       // No body can satisfy this contract (an agent turn with no addressable
       // participant). The socket fallback takes it rather than a POST that is

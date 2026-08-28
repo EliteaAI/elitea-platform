@@ -27,6 +27,8 @@ import { buildRegenerateBody, buildStartBody, resolveStartContract, resolveTarge
 const agent = { id: 42, entity_name: 'application' };
 const pipeline = { id: 43, entity_name: 'pipeline' };
 const model = { id: 7, entity_name: 'llm' };
+const dummy = { id: 2, entity_name: 'dummy' };
+const toolkit = { id: 25, entity_name: 'toolkit' };
 
 describe('resolveStartContract', () => {
   it('sends an agent turn under the application contract', () => {
@@ -41,8 +43,8 @@ describe('resolveStartContract', () => {
 });
 
 describe('resolveTargetParticipant', () => {
-  it('prefers the explicit selection', () => {
-    expect(resolveTargetParticipant(model, [agent])).toBe(model);
+  it('prefers an addressable explicit selection', () => {
+    expect(resolveTargetParticipant(agent, [dummy])).toBe(agent);
   });
 
   it('addresses the conversation’s only agent when nothing is selected', () => {
@@ -51,6 +53,11 @@ describe('resolveTargetParticipant', () => {
 
   it('stays unresolved when the conversation holds more than one agent', () => {
     expect(resolveTargetParticipant(undefined, [agent, pipeline])).toBeUndefined();
+  });
+
+  it('routes a stale toolkit or model selection through the ad-hoc model participant', () => {
+    expect(resolveTargetParticipant(toolkit, [dummy, toolkit])).toBe(dummy);
+    expect(resolveTargetParticipant(model, [dummy, model])).toBe(dummy);
   });
 });
 

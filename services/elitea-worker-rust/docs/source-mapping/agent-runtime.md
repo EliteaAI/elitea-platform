@@ -419,6 +419,31 @@ Postman Echo, correlated the result to the original provider call ID, ran the
 second model turn and reached EOS. Reloaded history contained exactly
 `RUST_OPENAPI_TOOL_E2E_20260828_B`. The worker retired the delivery normally.
 
+The same Private-project browser rehearsal then proved live tool-result
+regeneration rather than only a second ordinary turn. The initiating request
+retained its exact `question_id` while Rust/Main replay frames carried
+`question_id: null`; the UI now fills only that missing live-frame field from
+the admitted request and never overwrites an explicit event identity. The
+versioned `agent.regenerate.v1` request returned 200 for execution
+`6005d8b12b90e47ac1c24ad9335d8544`, invoked `echo_marker` again under a fresh
+provider call ID, completed the second model turn and survived a full-page
+reload with `RUST_REGEN_TOOL_E2E_20260828_G` as the final reply. Main history
+projection also omits a failed user/assistant pair together, so a later
+regeneration cannot inherit an orphan prompt whose partial assistant response
+ended in an error.
+
+This UI fallback does not claim a complete replay contract. The current
+`AgentExecutionCommandV1` carries the response-message and stream identities
+but not the question identity. `execution_generation` cannot substitute for
+it: an initial execution uses the question UUID, while regeneration uses a new
+regeneration UUID. A late-attaching client that has only durable node events
+therefore still cannot recover the question edge until Main's persisted chat
+history is available. Closing that gap requires an explicit optional
+language-neutral question identity rather than inference. Reload also restores
+the final assistant text but not the completed live tool-action accordion; that
+is a separate UI history-projection gap and does not weaken the recorded fresh
+tool invocation proof.
+
 The current UI participant behavior is the compatibility reference. Toolkit
 and MCP choices are checked switches that remain open during add or remove.
 Agents and pipelines are catalog selections that close the menu and activate

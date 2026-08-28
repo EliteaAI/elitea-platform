@@ -216,6 +216,10 @@ function classifyStartFailure(error: unknown): AgentStreamStartAttempt {
   };
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
 /**
  * One subscription to one run: the URL currently open, and the cursor-free URL
  * a resume rebuilds from.
@@ -268,6 +272,18 @@ export function useChatStreamTransport(
   const attemptRef = useRef(0);
   /** What Stop has to cancel server-side, from the start endpoint's answer. */
   const cancelRef = useRef<StopChatTaskParams | null>(null);
+  /**
+   * The user-message identity from the request that started this run.
+   *
+   * Main knows this identity at admission, but not every durable node event
+   * repeats `question_id`. Without retaining it here, a response rendered from
+   * those live frames has no link back to its question until the page reloads
+   * it from persisted history. Regenerate then falls through to the legacy
+   * request with an empty question and Main correctly rejects it. The request
+   * is the authoritative turn boundary, so it supplies only the value an
+   * individual frame omitted; an explicit frame value still wins.
+   */
+  const questionIdRef = useRef<string | undefined>(undefined);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -293,6 +309,7 @@ export function useChatStreamTransport(
     doneRef.current = true;
     ownerRef.current = undefined;
     cancelRef.current = null;
+    questionIdRef.current = undefined;
     clearRetry();
     setConnection(null);
   }, [clearRetry]);
@@ -309,8 +326,13 @@ export function useChatStreamTransport(
       // A frame with no `type` names no case; the reducer would return the
       // same array, but the forward below would still fire on it.
       if (!isChatStreamFrame(frame)) return;
+      const frameQuestionId = nonEmptyString(frame.question_id);
+      const identifiedFrame =
+        frameQuestionId === undefined && questionIdRef.current !== undefined
+          ? { ...frame, question_id: questionIdRef.current }
+          : frame;
       setChatHistory((prev) =>
-        applyChatStreamFrame(prev, frame, contextRef.current ?? {}),
+        applyChatStreamFrame(prev, identifiedFrame, contextRef.current ?? {}),
       );
       // A terminal frame ENDS the turn, so the transport stops owning a run
       // right here — it does not wait for the connection to close, because
@@ -324,8 +346,9 @@ export function useChatStreamTransport(
       //
       // detach() never touches chat history, and it must not here: the
       // terminal frame has already settled the message through the reducer.
-      if (isTurnTerminalFrame(frame)) detach();
-      if (shouldForwardAgentEvent(frame.type)) onAgentEventRef.current?.(frame);
+      if (isTurnTerminalFrame(identifiedFrame)) detach();
+      if (shouldForwardAgentEvent(identifiedFrame.type))
+        onAgentEventRef.current?.(identifiedFrame);
     },
     [setChatHistory, detach],
   );
@@ -431,6 +454,7 @@ export function useChatStreamTransport(
       accepted: AgentExecutionStart,
       conversationUuid: string,
       projectId: string | number,
+      questionId?: string,
     ): boolean => {
       if (!accepted.events_url) return false;
       // The user left this conversation while the POST was in flight. The run
@@ -444,6 +468,7 @@ export function useChatStreamTransport(
       attemptRef.current = 0;
       doneRef.current = false;
       ownerRef.current = conversationUuid;
+      questionIdRef.current = questionId;
       // `response_message_id` is what the cancel route addresses
       // (`DELETE .../task/prompt_lib/{projectID}/{responseMessageID}`). Without
       // one there is nothing to cancel and Stop can only detach.
@@ -474,6 +499,7 @@ export function useChatStreamTransport(
         started,
         startParams.conversationUuid,
         startParams.projectId,
+        nonEmptyString(startParams.body["question_id"]),
       )
         ? STARTED
         : NO_TRANSPORT;
@@ -503,6 +529,7 @@ export function useChatStreamTransport(
         resumed,
         resumeParams.conversationUuid,
         resumeParams.projectId,
+        nonEmptyString(resumeParams.body["question_id"]),
       );
       return true;
     },
@@ -529,7 +556,12 @@ export function useChatStreamTransport(
       }
       // The contract was accepted, so the run exists even when an older server
       // omits its replay URL. Never start the same regeneration over a socket.
-      subscribeToRun(accepted, params.conversationUuid, params.projectId);
+      subscribeToRun(
+        accepted,
+        params.conversationUuid,
+        params.projectId,
+        nonEmptyString(params.body["question_id"]),
+      );
       return true;
     },
     [subscribeToRun],

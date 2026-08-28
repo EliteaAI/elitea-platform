@@ -152,14 +152,20 @@ describe('toParticipant', () => {
     const result = toParticipant({
       id: '1', entity_name: 'toolkit',
       entity_meta: { id: 'em', name: 'Tool', project_id: 'p1' },
-      meta: { id: 'm1', user_name: 'usr', user_avatar: 'av' },
-      entity_settings: { version_id: 'v2', toolkit_type: 'mcp', variables: [1] },
+      meta: { id: 'm1', user_name: 'usr', user_avatar: 'av', is_container: true, mcp: true },
+      entity_settings: {
+        version_id: 'v2', toolkit_type: 'mcp', variables: [1], agent_type: 'pipeline', mcp_server_url: 'https://mcp.example',
+      },
     });
-    expect(result?.entityMeta).toEqual({ id: 'em', name: 'Tool', projectId: 'p1' });
-    expect(result?.meta).toEqual({ id: 'm1', userName: 'usr', userAvatar: 'av' });
-    expect(result?.entitySettings?.versionId).toBe('v2');
-    expect(result?.entitySettings?.toolkitType).toBe('mcp');
-    expect(result?.entitySettings?.variables).toEqual([1]);
+    expect(result).toEqual({
+      id: '1',
+      entityName: 'toolkit',
+      entityMeta: { id: 'em', name: 'Tool', projectId: 'p1' },
+      meta: { id: 'm1', userName: 'usr', userAvatar: 'av', isContainer: true, mcp: true },
+      entitySettings: {
+        versionId: 'v2', toolkitType: 'mcp', variables: [1], agentType: 'pipeline', mcpServerUrl: 'https://mcp.example',
+      },
+    });
   });
 });
 

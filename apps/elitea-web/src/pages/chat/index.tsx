@@ -35,10 +35,10 @@ import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import Box from '@mui/material/Box';
 
 import { conversationNavigation, useChatSessionStore } from '@/entities/conversation';
-import type { Participant } from '@/entities/participant';
-import { ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
+import { useDeleteParticipantMutation, type Participant } from '@/entities/participant';
+import { canParticipantBeActiveInChat, ParticipantsWrapper, useLocalActiveParticipant } from '@/features/chat-participants';
 import type { ChatBoxProps } from '@/widgets/chat-box';
-import { ChatBox } from '@/widgets/chat-box';
+import { ChatBox, toParticipant } from '@/widgets/chat-box';
 import { ContextBudget } from '@/widgets/context-budget';
 
 import { useChatPageData } from './useChatPageData';
@@ -105,15 +105,19 @@ function conversationIdOf(activeConversation: unknown): string | undefined {
   return (activeConversation as { readonly id?: string } | undefined)?.id;
 }
 
-function findParticipantById(participants: readonly unknown[] | undefined, id: string | undefined): unknown {
+export function findActiveParticipantById(participants: readonly unknown[] | undefined, id: string | undefined): unknown {
   if (!id) return undefined;
-  return participants?.find((p) => (p as { readonly id?: string } | null)?.id === id);
+  return participants?.find((raw) => {
+    const participant = raw as { readonly id?: string; readonly entity_name?: string } | null;
+    return participant?.id === id && canParticipantBeActiveInChat(participant);
+  });
 }
 
 /** @public The agent/pipeline editor open/close callbacks `ChatPage` forwards to `ChatBox` — see this module's own doc comment. */
 export interface ChatEditorCallbacks {
   readonly onShowAgentEditor?: (participant: Participant) => void;
   readonly onShowPipelineEditor?: (participant: Participant) => void;
+  readonly onShowToolkitEditor?: (participant: Participant) => void;
   readonly onCloseAgentEditor?: () => void;
   readonly onClosePipelineEditor?: () => void;
 }
@@ -136,7 +140,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
   const { conversationId, messageId } = useDeepLinkedConversationId(routeConversationId);
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
   const llm = useChatModelSettings({ activeConversation, projectId, userId: user?.id });
-  const { getLocalActiveParticipant, setLocalActiveParticipant } = useLocalActiveParticipant();
+  const { getLocalActiveParticipant, setLocalActiveParticipant, clearLocalActiveParticipant } = useLocalActiveParticipant();
+  const { mutate: deleteParticipant } = useDeleteParticipantMutation();
   useMessageIdToView(messageId, conversationIdOf(activeConversation));
 
   const [activeParticipant, setActiveParticipant] = useState<unknown>(undefined);
@@ -159,8 +164,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     // `useLocalActiveParticipant` is `@ts-nocheck` (see that file) — its
     // exports are untyped (`any`) from this call site's perspective.
     const local = getLocalActiveParticipant(conversationId) as { readonly participantId?: string };
-    const found = findParticipantById(activeConversation.participants, local.participantId);
-    if (found) setActiveParticipant(found);
+    const found = findActiveParticipantById(activeConversation.participants, local.participantId);
+    setActiveParticipant(found);
     // Only re-run when the conversation identity or its participant list changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, activeConversation?.participants]);
@@ -170,6 +175,41 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     const id = (participant as { readonly id?: string } | null)?.id;
     if (conversationId && id) setLocalActiveParticipant(conversationId, id);
   };
+
+  const handleDeleteParticipant = useCallback(
+    (participant: Record<string, unknown>) => {
+      const participantId = participant.id;
+      const hasParticipantId = typeof participantId === 'string' || typeof participantId === 'number';
+      if (projectId === undefined || conversationId === undefined || !hasParticipantId) return;
+
+      deleteParticipant(
+        { projectId, conversationId, id: String(participantId) },
+        {
+          onSuccess: () => {
+            if ((activeParticipant as { readonly id?: unknown } | undefined)?.id !== participantId) return;
+            setActiveParticipant(undefined);
+            clearLocalActiveParticipant(conversationId);
+          },
+        },
+      );
+    },
+    [activeParticipant, clearLocalActiveParticipant, conversationId, deleteParticipant, projectId],
+  );
+
+  const handleEditParticipant = useCallback(
+    (participant: Record<string, unknown>) => {
+      const normalized = toParticipant(participant);
+      if (!normalized) return;
+      const editorType = normalized.entitySettings?.agentType === 'pipeline' ? 'pipeline' : normalized.entityName;
+      const handlers = {
+        application: editorCallbacks?.onShowAgentEditor,
+        pipeline: editorCallbacks?.onShowPipelineEditor,
+        toolkit: editorCallbacks?.onShowToolkitEditor,
+      };
+      handlers[editorType as keyof typeof handlers]?.(normalized);
+    },
+    [editorCallbacks],
+  );
 
   return (
     <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
@@ -225,6 +265,8 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
           : {})}
         {...(activeParticipant ? { activeParticipant: activeParticipant as Record<string, unknown> } : {})}
         onSelectParticipant={handleChangeParticipant}
+        onDeleteParticipant={handleDeleteParticipant}
+        onEditParticipant={handleEditParticipant}
         /*
          * The context-budget panel. `ParticipantsWrapper` has always accepted
          * this slot (and gates the `conversationId` it hands over on the

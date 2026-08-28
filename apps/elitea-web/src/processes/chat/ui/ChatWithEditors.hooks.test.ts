@@ -32,6 +32,13 @@ const PIPELINE: Participant = {
   entityMeta: { id: '2', name: 'Pipeline Two' },
 };
 
+const TOOLKIT: Participant = {
+  id: '25',
+  entityName: 'toolkit',
+  entityMeta: { id: '20', name: 'OpenAPI Echo', projectId: 'proj-1' },
+  meta: { mcp: false },
+};
+
 describe('useChatWithEditors', () => {
   beforeEach(() => {
     resetStores();
@@ -76,6 +83,22 @@ describe('useChatWithEditors', () => {
 
     expect(result.current.isEditingAgent).toBe(false);
     expect(useEditorStateStore.getState().isAnyEditorOpen).toBe(false);
+  });
+
+  it('handleShowToolkitEditor opens the near-chat toolkit editor with the toolkit identity', () => {
+    const { result } = renderHook(() => useChatWithEditors());
+
+    act(() => {
+      result.current.handleShowToolkitEditor(TOOLKIT);
+    });
+
+    expect(result.current.isEditingToolkit).toBe(true);
+    expect(result.current.editToolkit.editingToolkit).toEqual({
+      id: '25',
+      isMCP: false,
+      entity_meta: { id: '20', project_id: 'proj-1', name: 'OpenAPI Echo' },
+      meta: { mcp: false },
+    });
   });
 
   it('queues a second open while an editor is already open, then opens the queued one on confirm and closes the first', async () => {

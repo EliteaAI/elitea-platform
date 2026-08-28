@@ -1082,6 +1082,45 @@ LEFT JOIN LATERAL (
               ),
               statement_timestamp()
           )
+          -- Keep failed or abandoned executions from leaving an orphan user
+          -- instruction in the rebuilt ad-hoc session. See the application
+          -- projection above for the paired-turn invariant.
+          AND (
+              (
+                  author.entity_name <> 'user'
+                  AND NOT message_group.is_streaming
+                  AND COALESCE(message_group.meta ->> 'is_error', 'false') = 'false'
+              )
+              OR (
+                  author.entity_name = 'user'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chat_message_group AS completed_reply
+                      JOIN chat_participants AS completed_reply_author
+                        ON completed_reply_author.id = completed_reply.author_participant_id
+                       AND completed_reply_author.entity_name <> 'user'
+                      JOIN chat_message_items AS completed_reply_item
+                        ON completed_reply_item.message_group_id = completed_reply.id
+                       AND completed_reply_item.item_type = 'text_message'
+                      JOIN chat_messages_text AS completed_reply_text
+                        ON completed_reply_text.id = completed_reply_item.id
+                       AND COALESCE(completed_reply_text.content, '') <> ''
+                      WHERE completed_reply.conversation_id = conversation.id
+                        AND completed_reply.reply_to_id = message_group.id
+                        AND NOT completed_reply.is_streaming
+                        AND COALESCE(completed_reply.meta ->> 'is_error', 'false') = 'false'
+                        AND completed_reply.created_at < COALESCE(
+                            (
+                                SELECT current_question.created_at
+                                FROM chat_message_group AS current_question
+                                WHERE current_question.conversation_id = conversation.id
+                                  AND current_question.uuid = $4::uuid
+                            ),
+                            statement_timestamp()
+                        )
+                  )
+              )
+          )
         GROUP BY message_group.id, message_group.created_at, author.entity_name
     ) AS history_group
     WHERE jsonb_array_length(history_group.content) > 0
@@ -1645,6 +1684,49 @@ LEFT JOIN LATERAL (
                     AND current_question.uuid = $3::uuid
               ),
               statement_timestamp()
+          )
+          -- A failed response has no usable assistant content, but its user
+          -- request used to survive this projection. A later regeneration
+          -- then rebuilt the session with an unanswered prior instruction and
+          -- the model resumed that instruction instead of the selected turn.
+          -- Keep history as completed pairs: assistant groups must be final
+          -- successes, and a user group must have at least one such reply with
+          -- content that this projection can carry.
+          AND (
+              (
+                  author.entity_name <> 'user'
+                  AND NOT message_group.is_streaming
+                  AND COALESCE(message_group.meta ->> 'is_error', 'false') = 'false'
+              )
+              OR (
+                  author.entity_name = 'user'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM chat_message_group AS completed_reply
+                      JOIN chat_participants AS completed_reply_author
+                        ON completed_reply_author.id = completed_reply.author_participant_id
+                       AND completed_reply_author.entity_name <> 'user'
+                      JOIN chat_message_items AS completed_reply_item
+                        ON completed_reply_item.message_group_id = completed_reply.id
+                       AND completed_reply_item.item_type = 'text_message'
+                      JOIN chat_messages_text AS completed_reply_text
+                        ON completed_reply_text.id = completed_reply_item.id
+                       AND COALESCE(completed_reply_text.content, '') <> ''
+                      WHERE completed_reply.conversation_id = conversation.id
+                        AND completed_reply.reply_to_id = message_group.id
+                        AND NOT completed_reply.is_streaming
+                        AND COALESCE(completed_reply.meta ->> 'is_error', 'false') = 'false'
+                        AND completed_reply.created_at < COALESCE(
+                            (
+                                SELECT current_question.created_at
+                                FROM chat_message_group AS current_question
+                                WHERE current_question.conversation_id = conversation.id
+                                  AND current_question.uuid = $3::uuid
+                            ),
+                            statement_timestamp()
+                        )
+                  )
+              )
           )
         GROUP BY message_group.id, message_group.created_at, author.entity_name
     ) AS history_group
