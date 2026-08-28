@@ -90,6 +90,26 @@ func configurationDefinitionKey(
 	return "", false
 }
 
+func hasDefinitionReference(schema map[string]any) bool {
+	if _, ok := schema["$ref"].(string); ok {
+		return true
+	}
+	branches, ok := schema["anyOf"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range branches {
+		branch, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, ok := branch["$ref"].(string); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // This is the defect #330 records, stated as a test: the credential picker is
 // gated on a property whose $defs entry carries metadata.section "credentials".
 // Before this change github served no "$defs" at all, so this could not pass.
@@ -224,7 +244,7 @@ func TestToolkitTypeCatalogueServesNoDanglingSchemaReference(t *testing.T) {
 			if !ok {
 				continue
 			}
-			if schema["$ref"] == nil && schema["anyOf"] == nil {
+			if !hasDefinitionReference(schema) {
 				continue
 			}
 			if _, resolved := configurationDefinitionKey(schema, definitions); !resolved {

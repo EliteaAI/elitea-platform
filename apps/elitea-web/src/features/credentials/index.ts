@@ -71,7 +71,12 @@ import { useCredentialWarningModal } from './model/useCredentialWarningModal';
 import { CredentialWarningBanner } from './ui/CredentialWarningBanner';
 import { CredentialWarningModal } from './ui/CredentialWarningModal';
 
-export type { ConfigSchemaNode, ConfigurationTypeDescriptor } from './api/configurations';
+export type {
+  ConfigSchemaNode,
+  ConfigSchemaSection,
+  ConfigSchemaSubsection,
+  ConfigurationTypeDescriptor,
+} from './api/configurations';
 export {
   useAvailableConfigurationsType,
   useConfigurationDetail,

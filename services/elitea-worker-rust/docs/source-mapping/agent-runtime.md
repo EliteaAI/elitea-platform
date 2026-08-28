@@ -412,11 +412,26 @@ model resolver. Bifrost appends `/v1/chat/completions`, so gateway account
 normalization removes exactly one trailing `/v1`; both `/llm` and `/llm/v1`
 stored values are operational.
 
-The next platform proofs cover one read-only configured toolkit, one frozen
-saved child, one real graph pause/resume with PostgreSQL checkpoint inspection,
-and the native OpenAI/Anthropic plus tool-calling model matrix. Approved
-effects, Kubernetes activation and load tests remain later gates. Indexing and
-RAG remain last.
+The next rehearsal used an OpenAPI credential and one selected dynamic
+operation. Execution `f25b5e2b95e68575c5656dd9fa577a43` exposed only
+`echo_marker` to the root `LlmAgent`. Rust dispatched the exact marker to
+Postman Echo, correlated the result to the original provider call ID, ran the
+second model turn and reached EOS. Reloaded history contained exactly
+`RUST_OPENAPI_TOOL_E2E_20260828_B`. The worker retired the delivery normally.
+
+The current UI participant behavior is the compatibility reference. Toolkit
+and MCP choices are checked switches that remain open during add or remove.
+Agents and pipelines are catalog selections that close the menu and activate
+the selected participant. The replatform UI now proves existing-chat toolkit
+remove and add through one 204 DELETE and one 200 POST. New-chat staging and
+default-model assignment for model-free saved participants remain open UI
+gates. The replatform OpenAPI form also lacks the current generic additional
+header editor.
+
+The next platform proofs cover one frozen saved child, one real graph
+pause/resume with PostgreSQL checkpoint inspection, and the native
+OpenAI/Anthropic tool-calling matrix. Approved effects, Kubernetes activation
+and load tests remain later gates. Indexing and RAG remain last.
 
 ## MCP, HITL, budgets, and cancellation
 

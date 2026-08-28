@@ -321,6 +321,29 @@ Maintained Rust runtime ownership registry:
   Backend retention, sampling, metrics and Kubernetes activation remain
   deployment-owned.
 
+Maintained current-UI integration reference:
+
+- Current UI
+  `src/[fsd]/features/chat/lib/hooks/chat-button/useApplicationSubmenu.hooks.js`,
+  `src/[fsd]/features/chat/ui/chat-button/{PlusChatButton,PlusChatSubmenu}.jsx`,
+  and
+  `src/[fsd]/features/chat/participants/lib/hooks/useAddNewParticipants.hooks.js`
+  define existing-chat participant behavior. Replatform ownership is
+  `processes/chat/model/usePlusMenuEntities.ts`,
+  `widgets/chat/ui/chat-button/{PlusChatButton,PlusChatSubmenu}.tsx`,
+  `widgets/chat-box/ui/hooks/useAddEntityParticipant.ts`, and `ChatBox.tsx`.
+  Toolkit and MCP rows use persistent checked toggles. Agent and pipeline rows
+  select and activate one catalog participant.
+- Replatform Main ownership is
+  `internal/api/v2/{configurations,toolkits}/handler.go`. It serves the current
+  form contracts, preserves restored configuration admission, and supports
+  toolkit tables with or without `owner_id`.
+- Private-project rehearsal proved one OpenAPI tool call through the complete
+  UI, Main, Redis, Rust, provider and persistence path. The same UI proved a
+  toolkit participant DELETE and POST without closing the submenu.
+- New-conversation participant staging, current UI default-model assignment,
+  and generic OpenAPI additional headers remain explicit UI parity gaps.
+
 Workspace-relative Python paths are included because the Python sources live in
 independent repositories. The Rust targets all live in this package and are
 repository-relative to `services/elitea-worker-rust/`.

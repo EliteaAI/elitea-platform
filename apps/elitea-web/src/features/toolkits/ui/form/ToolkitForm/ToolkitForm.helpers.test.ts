@@ -51,6 +51,13 @@ describe('updateDetailByPath', () => {
     expect(result).toEqual({ settings: { a: 1 } });
   });
 
+  it('replaces a nested array without changing it into an object', () => {
+    const detail: ToolkitFormEditDetail = { settings: { selected_tools: [] } };
+    const result = updateDetailByPath(detail, 'settings.selected_tools', ['echo_marker']);
+    expect(result).toEqual({ settings: { selected_tools: ['echo_marker'] } });
+    expect(Array.isArray(result.settings?.selected_tools)).toBe(true);
+  });
+
   it('sets a nested dot-path field, creating intermediate objects as needed', () => {
     const result = updateDetailByPath({}, 'meta.mcp_options', { url: 'https://x' });
     expect(result).toEqual({ meta: { mcp_options: { url: 'https://x' } } });

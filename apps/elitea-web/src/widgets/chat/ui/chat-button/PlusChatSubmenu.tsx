@@ -3,9 +3,9 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { t } from '@/shared/i18n';
 
 import Box from '@mui/material/Box';
-import Checkbox from '@mui/material/Checkbox';
 import MenuItem from '@mui/material/MenuItem';
 import MenuList from '@mui/material/MenuList';
+import Switch from '@mui/material/Switch';
 import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 
@@ -16,8 +16,8 @@ import type { Theme } from '@mui/material/styles';
  * (agents, pipelines, toolkits, attachments, tools).
  */
 export interface PlusChatSubmenuProps {
-  /** `checked` is optional — when a caller sets it on ANY item (e.g. the "tools" toggle list), every item renders a checkbox reflecting it; entity-picker items (agents/pipelines/toolkits) simply omit it. */
-  items?: { key: string; label: string; onClick?: () => void; checked?: boolean }[];
+  /** A defined `checked` value renders a switch. Agent and pipeline rows omit it. */
+  items?: { key: string; label: string; onClick?: () => void; checked?: boolean; pending?: boolean }[];
   searchValue?: string;
   onSearchChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   searchPlaceholder?: string;
@@ -172,6 +172,7 @@ export const PlusChatSubmenu = memo(
               <MenuItem
                 key={item.key}
                 onClick={handleItemClick(item)}
+                disabled={item.pending === true}
                 sx={{
                   padding: '0.5rem 1rem',
                   height: '2.5rem',
@@ -183,9 +184,10 @@ export const PlusChatSubmenu = memo(
                 }}
               >
                 {item.checked !== undefined && (
-                  <Checkbox
+                  <Switch
                     size="small"
                     checked={item.checked}
+                    disabled={item.pending === true}
                     onClick={(e) => e.stopPropagation()}
                     onChange={handleItemClick(item)}
                   />

@@ -19,24 +19,39 @@ describe('toPlusMenuItem', () => {
       label: 'Nightly digest',
       participantType: 'pipeline' as const,
       isPublic: false,
-      data: { id: 'pipe-7', description: 'Summarises the day', type: 'pipeline' },
+      data: { id: 'pipe-7', description: 'Summarises the day', type: 'pipeline', version_details: { id: 'v3' } },
     };
 
-    expect(toPlusMenuItem(item, '42')).toEqual({
+    expect(toPlusMenuItem(item, '42', { pipeline: true })).toEqual({
       id: 'pipe-7',
       name: 'Nightly digest',
       description: 'Summarises the day',
       participantType: 'pipeline',
       type: 'pipeline',
+      version_details: { id: 'v3' },
       project_id: '42',
+      agent_type: 'pipeline',
     });
   });
 
-  it('falls back to the label when the wire row carries no usable id', () => {
+  it('normalises numeric ids and preserves the row project', () => {
     const item = { label: 'Untitled', participantType: 'toolkit' as const, isPublic: false, data: { id: 99 } };
 
-    // A numeric id is not the string the row shape promises, so it is not
-    // passed off as one — the label is a stable, human-meaningful key.
-    expect(toPlusMenuItem(item, undefined)).toEqual({ id: 'Untitled', name: 'Untitled', participantType: 'toolkit' });
+    expect(toPlusMenuItem(item, undefined)).toEqual({ id: '99', name: 'Untitled', participantType: 'toolkit' });
+  });
+
+  it('marks MCP rows without discarding existing metadata', () => {
+    const item = {
+      label: 'MCP',
+      participantType: 'toolkit' as const,
+      isPublic: false,
+      data: { id: '7', project_id: 9, meta: { source: 'catalog' } },
+    };
+
+    expect(toPlusMenuItem(item, '42', { mcp: true })).toMatchObject({
+      id: '7',
+      project_id: '9',
+      meta: { source: 'catalog', mcp: true },
+    });
   });
 });

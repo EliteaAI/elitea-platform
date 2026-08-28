@@ -8,6 +8,7 @@ const baseParams = () => ({
   availableTools: [],
   enabledToolNames: undefined,
   onSelect: vi.fn(),
+  onToggle: vi.fn(),
   onCreate: { agents: vi.fn(), pipelines: vi.fn(), toolkits: vi.fn(), mcps: vi.fn() },
 });
 
@@ -32,6 +33,17 @@ describe('resolveActiveSubmenuView', () => {
     expect(onSelect).toHaveBeenCalledWith({ id: 'a1', name: 'Bot' });
   });
 
+  it('prefers the available agent catalog over attached participants', () => {
+    const result = resolveActiveSubmenuView('agents', {
+      ...baseParams(),
+      participants: [{ id: 'attached', name: 'Attached' }],
+      entities: { agents: [{ id: 'available', name: 'Available' }] },
+    });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.label).toBe('Available');
+  });
+
   it('builds pipeline submenu from entities.pipelines', () => {
     const result = resolveActiveSubmenuView('pipelines', {
       ...baseParams(),
@@ -42,11 +54,20 @@ describe('resolveActiveSubmenuView', () => {
   });
 
   it('builds toolkit submenu from entities.toolkits', () => {
+    const onToggle = vi.fn();
     const result = resolveActiveSubmenuView('toolkits', {
       ...baseParams(),
-      entities: { toolkits: [{ id: 't1', name: 'ToolA' }] },
+      entities: {
+        toolkits: [{ id: 't1', name: 'ToolA' }],
+        getParticipantMenuState: () => ({ checked: true, pending: true }),
+      },
+      onToggle,
     });
     expect(result.items[0]!.label).toBe('ToolA');
+    expect(result.items[0]!.checked).toBe(true);
+    expect(result.items[0]!.pending).toBe(true);
+    result.items[0]!.onClick?.();
+    expect(onToggle).toHaveBeenCalledWith({ id: 't1', name: 'ToolA' });
   });
 
   it('builds mcps submenu from entities.mcps', () => {

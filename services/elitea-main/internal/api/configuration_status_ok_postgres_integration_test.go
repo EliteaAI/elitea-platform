@@ -93,6 +93,22 @@ func TestConfigurationWriteRouteMakesACredentialVisibleToTheGateway(t *testing.T
 
 	credentialSQL, modelSQL := gatewayAdmissionStatements(t)
 
+	t.Run("a legacy schema without a status default accepts creates", func(t *testing.T) {
+		if _, err := pool.Exec(ctx, `
+ALTER TABLE p_1.configuration ALTER COLUMN status_ok DROP DEFAULT;
+ALTER TABLE p_2.configuration ALTER COLUMN status_ok DROP DEFAULT;`); err != nil {
+			t.Fatalf("remove the status default: %v", err)
+		}
+		created := postStatusOKConfiguration(t, unfixed, 1, map[string]any{
+			"elitea_title": "legacy-schema-openapi",
+			"type":         "openapi",
+			"data":         map[string]any{},
+		})
+		if created["status_ok"] != false {
+			t.Fatalf("create response status_ok = %v, want false", created["status_ok"])
+		}
+	})
+
 	t.Run("the defect", func(t *testing.T) {
 		created := postStatusOKConfiguration(t, unfixed, 1, map[string]any{
 			"elitea_title": "unfixed-openai",

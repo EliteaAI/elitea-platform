@@ -7,14 +7,8 @@ import { ToolOptionsByType } from './toolOptions';
  * `ToolTypes[key].value`. Split into its own file (rather than living in
  * `toolForm.ts`) purely to stay under the §3.5 400-line-per-file budget.
  *
- * Also folded in here: `apps/elitea-ui/src/common/constants.js`'s
- * `AuthenticationTypes.None` — the ONE member of that 5-constant family
- * (`AuthenticationTypes`/`ConfluenceAuthenticationTypes`/
- * `QTestLabAuthenticationTypes`/`JiraAuthenticationTypes`/
- * `GitHubAuthenticationTypes`) `ToolInitialValues.open_api` actually uses.
- * The other 4 are not referenced by this file and are NOT ported — porting
- * a whole unrelated constants family for one string literal would be scope
- * creep beyond what this promotion pass was asked to do.
+ * The OpenAPI seed uses the current `spec` and configuration-reference
+ * contract. The edit path still normalizes legacy `schema_settings` records.
  */
 
 interface ToolInitialValue {
@@ -41,10 +35,8 @@ export const ToolInitialValues: Readonly<Record<string, ToolInitialValue>> = {
   [ToolTypes.open_api.value]: {
     type: ToolTypes.open_api.value,
     settings: {
-      schema_settings: '',
+      spec: '',
       selected_tools: [],
-      // `AuthenticationTypes.None.value` in the baseline — inlined (see module doc comment).
-      authentication: { type: 'none', settings: {} },
     },
   },
   [ToolTypes.custom.value]: {

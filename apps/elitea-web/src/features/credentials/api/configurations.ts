@@ -70,9 +70,15 @@ export interface ConfigSchemaNode {
     readonly label?: string;
     readonly hidden?: boolean;
     readonly categories?: readonly string[];
+    readonly sections?: Readonly<Record<string, ConfigSchemaSection>>;
   };
   readonly [key: string]: unknown;
 }
+
+/** One selectable group inside a schema section. */
+export interface ConfigSchemaSubsection { readonly name: string; readonly fields?: readonly string[]; }
+/** A schema section groups alternative field sets. */
+export interface ConfigSchemaSection { readonly required?: boolean; readonly subsections?: readonly ConfigSchemaSubsection[]; }
 
 /** One row of `getAvailableConfigurationsType`'s response — a credential TYPE descriptor, not an instance. */
 export interface ConfigurationTypeDescriptor {
@@ -387,4 +393,3 @@ export async function deleteConfiguration(
 ): Promise<unknown> {
   return fetchData<unknown>(`/configurations/configuration/${projectId}/${configId}`, { method: 'DELETE' });
 }
-

@@ -81,9 +81,12 @@ export function isLikelySecretField(key: string, property: ConfigSchemaNode | un
 
 export function classifySchemaField(key: string, property: ConfigSchemaNode | undefined): SchemaFieldKind {
   if (isLikelySecretField(key, property)) return 'secret';
-  if (property?.type === 'boolean') return 'boolean';
-  if (property?.type === 'number' || property?.type === 'integer') return 'number';
-  if (Array.isArray(property?.enum) && property.enum.length > 0) return 'enum';
+  const branches = [property, ...asSchemaNodeArray(property?.anyOf), ...asSchemaNodeArray(property?.oneOf)].filter(
+    (branch): branch is ConfigSchemaNode => branch !== undefined,
+  );
+  if (branches.some((branch) => branch.type === 'boolean')) return 'boolean';
+  if (branches.some((branch) => branch.type === 'number' || branch.type === 'integer')) return 'number';
+  if (branches.some((branch) => Array.isArray(branch.enum) && branch.enum.length > 0)) return 'enum';
   return 'string';
 }
 

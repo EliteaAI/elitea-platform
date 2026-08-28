@@ -35,24 +35,13 @@
  *    `resolveSubmenuCreateConfig` now hides the row when there is none, so
  *    the menu shows no control it cannot honour.
  *
- * **Why the rows are flattened here.** `useChatEntityBrowser` returns
- * `ParticipantEntityItem`s — `{label, participantType, isPublic, data}`, with
- * the real `id`/`name` one level down in `data`. `PlusChatButton`'s
- * `toEntityItems` reads `item.id`/`item.name` directly, so handing it those
- * items unchanged would have labelled every row "Pipeline 1", "Pipeline 2",
- * … and passed a wrapper object to the select handler. `toPlusMenuItem`
- * below is the same flattening `features/chat-recommendations`'
- * `toCandidateRecommendationItem` already applies on the recommendation
- * path, which is what makes the object it produces the shape
- * `onChangeParticipant` — the SAME callback both paths end in — already
- * accepts. Replicated rather than imported: it is not exported from that
- * feature's barrel, and the `RecommendationItem` type that IS exported keeps
- * this typed against the real contract instead of `unknown`.
+ * **Why the rows are flattened here.** `useChatEntityBrowser` keeps the real
+ * row under `data`. The menu reads `id` and `name` from the top level.
+ * Keep the raw fields because participant creation needs version and type data.
  */
 import { useCallback, useMemo, useState } from 'react';
 
 import type { ParticipantEntityItem } from '@/entities/participant';
-import type { RecommendationItem } from '@/features/chat-recommendations';
 import { useSelectedProject } from '@/widgets/app-shell';
 
 import { useChatEntityBrowser } from './useChatEntityBrowser';
@@ -60,28 +49,38 @@ import { useChatEntityBrowser } from './useChatEntityBrowser';
 /** Raw wire row read off `ParticipantEntityItem.data` — the structural subset this mapping needs. */
 interface CandidateWireRow {
   readonly id?: unknown;
-  readonly description?: unknown;
-  readonly type?: unknown;
+  readonly project_id?: unknown;
+  readonly meta?: unknown;
 }
 
 /** @public (test seam) See this module's header: `ParticipantEntityItem` -> the flat row the "+" menu labels and the participant handlers consume. */
-export function toPlusMenuItem(item: ParticipantEntityItem, projectId: string | undefined): RecommendationItem {
+export function toPlusMenuItem(
+  item: ParticipantEntityItem,
+  projectId: string | undefined,
+  options: { readonly mcp?: boolean; readonly pipeline?: boolean } = {},
+): Readonly<Record<string, unknown>> & { readonly id: string; readonly name: string; readonly participantType: string } {
   const row = item.data as CandidateWireRow;
-  const id = typeof row.id === 'string' ? row.id : item.label;
-  const description = typeof row.description === 'string' ? row.description : undefined;
-  const type = typeof row.type === 'string' ? row.type : undefined;
+  const id = typeof row.id === 'string' || typeof row.id === 'number' ? String(row.id) : item.label;
+  const rowProjectId = typeof row.project_id === 'string' || typeof row.project_id === 'number'
+    ? String(row.project_id)
+    : projectId;
+  const rowMeta = typeof row.meta === 'object' && row.meta !== null
+    ? row.meta as Readonly<Record<string, unknown>>
+    : {};
   return {
+    ...item.data,
     id,
     name: item.label,
-    ...(description !== undefined ? { description } : {}),
     participantType: item.participantType,
-    ...(type !== undefined ? { type } : {}),
-    ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(rowProjectId !== undefined ? { project_id: rowProjectId } : {}),
+    ...(options.pipeline === true ? { agent_type: 'pipeline' } : {}),
+    ...(options.mcp === true ? { meta: { ...rowMeta, mcp: true } } : {}),
   };
 }
 
 /** Mirrors `widgets/chat`'s `PlusChatButtonEntitySubmenus` without importing it (a `widgets/` type in a `processes/` model file is legal, but this stays structural to keep the model layer JSX/widget-free). */
 interface PlusMenuEntities {
+  readonly agents: readonly unknown[];
   readonly pipelines: readonly unknown[];
   readonly toolkits: readonly unknown[];
   readonly mcps: readonly unknown[];
@@ -108,11 +107,12 @@ export function usePlusMenuEntities(): UsePlusMenuEntitiesResult {
 
   const entities = useMemo(
     () => ({
-      pipelines: browser.pipelines.items.map((item) => toPlusMenuItem(item, projectId)),
+      agents: browser.agents.items.map((item) => toPlusMenuItem(item, projectId)),
+      pipelines: browser.pipelines.items.map((item) => toPlusMenuItem(item, projectId, { pipeline: true })),
       toolkits: browser.toolkits.items.map((item) => toPlusMenuItem(item, projectId)),
-      mcps: browser.mcps.items.map((item) => toPlusMenuItem(item, projectId)),
+      mcps: browser.mcps.items.map((item) => toPlusMenuItem(item, projectId, { mcp: true })),
     }),
-    [browser.pipelines.items, browser.toolkits.items, browser.mcps.items, projectId],
+    [browser.agents.items, browser.pipelines.items, browser.toolkits.items, browser.mcps.items, projectId],
   );
 
   return { entities, onOpen };

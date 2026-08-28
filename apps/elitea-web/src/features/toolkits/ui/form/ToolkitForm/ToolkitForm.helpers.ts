@@ -11,12 +11,16 @@ import type { ToolkitConfigurationState, ToolkitFormEditDetail } from './Toolkit
  * testable and carries no React dependency.
  */
 
-/** Baseline `updateObjectByPath` (`common/utils.jsx`) — sets a dot-path field on `detail`, either merging into (default) or replacing an existing object value. */
+function isMergeableRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** Baseline `updateObjectByPath` (`common/utils.jsx`) — sets a dot-path field on `detail`, either merging plain records (default) or replacing the existing value. Arrays stay arrays and are always replaced. */
 export function updateDetailByPath(detail: ToolkitFormEditDetail, path: string, value: unknown, replace = false): ToolkitFormEditDetail {
   const segments = path.split('.');
   if (segments.length === 1) {
     const existing = detail[path];
-    const nextValue = !replace && typeof existing === 'object' && existing !== null && typeof value === 'object' && value !== null ? { ...existing, ...value } : value;
+    const nextValue = !replace && isMergeableRecord(existing) && isMergeableRecord(value) ? { ...existing, ...value } : value;
     return { ...detail, [path]: nextValue };
   }
   const [head, ...rest] = segments;

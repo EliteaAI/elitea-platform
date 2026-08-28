@@ -147,6 +147,27 @@ Prompts, arguments, results, URLs, credentials, tokens and provider bodies are
 never trace or log fields. Backend retention, sampling, metrics and Kubernetes
 activation remain deployment gates.
 
+Current configured-tool checkpoint: the Private-project UI created an OpenAPI
+credential and the dynamic `rust_openapi_echo` toolkit. Execution
+`f25b5e2b95e68575c5656dd9fa577a43` gave the Rust `LlmAgent` one selected
+operation. The model called `echo_marker` with the exact marker. Rust executed
+the Postman Echo request, returned the result under the provider call ID, ran a
+second model turn, reached EOS and retired the delivery. Reloaded history
+contained exactly `RUST_OPENAPI_TOOL_E2E_20260828_B`. No mock tool result was
+used. Main initially rejected this run because restored policy allowed 16
+outstanding requests while rehearsal configuration requested 64. The local
+deployment was aligned to 16 without weakening Main's safety check or changing
+the restored database.
+
+Existing-chat participant controls now follow the current UI reference.
+Toolkit and MCP rows remain open and use checked, pending add/remove switches.
+The live rehearsal produced one 204 participant deletion and one 200 addition
+for the same toolkit. Agent and pipeline selection uses the available catalog
+and activates the selected participant. New-conversation staging and current
+UI default-model assignment remain separate parity gaps. The generic OpenAPI
+additional-header editor is also absent from the replatform UI. These gaps do
+not invalidate the completed configured-tool runtime proof.
+
 Current output-continuation checkpoint: OpenAI-compatible model `Auto` preserves
 the UI's `max_tokens=-1` sentinel through Main and omits the provider wire limit;
 native Anthropic resolves its required limit from the frozen configuration.

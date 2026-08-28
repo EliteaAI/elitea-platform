@@ -15,7 +15,7 @@
  * "@"/"/"/"~" wiring (~1508-1608) and the broken/version-missing active-
  * participant guards (~2035-2051).
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent, RefObject } from 'react';
 
 import type { Participant } from '@/entities/participant';
@@ -115,6 +115,19 @@ export interface UseChatBoxStateResult {
   readonly onInputChange: (value: string) => void;
   /** Commits a picked "@" user mention into the input text (baseline: `onSelectUserMention`). */
   readonly onSelectUserMention: (user: ResolvedUserMention) => void;
+}
+
+/** Closes participant recommendations once for each active-participant change. */
+export function useResetRecommendationsOnParticipantChange(
+  participantId: string | undefined,
+  resetRecommendations: () => void,
+): void {
+  const previousParticipantId = useRef(participantId);
+  useEffect(() => {
+    if (previousParticipantId.current === participantId) return;
+    resetRecommendations();
+    previousParticipantId.current = participantId;
+  }, [participantId, resetRecommendations]);
 }
 
 /**
@@ -223,10 +236,8 @@ export function useChatBoxState(params: UseChatBoxStateParams): UseChatBoxStateR
   // -- Gate recommendation list when active participant changes --
   // (The composition root controls this via `activeParticipant` param.
   //  We reset the recommendation list whenever the participant changes.)
-  const prevParticipantId = useState<string | undefined>(activeParticipant?.id)[0];
-  if (prevParticipantId !== activeParticipant?.id && activeParticipant) {
-    setShowRecommendationList(false);
-  }
+  const resetRecommendations = useCallback(() => setShowRecommendationList(false), []);
+  useResetRecommendationsOnParticipantChange(activeParticipant?.id, resetRecommendations);
 
   return {
     selectedUsers,

@@ -36,7 +36,6 @@ import {
   deriveChatBoxIds,
   deriveChatBoxInputState,
   flattenChatBoxProps,
-  optField,
   resolveConversationStarters,
 } from './ChatBox.helpers';
 import type { ChatBoxEditorCallbacks } from './ChatBox.helpers';
@@ -57,6 +56,7 @@ import { useChatBoxInternalTools } from './hooks/useChatBoxInternalTools';
 import { useChatBoxVersioning } from './hooks/useChatBoxVersioning';
 import { useChatBoxMentions } from './hooks/useChatBoxMentions';
 import { useChatBoxActions } from './hooks/useChatBoxActions';
+import { useAddEntityParticipant } from './hooks/useAddEntityParticipant';
 import { useSessionDeclinedMcpServersRef } from './hooks/useSessionDeclinedMcpServersRef';
 import { useChatBoxSend } from './hooks/useChatBoxSend';
 import { useStableRef } from './hooks/useStableRef';
@@ -180,6 +180,7 @@ const ChatBoxInner = memo(function ChatBox({
   const { mutateAsync: deleteMessageMutateAsync } = conversationApi.useDeleteMessage();
   const { mutateAsync: deleteAllMessagesMutateAsync } = conversationApi.useDeleteAllMessages();
   const { mutateAsync: stopChatTaskMutateAsync } = conversationApi.useStopTask();
+  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant });
 
   // Everything one send needs: the SSE transport (issue #93) plus the
   // create-conversation-first and upload-attachments-first adapters.
@@ -379,11 +380,7 @@ const ChatBoxInner = memo(function ChatBox({
             model: { llmSettings, onSetLLMSettings, selectedModel: selectedLlmModel, onSelectModel: handleSelectModel, models: modelsList },
             refs: { attachmentButtonRef, voiceButtonRef, voiceInputRef: chatInputRef },
             isAgentsPage: !!isAgentsPage,
-            // `onSelectParticipant` is supplied HERE, not by the composition
-            // root: picking an entity from the "+" menu makes it the active
-            // participant, and that is the same `onChangeParticipant` the
-            // recommendation list already calls with the same row shape.
-            entitySubmenus: { ...entitySubmenus, ...optField('onSelectParticipant', onChangeParticipant) },
+            entitySubmenus: { ...entitySubmenus, onSelectParticipant: entityParticipantActions.onSelectParticipant, getParticipantMenuState: entityParticipantActions.getParticipantMenuState },
             participants: normalisedParticipants,
           })}
           refs={{ attachmentButtonRef, voiceButtonRef }}

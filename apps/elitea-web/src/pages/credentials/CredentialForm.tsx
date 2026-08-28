@@ -12,10 +12,8 @@
  *    `context` (project id, permissions, team-project flag) is entirely
  *    caller-supplied rather than read from a global store — the future
  *    route-wiring pass threads these from whatever R2/a later unit lands.
- *  - The per-type "data" schema is rendered with a flat field list
- *    (`CredentialSchemaField`, `./CredentialFormFields.tsx`) — the
- *    baseline's full recursive object/array `ToolBase` form renderer is
- *    the toolkits domain (A4), out of this unit's ownership fence.
+ *  - The data schema supports primitive fields and selectable sections.
+ *    Nested object and array fields still use the simple field renderer.
  *  - The baseline's "auto-reveal the title field on an `elitea_title` API
  *    error" UX is dropped in favour of an always-editable title field —
  *    functionally equivalent (the title is always settable), a simpler
@@ -42,6 +40,11 @@ import { BaseBtn } from '@/shared/ui/BaseBtn';
 import { CredentialsControls, CredentialsTabBar } from '@/features/credentials';
 
 import { CredentialSchemaField } from './CredentialFormFields';
+import {
+  CredentialFormSection,
+  credentialSectionFieldKeys,
+  isCredentialPropertyVisible,
+} from './CredentialFormSection';
 import { CredentialTypeSelector } from './CredentialTypeSelector';
 import { useCredentialFormController } from './useCredentialFormController';
 import type { CredentialFormContext, CredentialFormMode, CredentialFormPrefill } from './useCredentialFormController';
@@ -60,6 +63,7 @@ export interface CredentialFormProps {
 export function CredentialForm(props: CredentialFormProps): ReactNode {
   const c = useCredentialFormController(props);
   const { mode, context, onDiscarded } = props;
+  const sectionFieldKeys = new Set(Object.values(c.schemaSections).flatMap(credentialSectionFieldKeys));
 
   // Gate on the RESOLVED descriptor, not on the raw type string: an unknown
   // `:credentialType` in the URL must fall back to the picker rather than
@@ -110,13 +114,29 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
           label={t('credentials.form.sharedLabel', 'Shared with the team')}
         />
       )}
-      {Object.entries(c.schemaProperties).map(([fieldKey, property]) => (
-        <CredentialSchemaField
-          key={fieldKey}
-          fieldKey={fieldKey}
-          property={property}
-          value={c.data[fieldKey]}
-          error={c.fieldErrors[fieldKey]}
+      {Object.entries(c.schemaProperties).map(([fieldKey, property]) => {
+        if (sectionFieldKeys.has(fieldKey) || !isCredentialPropertyVisible(property, c.data)) return null;
+        return (
+          <CredentialSchemaField
+            key={fieldKey}
+            fieldKey={fieldKey}
+            property={property}
+            value={c.data[fieldKey]}
+            error={c.fieldErrors[fieldKey]}
+            required={c.schemaRequiredFields.includes(fieldKey)}
+            onChange={c.setField}
+          />
+        );
+      })}
+      {Object.entries(c.schemaSections).map(([sectionKey, section]) => (
+        <CredentialFormSection
+          key={sectionKey}
+          sectionKey={sectionKey}
+          section={section}
+          schemaProperties={c.schemaProperties}
+          schemaRequiredFields={c.schemaRequiredFields}
+          data={c.data}
+          fieldErrors={c.fieldErrors}
           onChange={c.setField}
         />
       ))}
