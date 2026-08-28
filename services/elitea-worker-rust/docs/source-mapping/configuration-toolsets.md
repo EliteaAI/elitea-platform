@@ -128,7 +128,7 @@ Indexing tools are recorded as a later overlay in `indexing.md`.
 
 | Configuration family | Python configuration symbol | Python toolkit symbol(s) | Fixed tools | Check | Rust targets | Status / notable gate |
 | --- | --- | --- | ---: | :---: | --- | --- |
-| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,projects,pull_requests,workflow_runs,tools}.rs`; future public descriptor | Capability-disabled foundation: strict anonymous/PAT/basic/App probe parsing plus twenty explicit identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search, workflow-status and Project V2 reads; the other 24 tools, workflow-log archives, App installation auth, sensitive effects, indexing overlay and live composition remain gates |
+| `github` | `configurations/github.py::GithubConfiguration` | `tools/github::EliteAGitHubToolkit` | 44 | Yes | `toolkits/families/github/{config,client,code_search,commits,projects,pull_requests,workflow_runs,tools}.rs`; common configured-tool materializer | Partial read profile: strict anonymous/PAT/basic/App probe parsing plus twenty identity, branch, file, repository-navigation, issue, pull-request, commit, server-side code-search, workflow-status and Project V2 reads; a mixed explicit SDK selection keeps these reads and omits unsupported operations with one bounded warning; the other 24 tools, workflow-log archives, App installation auth, sensitive effects and indexing remain gates |
 | `ado_repos` | `configurations/ado.py::AdoConfiguration` | `tools/ado/repos::AzureDevOpsReposToolkit` | 22 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_repos/` | Planned as its own complete SDK family; 16 repository operations plus 6 inherited indexing tools |
 | `ado_plans` | `configurations/ado.py::AdoConfiguration` | `tools/ado/test_plan::AzureDevOpsPlansToolkit` | 18 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_plans/` | Planned as its own complete SDK family; 12 test-plan operations plus 6 inherited indexing tools |
 | `ado_boards` | `configurations/ado.py::AdoConfiguration` | `tools/ado/work_item::AzureDevOpsWorkItemsToolkit` | 20 | Yes | `configurations/families/ado.rs`; future `toolkits/families/ado_boards/` | Planned as its own complete SDK family; 14 work-item operations plus 6 inherited indexing tools |
@@ -297,8 +297,8 @@ and configuration identity in
 materialization,
 `internal/infra/storage/configurations_materializer.go::materializeAgentExecution`
 resolves the frozen configuration settings and unsecrets the nested owned
-configuration into the bounded input document. The future authorized Rust
-assembler will parse that sealed materialized shape only after
+configuration into the bounded input document. The authorized Rust assembler
+parses that sealed materialized shape only after
 `AUTHORIZED_NOW`; it will not perform another configuration lookup or persist a
 second plaintext copy.
 
@@ -324,11 +324,16 @@ validation-only success, token/basic call `/user`, and App JWT calls `/app`.
 App-backed tool execution is still rejected because an installation-token
 exchange has not been implemented.
 
-`src/toolkits/families/github/tools.rs` exposes twenty explicitly selected
-ordinary reads through ADK-Rust 2.0.0's native `Tool`/`BasicToolset` boundary
-and the shared immutable blocklist. Empty selection still means all 44 SDK
-tools, so the partial Rust family rejects it instead of silently shrinking
-functionality. The current tests prove auth precedence and malformed pairs,
+`src/toolkits/families/github/tools.rs` exposes twenty selected ordinary reads.
+It uses ADK-Rust 2.0.0's native `Tool` and `BasicToolset` boundary.
+The common configured-tool materializer now selects this family for live work.
+A mixed explicit SDK selection retains supported reads and omits other tools.
+The worker emits one bounded warning with counts for this partial profile.
+An empty selection still means all 44 SDK tools, so Rust rejects it.
+Issue and pull-request schemas omit an artificial 64-bit maximum. Bedrock
+rejects that maximum before model execution. Runtime parsing still requires a
+positive unsigned integer.
+The current tests prove auth precedence and malformed pairs,
 Enterprise/repository normalization and bounds, origin/header binding, PKCS8
 App JWT shape, bounded response projection, rate-limit classification, native
 ADK selection/policy/argument behavior, exact line slicing/large-file guidance,
@@ -339,7 +344,7 @@ The first file group follows this source-to-Rust chain:
 | Current business source | Preserved behavior | Rust owner / deliberate hardening |
 | --- | --- | --- |
 | Main `internal/application/agentexecution/tools.go` and `internal/infra/storage/configurations_materializer.go::materializeAgentExecution` | Freeze the selected toolkit and resolve the exact repository, branch and owned configuration into the admitted request | `config.rs` consumes only that sealed materialized shape; it performs no configuration lookup and creates no second credential authority |
-| Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both agent kinds enter the same pinned SDK application/toolkit runtime | The future authorized Rust assembler will select this same family for both kinds; the capability remains disabled until that composition and the full selected catalog are available |
+| Python worker `agents/sdk_adapter.py::EliteaSdkAgentAdapter::{execute_application,execute_adhoc}` | Both agent kinds enter the same pinned SDK application/toolkit runtime | The authorized Rust assembler selects the GitHub family for both agent kinds. It exposes only implemented selected reads and keeps unsupported effects unavailable |
 | SDK `tools/github/github_client.py::{_read_file,read_file,read_multiple_files}` | GitHub Contents API, active-branch default, optional repository for a single read, 1-indexed inclusive line slicing, structured 200,000-character guidance, and cumulative batch skipping without fetching later files | `client.rs::GitHubApi::read_text_file` plus `tools.rs` preserve those results. Paths, UTF-8/base64 content, file bytes, batch count and output are bounded. Rust intentionally performs one asynchronous transport attempt; the lifecycle owns retry rather than copying the SDK's blocking `time.sleep` retry loop |
 | SDK `tools/elitea_base.py::BaseToolApiWrapper::search_file` and `tools/utils/text_operations.py::{apply_line_slice,search_in_content}` | `grep_file` is case-insensitive, supports regex or literal input, reports one match per line with before/after context, and uses Python-compatible line boundaries | `tools.rs` uses the non-backtracking Rust `regex` engine with explicit pattern/program/context/match/output limits. Invalid regex is a stable invalid-input error before network use instead of the SDK's warning plus ambiguous no-match result |
 | SDK `tools/utils/file_metadata.py::{guard_text_read,capped_read_multiple_files}` and `runtime/langchain/constants.py::DEFAULT_MAX_OUTPUT_CHARS` | Plain content below the cap; schema `1.0` `content_too_large` guidance above it; line-range honesty for an unchunkable single line; one cumulative 200,000-character batch budget | Rust emits the same machine discriminator, line instructions and skip notice. Per-file batch failures are data-free so upstream exception bodies, private repositories and credentials cannot enter model context or logs |
@@ -380,12 +385,15 @@ Main-owned connector with the same credential and egress boundary, Main may
 keep its probe there; the invariant is one family client per execution plane,
 not one prescribed language.
 
-Production registration remains disabled. Before this family can execute live
-agent work it still needs the authorized materializer connection, platform
-egress/private-DNS and Enterprise-CA policy, real GitHub TLS component proof,
-GitHub App installation-token support, the remaining 24 SDK operations
-(including six indexing-only operations), and direct sensitive-tool/HITL
-fencing.
+The partial read profile now enters live agent materialization. The standalone
+deployment proves the complete branch-read loop. Main freezes the configured
+GitHub toolkit, Rust exposes 20 selected reads beside another toolset, the model
+calls `list_branches_in_repo`, the configured GitHub request succeeds, and the
+terminal result remains visible after chat reload. Production readiness still
+needs platform egress, private-DNS and Enterprise-CA policy. GitHub App tool
+execution needs an installation-token exchange. The remaining 24 SDK
+operations include six indexing-only operations. Sensitive effects need direct
+HITL fencing before registration.
 
 ### Google Places complete read family
 

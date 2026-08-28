@@ -13,9 +13,9 @@ use adk_rust::Toolset;
 
 use super::DelegatedAuthorizationCatalog;
 use super::families::{
-    azure, azure_search, elastic, gcp, gitlab_org, google_places, keycloak, kubernetes, openapi,
-    postman, rally, report_portal, salesforce, service_now, sharepoint, slack, sonar, sql, yagmail,
-    zephyr, zephyr_squad,
+    azure, azure_search, elastic, gcp, github, gitlab_org, google_places, keycloak, kubernetes,
+    openapi, postman, rally, report_portal, salesforce, service_now, sharepoint, slack, sonar, sql,
+    yagmail, zephyr, zephyr_squad,
 };
 use super::policy::ToolAdmissionPolicy;
 use super::snapshot::{AdmittedToolSnapshot, FrozenToolKind, FrozenToolReference};
@@ -120,6 +120,7 @@ fn materialize(
             | "azure_search"
             | "elastic"
             | "gcp"
+            | "github"
             | "gitlab_org"
             | "google_places"
             | "keycloak"
@@ -187,6 +188,13 @@ fn materialize_a_to_k(
             policy,
         )
         .map_err(|_| invalid_configuration())?,
+        "github" => github::tools::build_github_read_only_toolset(
+            name,
+            github::config::GitHubToolkitConfig::parse(settings)
+                .map_err(|_| invalid_configuration())?,
+            policy,
+        )
+        .map_err(|error| github_toolset_materialization_error(error.code()))?,
         "gitlab_org" => gitlab_org::tools::build_gitlab_org_toolset(
             name,
             gitlab_org::config::GitLabOrgToolkitConfig::parse(settings)
@@ -303,8 +311,8 @@ fn materialize_p_to_z(
             policy,
         )
         .map_err(|_| invalid_configuration())?,
-        // Aha needs a sealed artifact resolver. GitHub is not yet a complete
-        // family. MCP and nested applications are rejected above by kind.
+        // Aha needs a sealed artifact resolver. MCP and nested applications
+        // are rejected above by kind.
         _ => return Err(unsupported_toolkit()),
     };
     Ok(Arc::new(toolset))
@@ -335,6 +343,17 @@ const fn openapi_materialization_error(
         openapi::config::OpenApiConfigErrorCode::InvalidConfiguration => invalid_configuration(),
         openapi::config::OpenApiConfigErrorCode::ResourceExhausted => resource_exhausted(),
         openapi::config::OpenApiConfigErrorCode::UnsupportedCapability => unsupported_toolkit(),
+    }
+}
+
+const fn github_toolset_materialization_error(
+    code: github::tools::GitHubToolsetErrorCode,
+) -> ToolsetMaterializationError {
+    match code {
+        github::tools::GitHubToolsetErrorCode::InvalidConfiguration
+        | github::tools::GitHubToolsetErrorCode::Client
+        | github::tools::GitHubToolsetErrorCode::InvalidDefinition => invalid_configuration(),
+        github::tools::GitHubToolsetErrorCode::UnsupportedSelection => unsupported_toolkit(),
     }
 }
 

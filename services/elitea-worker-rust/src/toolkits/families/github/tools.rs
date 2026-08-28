@@ -118,62 +118,79 @@ impl From<MaterializedToolsetError> for GitHubToolsetError {
     }
 }
 
-/// Build the capability-disabled first GitHub read-only profile.
+/// Build the first GitHub read-only profile.
 ///
 /// Empty selection still means all 44 current SDK tools, so it is rejected
-/// until the full family is ported. Twenty explicitly selected ordinary read
-/// operations can use this path. The production capability remains disabled
-/// until sensitive effects, the rest of the read catalog, GitHub App
-/// installation auth and cross-process TLS integration are complete.
+/// until the full family is ported. A mixed explicit selection keeps only the
+/// implemented ordinary reads. This permits a restored SDK toolkit to retain
+/// its read capability without exposing an unimplemented effect.
 pub(crate) fn build_github_read_only_toolset(
     toolkit_name: &str,
     config: GitHubToolkitConfig,
     policy: &Arc<ToolAdmissionPolicy>,
 ) -> Result<BasicToolset, GitHubToolsetError> {
-    validate_selection(config.selected_tools())?;
-    let selected = config
-        .selected_tools()
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
+    let (selected, omitted_count) = supported_selection(config.selected_tools())?;
+    if omitted_count > 0 {
+        tracing::warn!(
+            event = "agent_toolkit_tools_skipped",
+            reason_code = "unsupported_tool_selection",
+            toolkit_type = "github",
+            toolkit_name,
+            selected_count = config.selected_tools().len(),
+            materialized_count = selected.len(),
+            omitted_count,
+            "unsupported GitHub tools were omitted from the native read-only toolset"
+        );
+    }
     let repository = config.repository().to_owned();
     let client: Arc<dyn GitHubApi> = Arc::new(GitHubClient::new(config)?);
     build_with_api(toolkit_name, &repository, &selected, policy, &client)
 }
 
-fn validate_selection(selected: &[Box<str>]) -> Result<(), GitHubToolsetError> {
-    if selected.is_empty()
-        || selected.iter().any(|name| {
-            !matches!(
-                name.as_ref(),
-                GET_ME
-                    | LIST_BRANCHES
-                    | READ_FILE
-                    | READ_MULTIPLE_FILES
-                    | GREP_FILE
-                    | LIST_MAIN_FILES
-                    | LIST_ACTIVE_FILES
-                    | LIST_DIRECTORY_FILES
-                    | LIST_ISSUES
-                    | GET_ISSUE
-                    | SEARCH_ISSUES
-                    | LIST_PULL_REQUESTS
-                    | GET_PULL_REQUEST
-                    | LIST_PULL_REQUEST_DIFFS
-                    | LIST_COMMITS
-                    | GET_COMMIT_CHANGES
-                    | COMPARE_COMMITS
-                    | SEARCH_CODE
-                    | GET_WORKFLOW_STATUS
-                    | LIST_PROJECT_ISSUES
-            )
-        })
-    {
+fn supported_selection(selected: &[Box<str>]) -> Result<(Vec<String>, usize), GitHubToolsetError> {
+    if selected.is_empty() {
         return Err(GitHubToolsetError {
             code: GitHubToolsetErrorCode::UnsupportedSelection,
         });
     }
-    Ok(())
+    let supported = selected
+        .iter()
+        .filter(|name| is_supported_read(name))
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    if supported.is_empty() {
+        return Err(GitHubToolsetError {
+            code: GitHubToolsetErrorCode::UnsupportedSelection,
+        });
+    }
+    let omitted_count = selected.len() - supported.len();
+    Ok((supported, omitted_count))
+}
+
+fn is_supported_read(name: &str) -> bool {
+    matches!(
+        name,
+        GET_ME
+            | LIST_BRANCHES
+            | READ_FILE
+            | READ_MULTIPLE_FILES
+            | GREP_FILE
+            | LIST_MAIN_FILES
+            | LIST_ACTIVE_FILES
+            | LIST_DIRECTORY_FILES
+            | LIST_ISSUES
+            | GET_ISSUE
+            | SEARCH_ISSUES
+            | LIST_PULL_REQUESTS
+            | GET_PULL_REQUEST
+            | LIST_PULL_REQUEST_DIFFS
+            | LIST_COMMITS
+            | GET_COMMIT_CHANGES
+            | COMPARE_COMMITS
+            | SEARCH_CODE
+            | GET_WORKFLOW_STATUS
+            | LIST_PROJECT_ISSUES
+    )
 }
 
 fn build_with_api(
@@ -636,7 +653,6 @@ fn get_issue_schema() -> Value {
             "issue_number": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": i64::MAX,
                 "description": "Issue or pull-request number."
             },
             "repo_name": {
@@ -703,7 +719,6 @@ fn get_pull_request_schema() -> Value {
             "pr_number": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": i64::MAX,
                 "description": "Pull-request number."
             },
             "repo_name": {

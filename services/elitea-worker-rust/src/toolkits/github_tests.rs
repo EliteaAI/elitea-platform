@@ -34,7 +34,9 @@ use super::families::github::tools::{
     GitHubToolsetErrorCode, build_github_read_only_toolset, test_build_with_api,
 };
 use super::families::github::workflow_runs::test_project_workflow_status;
+use super::materialize::materialize_configured_toolsets_with_tokens_and_authorization;
 use super::policy::ToolAdmissionPolicy;
+use super::snapshot::FrozenToolSnapshot;
 
 const TEST_PKCS8_KEY_BODY: &str = "MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDIp4UApaJQ247TbIW43Pg8S+GVMRT6qsdhbg6iSSL6a3qwH4VYLIFcw73rXtRnYrxTasyqi3JwWwDO8xay7FCPuWlyQbnjQjhBnMz3M57riwYhR69PWTL2E9m8CucL9tVtRDLoPhN2dYdTG/qd1WUxdBJEvnXovJImufpEtLihATWNfou3XQxySk8R7Od3diY/rv55YS6x1xZG536JgoZr4UAOr8NYDTE5tBqqc4AYc3LyLjW9VbKISWFlyIHtFU1YESRcUtVswJ1JFtTypQvPWuCiY39M+mv52q/BE9uoODtt19pt2Nsi2FEKjTEVmDMIkJoaAzJReqVeiW4VQkmzAgMBAAECggEAI6TukZDa5rY6BwDOOGq4hi2Moy4W5fiUdpBQdS+80PNq1gKjc2hkipATGs67uKnnfoIIXXtsFt1zpU+1ho9IOF/dhXh7hw1qZO1v07IN1xXZPuw3DkdwMBqSoT7mkE+G1mQ5DtyIJJD4OyFLQeJ4mXJfFGspEvD8nXiIJtBbw+3cMzbUJRYwTWfTxIHfkq7uuXUs1zn3hGm1Ku3WIQo/e3+y1eiecSTqJqrGGWLtZjB6689c59RI0leT6jM4tizOIQ3BkUXAetn/HRFbKZRcNFhh0e7+G6QIVTFX/wXHbLZsJWkPzHxNX2USoWqgpnmgiGZSGTbAt/CJ492NeX0K8QKBgQD4W6jcKVAjlu6SKrhVlhO8RdjYs4IC+Mi4/1eyhvCtgtPhrHxWb/5zHPrlYZrt3E5rdhvcshNkcOM9cS1MxwPCnJshs+eWnjXwkl+tWy3ceroc21xAhu9XHrPqNLuyX04YHV/B0Rg23aC+/C8aQmikq30yeLxFpTiz0jQdSDgnFwKBgQDO1BfuiMQBoDRDYfUx3NfwJXcw5AX81U625OU5aOZc5WBC3I/F4W5S5r3D3CbsiunD+JGxxEuR+xFjSinxQkT9hQ/Vjp5PX53wJ1WmGQmM/VyBlSN6htfCR/Y8ra9nuUiV1qphlTrckdy1wY2VreK/RG3QZcFRlrlv+mFWGXaTxQKBgQC/yYCHq3uQUDChPU4mAYPyAvomtdBzXQ0cF0rwuVXIl9vpTNqjoU6cNEfntM0AW/1O7OEtN3LUQHyq6Ogzfwf/VBJUH2p6nGhJA6/Q3jV3Kmrod9kwl0LiQvpqpRhA8WoMIzrcIA0T6WgFtBbnr1rBtxAyVpwFKEa2TmAiMK/0NwKBgDW7gCQmP9W0Sx+eWVcE6symzxpSgwO2XubA/JQ3nnFP3fxA1NExybmb3Hz/utUFGcohz6gBOSjJszC6Wb8l2kqKwRxYGuTAEIYNkgC+zG5mfBvmJPt2AKOmkmAdN06ZIjRbOpRzcoFPG6nUiPXz4M6T9nuHk/ugTri6sYLuxpGJAoGBALI0mlazlyncjdZYq8GNnN8HaQu6uMahky1cgJjnN5LSq8jC03gEhHwyPlFSmjKVXD0En2YyQC5dEZAtFde76EJMAqtU3ZbEDADY/0H1ajcguEPUXBtey/xQ2y5tWgsXtaF0PeIfamGlgC2pAnH72m5MbRKuM5IiUql/qXNlOreq";
 
@@ -2011,7 +2013,7 @@ async fn native_project_read_preserves_the_sdk_schema_with_a_visible_hard_bound(
 }
 
 #[test]
-fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
+fn partial_profile_rejects_empty_or_wholly_unported_selection_before_network_use() {
     let Err(empty) = build_github_read_only_toolset("github", token_config(&[]), &policy(&[]))
     else {
         panic!("empty selection means the full unported SDK catalog");
@@ -2027,6 +2029,71 @@ fn partial_profile_rejects_empty_or_unported_selection_before_network_use() {
         unsupported.code(),
         GitHubToolsetErrorCode::UnsupportedSelection
     );
+}
+
+#[tokio::test]
+async fn configured_materializer_keeps_supported_reads_from_mixed_sdk_selection() {
+    let version = json!({
+        "tools":[{
+            "id":1,
+            "type":"github",
+            "toolkit_name":"configurations",
+            "settings":settings(
+                &json!({
+                    "configuration_type":"github",
+                    "base_url":"https://github.example.test/api/v3/",
+                    "access_token":"fixture-token"
+                }),
+                &["list_branches_in_repo", "create_issue"]
+            )
+        }]
+    });
+    let version = version.as_object().expect("version details");
+    let snapshot = FrozenToolSnapshot::from_version_details(version)
+        .expect("GitHub snapshot")
+        .apply_policy(policy(&[]).as_ref());
+
+    let (toolsets, authorization) = materialize_configured_toolsets_with_tokens_and_authorization(
+        &snapshot,
+        &policy(&[]),
+        &Map::new(),
+    )
+    .expect("GitHub materialization");
+
+    assert_eq!(toolsets.len(), 1);
+    assert!(authorization.is_empty());
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolsets[0].tools(readonly).await.expect("GitHub tools");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "list_branches_in_repo");
+}
+
+#[tokio::test]
+async fn provider_tool_schemas_do_not_emit_an_unportable_integer_ceiling() {
+    let selected = vec!["get_issue".to_owned(), "get_pull_request".to_owned()];
+    let client: Arc<dyn GitHubApi> = Arc::new(FixtureGitHubApi::default());
+    let toolset = test_build_with_api(
+        "github",
+        "EliteaAI/elitea-platform",
+        &selected,
+        &policy(&[]),
+        &client,
+    )
+    .expect("GitHub tools");
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolset.tools(readonly).await.expect("GitHub tools");
+
+    for tool in tools {
+        let schema = tool.parameters_schema().expect("parameter schema");
+        let number = if tool.name() == "get_issue" {
+            "issue_number"
+        } else {
+            "pr_number"
+        };
+        let property = &schema["properties"][number];
+        assert_eq!(property["minimum"], 1);
+        assert!(property.get("maximum").is_none());
+    }
 }
 
 #[derive(Default)]
