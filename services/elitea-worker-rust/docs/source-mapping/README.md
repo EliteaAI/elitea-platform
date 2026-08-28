@@ -207,7 +207,12 @@ Maintained Rust runtime ownership registry:
   MCP and application references, native family toolsets and generic bounded
   call policy/tracing. Configured materialization receives the same
   claim-scoped exact-resource delegated-token map as MCP and returns a merged
-  authorization catalog to root, pipeline and recursively saved agents;
+  authorization catalog to root, pipeline and recursively saved agents. Main
+  keeps a custom or Provider Hub participant attached when this deployment has
+  no actor-visible schema, but omits it from that execution snapshot with a
+  structured data-free warning. Rust applies the same rule only to a frozen
+  family that this binary does not implement. Invalid settings, permissions,
+  credentials and supported-family dependencies still fail closed;
 - `src/toolkits/families/openapi/{config,spec,client,tools}.rs`: bounded dynamic
   OpenAPI 3.x tool generation from an inline JSON/YAML document. This is not a
   static catalog: each admitted operation supplies its tool name, description,

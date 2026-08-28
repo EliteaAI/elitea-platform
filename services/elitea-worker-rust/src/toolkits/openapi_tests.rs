@@ -314,6 +314,44 @@ async fn configured_materializer_merges_openapi_authorization_and_honors_tool_po
     assert_eq!(tools[0].name(), "get_users_by_id");
 }
 
+#[tokio::test]
+async fn unsupported_configured_family_does_not_hide_runnable_openapi_toolkit() {
+    let version = json!({
+        "tools":[
+            {
+                "id":1,
+                "type":"github",
+                "toolkit_name":"source",
+                "settings":{"selected_tools":["read_file"]}
+            },
+            {
+                "id":72,
+                "type":"openapi",
+                "toolkit_name":"Customer API",
+                "settings":settings(&json!({}), &["get_users_by_id"])
+            }
+        ]
+    });
+    let version = version.as_object().expect("version details");
+    let snapshot = FrozenToolSnapshot::from_version_details(version)
+        .expect("mixed snapshot")
+        .apply_policy(policy(&[]).as_ref());
+
+    let (toolsets, authorization) = materialize_configured_toolsets_with_tokens_and_authorization(
+        &snapshot,
+        &policy(&[]),
+        &Map::new(),
+    )
+    .expect("supported toolkit remains runnable");
+
+    assert_eq!(toolsets.len(), 1);
+    assert!(authorization.is_empty());
+    let readonly: Arc<dyn ReadonlyContext> = context();
+    let tools = toolsets[0].tools(readonly).await.expect("OpenAPI tools");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name(), "get_users_by_id");
+}
+
 struct FixtureTransport {
     requests: Mutex<Vec<OpenApiRequest>>,
     token_requests: Mutex<Vec<Request>>,

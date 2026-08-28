@@ -82,7 +82,20 @@ pub(crate) fn materialize_configured_toolsets_with_tokens_and_authorization(
         .iter()
         .filter(|reference| reference.kind() == FrozenToolKind::Configured)
     {
-        let (toolset, authorization) = materialize(reference, policy, delegated_tokens)?;
+        let (toolset, authorization) = match materialize(reference, policy, delegated_tokens) {
+            Ok(materialized) => materialized,
+            Err(error) if error.code() == ToolsetMaterializationErrorCode::UnsupportedToolkit => {
+                tracing::warn!(
+                    event = "agent_toolkit_skipped",
+                    reason_code = "unsupported_toolkit_family",
+                    toolkit_type = reference.tool_type(),
+                    toolkit_id = reference.tool_id(),
+                    "agent toolkit is unavailable in this runtime and was omitted from the native toolsets"
+                );
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         delegated_authorization
             .merge(authorization)
             .map_err(|()| invalid_configuration())?;

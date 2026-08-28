@@ -189,6 +189,76 @@ func TestCurrentApplicationToolSnapshotFreezesSavedMCPReferenceWithoutSpecialCas
 	}
 }
 
+func TestCurrentApplicationToolSnapshotOmitsOnlySchemaUnavailableToolkit(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{err: configurationapp.ErrCurrentToolkitSchemaNotFound}
+	names := &currentAgentNameResolverStub{}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		names,
+		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{
+    "id":11,
+    "type":"wikis_Wikis",
+    "name":"configurations",
+    "settings":{"selected_tools":[]}
+  }]
+}`),
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := decodeCurrentApplicationVersion(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, ok := version["tools"].([]any)
+	if !ok || len(tools) != 0 || len(settings.requests) != 1 || len(names.requests) != 0 {
+		t.Fatalf("tools=%#v settings=%+v names=%+v", version["tools"], settings.requests, names.requests)
+	}
+}
+
+func TestCurrentApplicationToolSnapshotDoesNotHideToolkitDependencyFailure(t *testing.T) {
+	settings := &currentAgentSettingsResolverStub{err: configurationapp.ErrCurrentToolkitSettingsDependency}
+	service, err := NewCurrentApplicationToolSnapshotService(
+		settings,
+		&currentAgentNameResolverStub{},
+		currentAgentModelCatalogForTest(false),
+		&currentAgentGuardrailStub{},
+		1,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.FreezeCurrentApplicationVersion(
+		context.Background(),
+		CurrentApplicationVersionFreezeRequest{
+			ProjectID: 7, ActorUserID: 11,
+			VersionDetails: json.RawMessage(`{
+  "llm_settings":{"model_name":"model"},
+  "tools":[{"id":19,"type":"github","settings":{}}]
+}`),
+		},
+	)
+	if !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationReference(t *testing.T) {
 	settings := &currentAgentSettingsResolverStub{}
 	names := &currentAgentNameResolverStub{}

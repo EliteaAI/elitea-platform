@@ -30,7 +30,7 @@ func newCurrentAgentVersionFreezer(
 	}
 	schemas, err := NewCurrentCompositeToolkitSchemaCatalog(
 		builtInSchemas,
-		UnavailableCurrentActorVisibleToolkitSchemas{},
+		absentCurrentAgentDynamicToolkitSchemas{},
 	)
 	if err != nil {
 		return nil, err
@@ -75,6 +75,29 @@ func newCurrentAgentVersionFreezer(
 		guardrailPolicies,
 		configurations.publicProjectID,
 	)
+}
+
+// absentCurrentAgentDynamicToolkitSchemas keeps an unsupported Provider Hub or
+// custom toolkit attached to the conversation without making every other
+// participant unusable. The agent freezer treats found=false as a runtime
+// capability gap and omits only that toolkit from the immutable execution
+// snapshot. Index admission keeps the fail-closed unavailable adapter because
+// an index cannot run correctly after silently losing its source toolkit.
+type absentCurrentAgentDynamicToolkitSchemas struct{}
+
+func (absentCurrentAgentDynamicToolkitSchemas) FindCurrentActorVisibleToolkitSchema(
+	ctx context.Context,
+	_ int32,
+	_ int32,
+	_ string,
+) (configurationapp.CurrentToolkitSchema, bool, error) {
+	if ctx == nil {
+		return configurationapp.CurrentToolkitSchema{}, false, ErrCurrentToolkitSchemaLookupInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return configurationapp.CurrentToolkitSchema{}, false, err
+	}
+	return configurationapp.CurrentToolkitSchema{}, false, nil
 }
 
 type currentAgentToolkitNameAdapter struct {

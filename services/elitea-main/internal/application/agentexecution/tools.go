@@ -228,6 +228,15 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 			if contextErr := ctx.Err(); contextErr != nil {
 				return nil, contextErr
 			}
+			if errors.Is(err, configurationapp.ErrCurrentToolkitSchemaNotFound) {
+				slog.WarnContext(ctx, "agent toolkit is unavailable in this runtime and was omitted from the execution snapshot",
+					"event", "agent_toolkit_skipped",
+					"reason_code", "toolkit_schema_unavailable",
+					"toolkit_type", toolType,
+					"toolkit_id", toolID,
+					"project_id", request.ProjectID)
+				continue
+			}
 			return nil, unsupportedStartBecause("toolkit settings resolution", err)
 		}
 
