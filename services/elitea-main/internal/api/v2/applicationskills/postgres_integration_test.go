@@ -61,14 +61,40 @@ func TestCurrentApplicationSkillsRoutePostgresContractAndTenantIsolation(t *test
 		t.Fatalf("project one status=%d body=%s", projectOne.Code, projectOne.Body.String())
 	}
 	var projectOneBody struct {
-		Skills    []handler.CurrentApplicationSkill `json:"skills"`
-		MaxSkills int                               `json:"max_skills"`
+		Items []struct {
+			ID        string `json:"id"`
+			ProjectID string `json:"project_id"`
+			Name      string `json:"name"`
+			Type      string `json:"type"`
+			CreatedAt string `json:"created_at"`
+		} `json:"items"`
+		Total      int                               `json:"total"`
+		Page       int                               `json:"page"`
+		PageSize   int                               `json:"page_size"`
+		TotalPages int                               `json:"total_pages"`
+		Skills     []handler.CurrentApplicationSkill `json:"skills"`
+		MaxSkills  int                               `json:"max_skills"`
 	}
 	if err := json.NewDecoder(projectOne.Body).Decode(&projectOneBody); err != nil {
 		t.Fatal(err)
 	}
 	if projectOneBody.MaxSkills != 5 || len(projectOneBody.Skills) != 2 {
 		t.Fatalf("project one response=%+v", projectOneBody)
+	}
+	// The published SkillsList half (#395), read from the same rows. Without
+	// it apps/elitea-web sees a body with no `items` key and renders an empty
+	// skill list for an agent version that has two skills attached.
+	if len(projectOneBody.Items) != 2 || projectOneBody.Total != 2 ||
+		projectOneBody.Page != 1 || projectOneBody.PageSize != 2 ||
+		projectOneBody.TotalPages != 1 {
+		t.Fatalf("project one published half=%+v", projectOneBody)
+	}
+	for _, item := range projectOneBody.Items {
+		if item.ProjectID != "1" || item.Type != "skill" || item.ID == "" ||
+			item.Name == "" || item.CreatedAt == "" ||
+			strings.HasPrefix(item.CreatedAt, "0001-01-01") {
+			t.Fatalf("published item=%+v", item)
+		}
 	}
 	byID := make(map[int32]handler.CurrentApplicationSkill, len(projectOneBody.Skills))
 	for _, skill := range projectOneBody.Skills {
@@ -249,7 +275,7 @@ func TestCurrentApplicationSkillsHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 			appVersion: "999999",
 			userID:     "11",
 			wantStatus: http.StatusOK,
-			exactBody:  "{\"skills\":[],\"max_skills\":5}\n",
+			exactBody:  "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n",
 		},
 		{
 			name:       "zero version remains empty",
@@ -257,7 +283,7 @@ func TestCurrentApplicationSkillsHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 			appVersion: "0",
 			userID:     "11",
 			wantStatus: http.StatusOK,
-			exactBody:  "{\"skills\":[],\"max_skills\":5}\n",
+			exactBody:  "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n",
 		},
 		{
 			name:       "version beyond PostgreSQL integer remains empty",
@@ -265,7 +291,7 @@ func TestCurrentApplicationSkillsHTTPPostgresRBACAndTenantMatrix(t *testing.T) {
 			appVersion: "9999999999999999999999999999999999999999",
 			userID:     "11",
 			wantStatus: http.StatusOK,
-			exactBody:  "{\"skills\":[],\"max_skills\":5}\n",
+			exactBody:  "{\"items\":[],\"total\":0,\"page\":1,\"page_size\":0,\"total_pages\":0,\"skills\":[],\"max_skills\":5}\n",
 		},
 		{
 			name:       "nonnumeric version follows current routing 404",
@@ -532,7 +558,8 @@ CREATE SCHEMA p_2;
 CREATE TABLE p_1.skills (
     id INTEGER PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
-    description VARCHAR(2304) NOT NULL
+    description VARCHAR(2304) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 CREATE TABLE p_1.skill_versions (
     id INTEGER PRIMARY KEY,
@@ -567,7 +594,8 @@ INSERT INTO p_1.entity_skill_mapping (
 CREATE TABLE p_2.skills (
     id INTEGER PRIMARY KEY,
     name VARCHAR(128) NOT NULL,
-    description VARCHAR(2304) NOT NULL
+    description VARCHAR(2304) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 CREATE TABLE p_2.skill_versions (
     id INTEGER PRIMARY KEY,

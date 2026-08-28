@@ -194,17 +194,3 @@ export function useModelConfiguration({
     onChangeModel,
   };
 }
-
-/**
- * Model option creator — produces Select-compatible option arrays.
- */
-export const createOptions = (
-  items: readonly ModelInfo[] | undefined,
-): Array<{ value: string; label: string }> => {
-  return (
-    items?.map((config) => ({
-      value: `${config.name}<<>>${config.project_id}`,
-      label: config.display_name || config.name,
-    })) || []
-  );
-};

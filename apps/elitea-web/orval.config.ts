@@ -114,9 +114,35 @@
  * whether an empty-array filter with no `mode` means "exclude nothing" or
  * "match nothing" in 8.23.0 (untested — no reason to depend on it).
  */
+import path from 'node:path';
+import process from 'node:process';
+
 import { defineConfig } from 'orval';
 
 import { backfillMissingZodModels } from './scripts/lib/orval-zod-backfill.mjs';
+
+/**
+ * Where orval writes. `ORVAL_OUT_DIR` redirects the whole generator into a
+ * scratch directory; the default is the committed location.
+ *
+ * `scripts/check-generated-client.mjs` (issue #592) sets it. The gate used to
+ * regenerate ON TOP of the committed tree and read `git status`, which cannot
+ * see an ORPHAN — a file orval has stopped producing stays on disk, the
+ * rewrite never touches it, and the diff stays clean. The gate now regenerates
+ * into an EMPTY directory and compares both trees, so a file that is present
+ * in the checkout and absent from the run is a failure.
+ *
+ * The override is one variable, not a second config, on purpose: the check
+ * must exercise the SAME generator settings the committed client came from. A
+ * copied config would drift, and the gate would then compare the tree against
+ * a generator nobody uses.
+ *
+ * Keep every path below inside `OUT_DIR`. The generated files import the
+ * mutator by a path RELATIVE to themselves (`../mutator`), so the mutator must
+ * sit at the same depth in the scratch tree; the check copies the hand-written
+ * `mutator.ts` in before it runs orval.
+ */
+const OUT_DIR = process.env.ORVAL_OUT_DIR ?? path.join('src', 'shared', 'api', 'generated');
 
 export default defineConfig({
   elitea: {
@@ -125,8 +151,8 @@ export default defineConfig({
     },
     output: {
       mode: 'tags-split',
-      target: 'src/shared/api/generated/endpoints.ts',
-      schemas: { path: 'src/shared/api/generated/model', type: 'zod' },
+      target: path.join(OUT_DIR, 'endpoints.ts'),
+      schemas: { path: path.join(OUT_DIR, 'model'), type: 'zod' },
       client: 'react-query',
       httpClient: 'fetch',
       baseUrl: '', // resolved at runtime by shared/api/http.ts via shared/config (§7.1)
@@ -134,7 +160,7 @@ export default defineConfig({
         generators: [{ type: 'msw', delay: 0, useExamples: false }],
       },
       override: {
-        mutator: { path: 'src/shared/api/generated/mutator.ts', name: 'eliteaFetch' },
+        mutator: { path: path.join(OUT_DIR, 'mutator.ts'), name: 'eliteaFetch' },
         query: { useQuery: true, useSuspenseQuery: false, signal: true },
         zod: {
           generate: { param: true, query: true, header: true, body: true, response: true },
@@ -142,6 +168,15 @@ export default defineConfig({
         },
       },
     },
-    hooks: { afterAllFilesWrite: [() => backfillMissingZodModels(), 'prettier --write'] },
+    hooks: {
+      afterAllFilesWrite: [
+        () =>
+          backfillMissingZodModels({
+            modelDir: path.join(OUT_DIR, 'model'),
+            generatedDir: OUT_DIR,
+          }),
+        'prettier --write',
+      ],
+    },
   },
 });

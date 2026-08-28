@@ -203,7 +203,7 @@ func (p postgresToolSource) toolkitTools(ctx context.Context, schema string, too
 	}
 	query := fmt.Sprintf(`
 		SELECT name, type, COALESCE(description, ''), COALESCE(settings -> 'selected_tools', '[]'::jsonb)
-		FROM %q.elitea_tools
+		FROM %s.elitea_tools
 		WHERE meta #>> '{mcp_options,available_by_mcp}' = 'true'`, schema)
 	args := []any{}
 	if toolkitID != nil {

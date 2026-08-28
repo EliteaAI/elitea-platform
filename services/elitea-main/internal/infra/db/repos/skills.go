@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
@@ -32,10 +33,10 @@ const skillsSelectColumns = `
 	COALESCE(array_agg(t.name ORDER BY t.name) FILTER (WHERE t.name IS NOT NULL), '{}')`
 
 func skillsFromJoin(s string) string {
-	return fmt.Sprintf(`FROM %q.skills sk
-		LEFT JOIN %q.skill_versions sv ON sv.skill_id = sk.id AND sv.name = 'base'
-		LEFT JOIN %q.skill_version_tag_association svta ON svta.version_id = sv.id
-		LEFT JOIN %q.tags t ON t.id = svta.tag_id`, s, s, s, s)
+	return fmt.Sprintf(`FROM %s.skills sk
+		LEFT JOIN %s.skill_versions sv ON sv.skill_id = sk.id AND sv.name = 'base'
+		LEFT JOIN %s.skill_version_tag_association svta ON svta.version_id = sv.id
+		LEFT JOIN %s.tags t ON t.id = svta.tag_id`, s, s, s, s)
 }
 
 func scanSkillRow(row pgx.Row, projectID string) (skills.Skill, error) {
@@ -69,7 +70,7 @@ func (r *SkillsRepo) List(ctx context.Context, projectID string, params skills.L
 		args = append(args, "%"+params.Query+"%")
 	}
 
-	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %q.skills sk`, s) + where
+	countQ := fmt.Sprintf(`SELECT COUNT(*) FROM %s.skills sk`, s) + where
 	var total int
 	if err := r.pool.QueryRow(ctx, countQ, args...).Scan(&total); err != nil {
 		return skills.ListResponse{Items: []skills.Skill{}, Total: 0, Page: params.Page, PageSize: params.PageSize}, nil
@@ -152,7 +153,7 @@ func (r *SkillsRepo) ListForApplicationVersion(
 	// other than agents; without it a version id that collides with, say, a
 	// pipeline version id would contribute rows.
 	q := fmt.Sprintf(`SELECT %s %s
-		JOIN %q.entity_skill_mapping esm ON esm.skill_id = sk.id
+		JOIN %s.entity_skill_mapping esm ON esm.skill_id = sk.id
 		WHERE esm.entity_version_id = $1 AND esm.entity_type = 'agent'
 		GROUP BY sk.id, sv.id ORDER BY sk.name ASC`,
 		skillsSelectColumns, skillsFromJoin(s), s)
@@ -435,7 +436,7 @@ func (r *SkillsRepo) Get(ctx context.Context, projectID, skillID string) (skills
 func (r *SkillsRepo) GetByName(ctx context.Context, projectID, name string) (skills.Skill, bool, error) {
 	s := schema(projectID)
 	var id string
-	err := r.pool.QueryRow(ctx, fmt.Sprintf(`SELECT id FROM %q.skills WHERE name = $1 ORDER BY id LIMIT 1`, s), name).Scan(&id)
+	err := r.pool.QueryRow(ctx, fmt.Sprintf(`SELECT id FROM %s.skills WHERE name = $1 ORDER BY id LIMIT 1`, s), name).Scan(&id)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return skills.Skill{}, false, nil
@@ -451,6 +452,13 @@ func (r *SkillsRepo) GetByName(ctx context.Context, projectID, name string) (ski
 
 func (r *SkillsRepo) Create(ctx context.Context, projectID string, skill skills.Skill) (skills.Skill, error) {
 	s := schema(projectID)
+	// owner_id is the OWNING PROJECT, not the creating user — see
+	// createSkillSQL. A project id that names no schema stops here with a 400
+	// rather than reaching a statement built from a fail-closed sentinel.
+	ownerID, err := tenantschema.OwnerID(projectID)
+	if err != nil {
+		return skills.Skill{}, err
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return skills.Skill{}, fmt.Errorf("skills: create: begin: %w", err)
@@ -458,11 +466,8 @@ func (r *SkillsRepo) Create(ctx context.Context, projectID string, skill skills.
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var sk skills.Skill
-	err = tx.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.skills (name, description, owner_id, author_id, uuid, meta)
-		VALUES ($1, $2, 1, 1, gen_random_uuid(), '{}')
-		RETURNING id, name, COALESCE(description, ''), created_at`, s),
-		skill.Name, skill.Description).Scan(&sk.ID, &sk.Name, &sk.Description, &sk.CreatedAt)
+	err = tx.QueryRow(ctx, createSkillSQL(s),
+		skill.Name, skill.Description, ownerID).Scan(&sk.ID, &sk.Name, &sk.Description, &sk.CreatedAt)
 	if err != nil {
 		return skills.Skill{}, fmt.Errorf("skills: create: %w", err)
 	}
@@ -495,7 +500,7 @@ func (r *SkillsRepo) Update(ctx context.Context, projectID, skillID string, skil
 
 	var sk skills.Skill
 	err = tx.QueryRow(ctx, fmt.Sprintf(`
-		UPDATE %q.skills SET name = $1, description = $2
+		UPDATE %s.skills SET name = $1, description = $2
 		WHERE id = $3
 		RETURNING id, name, COALESCE(description, ''), created_at`, s),
 		skill.Name, skill.Description, skillID).Scan(&sk.ID, &sk.Name, &sk.Description, &sk.CreatedAt)
@@ -535,7 +540,7 @@ func upsertBaseSkillVersion(ctx context.Context, tx pgx.Tx, schema, skillID, ins
 
 	var versionID int
 	err := tx.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.skill_versions (skill_id, name, instructions, author_id)
+		INSERT INTO %s.skill_versions (skill_id, name, instructions, author_id)
 		VALUES ($1, 'base', $2, 1)
 		ON CONFLICT (skill_id, name) DO UPDATE SET instructions = EXCLUDED.instructions
 		RETURNING id`, schema), skillID, instructions).Scan(&versionID)
@@ -544,7 +549,7 @@ func upsertBaseSkillVersion(ctx context.Context, tx pgx.Tx, schema, skillID, ins
 	}
 	v.ID = strconv.Itoa(versionID)
 
-	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %q.skill_version_tag_association WHERE version_id = $1`, schema), versionID); err != nil {
+	if _, err := tx.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.skill_version_tag_association WHERE version_id = $1`, schema), versionID); err != nil {
 		return skills.SkillVersion{}, fmt.Errorf("skills: clear tags: %w", err)
 	}
 
@@ -558,7 +563,7 @@ func upsertBaseSkillVersion(ctx context.Context, tx pgx.Tx, schema, skillID, ins
 
 		var tagID int
 		err := tx.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.tags (name) VALUES ($1)
+			INSERT INTO %s.tags (name) VALUES ($1)
 			ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
 			RETURNING id`, schema), tagName).Scan(&tagID)
 		if err != nil {
@@ -566,7 +571,7 @@ func upsertBaseSkillVersion(ctx context.Context, tx pgx.Tx, schema, skillID, ins
 		}
 
 		if _, err := tx.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.skill_version_tag_association (version_id, tag_id) VALUES ($1, $2)
+			INSERT INTO %s.skill_version_tag_association (version_id, tag_id) VALUES ($1, $2)
 			ON CONFLICT DO NOTHING`, schema), versionID, tagID); err != nil {
 			return skills.SkillVersion{}, fmt.Errorf("skills: link tag %q: %w", tagName, err)
 		}
@@ -589,7 +594,7 @@ func (r *SkillsRepo) Delete(ctx context.Context, projectID, skillID string) erro
 	// (internal/api/v2/applications/handler.go:669-681).
 	var publishedCount int
 	if err := r.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.skill_versions WHERE skill_id = $1 AND status = 'published'`, s),
+		`SELECT COUNT(*) FROM %s.skill_versions WHERE skill_id = $1 AND status = 'published'`, s),
 		skillID).Scan(&publishedCount); err != nil {
 		return fmt.Errorf("skills: delete: check published versions: %w", err)
 	}
@@ -600,7 +605,7 @@ func (r *SkillsRepo) Delete(ctx context.Context, projectID, skillID string) erro
 	// skill_versions and skill_version_tag_association both cascade on
 	// delete (001_initial.sql), so no manual child cleanup is needed here
 	// (unlike applications.go, whose equivalent tables lack ON DELETE CASCADE).
-	q := fmt.Sprintf(`DELETE FROM %q.skills WHERE id = $1`, s)
+	q := fmt.Sprintf(`DELETE FROM %s.skills WHERE id = $1`, s)
 	ct, err := r.pool.Exec(ctx, q, skillID)
 	if err != nil {
 		return fmt.Errorf("skills: delete: %w", err)

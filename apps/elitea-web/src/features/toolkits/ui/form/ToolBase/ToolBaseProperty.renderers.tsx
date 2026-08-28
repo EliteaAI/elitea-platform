@@ -6,6 +6,7 @@ import type { Theme } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 
+import { useSecretFieldOptions } from '@/entities/secret';
 import { MAX_NAME_LENGTH } from '@/shared/lib/limits';
 import { t } from '@/shared/i18n';
 import { BaseCheckbox } from '@/shared/ui/BaseCheckbox';
@@ -379,8 +380,9 @@ export interface SecretFieldProps {
   readonly helperText: string | undefined;
 }
 
-/** The editable (non-disabled) secret field — ported from `ToolBaseProperty.jsx:324-339`. */
+/** The editable (non-disabled) secret field — ported from `ToolBaseProperty.jsx:324-339`. `secrets` comes from `useSecretFieldOptions()` (#441 — see that hook's header): no caller supplied it before, so the mode toggle, the saved-secret picker and its "Create new secret" entry were off for every user, an administrator included. The hook queries, so it runs in this leaf, which mounts for a secret field only. */
 export function SecretFieldInput({ value, onChange, label, required, error, helperText }: SecretFieldProps): ReactNode {
+  const secrets = useSecretFieldOptions();
   return (
     <SecretManagementInput
       value={value ?? ''}
@@ -388,6 +390,7 @@ export function SecretFieldInput({ value, onChange, label, required, error, help
       label={label}
       required={required}
       error={error}
+      secrets={secrets}
       {...(helperText !== undefined ? { helperText } : {})}
     />
   );

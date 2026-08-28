@@ -2699,5 +2699,6 @@
   "widgets.supportAssistant.showFullAnswer": "Show the full answer",
   "widgets.supportAssistant.userAvatar": "User avatar",
   "pages.onboarding.authorRetry": "Try again",
-  "pages.onboarding.authorUnavailable": "We could not load your account just now."
+  "pages.onboarding.authorUnavailable": "We could not load your account just now.",
+  "ai-configuration.copyConfigurationTooltip": "Copy configuration"
 }

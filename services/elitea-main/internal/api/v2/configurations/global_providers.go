@@ -217,7 +217,7 @@ var globalProviderSettingFields = []string{
 const listGlobalProvidersSQL = `
 	SELECT id, COALESCE(uuid::text, ''), COALESCE(label, ''), elitea_title, type,
 	       data, status_ok, COALESCE(status_logs, ''), created_at, updated_at
-	  FROM %q.configuration
+	  FROM %s.configuration
 	 WHERE section = '` + GlobalProviderSection + `' AND shared = true
 	 ORDER BY elitea_title, id`
 
@@ -227,7 +227,7 @@ func (h *Handler) ListGlobalProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	schema := fmt.Sprintf("p_%d", h.publicProjectID)
+	schema := pgx.Identifier{fmt.Sprintf("p_%d", h.publicProjectID)}.Sanitize()
 
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(listGlobalProvidersSQL, schema))
 	if err != nil {
@@ -600,14 +600,14 @@ func (h *Handler) requireGlobalRowSection(
 		apierr.WriteStatus(w, http.StatusNotFound, "configuration not found")
 		return false
 	}
-	schema := fmt.Sprintf("p_%d", h.publicProjectID)
+	schema := pgx.Identifier{fmt.Sprintf("p_%d", h.publicProjectID)}.Sanitize()
 
 	var section string
 	err := h.pool.QueryRow(r.Context(), fmt.Sprintf(
 		// COALESCE so a NULL section is a clean refusal rather than a scan
 		// error logged as a failure: a row with no section belongs to no
 		// surface, which is the same answer either way.
-		`SELECT COALESCE(section, '') FROM %q.configuration WHERE %s = $1`,
+		`SELECT COALESCE(section, '') FROM %s.configuration WHERE %s = $1`,
 		schema, configurationIDColumn(configID)), configID).Scan(&section)
 	if err != nil {
 		// A missing row and an unreadable one both answer 404 rather than 500.

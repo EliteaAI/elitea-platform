@@ -2093,6 +2093,36 @@
             "usedBy": [
                 "widgets/support-assistant"
             ]
+        },
+        {
+            "$comment": "HANDWRITTEN, YET IT NAMES AN operationId — the first entry of that shape, and deliberate. `source` says how the APP calls the route; `operationId` says which api/openapi/v2.yaml operation describes it. v2.yaml now describes both tool-catalogue reads, so orval generates a hook for each, but the app keeps calling them through src/entities/toolkit/api/toolkitToolsApi.ts, which holds the error-is-not-emptiness contract of #381/#440. Leave the id in place: the elitea-main gate TestSpecRouterConformance/manifest_reverse_check matches a manifest entry to the spec BY operationId, and its path fallback compares the spec path under the /api/v2 server base against a manifest path that carries no base, so a null id here reads as 'the spec does not describe this'.",
+            "id": "toolkits.availableTools",
+            "method": "GET",
+            "path": "/elitea_core/toolkit_available_tools/prompt_lib/{project_id}/{toolkit_id}",
+            "operationId": "listToolkitAvailableTools",
+            "source": "handwritten",
+            "responseSchema": "ToolkitToolsPayload",
+            "fixture": null,
+            "usedBy": [
+                "entities/toolkit",
+                "features/toolkits",
+                "features/pipelines"
+            ]
+        },
+        {
+            "$comment": "HANDWRITTEN, YET IT NAMES AN operationId — the first entry of that shape, and deliberate. `source` says how the APP calls the route; `operationId` says which api/openapi/v2.yaml operation describes it. v2.yaml now describes both tool-catalogue reads, so orval generates a hook for each, but the app keeps calling them through src/entities/toolkit/api/toolkitToolsApi.ts, which holds the error-is-not-emptiness contract of #381/#440. Leave the id in place: the elitea-main gate TestSpecRouterConformance/manifest_reverse_check matches a manifest entry to the spec BY operationId, and its path fallback compares the spec path under the /api/v2 server base against a manifest path that carries no base, so a null id here reads as 'the spec does not describe this'.",
+            "id": "toolkits.discoverTools",
+            "method": "POST",
+            "path": "/elitea_core/toolkit_discover_tools/prompt_lib/{project_id}/{toolkit_type}",
+            "operationId": "discoverToolkitTools",
+            "source": "handwritten",
+            "responseSchema": "ToolkitToolsPayload",
+            "fixture": null,
+            "usedBy": [
+                "entities/toolkit",
+                "features/toolkits",
+                "features/pipelines"
+            ]
         }
     ]
 }

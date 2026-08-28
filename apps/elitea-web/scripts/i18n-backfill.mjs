@@ -26,10 +26,31 @@ import { dirname, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { checkFloors } from './lib/gate-floor.mjs';
 import { extractCallSites, planBackfill } from './lib/i18n-backfill-core.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appRoot = resolve(scriptDir, '..');
+
+/*
+ * Floors on the scan (issue #528).
+ *
+ * `--check` decides on `addedKeys`, `hasUnresolvedConflicts` and
+ * `parseErrors`. All three are empty when the EXTRACTION finds nothing, and
+ * the gate then reports OK over an empty plan. `fileCount` and
+ * `allEntries.length` were printed and gated nothing.
+ *
+ * The vector is cheap to hit. Extraction binds to `t` imported from
+ * `@/shared/i18n`; rename that module and every call site stops matching at
+ * once. A skipped directory name, or a change to the source-file filter, does
+ * the same to `fileCount`.
+ *
+ * Measured on 2026-08-28: 2604 source files, 2812 `t()` call sites, 2702 keys
+ * in en.json.
+ */
+const MIN_SOURCE_FILES = 1500;
+const MIN_CALL_SITES = 1500;
+const MIN_EN_KEYS = 1500;
 
 const SOURCE_RE = /\.tsx?$/;
 const EXCLUDE_RE = /\.(test|spec|stories)\.tsx?$/;
@@ -154,6 +175,20 @@ function main() {
 
   const addedKeys = Object.keys(plan.toAdd).sort();
   console.log(`i18n-backfill: scanned ${fileCount} files, ${allEntries.length} t() call site(s), ${allFlagged.length} flagged`);
+
+  // The floors run before the verdict, in both modes. An extraction that
+  // matches nothing produces an empty plan, and an empty plan reads as a
+  // synchronised en.json.
+  const floors = checkFloors('i18n-backfill', [
+    { subject: 'source files scanned under src/', observed: fileCount, floor: MIN_SOURCE_FILES },
+    { subject: 't() call sites bound to @/shared/i18n', observed: allEntries.length, floor: MIN_CALL_SITES },
+    { subject: 'keys shipped in src/shared/i18n/en.json', observed: Object.keys(existingEn).length, floor: MIN_EN_KEYS },
+  ]);
+  for (const line of floors.lines) console.log(line);
+  if (!floors.ok) {
+    console.error(floors.error);
+    process.exit(2);
+  }
 
   reportConflicts(plan.conflicts);
   reportDrifted(plan.drifted);

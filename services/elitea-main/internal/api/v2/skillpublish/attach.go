@@ -86,10 +86,10 @@ func (h *Handler) AttachPublicSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	publicID := publicProjectID()
-	publicSchema := "p_" + publicID
+	publicQuoted := publicSchema()
 	userID := actingUserID(ctx, 1)
 
-	localSkillID, localVersionID, ok := h.resolveOrForkLocalSkill(ctx, schema, publicSchema, publicID, body, userID)
+	localSkillID, localVersionID, ok := h.resolveOrForkLocalSkill(ctx, schema, publicQuoted, publicID, body, userID)
 	if !ok {
 		results := make([]attachResult, 0, len(agentVersionIDs))
 		for _, id := range agentVersionIDs {
@@ -123,7 +123,7 @@ func (h *Handler) AttachPublicSkill(w http.ResponseWriter, r *http.Request) {
 			var attached bool
 			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`
 				SELECT EXISTS(
-					SELECT 1 FROM %q.entity_skill_mapping
+					SELECT 1 FROM %s.entity_skill_mapping
 					WHERE entity_version_id = $1 AND entity_type = $2 AND skill_id = ANY($3))`, schema),
 				agentVersionID, entityType, lineageSkillIDs).Scan(&attached) // failure leaves false; the unique constraint below still guards
 			if attached {
@@ -133,7 +133,7 @@ func (h *Handler) AttachPublicSkill(w http.ResponseWriter, r *http.Request) {
 		}
 
 		tag, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+			INSERT INTO %s.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
 			VALUES ($1, $2, $3, $4)
 			ON CONFLICT ON CONSTRAINT _entity_skill_unique DO NOTHING`, schema),
 			agentVersionID, entityType, localSkillID, localVersionID)
@@ -157,10 +157,10 @@ func (h *Handler) AttachPublicSkill(w http.ResponseWriter, r *http.Request) {
 // the reference. A loop that then fails leaves an unmapped local copy, which the
 // next attach of the same pair reuses — self-healing, so no cleanup path is
 // needed.
-func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicSchema, publicID string, body attachRequest, userID int) (int, int, bool) {
+func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicQuoted, publicID string, body attachRequest, userID int) (int, int, bool) {
 	var skillID, versionID int
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT skill_id, id FROM %q.skill_versions
+		SELECT skill_id, id FROM %s.skill_versions
 		WHERE meta->>'parent_project_id' = $1
 		  AND meta->>'parent_entity_id' = $2
 		  AND meta->>'parent_version_id' = $3
@@ -176,7 +176,7 @@ func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicSch
 	// (skill, version) pair is enough to pull unpublished content out of the
 	// public project, which is exactly what every other read in this package
 	// filters against.
-	source, found := h.readSkillVersion(ctx, publicSchema, strconv.Itoa(body.PublicSkillID), strconv.Itoa(body.PublicVersionID))
+	source, found := h.readSkillVersion(ctx, publicQuoted, strconv.Itoa(body.PublicSkillID), strconv.Itoa(body.PublicVersionID))
 	if !found || source.Status != "published" {
 		return 0, 0, false
 	}
@@ -190,7 +190,7 @@ func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicSch
 	projectID, _ := strconv.Atoi(strings.TrimPrefix(schema, "p_"))
 	var forkedSkillID int
 	if err := tx.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %q.skills (name, description, owner_id, author_id, meta)
+		INSERT INTO %s.skills (name, description, owner_id, author_id, meta)
 		VALUES ($1, $2, $3, $4, '{}'::jsonb)
 		RETURNING id`, schema),
 		source.SkillName, source.SkillDescription, projectID, userID).Scan(&forkedSkillID); err != nil {
@@ -221,7 +221,7 @@ func (h *Handler) resolveOrForkLocalSkill(ctx context.Context, schema, publicSch
 // version.
 func (h *Handler) lineageSkillIDs(ctx context.Context, schema, publicID string, publicSkillID int) []int {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT DISTINCT skill_id FROM %q.skill_versions
+		SELECT DISTINCT skill_id FROM %s.skill_versions
 		WHERE meta->>'parent_project_id' = $1 AND meta->>'parent_entity_id' = $2`, schema),
 		publicID, strconv.Itoa(publicSkillID))
 	if err != nil {

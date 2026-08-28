@@ -75,6 +75,8 @@ import (
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/platformconfig"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 // maxPublishedVersionsPerSkill caps how many versions of one skill the public
@@ -113,18 +115,31 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// projectSchema turns a path segment into the tenant schema name.
+// projectSchema turns a path segment into the tenant schema, QUOTED as a
+// PostgreSQL identifier and ready to interpolate with %s.
 //
-// Every query in this package interpolates the schema with %q, so a segment
-// that is not a plain integer must never reach one: `%q` quotes but does not
-// escape, and a crafted id would otherwise be able to close the identifier.
-// The router's own patterns do not constrain the segment, so the check lives
-// here.
+// Every query in this package interpolates the schema into its statement text,
+// because a schema name cannot be bound as a parameter. A segment that is not
+// a plain decimal project id is refused here, and the name that does pass is
+// quoted with SQL rules rather than with %q, which quotes with Go rules and
+// lets an embedded quote close the identifier (issue #543).
 func projectSchema(raw string) (string, bool) {
-	if !isPositiveInt(raw) {
+	quoted, err := tenantschema.Quote(raw)
+	if err != nil {
 		return "", false
 	}
-	return "p_" + raw, true
+	return quoted, true
+}
+
+// publicSchema is projectSchema for the PUBLIC project, whose schema holds the
+// published catalogue. publicProjectID only returns a validated id, so the
+// quoting cannot fail.
+func publicSchema() string {
+	quoted, err := tenantschema.Quote(publicProjectID())
+	if err != nil {
+		return `"p_1"`
+	}
+	return quoted
 }
 
 func isPositiveInt(raw string) bool {
@@ -135,7 +150,7 @@ func isPositiveInt(raw string) bool {
 // publicProjectID is the project whose schema holds the public catalog. Same
 // env var and same default as the application-level publish surface.
 func publicProjectID() string {
-	if id := os.Getenv("PUBLIC_PROJECT_ID"); id != "" && isPositiveInt(id) {
+	if id := os.Getenv("PUBLIC_PROJECT_ID"); tenantschema.Valid(id) {
 		return id
 	}
 	return "1"
@@ -261,8 +276,8 @@ func (h *Handler) readSkillVersion(ctx context.Context, schema string, skillID, 
 	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
 		SELECT sv.id, sv.skill_id, sv.name, sv.instructions, sv.status, sv.author_id,
 		       COALESCE(sv.meta::text, '{}'), sk.name, COALESCE(sk.description, '')
-		FROM %q.skill_versions sv
-		JOIN %q.skills sk ON sk.id = sv.skill_id
+		FROM %s.skill_versions sv
+		JOIN %s.skills sk ON sk.id = sv.skill_id
 		WHERE sv.id = $1 AND sv.skill_id = $2`, schema, schema), versionID, skillID).
 		Scan(&row.VersionID, &row.SkillID, &row.VersionName, &row.Instructions, &row.Status,
 			&row.AuthorID, &metaText, &row.SkillName, &row.SkillDescription)
@@ -276,8 +291,8 @@ func (h *Handler) readSkillVersion(ctx context.Context, schema string, skillID, 
 
 func (h *Handler) readVersionTags(ctx context.Context, schema string, versionID int) []string {
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT t.name FROM %q.skill_version_tag_association svta
-		JOIN %q.tags t ON t.id = svta.tag_id
+		SELECT t.name FROM %s.skill_version_tag_association svta
+		JOIN %s.tags t ON t.id = svta.tag_id
 		WHERE svta.version_id = $1
 		ORDER BY t.name`, schema, schema), versionID)
 	if err != nil {
@@ -300,7 +315,7 @@ func (h *Handler) readVersionTags(ctx context.Context, schema string, versionID 
 // reinsert shape repos/skills.go uses for the base version.
 func applyTags(ctx context.Context, tx queryExecer, schema string, versionID int, tags []string) error {
 	if _, err := tx.Exec(ctx, fmt.Sprintf(
-		`DELETE FROM %q.skill_version_tag_association WHERE version_id = $1`, schema), versionID); err != nil {
+		`DELETE FROM %s.skill_version_tag_association WHERE version_id = $1`, schema), versionID); err != nil {
 		return err
 	}
 	seen := make(map[string]bool, len(tags))
@@ -313,13 +328,13 @@ func applyTags(ctx context.Context, tx queryExecer, schema string, versionID int
 
 		var tagID int
 		if err := tx.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %q.tags (name) VALUES ($1)
+			INSERT INTO %s.tags (name) VALUES ($1)
 			ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
 			RETURNING id`, schema), name).Scan(&tagID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %q.skill_version_tag_association (version_id, tag_id)
+			INSERT INTO %s.skill_version_tag_association (version_id, tag_id)
 			VALUES ($1, $2) ON CONFLICT DO NOTHING`, schema), versionID, tagID); err != nil {
 			return err
 		}

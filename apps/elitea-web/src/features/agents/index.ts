@@ -94,13 +94,30 @@ export { ExportApplicationButton } from './ui/ExportApplicationButton';
 export { AgentToolsPanel } from './ui/AgentToolsPanel';
 
 /**
+ * #345 — the agent editor's tag control. It was written, tested through
+ * `ApplicationEditForm`, and mountable by nobody: an unexported local of a
+ * file no page renders, against a backend that had no `tags` field on
+ * `VersionWriteRequest` at all. Both halves are closed now — the wire
+ * contract carries the field and `UpdateVersion` writes the association
+ * rows — so the page mounts this through `CreateAgentForm`'s `tagsSlot`.
+ *
+ * The slot came from repacking the five write hooks into
+ * `applicationWriteHooks` (see that file); it freed four, and three are
+ * deliberately left free.
+ */
+export { AgentTagEditor } from './ui/AgentTagEditor';
+
+/**
  * Sub-unit A1a's ("Application data layer + version-lifecycle hooks")
  * contribution — the application/version data layer + tool change-diffing +
  * validation + chat-version-switch hooks (see each file's own doc comment
  * for the baseline file it ports and any disclosed backend gap/redesign).
  * `useDeleteVersion` is exported per the Wave-2 batch brief's explicit
  * requirement ("a known future consumer of not-yet-built
- * entities/version-adjacent UI — a version-delete dialog"). `getChangedTools`,
+ * entities/version-adjacent UI — a version-delete dialog"). #345 repacked
+ * all five write hooks into `applicationWriteHooks` — see that file for what
+ * the four freed slots bought and for the grep that proved the repack has
+ * one call site, not five. `getChangedTools`,
  * `useAutoSwitchApplicationChatVersion`, `useApplicationsStore`,
  * `entities/application-form`'s own `useCreateApplicationDraft`/
  * `useSaveApplicationVersion`, and every hook's plain input/result types
@@ -108,11 +125,7 @@ export { AgentToolsPanel } from './ui/AgentToolsPanel';
  * `features/agents/` slice may still import them directly — R-L3 only
  * restricts crossing INTO a different slice).
  */
-export { useCreateApplication } from './model/useCreateApplication';
-export { useSaveVersion } from './model/useSaveVersion';
-export { useSaveNewVersion } from './model/useSaveNewVersion';
-export { useDeleteVersion } from './model/useDeleteVersion';
-export { useSaveChangedTools } from './model/useSaveChangedTools';
+export { applicationWriteHooks } from './model/applicationWriteHooks';
 export { applicationValidationHooks } from './model/applicationValidationHooks';
 export { useApplicationChatSwitchVersion } from './model/useApplicationChatSwitchVersion';
 export { useCreateConfiguration } from './model/useCreateConfiguration';

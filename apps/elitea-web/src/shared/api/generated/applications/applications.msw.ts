@@ -344,6 +344,7 @@ export const getCreateApplicationResponseMock = (
           { length: faker.number.int({ min: 1, max: 10 }) },
           (_, i) => i + 1,
         ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
           name: faker.helpers.arrayElement([
             faker.helpers.arrayElement([
               faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -565,6 +566,7 @@ export const getCreateApplicationResponseMock = (
           { length: faker.number.int({ min: 1, max: 10 }) },
           (_, i) => i + 1,
         ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
           name: faker.helpers.arrayElement([
             faker.helpers.arrayElement([
               faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -891,6 +893,7 @@ export const getGetApplicationResponseMock = (
           { length: faker.number.int({ min: 1, max: 10 }) },
           (_, i) => i + 1,
         ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
           name: faker.helpers.arrayElement([
             faker.helpers.arrayElement([
               faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1121,6 +1124,7 @@ export const getEditApplicationResponseMock = (
           { length: faker.number.int({ min: 1, max: 10 }) },
           (_, i) => i + 1,
         ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
           name: faker.helpers.arrayElement([
             faker.helpers.arrayElement([
               faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1341,6 +1345,7 @@ export const getGetPublicApplicationResponseMock = (
         { length: faker.number.int({ min: 1, max: 10 }) },
         (_, i) => i + 1,
       ).map(() => ({
+        id: faker.helpers.arrayElement([faker.number.int(), undefined]),
         name: faker.helpers.arrayElement([
           faker.helpers.arrayElement([
             faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1777,6 +1782,7 @@ export const getGetApplicationVersionDetailResponseMock = (
       { length: faker.number.int({ min: 1, max: 10 }) },
       (_, i) => i + 1,
     ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
       name: faker.helpers.arrayElement([
         faker.helpers.arrayElement([
           faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1987,6 +1993,7 @@ export const getUpdateApplicationVersionResponseMock = (
       { length: faker.number.int({ min: 1, max: 10 }) },
       (_, i) => i + 1,
     ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
       name: faker.helpers.arrayElement([
         faker.helpers.arrayElement([
           faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -2203,6 +2210,7 @@ export const getGetApplicationVersionDetailExpandedResponseMock =
           { length: faker.number.int({ min: 1, max: 10 }) },
           (_, i) => i + 1,
         ).map(() => ({
+          id: faker.helpers.arrayElement([faker.number.int(), undefined]),
           name: faker.helpers.arrayElement([
             faker.helpers.arrayElement([
               faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -2435,6 +2443,7 @@ export const getSaveApplicationNewVersionResponseMock = (
       { length: faker.number.int({ min: 1, max: 10 }) },
       (_, i) => i + 1,
     ).map(() => ({
+      id: faker.helpers.arrayElement([faker.number.int(), undefined]),
       name: faker.helpers.arrayElement([
         faker.helpers.arrayElement([
           faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -2648,6 +2657,7 @@ export const getExportApplicationResponseMock = (
         { length: faker.number.int({ min: 1, max: 10 }) },
         (_, i) => i + 1,
       ).map(() => ({
+        id: faker.helpers.arrayElement([faker.number.int(), undefined]),
         name: faker.helpers.arrayElement([
           faker.helpers.arrayElement([
             faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -2921,6 +2931,10 @@ export const getImportWizardResponseMock = (
                   { length: faker.number.int({ min: 1, max: 10 }) },
                   (_, i) => i + 1,
                 ).map(() => ({
+                  id: faker.helpers.arrayElement([
+                    faker.number.int(),
+                    undefined,
+                  ]),
                   name: faker.helpers.arrayElement([
                     faker.helpers.arrayElement([
                       faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -3206,6 +3220,10 @@ export const getImportWizardResponseMock = (
                   { length: faker.number.int({ min: 1, max: 10 }) },
                   (_, i) => i + 1,
                 ).map(() => ({
+                  id: faker.helpers.arrayElement([
+                    faker.number.int(),
+                    undefined,
+                  ]),
                   name: faker.helpers.arrayElement([
                     faker.helpers.arrayElement([
                       faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -3639,6 +3657,7 @@ export const getForkAgentResponseMock = (
               { length: faker.number.int({ min: 1, max: 10 }) },
               (_, i) => i + 1,
             ).map(() => ({
+              id: faker.helpers.arrayElement([faker.number.int(), undefined]),
               name: faker.helpers.arrayElement([
                 faker.helpers.arrayElement([
                   faker.string.alpha({ length: { min: 10, max: 20 } }),

@@ -132,6 +132,12 @@ type ArtifactBootstrapper interface {
 // provision rather than creating projects with the #373 gap in them.
 type ProjectVaultBootstrapper interface {
 	EnsureProjectVault(ctx context.Context, projectID string) error
+	// EnsureProjectSecretsHeaderValue seals the project's `X-SECRET` value in
+	// the vault EnsureProjectVault created, and reports whether it wrote one
+	// (#408). It is on this interface, and not done by the provisioner, for
+	// the reason the whole interface exists: one minter owns every vault
+	// write, because it alone knows how the key is wrapped.
+	EnsureProjectSecretsHeaderValue(ctx context.Context, projectID string) (bool, error)
 	RemoveProjectVault(ctx context.Context, projectID string) error
 }
 

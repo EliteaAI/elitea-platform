@@ -444,6 +444,55 @@ jobs:
       - name: Check route-wiring map drift
         run: node scripts/build-route-wiring-map.mjs --check
 
+  gate-generated-artifacts:
+    name: Generated artifacts match their generators
+    runs-on: ubuntu-latest
+    # Issue #490. Three generators in apps/elitea-web/scripts/ write files that
+    # the repository COMMITS, and nothing compared the committed copy with a
+    # fresh run. A hand edit, or an input that moved on after the last
+    # regeneration, survived every pull request.
+    #
+    # gen-brand-tokens.mjs states the rule in its own header — "both committed;
+    # regenerate and diff, never hand-edit". This job is what performs the
+    # diff. It is the same shape as the two drift checks above
+    # (gate-generated-client, gate-route-wiring-map): regenerate in memory,
+    # compare bytes, name the file that differs.
+    #
+    # Each `--check` mode fails when the committed file is ABSENT and when the
+    # generator renders nothing, not only when the two differ (#426: a check
+    # that finds no subject must fail, not pass). The shared rule lives in
+    # scripts/lib/generated-drift.mjs, which the gate-script-coverage job holds
+    # at 100%.
+    #
+    # No `npm ci`: all three scripts import node: builtins, scripts/lib/, and
+    # src/shared/brand/color.ts (which imports nothing). Installing would add a
+    # minute to a gate that renders three files.
+    #
+    # gen-socket-contract.mjs is the FOURTH generator #490 names and is
+    # deliberately absent. Its server-side input,
+    # services/elitea-main/internal/api/socketio/server.go, was deleted with
+    # the prototype indexer transport (commit f12b59f8, issue #126), so the
+    # generator exits 2 on a missing file before it renders anything. A job
+    # here would be red for a reason that is not drift. Restoring that
+    # generator's input is tracked on #490 itself.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive # gen-brand-tokens reads the pinned apps/elitea-ui palettes
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Route export drift (parity/new-app-routes.json)
+        run: node scripts/export-routes.mjs --check
+      - name: Brand token drift (default.pack.json + palette.augment.d.ts)
+        # Runs even when the step above failed, so one pull request reports
+        # every stale artifact instead of one per push.
+        if: ${{ !cancelled() }}
+        run: node scripts/gen-brand-tokens.mjs --check --baseline ../elitea-ui
+      - name: Hue preview drift (parity/brand-hue-preview.html)
+        if: ${{ !cancelled() }}
+        run: node scripts/gen-hue-preview.mjs --check
+
   gate-mutator-coverage:
     name: Generated-client mutator coverage
     runs-on: ubuntu-latest
@@ -595,8 +644,14 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #528. The job used to run `npx depcruise src` and read the exit
+      # code. A cruise that resolves zero modules reports zero violations and
+      # exits 0, so a green tick could cover an empty run. The wrapper states
+      # `summary.totalCruised` and fails under a floor. It also computes the
+      # verdict itself: `depcruise --output-type json` exits 0 even with
+      # errors, measured on the bad depcruise fixture.
       - name: Run dependency cruise
-        run: npx depcruise src --config .dependency-cruiser.cjs
+        run: node scripts/check-layer-cycle.mjs
 
   gate-dead-code:
     name: Dead code gate
@@ -610,8 +665,13 @@ jobs:
           cache-dependency-path: apps/elitea-web/package-lock.json
       - name: Install (locked)
         run: npm ci
+      # Issue #528. `npx knip --max-issues 0` passed whether knip analysed
+      # 3967 files or none of them: zero files give zero issues. The wrapper
+      # counts what knip.json's `project` and `entry` globs match, states both
+      # numbers, and refuses to run knip over an empty subject set. knip still
+      # owns the verdict.
       - name: Run knip dead code gate
-        run: npx knip --max-issues 0
+        run: node scripts/check-dead-code.mjs
 
   gate-playwright-image-tag:
     name: Playwright image tag

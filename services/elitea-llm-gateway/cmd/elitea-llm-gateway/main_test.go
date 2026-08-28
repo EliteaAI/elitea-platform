@@ -44,6 +44,9 @@ func TestMainWiring(t *testing.T) {
 		{"account.NewFernetVault(", "the Fernet vault is never constructed — {{secret.NAME}} credential references cannot be resolved (BFF.6)"},
 		{"llmproxy.WithLoopBreakerParams(", "the per-(project_id, model) amplification backstop (spec §2.6 guard #2's implementation) is never armed — unbounded request amplification for one tuple would run unchecked in production"},
 		{"logLoopBreakerMode(", "the backstop's mode is never logged at startup — a disarmed or badly-tuned guard would be invisible to operators, which is how it shipped as a de-facto 5 req/s rate limiter (issue #12)"},
+		{"hopmarker.New(", "the hop marker is never built, so BOTH halves of hop detection are unarmed — the outbound stamp and the inbound recognition read the same value from this one call, and nothing else constructs it (issue #164)"},
+		{"llmproxy.WithHopMarker(", "the inbound half of hop-marker detection is never attached to the handler — the gateway would stamp every outbound provider request and then admit its own request back, so a circular route runs until the amplification backstop happens to fire, which it cannot do at a rate below its threshold (issue #164)"},
+		{"logHopMarkerMode(", "hop detection's mode is never logged at startup — an install with no GATEWAY_HOP_SECRET is inert, and that is precisely how a previous attempt shipped a guard that defaulted to \"\" and detected nothing anywhere (issue #164)"},
 		{"llmproxy.WithAlertEventPublisher(", "budget.soft_alert is never published to gateway.events.* — the 80% alert would be invisible to subscribers (spec §8.3)"},
 		{"llmproxy.WithStreamGrace(", "the stream-disconnect grace period is never configured — a client that disconnects mid-stream is billed nothing and the hard budget is bypassable (issue #9)"},
 		{"llmproxy.WithStreamDrainLimit(", "abandoned-stream drains are unbounded — a disconnect storm holds unbounded goroutines and provider sockets (issue #9)"},
@@ -59,6 +62,7 @@ func TestMainWiring(t *testing.T) {
 		{"govStore.Start(", "the recovery reconciler is inert until Start binds its context — CheckBudget would silently skip recovery"},
 		{"makeReadyzHandler(", "the NATS circuit-breaker /readyz handler is never mounted — a pod with a dead budget-enforcement path stays in the load-balancer rotation"},
 		{"budgetEnforcementUnwired(", "the /readyz gate for a NATS that never connected is never computed — a pod that boots during a NATS outage serves /llm unmetered, for the life of the process, while reporting ready (issue #304)"},
+		{"startBudgetRecovery(", "budget enforcement never comes back after a NATS outage — server.New dials once, so a pod that boots while NATS is down stays not-ready until an operator restarts it, and they can only do that after NATS returns (issue #315)"},
 		{`mux.HandleFunc("/healthz"`, "the liveness /healthz route is never mounted — issue #242's healthz/readyz split silently loses liveness, and the chart's livenessProbe would 404 every pod"},
 		{`mux.Handle("/metrics"`, "the operator controls have no route — the budget-enforcement gauge and the model-map refusal counters cannot be read, so the alarm for a gateway that enforces nothing (issue #304) cannot be built (issue #465)"},
 		{"llmproxy.WithGovernancePolicy(", "the authored governance definitions are never attached to the handler — every model allowlist, MCP allowlist, rate limit, credential rate policy and CEL routing rule in gateway.governance_config would be read and enforced nowhere, which is the state issue #218 exists to end"},
@@ -227,8 +231,14 @@ type fakePinger struct {
 
 func (f *fakePinger) Ping(_ context.Context) error { return f.err }
 
+// wired is the enforcementUnwired argument for a gateway whose budget
+// enforcement IS wired. makeReadyzHandler takes a function and not a bool
+// because a background re-dial clears that state while the process runs
+// (issue #315).
+func wired() bool { return false }
+
 func TestReadyz_PingFailureReturns503(t *testing.T) {
-	h := makeReadyzHandler(&fakePinger{err: errors.New("breaker open")}, false)
+	h := makeReadyzHandler(&fakePinger{err: errors.New("breaker open")}, wired)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -256,7 +266,7 @@ func TestReadyz_PingFailureReturns503(t *testing.T) {
 }
 
 func TestReadyz_PingOKReturns200(t *testing.T) {
-	h := makeReadyzHandler(&fakePinger{err: nil}, false)
+	h := makeReadyzHandler(&fakePinger{err: nil}, wired)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -281,7 +291,7 @@ func TestReadyz_PingOKReturns200(t *testing.T) {
 }
 
 func TestReadyz_NilPingerReturns200(t *testing.T) {
-	h := makeReadyzHandler(nil, false)
+	h := makeReadyzHandler(nil, wired)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -306,7 +316,7 @@ func TestReadyz_NilPingerReturns200(t *testing.T) {
 // typed-nil hazard on the drain path.
 func TestReadyz_TypedNilGovStoreReturns200(t *testing.T) {
 	var nilStore *governance.GovernanceStore // typed nil, as the disabled path passes
-	h := makeReadyzHandler(nilStore, false)
+	h := makeReadyzHandler(nilStore, wired)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 
@@ -470,13 +480,19 @@ func TestReadyz_NATSConfiguredButUnreachableAtStartupIsNotReady(t *testing.T) {
 			}
 			var govStore *governance.GovernanceStore
 
-			unwired := budgetEnforcementUnwired(cfg, govStore)
-			if unwired != tc.wantUnwired {
+			// The composition root reads the same predicate through the
+			// atomic holder, so the fixture builds one here too.
+			plane := &enforcementPlane{cfg: cfg}
+			plane.install(govStore)
+			if plane.unwired() != tc.wantUnwired {
+				t.Fatalf("enforcementPlane.unwired = %v, want %v", plane.unwired(), tc.wantUnwired)
+			}
+			if unwired := budgetEnforcementUnwired(cfg, govStore); unwired != tc.wantUnwired {
 				t.Fatalf("budgetEnforcementUnwired = %v, want %v", unwired, tc.wantUnwired)
 			}
 
 			rec := httptest.NewRecorder()
-			makeReadyzHandler(govStore, unwired).ServeHTTP(
+			makeReadyzHandler(plane, plane.unwired).ServeHTTP(
 				rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 			if rec.Code != tc.wantStatus {

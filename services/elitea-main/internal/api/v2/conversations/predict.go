@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/secrets"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 type chatPredictor struct {
@@ -38,19 +40,22 @@ type modelConfig struct {
 }
 
 func (cp *chatPredictor) resolveModel(ctx context.Context, projectID, modelName string) (modelConfig, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return modelConfig{}, err
+	}
 
 	// Find model config by elitea_title or data->>'name'
-	q := fmt.Sprintf(`SELECT c.data FROM %q.configuration c
+	q := fmt.Sprintf(`SELECT c.data FROM %s.configuration c
 		WHERE c.type = 'llm_model'
 		AND (c.elitea_title = $1 OR c.data->>'name' = $1)
 		LIMIT 1`, s)
 
 	var modelData []byte
-	err := cp.pool.QueryRow(ctx, q, modelName).Scan(&modelData)
+	err = cp.pool.QueryRow(ctx, q, modelName).Scan(&modelData)
 	if err != nil {
 		// Try prefix match
-		q2 := fmt.Sprintf(`SELECT c.data FROM %q.configuration c
+		q2 := fmt.Sprintf(`SELECT c.data FROM %s.configuration c
 			WHERE c.type = 'llm_model'
 			AND (c.elitea_title LIKE $1 OR c.data->>'name' LIKE $1)
 			ORDER BY c.elitea_title LIMIT 1`, s)
@@ -94,16 +99,19 @@ type credentialConfig struct {
 }
 
 func (cp *chatPredictor) resolveCredentials(ctx context.Context, projectID, credTitle string) (credentialConfig, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return credentialConfig{}, err
+	}
 
-	q := fmt.Sprintf(`SELECT c.type, c.data FROM %q.configuration c
+	q := fmt.Sprintf(`SELECT c.type, c.data FROM %s.configuration c
 		WHERE c.elitea_title = $1
 		AND c.type IN ('azure_open_ai', 'open_ai', 'amazon_bedrock', 'ai_dial')
 		LIMIT 1`, s)
 
 	var credType string
 	var credData []byte
-	err := cp.pool.QueryRow(ctx, q, credTitle).Scan(&credType, &credData)
+	err = cp.pool.QueryRow(ctx, q, credTitle).Scan(&credType, &credData)
 	if err != nil {
 		return credentialConfig{}, fmt.Errorf("credentials %q not found", credTitle)
 	}
@@ -255,25 +263,28 @@ type itemDetails struct {
 }
 
 func (cp *chatPredictor) findOrCreateUserParticipant(ctx context.Context, projectID string, conversationID int) (int, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return 0, err
+	}
 
 	// Try to find existing "user" participant
 	var userPID int
-	q := fmt.Sprintf(`SELECT p.id FROM %q.chat_participants p
-		JOIN %q.chat_participant_mapping pm ON pm.participant_id = p.id
+	q := fmt.Sprintf(`SELECT p.id FROM %s.chat_participants p
+		JOIN %s.chat_participant_mapping pm ON pm.participant_id = p.id
 		WHERE pm.conversation_id = $1 AND p.entity_name = 'user'
 		LIMIT 1`, s, s)
-	err := cp.pool.QueryRow(ctx, q, conversationID).Scan(&userPID)
+	err = cp.pool.QueryRow(ctx, q, conversationID).Scan(&userPID)
 	if err == nil {
 		return userPID, nil
 	}
 
 	// Create a "user" participant
 	var newPID int
-	qi := fmt.Sprintf(`INSERT INTO %q.chat_participants (uuid, entity_name, entity_meta, meta)
+	qi := fmt.Sprintf(`INSERT INTO %s.chat_participants (uuid, entity_name, entity_meta, meta)
 		VALUES (gen_random_uuid(), 'user', '{"name":"User"}'::jsonb, '{}'::json)
 		RETURNING id`, s)
-	err = cp.pool.QueryRow(ctx, qi, ).Scan(&newPID)
+	err = cp.pool.QueryRow(ctx, qi).Scan(&newPID)
 	if err != nil {
 		return 0, fmt.Errorf("create user participant: %w", err)
 	}
@@ -283,7 +294,7 @@ func (cp *chatPredictor) findOrCreateUserParticipant(ctx context.Context, projec
 	// bootstrap schema names this unique key `_participant_conversation_uc`,
 	// and the ledgered tenant migration every real deployment runs declares it
 	// anonymously. The constraint form failed there with SQLSTATE 42704.
-	qm := fmt.Sprintf(`INSERT INTO %q.chat_participant_mapping (conversation_id, participant_id, entity_settings)
+	qm := fmt.Sprintf(`INSERT INTO %s.chat_participant_mapping (conversation_id, participant_id, entity_settings)
 		VALUES ($1, $2, '{}'::jsonb)
 		ON CONFLICT (participant_id, conversation_id) DO NOTHING`, s)
 	_, err = cp.pool.Exec(ctx, qm, conversationID, newPID)
@@ -306,7 +317,10 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 	isError bool,
 	errorMsg string,
 ) ([]messageGroupResult, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Ensure a "user" participant exists
 	userPID, err := cp.findOrCreateUserParticipant(ctx, projectID, conversationID)
@@ -317,7 +331,7 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 	// Create request message group
 	var reqGroupID int
 	var reqGroupUUID string
-	q := fmt.Sprintf(`INSERT INTO %q.chat_message_group
+	q := fmt.Sprintf(`INSERT INTO %s.chat_message_group
 		(uuid, author_participant_id, conversation_id, sent_to_id, reply_to_id, meta, is_streaming)
 		VALUES (gen_random_uuid(), $1, $2, $3, NULL, '{}'::jsonb, false)
 		RETURNING id, uuid::text`, s)
@@ -328,7 +342,7 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 
 	// Create request message item
 	var reqItemID int
-	qi := fmt.Sprintf(`INSERT INTO %q.chat_message_items
+	qi := fmt.Sprintf(`INSERT INTO %s.chat_message_items
 		(uuid, item_type, order_index, meta, message_group_id)
 		VALUES (gen_random_uuid(), 'text_message', 0, '{}'::jsonb, $1)
 		RETURNING id`, s)
@@ -338,7 +352,7 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 	}
 
 	// Create request text
-	qt := fmt.Sprintf(`INSERT INTO %q.chat_messages_text (id, content) VALUES ($1, $2)`, s)
+	qt := fmt.Sprintf(`INSERT INTO %s.chat_messages_text (id, content) VALUES ($1, $2)`, s)
 	_, err = cp.pool.Exec(ctx, qt, reqItemID, userInput)
 	if err != nil {
 		return nil, fmt.Errorf("insert request text: %w", err)
@@ -363,7 +377,7 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 
 	var respGroupID int
 	var respGroupUUID string
-	qr := fmt.Sprintf(`INSERT INTO %q.chat_message_group
+	qr := fmt.Sprintf(`INSERT INTO %s.chat_message_group
 		(uuid, author_participant_id, conversation_id, sent_to_id, reply_to_id, meta, is_streaming)
 		VALUES (gen_random_uuid(), $1, $2, NULL, $3, $4::jsonb, false)
 		RETURNING id, uuid::text`, s)
@@ -413,23 +427,26 @@ func (cp *chatPredictor) storeAndReturnMessageGroups(
 }
 
 func (cp *chatPredictor) resolveAgentPrompt(ctx context.Context, projectID string, participantID int, conversationID int) (string, string, error) {
-	s := fmt.Sprintf("p_%s", projectID)
+	s, err := tenantschema.Quote(projectID)
+	if err != nil {
+		return "", "", err
+	}
 
 	// Get agent application_id from participant
 	q := fmt.Sprintf(`SELECT p.entity_meta->>'id'
-		FROM %q.chat_participants p
-		JOIN %q.chat_participant_mapping pm ON pm.participant_id = p.id
+		FROM %s.chat_participants p
+		JOIN %s.chat_participant_mapping pm ON pm.participant_id = p.id
 		WHERE pm.conversation_id = $1 AND p.id = $2`, s, s)
 
 	var appIDStr string
-	err := cp.pool.QueryRow(ctx, q, conversationID, participantID).Scan(&appIDStr)
+	err = cp.pool.QueryRow(ctx, q, conversationID, participantID).Scan(&appIDStr)
 	if err != nil {
 		return "", "", fmt.Errorf("participant %d not found", participantID)
 	}
 
 	// Get latest version's system prompt and model
 	qv := fmt.Sprintf(`SELECT av.instructions, COALESCE(av.llm_settings->>'model_name', '')
-		FROM %q.application_versions av
+		FROM %s.application_versions av
 		WHERE av.application_id::text = $1
 		ORDER BY av.id DESC LIMIT 1`, s)
 

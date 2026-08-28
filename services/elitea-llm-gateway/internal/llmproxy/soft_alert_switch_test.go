@@ -46,7 +46,7 @@ func TestSoftAlertSwitch_EnabledFires(t *testing.T) {
 	h := NewHandler(nil, nil, nil, WithBudgetGate(checker, &fakeCostEstimator{}))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 1, "1", 0, 500_000, belowThreshold())
+	h.trySoftAlert(ctx, h.budget(), 1, budgetScopeProject, "1", 0, 500_000, belowThreshold())
 
 	if checker.alertCalled.Load() != 1 {
 		t.Fatalf("TryAlertCooldown called %d times, want 1 — the crossing must alert while the switch is on",
@@ -60,7 +60,7 @@ func TestSoftAlertSwitch_DisabledSuppresses(t *testing.T) {
 	h := NewHandler(nil, nil, nil, WithBudgetGate(checker, &fakeCostEstimator{}))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 1, "1", 0, 500_000, belowThreshold())
+	h.trySoftAlert(ctx, h.budget(), 1, budgetScopeProject, "1", 0, 500_000, belowThreshold())
 
 	if checker.alertCalled.Load() != 0 {
 		t.Fatalf("TryAlertCooldown called %d times, want 0 — the operator turned soft alerts off",
@@ -81,7 +81,7 @@ func TestSoftAlertSwitch_DisabledDoesNotClaimCooldown(t *testing.T) {
 	h := NewHandler(nil, nil, nil, WithBudgetGate(checker, &fakeCostEstimator{}))
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	h.trySoftAlert(ctx, 1, "1", 0, 500_000, belowThreshold())
+	h.trySoftAlert(ctx, h.budget(), 1, budgetScopeProject, "1", 0, 500_000, belowThreshold())
 
 	if checker.alertCalled.Load() != 0 {
 		t.Fatal("the cooldown was claimed while alerts were off; the first crossing after re-enabling would be suppressed")

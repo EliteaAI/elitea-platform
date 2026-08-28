@@ -29,7 +29,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 )
@@ -86,14 +85,14 @@ func (h *Handler) AdminPublishedAgents(w http.ResponseWriter, r *http.Request) {
 		orderColumn = "app.name"
 	}
 
-	schema := fmt.Sprintf("p_%s", publicProjectIDForAdmin())
+	schema := publicTenantSchema()
 	publishedPredicate := fmt.Sprintf(`EXISTS (
-    SELECT 1 FROM %q.application_versions version
+    SELECT 1 FROM %s.application_versions version
     WHERE version.application_id = app.id AND version.status = 'published')`, schema)
 
 	var total int
 	if err := h.pool.QueryRow(ctx, fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q.applications app WHERE %s`, schema, publishedPredicate),
+		`SELECT COUNT(*) FROM %s.applications app WHERE %s`, schema, publishedPredicate),
 	).Scan(&total); err != nil {
 		// A read failure is reported as one. An empty page here would be
 		// indistinguishable from "this deployment has published nothing".
@@ -218,12 +217,5 @@ func positiveQueryInt(r *http.Request, name string, fallback int) int {
 // publicProjectIDForAdmin resolves the public project the catalogue lives in,
 // the same way every other public read in this package does.
 func publicProjectIDForAdmin() string {
-	id := os.Getenv("PUBLIC_PROJECT_ID")
-	if id == "" {
-		return "1"
-	}
-	if parsed, err := strconv.Atoi(id); err != nil || parsed <= 0 {
-		return "1"
-	}
-	return id
+	return publicProjectIDOrDefault()
 }

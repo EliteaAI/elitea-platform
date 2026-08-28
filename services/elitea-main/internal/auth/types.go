@@ -7,7 +7,26 @@ import (
 	"strings"
 )
 
+// ErrPrincipalInactive means the principal store ANSWERED, and the answer is
+// that this principal may not act: the row is gone, suspended, or does not
+// match the identity the credential claimed. It is a 401.
 var ErrPrincipalInactive = errors.New("authenticated principal is inactive")
+
+// ErrPrincipalUnavailable means the principal store DID NOT ANSWER: a
+// connection-pool timeout, a cancelled context, or any other dependency fault.
+// It is a 5xx, and it is never a 401 (#537).
+//
+// THE TWO MUST NOT BE COLLAPSED. They carried the same status and the same
+// body, so a load spike read as a session problem: the caller was told its
+// principal is inactive when nothing about the principal had been read. The
+// answer was wrong, no log line named the cause, and a real suspension could
+// not be told apart from an outage after the fact.
+//
+// A refusal that is not ErrPrincipalInactive is treated as this one, and not
+// the other way round. Fail-safe runs in that direction only: a fault reported
+// as a suspension hides an outage, while a suspension reported as a fault is a
+// caller who retries and is refused again.
+var ErrPrincipalUnavailable = errors.New("authenticated principal could not be validated")
 
 type ctxKey string
 

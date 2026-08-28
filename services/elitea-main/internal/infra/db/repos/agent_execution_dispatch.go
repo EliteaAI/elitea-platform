@@ -144,7 +144,15 @@ func (r *AgentExecutionJobsRepository) StorePreparedAgentExecution(ctx context.C
 	if err != nil {
 		return executionapp.StoredPreparedEnvelope{}, fmt.Errorf("lock agent execution envelope: %w", err)
 	}
-	if row.Retired || row.AuthorityGranted || row.State != string(executiondomain.JobPending) {
+	// A competing publisher can select, append and publish the envelope while
+	// this publisher is signing. That moves the job to DISPATCHED, which is not
+	// terminal: no worker holds the command yet, and the visibility redelivery
+	// path appends the same durable winner again. The winner therefore stays
+	// returnable in PENDING and in DISPATCHED. Worker authority, or a terminal
+	// job state, does end the window: returning the winner then would recreate
+	// a Redis entry that the worker may already have acknowledged and deleted.
+	if row.Retired || row.AuthorityGranted ||
+		(row.State != string(executiondomain.JobPending) && row.State != string(executiondomain.JobDispatched)) {
 		return executionapp.StoredPreparedEnvelope{}, executionapp.ErrDispatchRetired
 	}
 	if row.DeadlineExpired {
@@ -164,7 +172,10 @@ func (r *AgentExecutionJobsRepository) StorePreparedAgentExecution(ctx context.C
 	if stored != nil {
 		selected = *stored
 	} else {
-		if row.Published {
+		// Selection stays a one-shot. Only a PENDING job may select a new
+		// envelope; a DISPATCHED job already holds its durable winner, so a
+		// second signature must never replace it.
+		if row.Published || row.State != string(executiondomain.JobPending) {
 			return executionapp.StoredPreparedEnvelope{}, ErrPendingAgentExecutionDispatchNotFound
 		}
 		rows, err := queries.StorePreparedAgentExecutionEnvelope(

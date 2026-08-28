@@ -41,8 +41,9 @@
  *     toolbar actions hidden, full-screen edit still available — that part
  *     cannot be turned off, `StyledInputEnhancer.tsx`'s own doc comment:
  *     "the toolbar's entire purpose is the full-screen escape hatch").
- *  6. See `./useToolNodeEditing.ts`'s own doc comment for the real,
- *     disclosed `useToolkitAvailableToolsQuery` backend gap.
+ *  6. See `./useToolNodeEditing.ts`'s own doc comment for the state of the
+ *     dynamic tool-name discovery (#440 corrected it: the endpoint exists;
+ *     what is left here is the wiring).
  *
  * The editing callbacks/`functionOptions` derivation live in
  * `./useToolNodeEditing.ts`, and the target/source handle pair in the

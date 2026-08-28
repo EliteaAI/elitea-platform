@@ -206,11 +206,40 @@ main:
     # decision that writes status_ok (#457).
     ELITEA_CONFIGURATIONS_MUTATION_ENABLED: "false"
 
-    # Left OFF on purpose. Their routes answer a shape the published contract and
-    # the generated client both reject, so turning either on breaks the web
-    # client. Issues #394 and #395 track the contract work that must land first.
-    ELITEA_INDEX_TYPES_ENABLED: "false"
-    ELITEA_APPLICATION_SKILLS_ENABLED: "false"
+    # ON here (#394). The index-types read now answers ONE body that both
+    # shipped clients accept: the published DocumentLoadersResponse keys
+    # (items, total) that the generated apps/elitea-web client holds, beside
+    # the Pylon keys (document_types, image_types, code_types) that
+    # apps/elitea-ui reads. It was the missing items key that kept this flag
+    # dark. Both halves project the same pinned SDK snapshot, so they cannot
+    # disagree.
+    #
+    # The capability needs production authentication, which this values file
+    # supplies through fileConfig.authConfig above. Without it cmd/elitea-main
+    # refuses to start with "ELITEA_INDEX_TYPES_ENABLED requires production
+    # authentication".
+    #
+    # Turning it OFF is a rollback, not a no-op: internal/api/router.go then
+    # serves this path from the toolkits handler, which answers a static
+    # six-loader list that no data backs, and apps/elitea-ui reads that as an
+    # empty file-type allow-list.
+    ELITEA_INDEX_TYPES_ENABLED: "true"
+
+    # ON here (#395). The attached-skills read now answers ONE body that both
+    # shipped clients accept: the published SkillsList keys (items, total, page,
+    # page_size, total_pages) that apps/elitea-web reads, beside the Pylon keys
+    # (skills, max_skills) that apps/elitea-ui reads. It was the missing items
+    # key that kept this flag dark.
+    #
+    # The capability needs production authentication, which this values file
+    # supplies through fileConfig.authConfig above. Without it cmd/elitea-main
+    # refuses to start with "ELITEA_APPLICATION_SKILLS_ENABLED requires
+    # production authentication", and _helpers.tpl refuses the manifest first.
+    #
+    # Turning it OFF is a safe rollback: internal/api/router.go keeps serving
+    # this path from the skills handler, which answers the same rows in the same
+    # published envelope.
+    ELITEA_APPLICATION_SKILLS_ENABLED: "true"
 
     # The gateway serves every model. Point this at the gateway Service and give
     # the pod the client certificates — llmproxy always builds an mTLS transport,

@@ -98,6 +98,8 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { checkFloors, subjectPath } from './lib/gate-floor.mjs';
+
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml');
 const parseYaml = (text) => (yaml.safeLoad ? yaml.safeLoad(text) : yaml.load(text));
@@ -182,6 +184,38 @@ for (const [p, item] of Object.entries(doc.paths)) {
   }
 }
 const specOpsById = new Map(specOps.map((o) => [o.operationId, o]));
+
+/*
+ * Floor on the spec side (issue #528).
+ *
+ * The census side already refused an empty set. The SPEC side did not, and
+ * `paths: {}` passes the `doc.paths` guard above because an empty object is
+ * truthy. The loop then drops every operation that has lost its
+ * `operationId`, so `specOps` can also empty out while the file stays full.
+ *
+ * With `specOps` empty, nothing matches, every census item becomes
+ * `handwritten`, and no VIOLATION is reported. The burn-down ratchet catches
+ * that today only because the lock happens to list ids — an accident of the
+ * lock contents, not an assertion of this script.
+ *
+ * Measured on 2026-08-28: 157 operations in v2.yaml.
+ */
+const MIN_SPEC_OPERATIONS = 100;
+
+/*
+ * Floor on the census side. It replaces a bare `length === 0` refusal: zero is
+ * not the only broken state, and the count belongs in the log either way.
+ * Measured on 2026-08-28: 218 API-* items.
+ */
+const MIN_CENSUS_ITEMS = 150;
+
+const specFloor = checkFloors('contract-coverage', [
+  { subject: `operations with an operationId in ${subjectPath(repoRoot, specPath)}`, observed: specOps.length, floor: MIN_SPEC_OPERATIONS },
+]);
+if (!specFloor.ok) {
+  console.error(specFloor.error);
+  process.exit(2);
+}
 
 // --- Path shape matching (mirrors oapiserver/conformance.go rules) --------------
 function normalizeSegments(p) {
@@ -569,8 +603,11 @@ if (Array.isArray(manifestRoot.shards)) {
   }
 }
 
-if (apiItems.length === 0) {
-  console.error(`no API-* items found in ${manifestPath}`);
+const censusFloor = checkFloors('contract-coverage', [
+  { subject: `API-* items in ${subjectPath(repoRoot, manifestPath)}`, observed: apiItems.length, floor: MIN_CENSUS_ITEMS },
+]);
+if (!censusFloor.ok) {
+  console.error(censusFloor.error);
   process.exit(2);
 }
 
@@ -698,6 +735,7 @@ if (opts.json) {
     spec: path.relative(repoRoot, specPath),
     manifest: path.relative(repoRoot, manifestPath),
     specOperationCount: specOps.length,
+    censusItemCount: apiItems.length,
     totals: { ...counts, denominator },
     ratio: Number(ratio.toFixed(4)),
     ok: !hasFailures,
@@ -738,6 +776,9 @@ if (opts.json) {
     console.log(`VIOLATION  (ratchet) lock file ${path.relative(repoRoot, lockPath)} ${ratchet.invalidReason}`);
     console.log('           - the burn-down ratchet cannot run without it; restore it or create it deliberately with --update-lock');
   }
+  // State both subject sets on the pass path too, so a reader can tell a full
+  // comparison from one that measured nothing.
+  for (const line of [...specFloor.lines, ...censusFloor.lines]) console.log(line);
   console.log(ratioLine);
   console.log(hasFailures ? 'contract-coverage: FAIL' : 'contract-coverage: OK');
 }

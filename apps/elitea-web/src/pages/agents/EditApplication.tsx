@@ -8,7 +8,7 @@ import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
-import { AgentVersionControls, CreateAgentForm } from '@/features/agents';
+import { AgentTagEditor, AgentVersionControls, CreateAgentForm } from '@/features/agents';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
@@ -128,32 +128,27 @@ function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSa
  *    outside the chat process, so a dirty agent edit was silently lost on
  *    any nav-link click. This page now arms it through
  *    `useUnsavedChangesNavBlocker` (see the call site below).
- *  - Saving is CLOSED (#307). This used to disclose that only
- *    `conversation_starters` was persisted, which was true and meant the
- *    page saved nothing a user could type. It now routes every field it
+ *  - Saving is CLOSED (#307, and #345 for tags). It routes every field it
  *    renders — see the save-scope comment on the `useEditApplicationForm`
- *    call below for the two remaining, backend-side gaps (`variables` is a
- *    no-op on UPDATE; `conversation_starters` still has no input mounted).
+ *    call below for the one remaining backend-side gap
+ *    (`conversation_starters` still has no input mounted).
  *
  * **Read-only (public-viewer) gating, save-failure feedback, and the
  * detail-404 page** (adversarial-review fixes): the baseline's
  * `useViewMode()` hides the Save/Save-New-Version buttons whenever the
  * currently selected project is the public project (`ApplicationTabBar.jsx:65`);
  * this page reproduces that default via the same `isPublicAgentsProject`
- * check `Applications.tsx`/`useApplicationsData.ts` (this unit) already use
- * for the identical "is the current viewing context public" question — no
- * override is threaded through the `viewMode` search param declared on
- * `/agents/$tab` because nothing in this unit's own navigation call sites
+ * check `Applications.tsx`/`useApplicationsData.ts` (this unit) already use.
+ * No override is threaded through the `viewMode` search param declared on
+ * `/agents/$tab`: nothing in this unit's own navigation call sites
  * (`Latest`/`MyLiked`/`Trending`/`PrivateAgentsList`) ever sets it, so
- * reading it here would not change the actual, reachable behaviour. A
- * failed save now surfaces via `useEditApplicationForm`'s `saveError`,
- * rendered as an inline `role="alert"` banner (this app has no toast
- * infrastructure — see that hook's own doc comment). A 404/400 on the
- * application-DETAIL fetch itself now renders the same dedicated
+ * reading it here would not change the reachable behaviour. A failed save
+ * surfaces via `useEditApplicationForm`'s `saveError`, rendered as an
+ * inline `role="alert"` banner (this app has no toast infrastructure). A
+ * 404/400 on the application-DETAIL fetch renders the same dedicated
  * not-found `NoResultsMessage` this file already used for an unknown
- * version id, instead of falling through to the normal edit-page shell —
- * old app: `EditApplication.jsx`'s `shouldShowNotFoundPage = (isError &&
- * isNotFoundError(error)) || isVersionNotFound` → `<Page404 />`.
+ * version id — old app: `EditApplication.jsx`'s `shouldShowNotFoundPage =
+ * (isError && isNotFoundError(error)) || isVersionNotFound` → `<Page404 />`.
  */
 export function EditApplication(): ReactNode {
   const projectId = useSelectedProjectId();
@@ -180,11 +175,10 @@ export function EditApplication(): ReactNode {
   useCorrectUserNameInUrl(detail?.name);
 
   /*
-   * #307 — the version-level fields `CreateAgentForm` renders (instructions,
-   * welcome message, variables, step limit) live here rather than in the RHF
-   * form: `applicationCreationSchema` does not validate them (same split
-   * `CreateApplication.tsx` already makes for the create page). Resolved
-   * BEFORE the form hook because the save payload reads them.
+   * #307 (+ tags, #345) — the version-level fields `CreateAgentForm` renders
+   * live here rather than in the RHF form: `applicationCreationSchema` does
+   * not validate them (same split `CreateApplication.tsx` makes for the
+   * create page). Resolved BEFORE the form hook, which reads them.
    */
   const versionFields = useEditApplicationVersionFields(activeVersion);
 
@@ -254,36 +248,25 @@ export function EditApplication(): ReactNode {
   });
 
   /*
-   * The configuration panel used to be `<Box data-testid=… />` — self-closing
-   * and empty — on the grounds that the baseline's `ConfigurationTab` belonged
-   * to a sibling sub-unit. The consequence was that opening ANY agent showed a
-   * page with no fields on it: J14 created an agent, navigated to it, and found
-   * nothing to read back.
+   * The configuration panel used to be an empty `<Box data-testid=… />`, so
+   * opening ANY agent showed a page with no fields on it. It renders
+   * `features/agents`' `CreateAgentForm` — the same component the baseline
+   * shares between its create and edit pages, and the one
+   * `pages/agents/CreateApplication.tsx` already renders.
    *
-   * `CreateAgentForm` is a public export of `features/agents` and is what
-   * `pages/agents/CreateApplication.tsx` already renders; the baseline shares
-   * that same component between its create and edit pages.
-   *
-   * SAVE SCOPE (#307, closed): the panel is now writable as well as
-   * readable. `useEditApplicationForm` sends the application-level
-   * `name`/`description` through `editApplication` (PUT
-   * /elitea_core/application/…, routed since #117) and the version-level
-   * `instructions`/`welcome_message`/`variables`/`meta.step_limit`/
+   * SAVE SCOPE (#307, closed; #345 added `tags`): the panel is writable as
+   * well as readable. `useEditApplicationForm` sends `name`/`description`
+   * through `editApplication` and the version-level `instructions`/
+   * `welcome_message`/`variables`/`tags`/`meta.step_limit`/
    * `conversation_starters` through `updateApplicationVersion` — the two
-   * real endpoints `features/agents`' `useSaveVersion` already issues. This
-   * comment used to disclose that only `conversation_starters` was sent,
-   * which was true and meant the page saved nothing a user could type.
+   * real endpoints `features/agents`' `useSaveVersion` already issues.
    *
-   * TWO GAPS REMAIN, both backend-side and neither closable from here:
-   *  - `variables` is sent but silently discarded on UPDATE — the Go
-   *    `UpdateVersion` handler (applications/handler.go:807-836) reads
-   *    `name`/`instructions`/`welcome_message`/`agent_type`/`llm_settings`/
-   *    `conversation_starters`/`meta`/`pipeline_settings` and has no
-   *    `variables` branch at all; only `CreateVersion` persists them.
-   *  - `conversation_starters` has no input mounted (see the
-   *    `conversationStartersSlot` note on `CreateAgentForm`) — the editor
-   *    component itself has no port in this app, so the value round-trips
-   *    from the server but cannot be changed.
+   * ONE GAP REMAINS, backend-side and not closable from here:
+   * `conversation_starters` has no input mounted (see the
+   * `conversationStartersSlot` note on `CreateAgentForm`), so the value
+   * round-trips from the server but cannot be changed. The `variables` gap
+   * this used to record is closed (#307 wrote the UPDATE branch) and so is
+   * the `tags` one (#345 added the wire field and the association write).
    */
   const editor = useEditApplicationEditorBridge(form, versionFields);
 
@@ -373,6 +356,16 @@ export function EditApplication(): ReactNode {
               values={editor.values}
               onFieldChange={editor.onFieldChange}
               disabled={isReadOnlyView || isFetching}
+              /* #345 — the tag control. It reaches the wire through
+                 `toVersionSaveBody`'s `tags`, which `UpdateVersion` now
+                 writes as association rows. */
+              tagsSlot={
+                <AgentTagEditor
+                  projectId={projectId}
+                  value={versionFields.fields.tags}
+                  onChange={versionFields.setTags}
+                />
+              }
             />
             {/*
              * #307 — tool attach/detach, the last of the "correctly-wired

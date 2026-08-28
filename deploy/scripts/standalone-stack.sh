@@ -21,9 +21,10 @@
 #                EliteAClient (sdk-client-check.sh). It counts
 #                passes, failures AND skips, and a skipped assertion exits
 #                non-zero: add --allow-skips to accept an unmeasured
-#                precondition on purpose (#429). It also states how many
-#                assertions it is written to make, and a run that reports fewer
-#                results than that exits non-zero whatever the flags say (#422)
+#                precondition on purpose (#429). It also DERIVES how many
+#                assertions it is written to make, and a run that reports a
+#                different number exits non-zero whatever the flags say
+#                (#422, #534)
 #   down         tear down (add -v yourself to drop volumes)
 #
 # Typical first run:
@@ -52,6 +53,8 @@ COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.y
 . "${REPO_ROOT}/apps/elitea-web/scripts/lib/compose-detect.sh"
 # shellcheck source=lib/seeded-driver.sh
 . "${REPO_ROOT}/deploy/scripts/lib/seeded-driver.sh"
+# shellcheck source=../../scripts/lib/assertion-floor.sh
+. "${REPO_ROOT}/scripts/lib/assertion-floor.sh"
 detect_compose_bin
 
 # The one-SQL-string reader `resolve_seeded_driver` calls, in the same shape
@@ -894,15 +897,26 @@ SQL
     # `--allow-skips`. On that path one skip line stands for eleven unmeasured
     # assertions, and the run passes.
     #
-    # EXPECTED_ASSERTIONS is a floor, in the idiom .github/workflows/
-    # no-binaries.yml already uses for its script globs: state the number, and
-    # let a shortfall turn the run red. `passes + failures + skips` must equal
+    # EXPECTED_ASSERTIONS is a floor: `passes + failures + skips` must equal
     # it. `--allow-skips` does NOT lift this rule, because that flag accepts a
     # NAMED and COUNTED skip, not an assertion that reported nothing.
     #
-    # Move this number when you add or remove an assertion. Do not lower it to
-    # make a run agree.
-    EXPECTED_ASSERTIONS=29
+    # The number is DERIVED from this file, not written down (issue #534). A
+    # stated number is true only when the pull request merges. An assertion
+    # that a later merge ADDS, with the number left alone, made the floor
+    # under-count in silence for ever — which is worse than the skipped
+    # assertion the floor exists to catch.
+    #
+    # Each assertion in this subcommand holds exactly one accepting arm, so the
+    # accepting arms are the assertions. One site sits inside a loop and makes
+    # one assertion per listener, so the listener list adds its extra rounds.
+    # The list is declared here, and counted here, so the two cannot disagree.
+    # Read scripts/lib/assertion-floor.sh.
+    RUNTIME_LISTENERS=("control 9443" "output 9444" "content 9445")
+    ASSERTION_SITE_PATTERN='(^|[^[:alnum:]_])ok[[:space:]]+"'
+    ASSERTION_SITE_RANGE='/^  check)$/,/^    ;;$/'
+    ASSERTION_SITES="$(derive_assertion_floor "$0" "$ASSERTION_SITE_PATTERN" "$ASSERTION_SITE_RANGE")"
+    EXPECTED_ASSERTIONS=$(( ASSERTION_SITES + ${#RUNTIME_LISTENERS[@]} - 1 ))
     ALLOW_SKIPS=0
     for check_arg in "${@:2}"; do
       case "$check_arg" in
@@ -1128,7 +1142,7 @@ PY
     # A TLS 1.3 handshake that gets as far as "certificate required" proves the
     # listener is bound AND enforcing RequireAndVerifyClientCert. A bare TCP
     # connect would also succeed against a half-configured listener.
-    for entry in "control 9443" "output 9444" "content 9445"; do
+    for entry in "${RUNTIME_LISTENERS[@]}"; do
       set -- $entry
       name="$1"; port="$2"
       out="$(probe "openssl s_client -connect elitea-main:${port} -CAfile /m/runtime-ca.crt -tls1_3 </dev/null")"

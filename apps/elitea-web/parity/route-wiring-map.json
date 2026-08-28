@@ -965,7 +965,7 @@
       ],
       "status": "wired",
       "rendersRouteShell": false,
-      "note": "Renders AIConfiguration AND a RouteShell heading. See also issue #80 (missing ModelConfiguration layer).",
+      "note": "Renders AIConfiguration AND a RouteShell heading. The ModelConfiguration layer (issue #80) is now composed inside AIConfiguration.",
       "curated": true
     },
     {

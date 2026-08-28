@@ -352,15 +352,20 @@ func (h *Handler) TrendingAuthors(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
 		SELECT su.user_id, COALESCE(au.name, ''), COALESCE(au.email, ''),
 			COALESCE(su.avatar, ''), COUNT(sl.id) as like_count
 		FROM centry.social_users su
 		JOIN auth_core__user au ON au.id = su.user_id
-		LEFT JOIN %q.social_likes sl ON sl.user_id = su.user_id
+		LEFT JOIN %s.social_likes sl ON sl.user_id = su.user_id
 		GROUP BY su.user_id, au.name, au.email, su.avatar
 		ORDER BY like_count DESC
-		LIMIT 10`, fmt.Sprintf("p_%s", projectID)))
+		LIMIT 10`, schema))
 
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "failed to list trending authors"})
@@ -410,10 +415,15 @@ func (h *Handler) Like(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	_, err := h.pool.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %q.social_likes (entity_name, user_id, entity_id, created_at)
+		INSERT INTO %s.social_likes (entity_name, user_id, entity_id, created_at)
 		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (entity_name, user_id, entity_id) DO NOTHING`, fmt.Sprintf("p_%s", projectID)),
+		ON CONFLICT (entity_name, user_id, entity_id) DO NOTHING`, schema),
 		entityType, user.ID, entityID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to like"})
@@ -445,9 +455,14 @@ func (h *Handler) Unlike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	schema, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+
 	if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-		DELETE FROM %q.social_likes
-		WHERE entity_name = $1 AND user_id = $2 AND entity_id = $3`, fmt.Sprintf("p_%s", projectID)),
+		DELETE FROM %s.social_likes
+		WHERE entity_name = $1 AND user_id = $2 AND entity_id = $3`, schema),
 		entityType, user.ID, entityID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unlike"})
 		return
@@ -466,8 +481,11 @@ func (h *Handler) Pin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`INSERT INTO %q.social_pins (entity_name, entity_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`INSERT INTO %s.social_pins (entity_name, entity_id, user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, s)
 	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to pin"})
 		return
@@ -486,8 +504,11 @@ func (h *Handler) Unpin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
-	s := fmt.Sprintf("p_%s", projectID)
-	q := fmt.Sprintf(`DELETE FROM %q.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
+	q := fmt.Sprintf(`DELETE FROM %s.social_pins WHERE entity_name = $1 AND entity_id = $2 AND user_id = $3`, s)
 	if _, err := h.pool.Exec(ctx, q, entityType, entityID, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "failed to unpin"})
 		return
@@ -521,10 +542,13 @@ func (h *Handler) ListFeedbacks(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	ctx := r.Context()
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	q := fmt.Sprintf(`
 		SELECT id, entity_name, entity_id, user_id, rating, COALESCE(comment, ''), created_at
-		FROM %q.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
+		FROM %s.social_feedbacks ORDER BY created_at DESC LIMIT 50`, s)
 
 	rows, err := h.pool.Query(ctx, q)
 	if err != nil {
@@ -592,9 +616,12 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	comment, _ := body["comment"].(string)
 
-	s := fmt.Sprintf("p_%s", projectID)
+	s, schemaOK := tenantSchema(w, projectID)
+	if !schemaOK {
+		return
+	}
 	q := fmt.Sprintf(`
-		INSERT INTO %q.social_feedbacks (entity_name, entity_id, user_id, rating, comment, created_at)
+		INSERT INTO %s.social_feedbacks (entity_name, entity_id, user_id, rating, comment, created_at)
 		VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING id`, s)
 
 	var id int

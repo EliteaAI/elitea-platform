@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 )
 
 // owner_id must be named by the INSERT and bound to its own placeholder. A
@@ -17,7 +19,13 @@ import (
 func TestImportToolkitInsertSQLBindsTheOwnerAndTheAuthorSeparately(t *testing.T) {
 	t.Parallel()
 
-	statement := importToolkitInsertSQL("p_1")
+	// importToolkitInsertSQL takes an ALREADY-QUOTED identifier, so the test
+	// builds it the way the handlers do rather than restating the quoting.
+	schema, err := tenantschema.Quote("1")
+	if err != nil {
+		t.Fatalf("Quote(1) failed: %v", err)
+	}
+	statement := importToolkitInsertSQL(schema)
 
 	columns := regexp.MustCompile(`INSERT INTO "p_1"\.elitea_tools \(([^)]*)\)`).FindStringSubmatch(statement)
 	if columns == nil {

@@ -13,6 +13,7 @@ import { CommonNumberField } from '@/shared/ui/CommonNumberField';
 import { CommonStringField } from '@/shared/ui/CommonStringField';
 import { SecretManagementInput } from '@/shared/ui/SecretManagementInput';
 
+import { useSecretFieldOptions } from '@/entities/secret';
 import { classifySchemaField } from '@/features/credentials';
 import type { ConfigSchemaNode } from '@/features/credentials';
 
@@ -34,16 +35,28 @@ function metaFor(fieldKey: string, property: ConfigSchemaNode | undefined): Comm
   return { label, ...(property?.description !== undefined ? { description: property.description } : {}) };
 }
 
-function renderSecretField({ fieldKey, value, error, onChange }: CredentialSchemaFieldProps, label: string): ReactNode {
+/**
+ * #441: `secrets` was never supplied here, so a credential's secret field
+ * rendered as a plain masked text box — no mode toggle, no saved-secret
+ * picker, and no "Create new secret" entry for any user, an administrator
+ * included. `useSecretFieldOptions()` supplies the option list, the refresh
+ * action and the create grant `SecretField` expects from its caller.
+ *
+ * A component, not a helper called from `CredentialSchemaField`: the hook
+ * queries, and this mounts on the secret branch alone.
+ */
+function CredentialSecretField({ field, label }: { readonly field: CredentialSchemaFieldProps; readonly label: string }): ReactNode {
+  const { fieldKey, value, error, onChange } = field;
+  const secrets = useSecretFieldOptions();
   return (
     <SecretManagementInput
-      key={fieldKey}
       name={fieldKey}
       label={label}
       value={typeof value === 'string' ? value : ''}
       onChange={(next) => {
         onChange(fieldKey, next);
       }}
+      secrets={secrets}
       {...(error !== undefined ? { error: true, helperText: error } : {})}
     />
   );
@@ -97,7 +110,14 @@ function renderStringField({ fieldKey, property, value, error, onChange }: Crede
 export function CredentialSchemaField(props: CredentialSchemaFieldProps): ReactNode {
   const kind = classifySchemaField(props.fieldKey, props.property);
   const meta = metaFor(props.fieldKey, props.property);
-  if (kind === 'secret') return renderSecretField(props, meta.label);
+  if (kind === 'secret')
+    return (
+      <CredentialSecretField
+        key={props.fieldKey}
+        field={props}
+        label={meta.label}
+      />
+    );
   if (kind === 'boolean') return renderBooleanField(props, meta);
   if (kind === 'number') return renderNumberField(props, meta);
   return renderStringField(props, meta);

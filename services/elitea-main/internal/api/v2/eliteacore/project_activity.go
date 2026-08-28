@@ -45,10 +45,11 @@ package eliteacore
 import (
 	"context"
 	"fmt"
-	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/pkg/apierr"
 )
 
 // projectUserActivityRow is one member's event count. `user_email` is nullable

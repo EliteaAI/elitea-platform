@@ -115,21 +115,24 @@ func TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen(t *testing.T)
 	handler := v2secrets.NewHandler(pool)
 	projectVaultID := strconv.FormatInt(projectID, 10)
 
-	connectionString, found, err := handler.LookupProjectSecret(
+	connectionString, err := handler.LookupProjectSecret(
 		ctx, projectVaultID, vectorstoreapp.ProjectPgvectorConnstrKey)
-	if err != nil {
-		t.Fatalf("the deployment's own master key cannot open the vault it created: %v", err)
-	}
-	if !found {
+	// The two failures are separated, not collapsed (#416). ErrSecretNotFound
+	// means the vault opened and the material writer wrote nothing; anything
+	// else means this key cannot open the vault it created.
+	if errors.Is(err, v2secrets.ErrSecretNotFound) {
 		t.Fatal("the provisioned vault holds no pgvector connection string: " +
 			"the material writer wrote nothing an index run can redeem")
+	}
+	if err != nil {
+		t.Fatalf("the deployment's own master key cannot open the vault it created: %v", err)
 	}
 	if strings.Contains(connectionString, "{{secret.") {
 		t.Fatalf("the stored connection string is still a placeholder (%q)", connectionString)
 	}
-	if _, found, err := handler.LookupProjectSecret(
-		ctx, projectVaultID, vectorstoreapp.ProjectPgvectorPasswordKey); err != nil || !found {
-		t.Fatalf("the provisioned vault holds no pgvector password: found=%v error=%v", found, err)
+	if _, err := handler.LookupProjectSecret(
+		ctx, projectVaultID, vectorstoreapp.ProjectPgvectorPasswordKey); err != nil {
+		t.Fatalf("the provisioned vault holds no pgvector password: %v", err)
 	}
 	// The material is real, not merely present.
 	assertVectorStoreAccepts(ctx, t, connectionString, projectID)
@@ -145,9 +148,9 @@ func TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen(t *testing.T)
 	}); err != nil {
 		t.Fatalf("write vault material through the deployment's key: %v", err)
 	}
-	readBack, found, err := handler.LookupProjectSecret(ctx, projectVaultID, "issue_399_round_trip")
-	if err != nil || !found || readBack != "round-trip-value" {
-		t.Fatalf("round trip = %q found=%v error=%v, want \"round-trip-value\"", readBack, found, err)
+	readBack, err := handler.LookupProjectSecret(ctx, projectVaultID, "issue_399_round_trip")
+	if err != nil || readBack != "round-trip-value" {
+		t.Fatalf("round trip = %q error=%v, want \"round-trip-value\"", readBack, err)
 	}
 
 	/* ── the negative control ────────────────────────────────────────────
@@ -187,10 +190,10 @@ func TestProvisionWritesVaultMaterialTheDeploymentMasterKeyCanOpen(t *testing.T)
 	}
 
 	// And the vault the wrong key could not open is still intact.
-	stillThere, found, err := handler.LookupProjectSecret(
+	stillThere, err := handler.LookupProjectSecret(
 		ctx, projectVaultID, vectorstoreapp.ProjectPgvectorPasswordKey)
-	if err != nil || !found || stillThere == "written-with-the-wrong-key" {
-		t.Fatalf("the failed other-key write damaged the vault: found=%v error=%v", found, err)
+	if err != nil || stillThere == "written-with-the-wrong-key" {
+		t.Fatalf("the failed other-key write damaged the vault: %v", err)
 	}
 }
 

@@ -21,6 +21,14 @@ GATEWAY_RENDER_POSTURE="--set-string llmGateway.env.GATEWAY_SELF_LLM_ORIGINS=htt
 # deploy/helm/tests -> deploy. The chart and ArgoCD paths below are relative to
 # it, so this must follow the file if it ever moves again.
 DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$DIR/.." && pwd)"
+# The floor helper, shared with the other honest validators (issue #534). It
+# sits outside this script's own trigger path, so an edit to it does not start
+# helm-lint.yml. That is safe here and it is not a second gate: the helper only
+# COUNTS, and a helper that counts wrong makes this script red on its next run
+# instead of quietly passing.
+# shellcheck source=../../../scripts/lib/assertion-floor.sh
+. "${REPO_ROOT}/scripts/lib/assertion-floor.sh"
 
 # The gateway chart REFUSES to render until the operator states two postures
 # (#467, #473): the self-referential-credential origins and the egress posture.
@@ -45,8 +53,15 @@ FAIL=0
 # Every assertion this file is meant to make. A run that makes fewer has
 # skipped one, and a skipped assertion proves nothing. Same shape as
 # deploy/scripts/embedding-path-check.sh, which is the reference honest
-# validator in this repository. Raise this number with each new assertion.
-EXPECTED_ASSERTIONS=16
+# validator in this repository.
+#
+# DERIVED, not written down (issue #534). A number stated here is true only
+# when the pull request merges, so an assertion added later, with the number
+# left alone, made the floor under-count in silence for ever. Each assertion
+# below holds exactly one accepting arm, so the accepting arms are the
+# assertions. Read scripts/lib/assertion-floor.sh.
+ASSERTION_SITE_PATTERN='(^|[^[:alnum:]_])ok[[:space:]]+"'
+EXPECTED_ASSERTIONS="$(derive_assertion_floor "$0" "$ASSERTION_SITE_PATTERN")"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -151,11 +166,120 @@ def wave(f):
 assert wave("nats.yaml") < wave("nats-bootstrap.yaml") < wave("elitea.yaml"), "waves out of order"
 PY
 
+# Issue #475. The Application used to name "the values file this Application
+# points at" and carry no `helm:` block at all, so it pointed at nothing and
+# ArgoCD rendered the chart from its defaults alone. The chart REFUSES those
+# defaults — the two gateway postures have none — so the committed Application
+# could not sync. No gate said so, because every render in this repository
+# supplies the postures on its own command line.
+#
+# The two assertions below read the Application instead. The first says each
+# Application states where its values come from. The second renders the chart
+# the way ArgoCD renders it, from that statement, and reads DATABASE_URL back
+# out of the manifest.
+echo "== ArgoCD apps state where their values come from (#475) =="
+python3 - "$DIR/argocd/applications" <<'PYA' && ok "each Application that syncs an in-repo chart declares spec.source.helm" || bad "argocd application values source"
+import sys, yaml, pathlib
+apps = pathlib.Path(sys.argv[1])
+found = 0
+for f in sorted(apps.glob("*.yaml")):
+    a = yaml.safe_load(open(f))
+    src = a["spec"]["source"]
+    path = src.get("path", "")
+    if not path.startswith("deploy/helm/"):
+        continue
+    found += 1
+    helm = src.get("helm")
+    assert helm, (
+        f"{f.name} syncs {path} and declares no spec.source.helm. ArgoCD then "
+        "renders the chart from its own defaults, and no reader of this file "
+        "can say which values the release gets."
+    )
+    assert helm.get("valueFiles") or helm.get("parameters"), (
+        f"{f.name} has an empty spec.source.helm block, which states nothing."
+    )
+assert found, "no Application syncs an in-repo chart; this assertion measured nothing"
+PYA
+
+echo "== the elitea app renders, and DATABASE_URL comes from the Secret it names =="
+python3 - "$DIR/argocd/applications/elitea.yaml" "$DIR/helm/elitea" "$HELM" <<'PYB' && ok "DATABASE_URL is a secretKeyRef on the Secret and key the Application names" || bad "elitea application render / DATABASE_URL"
+import subprocess, sys, yaml
+
+app_file, chart, helm_bin = sys.argv[1], sys.argv[2], sys.argv[3]
+src = yaml.safe_load(open(app_file))["spec"]["source"]
+helm = src.get("helm") or {}
+params = {p["name"]: p.get("value", "") for p in helm.get("parameters", [])}
+
+# The values an OPERATOR supplies, and only those. Both are empty in git on
+# purpose, so this stands in for the operator. `.invalid` is reserved by
+# RFC 2606 and never resolves, so no reader mistakes it for a shipped default.
+operator = {
+    "llmGateway.env.GATEWAY_SELF_LLM_ORIGINS": "https://render-only.example.invalid/llm/v1",
+    "llmGateway.egressPosture": "public-unrestricted",
+}
+for name in operator:
+    assert name in params, (
+        f"{name} has no chart default and no slot in the Application. An "
+        "operator has nowhere in the committed files to put it."
+    )
+    assert params[name] == "", (
+        f"{name} carries the committed value {params[name]!r}. Only the "
+        "operator knows this address; a value here guards a name nobody uses."
+    )
+
+argv = [helm_bin, "template", "elitea", chart]
+for vf in helm.get("valueFiles", []):
+    argv += ["-f", f"{chart}/{vf}"]
+for name, value in params.items():
+    argv += ["--set-string", f"{name}={operator.get(name, value)}"]
+
+done = subprocess.run(argv, capture_output=True, text=True)
+assert done.returncode == 0, (
+    "the Application does not render with the values it supplies plus the two "
+    f"the operator supplies:\n{done.stderr.strip()}"
+)
+
+secret = params["postgresql.existingSecret"]
+key = params["postgresql.key"]
+assert secret and key, "the Application names no database Secret"
+
+seen = 0
+for doc in yaml.safe_load_all(done.stdout):
+    if not doc:
+        continue
+    spec = doc.get("spec", {})
+    pod = spec.get("template", {}).get("spec") or {}
+    for container in (pod.get("containers", []) + pod.get("initContainers", [])):
+        for env in container.get("env", []):
+            if env.get("name") != "DATABASE_URL":
+                continue
+            seen += 1
+            ref = env.get("valueFrom", {}).get("secretKeyRef")
+            where = f"{doc['kind']}/{doc['metadata']['name']}:{container['name']}"
+            assert ref, f"{where} takes DATABASE_URL in plaintext, not from a Secret"
+            assert ref["name"] == secret, (
+                f"{where} reads Secret {ref['name']!r}; the Application names {secret!r}"
+            )
+            assert ref["key"] == key, (
+                f"{where} reads key {ref['key']!r}; the Application names {key!r}"
+            )
+# A render that carried no DATABASE_URL at all would pass every check above.
+assert seen >= 3, (
+    f"only {seen} container(s) read DATABASE_URL. elitea-main, its migration "
+    "Job and the scheduler all read the database."
+)
+PYB
+
 echo
 RAN=$((PASS+FAIL))
 echo "BF0.2b render assertions: ${RAN} ran, ${PASS} passed, ${FAIL} failed"
-if [ "$RAN" -lt "$EXPECTED_ASSERTIONS" ]; then
-  echo "FAIL: ${RAN} assertion(s) ran, expected ${EXPECTED_ASSERTIONS}. A run that skips an assertion proves nothing." >&2
+# -ne, not -lt. A count that is too LOW means an assertion stopped running. A
+# count that is too HIGH means an assertion site ran more than once, so the
+# floor no longer describes the file. Both are errors, and neither is a pass.
+if [ "$RAN" -ne "$EXPECTED_ASSERTIONS" ]; then
+  echo "FAIL: ${RAN} assertion(s) ran, and this file holds ${EXPECTED_ASSERTIONS} assertion site(s)." >&2
+  echo "      A run that skips an assertion proves nothing, and a site that runs" >&2
+  echo "      twice is a site the floor cannot describe." >&2
   exit 1
 fi
 [ "$FAIL" -eq 0 ]

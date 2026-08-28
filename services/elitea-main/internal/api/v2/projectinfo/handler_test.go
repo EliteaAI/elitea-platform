@@ -145,9 +145,12 @@ func TestCurrentProjectInfoRouteAuthenticatesAndAuthorizesBeforeRead(t *testing.
 			path:          "/api/v2/elitea_core/project_info/prompt_lib/7/project-info",
 			remoteAddr:    "10.0.0.8:43120",
 			authenticated: true,
-			principalErr:  errors.New("principal suspended"),
-			allowed:       true,
-			wantStatus:    http.StatusUnauthorized,
+			// A real suspension carries auth.ErrPrincipalInactive; only that
+			// answer is a 401, because a database fault must not read as one
+			// (#537).
+			principalErr: auth.ErrPrincipalInactive,
+			allowed:      true,
+			wantStatus:   http.StatusUnauthorized,
 		},
 		{
 			name:          "permission denied",

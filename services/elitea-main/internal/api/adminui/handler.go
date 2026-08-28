@@ -191,7 +191,8 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	//      default, so a payload containing "</script>" cannot terminate the
 	//      enclosing tag. Do NOT switch this to a json.Encoder with
 	//      SetEscapeHTML(false) — that silently reopens the tag-breakout half.
-	configScript := fmt.Sprintf(`<script>window.admin_ui_config = %s;</script>`, string(cfgJSON))
+	inlineConfigScript := fmt.Sprintf("window.admin_ui_config = %s;", string(cfgJSON))
+	configScript := "<script>" + inlineConfigScript + "</script>"
 	indexHTML = strings.Replace(indexHTML, "<!-- admin_ui_config -->", configScript, 1)
 
 	// This page is per-operator and must never be replayed to another one.
@@ -211,9 +212,75 @@ func (h *Handler) ServeSPA(w http.ResponseWriter, r *http.Request) {
 	// and Logout, internal/api/middleware/internal_admin.go).
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
+
+	// The admin console runs with no Content-Security-Policy at all until this
+	// line (issue #177). Only the browserauth login page set one.
+	//
+	// The threat is measured, not hypothetical: a critical script-injection
+	// hole in THIS handler's own config injection (CodeQL go/unsafe-quoting)
+	// was fixed a few lines above.
+	//
+	// nosniff goes with it: this body is assembled from a file on disk plus
+	// injected JSON, and a browser that content-sniffs a mislabelled asset
+	// undoes part of what the policy buys.
+	w.Header().Set("Content-Security-Policy", spaContentSecurityPolicy(inlineConfigScript))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, indexHTML)
+}
+
+// spaContentSecurityPolicy builds the policy for one rendered admin page.
+//
+// # What it does NOT do, stated first
+//
+// It does not defend the ONE inline script this handler emits against a
+// payload injected into that script. The hash is computed over the bytes
+// actually served, so an injected payload is inside the hashed block and the
+// browser runs it. A nonce has the same property: the nonce sits on the tag
+// that carries the payload. The `go/unsafe-quoting` hole above is closed by
+// the JSON escaping, and it stays closed by its own test — not by this.
+//
+// # What it does do
+//
+//   - `script-src` carries no 'unsafe-inline'. Any OTHER inline script — a
+//     separate <script> element reflected into the page, or one written into
+//     an index.html on disk — has a different hash and does not run.
+//   - `script-src 'self'` denies a foreign script origin, so a bootstrap
+//     loader cannot pull the real payload from an attacker host.
+//   - `connect-src 'self'` denies the exfiltration leg. Script running in
+//     this page reaches the operator's permissions, address and session; with
+//     no route off the origin, reading them is worth much less.
+//   - `base-uri 'none'` stops an injected <base> from re-pointing every
+//     relative asset and API path; `object-src 'none'` removes the plugin
+//     surface; `frame-ancestors 'none'` blocks clickjacking of an
+//     authenticated admin session; `form-action 'self'` keeps a POST here.
+//
+// The hash is derived from the response, never restated as a constant, so it
+// cannot drift away from the script it authorises — which is the way a
+// hash-based policy usually rots into a blank page.
+//
+// 'unsafe-inline' stays on style-src because Emotion (MUI's styling engine)
+// injects <style> elements at runtime; that is a styling channel, not a script
+// one. img-src allows data:/blob: because the brand pack's logos are data URIs
+// (shared/brand/schema.ts: "data: URI or same-origin path"). Everything else
+// falls back to default-src 'self': the bundle, the API and the fonts are all
+// same-origin, and `ViteServerURL` is the hardcoded relative "/api/v2".
+func spaContentSecurityPolicy(inlineScript string) string {
+	digest := sha256.Sum256([]byte(inlineScript))
+	return strings.Join([]string{
+		"default-src 'self'",
+		"base-uri 'none'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+		"form-action 'self'",
+		"script-src 'self' 'sha256-" + base64.StdEncoding.EncodeToString(digest[:]) + "'",
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self'",
+	}, "; ")
 }
 
 // resolvePermissions returns the administration-mode permissions of one user.

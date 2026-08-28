@@ -12,10 +12,13 @@
 import { memo, useState } from 'react';
 import { useTheme, type Theme } from '@mui/material/styles';
 
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
+import IconButton from '@mui/material/IconButton';
 import Tab from '@mui/material/Tab';
 import Tabs from '@mui/material/Tabs';
+import Tooltip from '@mui/material/Tooltip';
 import Typography from '@mui/material/Typography';
 
 import { EliteaApiError } from '@/shared/api/generated/mutator';
@@ -26,9 +29,11 @@ import { aiConfigurationFeature } from '@/features/settings';
 
 const {
   ConfigurationsPanel,
+  ModelCapabilitiesSection,
   OpenAITemplate,
   ProjectAIConfiguration,
   useConfigurationsBySection,
+  useModelConfigurationLayer,
 } = aiConfigurationFeature;
 
 /**
@@ -90,6 +95,16 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
 
   const userApiUrl = useUserApiUrl();
   /*
+   * The baseline's `ModelConfiguration.jsx` level, restored (#80). It carries
+   * the two things this page composed nothing for: the capability chips of the
+   * project's default model, and the copy-the-whole-card button.
+   */
+  const { capabilities, copyConfiguration } = useModelConfigurationLayer({
+    projectId,
+    userApiUrl,
+    configurationsBySection,
+  });
+  /*
    * The model-owning project id used to be computed here and passed to
    * ProjectAIConfiguration, which advertised it as `OpenAI-Project`. It is
    * gone: that panel now shows the billing project only. A reader could not
@@ -131,10 +146,21 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
         here.
       */}
       {activeTab === 0 && (
-        <ProjectAIConfiguration
-          userApiUrl={userApiUrl}
-          projectId={projectId}
-        />
+        <Box sx={styles.projectConfigRow}>
+          <ProjectAIConfiguration
+            userApiUrl={userApiUrl}
+            projectId={projectId}
+          />
+          {/* Baseline `ModelConfiguration.jsx:214-226` floats this button over
+              the top-right of the card. It copies the whole configuration as
+              JSON — server URL, base URL, project id, the selected model, its
+              capabilities, and every configuration of every section. */}
+          <Tooltip title={t('ai-configuration.copyConfigurationTooltip', 'Copy configuration')} placement="top">
+            <IconButton color="secondary" onClick={copyConfiguration} sx={styles.copyButton}>
+              <ContentCopyIcon sx={styles.copyIcon} />
+            </IconButton>
+          </Tooltip>
+        </Box>
       )}
 
       {/* Tab content */}
@@ -155,6 +181,15 @@ export const AIConfiguration = memo(function AIConfiguration({ projectId }: AICo
 
         {activeTab === 1 && <OpenAITemplate projectId={projectId} />}
       </Box>
+
+      {/* Baseline `ModelConfiguration.jsx:249` renders the chips under the
+          panel, inside the configurations tab, and guards on a non-empty list
+          so the row costs no space when the model declares no capability. */}
+      {activeTab === 0 && capabilities.length > 0 && (
+        <Box sx={styles.capabilitiesRow}>
+          <ModelCapabilitiesSection capabilities={capabilities} />
+        </Box>
+      )}
     </Box>
   );
 });
@@ -193,6 +228,24 @@ function getStyles(theme: ReturnType<typeof useTheme>) {
       display: 'flex',
       flexDirection: 'column',
       minHeight: 0,
+    },
+    projectConfigRow: {
+      position: 'relative',
+      flexShrink: 0,
+    },
+    copyButton: {
+      position: 'absolute',
+      top: '1rem',
+      right: '1rem',
+    },
+    copyIcon: {
+      width: '1rem',
+      height: '1rem',
+    },
+    capabilitiesRow: {
+      flexShrink: 0,
+      padding: '0 1.5rem 1rem',
+      backgroundColor: t.vars.palette.background.eliteaDefault,
     },
     loadingCenter: {
       flex: 1,

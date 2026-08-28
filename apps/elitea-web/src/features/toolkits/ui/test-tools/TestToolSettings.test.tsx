@@ -109,6 +109,59 @@ describe('TestToolSettings', () => {
     expect(options.map((option) => option.textContent)).toEqual(['Create issue', 'List issues']);
   });
 
+  /**
+   * #440. Three outcomes that used to look identical on screen: a toolkit
+   * with no tools, a toolkit whose tools the backend publishes at runtime,
+   * and a failed read. The first two now differ from the third, and the
+   * three tests below are what discriminate them — one alone cannot.
+   */
+  describe('dynamic tool catalogue (#440)', () => {
+    const DISCOVER_PATH = '/api/v2/elitea_core/toolkit_discover_tools/prompt_lib/:projectId/:toolkitType';
+    /** A type with no static schema entry and no explicit selection, so the dynamic tier is the one in use. */
+    const DYNAMIC_VALUES = { type: 'openapi_tool', settings: {} };
+
+    it('lists the tools the backend publishes for a dynamic toolkit type', async () => {
+      const user = userEvent.setup();
+      server.use(
+        http.post(DISCOVER_PATH, () =>
+          HttpResponse.json({
+            tools: [
+              { id: '2', name: 'zeta_op', type: 'openapi_tool' },
+              { id: '1', name: 'alpha_op', type: 'openapi_tool' },
+            ],
+            total: 2,
+          }),
+        ),
+      );
+
+      renderTestToolSettings({ values: DYNAMIC_VALUES });
+
+      await user.click(await screen.findByLabelText('Tool'));
+      const options = await screen.findAllByRole('option');
+      expect(options.map((option) => option.textContent)).toEqual(['Alpha op', 'Zeta op']);
+      expect(screen.queryByTestId('tool-list-error')).not.toBeInTheDocument();
+    });
+
+    it('shows an error instead of the picker when the read fails', async () => {
+      server.use(http.post(DISCOVER_PATH, () => HttpResponse.json({ error: 'read available tools failed' }, { status: 500 })));
+
+      renderTestToolSettings({ values: DYNAMIC_VALUES });
+
+      expect(await screen.findByTestId('tool-list-error')).toBeInTheDocument();
+      // The empty picker must not stand in for the failure.
+      expect(screen.queryByLabelText('Tool')).not.toBeInTheDocument();
+    });
+
+    it('shows the empty picker, not an error, when the read succeeds with no tools', async () => {
+      server.use(http.post(DISCOVER_PATH, () => HttpResponse.json({ tools: [], total: 0 })));
+
+      renderTestToolSettings({ values: DYNAMIC_VALUES });
+
+      expect(await screen.findByLabelText('Tool')).toBeInTheDocument();
+      expect(screen.queryByTestId('tool-list-error')).not.toBeInTheDocument();
+    });
+  });
+
   it('calls onChangeTool with the selected value', async () => {
     const user = userEvent.setup();
     const onChangeTool = vi.fn();
