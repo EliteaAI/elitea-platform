@@ -28,6 +28,7 @@ const (
 	CurrentContinuationPath                  = "/api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}"
 	CurrentContinuationContract              = "agent.continue.hitl.v1"
 	CurrentAuthorizationContinuationContract = "agent.continue.authorization.v1"
+	CurrentOutputLimitContinuationContract   = "agent.continue.output-limit.v1"
 	CurrentApplicationStartMode              = auth.PermissionModeDefault
 	CurrentApplicationStartPermission        = "models.chat.messages.create"
 	CurrentRegenerationPermission            = "models.chat.conversations.regenerate"
@@ -385,7 +386,9 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 	projectID, ok := positiveCanonicalID(chi.URLParam(request, "projectID"))
 	conversationID := chi.URLParam(request, "conversationID")
 	contract := request.URL.Query().Get("execution_contract")
-	if !ok || (contract != CurrentContinuationContract && contract != CurrentAuthorizationContinuationContract) {
+	if !ok || (contract != CurrentContinuationContract &&
+		contract != CurrentAuthorizationContinuationContract &&
+		contract != CurrentOutputLimitContinuationContract) {
 		writeError(writer, http.StatusBadRequest, "Invalid agent continuation request")
 		return
 	}
@@ -432,6 +435,16 @@ func (handler *currentApplicationStartHandler) Continue(writer http.ResponseWrit
 		ThreadID: body.ThreadID,
 	}
 	switch contract {
+	case CurrentOutputLimitContinuationContract:
+		if body.ThreadID != "" || body.HITLResume || body.HITLAction != "" ||
+			!absentJSON(body.HITLValue) || !absentJSON(body.HITLDecisions) ||
+			!absentJSON(body.MCPTokens) || !absentJSON(body.IgnoredMCPServers) ||
+			!absentJSON(body.UserDeclinedMCPServers) || body.UserInput != "" ||
+			body.AuthorizationRequestID != "" || body.AuthorizationAction != "" {
+			writeUnsupported(writer)
+			return
+		}
+		continuation.Kind = agentexecutionapp.CurrentContinuationOutputLimit
 	case CurrentContinuationContract:
 		decisions, decisionsValid := currentHITLDecisions(body.HITLDecisions)
 		if !body.HITLResume || !decisionsValid || !emptyJSONObject(body.MCPTokens) ||
@@ -521,6 +534,12 @@ func writeStartError(writer http.ResponseWriter, err error) {
 		writeJSON(writer, http.StatusConflict, map[string]any{
 			"error":     "agent_authorization_already_resolved",
 			"message":   "This toolkit authorization request was already resolved. Refresh the conversation before retrying.",
+			"retryable": false,
+		})
+	case errors.Is(err, agentexecutionapp.ErrCurrentAgentOutputLimitAlreadyResolved):
+		writeJSON(writer, http.StatusConflict, map[string]any{
+			"error":     "agent_output_limit_already_resolved",
+			"message":   "This output continuation was already started. Refresh the conversation before retrying.",
 			"retryable": false,
 		})
 	case errors.Is(err, executionapp.ErrIdempotencyConflict):

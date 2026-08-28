@@ -50,6 +50,7 @@ export interface ConversationWire {
   readonly created_at?: string;
   readonly updated_at?: string;
   readonly participants?: readonly ChatParticipantWire[];
+  readonly meta?: Readonly<Record<string, unknown>>;
   readonly [key: string]: unknown;
 }
 
@@ -268,16 +269,12 @@ export async function startAgentExecution(params: StartAgentExecutionParams): Pr
 /* manifest: conversation.continueAgentExecution */
 
 /**
- * The HITL continuation contract the Go route admits
- * (`agentexecution/route.go`: `CurrentContinuationContract`).
- *
- * The route admits one other value, `agent.continue.authorization.v1`, for the
- * MCP re-authorization pause. This app does not send it: the contract requires
- * an `authorization_request_id`, and nothing here captures that field off the
- * `mcp_authorization_required` frame yet. The route admits NO token-limit
- * continuation at all. Both of those resumes stay on the socket.
+ * The continuation contracts used by the current Go route. Output-limit
+ * continuation has its own contract because it starts a fresh model call in
+ * the same durable session; it is not a HITL or checkpoint resume.
  */
 export const AGENT_CONTINUE_HITL_CONTRACT = 'agent.continue.hitl.v1';
+export const AGENT_CONTINUE_OUTPUT_LIMIT_CONTRACT = 'agent.continue.output-limit.v1';
 
 export interface ContinueAgentExecutionParams {
   readonly projectId: string | number;

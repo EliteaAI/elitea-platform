@@ -218,8 +218,15 @@ type AgentExecutionInputV1 struct {
 	// Guardrail identifiers only — never credentials. The tool and toolkit names
 	// here are the same public identifiers the toolkit catalogue already serves.
 	ToolkitGuardrails []byte `protobuf:"bytes,38,opt,name=toolkit_guardrails,json=toolkitGuardrails,proto3" json:"toolkit_guardrails,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Visible assistant text from a root response that ended on the provider's
+	// output-token limit. It is present only when `should_continue` means an
+	// output continuation, never for HITL, delegated authorization, Printer, or
+	// graph-checkpoint resume. Keeping this visible-only value explicit prevents
+	// hidden reasoning from leaking into the continuation prompt and gives every
+	// language the same unambiguous continuation discriminator.
+	TruncatedContent []byte `protobuf:"bytes,39,opt,name=truncated_content,json=truncatedContent,proto3" json:"truncated_content,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *AgentExecutionInputV1) Reset() {
@@ -514,6 +521,13 @@ func (x *AgentExecutionInputV1) GetNextInputSuggestion() []byte {
 func (x *AgentExecutionInputV1) GetToolkitGuardrails() []byte {
 	if x != nil {
 		return x.ToolkitGuardrails
+	}
+	return nil
+}
+
+func (x *AgentExecutionInputV1) GetTruncatedContent() []byte {
+	if x != nil {
+		return x.TruncatedContent
 	}
 	return nil
 }
@@ -826,7 +840,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x10request_entry_id\x18\x01 \x01(\tR\x0erequestEntryId\x12(\n" +
 	"\x10client_stream_id\x18\x02 \x01(\tR\x0eclientStreamId\x12*\n" +
 	"\x11client_message_id\x18\x03 \x01(\tR\x0fclientMessageId\x12\x1b\n" +
-	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\xc9\r\n" +
+	"\tsio_event\x18\x04 \x01(\tR\bsioEventJ\x04\b\x05\x10\x10\"\xf6\r\n" +
 	"\x15AgentExecutionInputV1\x12'\n" +
 	"\x0fschema_revision\x18\x01 \x01(\tR\x0eschemaRevision\x12\x10\n" +
 	"\x03llm\x18\x02 \x01(\fR\x03llm\x12!\n" +
@@ -873,7 +887,8 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"debug_mode\x18$ \x01(\bH\bR\tdebugMode\x88\x01\x01\x122\n" +
 	"\x15next_input_suggestion\x18% \x01(\fR\x13nextInputSuggestion\x12-\n" +
-	"\x12toolkit_guardrails\x18& \x01(\fR\x11toolkitGuardrailsB\f\n" +
+	"\x12toolkit_guardrails\x18& \x01(\fR\x11toolkitGuardrails\x12+\n" +
+	"\x11truncated_content\x18' \x01(\fR\x10truncatedContentB\f\n" +
 	"\n" +
 	"_thread_idB\x10\n" +
 	"\x0e_checkpoint_idB\x0e\n" +
@@ -883,7 +898,7 @@ const file_elitea_runtime_v1_agent_proto_rawDesc = "" +
 	"\x15_execution_generationB\x12\n" +
 	"\x10_conversation_idB\x1d\n" +
 	"\x1b_exception_handling_enabledB\r\n" +
-	"\v_debug_modeJ\x04\b'\x10@\"\x94\x02\n" +
+	"\v_debug_modeJ\x04\b(\x10@\"\x94\x02\n" +
 	"!AgentExecutionArtifactReferenceV1\x12\x1f\n" +
 	"\vartifact_id\x18\x01 \x01(\tR\n" +
 	"artifactId\x12+\n" +

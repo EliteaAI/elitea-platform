@@ -234,7 +234,7 @@ pub(crate) fn test_fresh_agent_delivery(
 
 /// An input-free redelivery which may only inspect and recover durable output.
 pub struct OutputRecoveryAgentDelivery {
-    _delivery: RedisCommandDelivery,
+    delivery: RedisCommandDelivery,
     verified: VerifiedAgentCommand,
     recovery: AgentOutputRecovery,
 }
@@ -248,6 +248,43 @@ impl OutputRecoveryAgentDelivery {
     #[must_use]
     pub const fn recovery_kind(&self) -> AgentOutputRecoveryKind {
         self.recovery.kind()
+    }
+
+    #[must_use]
+    pub const fn desired_state(&self) -> crate::protocol::control::DesiredExecutionState {
+        self.recovery.desired_state()
+    }
+
+    pub(crate) fn matches_output_transport(
+        &self,
+        workload_session_id: &str,
+        producer_id: &str,
+    ) -> bool {
+        self.recovery
+            .matches_output_transport(workload_session_id, producer_id)
+    }
+
+    pub(crate) fn spool_identity(&self) -> ExecutionSpoolIdentity {
+        let command = self.verified.command();
+        ExecutionSpoolIdentity {
+            tenant_id: command.tenant_id.clone(),
+            resource_project_id: command.resource_project_id.clone(),
+            projection_project_id: command.projection_project_id.clone(),
+            command_id: command.command_id.clone(),
+            execution_id: command.execution_id.clone(),
+            generation: command.generation,
+            producer_id: self.recovery.producer_id().to_owned(),
+        }
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        RedisCommandDelivery,
+        VerifiedAgentCommand,
+        AgentOutputRecovery,
+    ) {
+        (self.delivery, self.verified, self.recovery)
     }
 }
 
@@ -398,7 +435,7 @@ where
                 );
                 Ok(AgentDeliveryRoute::OutputRecovery(Box::new(
                     OutputRecoveryAgentDelivery {
-                        _delivery: delivery,
+                        delivery,
                         verified,
                         recovery,
                     },

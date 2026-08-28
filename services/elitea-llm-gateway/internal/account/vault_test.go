@@ -194,6 +194,32 @@ func TestVaultResolve_FromVault_RawKey(t *testing.T) {
 	}
 }
 
+func TestVaultResolve_IgnoresUnrelatedLegacyNonStringValues(t *testing.T) {
+	projectKey := newTestKey()
+	blob := fernetEncrypt(t, projectKey, []byte(`{"secrets":{"OPENAI_KEY":"sk-vaulted","MODEL_LIMIT":64000},"hidden_secrets":{"ENABLED":true}}`))
+	db := &fakeDB{keyRow: projectKey, dataRow: blob}
+
+	v := &FernetVault{db: db}
+	got, err := v.Resolve(context.Background(), "42", "{{secret.OPENAI_KEY}}")
+	if err != nil {
+		t.Fatalf("Resolve string beside legacy scalar values: %v", err)
+	}
+	if got != "sk-vaulted" {
+		t.Fatalf("got %q, want sk-vaulted", got)
+	}
+}
+
+func TestVaultResolve_RejectsReferencedNonStringValue(t *testing.T) {
+	projectKey := newTestKey()
+	blob := fernetEncrypt(t, projectKey, []byte(`{"secrets":{"MODEL_LIMIT":64000},"hidden_secrets":{}}`))
+	db := &fakeDB{keyRow: projectKey, dataRow: blob}
+
+	v := &FernetVault{db: db}
+	if _, err := v.Resolve(context.Background(), "42", "{{secret.MODEL_LIMIT}}"); err == nil {
+		t.Fatal("expected a non-string referenced secret to be rejected")
+	}
+}
+
 func TestVaultResolve_FromVault_HiddenSecret(t *testing.T) {
 	projectKey := newTestKey()
 	blob := fernetEncrypt(t, projectKey, []byte(`{"secrets":{},"hidden_secrets":{"H":"hidden-val"}}`))

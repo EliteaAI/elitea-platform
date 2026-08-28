@@ -1542,7 +1542,8 @@ async fn direct_saved_agent_node_streams_one_exact_pipeline_hierarchy() {
     assert!(
         browser
             .iter()
-            .any(|event| event["content"] == "direct child summary")
+            .any(|event| event["content"] == "direct child summary"),
+        "missing direct child summary: {browser:?}"
     );
     assert_eq!(calls.load(Ordering::Acquire), 2);
     assert_eq!(
@@ -1693,7 +1694,8 @@ async fn pipeline_agent_node_resumes_parallel_nested_confirmations_without_ident
     assert!(
         browser
             .iter()
-            .any(|event| event["content"] == "parallel orchestrator summary")
+            .any(|event| event["content"] == "parallel orchestrator summary"),
+        "missing parallel orchestrator summary: {browser:?}"
     );
     assert_eq!(tool_calls.load(Ordering::Acquire), 2);
     assert_eq!(connections.load(Ordering::Acquire), 3);
@@ -1804,7 +1806,8 @@ async fn run_pipeline_agent_node_nested_authorization(authorize: bool) {
     assert!(
         browser
             .iter()
-            .any(|event| event["content"] == "parallel orchestrator summary")
+            .any(|event| event["content"] == "parallel orchestrator summary"),
+        "missing parallel orchestrator summary: {browser:?}"
     );
     assert_eq!(
         tool_calls.load(Ordering::Acquire),
@@ -1949,7 +1952,8 @@ async fn pipeline_agent_node_resumes_parallel_mixed_sensitive_and_authorization_
     assert!(
         browser
             .iter()
-            .any(|event| event["content"] == "mixed guardrails complete")
+            .any(|event| event["content"] == "mixed guardrails complete"),
+        "missing mixed guardrails completion: {browser:?}"
     );
     assert_eq!(sensitive_calls.load(Ordering::Acquire), 1);
     assert_eq!(authorization_calls.load(Ordering::Acquire), 1);

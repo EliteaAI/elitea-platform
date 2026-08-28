@@ -245,6 +245,14 @@ pub(crate) struct AgentEventProjectionContext {
     parallel_reconcile: bool,
     invoked_skills: Vec<Value>,
     applied_skills: Vec<Value>,
+    output_limit_behavior: OutputLimitBehavior,
+    continuation_prefix: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum OutputLimitBehavior {
+    UserControlled,
+    Suppressed,
 }
 
 /// Validated ordinary-turn values derived from the authenticated command and
@@ -260,6 +268,8 @@ pub(crate) struct OrdinaryProjectionInput {
     pub(crate) root_agent_name: String,
     pub(crate) model_name: String,
     pub(crate) application_details: Value,
+    pub(crate) should_continue: bool,
+    pub(crate) continuation_prefix: Option<String>,
 }
 
 /// Frozen public labels for saved participants exposed as model-callable tools.
@@ -424,11 +434,13 @@ impl AgentEventProjectionContext {
             model_name: input.model_name,
             application_details: input.application_details,
             graph_checkpoint_thread_id: None,
-            should_continue: false,
+            should_continue: input.should_continue,
             hitl_resume: false,
             parallel_reconcile: false,
             invoked_skills: Vec::new(),
             applied_skills: Vec::new(),
+            output_limit_behavior: OutputLimitBehavior::UserControlled,
+            continuation_prefix: input.continuation_prefix,
         };
         validate_context(&context)?;
         Ok(context)
@@ -441,6 +453,7 @@ impl AgentEventProjectionContext {
         context.graph_checkpoint_thread_id = Some(input.checkpoint_thread_id);
         context.should_continue = input.should_continue;
         context.hitl_resume = input.hitl_resume;
+        context.output_limit_behavior = OutputLimitBehavior::Suppressed;
         validate_context(&context)?;
         Ok(context)
     }
@@ -468,6 +481,8 @@ impl AgentEventProjectionContext {
             parallel_reconcile: self.parallel_reconcile,
             invoked_skills: Vec::new(),
             applied_skills: Vec::new(),
+            output_limit_behavior: OutputLimitBehavior::Suppressed,
+            continuation_prefix: None,
         };
         validate_context(&context)?;
         Ok(context)
@@ -494,12 +509,25 @@ impl AgentEventProjectionContext {
             parallel_reconcile: false,
             invoked_skills: Vec::new(),
             applied_skills: Vec::new(),
+            output_limit_behavior: OutputLimitBehavior::UserControlled,
+            continuation_prefix: None,
         }
+    }
+
+    pub(crate) fn output_continuation_fixture(
+        application_details: Value,
+        previous_content: &str,
+    ) -> Self {
+        let mut context = Self::fixture(application_details);
+        context.should_continue = true;
+        context.continuation_prefix = Some(previous_content.to_owned());
+        context
     }
 
     pub(crate) fn pipeline_fixture(application_details: Value) -> Self {
         let mut context = Self::fixture(application_details);
         context.graph_checkpoint_thread_id = Some("thread-1".to_owned());
+        context.output_limit_behavior = OutputLimitBehavior::Suppressed;
         context
     }
 }
@@ -511,7 +539,9 @@ struct ActiveModelTurn {
     thinking: String,
 }
 
-struct CompletedModelTurn;
+struct CompletedModelTurn {
+    output_limited: bool,
+}
 
 #[derive(Clone)]
 struct ActiveToolCall {
@@ -595,6 +625,7 @@ struct OrdinaryModelEvent {
     content: String,
     thinking: String,
     closes_turn: bool,
+    output_limited: bool,
     timestamp: String,
 }
 
@@ -620,6 +651,64 @@ pub(crate) struct AgentEventProjector {
     descendants: BTreeMap<String, DescendantAgentProjector>,
     pipeline_result: Option<String>,
     saw_pipeline_node_events: bool,
+    continuation_overlap: Option<ContinuationOverlap>,
+}
+
+const MAX_CONTINUATION_OVERLAP_CHARS: usize = 150;
+
+struct ContinuationOverlap {
+    previous_content: String,
+    raw_content: String,
+    removed_prefix_bytes: Option<usize>,
+    injected_separator: bool,
+}
+
+impl ContinuationOverlap {
+    fn new(previous_content: String) -> Self {
+        Self {
+            previous_content,
+            raw_content: String::new(),
+            removed_prefix_bytes: None,
+            injected_separator: false,
+        }
+    }
+
+    fn project(
+        &mut self,
+        current: String,
+        closes_turn: bool,
+    ) -> Result<String, AgentEventProjectionError> {
+        let (raw_content, _) = merge_stream_value(&self.raw_content, current)?;
+        self.raw_content = raw_content;
+        if self.removed_prefix_bytes.is_none() {
+            if !closes_turn && self.raw_content.chars().count() <= MAX_CONTINUATION_OVERLAP_CHARS {
+                return Ok(String::new());
+            }
+            let trimmed = trim_continuation_overlap(&self.previous_content, &self.raw_content);
+            self.injected_separator = trimmed
+                .strip_prefix(' ')
+                .is_some_and(|content| content == self.raw_content);
+            self.removed_prefix_bytes = Some(self.raw_content.len().saturating_sub(trimmed.len()));
+        }
+        let removed = self.removed_prefix_bytes.unwrap_or_default();
+        let projected = self
+            .raw_content
+            .get(removed..)
+            .map(ToOwned::to_owned)
+            .ok_or_else(AgentEventProjectionError::invalid_state)?;
+        if self.injected_separator {
+            let mut separated = String::with_capacity(projected.len().saturating_add(1));
+            separated.push(' ');
+            separated.push_str(&projected);
+            Ok(separated)
+        } else {
+            Ok(projected)
+        }
+    }
+
+    fn completed(&self, content: &str) -> String {
+        trim_continuation_overlap(&self.previous_content, content)
+    }
 }
 
 impl AgentEventProjector {
@@ -660,6 +749,11 @@ impl AgentEventProjector {
         application_tools: ApplicationToolPresentationCatalog,
     ) -> Result<Self, AgentEventProjectionError> {
         validate_context(&context)?;
+        let continuation_overlap = context
+            .continuation_prefix
+            .clone()
+            .filter(|content| !content.is_empty())
+            .map(ContinuationOverlap::new);
         Ok(Self {
             context,
             state: ProjectionState::Created,
@@ -671,6 +765,7 @@ impl AgentEventProjector {
             descendants: BTreeMap::new(),
             pipeline_result: None,
             saw_pipeline_node_events: false,
+            continuation_overlap,
         })
     }
 
@@ -688,7 +783,10 @@ impl AgentEventProjector {
             "agent_start",
             &Value::Null,
             None,
-            &json!({"invoked_skills": self.context.invoked_skills}),
+            &json!({
+                "invoked_skills": self.context.invoked_skills,
+                "should_continue": self.context.should_continue,
+            }),
             occurred_at,
         )?;
         self.state = ProjectionState::Started;
@@ -1597,6 +1695,7 @@ impl AgentEventProjector {
                         content: text.clone(),
                         thinking: String::new(),
                         closes_turn: true,
+                        output_limited: false,
                         timestamp: event
                             .timestamp
                             .to_rfc3339_opts(SecondsFormat::AutoSi, false),
@@ -1604,7 +1703,9 @@ impl AgentEventProjector {
                 )?
             }
         };
-        self.state = ProjectionState::Complete(CompletedModelTurn);
+        self.state = ProjectionState::Complete(CompletedModelTurn {
+            output_limited: false,
+        });
         Ok(batch)
     }
 
@@ -1623,6 +1724,7 @@ impl AgentEventProjector {
         model_event: OrdinaryModelEvent,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
         let timestamp = model_event.timestamp;
+        let output_limited = model_event.output_limited;
         let starts_turn = matches!(
             self.state,
             ProjectionState::Started | ProjectionState::Complete(_)
@@ -1652,8 +1754,12 @@ impl AgentEventProjector {
                 return Err(AgentEventProjectionError::invalid_state());
             }
         };
-        let (next_content, content_delta) =
-            merge_stream_value(previous_content, model_event.content)?;
+        let model_content = if let Some(overlap) = self.continuation_overlap.as_mut() {
+            overlap.project(model_event.content, model_event.closes_turn)?
+        } else {
+            model_event.content
+        };
+        let (next_content, content_delta) = merge_stream_value(previous_content, model_content)?;
         let (next_thinking, thinking_delta) =
             merge_stream_value(previous_thinking, model_event.thinking)?;
         let next_timestamp_start = timestamp_start.to_owned();
@@ -1663,19 +1769,8 @@ impl AgentEventProjector {
             batch.push(self.model_start_event(event, &timestamp)?)?;
         }
 
-        if !content_delta.is_empty() || !thinking_delta.is_empty() {
-            let content = if content_delta.is_empty() {
-                Value::Null
-            } else {
-                Value::String(content_delta)
-            };
-            batch.push(self.event(
-                "agent_llm_chunk",
-                &content,
-                (!thinking_delta.is_empty()).then_some(thinking_delta),
-                &json!({"tool_run_id": event.id}),
-                event.timestamp,
-            )?)?;
+        if let Some(chunk) = self.model_chunk_event(event, content_delta, thinking_delta)? {
+            batch.push(chunk)?;
         }
 
         if model_event.closes_turn {
@@ -1715,7 +1810,10 @@ impl AgentEventProjector {
                 }),
                 event.timestamp,
             )?)?;
-            self.state = ProjectionState::Complete(CompletedModelTurn);
+            self.state = ProjectionState::Complete(CompletedModelTurn { output_limited });
+            if let Some(confirmation) = self.output_limit_confirmation(event, output_limited)? {
+                batch.push(confirmation)?;
+            }
         } else {
             self.state = ProjectionState::Active(ActiveModelTurn {
                 event_id: event.id.clone(),
@@ -1725,6 +1823,57 @@ impl AgentEventProjector {
             });
         }
         Ok(batch)
+    }
+
+    fn model_chunk_event(
+        &self,
+        event: &Event,
+        content_delta: String,
+        thinking_delta: String,
+    ) -> Result<Option<NodeEventV1>, AgentEventProjectionError> {
+        if content_delta.is_empty() && thinking_delta.is_empty() {
+            return Ok(None);
+        }
+        let content = if content_delta.is_empty() {
+            Value::Null
+        } else {
+            Value::String(content_delta)
+        };
+        self.event(
+            "agent_llm_chunk",
+            &content,
+            (!thinking_delta.is_empty()).then_some(thinking_delta),
+            &json!({"tool_run_id": event.id}),
+            event.timestamp,
+        )
+        .map(Some)
+    }
+
+    fn output_limit_confirmation(
+        &self,
+        event: &Event,
+        output_limited: bool,
+    ) -> Result<Option<NodeEventV1>, AgentEventProjectionError> {
+        if !output_limited
+            || matches!(
+                self.context.output_limit_behavior,
+                OutputLimitBehavior::Suppressed
+            )
+        {
+            return Ok(None);
+        }
+        self.event(
+            "agent_requires_confirmation",
+            &Value::String("Continue".to_owned()),
+            None,
+            &json!({
+                "tool_run_id": event.id,
+                "thread_id": self.context.thread_id,
+                "finish_reason": "length",
+            }),
+            event.timestamp,
+        )
+        .map(Some)
     }
 
     fn project_tool_starts(
@@ -1912,11 +2061,12 @@ impl AgentEventProjector {
         occurred_at: DateTime<Utc>,
     ) -> Result<ProjectedAgentEventBatch, AgentEventProjectionError> {
         let printer_checkpoint = matches!(self.state, ProjectionState::PrinterComplete);
-        if !matches!(
-            self.state,
-            ProjectionState::Complete(_) | ProjectionState::PrinterComplete
-        ) || !self.active_tools.is_empty()
-        {
+        let output_limited = match &self.state {
+            ProjectionState::Complete(turn) => turn.output_limited,
+            ProjectionState::PrinterComplete => false,
+            _ => return Err(AgentEventProjectionError::invalid_state()),
+        };
+        if !self.active_tools.is_empty() {
             return Err(AgentEventProjectionError::invalid_state());
         }
         validate_public_text(&completion.thread_id)?;
@@ -1928,6 +2078,10 @@ impl AgentEventProjector {
         } = completion;
         execution_finished &= !printer_checkpoint;
         let content = self.pipeline_result.take().unwrap_or(content);
+        let content = self
+            .continuation_overlap
+            .as_ref()
+            .map_or(content.clone(), |overlap| overlap.completed(&content));
         let mut batch = ProjectedAgentEventBatch::new();
         let response = Value::String(content);
         if execution_finished {
@@ -1947,7 +2101,10 @@ impl AgentEventProjector {
             "agent_response",
             &response,
             None,
-            &json!({"finish_reason": "stop", "thread_id": thread_id}),
+            &json!({
+                "finish_reason": if output_limited { "length" } else { "stop" },
+                "thread_id": thread_id,
+            }),
             occurred_at,
         )?)?;
         batch.push(self.event(
@@ -1967,6 +2124,7 @@ impl AgentEventProjector {
                 "chat_history_tokens_input": 0,
                 "llm_response_tokens_output": 0,
                 "should_continue": self.context.should_continue,
+                "output_limit_reached": output_limited,
                 "hitl_resume": self.context.hitl_resume,
                 "parallel_reconcile": self.context.parallel_reconcile,
                 "context_info": context_info,
@@ -2045,6 +2203,10 @@ fn validate_context(
         .graph_checkpoint_thread_id
         .as_deref()
         .is_some_and(|value| validate_public_text(value).is_err())
+        || context
+            .continuation_prefix
+            .as_deref()
+            .is_some_and(|value| value.len() > 64 * 1_024 || value.contains('\0'))
     {
         return Err(AgentEventProjectionError::invalid_state());
     }
@@ -3695,11 +3857,12 @@ fn ordinary_model_event(
         if !event.actions.state_delta.is_empty() || event.actions.skip_summarization {
             return Err(AgentEventProjectionError::unsupported());
         }
-        validate_finish_reason(event)?;
+        let output_limited = output_limited(event)?;
         return Ok(Some(OrdinaryModelEvent {
             content: String::new(),
             thinking: String::new(),
             closes_turn: true,
+            output_limited,
             timestamp: event
                 .timestamp
                 .to_rfc3339_opts(SecondsFormat::AutoSi, false),
@@ -3716,27 +3879,27 @@ fn ordinary_model_event(
     }
     let (content, thinking) = ordinary_text_parts(content.parts.as_slice(), allow_function_calls)?;
     let closes_turn = event.llm_response.turn_complete || !event.llm_response.partial;
-    if closes_turn {
-        validate_finish_reason(event)?;
-    }
+    let output_limited = if closes_turn {
+        output_limited(event)?
+    } else {
+        false
+    };
     Ok(Some(OrdinaryModelEvent {
         content,
         thinking,
         closes_turn,
+        output_limited,
         timestamp: event
             .timestamp
             .to_rfc3339_opts(SecondsFormat::AutoSi, false),
     }))
 }
 
-fn validate_finish_reason(event: &Event) -> Result<(), AgentEventProjectionError> {
-    if matches!(
-        event.llm_response.finish_reason,
-        None | Some(FinishReason::Stop)
-    ) {
-        Ok(())
-    } else {
-        Err(AgentEventProjectionError::unsupported())
+fn output_limited(event: &Event) -> Result<bool, AgentEventProjectionError> {
+    match event.llm_response.finish_reason {
+        None | Some(FinishReason::Stop) => Ok(false),
+        Some(FinishReason::MaxTokens) => Ok(true),
+        _ => Err(AgentEventProjectionError::unsupported()),
     }
 }
 
@@ -4158,6 +4321,46 @@ fn merge_stream_value(
         extend_bounded(&mut accumulated, &current)?;
         Ok((accumulated, current))
     }
+}
+
+fn trim_continuation_overlap(existing_tail: &str, incoming_content: &str) -> String {
+    let stripped = incoming_content.trim_start_matches(['\n', '\r']);
+    let existing = existing_tail.chars().collect::<Vec<_>>();
+    let incoming = stripped.chars().collect::<Vec<_>>();
+    let max_overlap = existing
+        .len()
+        .min(incoming.len())
+        .min(MAX_CONTINUATION_OVERLAP_CHARS);
+
+    for overlap in (4..=max_overlap).rev() {
+        let suffix = &existing[existing.len() - overlap..];
+        if suffix != &incoming[..overlap]
+            || !suffix.iter().any(|character| character.is_alphanumeric())
+        {
+            continue;
+        }
+        let starts_at_boundary = overlap == existing.len()
+            || !(existing[existing.len() - overlap - 1].is_alphanumeric()
+                && suffix[0].is_alphanumeric());
+        let ends_at_boundary = overlap == incoming.len()
+            || !(suffix[overlap - 1].is_alphanumeric() && incoming[overlap].is_alphanumeric());
+        if starts_at_boundary && ends_at_boundary {
+            return incoming[overlap..].iter().collect();
+        }
+    }
+    if existing
+        .last()
+        .is_some_and(|character| character.is_alphabetic())
+        && incoming
+            .first()
+            .is_some_and(|character| character.is_alphabetic())
+    {
+        let mut separated = String::with_capacity(incoming_content.len().saturating_add(1));
+        separated.push(' ');
+        separated.push_str(incoming_content);
+        return separated;
+    }
+    incoming_content.to_owned()
 }
 
 fn extend_bounded(target: &mut String, value: &str) -> Result<(), AgentEventProjectionError> {

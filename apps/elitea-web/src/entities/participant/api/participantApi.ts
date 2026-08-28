@@ -25,13 +25,10 @@
  * generated or hand-written `conversationDetails` query anywhere in this
  * app yet (the sibling two endpoints above are the only handwritten chat-
  * domain entries so far, and neither is `conversationDetails`), so there is
- * no established query-key convention to invalidate against. Each mutation
- * below still calls `queryClient.invalidateQueries` against a LOCAL,
- * documented key shape (`['chat', 'conversation', 'details', projectId,
- * conversationId]`) so a future `conversationDetails`-query-building unit
- * (chat.api.js's remaining 24 endpoints, out of this unit's scope) gets
- * working invalidation for free by keying its own query the same way —
- * flagged here rather than silently wired to nothing.
+ * `entities/conversation` now owns the corresponding details query. Mutations
+ * invalidate its real prefix (`['conversation', 'details', projectId,
+ * conversationId]`) so saved participant settings are visible after a
+ * refetch instead of remaining trapped in a stale cache entry.
  */
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 
@@ -47,7 +44,7 @@ async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 function conversationDetailsQueryKey(projectId: string, conversationId: string) {
-  return ['chat', 'conversation', 'details', projectId, conversationId] as const;
+  return ['conversation', 'details', projectId, conversationId] as const;
 }
 
 /* ── addParticipantIntoConversation — POST elitea_core/participants/prompt_lib/{projectId}/{conversationId} ── */

@@ -443,7 +443,9 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	} else if admission.CurrentContinueTurn != nil {
 		turn := *admission.CurrentContinueTurn
 		var resumeErr error
-		if turn.ContinuationKind == agentexecutionapp.CurrentContinuationAuthorization {
+		if turn.ContinuationKind == agentexecutionapp.CurrentContinuationOutputLimit {
+			resumeErr = resumeCurrentAgentOutputLimit(ctx, txQueries, admission.Record.Job.ID, turn)
+		} else if turn.ContinuationKind == agentexecutionapp.CurrentContinuationAuthorization {
 			resumeErr = resumeCurrentAgentAuthorization(ctx, txQueries, admission.Record.Job.ID, turn)
 		} else {
 			resumeErr = resumeCurrentAgentHITL(ctx, txQueries, admission.Record.Job.ID, turn)
@@ -594,6 +596,62 @@ func resumeCurrentAgentHITL(
 	}
 	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
 		return errors.New("current agent continuation returned an invalid response binding")
+	}
+	return nil
+}
+
+func resumeCurrentAgentOutputLimit(
+	ctx context.Context,
+	queries *sqlcgen.Queries,
+	executionID string,
+	turn agentexecutionapp.CurrentContinueTurn,
+) error {
+	projectID, projectIDValid := currentAgentDatabaseID(turn.ProjectID)
+	targetParticipantID, targetParticipantIDValid := currentAgentDatabaseID(turn.TargetParticipantID)
+	if !projectIDValid || !targetParticipantIDValid {
+		return executionapp.ErrInvalidAdmission
+	}
+	var applicationID, applicationVersionID int32
+	if turn.Kind == agentexecutionapp.CurrentRegenerationApplication {
+		var applicationIDValid, applicationVersionIDValid bool
+		applicationID, applicationIDValid = currentAgentDatabaseID(turn.ApplicationID)
+		applicationVersionID, applicationVersionIDValid = currentAgentDatabaseID(turn.ApplicationVersionID)
+		if !applicationIDValid || !applicationVersionIDValid {
+			return executionapp.ErrInvalidAdmission
+		}
+	}
+	conversationUUID, err := currentPGUUID(turn.ConversationUUID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	questionID, err := currentPGUUID(turn.QuestionID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	responseMessageID, err := currentPGUUID(turn.ResponseMessageID)
+	if err != nil {
+		return executionapp.ErrInvalidAdmission
+	}
+	row, err := queries.ResumeCurrentAgentOutputLimit(
+		ctx,
+		sqlcgen.ResumeCurrentAgentOutputLimitParams{
+			ActorUserID: turn.ActorUserID, TargetParticipantID: targetParticipantID,
+			ConversationUuid: conversationUUID, QuestionID: questionID,
+			ResponseMessageID: responseMessageID, ContinuationKind: string(turn.Kind),
+			ApplicationID: applicationID, ApplicationVersionID: applicationVersionID,
+			ExecutionGeneration: turn.ExecutionGeneration, ThreadID: turn.ThreadID,
+			OutputLimitSequence: turn.OutputLimitSequence,
+			ExecutionID:         executionID, ProjectID: projectID,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return agentexecutionapp.ErrCurrentAgentOutputLimitAlreadyResolved
+	}
+	if err != nil {
+		return fmt.Errorf("resume current agent output-limit continuation: %w", err)
+	}
+	if row.ResponseMessageGroupID <= 0 || row.ResponseMessageID != responseMessageID {
+		return errors.New("current agent output-limit continuation returned an invalid response binding")
 	}
 	return nil
 }

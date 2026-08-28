@@ -190,6 +190,18 @@ function assistantHitlFields(
   };
 }
 
+function assistantContinuationFields(
+  meta: MessageGroupWire['meta'],
+): Partial<Pick<AssistantMessage, 'requiresConfirmation'>> {
+  if (meta?.output_limit_reached !== true) return {};
+  return {
+    requiresConfirmation: {
+      message: "Token limit reached mid-response. Press 'Continue' to see more.",
+      buttonText: 'Continue',
+    },
+  };
+}
+
 /** `meta.thinking_steps`/`meta.tool_calls`/`meta.first_tool_timestamp_start` — `buildToolActions`' raw inputs. */
 function resolveAssistantToolInputs(meta: MessageGroupWire['meta']) {
   return {
@@ -271,5 +283,6 @@ export function normaliseAssistantMessage(
     ...(exception !== undefined ? { exception } : {}),
     ...(messageGroup.likes !== undefined ? { likes: messageGroup.likes } : {}),
     ...assistantHitlFields(meta),
+    ...assistantContinuationFields(meta),
   };
 }

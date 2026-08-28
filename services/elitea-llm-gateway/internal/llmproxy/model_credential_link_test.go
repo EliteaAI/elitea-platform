@@ -518,6 +518,81 @@ func TestUnpublishedCredentialOfThePublicProjectIsNotLinkable(t *testing.T) {
 	}
 }
 
+// TestPublishedModelPinsItsUnpublishedOwnerCredential is the restored Centry
+// shape: the model row is shared, its private:false link names a credential in
+// the same public project, and that credential is intentionally not shared.
+// The model is the capability; the credential must not become generally
+// linkable as a side effect.
+func TestPublishedModelPinsItsUnpublishedOwnerCredential(t *testing.T) {
+	const public = "1"
+	spy := &linkSpy{dispatchSpy: newDispatchSpy()}
+	db := &fakeModelDB{
+		bySchema: map[string][]fakeModelRow{
+			mapProjectID: {},
+			public: {{
+				title:  "Shared GPT",
+				data:   []byte(`{"name":"gpt-5.4-mini","ai_credentials":{"elitea_title":"ai_creds","private":false}}`),
+				shared: true,
+			}},
+		},
+		credsBySchema: map[string][]fakeCredentialRow{
+			mapProjectID: {},
+			public:       {{id: "pub-1", typ: "open_ai", title: "ai_creds", shared: false}},
+		},
+	}
+	resolver := NewModelResolver(ModelResolverConfig{DB: db, PublicProjectID: public})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver)).route()
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Shared GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	if got, _ := spy.last(); got.provider != "openai" || got.model != "gpt-5.4-mini" {
+		t.Fatalf("dispatch = (%q, %q), want (openai, gpt-5.4-mini)", got.provider, got.model)
+	}
+	link, pinned := spy.pin()
+	if !pinned {
+		t.Fatal("published model did not pin its owner credential")
+	}
+	if link.ProjectID != public || link.ConfigID != "pub-1" || !link.ModelOwnerAccess {
+		t.Fatalf("pinned credential = %+v, want public owner capability", link)
+	}
+}
+
+// TestPublishedModelPrivateLinkUsesTheCallerScope preserves the other current
+// reference mode. private:true never grants model-owner access and may resolve
+// only the caller's personal credential (or a separately published fallback).
+func TestPublishedModelPrivateLinkUsesTheCallerScope(t *testing.T) {
+	const public = "1"
+	spy := &linkSpy{dispatchSpy: newDispatchSpy()}
+	db := &fakeModelDB{
+		bySchema: map[string][]fakeModelRow{
+			mapProjectID: {},
+			public: {{
+				title:  "Personal GPT",
+				data:   []byte(`{"name":"gpt-5.4-mini","ai_credentials":{"elitea_title":"personal_creds","private":true}}`),
+				shared: true,
+			}},
+		},
+		credsBySchema: map[string][]fakeCredentialRow{
+			mapProjectID: {{id: "own-1", typ: "open_ai", title: "personal_creds"}},
+			public:       {{id: "pub-1", typ: "amazon_bedrock", title: "personal_creds", shared: false}},
+		},
+	}
+	resolver := NewModelResolver(ModelResolverConfig{DB: db, PublicProjectID: public})
+	h := NewHandler(spy, nil, nil, WithModelResolver(resolver)).route()
+
+	postAs(t, h, "/llm/v1/chat/completions", mapProjectID,
+		`{"model":"Personal GPT","messages":[{"role":"user","content":"hi"}]}`)
+
+	link, pinned := spy.pin()
+	if !pinned || link.ProjectID != mapProjectID || link.ConfigID != "own-1" {
+		t.Fatalf("pinned credential = %+v, want caller's personal credential", link)
+	}
+	if link.ModelOwnerAccess {
+		t.Fatal("private:true link received model-owner access")
+	}
+}
+
 // TestOwnCredentialWinsOverAPublishedOneOfTheSameTitle pins the precedence
 // between the two scopes. It is the same precedence the model list and the
 // credential list already keep.

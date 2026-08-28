@@ -15,6 +15,28 @@ describe('orderedProjectOptions', () => {
     expect(ordered.map((p) => p.name)).toEqual(['Public', 'Alpha', 'mango', 'Zulu']);
   });
 
+  it('uses user-facing names and pins the personal project after the public project', () => {
+    const projects = [
+      project(7, 'Zulu'),
+      project(2, 'project_user_3'),
+      project(1, 'promptlib_public'),
+      project(4, 'Alpha'),
+    ];
+    const ordered = orderedProjectOptions(projects, '1', '2');
+    expect(ordered.map((p) => [p.id, p.name])).toEqual([
+      [1, 'Public'],
+      [2, 'Private'],
+      [4, 'Alpha'],
+      [7, 'Zulu'],
+    ]);
+  });
+
+  it('does not infer a personal project from its storage-name pattern', () => {
+    const projects = [project(2, 'project_user_3'), project(1, 'promptlib_public')];
+    const ordered = orderedProjectOptions(projects, '1');
+    expect(ordered.map((p) => p.name)).toEqual(['Public', 'project_user_3']);
+  });
+
   it('is a pure alphabetical sort when no project matches the public id', () => {
     const projects = [project(3, 'Zulu'), project(2, 'Alpha')];
     const ordered = orderedProjectOptions(projects, '999');

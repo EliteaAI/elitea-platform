@@ -110,6 +110,7 @@ pub(super) fn ordinary_request(kind: AgentExecutionKind) -> AgentExecutionReques
             debug_mode: None,
             next_input_suggestion: NextInputSuggestionPolicy::default(),
             toolkit_guardrails: None,
+            truncated_content: None,
         },
     }
 }
@@ -144,7 +145,7 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
         OrdinaryModelProvider::OpenAiChat
     );
     assert_eq!(application.model_project_id(), 17);
-    assert_eq!(application.max_tokens(), 4096);
+    assert_eq!(application.max_tokens(), Some(4096));
     assert_eq!(
         application.reasoning_effort(),
         Some(ReasoningEffort::Medium)
@@ -157,7 +158,7 @@ fn application_and_adhoc_ordinary_profiles_normalize_current_main_model_contract
     assert_eq!(adhoc.model_name(), "fixture-model");
     assert_eq!(adhoc.model_provider(), OrdinaryModelProvider::OpenAiChat);
     assert_eq!(adhoc.model_project_id(), 17);
-    assert_eq!(adhoc.max_tokens(), 2048);
+    assert_eq!(adhoc.max_tokens(), Some(2048));
     assert_eq!(adhoc.reasoning_effort(), None);
     assert_eq!(adhoc.temperature(), Some(0.7));
 
@@ -232,6 +233,43 @@ fn context_management_has_an_explicit_fail_closed_runner_seam() {
     let error = OrdinaryNoToolProfile::validate(&malformed)
         .expect_err("a malformed master switch is not silently ignored");
     assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+}
+
+#[test]
+fn output_continuation_profile_requires_one_clean_explicit_partial() {
+    for partial in ["partial visible answer", ""] {
+        let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+        request.payload.should_continue = true;
+        request.payload.truncated_content = Some(partial.to_owned());
+        OrdinaryNoToolProfile::validate_output_continuation(&request)
+            .expect("authorized output continuation");
+        let error = OrdinaryNoToolProfile::validate(&request)
+            .expect_err("a fresh turn must reject continuation state");
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
+
+    for mutation in 0..5 {
+        let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+        request.payload.should_continue = true;
+        request.payload.truncated_content = Some("partial visible answer".to_owned());
+        match mutation {
+            0 => request.payload.truncated_content = None,
+            1 => request.payload.truncated_content = Some("invalid\0partial".to_owned()),
+            2 => request.payload.truncated_content = Some("x".repeat(64 * 1_024 + 1)),
+            3 => request.payload.hitl_resume = true,
+            4 => request.payload.hitl_action = Some("approve".to_owned()),
+            _ => unreachable!("bounded mutation corpus"),
+        }
+        let error = OrdinaryNoToolProfile::validate_output_continuation(&request)
+            .expect_err("mixed or malformed output continuation must fail closed");
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
 }
 
 #[test]
@@ -470,7 +508,7 @@ fn pipeline_tools_templates_and_defaults_are_classified_before_redemption() {
         .insert("max_tokens".to_owned(), json!(-1));
     let profile = OrdinaryNoToolProfile::validate(&defaulted_application)
         .expect("SDK-compatible application defaults");
-    assert_eq!(profile.max_tokens(), 4_000);
+    assert_eq!(profile.max_tokens(), None);
 
     let mut templated_adhoc = ordinary_request(AgentExecutionKind::Adhoc);
     templated_adhoc
@@ -620,5 +658,42 @@ fn credential_redemption_is_unreachable_until_the_profile_is_admitted() {
         )
         .admit_llm_agent(&empty_tool_policy())
         .is_err()
+    );
+}
+
+#[test]
+fn regeneration_is_admitted_as_a_durable_session_rebuild() {
+    let mut request = ordinary_request(AgentExecutionKind::Adhoc);
+    request.payload.is_regenerate = true;
+    OrdinaryNoToolProfile::validate_regeneration(&request).expect("regeneration profile");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate(&request)
+            .expect_err("fresh admission must not absorb regeneration")
+            .code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
+    );
+
+    let admitted = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_llm_agent(&empty_tool_policy())
+    .expect("admitted regeneration");
+    assert!(admitted.is_resume());
+
+    let mut mixed = request;
+    mixed.payload.should_continue = true;
+    let Err(error) = AuthorizedNativeAssembly::new(
+        &mixed,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_llm_agent(&empty_tool_policy()) else {
+        panic!("regeneration cannot also resume an interrupt");
+    };
+    assert_eq!(
+        error.code(),
+        NativeAgentAssemblyErrorCode::UnsupportedCapability
     );
 }

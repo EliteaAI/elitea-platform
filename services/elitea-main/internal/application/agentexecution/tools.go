@@ -18,12 +18,10 @@ import (
 )
 
 const (
-	currentAgentDefaultMaxTokens          = int64(4_000)
-	currentAgentReasoningDefaultMaxTokens = int64(16_000)
-	currentMaxNestedSkillApplications     = 25
-	currentMaxNestedSkills                = 512
-	currentMaxNestedSkillIconBytes        = 16 * 1024
-	currentNestedSkillRegistryField       = "nested_skill_registry"
+	currentMaxNestedSkillApplications = 25
+	currentMaxNestedSkills            = 512
+	currentMaxNestedSkillIconBytes    = 16 * 1024
+	currentNestedSkillRegistryField   = "nested_skill_registry"
 )
 
 // CurrentApplicationVersionFreezer converts the current saved application
@@ -546,11 +544,15 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 		if !valid || maxTokens == 0 || maxTokens < -1 || maxTokens > math.MaxInt32 {
 			return unsupportedStart("max_tokens is out of the admitted range")
 		}
-		if maxTokens == -1 {
-			maxTokens = currentAgentDefaultMaxTokens
-			if selected.SupportsReasoning != nil && *selected.SupportsReasoning {
-				maxTokens = currentAgentReasoningDefaultMaxTokens
+		// OpenAI-compatible providers define Auto by omission. Keep the sentinel
+		// in the immutable snapshot so the worker can omit the wire field. Native
+		// Anthropic requires max_tokens, so Auto uses the configured model limit.
+		if maxTokens == -1 && !compatible {
+			if selected.MaxOutputTokens == nil || *selected.MaxOutputTokens <= 0 ||
+				*selected.MaxOutputTokens > math.MaxInt32 {
+				return unsupportedStart("the native model has no valid maximum output token configuration")
 			}
+			maxTokens = int64(*selected.MaxOutputTokens)
 		}
 		settings["max_tokens"] = maxTokens
 	}

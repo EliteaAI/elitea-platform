@@ -15,13 +15,8 @@
  * disclosed data gap (`projectId` has no fully-wired source until unit
  * S1/AppShell or R2/router-context lands).
  *
- * DISCLOSED GAP: `ChatBoxProps` has no "a new conversation was just
- * created" callback (its internal `useChatBoxHandlers` creates the
- * conversation but never surfaces the new id back to the caller), so this
- * page cannot navigate `/chat` -> `/chat/:newId` after the first message
- * of a brand-new chat the way the old app's `changeUrlByConversation` did.
- * Fixing that requires extending `ChatBoxProps` itself (a C6 contract
- * change) — flagged, not silently worked around here.
+ * A successful first send promotes the created conversation into the route.
+ * This preserves one conversation UUID for later turns and durable history.
  *
  * `editorCallbacks` (unit A2/A4/C6-editor-composition follow-up): an
  * OPTIONAL prop bundle — same "group related props into one slot" §3.5
@@ -34,7 +29,7 @@
  * doc comment for who actually supplies real (non-no-op) callbacks here.
  */
 import type { ComponentProps } from 'react';
-import { memo, useEffect, useState } from 'react';
+import { memo, useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 
 import Box from '@mui/material/Box';
@@ -47,6 +42,7 @@ import { ChatBox } from '@/widgets/chat-box';
 import { ContextBudget } from '@/widgets/context-budget';
 
 import { useChatPageData } from './useChatPageData';
+import { useChatModelSettings } from './useChatModelSettings';
 
 /**
  * Baseline `rightPanelWidth` (`NewChat.jsx:187`). `ParticipantsWrapper`'s own
@@ -135,15 +131,25 @@ export interface ChatPageProps {
 }
 
 const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
+  const navigate = useNavigate();
   const { conversationId: routeConversationId } = useParams({ strict: false }) as { conversationId?: string };
   const { conversationId, messageId } = useDeepLinkedConversationId(routeConversationId);
   const { projectId, user, activeConversation, isLoadingConversation } = useChatPageData({ conversationId });
+  const llm = useChatModelSettings({ activeConversation, projectId, userId: user?.id });
   const { getLocalActiveParticipant, setLocalActiveParticipant } = useLocalActiveParticipant();
   useMessageIdToView(messageId, conversationIdOf(activeConversation));
 
   const [activeParticipant, setActiveParticipant] = useState<unknown>(undefined);
   // Baseline default: collapsed (`NewChat.jsx:166`).
   const [participantsCollapsed, setParticipantsCollapsed] = useState(true);
+
+  const handleConversationCreated = useCallback(
+    (created: { readonly id?: string | number }) => {
+      if (created.id === undefined) return;
+      void navigate({ to: '/chat/$conversationId', params: { conversationId: String(created.id) } });
+    },
+    [navigate],
+  );
 
   // Restore the conversation's last-active participant once its real
   // participant list has loaded (baseline: `ChatWrapper.jsx`'s own
@@ -169,9 +175,14 @@ const ChatPage = memo(({ editorCallbacks, entitySubmenus }: ChatPageProps) => {
     <Box sx={{ display: 'flex', height: '100%', minHeight: 0, width: '100%' }}>
       <Box sx={{ flexGrow: 1, minWidth: 0, height: '100%' }}>
         <ChatBox
-          conversation={{ ...(activeConversation ? { active: activeConversation } : {}), isLoading: isLoadingConversation }}
+          conversation={{
+            ...(activeConversation ? { active: activeConversation } : {}),
+            isLoading: isLoadingConversation,
+            onCreated: handleConversationCreated,
+          }}
           {...(projectId !== undefined ? { projectId } : {})}
           {...(user ? { user } : {})}
+          llm={{ settings: llm.settings, onSetSettings: llm.onSetSettings }}
           participant={{ active: activeParticipant, onChange: handleChangeParticipant }}
           {...(editorCallbacks || entitySubmenus
             ? {

@@ -176,6 +176,7 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
         responses[3].finish_reason,
         Some(adk_rust::FinishReason::Stop)
     );
+    assert!(responses[3].content.is_none());
     assert!(matches!(
         responses[1]
             .content
@@ -193,6 +194,46 @@ async fn exact_sdk_request_and_fragmented_sse_are_preserved() {
         panic!("exactly one model request expected")
     };
     assert_exact_captured_request(request);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn automatic_max_tokens_omits_the_openai_wire_limit() {
+    let (client, captured) = test_model_gateway_client(
+        vec![TestModelGatewayOutcome::Response(
+            test_model_gateway_response(Body::new(Full::new(Bytes::from(ordinary_sse())))),
+        )],
+        test_model_gateway_config(),
+    )
+    .expect("model gateway client");
+    let mut invocation = test_model_gateway_invocation();
+    invocation.max_tokens = None;
+    let bound = client
+        .bind_ordinary(
+            &ClaimScopedEliteaContext::fixture(17, TOKEN),
+            17,
+            invocation,
+        )
+        .expect("bound automatic-limit model");
+    let mut request = test_model_gateway_request("explain this");
+    request
+        .config
+        .as_mut()
+        .expect("generation config")
+        .max_output_tokens = None;
+
+    drain(
+        bound
+            .generate_for_test(request)
+            .await
+            .expect("automatic-limit model stream"),
+    )
+    .await
+    .expect("valid automatic-limit response");
+
+    let captured = captured.lock().expect("captured requests");
+    let body: serde_json::Value =
+        serde_json::from_slice(&captured[0].body).expect("model request JSON");
+    assert!(body.get("max_completion_tokens").is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

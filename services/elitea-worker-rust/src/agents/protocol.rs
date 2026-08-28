@@ -59,7 +59,7 @@ pub fn parse_agent_execution_input(
 /// Returns [`AgentProtocolError::InvalidInput`] for a malformed binding,
 /// semantic shape, or invariant. Bounded JSON input may also return
 /// [`AgentProtocolError::ResourceExhausted`].
-#[allow(clippy::too_many_lines)] // A linear 37-field projection is easier to audit against the proto.
+#[allow(clippy::too_many_lines)] // A linear field projection is easier to audit against the proto.
 pub fn request_from(
     message: AgentExecutionInputV1,
     kind: AgentExecutionKind,
@@ -137,6 +137,10 @@ pub fn request_from(
     )?;
     let next_input_suggestion = next_input_suggestion_policy(&message.next_input_suggestion)?;
     let toolkit_guardrails = toolkit_guardrails_policy(&message.toolkit_guardrails)?;
+    let truncated_content = optional_json_string(
+        &message.truncated_content,
+        "the truncated agent content must be text",
+    )?;
 
     let steps_limit = match message.steps_limit {
         Some(value) if value > 0 => Some(value.cast_unsigned()),
@@ -207,6 +211,7 @@ pub fn request_from(
             debug_mode: message.debug_mode,
             next_input_suggestion,
             toolkit_guardrails,
+            truncated_content,
         },
     })
 }
@@ -254,6 +259,19 @@ fn optional_json_object(
     match parse_json_value(raw)? {
         Value::Null => Ok(None),
         Value::Object(value) => Ok(Some(value)),
+        _ => Err(AgentProtocolError::InvalidInput(shape_error)),
+    }
+}
+
+fn optional_json_string(
+    raw: &[u8],
+    shape_error: &'static str,
+) -> Result<Option<String>, AgentProtocolError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    match parse_json_value(raw)? {
+        Value::String(value) => Ok(Some(value)),
         _ => Err(AgentProtocolError::InvalidInput(shape_error)),
     }
 }

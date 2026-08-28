@@ -184,7 +184,7 @@ async fn immediate_poll_is_sequential_and_uses_unique_renewal_keys() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn state_probe_fails_closed_on_local_expiry_and_monitor_shutdown() {
+async fn state_probe_keeps_one_poll_for_renewal_and_fails_closed_before_expiry() {
     let state = Arc::new(FakeState::default());
     let clock = Arc::new(AtomicI64::new(NOW));
     let sampled_clock = {
@@ -201,6 +201,11 @@ async fn state_probe_fails_closed_on_local_expiry_and_monitor_shutdown() {
     probe.ensure_running().expect("initial state-write margin");
 
     clock.store(NOW + 10_001, Ordering::SeqCst);
+    probe
+        .ensure_running()
+        .expect("periodic renewal boundary remains writable");
+
+    clock.store(NOW + 20_001, Ordering::SeqCst);
     let expired = probe.ensure_running().expect_err("insufficient margin");
     assert_eq!(expired.code(), ClaimLeaseErrorCode::LeaseLost);
 

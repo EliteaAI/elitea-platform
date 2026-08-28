@@ -292,6 +292,7 @@ impl AgentTerminalReplay for FakeReplay {
 
 struct RecoveryControl {
     trace: Arc<Mutex<Vec<&'static str>>>,
+    claim_fixture: &'static str,
     settlement_fails: bool,
     authorize_disposition: Option<AuthorizeInvocationDispositionV1>,
     authorize_unavailable: bool,
@@ -307,7 +308,10 @@ impl ControlRpc for RecoveryControl {
         _request: Request<ClaimCommandRequestV1>,
     ) -> Result<Response<ClaimCommandResponseV1>, Status> {
         self.trace.lock().expect("trace").push("claim");
-        Ok(Response::new(claim_response()))
+        Ok(Response::new(
+            ClaimCommandResponseV1::decode(bytes(self.claim_fixture).as_slice())
+                .expect("claim fixture"),
+        ))
     }
 
     async fn begin_execution(
@@ -471,6 +475,7 @@ fn recovery_control_with_policy(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
+                claim_fixture: "accepted_claim",
                 settlement_fails,
                 authorize_disposition: None,
                 authorize_unavailable: false,
@@ -501,6 +506,7 @@ fn authorization_control_with_disposition(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
+                claim_fixture: "accepted_claim",
                 settlement_fails: false,
                 authorize_disposition: Some(disposition),
                 authorize_unavailable: false,
@@ -541,6 +547,7 @@ fn authorized_control_with_policy(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
+                claim_fixture: "accepted_claim",
                 settlement_fails: false,
                 authorize_disposition: Some(AuthorizeInvocationDispositionV1::AuthorizedNow),
                 authorize_unavailable: false,
@@ -563,6 +570,31 @@ fn authorized_control_with_policy(
     )
 }
 
+fn ambiguous_output_recovery_control(
+    trace: Arc<Mutex<Vec<&'static str>>>,
+) -> Arc<AgentControlClient<RecoveryControl>> {
+    Arc::new(
+        AgentControlClient::new(
+            RecoveryControl {
+                trace,
+                claim_fixture: "claim_recover_ambiguous_invocation_noack",
+                settlement_fails: false,
+                authorize_disposition: None,
+                authorize_unavailable: false,
+                renew_fail_after: None,
+                renew_attempts: AtomicUsize::new(0),
+                observe_states: Mutex::new(VecDeque::new()),
+            },
+            ControlGrpcConfig {
+                deadline: Duration::from_secs(1),
+                workload_session_id: "workload-1".to_owned(),
+                producer_id: "worker-1".to_owned(),
+            },
+        )
+        .expect("ambiguous output recovery control"),
+    )
+}
+
 fn unavailable_authorization_control(
     trace: Arc<Mutex<Vec<&'static str>>>,
 ) -> Arc<AgentControlClient<RecoveryControl>> {
@@ -570,6 +602,7 @@ fn unavailable_authorization_control(
         AgentControlClient::new(
             RecoveryControl {
                 trace,
+                claim_fixture: "accepted_claim",
                 settlement_fails: false,
                 authorize_disposition: None,
                 authorize_unavailable: true,
@@ -2899,6 +2932,75 @@ async fn redis_delivery_processor_owns_both_agent_kinds_through_retirement() {
     for kind in [AgentExecutionKind::Application, AgentExecutionKind::Adhoc] {
         Box::pin(run_delivery_processor_case(kind)).await;
     }
+}
+
+#[tokio::test]
+async fn ambiguous_output_recovery_terminalizes_without_reentering_business_execution() {
+    let trace = Arc::new(Mutex::new(Vec::new()));
+    let (temporary, output_root) = root();
+    let control = ambiguous_output_recovery_control(Arc::clone(&trace));
+    let admission = InvocationAdmission::new(
+        InvocationAdmissionConfig::new(1, Duration::from_secs(1)).expect("invocation admission"),
+    );
+    let progress_state = FakeProgressState::new([], []);
+    let connector = FakeProgressConnector {
+        state: Arc::clone(&progress_state),
+    };
+    let retirer = Arc::new(recovery_retirer(
+        Arc::clone(&trace),
+        Ok(RedisRetirementResponse {
+            acknowledged: 1,
+            deleted: 1,
+            unmapped: 1,
+        }),
+    ));
+    let processor = native_agent_delivery_processor(
+        Arc::new(TestOnlyConformanceHmacAuthenticator),
+        preflight(output_root, "worker-1"),
+        control,
+        retirer,
+        Arc::new(KindAgentInput {
+            trace: Arc::clone(&trace),
+            kind: AgentExecutionKind::Application,
+        }),
+        Arc::new(|| NOW),
+        admission.clone(),
+        AgentPreparationConfig::new(Duration::from_secs(10)).expect("preparation config"),
+        Arc::new(TestNativeAssembler {
+            trace: Arc::clone(&trace),
+            agent: Arc::new(ImmediateTextAgent),
+            sensitive: false,
+        }),
+        connector,
+        1,
+        recovery_config(1),
+    );
+
+    processor
+        .process(redis_delivery(signed_command_for_kind(
+            AgentExecutionKind::Application,
+        )))
+        .await;
+    processor.close().await.expect("delivery processor drain");
+
+    assert_eq!(
+        *trace.lock().expect("trace"),
+        ["claim", "renew", "observe", "settlement", "redis"]
+    );
+    assert_eq!(admission.available_capacity(), 1);
+    let frames = progress_state.frames.lock().expect("frames");
+    assert_eq!(frames.len(), 1);
+    assert!(frames[0].terminal);
+    assert_eq!(frames[0].sequence, 5);
+    assert_eq!(frames[0].claim_handoff_watermark, 4);
+    let Some(execution_output_frame_v1::Payload::RuntimeError(error)) = frames[0].payload.as_ref()
+    else {
+        panic!("ambiguous recovery must publish one safe runtime terminal");
+    };
+    assert_eq!(error.code, RuntimeErrorCodeV1::Internal as i32);
+    drop(frames);
+    drop(processor);
+    drop(temporary);
 }
 
 async fn run_delivery_processor_case(kind: AgentExecutionKind) {

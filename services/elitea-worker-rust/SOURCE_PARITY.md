@@ -1,7 +1,7 @@
 # Rust worker source parity
 
 - Status: capability-disabled production agent runtime with isolated end-to-end proof
-- Last verified: 2026-08-25
+- Last verified: 2026-08-28
 - Production capability registration: disabled
 
 The previous Rust worker implementation was never committed and no recoverable
@@ -146,6 +146,35 @@ carry.
 Prompts, arguments, results, URLs, credentials, tokens and provider bodies are
 never trace or log fields. Backend retention, sampling, metrics and Kubernetes
 activation remain deployment gates.
+
+Current output-continuation checkpoint: OpenAI-compatible model `Auto` preserves
+the UI's `max_tokens=-1` sentinel through Main and omits the provider wire limit;
+native Anthropic resolves its required limit from the frozen configuration.
+An explicitly bounded root response persists its partial text and exact
+`output_limit_sequence`, survives reload, and resumes the same response through
+`agent.continue.output-limit.v1` with the same conversation, message, question,
+thread, generation, and restored ADK session. Main reconstructs ad-hoc model
+settings from the selected dummy/model participant rather than the user
+participant. Rust removes one meaningful overlap and restores a missing
+alphabetic separator at the continuation seam before stream and terminal
+projection. Local Private-project UI proof covered a 700-token pause, reload,
+one 200 continuation, one start/end marker pair, a clean `with external systems`
+seam, durable completion, and a fresh exact follow-up. Root continuation remains
+user-triggered; automatic bounded continuation and its future project controls
+remain a separate policy slice, as do pipeline/nested automatic continuation
+and crash recovery between suffix persistence and graph advancement.
+
+Current regeneration checkpoint: the typed Main route admits
+`agent.regenerate.v1` with the original response identity and a new execution
+generation. Rust treats `is_regenerate` as a distinct direct-agent start mode,
+not as a fresh append or interrupt resume. Under the current claim and session
+writer fence, it deletes and recreates only the exact ADK session, seeds Main's
+history snapshot from before the replaced response, and runs the original user
+turn once. A Private-project UI proof regenerated a bounded response, continued
+its 500-token suffix, retained one replacement branch after reload, and removed
+the earlier failed response. The resulting agentstate session contains only the
+replacement user/model pairs. Saved-pipeline regeneration still requires
+coordinated SessionService and Checkpointer rewind semantics.
 
 Current CI checkpoint: `.github/workflows/ci-rust.yml` uses the pinned Rust
 toolchain for formatting, Clippy, rustdoc, tests, and a release build.

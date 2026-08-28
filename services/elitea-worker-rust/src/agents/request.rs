@@ -90,6 +90,9 @@ pub struct AgentExecutionPayload {
     /// fallback for commands produced before field 38 existed; `Some({})`
     /// explicitly clears that fallback for this invocation.
     pub toolkit_guardrails: Option<Map<String, Value>>,
+    /// Visible root-assistant output that ended on the provider token limit.
+    /// Presence distinguishes output continuation from HITL/authorization.
+    pub truncated_content: Option<String>,
 }
 
 #[derive(Eq, PartialEq)]

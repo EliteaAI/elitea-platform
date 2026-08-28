@@ -282,6 +282,7 @@ fn request(tools: Vec<Value>) -> AgentExecutionRequest {
             debug_mode: None,
             next_input_suggestion: NextInputSuggestionPolicy::default(),
             toolkit_guardrails: None,
+            truncated_content: None,
         },
     }
 }

@@ -454,6 +454,21 @@ impl AgentOutputRecovery {
         self.binding.lease_expires_at_unix_millis
     }
 
+    #[must_use]
+    pub(crate) fn matches_output_transport(
+        &self,
+        workload_session_id: &str,
+        producer_id: &str,
+    ) -> bool {
+        self.binding.fence.workload_session_id == workload_session_id
+            && self.binding.fence.producer_id == producer_id
+    }
+
+    #[must_use]
+    pub(crate) fn producer_id(&self) -> &str {
+        &self.binding.fence.producer_id
+    }
+
     /// Separate the exact-fence recovery state from its unique lease handle.
     /// The delivery integration must supervise that handle before publishing.
     #[must_use]
@@ -495,6 +510,32 @@ impl LeasedAgentOutputRecovery {
     #[must_use]
     pub const fn claim_handoff_watermark(&self) -> u64 {
         self.binding.claim_handoff_watermark
+    }
+
+    /// Consume recovery-only authority into one canonical failure terminal.
+    ///
+    /// This value has no input or `BeginExecution` path. The terminal sequence
+    /// comes only from Main's authenticated handoff watermark, and the frame
+    /// uses the replacement claim fence that the caller is supervising.
+    pub(crate) fn bind_failure_terminal(
+        self,
+        verified: &VerifiedAgentCommand,
+        failure: RuntimeFailureKind,
+        occurred_at_unix_millis: i64,
+    ) -> Result<ExecutionOutputFrameV1, ProtocolError> {
+        if self.binding.identity != identity_from_command(verified) {
+            return Err(ProtocolError::AuthorizationFailed(
+                "the output recovery authority does not match its command",
+            ));
+        }
+        build_agent_terminal_output_frame(
+            verified,
+            &self.binding.fence,
+            AgentTerminalOutput::Failure(failure),
+            next_output_sequence(self.binding.claim_handoff_watermark)?,
+            occurred_at_unix_millis,
+            self.binding.claim_handoff_watermark,
+        )
     }
 }
 

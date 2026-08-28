@@ -121,7 +121,7 @@ const ChatBoxInner = memo(function ChatBox({
   const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
-  const { activeConversation, isLoadingConversation } = unwrapChatBoxConversation(conversation);
+  const { activeConversation, isLoadingConversation, onConversationCreated } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
 
@@ -185,7 +185,7 @@ const ChatBoxInner = memo(function ChatBox({
   // create-conversation-first and upload-attachments-first adapters.
   // `startStreamedExecution` reports whether the transport took the run, so
   // `sendQuestion` knows not to ALSO emit `chat_predict`.
-  const { startStreamedExecution, continueStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
+  const { startStreamedExecution, continueStreamedExecution, regenerateStreamedExecution, stopStreamedExecution, isStreaming: isStreamedExecution, createConversationForSend, uploadAttachmentsForSend } = useChatBoxSend({
     deps: { createConversation: lifecycle.createConversation, uploadAttachments: data.attachments.upload.uploadAttachments },
     setChatHistory: data.setChatHistory, projectId, projectIdString, isAgentsPage, conversationUuid,
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
@@ -217,7 +217,7 @@ const ChatBoxInner = memo(function ChatBox({
     projectId,
     socketId: socketClient.socket.id,
     sessionDeclinedMcpServersRef,
-    startStreamedExecution, continueStreamedExecution,
+    startStreamedExecution, continueStreamedExecution, regenerateStreamedExecution,
   });
 
   // Delete confirmation (single message / clear-all) — baseline:
@@ -291,7 +291,7 @@ const ChatBoxInner = memo(function ChatBox({
     handleContinueMcpExecution,
     handleContinueTokenLimit,
     handleClear,
-  } = useChatBoxActions({ chatInputRef, data, state, handlers, deleteAlert, messages, isAgentsPage, readAloudStop });
+  } = useChatBoxActions({ chatInputRef, data, state, handlers, deleteAlert, messages, isAgentsPage, readAloudStop, onConversationCreated });
 
   // Imperative handle (stable via refs, so identity never churns)
   const handleClearRef = useStableRef(handleClear);

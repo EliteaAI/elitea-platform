@@ -33,7 +33,7 @@ use zeroize::Zeroizing;
 
 use super::runtime_context::ClaimScopedEliteaContext;
 use crate::agents::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
-use crate::agents::session::BoundOrdinaryAgentModel;
+use crate::agents::session::{BoundOrdinaryAgentModel, DurableModelCompletion};
 
 const MODEL_ROUTE: &str = "/llm/v1/chat/completions";
 const MAX_ORIGIN_BYTES: usize = 2_048;
@@ -94,7 +94,7 @@ impl ModelGatewayConfig {
 pub(crate) struct ModelGatewayInvocation {
     pub(crate) model_name: String,
     pub(crate) system_instruction: String,
-    pub(crate) max_tokens: u32,
+    pub(crate) max_tokens: Option<u32>,
     pub(crate) reasoning_effort: Option<ModelReasoningEffort>,
     pub(crate) temperature: Option<f32>,
     pub(crate) max_model_turns: u32,
@@ -304,6 +304,10 @@ impl BoundOrdinaryAgentModel for BoundModelGateway {
     fn take_completed_text(self) -> Result<String, NativeAgentAssemblyError> {
         self.completion.take().map_err(model_completion_error)
     }
+
+    fn durable_completion(&self) -> Option<Arc<dyn DurableModelCompletion>> {
+        Some(self.completion.state.clone())
+    }
 }
 
 fn model_completion_error(error: ModelGatewayError) -> NativeAgentAssemblyError {
@@ -342,6 +346,18 @@ struct CompletionState {
 
 struct ModelGatewayCompletion {
     state: Arc<Mutex<CompletionState>>,
+}
+
+impl DurableModelCompletion for Mutex<CompletionState> {
+    fn snapshot(&self) -> adk_rust::Result<Option<String>> {
+        self.lock().map(|state| state.value.clone()).map_err(|_| {
+            model_error(
+                ErrorCategory::Internal,
+                "model_gateway.completion_state",
+                "the model completion state is unavailable",
+            )
+        })
+    }
 }
 
 impl ModelGatewayCompletion {
@@ -457,6 +473,7 @@ impl Llm for EliteaOpenAiCompatibleModel {
                 span.in_scope(|| {
                     tracing::warn!(
                         event = "agent_model_request_failed",
+                        error = %error,
                         error_code = error.code,
                         retryable = error.is_retryable(),
                     );
@@ -473,10 +490,12 @@ pub(super) fn validate_invocation(
     if !bounded_header_text(&invocation.model_name, MAX_MODEL_NAME_BYTES)
         || invocation.system_instruction.len() > MAX_INSTRUCTION_BYTES
         || invocation.system_instruction.contains('\0')
-        || invocation.max_tokens == 0
+        || invocation.max_tokens == Some(0)
         || invocation.max_model_turns == 0
         || invocation.max_model_turns > MAX_MODEL_TURNS
-        || i32::try_from(invocation.max_tokens).is_err()
+        || invocation
+            .max_tokens
+            .is_some_and(|value| i32::try_from(value).is_err())
         || (invocation
             .reasoning_effort
             .is_some_and(|effort| effort != ModelReasoningEffort::None)
@@ -526,10 +545,12 @@ fn build_request_body(
         "stream_options".to_owned(),
         serde_json::json!({"include_usage": true}),
     );
-    body.insert(
-        "max_completion_tokens".to_owned(),
-        serde_json::Value::from(invocation.max_tokens),
-    );
+    if let Some(max_tokens) = invocation.max_tokens {
+        body.insert(
+            "max_completion_tokens".to_owned(),
+            serde_json::Value::from(max_tokens),
+        );
+    }
     if let Some(temperature) = invocation.temperature {
         body.insert(
             "temperature".to_owned(),
@@ -830,7 +851,10 @@ fn generation_config_matches(
     invocation: &ModelGatewayInvocation,
 ) -> bool {
     config.temperature == invocation.temperature
-        && config.max_output_tokens == i32::try_from(invocation.max_tokens).ok()
+        && config.max_output_tokens
+            == invocation
+                .max_tokens
+                .and_then(|value| i32::try_from(value).ok())
         && config.top_p.is_none()
         && config.top_k.is_none()
         && config.frequency_penalty.is_none()
@@ -1540,7 +1564,8 @@ impl OpenAiStreamState {
             OpenAiFinish::Safety => FinishReason::Safety,
             OpenAiFinish::Other => FinishReason::Other,
         };
-        self.completed_text = (!has_tool_calls).then(|| std::mem::take(&mut self.accumulated_text));
+        let completed_text = std::mem::take(&mut self.accumulated_text);
+        self.completed_text = (!has_tool_calls).then_some(completed_text);
         self.terminal = Some(LlmResponse {
             content: (!parts.is_empty()).then_some(Content {
                 role: "model".to_owned(),
@@ -1863,7 +1888,7 @@ pub(super) fn test_model_gateway_invocation() -> ModelGatewayInvocation {
     ModelGatewayInvocation {
         model_name: "fixture-model".to_owned(),
         system_instruction: "review carefully\nbe concise".to_owned(),
-        max_tokens: 4_000,
+        max_tokens: Some(4_000),
         reasoning_effort: Some(ModelReasoningEffort::Medium),
         temperature: None,
         max_model_turns: 25,

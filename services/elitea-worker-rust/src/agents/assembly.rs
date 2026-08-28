@@ -44,7 +44,7 @@ pub(crate) struct OrdinaryNoToolProfile {
     model_name: String,
     model_provider: OrdinaryModelProvider,
     model_project_id: u32,
-    max_tokens: u32,
+    max_tokens: Option<u32>,
     reasoning_effort: Option<ReasoningEffort>,
     temperature: Option<f32>,
     step_limit: u32,
@@ -78,6 +78,24 @@ impl OrdinaryNoToolProfile {
         request: &AgentExecutionRequest,
     ) -> Result<Self, NativeAgentAssemblyError> {
         Self::validate_with_mode(request, CommonProfileMode::McpAuthorization)
+    }
+
+    /// Validate one fresh model call that continues visible root output.
+    pub(crate) fn validate_output_continuation(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::validate_with_mode(request, CommonProfileMode::OutputContinuation)
+    }
+
+    /// Validate one explicit regeneration from Main's truncated history.
+    ///
+    /// Regeneration is neither a fresh append nor an interrupt resume. Main
+    /// freezes the history before the response being replaced, and the session
+    /// boundary rebuilds the exact thread from that snapshot before running.
+    pub(crate) fn validate_regeneration(
+        request: &AgentExecutionRequest,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::validate_with_mode(request, CommonProfileMode::Regenerate)
     }
 
     /// Validate the model/session shell shared by a stored pipeline.
@@ -291,7 +309,7 @@ impl OrdinaryNoToolProfile {
     }
 
     #[must_use]
-    pub(crate) const fn max_tokens(&self) -> u32 {
+    pub(crate) const fn max_tokens(&self) -> Option<u32> {
         self.max_tokens
     }
 
@@ -334,9 +352,11 @@ struct CommonProfile {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CommonProfileMode {
     Fresh,
+    Regenerate,
     Continuation,
     DirectGuardrailContinuation,
     McpAuthorization,
+    OutputContinuation,
 }
 
 fn validate_common_profile(
@@ -363,12 +383,18 @@ fn validate_common_profile(
         mode,
         CommonProfileMode::DirectGuardrailContinuation | CommonProfileMode::McpAuthorization
     );
+    let regeneration = mode == CommonProfileMode::Regenerate;
+    let output_continuation = mode == CommonProfileMode::OutputContinuation;
+    let valid_truncated_content = payload
+        .truncated_content
+        .as_deref()
+        .is_some_and(|value| value.len() <= 64 * 1_024 && !value.contains('\0'));
     if (!allows_mcp_authority
         && (!payload.mcp_tokens.is_empty()
             || !payload.ignored_mcp_servers.is_empty()
             || !payload.user_declined_mcp_servers.is_empty()))
         || payload.checkpoint_id.is_some()
-        || payload.is_regenerate
+        || payload.is_regenerate != regeneration
         || payload.supports_vision
         || payload.return_chat_history
         || !payload.invoked_skills.is_empty()
@@ -384,6 +410,7 @@ fn validate_common_profile(
         || payload.debug
         || !payload.meta.is_empty()
         || payload.persona != "generic"
+        || (output_continuation != valid_truncated_content)
     {
         return Err(unsupported_profile());
     }
@@ -392,10 +419,20 @@ fn validate_common_profile(
         || payload.hitl_action.is_some()
         || payload.hitl_value.is_some()
         || !payload.hitl_decisions.is_empty();
-    if (mode == CommonProfileMode::Fresh && has_direct_hitl_fields)
-        || (mode != CommonProfileMode::Fresh && !has_direct_hitl_fields)
+    let starts_without_interrupt = matches!(
+        mode,
+        CommonProfileMode::Fresh | CommonProfileMode::Regenerate
+    );
+    if (starts_without_interrupt && has_direct_hitl_fields)
+        || (!starts_without_interrupt && !has_direct_hitl_fields)
         || (mode == CommonProfileMode::McpAuthorization
             && (payload.hitl_resume
+                || payload.hitl_action.is_some()
+                || payload.hitl_value.is_some()
+                || !payload.hitl_decisions.is_empty()))
+        || (output_continuation
+            && (!payload.should_continue
+                || payload.hitl_resume
                 || payload.hitl_action.is_some()
                 || payload.hitl_value.is_some()
                 || !payload.hitl_decisions.is_empty()))
@@ -702,7 +739,7 @@ struct ValidatedModel {
     model_name: String,
     model_provider: OrdinaryModelProvider,
     model_project_id: u32,
-    max_tokens: u32,
+    max_tokens: Option<u32>,
     reasoning_effort: Option<ReasoningEffort>,
     temperature: Option<f32>,
 }
@@ -808,11 +845,11 @@ fn positive_u32(value: Option<&Value>) -> Result<u32, NativeAgentAssemblyError> 
         .ok_or_else(invalid_profile)
 }
 
-fn normalized_max_tokens(value: Option<&Value>) -> Result<u32, NativeAgentAssemblyError> {
+fn normalized_max_tokens(value: Option<&Value>) -> Result<Option<u32>, NativeAgentAssemblyError> {
     match value {
-        None | Some(Value::Null) => Ok(4_000),
-        Some(value) if value.as_i64() == Some(-1) => Ok(4_000),
-        Some(value) => positive_u32(Some(value)),
+        None | Some(Value::Null) => Ok(None),
+        Some(value) if value.as_i64() == Some(-1) => Ok(None),
+        Some(value) => positive_u32(Some(value)).map(Some),
     }
 }
 

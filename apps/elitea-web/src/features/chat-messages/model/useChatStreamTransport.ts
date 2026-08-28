@@ -45,28 +45,41 @@
  * appends unconditionally). Nothing is reconnected once the turn is over or
  * the user pressed Stop.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  AGENT_REGENERATE_CONTRACT,
   continueAgentExecution,
+  regenerate as regenerateConversation,
   startAgentExecution,
   stopChatTask,
   type AgentExecutionStart,
   type ContinueAgentExecutionParams,
   type StartAgentExecutionParams,
   type StopChatTaskParams,
-} from '@/entities/conversation/api/conversationApi';
-import { streamReconnectDelayMs, useExecutionEventStream, withResumeCursor, type ExecutionEventData } from '@/shared/api/sse';
+} from "@/entities/conversation/api/conversationApi";
+import { EliteaApiError } from "@/shared/api/generated/mutator";
+import {
+  streamReconnectDelayMs,
+  useExecutionEventStream,
+  withResumeCursor,
+  type ExecutionEventData,
+} from "@/shared/api/sse";
 
-import { settleInFlight } from '../lib/chatStreamSettle';
-import { applyChatStreamFrame, type ChatStreamContext } from '../lib/chatStreamReducer';
-import { isChatStreamFrame } from '../lib/chatStreamFrame';
-import { shouldForwardAgentEvent } from '../lib/agentGraphEvents';
-import { isTurnTerminalFrame } from '../lib/chatStreamTurnEnd';
+import { settleInFlight } from "../lib/chatStreamSettle";
+import {
+  applyChatStreamFrame,
+  type ChatStreamContext,
+} from "../lib/chatStreamReducer";
+import { isChatStreamFrame } from "../lib/chatStreamFrame";
+import { shouldForwardAgentEvent } from "../lib/agentGraphEvents";
+import { isTurnTerminalFrame } from "../lib/chatStreamTurnEnd";
 
-import type { ChatMessage } from '../lib/convertMessagesToChatHistory';
+import type { ChatMessage } from "../lib/convertMessagesToChatHistory";
 
-type SetChatHistory = (updater: (prev: readonly ChatMessage[]) => readonly ChatMessage[]) => void;
+type SetChatHistory = (
+  updater: (prev: readonly ChatMessage[]) => readonly ChatMessage[],
+) => void;
 
 /** @public Params for `useChatStreamTransport`. */
 export interface UseChatStreamTransportParams {
@@ -94,6 +107,10 @@ export interface UseChatStreamTransportParams {
 
 /** @public */
 export interface UseChatStreamTransportResult {
+  /** Start with the distinction between an absent transport and a server refusal. */
+  readonly startDetailed: (
+    params: StartAgentExecutionParams,
+  ) => Promise<AgentStreamStartAttempt>;
   /**
    * Start a run over REST and take ownership of its stream.
    *
@@ -113,6 +130,13 @@ export interface UseChatStreamTransportResult {
    * live view of it is missing.
    */
   readonly resume: (params: ContinueAgentExecutionParams) => Promise<boolean>;
+  /** Regenerate one persisted answer and take ownership of its replacement stream. */
+  readonly regenerate: (params: {
+    readonly projectId: string | number;
+    readonly conversationUuid: string;
+    readonly responseMessageId: string;
+    readonly body: Readonly<Record<string, unknown>>;
+  }) => Promise<boolean>;
   /** Whether a stream is currently subscribed — drives the composer's Stop affordance. */
   readonly isStreaming: boolean;
   /**
@@ -133,6 +157,65 @@ export interface UseChatStreamTransportResult {
   readonly stop: () => void;
 }
 
+/** Result of starting a run before the widget decides whether socket fallback is safe. */
+export type AgentStreamStartAttempt =
+  | { readonly started: true }
+  | { readonly started: false; readonly reason: "no-transport" }
+  | {
+      readonly started: false;
+      readonly reason: "rejected";
+      readonly message: string;
+    };
+
+const STARTED: AgentStreamStartAttempt = { started: true };
+const NO_TRANSPORT: AgentStreamStartAttempt = {
+  started: false,
+  reason: "no-transport",
+};
+
+function serverFailureMessage(body: unknown, status: number): string {
+  if (typeof body === "object" && body !== null) {
+    const value = body as Readonly<Record<string, unknown>>;
+    for (const field of ["safe_message", "message", "error"] as const) {
+      if (typeof value[field] === "string" && value[field].trim() !== "")
+        return value[field];
+    }
+  }
+  return `The agent run could not start (HTTP ${status}).`;
+}
+
+function classifyStartFailure(error: unknown): AgentStreamStartAttempt {
+  if (!(error instanceof EliteaApiError)) return NO_TRANSPORT;
+  const failure = error.failure;
+  if (failure.kind === "http") {
+    if (failure.status === 404 || failure.status === 405) return NO_TRANSPORT;
+    return {
+      started: false,
+      reason: "rejected",
+      message: serverFailureMessage(failure.body, failure.status),
+    };
+  }
+  if (failure.kind === "auth") {
+    return {
+      started: false,
+      reason: "rejected",
+      message: "This session is not authorized to start the agent run.",
+    };
+  }
+  if (failure.kind === "network") {
+    return {
+      started: false,
+      reason: "rejected",
+      message: "The agent service could not be reached.",
+    };
+  }
+  return {
+    started: false,
+    reason: "rejected",
+    message: "The agent start request was cancelled.",
+  };
+}
+
 /**
  * One subscription to one run: the URL currently open, and the cursor-free URL
  * a resume rebuilds from.
@@ -148,8 +231,16 @@ interface StreamConnection {
   readonly url: string | null;
 }
 
-export function useChatStreamTransport(params: UseChatStreamTransportParams): UseChatStreamTransportResult {
-  const { setChatHistory, conversationUuid, context, onAgentEvent, onStreamError } = params;
+export function useChatStreamTransport(
+  params: UseChatStreamTransportParams,
+): UseChatStreamTransportResult {
+  const {
+    setChatHistory,
+    conversationUuid,
+    context,
+    onAgentEvent,
+    onStreamError,
+  } = params;
   const [connection, setConnection] = useState<StreamConnection | null>(null);
 
   // Read through a ref so a changing context does not re-open the stream:
@@ -177,7 +268,9 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   const attemptRef = useRef(0);
   /** What Stop has to cancel server-side, from the start endpoint's answer. */
   const cancelRef = useRef<StopChatTaskParams | null>(null);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current === undefined) return;
@@ -190,7 +283,10 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
    * during a pending reconnect, where nothing is subscribed but the run is
    * still this hook's to stop.
    */
-  const ownsRun = useCallback((): boolean => ownerRef.current !== undefined, []);
+  const ownsRun = useCallback(
+    (): boolean => ownerRef.current !== undefined,
+    [],
+  );
 
   /** Close the connection and forget the run. Never touches chat history. */
   const detach = useCallback(() => {
@@ -213,7 +309,9 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
       // A frame with no `type` names no case; the reducer would return the
       // same array, but the forward below would still fire on it.
       if (!isChatStreamFrame(frame)) return;
-      setChatHistory((prev) => applyChatStreamFrame(prev, frame, contextRef.current ?? {}));
+      setChatHistory((prev) =>
+        applyChatStreamFrame(prev, frame, contextRef.current ?? {}),
+      );
       // A terminal frame ENDS the turn, so the transport stops owning a run
       // right here — it does not wait for the connection to close, because
       // the server never closes it (executions/events.go keeps the stream open
@@ -236,7 +334,10 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
     (frame: ExecutionEventData) => {
       // The server reporting the EXECUTION failed — distinct from the stream
       // dropping. The reason is shown on the message, not swallowed.
-      const reason = typeof frame['error'] === 'string' ? frame['error'] : 'The agent run failed.';
+      const reason =
+        typeof frame["error"] === "string"
+          ? frame["error"]
+          : "The agent run failed.";
       detach();
       setChatHistory((prev) => settleInFlight(prev, reason));
       onStreamErrorRef.current?.(reason);
@@ -261,7 +362,7 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
       // stopped arriving.
       detach();
       setChatHistory((prev) => settleInFlight(prev));
-      onStreamErrorRef.current?.('The connection to the agent run was lost.');
+      onStreamErrorRef.current?.("The connection to the agent run was lost.");
       return;
     }
     attemptRef.current = attempt;
@@ -272,7 +373,10 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
     setConnection({ baseUrl, url: null });
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = undefined;
-      setConnection({ baseUrl, url: withResumeCursor(baseUrl, cursorRef.current) });
+      setConnection({
+        baseUrl,
+        url: withResumeCursor(baseUrl, cursorRef.current),
+      });
     }, delay);
   }, [connection, detach, clearRetry, setChatHistory]);
 
@@ -285,7 +389,12 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   // and `onCursor` fires for it like any other, so the cursor moves past the
   // gap and the surviving frames still finish the answer. A no-op callback
   // here would only look like handling that is not there.
-  useExecutionEventStream(connection?.url ?? null, { onNodeEvent, onFailed, onCursor, onError });
+  useExecutionEventStream(connection?.url ?? null, {
+    onNodeEvent,
+    onFailed,
+    onCursor,
+    onError,
+  });
 
   // #328: the conversation on screen changed while a stream was open. The
   // stream belongs to the previous one, so it is dropped — without settling
@@ -293,7 +402,12 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   useEffect(() => {
     if (connection === null) return;
     const owner = ownerRef.current;
-    if (owner === undefined || conversationUuid === undefined || owner === conversationUuid) return;
+    if (
+      owner === undefined ||
+      conversationUuid === undefined ||
+      owner === conversationUuid
+    )
+      return;
     detach();
   }, [conversationUuid, connection, detach]);
 
@@ -313,7 +427,11 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
    * Returns `false` only when the answer carries no stream to watch.
    */
   const subscribeToRun = useCallback(
-    (accepted: AgentExecutionStart, conversationUuid: string, projectId: string | number): boolean => {
+    (
+      accepted: AgentExecutionStart,
+      conversationUuid: string,
+      projectId: string | number,
+    ): boolean => {
       if (!accepted.events_url) return false;
       // The user left this conversation while the POST was in flight. The run
       // EXISTS server-side now, so nothing subscribes: those frames belong to
@@ -330,7 +448,8 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
       // (`DELETE .../task/prompt_lib/{projectID}/{responseMessageID}`). Without
       // one there is nothing to cancel and Stop can only detach.
       cancelRef.current =
-        typeof accepted.response_message_id === 'string' && accepted.response_message_id !== ''
+        typeof accepted.response_message_id === "string" &&
+        accepted.response_message_id !== ""
           ? { projectId, messageGroupUuid: accepted.response_message_id }
           : null;
       setConnection({ baseUrl: accepted.events_url, url: accepted.events_url });
@@ -339,34 +458,82 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
     [clearRetry],
   );
 
-  const start = useCallback(async (startParams: StartAgentExecutionParams): Promise<boolean> => {
-    let started: AgentExecutionStart;
-    try {
-      started = await startAgentExecution(startParams);
-    } catch {
-      // Not an error to report: on a backend without the SSE path this is the
-      // EXPECTED answer, and the caller recovers by emitting chat_predict.
-      return false;
-    }
-    // A 200 with no events_url is the same signal — an older backend answering
-    // the same route. Treating it as success would leave the run unwatched.
-    return subscribeToRun(started, startParams.conversationUuid, startParams.projectId);
-  }, [subscribeToRun]);
+  const startDetailed = useCallback(
+    async (
+      startParams: StartAgentExecutionParams,
+    ): Promise<AgentStreamStartAttempt> => {
+      let started: AgentExecutionStart;
+      try {
+        started = await startAgentExecution(startParams);
+      } catch (error) {
+        return classifyStartFailure(error);
+      }
+      // A 200 with no events_url is the same signal — an older backend answering
+      // the same route. Treating it as success would leave the run unwatched.
+      return subscribeToRun(
+        started,
+        startParams.conversationUuid,
+        startParams.projectId,
+      )
+        ? STARTED
+        : NO_TRANSPORT;
+    },
+    [subscribeToRun],
+  );
 
-  const resume = useCallback(async (resumeParams: ContinueAgentExecutionParams): Promise<boolean> => {
-    let resumed: AgentExecutionStart;
-    try {
-      resumed = await continueAgentExecution(resumeParams);
-    } catch {
-      // The route refused the resume, or this backend does not serve it. The
-      // caller falls back to `chat_continue_predict`.
-      return false;
-    }
-    // The route ACCEPTED the resume. The run is live again whether or not the
-    // answer named a stream, so the caller must not resume it a second time.
-    subscribeToRun(resumed, resumeParams.conversationUuid, resumeParams.projectId);
-    return true;
-  }, [subscribeToRun]);
+  const start = useCallback(
+    async (startParams: StartAgentExecutionParams): Promise<boolean> =>
+      (await startDetailed(startParams)).started,
+    [startDetailed],
+  );
+
+  const resume = useCallback(
+    async (resumeParams: ContinueAgentExecutionParams): Promise<boolean> => {
+      let resumed: AgentExecutionStart;
+      try {
+        resumed = await continueAgentExecution(resumeParams);
+      } catch {
+        // The route refused the resume, or this backend does not serve it. The
+        // caller falls back to `chat_continue_predict`.
+        return false;
+      }
+      // The route ACCEPTED the resume. The run is live again whether or not the
+      // answer named a stream, so the caller must not resume it a second time.
+      subscribeToRun(
+        resumed,
+        resumeParams.conversationUuid,
+        resumeParams.projectId,
+      );
+      return true;
+    },
+    [subscribeToRun],
+  );
+
+  const regenerate = useCallback(
+    async (params: {
+      readonly projectId: string | number;
+      readonly conversationUuid: string;
+      readonly responseMessageId: string;
+      readonly body: Readonly<Record<string, unknown>>;
+    }): Promise<boolean> => {
+      let accepted: AgentExecutionStart;
+      try {
+        accepted = await regenerateConversation({
+          ...params.body,
+          projectId: params.projectId,
+          id: params.responseMessageId,
+          executionContract: AGENT_REGENERATE_CONTRACT,
+        });
+      } catch {
+        return false;
+      }
+      // The contract was accepted, so the run exists even when an older server
+      // omits its replay URL. Never start the same regeneration over a socket.
+      subscribeToRun(accepted, params.conversationUuid, params.projectId);
+      return true;
+    },
+    [subscribeToRun],
+  );
 
   const stop = useCallback(() => {
     // Nothing of this hook's is running — the run was already stopped, already
@@ -387,7 +554,15 @@ export function useChatStreamTransport(params: UseChatStreamTransportParams): Us
   }, [detach, setChatHistory, ownsRun]);
 
   return useMemo(
-    () => ({ start, resume, isStreaming: connection !== null, close: detach, stop }),
-    [start, resume, connection, detach, stop],
+    () => ({
+      startDetailed,
+      start,
+      resume,
+      regenerate,
+      isStreaming: connection !== null,
+      close: detach,
+      stop,
+    }),
+    [startDetailed, start, resume, regenerate, connection, detach, stop],
   );
 }

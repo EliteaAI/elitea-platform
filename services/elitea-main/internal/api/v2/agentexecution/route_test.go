@@ -240,6 +240,50 @@ func TestCurrentContinuationRoutePreservesCurrentPathRBACAndResponseIdentity(t *
 	}
 }
 
+func TestCurrentOutputLimitContinuationRouteCarriesOnlyResponseIdentity(t *testing.T) {
+	if CurrentOutputLimitContinuationContract != "agent.continue.output-limit.v1" {
+		t.Fatalf("output continuation contract drifted: %q", CurrentOutputLimitContinuationContract)
+	}
+	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
+		ExecutionID: "execution-output-continue", CommandID: "command-output-continue",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a", Created: true,
+	}}
+	route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+	response := httptest.NewRecorder()
+	route.ServeHTTP(response, currentOutputContinuationRequest(validCurrentOutputContinuationBody()))
+
+	request := useCase.continuationRequest
+	if response.Code != http.StatusOK || useCase.continuationCalls != 1 ||
+		request.Kind != agentexecutionapp.CurrentContinuationOutputLimit ||
+		request.ProjectID != 7 || request.ActorUserID != 11 ||
+		request.ConversationUUID != "8bc66e50-46c4-4e2c-94ec-daec6c596ac0" ||
+		request.ResponseMessageID != "30e0913e-10d4-43db-b8d0-c7b79480935a" ||
+		request.ThreadID != "" || request.Action != "" || request.Value != "" ||
+		request.AuthorizationID != "" || len(request.HITLDecisions) != 0 {
+		t.Fatalf("status=%d calls=%d request=%+v body=%s",
+			response.Code, useCase.continuationCalls, request, response.Body.String())
+	}
+}
+
+func TestCurrentOutputLimitContinuationRouteRejectsBrowserSelectedRuntimeState(t *testing.T) {
+	for name, body := range map[string]string{
+		"thread": strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"thread_id":"thread-stale","message_id":`, 1),
+		"hitl":   strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"hitl_resume":true,"message_id":`, 1),
+		"tokens": strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"mcp_tokens":{},"message_id":`, 1),
+		"input":  strings.Replace(validCurrentOutputContinuationBody(), `"message_id":`, `"user_input":"continue","message_id":`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			useCase := &currentStartUseCaseStub{}
+			route := newCurrentStartRoute(t, useCase, allowCurrentStartPermission())
+			response := httptest.NewRecorder()
+			route.ServeHTTP(response, currentOutputContinuationRequest(body))
+			if response.Code != http.StatusUnprocessableEntity || useCase.continuationCalls != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.Code, useCase.continuationCalls, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestCurrentContinuationRouteCarriesBlockWithComment(t *testing.T) {
 	useCase := &currentStartUseCaseStub{outcome: agentexecutionapp.CurrentApplicationStartOutcome{
 		ExecutionID: "execution-comment", CommandID: "command-comment",
@@ -614,6 +658,27 @@ func currentAuthorizationContinuationRequest(body string) *http.Request {
 	request.Header.Set("X-Auth-ID", "11")
 	request.RemoteAddr = "10.0.0.8:43120"
 	return request
+}
+
+func currentOutputContinuationRequest(body string) *http.Request {
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v2/elitea_core/continue_predict/prompt_lib/7/8bc66e50-46c4-4e2c-94ec-daec6c596ac0?execution_contract="+CurrentOutputLimitContinuationContract,
+		strings.NewReader(body),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Auth-Type", "user")
+	request.Header.Set("X-Auth-ID", "11")
+	request.RemoteAddr = "10.0.0.8:43120"
+	return request
+}
+
+func validCurrentOutputContinuationBody() string {
+	return `{
+  "project_id":7,
+  "conversation_uuid":"8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+  "message_id":"30e0913e-10d4-43db-b8d0-c7b79480935a"
+}`
 }
 
 func validCurrentContinuationBody() string {

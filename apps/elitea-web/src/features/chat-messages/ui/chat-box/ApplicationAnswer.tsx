@@ -152,7 +152,7 @@ export function ApplicationAnswer({
   const isProcessing = isLoading || isRegenerating || isStreaming;
   const isLoadingOrRegenerating = isLoading || isRegenerating;
   const exception = answer.exception;
-  const canRenderContent = !exception && !isLoadingOrRegenerating;
+  const canRenderContent = !isLoadingOrRegenerating;
   const requiresConfirmationSignal = getRequiresConfirmation(answer);
 
   const textItems = useMemo(() => getTextMessageItems(answer.messageItems), [answer.messageItems]);

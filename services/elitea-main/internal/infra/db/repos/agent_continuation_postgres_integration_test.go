@@ -1140,6 +1140,108 @@ WHERE uuid = $1`, responseID); err != nil {
 	}
 }
 
+func TestPostgresCurrentOutputContinuationResolvesVisibleTextAndConsumesOneSequence(t *testing.T) {
+	pool := newMigratedPostgresIntegrationPool(t)
+	seedCurrentAgentContinuationSchema(t, pool)
+
+	tx, err := pool.BeginTx(t.Context(), pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if err := tenant.BindProject(t.Context(), tx, tenant.Project{ID: 1}); err != nil {
+		t.Fatal(err)
+	}
+	queries := sqlcgen.New(tx)
+	conversationID := mustCurrentPGUUID(t, "10000000-0000-4000-8000-000000000031")
+	questionID := "20000000-0000-4000-8000-000000000061"
+	responseID := insertPostgresCurrentApplicationTurn(
+		t, queries, conversationID, questionID,
+		"30000000-0000-4000-8000-000000000061",
+		"40000000-0000-4000-8000-000000000061",
+		"Explain durable workers", "execution-output-limited",
+	)
+	completePostgresCurrentApplicationTurn(t, tx, responseID, "A durable worker stores ")
+	if _, err := tx.Exec(t.Context(), `
+WITH response AS (
+    UPDATE chat_message_group
+    SET meta = meta || jsonb_build_object(
+        'thread_id', 'thread-output-1',
+        'execution_generation', $2::text,
+        'output_limit_reached', TRUE,
+        'output_limit_sequence', 1
+    )
+    WHERE uuid = $1
+    RETURNING id
+), item AS (
+    INSERT INTO chat_message_items (uuid, item_type, order_index, meta, message_group_id)
+    SELECT gen_random_uuid(), 'text_message', 1, '{}'::jsonb, response.id
+    FROM response
+    RETURNING id
+)
+INSERT INTO chat_messages_text (id, content)
+SELECT item.id, 'progress before acknowledgement.' FROM item`, responseID, questionID); err != nil {
+		t.Fatal(err)
+	}
+
+	resolve := sqlcgen.ResolveCurrentOutputLimitContinuationParams{
+		ActorUserID: 12, ProjectID: 1, ConversationUuid: conversationID,
+		ResponseMessageID: responseID,
+	}
+	if _, err := queries.ResolveCurrentOutputLimitContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("cross-user resolution error=%v", err)
+	}
+	resolve.ActorUserID = 11
+	resolved, err := queries.ResolveCurrentOutputLimitContinuation(t.Context(), resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.ContinuationKind != "application" || resolved.UserInput != "Explain durable workers" ||
+		resolved.TruncatedContent != "A durable worker stores progress before acknowledgement." ||
+		resolved.ThreadID != "thread-output-1" || resolved.ExecutionGeneration != questionID ||
+		resolved.OutputLimitSequence != 1 {
+		t.Fatalf("resolved=%+v", resolved)
+	}
+
+	resume := sqlcgen.ResumeCurrentAgentOutputLimitParams{
+		ActorUserID: 11, ProjectID: 1, TargetParticipantID: 21,
+		ApplicationID: 31, ApplicationVersionID: 41, ContinuationKind: "application",
+		ConversationUuid: conversationID, QuestionID: mustCurrentPGUUID(t, questionID),
+		ResponseMessageID: responseID, ExecutionGeneration: questionID,
+		ThreadID: "thread-output-1", OutputLimitSequence: 2,
+		ExecutionID: "execution-output-continued",
+	}
+	if _, err := queries.ResumeCurrentAgentOutputLimit(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("wrong sequence resume error=%v", err)
+	}
+	resume.OutputLimitSequence = 1
+	row, err := queries.ResumeCurrentAgentOutputLimit(t.Context(), resume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.ResponseMessageID != responseID || row.ResponseMessageGroupID <= 0 {
+		t.Fatalf("resume row=%+v", row)
+	}
+	if _, err := queries.ResumeCurrentAgentOutputLimit(t.Context(), resume); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("replayed resume error=%v", err)
+	}
+	if _, err := queries.ResolveCurrentOutputLimitContinuation(t.Context(), resolve); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("consumed continuation remained visible: %v", err)
+	}
+
+	var isStreaming, hasOutputLimit bool
+	var taskID string
+	if err := tx.QueryRow(t.Context(), `
+SELECT is_streaming, task_id, meta ? 'output_limit_reached'
+FROM chat_message_group
+WHERE uuid = $1`, responseID).Scan(&isStreaming, &taskID, &hasOutputLimit); err != nil {
+		t.Fatal(err)
+	}
+	if !isStreaming || taskID != "execution-output-continued" || hasOutputLimit {
+		t.Fatalf("streaming=%v task=%q output_limit=%v", isStreaming, taskID, hasOutputLimit)
+	}
+}
+
 func TestPostgresCurrentSequentialNestedHITLContinuationConsumesExistingResponseAtomically(t *testing.T) {
 	pool := newMigratedPostgresIntegrationPool(t)
 	seedCurrentAgentContinuationSchema(t, pool)
@@ -1756,8 +1858,8 @@ INSERT INTO p_1.chat_participants (id, uuid, entity_name, entity_meta, meta) VAL
 INSERT INTO p_1.chat_participant_mapping (
     conversation_id, participant_id, entity_settings
 ) VALUES
-    (2, 20, '{"llm_settings":{"model_name":"saved","model_project_id":1,"max_tokens":1024}}'::jsonb),
-    (2, 23, '{}'::jsonb),
+    (2, 20, '{}'::jsonb),
+    (2, 23, '{"llm_settings":{"model_name":"saved","model_project_id":1,"max_tokens":1024}}'::jsonb),
     (2, 24, '{}'::jsonb),
     (2, 30, '{"version_id":41,"variables":[],"agent_type":"agent"}'::jsonb);`); err != nil {
 		t.Fatal(err)

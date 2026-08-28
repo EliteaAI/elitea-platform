@@ -470,6 +470,219 @@ fn delta_streaming_content_is_accumulated_without_assuming_cumulative_chunks() {
 }
 
 #[test]
+fn top_level_max_tokens_preserves_output_and_requests_continuation() {
+    let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
+        .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let mut completed = event(
+        "llm-limited",
+        1,
+        false,
+        true,
+        vec![Part::Text {
+            text: "partial answer".to_owned(),
+        }],
+    );
+    completed.llm_response.finish_reason = Some(FinishReason::MaxTokens);
+
+    let projected: Vec<_> = projector
+        .project(&completed)
+        .expect("max-token completion")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(
+        projected
+            .iter()
+            .map(|event| event["type"].as_str())
+            .collect::<Vec<_>>(),
+        [
+            Some("agent_llm_start"),
+            Some("agent_llm_chunk"),
+            Some("agent_llm_end"),
+            Some("partial_message"),
+            Some("agent_requires_confirmation"),
+        ]
+    );
+    assert_eq!(projected[4]["content"], "Continue");
+    assert_eq!(projected[4]["response_metadata"]["finish_reason"], "length");
+
+    let terminal: Vec<_> = projector
+        .finish_after_eos(
+            CompletedAgentBrowserOutput::fixture("partial answer"),
+            timestamp(2),
+        )
+        .expect("EOS projection")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(terminal[1]["response_metadata"]["finish_reason"], "length");
+    assert_eq!(
+        terminal[2]["response_metadata"]["output_limit_reached"],
+        true
+    );
+}
+
+#[test]
+fn output_continuation_trims_one_meaningful_overlap_from_stream_and_terminal() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::output_continuation_fixture(
+            json!({}),
+            "A durable worker stores progress.",
+        ))
+        .expect("continuation projector");
+    let start: Vec<_> = projector
+        .start(timestamp(0))
+        .expect("start")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(start[0]["response_metadata"]["should_continue"], true);
+
+    let first: Vec<_> = projector
+        .project(&event(
+            "llm-continuation",
+            1,
+            true,
+            false,
+            vec![Part::Text {
+                text: "progress.".to_owned(),
+            }],
+        ))
+        .expect("buffered overlap")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["type"], "agent_llm_start");
+
+    let completed: Vec<_> = projector
+        .project(&event(
+            "llm-continuation",
+            2,
+            false,
+            true,
+            vec![Part::Text {
+                text: "progress. It can recover safely.".to_owned(),
+            }],
+        ))
+        .expect("trimmed continuation")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(completed[0]["type"], "agent_llm_chunk");
+    assert_eq!(completed[0]["content"], " It can recover safely.");
+    assert_eq!(
+        completed[2]["response_metadata"]["thinking_steps"][0]["text"],
+        " It can recover safely."
+    );
+
+    let terminal: Vec<_> = projector
+        .finish_after_eos(
+            CompletedAgentBrowserOutput::fixture("progress. It can recover safely."),
+            timestamp(3),
+        )
+        .expect("trimmed terminal")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(terminal[0]["content"], " It can recover safely.");
+    assert_eq!(terminal[2]["content"], " It can recover safely.");
+}
+
+#[test]
+fn output_continuation_keeps_non_overlapping_content_unchanged() {
+    let mut projector = AgentEventProjector::new(
+        AgentEventProjectionContext::output_continuation_fixture(json!({}), "33. item-33"),
+    )
+    .expect("continuation projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected: Vec<_> = projector
+        .project(&event(
+            "llm-next-item",
+            1,
+            false,
+            true,
+            vec![Part::Text {
+                text: "34. item-34".to_owned(),
+            }],
+        ))
+        .expect("non-overlapping continuation")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(projected[1]["content"], "34. item-34");
+}
+
+#[test]
+fn output_continuation_restores_a_missing_word_separator() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::output_continuation_fixture(
+            json!({}),
+            "However, you must implement safeguards to",
+        ))
+        .expect("continuation projector");
+    projector.start(timestamp(0)).expect("start");
+    let projected: Vec<_> = projector
+        .project(&event(
+            "llm-word-seam",
+            1,
+            false,
+            true,
+            vec![Part::Text {
+                text: "prevent duplicate work.".to_owned(),
+            }],
+        ))
+        .expect("word seam continuation")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(projected[1]["content"], " prevent duplicate work.");
+
+    let terminal: Vec<_> = projector
+        .finish_after_eos(
+            CompletedAgentBrowserOutput::fixture("prevent duplicate work."),
+            timestamp(2),
+        )
+        .expect("word seam terminal")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert_eq!(terminal[0]["content"], " prevent duplicate work.");
+    assert_eq!(terminal[2]["content"], " prevent duplicate work.");
+}
+
+#[test]
+fn pipeline_max_tokens_does_not_offer_a_misrouted_root_continuation() {
+    let mut projector =
+        AgentEventProjector::new(AgentEventProjectionContext::pipeline_fixture(json!({})))
+            .expect("projector");
+    projector.start(timestamp(0)).expect("start");
+    let mut completed = event(
+        "pipeline-llm-limited",
+        1,
+        false,
+        true,
+        vec![Part::Text {
+            text: "partial node output".to_owned(),
+        }],
+    );
+    completed.llm_response.finish_reason = Some(FinishReason::MaxTokens);
+
+    let projected: Vec<_> = projector
+        .project(&completed)
+        .expect("max-token pipeline completion")
+        .into_iter()
+        .map(|event| current(&event))
+        .collect();
+    assert!(
+        projected
+            .iter()
+            .all(|event| event["type"] != "agent_requires_confirmation")
+    );
+}
+
+#[test]
 fn tool_calls_and_results_follow_the_current_browser_lifecycle() {
     let mut projector = AgentEventProjector::new(AgentEventProjectionContext::fixture(json!({})))
         .expect("projector");

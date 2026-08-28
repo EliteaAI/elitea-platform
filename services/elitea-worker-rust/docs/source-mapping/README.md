@@ -66,6 +66,16 @@ Maintained Rust runtime ownership registry:
   sensitive-tool pauses and worker-side exact resolution of Main-authorized
   decisions against raw persisted calls. The ordinary assembler accepts one
   exact continuation before PAT redemption and requires a restorable session.
+  Root output-limit continuation keeps the original response identity, restores
+  the exact ADK session, and receives its model snapshot from the selected
+  dummy/model participant. The event projector removes bounded overlap and
+  repairs a missing alphabetic word separator consistently in stream and
+  terminal output.
+  Direct/ad-hoc regeneration is a separate admitted start mode: the exact
+  claim-fenced session is deleted and recreated, then seeded from Main's
+  pre-response history before the original question runs once. It never appends
+  to the replaced assistant branch. Saved-pipeline regeneration remains a
+  separate SessionService plus Checkpointer rewind slice.
   Approved reads replay through ADK `RunConfig`/`ToolExecutor`; denied calls
   produce a structured result under the original call ID without dispatching
   the real tool. Exact restart suffixes are recovered and the internal replay

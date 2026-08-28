@@ -23,11 +23,24 @@ fn invocation(model: &str, effort: Option<ModelReasoningEffort>) -> ModelGateway
     ModelGatewayInvocation {
         model_name: model.to_owned(),
         system_instruction: "review carefully\nbe concise".to_owned(),
-        max_tokens: 4_000,
+        max_tokens: Some(4_000),
         reasoning_effort: effort,
         temperature: effort.is_none().then_some(0.7),
         max_model_turns: 25,
     }
+}
+
+#[test]
+fn native_anthropic_rejects_an_unresolved_automatic_limit() {
+    let (client, _) = test_model_gateway_client(Vec::new(), test_model_gateway_config())
+        .expect("model gateway client");
+    let mut settings = invocation(MODEL, None);
+    settings.max_tokens = None;
+    assert!(matches!(
+        client
+            .bind_anthropic_ordinary(&ClaimScopedEliteaContext::fixture(17, TOKEN), 17, settings,),
+        Err(super::model_gateway::ModelGatewayError::InvalidInvocation)
+    ));
 }
 
 fn request(model: &str, temperature: Option<f32>) -> LlmRequest {
@@ -160,6 +173,7 @@ async fn native_messages_request_preserves_cache_thinking_identity_and_completio
         responses[3].finish_reason,
         Some(adk_rust::FinishReason::Stop)
     );
+    assert!(responses[3].content.is_none());
     let usage = responses[3]
         .usage_metadata
         .as_ref()

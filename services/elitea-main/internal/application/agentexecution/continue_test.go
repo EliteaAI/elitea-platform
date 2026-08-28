@@ -34,6 +34,107 @@ func TestCurrentContinuationDatabaseIDBoundsCurrentIntegerSchema(t *testing.T) {
 	}
 }
 
+func TestCurrentApplicationOutputContinuationReusesExactSessionAndVisiblePartial(t *testing.T) {
+	resolver := &currentApplicationResolverStub{
+		continuationTarget: CurrentContinuationTarget{
+			ContinuationKind:    CurrentContinuationOutputLimit,
+			Kind:                CurrentRegenerationApplication,
+			TargetParticipantID: 21,
+			QuestionID:          "ee92ccbd-3312-4c72-b20b-fddf224e7c0e",
+			UserInput:           "Explain durable workers",
+			ThreadID:            "thread-current-output-1",
+			ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+			TruncatedContent:    "A durable worker stores progress before it acknowledges work.",
+			OutputLimitSequence: 2,
+		},
+		target: CurrentApplicationTarget{
+			ApplicationID: 31, ApplicationVersionID: 41,
+			Variables: json.RawMessage(`[]`),
+			VersionDetails: json.RawMessage(`{
+  "id":41,"application_id":31,"agent_type":"agent","instructions":"Be precise",
+  "llm_settings":{"model_name":"test","model_project_id":7,"openai_compatible":false},
+  "meta":{},"tools":[]
+}`),
+			ChatHistory: json.RawMessage(`[]`),
+		},
+	}
+	admissions := &currentApplicationAdmissionStub{outcome: executionapp.AdmissionOutcome{
+		ExecutionID: "execution-output-continue", CommandID: "command-output-continue", Created: true,
+	}}
+	service, err := NewCurrentApplicationStartService(
+		resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{},
+		&currentApplicationVersionFreezerStub{}, admissions,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationOutputLimit,
+	}
+
+	outcome, err := service.ContinueCurrentAgent(context.Background(), request)
+	if err != nil || len(admissions.requests) != 1 {
+		t.Fatalf("ContinueCurrentAgent() error=%v admissions=%d", err, len(admissions.requests))
+	}
+	admission := admissions.requests[0]
+	turn := admission.CurrentContinueTurn
+	if outcome.ResponseMessageID != request.ResponseMessageID ||
+		admission.CapabilityID != executiondomain.AgentApplicationCapability ||
+		admission.SIOEvent != "chat_continue_predict" || turn == nil ||
+		turn.ContinuationKind != CurrentContinuationOutputLimit ||
+		turn.OutputLimitSequence != 2 || turn.ThreadID != "thread-current-output-1" ||
+		turn.ExecutionGeneration != resolver.continuationTarget.ExecutionGeneration ||
+		turn.InterruptID != "" || turn.Action != "" || len(turn.HITLDecisions) != 0 {
+		t.Fatalf("outcome=%+v admission=%+v turn=%+v", outcome, admission, turn)
+	}
+	input := admission.Input
+	if !input.ShouldContinue || input.HitlResume || input.HitlAction != nil || input.HitlValue != nil ||
+		string(input.HitlDecisions) != `[]` || input.GetThreadId() != "thread-current-output-1" ||
+		input.GetExecutionGeneration() != resolver.continuationTarget.ExecutionGeneration ||
+		string(input.TruncatedContent) != `"A durable worker stores progress before it acknowledges work."` {
+		t.Fatalf("input=%+v truncated_content=%s", input, input.TruncatedContent)
+	}
+	if admission.IdempotencyKey != "continue-output/30e0913e-10d4-43db-b8d0-c7b79480935a/2" {
+		t.Fatalf("idempotency_key=%q", admission.IdempotencyKey)
+	}
+	if err := validateAuthoritativeInput(input); err != nil {
+		t.Fatalf("output continuation must pass authoritative validation: %v", err)
+	}
+}
+
+func TestCurrentOutputContinuationSupportsZeroVisibleContentAndRejectsMixedResume(t *testing.T) {
+	target := CurrentContinuationTarget{
+		ContinuationKind: CurrentContinuationOutputLimit,
+		Kind:             CurrentRegenerationAdhoc, TargetParticipantID: 21,
+		QuestionID: "ee92ccbd-3312-4c72-b20b-fddf224e7c0e", UserInput: "Think first",
+		ThreadID: "thread-output-empty", ExecutionGeneration: "9fba0a08-5049-42bb-9019-c2f3df686010",
+		TruncatedContent: "", OutputLimitSequence: 1,
+	}
+	if err := target.Validate(); err != nil {
+		t.Fatalf("zero-visible output continuation must be valid: %v", err)
+	}
+	request := CurrentContinuationRequest{
+		ProjectID: 7, ActorUserID: 11,
+		ConversationUUID:  "8bc66e50-46c4-4e2c-94ec-daec6c596ac0",
+		ResponseMessageID: "30e0913e-10d4-43db-b8d0-c7b79480935a",
+		Kind:              CurrentContinuationOutputLimit,
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("minimal output continuation request must be valid: %v", err)
+	}
+	request.ThreadID = "browser-selected-thread"
+	if err := request.Validate(); err != ErrInvalidCurrentAgentStart {
+		t.Fatalf("mixed output continuation error=%v", err)
+	}
+	target.HITLInterrupts = []CurrentHITLInterrupt{{InterruptID: "interrupt-1", AvailableActions: []string{"approve"}}}
+	if err := target.Validate(); err != ErrUnsupportedCurrentAgentStart {
+		t.Fatalf("mixed output target error=%v", err)
+	}
+}
+
 func TestCurrentApplicationContinuationReusesCheckpointAndResponse(t *testing.T) {
 	resolver := &currentApplicationResolverStub{
 		continuationTarget: CurrentContinuationTarget{

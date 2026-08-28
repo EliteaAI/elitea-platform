@@ -49,20 +49,30 @@ impl ClaimLeaseMonitorConfig {
                 "the claim lease polling interval is outside the approved range",
             ));
         }
-        let doubled_nanos = poll_interval.as_nanos().checked_mul(2).ok_or(
-            ClaimLeaseError::InvalidConfiguration(
-                "the claim lease polling interval is outside the approved range",
-            ),
-        )?;
-        let margin_millis = i64::try_from(doubled_nanos.div_ceil(1_000_000)).map_err(|_| {
-            ClaimLeaseError::InvalidConfiguration(
-                "the claim lease polling interval is outside the approved range",
-            )
-        })?;
+        let poll_nanos = poll_interval.as_nanos();
+        let state_write_margin_millis =
+            i64::try_from(poll_nanos.div_ceil(1_000_000)).map_err(|_| {
+                ClaimLeaseError::InvalidConfiguration(
+                    "the claim lease polling interval is outside the approved range",
+                )
+            })?;
+        let doubled_nanos =
+            poll_nanos
+                .checked_mul(2)
+                .ok_or(ClaimLeaseError::InvalidConfiguration(
+                    "the claim lease polling interval is outside the approved range",
+                ))?;
+        let renewal_margin_millis =
+            i64::try_from(doubled_nanos.div_ceil(1_000_000)).map_err(|_| {
+                ClaimLeaseError::InvalidConfiguration(
+                    "the claim lease polling interval is outside the approved range",
+                )
+            })?;
         Ok(Self {
             validated: ValidatedLeaseConfig {
                 poll_interval,
-                margin_millis,
+                renewal_margin_millis,
+                state_write_margin_millis,
             },
         })
     }
@@ -71,7 +81,8 @@ impl ClaimLeaseMonitorConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ValidatedLeaseConfig {
     poll_interval: Duration,
-    margin_millis: i64,
+    renewal_margin_millis: i64,
+    state_write_margin_millis: i64,
 }
 
 /// Wall-clock source used only for server-issued Unix-millisecond deadlines.
@@ -380,6 +391,22 @@ impl ClaimLeaseMonitor {
         Self::start_inner(control, recovery.into_lease_handle(), clock, config, None)
     }
 
+    /// Start supervision for an input-free replacement claim which must
+    /// reconcile a stale RUNNING execution. Unlike fresh activation, this
+    /// monitor can never mint business-input or invocation authority.
+    pub(crate) fn start_output_recovery<R, K>(
+        control: Arc<AgentControlClient<R>>,
+        lease: ClaimLeaseHandle,
+        clock: Arc<K>,
+        config: ClaimLeaseMonitorConfig,
+    ) -> Self
+    where
+        R: ControlRpc + 'static,
+        K: UnixMillisClock,
+    {
+        Self::start_inner(control, lease, clock, config, None)
+    }
+
     fn start_inner<R, K>(
         control: Arc<AgentControlClient<R>>,
         lease: ClaimLeaseHandle,
@@ -419,7 +446,7 @@ impl ClaimLeaseMonitor {
             actor: Some(actor),
             activation,
             clock: probe_clock,
-            margin_millis: config.margin_millis,
+            margin_millis: config.state_write_margin_millis,
             supervision_live,
         }
     }
@@ -751,7 +778,7 @@ where
     if renewal
         .lease_expires_at_unix_millis
         .checked_sub(now_unix_millis)
-        .is_none_or(|remaining| remaining < config.margin_millis)
+        .is_none_or(|remaining| remaining < config.renewal_margin_millis)
     {
         return Err(ClaimLeaseError::LeaseLost(
             "the renewed claim lease has insufficient execution margin",

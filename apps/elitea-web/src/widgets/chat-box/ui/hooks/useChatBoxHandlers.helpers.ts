@@ -98,7 +98,15 @@ export interface ChatBoxHandlerDeps {
    */
   readonly continueStreamedExecution?: (params: {
     readonly conversationUuid: string;
+    readonly contract: string;
     readonly body: Record<string, unknown>;
+  }) => Promise<StreamStartOutcome>;
+  /** Regenerate one answer through Main and subscribe to its SSE replay. */
+  readonly regenerateStreamedExecution?: (params: {
+    readonly messageId: string;
+    readonly questionId: string;
+    readonly question: string;
+    readonly updatedItems?: readonly UpdatedMessageItem[] | undefined;
   }) => Promise<StreamStartOutcome>;
 }
 /**
@@ -180,7 +188,7 @@ export interface UseChatBoxHandlersResult {
   readonly clearChat: () => Promise<void>;
   readonly continueHitl: (action: HitlInterruptAction) => Promise<void>;
   readonly resumeMcpFlow: (messageId: string, addToIgnoreList?: boolean) => void;
-  readonly continueTokenLimit: (messageId: string) => void;
+  readonly continueTokenLimit: (messageId: string) => Promise<void>;
 }
 export interface ToolActionLike {
   readonly status?: string;

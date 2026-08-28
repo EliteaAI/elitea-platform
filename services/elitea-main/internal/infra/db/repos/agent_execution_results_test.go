@@ -21,6 +21,7 @@ type currentAgentTerminalWriterStub struct {
 	attachments    []sqlcgen.UpdateCurrentAgentAttachmentContentParams
 	attachmentRows int64
 	attachmentErr  error
+	deletedText    sqlcgen.DeleteCurrentAgentProvisionalTextParams
 }
 
 func (s *currentAgentTerminalWriterStub) LockCurrentAgentResponseForTerminal(
@@ -38,6 +39,14 @@ func (s *currentAgentTerminalWriterStub) InsertCurrentAgentTextContent(
 	context.Context,
 	sqlcgen.InsertCurrentAgentTextContentParams,
 ) error {
+	return nil
+}
+
+func (s *currentAgentTerminalWriterStub) DeleteCurrentAgentProvisionalText(
+	_ context.Context,
+	arg sqlcgen.DeleteCurrentAgentProvisionalTextParams,
+) error {
+	s.deletedText = arg
 	return nil
 }
 
@@ -113,6 +122,30 @@ func TestPersistCurrentAgentTerminalPreservesSkillsAcrossPauseReloadAndContinuat
 	wantFinal := `[{"skill_id":3,"name":"LOADED","icon_meta":{"name":"updated"}},{"skill_id":4,"name":"Final","icon_meta":null},{"skill_id":1,"name":"Existing","icon_meta":null}]`
 	if string(continuationWriter.full.InvokedSkills) != wantFinal {
 		t.Fatalf("continued invoked skills = %s", continuationWriter.full.InvokedSkills)
+	}
+}
+
+func TestPersistCurrentAgentTerminalReplacesOnlyItsProvisionalText(t *testing.T) {
+	writer := &currentAgentTerminalWriterStub{existingSkills: `[]`}
+	expected := outputapp.ExpectedAgentExecution{
+		ExecutionID: "execution-9",
+		Generation:  3,
+	}
+	err := persistCurrentAgentTerminal(t.Context(), writer, expected, currentAgentTerminal{
+		FullMessage: &currentAgentFullMessage{
+			Content:       "complete answer",
+			ThreadID:      "thread-1",
+			References:    json.RawMessage(`[]`),
+			InvokedSkills: json.RawMessage(`[]`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.deletedText.MessageGroupID != 17 ||
+		writer.deletedText.ExecutionID != expected.ExecutionID ||
+		writer.deletedText.Generation != int64(expected.Generation) {
+		t.Fatalf("deleted provisional text binding = %+v", writer.deletedText)
 	}
 }
 

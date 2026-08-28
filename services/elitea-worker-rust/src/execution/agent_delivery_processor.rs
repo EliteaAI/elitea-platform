@@ -31,7 +31,8 @@ use super::output_delivery::{
     AgentFailureTerminalError, AgentOutputPreflight, AgentOutputPreflightError,
     AgentOutputPreflightOutcome, AgentOutputRecoveryRequiredKind, AgentProgressConnector,
     AgentTerminalRecoveryConfig, AgentTerminalRecoveryError, AgentTerminalReplay,
-    publish_pre_invocation_terminal, recover_accepted_terminal,
+    publish_pre_invocation_terminal, reconcile_empty_agent_output_recovery,
+    recover_accepted_terminal,
 };
 use super::redis_delivery::RedisDeliveryProcessor as RedisDeliveryProcessorContract;
 use crate::agents::runtime::NativeAgentAssembler;
@@ -39,7 +40,10 @@ use crate::diagnostics::attach_command_trace_parent;
 use crate::protocol::command::{
     SignedCommandAuthenticator, VerifiedAgentCommand, parse_and_verify_agent_command,
 };
-use crate::protocol::control::{AgentControlClient, AgentOutputRecoveryKind};
+use crate::protocol::control::{
+    AgentControlClient, AgentOutputRecoveryKind, DesiredExecutionState,
+};
+use crate::protocol::output::RuntimeFailureKind;
 use crate::transport::ControlRpc;
 use crate::transport::redis_commands::{
     RedisCommandDelivery, RedisCommandRetirer, RedisRetirementClient,
@@ -130,10 +134,7 @@ where
         match route {
             AgentDeliveryRoute::Fresh(fresh) => Box::pin(self.process_fresh(*fresh)).await,
             AgentDeliveryRoute::OutputRecovery(recovery) => {
-                Ok(AgentDeliveryProcessOutcome::retained(
-                    output_recovery_code(recovery.recovery_kind()),
-                    true,
-                ))
+                Box::pin(self.process_output_recovery(*recovery)).await
             }
             AgentDeliveryRoute::RetryLaterNoAck => Ok(AgentDeliveryProcessOutcome::retained(
                 "agent_delivery.retry_later",
@@ -143,6 +144,53 @@ where
                 "agent_delivery.redelivery_retired",
             )),
         }
+    }
+
+    async fn process_output_recovery(
+        &self,
+        recovery: super::agent_delivery::OutputRecoveryAgentDelivery,
+    ) -> Result<AgentDeliveryProcessOutcome, AgentDeliveryProcessError> {
+        let kind = recovery.recovery_kind();
+        let failure = match (kind, recovery.desired_state()) {
+            (AgentOutputRecoveryKind::AmbiguousInvocation, DesiredExecutionState::Running) => {
+                RuntimeFailureKind::Internal
+            }
+            (AgentOutputRecoveryKind::Running, DesiredExecutionState::Cancelled) => {
+                RuntimeFailureKind::Cancelled
+            }
+            _ => {
+                return Ok(AgentDeliveryProcessOutcome::retained(
+                    output_recovery_code(kind),
+                    true,
+                ));
+            }
+        };
+        let Some(recovery) = self
+            .output
+            .prepare_empty_recovery(recovery)
+            .await
+            .map_err(AgentDeliveryProcessError::OutputPreflight)?
+        else {
+            return Ok(AgentDeliveryProcessOutcome::retained(
+                "agent_delivery.output_recovery_pending",
+                true,
+            ));
+        };
+        reconcile_empty_agent_output_recovery(
+            Arc::clone(&self.control),
+            self.retirer.as_ref(),
+            self.replay.as_ref(),
+            recovery,
+            failure,
+            Arc::clone(&self.clock),
+            self.preparation.lease_config(),
+            self.terminal_recovery,
+        )
+        .await
+        .map_err(AgentDeliveryProcessError::FailureTerminal)?;
+        Ok(AgentDeliveryProcessOutcome::completed(
+            "agent_delivery.ambiguous_invocation_reconciled",
+        ))
     }
 
     async fn process_fresh(

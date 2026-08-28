@@ -210,6 +210,20 @@ describe('normaliseAssistantMessage', () => {
     expect('exception' in normaliseAssistantMessage(baseGroup, [], undefined)).toBe(false);
   });
 
+  it('restores the token-limit continuation signal from durable metadata', () => {
+    const group: MessageGroupWire = {
+      ...baseGroup,
+      meta: { output_limit_reached: true, output_limit_sequence: 1, thread_id: 'thread-1' },
+    };
+    expect(normaliseAssistantMessage(group, [], undefined)).toMatchObject({
+      threadId: 'thread-1',
+      requiresConfirmation: {
+        message: "Token limit reached mid-response. Press 'Continue' to see more.",
+        buttonText: 'Continue',
+      },
+    });
+  });
+
   it('skips an empty/whitespace-only thinking step (a real no-op backend transition step)', () => {
     const group: MessageGroupWire = {
       ...baseGroup,

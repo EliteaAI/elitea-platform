@@ -74,6 +74,11 @@ type modelObject struct {
 	// credentialTitle is the link's elitea_title. It identifies the credential
 	// when credentialID is empty, and it names the row in a log line.
 	credentialTitle string
+	// credentialModelOwnerAccess records that this credential was resolved
+	// through a model published from the operator's public project. It lets the
+	// account use that model's owner credential without publishing the
+	// credential as a generally reusable provider.
+	credentialModelOwnerAccess bool
 }
 
 // linkedCredential returns the account-side selector for this model's linked
@@ -83,9 +88,10 @@ func (mo modelObject) linkedCredential() (account.LinkedCredential, bool) {
 		return account.LinkedCredential{}, false
 	}
 	return account.LinkedCredential{
-		ProjectID: mo.credentialProject,
-		ConfigID:  mo.credentialID,
-		Title:     mo.credentialTitle,
+		ProjectID:        mo.credentialProject,
+		ConfigID:         mo.credentialID,
+		Title:            mo.credentialTitle,
+		ModelOwnerAccess: mo.credentialModelOwnerAccess,
 	}, true
 }
 
@@ -144,6 +150,11 @@ type modelConfigData struct {
 type modelCredentialRef struct {
 	EliteaTitle string `json:"elitea_title"`
 	AlitaTitle  string `json:"alita_title"`
+	// Private selects the caller's personal-project credential when true. When
+	// false, the current platform resolves the credential in the model owner's
+	// project. False is also the legacy default for an expanded shape that did
+	// not persist this field.
+	Private bool `json:"private"`
 	// ConfigurationType is the credential row's `type` column, present only in
 	// the expanded shape.
 	ConfigurationType string `json:"configuration_type"`
@@ -191,6 +202,16 @@ type credentialRef struct {
 	apiBase string
 	// ownerProjectID is the project whose schema holds the row.
 	ownerProjectID string
+}
+
+// modelCredentialLookups preserves the current platform's two reference
+// scopes. projectLocal is used when data.ai_credentials.private is false;
+// personal is used when it is true. modelOwnerAccess applies only to a
+// project-local match from a published public-project model.
+type modelCredentialLookups struct {
+	projectLocal     []map[string]credentialRef
+	personal         []map[string]credentialRef
+	modelOwnerAccess bool
 }
 
 // modelSection is one (section, type) pair in p_{projectID}.configuration that
@@ -534,7 +555,10 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 
 	publicScope := m.publicProjectID != "" && m.publicProjectID != projectID
 	if !publicScope {
-		if err := m.queryScope(ctx, projectID, false, []map[string]credentialRef{ownCreds}, &models, seen); err != nil {
+		if err := m.queryScope(ctx, projectID, false, modelCredentialLookups{
+			projectLocal: []map[string]credentialRef{ownCreds},
+			personal:     []map[string]credentialRef{ownCreds},
+		}, &models, seen); err != nil {
 			return nil, err
 		}
 		return models, nil
@@ -547,19 +571,34 @@ func (m *ModelResolver) query(ctx context.Context, projectID string) ([]modelObj
 	if err != nil {
 		return nil, err
 	}
+	// A published model is a capability in the current platform. Its
+	// private:false link resolves against the model's owning public project,
+	// where the credential does not need to be separately shared. This second
+	// non-secret metadata read is used only for published model rows below; an
+	// ordinary caller-owned model still sees publicCreds and its shared=true
+	// predicate only.
+	publicModelOwnerCreds, err := m.credentialRefs(ctx, m.publicProjectID, false)
+	if err != nil {
+		return nil, err
+	}
 
 	// The caller's own model row may link to a credential the platform
 	// published. Its own project is searched first, so a same-titled credential
 	// of its own wins — the precedence the rest of this file already keeps.
-	if err := m.queryScope(ctx, projectID, false,
-		[]map[string]credentialRef{ownCreds, publicCreds}, &models, seen); err != nil {
+	if err := m.queryScope(ctx, projectID, false, modelCredentialLookups{
+		projectLocal: []map[string]credentialRef{ownCreds, publicCreds},
+		personal:     []map[string]credentialRef{ownCreds, publicCreds},
+	}, &models, seen); err != nil {
 		return nil, err
 	}
-	// A public model row links to a public credential. The caller's own
-	// credentials are NOT searched for it: a published model must not resolve
-	// differently for each caller.
-	if err := m.queryScope(ctx, m.publicProjectID, true,
-		[]map[string]credentialRef{publicCreds}, &models, seen); err != nil {
+	// A public model's private:false link uses the model owner's credential.
+	// private:true retains the current platform's personal-project behavior and
+	// falls back only to a separately published public credential.
+	if err := m.queryScope(ctx, m.publicProjectID, true, modelCredentialLookups{
+		projectLocal:     []map[string]credentialRef{publicModelOwnerCreds},
+		personal:         []map[string]credentialRef{ownCreds, publicCreds},
+		modelOwnerAccess: true,
+	}, &models, seen); err != nil {
 		return nil, err
 	}
 	return models, nil
@@ -576,7 +615,7 @@ func (m *ModelResolver) queryScope(
 	ctx context.Context,
 	scopeProjectID string,
 	sharedOnly bool,
-	creds []map[string]credentialRef,
+	creds modelCredentialLookups,
 	models *[]modelObject,
 	seen map[string]struct{},
 ) error {
@@ -662,7 +701,7 @@ func (m *ModelResolver) applyCredentialLink(
 	mo *modelObject,
 	link *modelCredentialRef,
 	scopeProjectID string,
-	creds []map[string]credentialRef,
+	creds modelCredentialLookups,
 ) {
 	if !link.names() {
 		return
@@ -672,7 +711,13 @@ func (m *ModelResolver) applyCredentialLink(
 	configID := link.ConfigurationUUID
 	ownerProject := link.ConfigurationProjectID.String()
 	title := link.title()
-	ref, refFound := lookupCredentialRef(creds, title)
+	credentialScopes := creds.projectLocal
+	modelOwnerAccess := creds.modelOwnerAccess
+	if link.Private {
+		credentialScopes = creds.personal
+		modelOwnerAccess = false
+	}
+	ref, refFound := lookupCredentialRef(credentialScopes, title)
 
 	if credentialType == "" {
 		if !refFound {
@@ -698,6 +743,7 @@ func (m *ModelResolver) applyCredentialLink(
 	mo.credentialProject = ownerProject
 	mo.credentialID = configID
 	mo.credentialTitle = title
+	mo.credentialModelOwnerAccess = modelOwnerAccess && ownerProject == scopeProjectID
 }
 
 // lookupCredentialRef finds title in the first lookup that holds it.

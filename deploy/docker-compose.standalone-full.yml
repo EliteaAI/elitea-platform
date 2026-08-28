@@ -723,7 +723,10 @@ services:
 
       # Configuration-validation dispatch: the base plane, always required.
       ELITEA_RUNTIME_COMMAND_STREAM: "commands.v1.configuration.validate.v1.validation-small.shared-credential-free.1.0"
-      ELITEA_RUNTIME_MAX_OUTSTANDING: "64"
+      # A restored database can already carry the cluster-wide admission
+      # policy. All Main replicas must use that persisted value; the runtime
+      # deliberately rejects a mismatch instead of silently changing capacity.
+      ELITEA_RUNTIME_MAX_OUTSTANDING: "${ELITEA_RUNTIME_MAX_OUTSTANDING:-64}"
       ELITEA_RUNTIME_STREAM_MAX_ENTRIES: "1024"
 
       # Agent-execution dispatch: the chat send path. The stream name must not
@@ -857,7 +860,7 @@ services:
       # value, and the seeded working project IS 1 — so setting both to 1 renders
       # the PUBLIC view on every agents/pipelines/skills page and makes the
       # private list unreachable. 99 is an id no fixture creates.
-      VITE_PUBLIC_PROJECT_ID: "99"
+      VITE_PUBLIC_PROJECT_ID: "${VITE_PUBLIC_PROJECT_ID:-99}"
     depends_on:
       elitea-main:
         condition: service_healthy

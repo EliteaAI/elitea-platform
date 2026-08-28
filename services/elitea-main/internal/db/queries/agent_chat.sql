@@ -452,7 +452,7 @@ WHERE application_version.id = sqlc.arg(application_version_id)::integer;
 SELECT conversation.id AS conversation_id,
        author_participant.id AS author_participant_id,
        target_participant.id AS target_participant_id,
-       COALESCE(author_mapping.entity_settings -> 'llm_settings', '{}'::jsonb)::text AS llm_settings_json,
+       COALESCE(target_mapping.entity_settings -> 'llm_settings', '{}'::jsonb)::text AS llm_settings_json,
        (CASE
            WHEN COALESCE(conversation.meta ->> 'default_instructions', '') = ''
            THEN COALESCE(conversation.instructions, '')
@@ -1012,6 +1012,146 @@ WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
   AND COALESCE(response.meta ->> 'thread_id', '') <> ''
   AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
 ;
+
+-- name: ResolveCurrentOutputLimitContinuation :one
+SELECT conversation.uuid AS conversation_uuid,
+       question.uuid AS question_id,
+       response.author_participant_id AS target_participant_id,
+       CASE response_author.entity_name
+           WHEN 'application' THEN 'application'
+           WHEN 'dummy' THEN 'adhoc'
+       END::text AS continuation_kind,
+       question_text.content::text AS user_input,
+       COALESCE(response_text.content, '')::text AS truncated_content,
+       COALESCE(response.meta ->> 'thread_id', '')::text AS thread_id,
+       COALESCE(response.meta ->> 'execution_generation', '')::text AS execution_generation,
+       CASE
+           WHEN COALESCE(response.meta ->> 'output_limit_sequence', '') ~ '^[1-9][0-9]*$'
+               THEN (response.meta ->> 'output_limit_sequence')::bigint
+           ELSE 0::bigint
+       END AS output_limit_sequence
+FROM chat_message_group AS response
+JOIN chat_conversations AS conversation
+  ON conversation.id = response.conversation_id
+JOIN chat_message_group AS question
+  ON question.id = response.reply_to_id
+ AND question.conversation_id = conversation.id
+JOIN chat_participants AS question_author
+  ON question_author.id = question.author_participant_id
+ AND question_author.entity_name = 'user'
+JOIN chat_participants AS response_author
+  ON response_author.id = response.author_participant_id
+ AND response_author.entity_name IN ('application', 'dummy')
+JOIN chat_participant_mapping AS actor_mapping
+  ON actor_mapping.conversation_id = conversation.id
+JOIN chat_participants AS actor_participant
+  ON actor_participant.id = actor_mapping.participant_id
+ AND actor_participant.entity_name = 'user'
+ AND (actor_participant.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+LEFT JOIN LATERAL (
+    SELECT text_item.content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = question.id
+      AND item.item_type = 'text_message'
+    ORDER BY item.order_index DESC, item.id DESC
+    LIMIT 1
+) AS question_text ON TRUE
+JOIN LATERAL (
+    SELECT string_agg(text_item.content, '' ORDER BY item.order_index, item.id) AS content
+    FROM chat_message_items AS item
+    JOIN chat_messages_text AS text_item ON text_item.id = item.id
+    WHERE item.message_group_id = response.id
+      AND item.item_type = 'text_message'
+) AS response_text ON TRUE
+WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
+  AND response.uuid = sqlc.arg(response_message_id)::uuid
+  AND NOT response.is_streaming
+  AND response.meta -> 'output_limit_reached' = 'true'::jsonb
+  AND COALESCE(response.meta ->> 'output_limit_sequence', '') ~ '^[1-9][0-9]*$'
+  AND COALESCE(response.meta ->> 'thread_id', '') <> ''
+  AND COALESCE(response.meta ->> 'execution_generation', '') <> ''
+  AND NOT (response.meta ? 'hitl_interrupt')
+  AND NOT (response.meta ? 'hitl_interrupts')
+  AND NOT (response.meta ? 'authorization_requests')
+  AND (
+      conversation.author_id = sqlc.arg(actor_user_id)::bigint
+      OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+  )
+  AND (
+      response_author.entity_name = 'dummy'
+      OR (
+          response_author.entity_name = 'application'
+          AND (response_author.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
+      )
+  );
+
+-- name: ResumeCurrentAgentOutputLimit :one
+WITH resolved AS MATERIALIZED (
+    SELECT response.id, response.uuid
+    FROM chat_message_group AS response
+    JOIN chat_conversations AS conversation
+      ON conversation.id = response.conversation_id
+    JOIN chat_message_group AS question
+      ON question.id = response.reply_to_id
+     AND question.conversation_id = conversation.id
+    JOIN chat_participants AS question_author
+      ON question_author.id = question.author_participant_id
+     AND question_author.entity_name = 'user'
+    JOIN chat_participants AS response_author
+      ON response_author.id = response.author_participant_id
+     AND response_author.id = sqlc.arg(target_participant_id)::integer
+    LEFT JOIN chat_participant_mapping AS application_mapping
+      ON application_mapping.conversation_id = conversation.id
+     AND application_mapping.participant_id = response_author.id
+    LEFT JOIN application_versions AS application_version
+      ON application_version.id = sqlc.arg(application_version_id)::integer
+     AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
+     AND application_version.application_id = sqlc.arg(application_id)::integer
+     AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    WHERE conversation.uuid = sqlc.arg(conversation_uuid)::uuid
+      AND response.uuid = sqlc.arg(response_message_id)::uuid
+      AND question.uuid = sqlc.arg(question_id)::uuid
+      AND NOT response.is_streaming
+      AND response.meta -> 'output_limit_reached' = 'true'::jsonb
+      AND response.meta ->> 'output_limit_sequence' = sqlc.arg(output_limit_sequence)::bigint::text
+      AND response.meta ->> 'execution_generation' = sqlc.arg(execution_generation)::text
+      AND response.meta ->> 'thread_id' = sqlc.arg(thread_id)::text
+      AND NOT (response.meta ? 'hitl_interrupt')
+      AND NOT (response.meta ? 'hitl_interrupts')
+      AND NOT (response.meta ? 'authorization_requests')
+      AND (
+          conversation.author_id = sqlc.arg(actor_user_id)::bigint
+          OR (question_author.entity_meta ->> 'id')::bigint = sqlc.arg(actor_user_id)::bigint
+      )
+      AND (
+          (
+              sqlc.arg(continuation_kind)::text = 'adhoc'
+              AND response_author.entity_name = 'dummy'
+              AND sqlc.arg(application_id)::integer = 0
+              AND sqlc.arg(application_version_id)::integer = 0
+          )
+          OR (
+              sqlc.arg(continuation_kind)::text = 'application'
+              AND response_author.entity_name = 'application'
+              AND (response_author.entity_meta ->> 'project_id')::integer = sqlc.arg(project_id)::integer
+              AND application_version.id IS NOT NULL
+          )
+      )
+    FOR UPDATE OF response
+), updated AS (
+    UPDATE chat_message_group AS response
+    SET meta = response.meta - 'output_limit_reached',
+        is_streaming = TRUE,
+        task_id = sqlc.arg(execution_id)::text,
+        updated_at = clock_timestamp()
+    FROM resolved
+    WHERE response.id = resolved.id
+    RETURNING response.id, response.uuid
+)
+SELECT updated.id AS response_message_group_id,
+       updated.uuid AS response_message_id
+FROM updated;
 
 -- name: ResumeCurrentAgentHITL :one
 WITH resolved AS MATERIALIZED (
@@ -1611,6 +1751,14 @@ RETURNING id;
 INSERT INTO chat_messages_text (id, content)
 VALUES (sqlc.arg(item_id)::bigint, sqlc.arg(content)::text);
 
+-- name: DeleteCurrentAgentProvisionalText :exec
+DELETE FROM chat_message_items
+WHERE message_group_id = sqlc.arg(message_group_id)::bigint
+  AND item_type = 'text_message'
+  AND meta ->> 'runtime_stream_execution_id' = sqlc.arg(execution_id)::text
+  AND meta ->> 'runtime_stream_generation' = sqlc.arg(generation)::bigint::text
+  AND meta -> 'runtime_stream_provisional' = 'true'::jsonb;
+
 -- name: GetCurrentAgentInvokedSkills :one
 SELECT COALESCE(meta -> 'invoked_skills', '[]'::jsonb)::text AS invoked_skills
 FROM chat_message_group
@@ -1619,14 +1767,27 @@ WHERE id = sqlc.arg(message_group_id)::bigint;
 -- name: FinalizeCurrentAgentFullMessage :execrows
 UPDATE chat_message_group
 SET is_streaming = FALSE,
-    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts' - 'authorization_requests')
+    meta = (meta - 'hitl_interrupt' - 'hitl_interrupts' - 'authorization_requests' - 'output_limit_reached')
         || jsonb_build_object(
             'thread_id', sqlc.arg(thread_id)::text,
             'references', sqlc.arg(references_json)::jsonb,
             'is_error', FALSE,
             'error', '',
             'invoked_skills', sqlc.arg(invoked_skills)::jsonb
-        ),
+        )
+        || CASE
+            WHEN sqlc.arg(output_limit_reached)::boolean
+            THEN jsonb_build_object(
+                'output_limit_reached', TRUE,
+                'output_limit_sequence',
+                CASE
+                    WHEN COALESCE(meta ->> 'output_limit_sequence', '') ~ '^[0-9]+$'
+                    THEN (meta ->> 'output_limit_sequence')::bigint + 1
+                    ELSE 1
+                END
+            )
+            ELSE '{}'::jsonb
+        END,
     updated_at = clock_timestamp()
 WHERE id = sqlc.arg(message_group_id)::bigint;
 

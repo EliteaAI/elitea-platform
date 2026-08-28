@@ -1128,6 +1128,7 @@ fn tool_resume_payload(
         debug_mode: None,
         next_input_suggestion: NextInputSuggestionPolicy::default(),
         toolkit_guardrails: None,
+        truncated_content: None,
     }
 }
 

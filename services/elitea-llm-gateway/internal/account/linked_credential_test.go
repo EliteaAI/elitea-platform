@@ -242,6 +242,61 @@ func TestLinkedSharedCredentialSelectsThePublishedRow(t *testing.T) {
 	}
 }
 
+// TestPublishedModelUsesItsUnpublishedOwnerCredential preserves the current
+// platform's capability boundary. The model is what the operator publishes;
+// its public-project credential remains unavailable for general selection.
+func TestPublishedModelUsesItsUnpublishedOwnerCredential(t *testing.T) {
+	db := &fakeDB{bySchema: map[string][][]any{
+		callerProject: {},
+		publicProject: {openAIRow("pub-1", "model-owner-openai", "OWNER-KEY", false)},
+	}}
+	a := newSharedAccount(t, db, &fakeVault{})
+
+	ctx := ctxWithLink(callerProject, LinkedCredential{
+		ProjectID:        publicProject,
+		ConfigID:         "pub-1",
+		Title:            "model-owner-openai",
+		ModelOwnerAccess: true,
+	})
+	keys, err := a.GetKeysForProvider(ctx, schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetKeysForProvider: %v", err)
+	}
+	if len(keys) != 1 || keys[0].Value.Val != "OWNER-KEY" {
+		t.Fatalf("keys = %+v, want the one model-owner credential", keys)
+	}
+	if strings.Contains(db.gotSQL[0], "shared = true") {
+		t.Fatal("the caller's own credential read unexpectedly used the shared predicate")
+	}
+	if len(db.gotSQL) != 2 || strings.Contains(db.gotSQL[1], "shared = true") {
+		t.Fatalf("public owner lookup did not use the model capability: %+v", db.gotSQL)
+	}
+}
+
+// TestModelOwnerAccessDoesNotAuthorizeAnotherProject proves the provenance bit
+// cannot turn a caller-selected project into a credential scope. Only the
+// operator-configured public project may be relaxed.
+func TestModelOwnerAccessDoesNotAuthorizeAnotherProject(t *testing.T) {
+	db := &fakeDB{bySchema: map[string][][]any{
+		callerProject: {},
+		publicProject: {openAIRow("pub-1", "not-published", "OWNER-KEY", false)},
+		otherProject:  {openAIRow("other-1", "other", "OTHER-KEY", false)},
+	}}
+	a := newSharedAccount(t, db, &fakeVault{})
+
+	ctx := ctxWithLink(callerProject, LinkedCredential{
+		ProjectID: otherProject, ConfigID: "other-1", Title: "other", ModelOwnerAccess: true,
+	})
+	if _, err := a.GetKeysForProvider(ctx, schemas.OpenAI); !errors.Is(err, ErrLinkedCredentialNotFound) {
+		t.Fatalf("error = %v, want ErrLinkedCredentialNotFound", err)
+	}
+	for _, statement := range db.gotSQL {
+		if strings.Contains(statement, `"p_`+otherProject+`"`) {
+			t.Fatalf("account queried an unrelated project: %s", statement)
+		}
+	}
+}
+
 // ── the end-to-end proof ──────────────────────────────────────────────────────
 
 // TestLinkedCredentialReachesTheNamedEndpoint is the behavioural proof. Nothing

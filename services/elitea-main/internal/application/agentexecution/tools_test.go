@@ -504,22 +504,23 @@ func TestCurrentApplicationToolSnapshotValidatesConstruction(t *testing.T) {
 	}
 }
 
-func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing.T) {
+func TestCurrentApplicationToolSnapshotPreservesProviderAutoMaxTokens(t *testing.T) {
 	tests := []struct {
 		name              string
+		compatible        bool
 		supportsReasoning bool
 		wantMaxTokens     int64
 	}{
-		{name: "ordinary model", wantMaxTokens: currentAgentDefaultMaxTokens},
-		{name: "reasoning model", supportsReasoning: true, wantMaxTokens: currentAgentReasoningDefaultMaxTokens},
+		{name: "OpenAI-compatible model", compatible: true, wantMaxTokens: -1},
+		{name: "native Anthropic model", supportsReasoning: true, wantMaxTokens: 32_000},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			compatible := true
+			maxOutputTokens := 32_000
 			models := &currentAgentModelCatalogStub{response: configurationapp.CurrentModelCatalogResponse{
 				Items: []configurationapp.CurrentModelCatalogItem{{
-					Name: "model", ProjectID: 7, OpenAICompatible: &compatible,
-					SupportsReasoning: &test.supportsReasoning,
+					Name: "model", ProjectID: 7, OpenAICompatible: &test.compatible,
+					SupportsReasoning: &test.supportsReasoning, MaxOutputTokens: &maxOutputTokens,
 				}},
 			}}
 			service, err := NewCurrentApplicationToolSnapshotService(
@@ -543,7 +544,7 @@ func TestCurrentApplicationToolSnapshotExpandsCurrentDefaultMaxTokens(t *testing
 				t.Fatal(err)
 			}
 			settings := version["llm_settings"].(map[string]any)
-			maxTokens, valid := positiveCurrentAgentJSONInteger(settings["max_tokens"])
+			maxTokens, valid := currentAgentJSONInteger(settings["max_tokens"])
 			if !valid || maxTokens != test.wantMaxTokens {
 				t.Fatalf("max_tokens=%v, want %d", settings["max_tokens"], test.wantMaxTokens)
 			}

@@ -57,12 +57,16 @@ export function reduceTurnFrame(
     case SocketMessageType.StartTask:
     case SocketMessageType.AgentStart: {
       if (index === -1) return [...history, createAssistantMessage(frame, context)];
+      const current = history[index];
+      if (!current) return history;
+      const continuingOutput = frame.response_metadata?.should_continue === true;
       return replaceAt(history, index, {
-        content: '',
+        content: continuingOutput ? current.content : '',
         isStreaming: true,
         isLoading: true,
-        references: [],
+        references: continuingOutput ? current.references : [],
         exception: undefined,
+        requiresConfirmation: undefined,
         ...(frame.question_id !== undefined ? { questionId: frame.question_id } : {}),
       });
     }

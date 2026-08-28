@@ -204,6 +204,12 @@ impl<'a> AuthorizedNativeAssembly<'a> {
         let start = admit_native_start(self.request)?;
         let profile = match &start {
             AdmittedNativeStart::Fresh => OrdinaryNoToolProfile::validate(self.request)?,
+            AdmittedNativeStart::Regenerate => {
+                OrdinaryNoToolProfile::validate_regeneration(self.request)?
+            }
+            AdmittedNativeStart::OutputContinuation => {
+                OrdinaryNoToolProfile::validate_output_continuation(self.request)?
+            }
             AdmittedNativeStart::DirectHitl(_) => {
                 OrdinaryNoToolProfile::validate_direct_hitl_resume(self.request)?
             }
@@ -211,7 +217,15 @@ impl<'a> AuthorizedNativeAssembly<'a> {
                 OrdinaryNoToolProfile::validate_delegated_authorization_resume(self.request)?
             }
         };
-        let plan = OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?;
+        let plan = if matches!(&start, AdmittedNativeStart::OutputContinuation) {
+            OrdinaryNativeAgentPlan::from_authorized_output_continuation(
+                self.request,
+                &profile,
+                &self.command,
+            )?
+        } else {
+            OrdinaryNativeAgentPlan::from_authorized(self.request, &profile, &self.command)?
+        };
         let toolsets = FrozenToolSnapshot::from_request(self.request)
             .map_err(tool_snapshot_error)?
             .apply_policy(policy);
@@ -381,6 +395,8 @@ impl<'a> AdmittedPipelineNativeAssembly<'a> {
 /// The direct-agent start modes admitted before PAT redemption.
 pub(crate) enum AdmittedNativeStart {
     Fresh,
+    Regenerate,
+    OutputContinuation,
     DirectHitl(DirectHitlDecisionSet),
     DelegatedAuthorization(DirectDelegatedAuthorizationContinuation),
 }
@@ -473,8 +489,20 @@ fn admit_native_start(
     request: &AgentExecutionRequest,
 ) -> Result<AdmittedNativeStart, NativeAgentAssemblyError> {
     let payload = &request.payload;
+    if payload.is_regenerate {
+        if has_continuation(request) {
+            return Err(NativeAgentAssemblyError::new(
+                NativeAgentAssemblyErrorCode::UnsupportedCapability,
+                "regeneration cannot resume an interrupted native agent",
+            ));
+        }
+        return Ok(AdmittedNativeStart::Regenerate);
+    }
     if !has_continuation(request) {
         return Ok(AdmittedNativeStart::Fresh);
+    }
+    if payload.truncated_content.is_some() {
+        return Ok(AdmittedNativeStart::OutputContinuation);
     }
     if payload.should_continue
         && !payload.hitl_resume

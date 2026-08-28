@@ -16,7 +16,8 @@ use std::sync::Arc;
 use adk_rust::agent::LlmAgentBuilder;
 use adk_rust::graph::Checkpointer;
 use adk_rust::session::{
-    AppendEventRequest, CreateRequest, GetRequest, InMemorySessionService, Session, SessionService,
+    AppendEventRequest, CreateRequest, DeleteRequest, GetRequest, InMemorySessionService,
+    ListRequest, Session, SessionService,
 };
 use adk_rust::{
     AdkError, AdkIdentity, Agent, Content, Event, EventStream, GenerateContentConfig,
@@ -86,6 +87,17 @@ const APPLICATION_CAPABILITY_ID: &str = "agent.execute.application.v1";
 const ADHOC_CAPABILITY_ID: &str = "agent.execute.adhoc.v1";
 const FROZEN_HISTORY_EVENT_DOMAIN: &[u8] = b"elitea.adk.frozen-history-event.v1\0";
 const MAX_PARALLEL_APPLICATION_CALLS: usize = 8;
+fn output_continuation_prompt(original_request: &str, visible_content: &str) -> String {
+    if visible_content.is_empty() {
+        return format!(
+            "The previous attempt reached its output-token limit during internal reasoning before it produced visible output. Produce the complete answer now. Follow the original request exactly. Output only the answer and do not refer to the previous attempt.\n\nOriginal request:\n{original_request}"
+        );
+    }
+    let visible_words = visible_content.split_whitespace().count();
+    format!(
+        "The previous assistant output was cut off by its output-token limit after approximately {visible_words} visible words. Continue exactly where it stopped. Output only the missing ending. Do not repeat or restart content. Preserve the original request constraints and any leading whitespace required at the seam. The exact visible assistant output is included because it might not be present in durable model history. Continue after its final character.\n\nOriginal request:\n{original_request}\n\nExact visible assistant output so far:\n<visible-assistant-output>\n{visible_content}\n</visible-assistant-output>"
+    )
+}
 
 /// Dispatch policy chosen from the complete frozen root tool snapshot.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -412,6 +424,7 @@ pub(crate) struct OrdinaryNativeAgentPlan {
     projection_project_id: String,
     execution_id: String,
     generation: u64,
+    regenerate: bool,
 }
 
 impl OrdinaryNativeAgentPlan {
@@ -420,7 +433,15 @@ impl OrdinaryNativeAgentPlan {
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
     ) -> Result<Self, NativeAgentAssemblyError> {
-        Self::from_authorized_mode(request, profile, binding, None)
+        Self::from_authorized_mode(request, profile, binding, None, false)
+    }
+
+    pub(crate) fn from_authorized_output_continuation(
+        request: &AgentExecutionRequest,
+        profile: &OrdinaryNoToolProfile,
+        binding: &AuthorizedNativeCommandBinding,
+    ) -> Result<Self, NativeAgentAssemblyError> {
+        Self::from_authorized_mode(request, profile, binding, None, true)
     }
 
     pub(crate) fn from_authorized_pipeline(
@@ -435,6 +456,7 @@ impl OrdinaryNativeAgentPlan {
             profile,
             binding,
             Some((should_continue, hitl_resume)),
+            false,
         )
     }
 
@@ -443,6 +465,7 @@ impl OrdinaryNativeAgentPlan {
         profile: &OrdinaryNoToolProfile,
         binding: &AuthorizedNativeCommandBinding,
         pipeline_resume: Option<(bool, bool)>,
+        output_continuation: bool,
     ) -> Result<Self, NativeAgentAssemblyError> {
         let user_text = match &request.payload.user_input {
             UserInput::Text(text) => text.clone(),
@@ -486,6 +509,10 @@ impl OrdinaryNativeAgentPlan {
             root_agent_name: ROOT_AGENT_NAME.to_owned(),
             model_name: profile.model_name().to_owned(),
             application_details,
+            should_continue: output_continuation,
+            continuation_prefix: output_continuation
+                .then(|| request.payload.truncated_content.clone())
+                .flatten(),
         };
         let projection = if let Some((should_continue, hitl_resume)) = pipeline_resume {
             AgentEventProjectionContext::pipeline(PipelineProjectionInput {
@@ -505,10 +532,23 @@ impl OrdinaryNativeAgentPlan {
         Ok(Self {
             user_id,
             session_id,
-            user_content: Content::new("user").with_text(user_text),
+            user_content: Content::new("user").with_text(if output_continuation {
+                output_continuation_prompt(
+                    &user_text,
+                    request
+                        .payload
+                        .truncated_content
+                        .as_deref()
+                        .unwrap_or_default(),
+                )
+            } else {
+                user_text
+            }),
             generation_config: GenerateContentConfig {
                 temperature: profile.temperature(),
-                max_output_tokens: i32::try_from(profile.max_tokens()).ok(),
+                max_output_tokens: profile
+                    .max_tokens()
+                    .and_then(|value| i32::try_from(value).ok()),
                 ..GenerateContentConfig::default()
             },
             max_iterations: profile.step_limit(),
@@ -523,6 +563,7 @@ impl OrdinaryNativeAgentPlan {
             projection_project_id: binding.projection_project_id.clone(),
             execution_id: binding.execution_id.clone(),
             generation: binding.generation,
+            regenerate: request.payload.is_regenerate,
         })
     }
 
@@ -534,6 +575,18 @@ impl OrdinaryNativeAgentPlan {
     #[cfg(test)]
     pub(super) fn user_id(&self) -> &str {
         self.user_id.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn user_text(&self) -> String {
+        self.user_content
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                adk_rust::Part::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -868,6 +921,128 @@ pub(crate) trait BoundOrdinaryAgentModel: Send + 'static {
     fn adk_model(&self) -> Arc<dyn Llm>;
 
     fn take_completed_text(self) -> Result<String, NativeAgentAssemblyError>;
+
+    fn durable_completion(&self) -> Option<Arc<dyn DurableModelCompletion>> {
+        None
+    }
+}
+
+/// Read-only provider completion used only while ADK persists a terminal event.
+///
+/// ADK streams delta events through the agent and stores only the terminal
+/// event in `SessionService`. Repeating the full text on that terminal model
+/// response corrupts the agent's in-process accumulator. This separate view
+/// lets the session boundary enrich its private durable copy without changing
+/// the event that continues through the Runner and browser projector.
+pub(crate) trait DurableModelCompletion: Send + Sync {
+    fn snapshot(&self) -> adk_rust::Result<Option<String>>;
+}
+
+struct CompletionPersistingSessionService {
+    inner: Arc<dyn SessionService>,
+    completion: Arc<dyn DurableModelCompletion>,
+}
+
+impl CompletionPersistingSessionService {
+    fn new(inner: Arc<dyn SessionService>, completion: Arc<dyn DurableModelCompletion>) -> Self {
+        Self { inner, completion }
+    }
+
+    fn durable_event(&self, mut event: Event) -> adk_rust::Result<Event> {
+        if event.llm_response.partial || !event.llm_response.turn_complete {
+            return Ok(event);
+        }
+        let already_has_text = event.llm_response.content.as_ref().is_some_and(|content| {
+            content
+                .parts
+                .iter()
+                .any(|part| matches!(part, adk_rust::Part::Text { text } if !text.is_empty()))
+        });
+        if already_has_text {
+            return Ok(event);
+        }
+        let Some(text) = self.completion.snapshot()? else {
+            tracing::warn!(
+                event = "agent_session_terminal_completion_unavailable",
+                event_id = %event.id,
+                "the terminal ADK session event could not be enriched with its streamed completion"
+            );
+            return Ok(event);
+        };
+        if text.is_empty() {
+            return Ok(event);
+        }
+        let content = event
+            .llm_response
+            .content
+            .get_or_insert_with(|| Content::new("model"));
+        tracing::debug!(
+            event = "agent_session_terminal_completion_enriched",
+            event_id = %event.id,
+            completion_bytes = text.len(),
+            "enriched the private durable terminal event with its streamed completion"
+        );
+        content.parts.insert(0, adk_rust::Part::Text { text });
+        Ok(event)
+    }
+}
+
+#[async_trait]
+impl SessionService for CompletionPersistingSessionService {
+    async fn create(&self, req: CreateRequest) -> adk_rust::Result<Box<dyn Session>> {
+        self.inner.create(req).await
+    }
+
+    async fn get(&self, req: GetRequest) -> adk_rust::Result<Box<dyn Session>> {
+        self.inner.get(req).await
+    }
+
+    async fn list(&self, req: ListRequest) -> adk_rust::Result<Vec<Box<dyn Session>>> {
+        self.inner.list(req).await
+    }
+
+    async fn delete(&self, req: DeleteRequest) -> adk_rust::Result<()> {
+        self.inner.delete(req).await
+    }
+
+    async fn append_event(&self, session_id: &str, event: Event) -> adk_rust::Result<()> {
+        self.inner
+            .append_event(session_id, self.durable_event(event)?)
+            .await
+    }
+
+    async fn append_event_for_identity(&self, req: AppendEventRequest) -> adk_rust::Result<()> {
+        self.inner
+            .append_event_for_identity(AppendEventRequest {
+                identity: req.identity,
+                event: self.durable_event(req.event)?,
+            })
+            .await
+    }
+
+    async fn delete_all_sessions(&self, app_name: &str, user_id: &str) -> adk_rust::Result<()> {
+        self.inner.delete_all_sessions(app_name, user_id).await
+    }
+
+    async fn rewind(
+        &self,
+        session_id: &str,
+        target_event_id: &str,
+    ) -> adk_rust::Result<Box<dyn Session>> {
+        self.inner.rewind(session_id, target_event_id).await
+    }
+
+    async fn rewind_steps(
+        &self,
+        session_id: &str,
+        steps: usize,
+    ) -> adk_rust::Result<Box<dyn Session>> {
+        self.inner.rewind_steps(session_id, steps).await
+    }
+
+    async fn health_check(&self) -> adk_rust::Result<()> {
+        self.inner.health_check().await
+    }
 }
 
 /// Consuming ordinary completion selector retained beside the Runner.
@@ -968,6 +1143,7 @@ pub(crate) async fn assemble_pipeline_native(
         projection_project_id: _,
         execution_id: _,
         generation: _,
+        regenerate: _,
     } = plan;
     context_management.prepare_runner_composition();
     let agent: Arc<dyn Agent> = Arc::new(
@@ -1214,6 +1390,7 @@ where
         projection_project_id: _,
         execution_id: _,
         generation: _,
+        regenerate,
     } = plan;
     context_management.prepare_runner_composition();
     let parallel = execution_mode == NativeToolExecutionMode::ParallelApplications;
@@ -1228,6 +1405,9 @@ where
         runtime,
         parallel,
     )?;
+    if regenerate {
+        reset_session_for_regeneration(sessions.as_ref(), &user_id, &session_id).await?;
+    }
     let (session, created) =
         restore_or_create_session(sessions.as_ref(), &user_id, &session_id).await?;
     let identity = session
@@ -1250,10 +1430,19 @@ where
         session_bootstrap = if created { "seeded" } else { "restored" },
         "prepared the ADK session for the native agent runner"
     );
+    let runner_sessions: Arc<dyn SessionService> = model.durable_completion().map_or_else(
+        || Arc::clone(&sessions),
+        |completion| {
+            Arc::new(CompletionPersistingSessionService::new(
+                Arc::clone(&sessions),
+                completion,
+            ))
+        },
+    );
     let runner = adk_rust::runner::Runner::builder()
         .app_name(APP_NAME)
         .agent(agent)
-        .session_service(sessions)
+        .session_service(runner_sessions)
         .build()
         .map_err(|_| invalid_configuration())?;
     let invocation = if parallel {
@@ -1540,6 +1729,7 @@ where
         projection_project_id: _,
         execution_id: _,
         generation: _,
+        regenerate: _,
     } = plan;
     context_management.prepare_runner_composition();
     let stored = sessions
@@ -1616,6 +1806,36 @@ async fn restore_or_create_session(
             .await
             .map(|session| (session, true))
             .map_err(|_| dependency_unavailable()),
+        Err(_) => Err(dependency_unavailable()),
+    }
+}
+
+async fn reset_session_for_regeneration(
+    sessions: &dyn SessionService,
+    user_id: &UserId,
+    session_id: &SessionId,
+) -> Result<(), NativeAgentAssemblyError> {
+    let user_id = user_id.to_string();
+    let session_id = session_id.to_string();
+    match sessions
+        .get(GetRequest {
+            app_name: APP_NAME.to_owned(),
+            user_id: user_id.clone(),
+            session_id: session_id.clone(),
+            num_recent_events: Some(0),
+            after: None,
+        })
+        .await
+    {
+        Ok(_) => sessions
+            .delete(DeleteRequest {
+                app_name: APP_NAME.to_owned(),
+                user_id,
+                session_id,
+            })
+            .await
+            .map_err(|_| dependency_unavailable()),
+        Err(error) if error.code == "session.not_found" => Ok(()),
         Err(_) => Err(dependency_unavailable()),
     }
 }

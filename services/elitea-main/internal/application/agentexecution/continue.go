@@ -18,13 +18,15 @@ import (
 )
 
 const (
-	maxCurrentHITLValueBytes = 256 * 1024
-	maxCurrentHITLDecisions  = 16
+	maxCurrentHITLValueBytes          = 256 * 1024
+	maxCurrentHITLDecisions           = 16
+	maxCurrentOutputContinuationBytes = 64 * 1024
 )
 
 var (
 	ErrCurrentAgentHITLAlreadyResolved          = errors.New("current agent HITL interrupt is already resolved")
 	ErrCurrentAgentAuthorizationAlreadyResolved = errors.New("current agent authorization request is already resolved")
+	ErrCurrentAgentOutputLimitAlreadyResolved   = errors.New("current agent output-limit continuation is already resolved")
 )
 
 type CurrentContinuationKind string
@@ -32,6 +34,7 @@ type CurrentContinuationKind string
 const (
 	CurrentContinuationHITL          CurrentContinuationKind = "hitl"
 	CurrentContinuationAuthorization CurrentContinuationKind = "authorization"
+	CurrentContinuationOutputLimit   CurrentContinuationKind = "output_limit"
 )
 
 type CurrentContinuationResolveRequest struct {
@@ -49,7 +52,8 @@ func (request CurrentContinuationResolveRequest) Validate() error {
 		return ErrInvalidCurrentAgentStart
 	}
 	if request.normalizedKind() != CurrentContinuationHITL &&
-		request.normalizedKind() != CurrentContinuationAuthorization {
+		request.normalizedKind() != CurrentContinuationAuthorization &&
+		request.normalizedKind() != CurrentContinuationOutputLimit {
 		return ErrInvalidCurrentAgentStart
 	}
 	if request.normalizedKind() == CurrentContinuationAuthorization &&
@@ -57,7 +61,7 @@ func (request CurrentContinuationResolveRequest) Validate() error {
 		(len(request.AuthorizationID) > 512 || strings.ContainsRune(request.AuthorizationID, '\x00')) {
 		return ErrInvalidCurrentAgentStart
 	}
-	if request.normalizedKind() == CurrentContinuationHITL && request.AuthorizationID != "" {
+	if request.normalizedKind() != CurrentContinuationAuthorization && request.AuthorizationID != "" {
 		return ErrInvalidCurrentAgentStart
 	}
 	return nil
@@ -86,6 +90,8 @@ type CurrentContinuationTarget struct {
 	AvailableActions      []string
 	HITLInterrupts        []CurrentHITLInterrupt
 	AuthorizationRequests []CurrentAuthorizationRequest
+	TruncatedContent      string
+	OutputLimitSequence   int64
 }
 
 type CurrentHITLInterrupt struct {
@@ -117,8 +123,18 @@ func (target CurrentContinuationTarget) Validate() error {
 		!validCurrentAgentText(target.UserInput, maxCurrentAgentUserInputBytes) ||
 		target.ThreadID == "" || len(target.ThreadID) > 256 || strings.ContainsRune(target.ThreadID, '\x00') ||
 		!validUUID(target.ExecutionGeneration) ||
-		(kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization) {
+		(kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization &&
+			kind != CurrentContinuationOutputLimit) {
 		return ErrUnsupportedCurrentAgentStart
+	}
+	if kind == CurrentContinuationOutputLimit {
+		if len(target.TruncatedContent) > maxCurrentOutputContinuationBytes ||
+			strings.ContainsRune(target.TruncatedContent, '\x00') || target.OutputLimitSequence <= 0 ||
+			len(target.HITLInterrupts) != 0 || len(target.AuthorizationRequests) != 0 ||
+			target.InterruptID != "" || target.ToolCallID != "" || len(target.AvailableActions) != 0 {
+			return ErrUnsupportedCurrentAgentStart
+		}
+		return nil
 	}
 	if kind == CurrentContinuationHITL {
 		if len(target.HITLInterrupts) == 0 || len(target.HITLInterrupts) > maxCurrentHITLDecisions ||
@@ -215,6 +231,15 @@ func (request CurrentContinuationRequest) Validate() error {
 		if _, err := request.normalizedHITLDecisions(); err != nil ||
 			request.AuthorizationID != "" || len(request.MCPTokens) != 0 ||
 			len(request.IgnoredMCPServers) != 0 || len(request.DeclinedMCPServers) != 0 {
+			return ErrInvalidCurrentAgentStart
+		}
+		return nil
+	}
+	if kind == CurrentContinuationOutputLimit {
+		if request.ThreadID != "" || request.Action != "" || request.Value != "" ||
+			request.AuthorizationID != "" || len(request.MCPTokens) != 0 ||
+			len(request.IgnoredMCPServers) != 0 || len(request.DeclinedMCPServers) != 0 ||
+			len(request.HITLDecisions) != 0 {
 			return ErrInvalidCurrentAgentStart
 		}
 		return nil
@@ -381,6 +406,7 @@ type CurrentContinueTurn struct {
 	Action               string
 	ContinuationKind     CurrentContinuationKind
 	HITLDecisions        json.RawMessage
+	OutputLimitSequence  int64
 }
 
 func (turn CurrentContinueTurn) Validate() error {
@@ -394,8 +420,15 @@ func (turn CurrentContinueTurn) Validate() error {
 	if kind == "" {
 		kind = CurrentContinuationHITL
 	}
-	if kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization {
+	if kind != CurrentContinuationHITL && kind != CurrentContinuationAuthorization &&
+		kind != CurrentContinuationOutputLimit {
 		return ErrInvalidCurrentAgentStart
+	}
+	if kind == CurrentContinuationOutputLimit {
+		if len(turn.HITLDecisions) != 0 || turn.InterruptID != "" || turn.Action != "" ||
+			turn.OutputLimitSequence <= 0 {
+			return ErrInvalidCurrentAgentStart
+		}
 	}
 	if kind == CurrentContinuationHITL && !validCurrentHITLDecisionsJSON(turn.HITLDecisions) {
 		return ErrInvalidCurrentAgentStart
@@ -505,7 +538,7 @@ func (service *CurrentApplicationStartService) ContinueCurrentAgent(
 		if err != nil || !decisionsMatchCurrentHITLInterrupts(decisions, target.HITLInterrupts) {
 			return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
 		}
-	} else {
+	} else if request.normalizedKind() == CurrentContinuationAuthorization {
 		decisions, err = request.normalizedAuthorizationDecisions()
 		if err != nil || !decisionsMatchCurrentAuthorizationRequests(decisions, target.AuthorizationRequests) {
 			return CurrentApplicationStartOutcome{}, ErrUnsupportedCurrentAgentStart
@@ -518,12 +551,24 @@ func (service *CurrentApplicationStartService) ContinueCurrentAgent(
 	}
 	projectID := strconv.FormatInt(request.ProjectID, 10)
 	actorID := strconv.FormatInt(request.ActorUserID, 10)
+	idempotencyKey := currentContinuationIdempotencyKey(
+		request.ResponseMessageID,
+		input.HitlDecisions,
+		request.AuthorizationID,
+		request.Action,
+	)
+	if request.normalizedKind() == CurrentContinuationOutputLimit {
+		idempotencyKey = currentOutputContinuationIdempotencyKey(
+			request.ResponseMessageID,
+			target.OutputLimitSequence,
+		)
+	}
 	outcome, err := service.admissions.Submit(ctx, SubmitRequest{
 		Identity: executionapp.AdmissionIdentity{
 			TenantID: projectID, ResourceProjectID: projectID,
 			ProjectionProjectID: projectID, ActorID: actorID,
 		},
-		IdempotencyKey: currentContinuationIdempotencyKey(request.ResponseMessageID, input.HitlDecisions, request.AuthorizationID, request.Action),
+		IdempotencyKey: idempotencyKey,
 		CapabilityID:   capabilityID, ClientStreamID: request.ConversationUUID,
 		ClientMessageID: request.ResponseMessageID, SIOEvent: "chat_continue_predict",
 		Input: input, CurrentContinueTurn: turn,
@@ -554,7 +599,8 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 		TargetParticipantID: target.TargetParticipantID, Kind: target.Kind,
 		QuestionID: target.QuestionID, ResponseMessageID: request.ResponseMessageID,
 		ExecutionGeneration: target.ExecutionGeneration, ThreadID: target.ThreadID,
-		ContinuationKind: request.normalizedKind(),
+		ContinuationKind:    request.normalizedKind(),
+		OutputLimitSequence: target.OutputLimitSequence,
 	}
 	var input *runtimev1.AgentExecutionInputV1
 	var capabilityID string
@@ -640,7 +686,13 @@ func (service *CurrentApplicationStartService) currentContinuationInput(
 	input.ThreadId = stringPointer(target.ThreadID)
 	input.ExecutionGeneration = stringPointer(target.ExecutionGeneration)
 	input.ShouldContinue = true
-	if request.normalizedKind() == CurrentContinuationAuthorization {
+	if request.normalizedKind() == CurrentContinuationOutputLimit {
+		encodedTruncatedContent, err := json.Marshal(target.TruncatedContent)
+		if err != nil {
+			return nil, nil, "", ErrInvalidCurrentAgentStart
+		}
+		input.TruncatedContent = encodedTruncatedContent
+	} else if request.normalizedKind() == CurrentContinuationAuthorization {
 		slices.SortFunc(decisions, func(left, right CurrentHITLDecision) int {
 			return strings.Compare(left.InterruptID, right.InterruptID)
 		})
@@ -722,6 +774,10 @@ func currentContinuationIdempotencyKey(
 	_, _ = digest.Write([]byte(authorizationAction))
 	sum := digest.Sum(nil)
 	return "continue/" + responseID + "/" + hex.EncodeToString(sum[:16])
+}
+
+func currentOutputContinuationIdempotencyKey(responseID string, sequence int64) string {
+	return "continue-output/" + responseID + "/" + strconv.FormatInt(sequence, 10)
 }
 
 func stringPointer(value string) *string {

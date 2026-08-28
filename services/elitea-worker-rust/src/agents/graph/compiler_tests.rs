@@ -554,5 +554,6 @@ fn resume_payload(interrupt_id: &str, action: &str, value: &str) -> AgentExecuti
         debug_mode: None,
         next_input_suggestion: NextInputSuggestionPolicy::default(),
         toolkit_guardrails: None,
+        truncated_content: None,
     }
 }

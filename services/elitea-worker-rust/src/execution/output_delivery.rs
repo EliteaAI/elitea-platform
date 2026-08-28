@@ -44,7 +44,7 @@ use crate::transport::{
     OutputProtocolError, PreparedOutputSpool,
 };
 
-use super::agent_delivery::FreshAgentDelivery;
+use super::agent_delivery::{FreshAgentDelivery, OutputRecoveryAgentDelivery};
 use super::agent_lease::{
     ClaimLeaseError, ClaimLeaseMonitor, ClaimLeaseMonitorConfig, UnixMillisClock,
 };
@@ -77,6 +77,30 @@ pub enum AgentOutputRecoveryRequiredKind {
 pub struct EmptyAgentOutput {
     fresh: FreshAgentDelivery,
     output: PreparedAgentOutput,
+}
+
+/// Recovery-only claim plus an exclusively locked empty output spool.
+///
+/// This value carries no input, `BeginExecution`, authorization, or ADK
+/// authority. It exists only so an expired ambiguous invocation can end with
+/// one claim-bound safe failure instead of remaining RUNNING forever.
+pub(crate) struct EmptyAgentOutputRecovery {
+    recovery: OutputRecoveryAgentDelivery,
+    output: PreparedAgentOutput,
+}
+
+impl EmptyAgentOutputRecovery {
+    fn into_parts(
+        self,
+    ) -> (
+        crate::transport::redis_commands::RedisCommandDelivery,
+        VerifiedAgentCommand,
+        crate::protocol::control::AgentOutputRecovery,
+        PreparedAgentOutput,
+    ) {
+        let (delivery, verified, recovery) = self.recovery.into_parts();
+        (delivery, verified, recovery, self.output)
+    }
 }
 
 impl EmptyAgentOutput {
@@ -1890,6 +1914,118 @@ where
     })
 }
 
+/// Terminalize one expired input-free recovery claim from an empty spool.
+///
+/// The replacement claim can neither load input nor enter ADK. A final lease
+/// poll chooses cancellation/deadline over the proposed safe failure, then the
+/// normal durable-output, settlement, and Redis-retirement chain closes the
+/// exact command. This bounds a `MAY_HAVE_STARTED` crash without risking a
+/// second model or tool invocation.
+#[allow(clippy::too_many_arguments)] // Every claim, lease, spool, and retirement owner is explicit.
+pub(crate) fn reconcile_empty_agent_output_recovery<'a, R, C, T, K>(
+    control: Arc<AgentControlClient<R>>,
+    retirer: &'a RedisCommandRetirer<C>,
+    replay: &'a T,
+    recovery: EmptyAgentOutputRecovery,
+    proposed_failure: RuntimeFailureKind,
+    clock: Arc<K>,
+    lease_config: ClaimLeaseMonitorConfig,
+    recovery_config: AgentTerminalRecoveryConfig,
+) -> TerminalFuture<'a, Result<AgentFailureTerminalCompletion, AgentFailureTerminalError>>
+where
+    R: ControlRpc + 'static,
+    C: RedisRetirementClient + 'a,
+    T: AgentTerminalReplay + 'a,
+    K: UnixMillisClock,
+{
+    Box::pin(async move {
+        let (delivery, verified, recovery, output) = recovery.into_parts();
+        let execution_kind = verified.kind();
+        let (output_authority, lease_handle) = recovery.split_lease_authority();
+        let lease = ClaimLeaseMonitor::start_output_recovery(
+            Arc::clone(&control),
+            lease_handle,
+            Arc::clone(&clock),
+            lease_config,
+        );
+
+        let result = async {
+            let mut failure = match lease.check_now().await {
+                Ok(()) => proposed_failure,
+                Err(ClaimLeaseError::Cancelled(_)) => RuntimeFailureKind::Cancelled,
+                Err(error) => return Err(AgentFailureTerminalError::Lease(error)),
+            };
+            let occurred_at_unix_millis = clock.now_unix_millis();
+            if occurred_at_unix_millis <= 0 {
+                return Err(AgentFailureTerminalError::Clock(
+                    "the wall clock cannot reconcile the agent terminal",
+                ));
+            }
+            if failure != RuntimeFailureKind::Cancelled
+                && occurred_at_unix_millis >= verified.command().deadline_unix_millis
+            {
+                failure = RuntimeFailureKind::DeadlineExceeded;
+            }
+            let frame = output_authority
+                .bind_failure_terminal(&verified, failure, occurred_at_unix_millis)
+                .map_err(AgentFailureTerminalError::InvalidDurableState)?;
+            tracing::info!(event = "agent_output_recovery_terminal_persistence_started");
+            let (spool, reopener) = output
+                .persist_terminal(&frame)
+                .await
+                .map_err(AgentFailureTerminalError::Output)?;
+            tracing::info!(event = "agent_output_recovery_terminal_started");
+            let (acknowledged, frame) = replay_terminal_with_replacement(
+                replay,
+                &verified,
+                frame,
+                spool,
+                reopener,
+                recovery_config.max_output_sessions,
+            )
+            .await
+            .map_err(failure_replay_error)?;
+            let failure = restored_terminal_failure_kind(&frame).ok_or(
+                AgentFailureTerminalError::InvalidDurableState(ProtocolError::InvalidInput(
+                    "the reconciled failure terminal is malformed",
+                )),
+            )?;
+            tracing::info!(
+                event = "agent_output_recovery_terminal_acknowledged",
+                sequence = frame.sequence,
+            );
+            tracing::info!(event = "agent_settlement_started");
+            let receipt = control
+                .prepare_agent_settlement(acknowledged)
+                .await
+                .map_err(AgentFailureTerminalError::Settlement)?;
+            tracing::info!(event = "agent_settlement_prepared");
+            let settlement_receipt_id = receipt.receipt_id().to_owned();
+            tracing::info!(event = "agent_redis_retirement_started");
+            retirer
+                .retire_agent_command(delivery, &verified, receipt.into())
+                .await
+                .map_err(AgentFailureTerminalError::Redis)?;
+            tracing::info!(event = "agent_redis_retirement_completed");
+            Ok(AgentFailureTerminalCompletion {
+                execution_kind,
+                sequence: frame.sequence,
+                failure,
+                settlement_receipt_id,
+            })
+        }
+        .await;
+
+        if let Err(error) = lease.close().await {
+            tracing::warn!(
+                error_code = error.code().as_str(),
+                "claim lease supervision ended after ambiguous output reconciliation"
+            );
+        }
+        result
+    })
+}
+
 /// Replay and retire one terminal already admitted from an ACCEPTED claim.
 ///
 /// No `BeginExecution`, input, authorization or ADK authority exists on this
@@ -2248,6 +2384,43 @@ impl AgentOutputPreflight {
         Err(AgentOutputPreflightError::InvalidDurableState(
             "the pending agent output does not match the accepted claim",
         ))
+    }
+
+    /// Open the exact recovery spool without granting fresh execution.
+    ///
+    /// `None` means durable output is already pending and needs a separate
+    /// exact-frame recovery path. Only an empty spool may receive the bounded
+    /// canonical failure used to reconcile a stale ambiguous invocation.
+    pub(crate) async fn prepare_empty_recovery(
+        &self,
+        recovery: OutputRecoveryAgentDelivery,
+    ) -> Result<Option<EmptyAgentOutputRecovery>, AgentOutputPreflightError> {
+        if !recovery.matches_output_transport(
+            &self.policy.output_config.workload_session_id,
+            &self.policy.output_config.producer_id,
+        ) {
+            return Err(AgentOutputPreflightError::InvalidConfiguration(
+                "the output transport identity does not match the recovery claim",
+            ));
+        }
+        let binding = Arc::new(recovery.spool_identity());
+        let factory = AgentOutputSpoolFactory {
+            policy: Arc::clone(&self.policy),
+            binding,
+        };
+        tracing::info!(event = "agent_output_recovery_spool_open_started");
+        let prepared = factory.reopen().await?;
+        tracing::info!(
+            event = "agent_output_recovery_spool_open_completed",
+            pending_frame_count = prepared.pending_frame_count(),
+        );
+        if prepared.pending_frame_count() != 0 {
+            return Ok(None);
+        }
+        Ok(Some(EmptyAgentOutputRecovery {
+            recovery,
+            output: PreparedAgentOutput { prepared, factory },
+        }))
     }
 }
 

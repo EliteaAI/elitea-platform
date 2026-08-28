@@ -126,12 +126,12 @@ export function AppShell({ children }: AppShellProps): ReactNode {
   const configResult = getConfig();
   const publicProjectId = configResult.status === 'ok' ? configResult.config.vite_public_project_id : '';
 
-  const { project, selectProject } = useSelectedProject();
-  const { projects, isLoading: projectsLoading } = useProjectOptions(publicProjectId);
-  const permissions = usePermissionSet(project?.id);
-  const collapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const authorQuery = useGetCurrentAuthor();
   const personalProjectId = personalProjectIdOf(authorQuery.data);
+  const { project, selectProject } = useSelectedProject();
+  const { projects, isLoading: projectsLoading } = useProjectOptions(publicProjectId, personalProjectId);
+  const permissions = usePermissionSet(project?.id);
+  const collapsed = useSidebarCollapsedStore((state) => state.collapsed);
   const pathname = useRouterState({ select: (routerState) => routerState.location.pathname });
   const { banner, maintenance } = usePlatformAnnouncements();
   const isOnboardingPage = pathname === ONBOARDING_PATHNAME;
@@ -163,6 +163,17 @@ export function AppShell({ children }: AppShellProps): ReactNode {
     const personalProject = projects.find((candidate) => String(candidate.id) === personalProjectId);
     selectProject(personalProjectId, personalProject?.name ?? PERSONAL_PROJECT_FALLBACK_NAME);
   }, [project, personalProjectId, projects, projectsLoading, selectProject]);
+
+  // A restored browser can carry the raw database name from an older build.
+  // Reconcile it with the server-backed display option so page titles,
+  // analytics headings and the switcher all use the same Public/Private name.
+  useEffect(() => {
+    if (project === null || projectsLoading) return;
+    const listedProject = projects.find((candidate) => String(candidate.id) === project.id);
+    if (listedProject !== undefined && listedProject.name !== project.name) {
+      selectProject(project.id, listedProject.name);
+    }
+  }, [project, projects, projectsLoading, selectProject]);
 
   const sidebarWidth = isOnboardingPage ? 0 : collapsed ? COLLAPSED_SIDE_BAR_WIDTH_PX : SIDE_BAR_WIDTH_PX;
 

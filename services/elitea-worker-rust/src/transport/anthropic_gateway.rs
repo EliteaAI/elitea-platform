@@ -43,7 +43,7 @@ use super::model_gateway::{
 };
 use super::runtime_context::ClaimScopedEliteaContext;
 use crate::agents::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
-use crate::agents::session::BoundOrdinaryAgentModel;
+use crate::agents::session::{BoundOrdinaryAgentModel, DurableModelCompletion};
 
 const ANTHROPIC_ROUTE: &str = "/llm/v1/messages";
 const MAX_COMPLETION_BYTES: usize = 60 * 1_024;
@@ -67,6 +67,11 @@ impl ModelGatewayClient {
         invocation: ModelGatewayInvocation,
     ) -> Result<BoundAnthropicGateway, ModelGatewayError> {
         validate_invocation(&invocation)?;
+        if invocation.max_tokens.is_none() {
+            // Anthropic Messages requires max_tokens. Main resolves Auto to
+            // the configured model maximum before it freezes a native model.
+            return Err(ModelGatewayError::InvalidInvocation);
+        }
         let token = context.model_facade_token();
         let billing_project_id = context.resource_project_id();
         if model_owner_project_id == 0 || billing_project_id == 0 || token.is_empty() {
@@ -103,6 +108,10 @@ impl BoundOrdinaryAgentModel for BoundAnthropicGateway {
     fn take_completed_text(self) -> Result<String, NativeAgentAssemblyError> {
         self.completion.take().map_err(anthropic_completion_error)
     }
+
+    fn durable_completion(&self) -> Option<Arc<dyn DurableModelCompletion>> {
+        Some(self.completion.state.clone())
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +136,18 @@ struct AnthropicCompletionState {
 
 struct AnthropicCompletion {
     state: Arc<Mutex<AnthropicCompletionState>>,
+}
+
+impl DurableModelCompletion for Mutex<AnthropicCompletionState> {
+    fn snapshot(&self) -> adk_rust::Result<Option<String>> {
+        self.lock().map(|state| state.value.clone()).map_err(|_| {
+            anthropic_error(
+                ErrorCategory::Internal,
+                "completion_state",
+                "the native Anthropic completion state is unavailable",
+            )
+        })
+    }
 }
 
 impl AnthropicCompletion {
@@ -265,6 +286,7 @@ impl Llm for EliteaAnthropicModel {
                 span.in_scope(|| {
                     tracing::warn!(
                         event = "agent_model_request_failed",
+                        error = %error,
                         error_code = error.code,
                         retryable = error.is_retryable(),
                     );
@@ -406,9 +428,12 @@ struct NativeGeneration {
 }
 
 fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGeneration, AdkError> {
+    let max_tokens = invocation
+        .max_tokens
+        .ok_or_else(invalid_anthropic_request)?;
     let Some(effort) = invocation.reasoning_effort else {
         return Ok(NativeGeneration {
-            max_tokens: invocation.max_tokens,
+            max_tokens,
             temperature: invocation.temperature,
             thinking: None,
             output_config: None,
@@ -416,7 +441,7 @@ fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGenera
     };
     if adaptive_thinking_model(&invocation.model_name) {
         return Ok(NativeGeneration {
-            max_tokens: invocation.max_tokens,
+            max_tokens,
             temperature: None,
             thinking: Some(ThinkingConfig::Adaptive {
                 display: Some(ThinkingDisplay::Summarized),
@@ -429,8 +454,7 @@ fn native_generation(invocation: &ModelGatewayInvocation) -> Result<NativeGenera
         ModelReasoningEffort::Medium | ModelReasoningEffort::None => 4_096,
         ModelReasoningEffort::High => 9_092,
     };
-    let max_tokens = invocation
-        .max_tokens
+    let max_tokens = max_tokens
         .checked_add(budget)
         .filter(|value| i32::try_from(*value).is_ok())
         .ok_or_else(invalid_anthropic_request)?;

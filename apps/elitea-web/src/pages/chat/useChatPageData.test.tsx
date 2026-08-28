@@ -63,7 +63,7 @@ function authorHandler() {
 
 function detailsHandler() {
   return http.get(`${BASE}/elitea_core/conversation/prompt_lib/${PROJECT}/${CONVERSATION}`, () =>
-    HttpResponse.json({ id: CONVERSATION, name: 'A conversation', participants: [{ id: 'p1' }] }),
+    HttpResponse.json({ id: CONVERSATION, name: 'A conversation', participants: [{ id: 'p1' }], meta: { steps_limit: 12 } }),
   );
 }
 
@@ -99,6 +99,53 @@ describe('useChatPageData', () => {
     expect([...(groups ?? [])]).toHaveLength(2);
     expect(result.current.projectId).toBe(PROJECT);
     expect(result.current.user).toStrictEqual({ id: 'u1', name: 'Ada', avatar: '' });
+    expect(result.current.activeConversation?.meta).toStrictEqual({ steps_limit: 12 });
+  });
+
+  it('adapts Main current-schema rows into stable message UUIDs and reply linkage', async () => {
+    server.use(
+      authorHandler(),
+      detailsHandler(),
+      messagesHandler({
+        items: [
+          {
+            id: '41',
+            uid: '00000000-0000-4000-8000-000000000041',
+            role: 'user',
+            content: 'question',
+            metadata: { interaction_uuid: 'interaction-1' },
+            created_at: '2026-08-27T18:00:00Z',
+          },
+          {
+            id: '42',
+            uid: '00000000-0000-4000-8000-000000000042',
+            role: 'assistant',
+            content: 'answer',
+            metadata: { thread_id: 'thread-1' },
+            created_at: '2026-08-27T18:00:01Z',
+          },
+        ],
+      }),
+    );
+
+    const { result } = renderHook(() => useChatPageData({ conversationId: CONVERSATION }), { wrapper });
+
+    await waitFor(() => expect(result.current.activeConversation?.message_groups).toHaveLength(2));
+    const groups = result.current.activeConversation?.message_groups ?? [];
+    expect(groups[0]).toMatchObject({
+      id: '41',
+      uuid: '00000000-0000-4000-8000-000000000041',
+      role: 'user',
+      meta: { interaction_uuid: 'interaction-1' },
+    });
+    expect(groups[1]).toMatchObject({
+      id: '42',
+      uuid: '00000000-0000-4000-8000-000000000042',
+      role: 'assistant',
+      reply_to_id: '41',
+      question_id: '41',
+      meta: { thread_id: 'thread-1' },
+    });
   });
 
   it('reports a brand-new list envelope loudly instead of rendering it as an empty conversation', async () => {

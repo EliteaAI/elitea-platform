@@ -126,7 +126,7 @@ func TestCurrentAdhocStartAcceptsCurrentDefaultMaxTokensSentinel(t *testing.T) {
 		ExecutionID: "execution-adhoc", CommandID: "command-adhoc", Created: true,
 	}}
 	freezer := &currentApplicationVersionFreezerStub{result: json.RawMessage(`{
-  "llm_settings":{"model_name":"requested","model_project_id":9,"max_tokens":4000,"openai_compatible":true},
+  "llm_settings":{"model_name":"requested","model_project_id":9,"max_tokens":-1,"openai_compatible":true},
   "tools":[]
 }`)}
 	service, err := NewCurrentApplicationStartService(resolver, resolver, resolver, resolver, resolver, &currentAgentGuardrailStub{}, freezer, admissions)
@@ -141,7 +141,7 @@ func TestCurrentAdhocStartAcceptsCurrentDefaultMaxTokensSentinel(t *testing.T) {
 		t.Fatalf("StartCurrentAdhoc() error = %v", err)
 	}
 	if len(freezer.calls) != 1 || !bytes.Contains(freezer.calls[0].VersionDetails, []byte(`"max_tokens":-1`)) ||
-		len(admissions.requests) != 1 || !bytes.Contains(admissions.requests[0].Input.GetLlm(), []byte(`"max_tokens":4000`)) {
+		len(admissions.requests) != 1 || !bytes.Contains(admissions.requests[0].Input.GetLlm(), []byte(`"max_tokens":-1`)) {
 		t.Fatalf("freezer=%s runtime=%s", freezer.calls[0].VersionDetails, admissions.requests[0].Input.GetLlm())
 	}
 }

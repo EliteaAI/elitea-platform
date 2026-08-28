@@ -1417,7 +1417,10 @@ impl LazyNestedAgent {
             .model(model)
             .generate_content_config(GenerateContentConfig {
                 temperature: self.profile.temperature(),
-                max_output_tokens: i32::try_from(self.profile.max_tokens()).ok(),
+                max_output_tokens: self
+                    .profile
+                    .max_tokens()
+                    .and_then(|value| i32::try_from(value).ok()),
                 ..GenerateContentConfig::default()
             })
             .max_iterations(self.profile.step_limit())

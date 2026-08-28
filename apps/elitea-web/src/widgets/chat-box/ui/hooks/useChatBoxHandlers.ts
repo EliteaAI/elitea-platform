@@ -19,7 +19,7 @@
  * decision-batching isn't ported (each decision resumes independently);
  * Track-2's independent fan-out-child resume IS (routes on `childThreadId`).
  *
- * CONTINUATION TRANSPORT. `continueHitl` resumes over REST first — `POST
+ * CONTINUATION TRANSPORT. `continueHitl` and `continueTokenLimit` resume over REST first — `POST
  * /api/v2/elitea_core/continue_predict/prompt_lib/{projectID}/{conversationID}`
  * with `execution_contract=agent.continue.hitl.v1` — and emits
  * `chat_continue_predict` only when that route refuses or is absent. The order
@@ -28,63 +28,48 @@
  * every approval paused server-side. It never emits after a route that
  * ACCEPTED the resume; that would run the agent twice.
  *
- * THE OTHER TWO STAY ON THE SOCKET, and that is the backend's shape, not an
- * omission here:
- *
- *  - `continueTokenLimit` has NO contract. `Continue` admits exactly
- *    `agent.continue.hitl.v1` and `agent.continue.authorization.v1`, and 400s
- *    on anything else.
- *  - `resumeMcpFlow` would need `agent.continue.authorization.v1`, which
+ * MCP authorization still stays on the socket. It would need
+ * `agent.continue.authorization.v1`, which
  *    REQUIRES an `authorization_request_id`. Nothing in this app captures that
  *    field off the `mcp_authorization_required` frame yet, and the same
  *    contract refuses the non-empty `user_declined_mcp_servers` this handler
  *    sends.
  *
- * Both still revert their optimistic patch when no transport takes the resume,
- * so neither spins for the session.
+ * It still reverts its optimistic patch when no transport takes the resume.
  */
 
-import type { conversationApi } from '@/entities/conversation';
-import type { ChatMessage } from '@/features/chat-messages';
-import { t } from '@/shared/i18n';
-import { ToolActionStatus } from '@/shared/lib/chat';
+import { conversationApi } from "@/entities/conversation";
+import type { ChatMessage } from "@/features/chat-messages";
+import { ToolActionStatus } from "@/shared/lib/chat";
 
 import {
   buildChatContinuePayload,
   buildDeclinedServersList,
-  buildDefaultMessagePayload,
-  buildFailedTurnMessage,
-  buildOptimisticUserMessage,
-  buildRegeneratePayload,
-  buildSendResult,
   extractCopyableContent,
   findActionRequiredToolAction,
-  findQuestionForAnswer,
   findQuestionText,
-  maybeSetStreamingInfo,
-  NO_STREAM_TRANSPORT,
   readServerUrl,
-  regeneratingPatch,
-  resolveConversationForSend,
-  resolveParticipantId,
-  resolveUploadConversationId,
   revertContinuation,
-  toProjectIdString,
   trackMcpAuthDecision,
   tryEmit,
-  uploadPendingAttachments,
-  UPLOAD_FAILED,
-} from './useChatBoxHandlers.helpers';
-import { buildHitlContinueBody, findHitlInterruptId } from './useChatBoxHandlers.hitl';
+} from "./useChatBoxHandlers.helpers";
+import {
+  buildHitlContinueBody,
+  findHitlInterruptId,
+} from "./useChatBoxHandlers.hitl";
 import type {
   ChatBoxHandlerDeps,
   HitlInterruptAction,
-  SendQuestionParams,
-  SendResult,
   ToolActionLike,
-  UpdatedMessageItem,
   UseChatBoxHandlersResult,
-} from './useChatBoxHandlers.helpers';
+} from "./useChatBoxHandlers.helpers";
+import {
+  createClearChat,
+  createDeleteAnswer,
+  createRegenerateAnswer,
+  createSendQuestion,
+  undeliveredText,
+} from "./useChatBoxHandlers.turns";
 
 /*
  * [#71] `UpdatedMessageItem` and `UploadedAttachmentOutcome` were dropped from
@@ -108,79 +93,22 @@ export type {
   SendQuestionParams,
   SendResult,
   UseChatBoxHandlersResult,
-} from './useChatBoxHandlers.helpers';
-
-/** Shown when neither the REST transport nor the socket accepted the turn. */
-const undeliveredText = (): string =>
-  t('widgets.chatBox.turnNotDelivered', 'The message was not sent: no chat connection is available. Reload the page and try again.');
-
-/**
- * Hands ONE turn to the REST transport, then to the socket.
- *
- * Returns `undefined` when a transport took the turn, or the text to show the
- * user when NONE did. Exactly one of the two starts may run: a started REST
- * execution is already live server-side, and emitting `chat_predict` as well
- * would run the agent a second time.
- */
-async function deliverTurn(
-  deps: ChatBoxHandlerDeps,
-  params: { readonly conversationUuid: string; readonly payload: Record<string, unknown> },
-): Promise<string | undefined> {
-  const outcome = deps.startStreamedExecution
-    ? await deps.startStreamedExecution({ conversationUuid: params.conversationUuid, payload: params.payload })
-    : NO_STREAM_TRANSPORT;
-  if (outcome.started) return undefined;
-  // A route that ANSWERED and refused this turn must not be retried over the
-  // socket: the second start cannot succeed either, and it hides the reason.
-  if (outcome.reason === 'rejected') return outcome.message;
-  const emitted = tryEmit(
-    () => deps.emitSocket('chat_predict', { ...params.payload, conversation_uuid: params.conversationUuid, project_id: toProjectIdString(deps.projectId) }),
-    'chat_predict',
-  );
-  return emitted ? undefined : undeliveredText();
-}
+} from "./useChatBoxHandlers.helpers";
 
 /** Creates a bundle of imperative action handlers for the ChatBox, each a closure over caller-injected `deps`. */
-export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlersResult {
-  const { emitSocket, setChatHistory, isStreamingNow, setStreamingInfo, generateMessagePayload, triggerRegenerate, triggerDeleteMessage, triggerDeleteAllMessages, conversationUuid, conversationId, projectId } = deps;
-  const sendQuestion = async (params: SendQuestionParams): Promise<SendResult> => {
-    const { question, attachments, isSendingToUser, userIds } = params;
-    if (!question.trim()) return { success: false };
-    // Track a still-pending MCP auth as session-declined before sending — baseline: `ChatBox.jsx:793-812`.
-    const lastMessage = deps.chatHistory[deps.chatHistory.length - 1];
-    const pendingAuth = findActionRequiredToolAction(lastMessage);
-    trackMcpAuthDecision(deps.sessionDeclinedMcpServersRef, pendingAuth, readServerUrl(pendingAuth), true);
-    const questionId = crypto.randomUUID();
-    const participant = deps.getActiveParticipant?.() ?? null;
-    const userParticipant = deps.getUserParticipant?.();
-    const participantId = resolveParticipantId(participant);
-    const { uuid: resolvedConversationUuid, createdConversation } = await resolveConversationForSend(deps, question);
-    const uploadConversationId = resolveUploadConversationId(createdConversation, deps.conversationId);
-    const attachmentList = await uploadPendingAttachments(deps, attachments, uploadConversationId);
-    if (attachmentList === UPLOAD_FAILED) return { success: false };
-    const payload = (generateMessagePayload ?? buildDefaultMessagePayload)({ question, questionId, participant, conversationUuid: resolvedConversationUuid, attachmentList, isSendingToUser, userIds });
-    setChatHistory((prev) => [...prev, buildOptimisticUserMessage(questionId, question, userParticipant, participantId)]);
-    if (!isStreamingNow) setStreamingInfo(questionId);
-    // Only start once a conversation UUID actually exists — baseline:
-    // `ChatBox.jsx:928` `if (conversationUuid) { emit(...) }`.
-    //
-    // SSE FIRST, socket as fallback (issue #93). Every outcome of that pair is
-    // now REPORTED. Before, a turn that reached no transport left the
-    // optimistic user bubble on screen. It produced no answer, no error and
-    // nothing the user could act on. That is the normal case on a deployment
-    // whose `vite_socket_server` is empty. There the injected socket client is
-    // the no-op stub whose `emit` returns false.
-    const failure = resolvedConversationUuid
-      ? await deliverTurn(deps, { conversationUuid: resolvedConversationUuid, payload })
-      : t('widgets.chatBox.conversationNotCreated', 'The message was not sent: this chat could not be created.');
-    if (failure !== undefined) {
-      setChatHistory((prev) => [...prev, buildFailedTurnMessage(questionId, failure)]);
-      return { success: false };
-    }
-    return buildSendResult(createdConversation);
-  };
+export function useChatBoxHandlers(
+  deps: ChatBoxHandlerDeps,
+): UseChatBoxHandlersResult {
+  const {
+    emitSocket,
+    setChatHistory,
+    setStreamingInfo,
+  } = deps;
+  const sendQuestion = createSendQuestion(deps);
   const copyToClipboard = async (message: ChatMessage): Promise<boolean> => {
-    const content = message.exception ? JSON.stringify(message.exception) : extractCopyableContent(message);
+    const content = message.exception
+      ? JSON.stringify(message.exception)
+      : extractCopyableContent(message);
     if (!content) return false;
     try {
       await navigator.clipboard.writeText(content);
@@ -189,93 +117,78 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
       return false;
     }
   };
-  const regenerateAnswer = async (messageId: string, updatedItems?: readonly UpdatedMessageItem[]): Promise<void> => {
-    if (!triggerRegenerate) {
-      console.warn('[useChatBoxHandlers] regenerateAnswer: triggerRegenerate not provided');
-      return;
-    }
-    const answer = deps.chatHistory.find((item) => item.id === messageId);
-    const questionMessage = findQuestionForAnswer(deps.chatHistory, answer);
-    let previousAnswer: ChatMessage | undefined;
-    setChatHistory((prev) => {
-      previousAnswer = prev.find((item) => item.id === messageId);
-      return prev.map((item) => (item.id !== messageId ? item : regeneratingPatch(item)));
-    });
-    maybeSetStreamingInfo(setStreamingInfo, questionMessage?.id);
-    // Deliberately sends NO `execution_contract` (issue #93): on the
-    // compose stack that query value is the traefik discriminator that
-    // reroutes this POST from legacy pylon to the Go agent-execution
-    // handler, which requires a body shape (`payload.user_input`, numeric
-    // `project_id`) that `buildRegeneratePayload` does not produce — and
-    // regenerate has no socket fallback to absorb the rejection.
-    const payload = buildRegeneratePayload(deps, messageId, questionMessage, updatedItems);
-    try {
-      await triggerRegenerate(payload as Parameters<typeof conversationApi.regenerate>[0]);
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] regenerate failed:', error);
-      if (previousAnswer) {
-        const restored = previousAnswer;
-        setChatHistory((prev) => prev.map((item) => (item.id !== messageId ? item : restored)));
-      }
-    }
-  };
-  const deleteAnswer = async (messageId: string): Promise<void> => {
-    if (!triggerDeleteMessage) {
-      console.warn('[useChatBoxHandlers] deleteAnswer: triggerDeleteMessage not provided');
-      return;
-    }
-    const convId = conversationUuid ?? (conversationId !== undefined ? String(conversationId) : '');
-    try {
-      const result = await triggerDeleteMessage({ projectId: toProjectIdString(projectId), id: messageId, conversationId: convId });
-      // Prune every group the SERVER says it removed. Deleting an answer also
-      // deletes the question it replies to, so filtering on `messageId` alone
-      // left that question on screen until the next refetch. `chatHistory`
-      // items are keyed by message-group UUID (entities/message normalise), the
-      // same ids the server returns, so these match directly.
-      const removed = new Set<string>(
-        result?.deleted && result.deleted.length > 0 ? result.deleted.map(String) : [String(messageId)],
-      );
-      setChatHistory((prev) => prev.filter((item) => !removed.has(String(item.id))));
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] deleteAnswer failed:', error);
-    }
-  };
-  // Messages-only delete — NEVER the whole conversation.
-  const clearChat = async (): Promise<void> => {
-    if (!triggerDeleteAllMessages) {
-      console.warn('[useChatBoxHandlers] clearChat: triggerDeleteAllMessages not provided');
-      return;
-    }
-    const convId = conversationUuid ?? (conversationId !== undefined ? String(conversationId) : '');
-    try {
-      await triggerDeleteAllMessages({ projectId: toProjectIdString(projectId), conversationId: convId });
-      setChatHistory([]);
-    } catch (error) {
-      console.warn('[useChatBoxHandlers] clearChat failed:', error);
-    }
-  };
+  const regenerateAnswer = createRegenerateAnswer(deps);
+  const deleteAnswer = createDeleteAnswer(deps);
+  const clearChat = createClearChat(deps);
   // `applyHitlOptimisticUpdate`/`buildHitlPayload` extracted (from `continueHitl`) to keep it under the complexity budget.
-  const applyHitlOptimisticUpdate = (messageId: string, action: HitlInterruptAction): void => {
+  const applyHitlOptimisticUpdate = (
+    messageId: string,
+    action: HitlInterruptAction,
+  ): void => {
     setChatHistory((prev) =>
       prev.map((msg) => {
         if (msg.id !== messageId) return msg;
         if (action.childThreadId && Array.isArray(msg.hitlInterrupts)) {
-          const remaining = (msg.hitlInterrupts as unknown as readonly { tool_call_id?: string }[]).filter((entry) => entry.tool_call_id !== action.toolCallId);
-          return { ...msg, hitlInterrupts: remaining, hitlInterrupt: remaining[0], isStreaming: true, isLoading: true };
+          const remaining = (
+            msg.hitlInterrupts as unknown as readonly {
+              tool_call_id?: string;
+            }[]
+          ).filter((entry) => entry.tool_call_id !== action.toolCallId);
+          return {
+            ...msg,
+            hitlInterrupts: remaining,
+            hitlInterrupt: remaining[0],
+            isStreaming: true,
+            isLoading: true,
+          };
         }
-        return { ...msg, isLoading: true, isStreaming: true, exception: undefined, hitlInterrupt: undefined, hitlInterrupts: undefined };
+        return {
+          ...msg,
+          isLoading: true,
+          isStreaming: true,
+          exception: undefined,
+          hitlInterrupt: undefined,
+          hitlInterrupts: undefined,
+        };
       }),
     );
   };
-  const buildHitlPayload = (message: ChatMessage, action: HitlInterruptAction): Record<string, unknown> => {
-    const question = action.action === 'edit' ? (action.value ?? '') : action.action;
+  const buildHitlPayload = (
+    message: ChatMessage,
+    action: HitlInterruptAction,
+  ): Record<string, unknown> => {
+    const question =
+      action.action === "edit" ? (action.value ?? "") : action.action;
     const threadId = action.childThreadId || message.threadId;
-    const base = buildChatContinuePayload(deps, { messageId: message.id, threadId, question });
+    const base = buildChatContinuePayload(deps, {
+      messageId: message.id,
+      threadId,
+      question,
+    });
     if (action.childThreadId) {
-      return { ...base, hitl_resume: true, hitl_decisions: [{ thread_id: action.childThreadId, tool_call_id: action.toolCallId, action: action.action, value: action.value ?? '' }] };
+      return {
+        ...base,
+        hitl_resume: true,
+        hitl_decisions: [
+          {
+            thread_id: action.childThreadId,
+            tool_call_id: action.toolCallId,
+            action: action.action,
+            value: action.value ?? "",
+          },
+        ],
+      };
     }
-    const withValue = action.action === 'edit' || action.action === 'block_with_comment' ? { hitl_value: action.value ?? '' } : {};
-    return { ...base, hitl_resume: true, hitl_action: action.action, ...withValue };
+    const withValue =
+      action.action === "edit" || action.action === "block_with_comment"
+        ? { hitl_value: action.value ?? "" }
+        : {};
+    return {
+      ...base,
+      hitl_resume: true,
+      hitl_action: action.action,
+      ...withValue,
+    };
   };
   /**
    * Resumes the pause over REST when the route can express it.
@@ -283,7 +196,10 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
    * Returns `true` when the run is live again — the socket must then stay
    * quiet, because a second resume runs the agent twice.
    */
-  const resumeHitlOverRest = async (message: ChatMessage, action: HitlInterruptAction): Promise<boolean> => {
+  const resumeHitlOverRest = async (
+    message: ChatMessage,
+    action: HitlInterruptAction,
+  ): Promise<boolean> => {
     if (!deps.continueStreamedExecution || !deps.conversationUuid) return false;
     const body = buildHitlContinueBody({
       projectId: deps.projectId,
@@ -294,11 +210,20 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
       interruptId: findHitlInterruptId(message, action.toolCallId),
     });
     if (body === undefined) return false;
-    const outcome = await deps.continueStreamedExecution({ conversationUuid: deps.conversationUuid, body });
+    const outcome = await deps.continueStreamedExecution({
+      conversationUuid: deps.conversationUuid,
+      contract: conversationApi.contracts.continueHitl,
+      body,
+    });
     return outcome.started;
   };
   const continueHitl = async (action: HitlInterruptAction): Promise<void> => {
-    const message = [...deps.chatHistory].reverse().find((item) => Boolean(item.hitlInterrupt) || Boolean(item.hitlInterrupts?.length));
+    const message = [...deps.chatHistory]
+      .reverse()
+      .find(
+        (item) =>
+          Boolean(item.hitlInterrupt) || Boolean(item.hitlInterrupts?.length),
+      );
     if (!message) return;
     const payload = buildHitlPayload(message, action);
     applyHitlOptimisticUpdate(message.id, action);
@@ -311,7 +236,12 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     // the approval card is already gone and the bubble already spinning. So a
     // continuation that reached no transport left the run paused server-side,
     // with no way back on screen.
-    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'continueHitl')) {
+    if (
+      !tryEmit(
+        () => emitSocket("chat_continue_predict", payload),
+        "continueHitl",
+      )
+    ) {
       revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
@@ -319,34 +249,108 @@ export function useChatBoxHandlers(deps: ChatBoxHandlerDeps): UseChatBoxHandlers
     const message = deps.chatHistory.find((item) => item.id === messageId);
     if (!message) return;
     const authRequiredAction = findActionRequiredToolAction(message);
-    trackMcpAuthDecision(deps.sessionDeclinedMcpServersRef, authRequiredAction, readServerUrl(authRequiredAction), addToIgnoreList);
-    const question = findQuestionText(deps.chatHistory, message) ?? 'Continue';
+    trackMcpAuthDecision(
+      deps.sessionDeclinedMcpServersRef,
+      authRequiredAction,
+      readServerUrl(authRequiredAction),
+      addToIgnoreList,
+    );
+    const question = findQuestionText(deps.chatHistory, message) ?? "Continue";
     const payload: Record<string, unknown> = {
-      ...buildChatContinuePayload(deps, { messageId, threadId: message.threadId, question }),
-      user_declined_mcp_servers: buildDeclinedServersList(deps.sessionDeclinedMcpServersRef),
+      ...buildChatContinuePayload(deps, {
+        messageId,
+        threadId: message.threadId,
+        question,
+      }),
+      user_declined_mcp_servers: buildDeclinedServersList(
+        deps.sessionDeclinedMcpServersRef,
+      ),
     };
     setChatHistory((prev) =>
       prev.map((msg) =>
         msg.id !== messageId
           ? msg
-          : { ...msg, isLoading: true, isStreaming: true, toolActions: ((msg.toolActions ?? []) as readonly ToolActionLike[]).filter((a) => a.status !== ToolActionStatus.actionRequired) as unknown as ChatMessage['toolActions'] },
+          : {
+              ...msg,
+              isLoading: true,
+              isStreaming: true,
+              toolActions: (
+                (msg.toolActions ?? []) as readonly ToolActionLike[]
+              ).filter(
+                (a) => a.status !== ToolActionStatus.actionRequired,
+              ) as unknown as ChatMessage["toolActions"],
+            },
       ),
     );
     setStreamingInfo(message.questionId ?? messageId);
-    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'resumeMcpFlow')) {
+    if (
+      !tryEmit(
+        () => emitSocket("chat_continue_predict", payload),
+        "resumeMcpFlow",
+      )
+    ) {
       revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
-  const continueTokenLimit = (messageId: string): void => {
+  const continueTokenLimit = async (messageId: string): Promise<void> => {
     const message = deps.chatHistory.find((item) => item.id === messageId);
     if (!message) return;
-    const question = findQuestionText(deps.chatHistory, message) ?? 'Continue';
-    const payload = buildChatContinuePayload(deps, { messageId, threadId: message.threadId, question });
-    setChatHistory((prev) => prev.map((msg) => (msg.id !== messageId ? msg : { ...msg, isLoading: true, isStreaming: true })));
+    setChatHistory((prev) =>
+      prev.map((msg) =>
+        msg.id !== messageId
+          ? msg
+          : { ...msg, isLoading: true, isStreaming: true },
+      ),
+    );
     setStreamingInfo(message.questionId ?? messageId);
-    if (!tryEmit(() => emitSocket('chat_continue_predict', payload), 'continueTokenLimit')) {
+    const projectId = Number(deps.projectId);
+    if (
+      deps.continueStreamedExecution &&
+      deps.conversationUuid &&
+      Number.isSafeInteger(projectId) &&
+      projectId > 0
+    ) {
+      const outcome = await deps.continueStreamedExecution({
+        conversationUuid: deps.conversationUuid,
+        contract: conversationApi.contracts.continueOutputLimit,
+        body: {
+          project_id: projectId,
+          conversation_uuid: deps.conversationUuid,
+          message_id: messageId,
+        },
+      });
+      if (outcome.started) return;
+      if (outcome.reason === "rejected") {
+        revertContinuation(setChatHistory, message, outcome.message);
+        return;
+      }
+    }
+    const question = findQuestionText(deps.chatHistory, message) ?? "Continue";
+    const payload = {
+      ...buildChatContinuePayload(deps, {
+        messageId,
+        threadId: message.threadId,
+        question,
+      }),
+      token_limit_continuation: true,
+    };
+    if (
+      !tryEmit(
+        () => emitSocket("chat_continue_predict", payload),
+        "continueTokenLimit",
+      )
+    ) {
       revertContinuation(setChatHistory, message, undeliveredText());
     }
   };
-  return { sendQuestion, copyToClipboard, regenerateAnswer, deleteAnswer, clearChat, continueHitl, resumeMcpFlow, continueTokenLimit };
+  return {
+    sendQuestion,
+    copyToClipboard,
+    regenerateAnswer,
+    deleteAnswer,
+    clearChat,
+    continueHitl,
+    resumeMcpFlow,
+    continueTokenLimit,
+  };
 }

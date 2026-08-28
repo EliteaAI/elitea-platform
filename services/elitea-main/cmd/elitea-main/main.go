@@ -319,6 +319,7 @@ func run(ctx context.Context, logger *slog.Logger) (runErr error) {
 				Validator:                 formGraph,
 				PrincipalValidator:        principalValidator,
 				ForwardedIdentityVerifier: forwardedIdentityVerifier,
+				SessionSecret:             formSessionSecret,
 			},
 			legacyrbac.NewPostgresResolver(pool),
 		)

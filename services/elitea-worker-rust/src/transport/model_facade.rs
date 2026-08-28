@@ -16,7 +16,7 @@ use super::anthropic_gateway::BoundAnthropicGateway;
 use super::model_gateway::{BoundModelGateway, ModelGatewayClient};
 use super::runtime_context::ClaimScopedEliteaContext;
 use crate::agents::runtime::NativeAgentAssemblyError;
-use crate::agents::session::BoundOrdinaryAgentModel;
+use crate::agents::session::{BoundOrdinaryAgentModel, DurableModelCompletion};
 
 pub(crate) use super::model_gateway::{
     ModelGatewayConfig as ModelFacadeConfig, ModelGatewayError as ModelFacadeError,
@@ -91,6 +91,13 @@ impl BoundOrdinaryAgentModel for BoundModelFacade {
         match self {
             Self::OpenAiCompatible(model) => model.take_completed_text(),
             Self::Anthropic(model) => model.take_completed_text(),
+        }
+    }
+
+    fn durable_completion(&self) -> Option<Arc<dyn DurableModelCompletion>> {
+        match self {
+            Self::OpenAiCompatible(model) => model.durable_completion(),
+            Self::Anthropic(model) => model.durable_completion(),
         }
     }
 }

@@ -134,14 +134,18 @@ impl OrdinaryNativeAgentAssembler {
                 &tool_policy,
             )
             .await?;
-        let model = self.bind_model(&profile, context.as_ref())?;
+        let output_continuation = matches!(&start, AdmittedNativeStart::OutputContinuation);
+        tracing::Span::current().record("output_continuation", output_continuation);
+        let model = self.bind_model(&profile, context.as_ref(), output_continuation)?;
         tracing::Span::current().record("stage", "runner");
         let sessions = self
             .sessions
             .open(session_authority, state_writer_lease, &plan)
             .await?;
         match start {
-            AdmittedNativeStart::Fresh => {
+            AdmittedNativeStart::Fresh
+            | AdmittedNativeStart::Regenerate
+            | AdmittedNativeStart::OutputContinuation => {
                 tracing::Span::current().record(
                     "tool_execution_mode",
                     match fresh_execution_mode {
@@ -257,12 +261,19 @@ impl OrdinaryNativeAgentAssembler {
         &self,
         profile: &super::assembly::OrdinaryNoToolProfile,
         context: &crate::transport::runtime_context::ClaimScopedEliteaContext,
+        output_continuation: bool,
     ) -> Result<BoundModelFacade, NativeAgentAssemblyError> {
         let invocation = ModelInvocation {
             model_name: profile.model_name().to_owned(),
             system_instruction: profile.instructions().to_owned(),
             max_tokens: profile.max_tokens(),
-            reasoning_effort: profile.reasoning_effort().map(model_reasoning_effort),
+            reasoning_effort: profile.reasoning_effort().map(|effort| {
+                if output_continuation {
+                    ModelReasoningEffort::Low
+                } else {
+                    model_reasoning_effort(effort)
+                }
+            }),
             temperature: profile.temperature(),
             max_model_turns: profile.step_limit(),
         };
@@ -359,6 +370,7 @@ fn assembly_span(assembly: &AuthorizedNativeAssembly<'_>, session_backend: &str)
         nested_application_count = tracing::field::Empty,
         materialized_toolset_count = tracing::field::Empty,
         tool_execution_mode = tracing::field::Empty,
+        output_continuation = tracing::field::Empty,
         session_backend,
         session_bootstrap = tracing::field::Empty,
         outcome = tracing::field::Empty,

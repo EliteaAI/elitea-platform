@@ -180,8 +180,10 @@ const sharedPredicate = " AND shared = true"
 // It reads two scopes (issue #316):
 //
 //  1. p_{projectID} — every credential the caller's own project owns.
-//  2. p_{publicProjectID} — ONLY the rows flagged `shared = true`, i.e. the
-//     models and credentials the platform operator published for everyone.
+//  2. p_{publicProjectID} — normally only rows flagged `shared = true`.
+//     A credential pinned by a model published from that project may read its
+//     exact owner row even when the credential is not separately published.
+//     Running the model does not make the credential generally selectable.
 //
 // The caller's own rows come first, so the legacy precedence is preserved: where
 // both scopes describe the same thing, the project's own row wins (legacy
@@ -232,7 +234,12 @@ func (a *EliteaAccount) loadCredentials(ctx context.Context, projectID string, p
 	if err := validateProjectID(a.publicProjectID); err != nil {
 		return nil, fmt.Errorf("public project id: %w", err)
 	}
-	shared, err := a.loadCredentialScope(ctx, a.publicProjectID, provider, types, true)
+	sharedOnly := true
+	if link, linked := linkedCredentialFromContext(ctx); linked &&
+		link.ModelOwnerAccess && link.ProjectID == a.publicProjectID {
+		sharedOnly = false
+	}
+	shared, err := a.loadCredentialScope(ctx, a.publicProjectID, provider, types, sharedOnly)
 	if err != nil {
 		return nil, err
 	}

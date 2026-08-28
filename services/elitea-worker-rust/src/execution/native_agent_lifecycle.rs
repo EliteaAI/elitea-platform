@@ -571,6 +571,7 @@ where
                     }
                     Err(error) => {
                         tracing::warn!(
+                            error = %error,
                             error_code = error.code().as_str(),
                             "native agent event stream failed"
                         );
@@ -586,6 +587,7 @@ where
                     Ok(batch) => batch,
                     Err(error) => {
                         tracing::warn!(
+                            error = %error,
                             error_code = error.code().as_str(),
                             "native agent event projection failed"
                         );

@@ -96,6 +96,13 @@ func (e pgxExecutor) InsertCurrentAgentTextContent(
 	return sqlcgen.New(e.queryer).InsertCurrentAgentTextContent(ctx, arg)
 }
 
+func (e pgxExecutor) DeleteCurrentAgentProvisionalText(
+	ctx context.Context,
+	arg sqlcgen.DeleteCurrentAgentProvisionalTextParams,
+) error {
+	return sqlcgen.New(e.queryer).DeleteCurrentAgentProvisionalText(ctx, arg)
+}
+
 func (e pgxExecutor) UpdateCurrentAgentAttachmentContent(
 	ctx context.Context,
 	arg sqlcgen.UpdateCurrentAgentAttachmentContentParams,
@@ -164,6 +171,13 @@ func (e pgxExecutor) ResolveCurrentContinuation(
 	arg sqlcgen.ResolveCurrentContinuationParams,
 ) (sqlcgen.ResolveCurrentContinuationRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentContinuation(ctx, arg)
+}
+
+func (e pgxExecutor) ResolveCurrentOutputLimitContinuation(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentOutputLimitContinuationParams,
+) (sqlcgen.ResolveCurrentOutputLimitContinuationRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentOutputLimitContinuation(ctx, arg)
 }
 
 func (e pgxExecutor) ResolveCurrentAuthorizationContinuation(

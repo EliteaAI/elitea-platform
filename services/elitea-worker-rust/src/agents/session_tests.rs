@@ -25,7 +25,7 @@ use super::runtime::{NativeAgentCompletionSelector, NativeAgentRuntimeErrorCode}
 use super::sensitive_tools::SensitiveToolCatalog;
 use super::session::{
     ApplicationRuntimeProjection, AuthorizedNativeCommandBinding, BoundOrdinaryAgentModel,
-    NativeSessionBackend, NativeToolExecutionMode, OrdinaryNativeAgentPlan,
+    DurableModelCompletion, NativeSessionBackend, NativeToolExecutionMode, OrdinaryNativeAgentPlan,
     OrdinaryRuntimeBindings, assemble_direct_hitl_resume_with_sessions,
     assemble_direct_hitl_resume_with_sessions_and_applications, assemble_ordinary_native,
     assemble_ordinary_native_with_sessions, assemble_ordinary_native_with_sessions_and_options,
@@ -58,6 +58,80 @@ fn bound_model(response: &str) -> FixtureBoundModel {
             )),
         ),
         completed: response.to_owned(),
+    }
+}
+
+struct StreamingFixtureLlm {
+    response: String,
+}
+
+#[async_trait]
+impl Llm for StreamingFixtureLlm {
+    fn name(&self) -> &'static str {
+        "fixture-model"
+    }
+
+    async fn generate_content(
+        &self,
+        _request: LlmRequest,
+        _stream: bool,
+    ) -> adk_rust::Result<LlmResponseStream> {
+        let partial = LlmResponse {
+            content: Some(Content::new("model").with_text(&self.response)),
+            partial: true,
+            ..LlmResponse::default()
+        };
+        let terminal = LlmResponse {
+            finish_reason: Some(FinishReason::Stop),
+            turn_complete: true,
+            ..LlmResponse::default()
+        };
+        Ok(Box::pin(adk_rust::futures::stream::iter([
+            Ok(partial),
+            Ok(terminal),
+        ])))
+    }
+}
+
+struct FixtureDurableCompletion {
+    value: String,
+}
+
+impl DurableModelCompletion for FixtureDurableCompletion {
+    fn snapshot(&self) -> adk_rust::Result<Option<String>> {
+        Ok(Some(self.value.clone()))
+    }
+}
+
+struct StreamingBoundModel {
+    model: Arc<dyn Llm>,
+    completed: String,
+    durable: Arc<dyn DurableModelCompletion>,
+}
+
+impl BoundOrdinaryAgentModel for StreamingBoundModel {
+    fn adk_model(&self) -> Arc<dyn Llm> {
+        self.model.clone()
+    }
+
+    fn take_completed_text(self) -> Result<String, super::runtime::NativeAgentAssemblyError> {
+        Ok(self.completed)
+    }
+
+    fn durable_completion(&self) -> Option<Arc<dyn DurableModelCompletion>> {
+        Some(self.durable.clone())
+    }
+}
+
+fn streaming_bound_model(response: &str) -> StreamingBoundModel {
+    StreamingBoundModel {
+        model: Arc::new(StreamingFixtureLlm {
+            response: response.to_owned(),
+        }),
+        completed: response.to_owned(),
+        durable: Arc::new(FixtureDurableCompletion {
+            value: response.to_owned(),
+        }),
     }
 }
 
@@ -409,6 +483,195 @@ async fn injected_session_restores_existing_history_without_reseeding_the_frozen
     assert!(first_id.starts_with("fh-"));
     assert!(second_id.starts_with("fh-"));
     assert_ne!(first_id, second_id);
+}
+
+#[tokio::test]
+async fn durable_session_projects_the_previous_assistant_turn_into_the_next_model_request() {
+    let mut first_request = ordinary_request(AgentExecutionKind::Adhoc);
+    first_request.payload.chat_history.clear();
+    first_request.payload.user_input = UserInput::Text("first question".to_owned());
+    let first_profile =
+        OrdinaryNoToolProfile::validate(&first_request).expect("first ordinary profile");
+    let first_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &first_request,
+        &first_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first native plan");
+    let sessions = Arc::new(InMemorySessionService::new());
+    let first_sessions: Arc<dyn SessionService> = sessions.clone();
+    let first = assemble_ordinary_native_with_sessions(
+        streaming_bound_model("first answer"),
+        first_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        first_sessions,
+    )
+    .await
+    .expect("first assembly");
+    let (mut first_run, _projector, first_completion) = first.start().expect("first run");
+    while first_run.next_event().await.expect("first event").is_some() {}
+    first_completion.select().await.expect("first completion");
+
+    let mut second_request = first_request;
+    second_request.payload.user_input = UserInput::Text("second question".to_owned());
+    let second_profile =
+        OrdinaryNoToolProfile::validate(&second_request).expect("second ordinary profile");
+    let second_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &second_request,
+        &second_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("second native plan");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let second_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&calls),
+        }),
+        completed: "second answer".to_owned(),
+    };
+    let second_sessions: Arc<dyn SessionService> = sessions;
+    let second = assemble_ordinary_native_with_sessions(
+        second_model,
+        second_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        second_sessions,
+    )
+    .await
+    .expect("second assembly");
+    let (mut second_run, _projector, second_completion) = second.start().expect("second run");
+    while second_run
+        .next_event()
+        .await
+        .expect("second event")
+        .is_some()
+    {}
+    second_completion.select().await.expect("second completion");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let requests = captured.lock().expect("captured second request");
+    let [request] = requests.as_slice() else {
+        panic!("exactly one second-turn request expected");
+    };
+    assert_eq!(
+        request
+            .contents
+            .iter()
+            .map(|content| content.role.as_str())
+            .collect::<Vec<_>>(),
+        ["user", "model", "user"]
+    );
+    let visible = request
+        .contents
+        .iter()
+        .map(|content| {
+            content
+                .parts
+                .iter()
+                .filter_map(|part| match part {
+                    Part::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible,
+        ["first question", "first answer", "second question"]
+    );
+}
+
+#[tokio::test]
+async fn regeneration_rebuilds_the_session_without_the_replaced_assistant_turn() {
+    let mut first_request = ordinary_request(AgentExecutionKind::Adhoc);
+    first_request.payload.chat_history.clear();
+    first_request.payload.user_input = UserInput::Text("question to regenerate".to_owned());
+    let first_profile =
+        OrdinaryNoToolProfile::validate(&first_request).expect("first ordinary profile");
+    let first_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &first_request,
+        &first_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("first native plan");
+    let sessions = Arc::new(InMemorySessionService::new());
+    let first_sessions: Arc<dyn SessionService> = sessions.clone();
+    let first = assemble_ordinary_native_with_sessions(
+        streaming_bound_model("answer being replaced"),
+        first_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        first_sessions,
+    )
+    .await
+    .expect("first assembly");
+    let (mut first_run, _projector, first_completion) = first.start().expect("first run");
+    while first_run.next_event().await.expect("first event").is_some() {}
+    first_completion.select().await.expect("first completion");
+
+    let mut regeneration = first_request;
+    regeneration.payload.is_regenerate = true;
+    let regeneration_profile =
+        OrdinaryNoToolProfile::validate_regeneration(&regeneration).expect("regeneration profile");
+    let regeneration_plan = OrdinaryNativeAgentPlan::from_authorized(
+        &regeneration,
+        &regeneration_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("regeneration native plan");
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let regeneration_model = FixtureBoundModel {
+        model: Arc::new(CapturingFinalLlm {
+            requests: Arc::clone(&captured),
+            calls: Arc::clone(&calls),
+        }),
+        completed: "replacement answer".to_owned(),
+    };
+    let regeneration_sessions: Arc<dyn SessionService> = sessions;
+    let regenerated = assemble_ordinary_native_with_sessions(
+        regeneration_model,
+        regeneration_plan,
+        Vec::new(),
+        SensitiveToolCatalog::default(),
+        regeneration_sessions,
+    )
+    .await
+    .expect("regeneration assembly");
+    let (mut regeneration_run, _projector, regeneration_completion) =
+        regenerated.start().expect("regeneration run");
+    while regeneration_run
+        .next_event()
+        .await
+        .expect("regeneration event")
+        .is_some()
+    {}
+    regeneration_completion
+        .select()
+        .await
+        .expect("regeneration completion");
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let requests = captured.lock().expect("captured regeneration request");
+    let [request] = requests.as_slice() else {
+        panic!("exactly one regeneration request expected");
+    };
+    assert_eq!(request.contents.len(), 1);
+    assert_eq!(request.contents[0].role, "user");
+    assert_eq!(
+        request.contents[0]
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                Part::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>(),
+        "question to regenerate"
+    );
 }
 
 #[tokio::test]
@@ -1526,6 +1789,54 @@ fn pseudonymous_session_identity_is_stable_per_thread_and_separated_between_thre
     )
     .expect("other plan");
     assert_ne!(first.session_id(), other.session_id());
+}
+
+#[test]
+fn output_continuation_keeps_the_session_and_replaces_the_user_turn_with_a_bounded_instruction() {
+    let request = ordinary_request(AgentExecutionKind::Adhoc);
+    let profile = OrdinaryNoToolProfile::validate(&request).expect("ordinary profile");
+    let fresh = OrdinaryNativeAgentPlan::from_authorized(
+        &request,
+        &profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("fresh plan");
+
+    let mut continuation = request;
+    continuation.payload.should_continue = true;
+    continuation.payload.truncated_content =
+        Some("A durable worker stores progress before it acknowledges each command.".to_owned());
+    let continuation_profile = OrdinaryNoToolProfile::validate_output_continuation(&continuation)
+        .expect("output continuation profile");
+    let continued = OrdinaryNativeAgentPlan::from_authorized_output_continuation(
+        &continuation,
+        &continuation_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("output continuation plan");
+
+    assert_eq!(fresh.session_id(), continued.session_id());
+    let prompt = continued.user_text();
+    assert!(prompt.contains("Continue exactly where it stopped."));
+    assert!(prompt.contains("Original request:\ncurrent"));
+    assert!(prompt.contains(
+        "<visible-assistant-output>\nA durable worker stores progress before it acknowledges each command.\n</visible-assistant-output>"
+    ));
+
+    continuation.payload.truncated_content = Some(String::new());
+    let reasoning_only_profile = OrdinaryNoToolProfile::validate_output_continuation(&continuation)
+        .expect("reasoning-only continuation profile");
+    let reasoning_only = OrdinaryNativeAgentPlan::from_authorized_output_continuation(
+        &continuation,
+        &reasoning_only_profile,
+        &AuthorizedNativeCommandBinding::fixture(),
+    )
+    .expect("reasoning-only continuation plan");
+    assert!(
+        reasoning_only
+            .user_text()
+            .contains("before it produced visible output")
+    );
 }
 
 #[test]

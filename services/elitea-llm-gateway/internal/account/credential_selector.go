@@ -66,6 +66,16 @@ type LinkedCredential struct {
 	ProjectID string
 	ConfigID  string
 	Title     string
+	// ModelOwnerAccess is set only when the gateway resolved the link from a
+	// model that the operator published from PublicProjectID. The current
+	// platform treats that model as a capability: callers may run it with the
+	// credential in its owning project even when the credential itself is not
+	// separately published for general reuse.
+	//
+	// This bit is internal provenance, not request data. The account still
+	// checks that ProjectID is exactly its operator-configured public project
+	// before it relaxes the shared-row predicate.
+	ModelOwnerAccess bool
 }
 
 // empty reports whether the link names nothing at all.

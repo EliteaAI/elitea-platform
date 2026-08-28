@@ -842,6 +842,7 @@ fn resume_payload(thread_id: &str, interrupt_id: &str) -> AgentExecutionPayload 
         debug_mode: None,
         next_input_suggestion: NextInputSuggestionPolicy::default(),
         toolkit_guardrails: None,
+        truncated_content: None,
     }
 }
 

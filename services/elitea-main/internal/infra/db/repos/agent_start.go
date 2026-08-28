@@ -57,6 +57,10 @@ type currentRegenerationQuerier interface {
 }
 
 type currentContinuationQuerier interface {
+	ResolveCurrentOutputLimitContinuation(
+		context.Context,
+		sqlcgen.ResolveCurrentOutputLimitContinuationParams,
+	) (sqlcgen.ResolveCurrentOutputLimitContinuationRow, error)
 	ResolveCurrentContinuation(
 		context.Context,
 		sqlcgen.ResolveCurrentContinuationParams,
@@ -339,6 +343,37 @@ func (repository *CurrentAgentStartRepository) ResolveCurrentContinuation(
 			queries, ok := tx.(currentContinuationQuerier)
 			if !ok {
 				return errors.New("current agent continuation query is unavailable")
+			}
+			if request.Kind == agentexecutionapp.CurrentContinuationOutputLimit {
+				row, queryErr := queries.ResolveCurrentOutputLimitContinuation(
+					ctx,
+					sqlcgen.ResolveCurrentOutputLimitContinuationParams{
+						ActorUserID: request.ActorUserID, ProjectID: projectID,
+						ConversationUuid: conversationUUID, ResponseMessageID: responseMessageID,
+					},
+				)
+				if errors.Is(queryErr, pgx.ErrNoRows) {
+					return agentexecutionapp.ErrCurrentAgentOutputLimitAlreadyResolved
+				}
+				if queryErr != nil {
+					return fmt.Errorf("resolve current agent output-limit continuation: %w", queryErr)
+				}
+				target = agentexecutionapp.CurrentContinuationTarget{
+					ContinuationKind:    agentexecutionapp.CurrentContinuationOutputLimit,
+					Kind:                agentexecutionapp.CurrentRegenerationKind(row.ContinuationKind),
+					TargetParticipantID: int64(row.TargetParticipantID),
+					QuestionID:          uuid.UUID(row.QuestionID.Bytes).String(),
+					UserInput:           row.UserInput,
+					ThreadID:            row.ThreadID,
+					ExecutionGeneration: row.ExecutionGeneration,
+					TruncatedContent:    row.TruncatedContent,
+					OutputLimitSequence: int64(row.OutputLimitSequence),
+				}
+				if uuid.UUID(row.ConversationUuid.Bytes).String() != request.ConversationUUID ||
+					target.Validate() != nil {
+					return agentexecutionapp.ErrUnsupportedCurrentAgentStart
+				}
+				return nil
 			}
 			if request.Kind == agentexecutionapp.CurrentContinuationAuthorization {
 				row, queryErr := queries.ResolveCurrentAuthorizationContinuation(

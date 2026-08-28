@@ -6,22 +6,31 @@
  * test is therefore evidence that a real recorded run renders through the real
  * SSE seam — not that a hand-written frame satisfies a hand-written reducer.
  */
-import { act, render, waitFor } from '@testing-library/react';
-import { http, HttpResponse } from 'msw';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, render, waitFor } from "@testing-library/react";
+import { http, HttpResponse } from "msw";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
-import { resetConfigForTests } from '@/shared/config/get-config';
-import { installTestEventSource, type TestEventSourceRegistry } from '@/shared/api/sse/testing';
-import { server } from '@/test/setup';
+import {
+  configureGeneratedClient,
+  resetGeneratedClient,
+} from "@/shared/api/generated/mutator";
+import { resetConfigForTests } from "@/shared/config/get-config";
+import {
+  installTestEventSource,
+  type TestEventSourceRegistry,
+} from "@/shared/api/sse/testing";
+import { server } from "@/test/setup";
 
-import { useChatStreamTransport, type UseChatStreamTransportResult } from './useChatStreamTransport';
-import type { ChatMessage } from '../lib/convertMessagesToChatHistory';
+import {
+  useChatStreamTransport,
+  type UseChatStreamTransportResult,
+} from "./useChatStreamTransport";
+import type { ChatMessage } from "../lib/convertMessagesToChatHistory";
 
-const BASE = '/api/v2';
-const EVENTS_URL = '/api/v2/executions/7/exec-1/events';
-const MESSAGE_ID = '63c6d989-2860-5d68-9e3e-3587c63350d3';
-const RESPONSE_MESSAGE_ID = 'e3f5b0f2-8a3c-4d9a-9a1e-0c2b7f5d1a44';
+const BASE = "/api/v2";
+const EVENTS_URL = "/api/v2/executions/7/exec-1/events";
+const MESSAGE_ID = "63c6d989-2860-5d68-9e3e-3587c63350d3";
+const RESPONSE_MESSAGE_ID = "e3f5b0f2-8a3c-4d9a-9a1e-0c2b7f5d1a44";
 
 const globals = globalThis as unknown as Record<string, unknown>;
 let registry: TestEventSourceRegistry;
@@ -29,10 +38,10 @@ let registry: TestEventSourceRegistry;
 function pendingAssistant(): ChatMessage {
   return {
     id: MESSAGE_ID,
-    role: 'assistant',
-    name: 'Agent',
-    content: '',
-    createdAt: '2026-08-13T00:00:00.000Z',
+    role: "assistant",
+    name: "Agent",
+    content: "",
+    createdAt: "2026-08-13T00:00:00.000Z",
     isStreaming: true,
     isLoading: true,
   };
@@ -46,8 +55,12 @@ function harness(): {
   readonly errors: string[];
   readonly Probe: () => null;
 } {
-  const api: { current: UseChatStreamTransportResult | undefined } = { current: undefined };
-  const history: { current: readonly ChatMessage[] } = { current: [pendingAssistant()] };
+  const api: { current: UseChatStreamTransportResult | undefined } = {
+    current: undefined,
+  };
+  const history: { current: readonly ChatMessage[] } = {
+    current: [pendingAssistant()],
+  };
   const agentEvents: unknown[] = [];
   const errors: string[] = [];
 
@@ -56,7 +69,7 @@ function harness(): {
       setChatHistory: (updater) => {
         history.current = updater(history.current);
       },
-      context: { name: 'Agent', now: () => '2026-08-13T00:00:00.000Z' },
+      context: { name: "Agent", now: () => "2026-08-13T00:00:00.000Z" },
       onAgentEvent: (frame) => agentEvents.push(frame),
       onStreamError: (reason) => errors.push(reason),
     });
@@ -72,36 +85,55 @@ function nodeEvent(payload: Record<string, unknown>): string {
 
 beforeEach(() => {
   registry = installTestEventSource();
-  globals['elitea_ui_config'] = { vite_server_url: BASE, vite_base_uri: '/', vite_public_project_id: 'public-1' };
+  globals["elitea_ui_config"] = {
+    vite_server_url: BASE,
+    vite_base_uri: "/",
+    vite_public_project_id: "public-1",
+  };
   resetConfigForTests();
   configureGeneratedClient({ baseUrl: BASE });
 });
 
 afterEach(() => {
   registry.restore();
-  delete globals['elitea_ui_config'];
+  delete globals["elitea_ui_config"];
   resetConfigForTests();
   resetGeneratedClient();
 });
 
 function okStart(
-  body: Record<string, unknown> = { task_id: 'exec-1', events_url: EVENTS_URL, response_message_id: RESPONSE_MESSAGE_ID },
+  body: Record<string, unknown> = {
+    task_id: "exec-1",
+    events_url: EVENTS_URL,
+    response_message_id: RESPONSE_MESSAGE_ID,
+  },
 ): void {
-  server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => HttpResponse.json(body)));
+  server.use(
+    http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () =>
+      HttpResponse.json(body),
+    ),
+  );
 }
 
 /** Start a run and wait for its stream, the preamble every case below shares. */
-async function started(api: { current: UseChatStreamTransportResult | undefined }): Promise<void> {
+async function started(api: {
+  current: UseChatStreamTransportResult | undefined;
+}): Promise<void> {
   await act(async () => {
     await api.current?.start(START);
   });
   await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
 }
 
-const START = { projectId: 7, conversationUuid: 'uuid-1', contract: 'agent.execute.application.v1', body: { question: 'hi' } };
+const START = {
+  projectId: 7,
+  conversationUuid: "uuid-1",
+  contract: "agent.execute.application.v1",
+  body: { question: "hi" },
+};
 
-describe('useChatStreamTransport', () => {
-  it('renders a real recorded turn end to end, from POST through SSE to chat history', async () => {
+describe("useChatStreamTransport", () => {
+  it("renders a real recorded turn end to end, from POST through SSE to chat history", async () => {
     okStart();
     const { api, history, Probe } = harness();
     render(<Probe />);
@@ -114,22 +146,40 @@ describe('useChatStreamTransport', () => {
 
     // The order a live stack emitted, captured from the chat smoke.
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_start' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_on_transitional_edge' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_start' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'MOCK: ' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'chat smoke' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_end' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }));
+      registry.emit("execution.node_event", nodeEvent({ type: "agent_start" }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_on_transitional_edge" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_start" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "MOCK: " }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "chat smoke" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_end" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "pipeline_finish" }),
+      );
     });
 
     expect(history.current).toHaveLength(1);
-    expect(history.current[0]?.content).toBe('MOCK: chat smoke');
+    expect(history.current[0]?.content).toBe("MOCK: chat smoke");
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(history.current[0]?.isLoading).toBe(false);
   });
 
-  it('reports isStreaming false once the turn ends, without waiting for a close', async () => {
+  it("reports isStreaming false once the turn ends, without waiting for a close", async () => {
     // The regression this pins shipped and was caught only by the #284
     // journey ("the composer must be released when the turn ends"). The
     // server NEVER closes this stream — executions/events.go keeps it open and
@@ -151,12 +201,18 @@ describe('useChatStreamTransport', () => {
     await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'done' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "done" }),
+      );
     });
     expect(api.current?.isStreaming).toBe(true);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "pipeline_finish" }),
+      );
     });
 
     await waitFor(() => expect(api.current?.isStreaming).toBe(false));
@@ -176,7 +232,7 @@ describe('useChatStreamTransport', () => {
    * EVIDENCE: `handlers/agent_events.py:293-360` (emit_terminal) and
    * `executions/events.go:181-232` (the server loop has no terminal exit).
    */
-  it('releases the stream when the run pauses for a human decision', async () => {
+  it("releases the stream when the run pauses for a human decision", async () => {
     okStart();
     const { api, history, Probe } = harness();
     render(<Probe />);
@@ -184,11 +240,15 @@ describe('useChatStreamTransport', () => {
 
     act(() => {
       registry.emit(
-        'execution.node_event',
+        "execution.node_event",
         nodeEvent({
-          type: 'agent_hitl_interrupt',
-          content: 'Approve this tool call?',
-          response_metadata: { thread_id: 't-1', message: 'Approve this tool call?', hitl_interrupt: { tool_name: 'shell' } },
+          type: "agent_hitl_interrupt",
+          content: "Approve this tool call?",
+          response_metadata: {
+            thread_id: "t-1",
+            message: "Approve this tool call?",
+            hitl_interrupt: { tool_name: "shell" },
+          },
         }),
       );
     });
@@ -204,7 +264,7 @@ describe('useChatStreamTransport', () => {
    * would truncate their output. `classifyHitlPause` is the one rule both the
    * reducer and the transport read.
    */
-  it('keeps the stream open when only a fan-out child pauses', async () => {
+  it("keeps the stream open when only a fan-out child pauses", async () => {
     okStart();
     const { api, history, Probe } = harness();
     render(<Probe />);
@@ -212,11 +272,14 @@ describe('useChatStreamTransport', () => {
 
     act(() => {
       registry.emit(
-        'execution.node_event',
+        "execution.node_event",
         nodeEvent({
-          type: 'agent_hitl_interrupt',
-          content: 'child paused',
-          response_metadata: { message: 'child paused', metadata: { parent_agent_name: 'root', child_thread_id: 'child-1' } },
+          type: "agent_hitl_interrupt",
+          content: "child paused",
+          response_metadata: {
+            message: "child paused",
+            metadata: { parent_agent_name: "root", child_thread_id: "child-1" },
+          },
         }),
       );
     });
@@ -227,9 +290,12 @@ describe('useChatStreamTransport', () => {
     // A sibling still folds into the same message, which is what the open
     // stream is for.
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'sibling output' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "sibling output" }),
+      );
     });
-    expect(history.current[0]?.content).toContain('sibling output');
+    expect(history.current[0]?.content).toContain("sibling output");
   });
 
   /**
@@ -244,7 +310,7 @@ describe('useChatStreamTransport', () => {
    * both parallel shapes, and it holds the live thinking view open. Only the
    * TRANSPORT detaches here.
    */
-  it('closes on an in-process parallel aggregate pause', async () => {
+  it("closes on an in-process parallel aggregate pause", async () => {
     okStart();
     const { api, history, Probe } = harness();
     render(<Probe />);
@@ -252,16 +318,16 @@ describe('useChatStreamTransport', () => {
 
     act(() => {
       registry.emit(
-        'execution.node_event',
+        "execution.node_event",
         nodeEvent({
-          type: 'agent_hitl_interrupt',
-          content: 'Approve both sub-agents?',
+          type: "agent_hitl_interrupt",
+          content: "Approve both sub-agents?",
           response_metadata: {
-            thread_id: 't-1',
-            message: 'Approve both sub-agents?',
+            thread_id: "t-1",
+            message: "Approve both sub-agents?",
             hitl_interrupts: [
-              { tool_call_id: 'c-1', parent_agent_name: 'researcher' },
-              { tool_call_id: 'c-2', parent_agent_name: 'writer' },
+              { tool_call_id: "c-1", parent_agent_name: "researcher" },
+              { tool_call_id: "c-2", parent_agent_name: "writer" },
             ],
           },
         }),
@@ -282,7 +348,7 @@ describe('useChatStreamTransport', () => {
    * (`agent_events.py:335-357`). Detaching on the first would drop the second
    * authorization card.
    */
-  it('closes on the terminal MCP authorization frame only, not the progress one', async () => {
+  it("closes on the terminal MCP authorization frame only, not the progress one", async () => {
     okStart();
     const { api, Probe } = harness();
     render(<Probe />);
@@ -290,11 +356,16 @@ describe('useChatStreamTransport', () => {
 
     act(() => {
       registry.emit(
-        'execution.node_event',
+        "execution.node_event",
         nodeEvent({
-          type: 'mcp_authorization_required',
-          content: 'Authorization required.',
-          response_metadata: { tool_run_id: 'run-1', tool_name: 'github', server_url: 'https://mcp.example', authorization_servers: ['https://auth.example'] },
+          type: "mcp_authorization_required",
+          content: "Authorization required.",
+          response_metadata: {
+            tool_run_id: "run-1",
+            tool_name: "github",
+            server_url: "https://mcp.example",
+            authorization_servers: ["https://auth.example"],
+          },
         }),
       );
     });
@@ -303,16 +374,19 @@ describe('useChatStreamTransport', () => {
 
     act(() => {
       registry.emit(
-        'execution.node_event',
+        "execution.node_event",
         nodeEvent({
-          type: 'mcp_authorization_required',
-          content: 'Toolkit authorization is required.',
+          type: "mcp_authorization_required",
+          content: "Toolkit authorization is required.",
           response_metadata: {
-            tool_run_id: 'run-2',
-            tool_name: 'github',
-            server_url: 'https://mcp.example',
-            authorization_servers: ['https://auth.example'],
-            authorization_requests: [{ tool_run_id: 'run-1' }, { tool_run_id: 'run-2' }],
+            tool_run_id: "run-2",
+            tool_name: "github",
+            server_url: "https://mcp.example",
+            authorization_servers: ["https://auth.example"],
+            authorization_requests: [
+              { tool_run_id: "run-1" },
+              { tool_run_id: "run-2" },
+            ],
           },
         }),
       );
@@ -323,23 +397,34 @@ describe('useChatStreamTransport', () => {
   });
 
   /** A failure frame also ends the turn — the worker emits no node event after one. */
-  it('releases the stream when the run fails', async () => {
+  it("releases the stream when the run fails", async () => {
     okStart();
     const { api, Probe } = harness();
     render(<Probe />);
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'llm_error', content: 'the model refused the request' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({
+          type: "llm_error",
+          content: "the model refused the request",
+        }),
+      );
     });
 
     await waitFor(() => expect(api.current?.isStreaming).toBe(false));
     expect(registry.getOpen()).toHaveLength(0);
   });
 
-  it('reports false and opens NO stream when the backend rejects the contract', async () => {
+  it("reports false and opens NO stream when the backend rejects the contract", async () => {
     // The documented fallback signal: the caller then emits chat_predict.
-    server.use(http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => new HttpResponse(null, { status: 400 })));
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`,
+        () => new HttpResponse(null, { status: 400 }),
+      ),
+    );
     const { api, Probe } = harness();
     render(<Probe />);
 
@@ -349,10 +434,35 @@ describe('useChatStreamTransport', () => {
     expect(registry.getOpen()).toHaveLength(0);
   });
 
-  it('reports false when a 200 carries no events_url', async () => {
+  it("preserves a typed 422 refusal and its server message for the chat widget", async () => {
+    server.use(
+      http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () =>
+        HttpResponse.json(
+          {
+            error: "unsupported_agent_execution",
+            message: "This agent turn requires the current execution path.",
+          },
+          { status: 422 },
+        ),
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(api.current?.startDetailed(START)).resolves.toEqual({
+        started: false,
+        reason: "rejected",
+        message: "This agent turn requires the current execution path.",
+      });
+    });
+    expect(registry.getOpen()).toHaveLength(0);
+  });
+
+  it("reports false when a 200 carries no events_url", async () => {
     // An older backend answering the same route. Treating it as success would
     // leave the run unwatched AND suppress the socket fallback.
-    okStart({ task_id: 'exec-1' });
+    okStart({ task_id: "exec-1" });
     const { api, Probe } = harness();
     render(<Probe />);
 
@@ -362,7 +472,7 @@ describe('useChatStreamTransport', () => {
     expect(registry.getOpen()).toHaveLength(0);
   });
 
-  it('forwards graph frames to the flow editor but never the chunks', async () => {
+  it("forwards graph frames to the flow editor but never the chunks", async () => {
     okStart();
     const { api, agentEvents, Probe } = harness();
     render(<Probe />);
@@ -372,14 +482,22 @@ describe('useChatStreamTransport', () => {
     await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_on_tool_node' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'x' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_on_tool_node" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "x" }),
+      );
     });
 
-    expect(agentEvents.map((frame) => (frame as { type: string }).type)).toEqual(['agent_on_tool_node']);
+    expect(
+      agentEvents.map((frame) => (frame as { type: string }).type),
+    ).toEqual(["agent_on_tool_node"]);
   });
 
-  it('stops the spinner when the run fails server-side, and says why', async () => {
+  it("stops the spinner when the run fails server-side, and says why", async () => {
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
@@ -389,16 +507,19 @@ describe('useChatStreamTransport', () => {
     await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
 
     act(() => {
-      registry.emit('execution.failed', JSON.stringify({ error: 'model unavailable' }));
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({ error: "model unavailable" }),
+      );
     });
 
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(history.current[0]?.isLoading).toBe(false);
-    expect(history.current[0]?.exception).toBe('model unavailable');
-    expect(errors).toEqual(['model unavailable']);
+    expect(history.current[0]?.exception).toBe("model unavailable");
+    expect(errors).toEqual(["model unavailable"]);
   });
 
-  it('does not settle the message on the first drop — that turn is still resumable', async () => {
+  it("does not settle the message on the first drop — that turn is still resumable", async () => {
     // Before #329 a drop ended the turn on the spot. It is now a reconnect,
     // and settling here would render "done" over an answer still coming.
     okStart();
@@ -416,13 +537,17 @@ describe('useChatStreamTransport', () => {
     expect(errors).toEqual([]);
   });
 
-  it('does not reopen the stream when the context changes mid-answer', async () => {
+  it("does not reopen the stream when the context changes mid-answer", async () => {
     // A reconnect would replay the run from its cursor and duplicate what is
     // already on screen, which is why the context is read through a ref.
     okStart();
     let renderCount = 0;
-    const api: { current: UseChatStreamTransportResult | undefined } = { current: undefined };
-    const history: { current: readonly ChatMessage[] } = { current: [pendingAssistant()] };
+    const api: { current: UseChatStreamTransportResult | undefined } = {
+      current: undefined,
+    };
+    const history: { current: readonly ChatMessage[] } = {
+      current: [pendingAssistant()],
+    };
 
     function Probe(): null {
       renderCount += 1;
@@ -449,7 +574,7 @@ describe('useChatStreamTransport', () => {
     expect(registry.getOpen()).toHaveLength(1);
   });
 
-  it('closes the stream on request', async () => {
+  it("closes the stream on request", async () => {
     okStart();
     const { api, Probe } = harness();
     render(<Probe />);
@@ -465,7 +590,7 @@ describe('useChatStreamTransport', () => {
     await waitFor(() => expect(registry.getOpen()).toHaveLength(0));
   });
 
-  it('ignores a frame that names no type instead of forwarding it', async () => {
+  it("ignores a frame that names no type instead of forwarding it", async () => {
     okStart();
     const { api, history, agentEvents, Probe } = harness();
     render(<Probe />);
@@ -476,7 +601,10 @@ describe('useChatStreamTransport', () => {
 
     const before = history.current;
     act(() => {
-      registry.emit('execution.node_event', JSON.stringify({ message_id: MESSAGE_ID }));
+      registry.emit(
+        "execution.node_event",
+        JSON.stringify({ message_id: MESSAGE_ID }),
+      );
     });
 
     expect(history.current).toBe(before);
@@ -493,19 +621,32 @@ function conversationHarness(): {
   readonly api: { current: UseChatStreamTransportResult | undefined };
   readonly first: { current: readonly ChatMessage[] };
   readonly second: { current: readonly ChatMessage[] };
-  readonly Probe: (props: { conversationUuid: string; target: { current: readonly ChatMessage[] } }) => null;
+  readonly Probe: (props: {
+    conversationUuid: string;
+    target: { current: readonly ChatMessage[] };
+  }) => null;
 } {
-  const api: { current: UseChatStreamTransportResult | undefined } = { current: undefined };
-  const first: { current: readonly ChatMessage[] } = { current: [pendingAssistant()] };
+  const api: { current: UseChatStreamTransportResult | undefined } = {
+    current: undefined,
+  };
+  const first: { current: readonly ChatMessage[] } = {
+    current: [pendingAssistant()],
+  };
   const second: { current: readonly ChatMessage[] } = { current: [] };
 
-  function Probe({ conversationUuid, target }: { conversationUuid: string; target: { current: readonly ChatMessage[] } }): null {
+  function Probe({
+    conversationUuid,
+    target,
+  }: {
+    conversationUuid: string;
+    target: { current: readonly ChatMessage[] };
+  }): null {
     api.current = useChatStreamTransport({
       conversationUuid,
       setChatHistory: (updater) => {
         target.current = updater(target.current);
       },
-      context: { name: 'Agent', now: () => '2026-08-13T00:00:00.000Z' },
+      context: { name: "Agent", now: () => "2026-08-13T00:00:00.000Z" },
     });
     return null;
   }
@@ -513,17 +654,22 @@ function conversationHarness(): {
   return { api, first, second, Probe };
 }
 
-describe('stream ownership (#328)', () => {
-  it('does not leak the first conversation\'s frames into the second one', async () => {
+describe("stream ownership (#328)", () => {
+  it("does not leak the first conversation's frames into the second one", async () => {
     okStart();
     const { api, first, second, Probe } = conversationHarness();
-    const { rerender } = render(<Probe conversationUuid="uuid-1" target={first} />);
+    const { rerender } = render(
+      <Probe conversationUuid="uuid-1" target={first} />,
+    );
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'first answer' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "first answer" }),
+      );
     });
-    expect(first.current[0]?.content).toBe('first answer');
+    expect(first.current[0]?.content).toBe("first answer");
 
     // The user opens another conversation. ChatBox does NOT unmount — it
     // re-renders against a different conversation and a different history.
@@ -534,25 +680,36 @@ describe('stream ownership (#328)', () => {
     expect(registry.getOpen()).toHaveLength(0);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'LEAKED' }));
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_response', content: 'LEAKED WHOLE' }));
-      registry.emit('execution.failed', JSON.stringify({ error: 'LEAKED FAILURE' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "LEAKED" }),
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_response", content: "LEAKED WHOLE" }),
+      );
+      registry.emit(
+        "execution.failed",
+        JSON.stringify({ error: "LEAKED FAILURE" }),
+      );
     });
 
     // The assertion that matters: nothing from the abandoned run reached the
     // transcript now on screen. Asserting `close()` fired would pass even if
     // the frames still landed.
     expect(second.current).toEqual([]);
-    expect(first.current[0]?.content).toBe('first answer');
+    expect(first.current[0]?.content).toBe("first answer");
   });
 
-  it('subscribes to nothing when the user switches while the start POST is in flight', async () => {
+  it("subscribes to nothing when the user switches while the start POST is in flight", async () => {
     // The run exists server-side by then, so `start` still answers `true` (a
     // `chat_predict` fallback would run the agent twice) — but its frames
     // belong to a transcript that is no longer on screen.
     okStart();
     const { api, second, Probe } = conversationHarness();
-    const { rerender } = render(<Probe conversationUuid="uuid-1" target={second} />);
+    const { rerender } = render(
+      <Probe conversationUuid="uuid-1" target={second} />,
+    );
 
     const pending = api.current?.start(START);
     // A synchronous `act` so the switch is COMMITTED before the POST resolves
@@ -570,7 +727,7 @@ describe('stream ownership (#328)', () => {
     expect(second.current).toEqual([]);
   });
 
-  it('opens no stream after unmount, including a reconnect already scheduled', async () => {
+  it("opens no stream after unmount, including a reconnect already scheduled", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       okStart();
@@ -592,7 +749,12 @@ describe('stream ownership (#328)', () => {
       // unmount would open a second, feeding a hook nothing renders.
       expect(registry.getSources()).toHaveLength(1);
       expect(registry.getOpen()).toHaveLength(0);
-      expect(registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'after unmount' }))).toBe(0);
+      expect(
+        registry.emit(
+          "execution.node_event",
+          nodeEvent({ type: "agent_llm_chunk", content: "after unmount" }),
+        ),
+      ).toBe(0);
       expect(history.current).toBe(before);
     } finally {
       vi.useRealTimers();
@@ -604,22 +766,28 @@ describe('stream ownership (#328)', () => {
 /*  #328 — Stop                                                          */
 /* ------------------------------------------------------------------ */
 
-describe('stop (#328)', () => {
-  it('cancels the run server-side, closes the stream, and applies nothing further', async () => {
+describe("stop (#328)", () => {
+  it("cancels the run server-side, closes the stream, and applies nothing further", async () => {
     okStart();
     const cancelled: string[] = [];
     server.use(
-      http.delete(`${BASE}/elitea_core/task/prompt_lib/7/:responseMessageId`, ({ params }) => {
-        cancelled.push(String(params['responseMessageId']));
-        return new HttpResponse(null, { status: 204 });
-      }),
+      http.delete(
+        `${BASE}/elitea_core/task/prompt_lib/7/:responseMessageId`,
+        ({ params }) => {
+          cancelled.push(String(params["responseMessageId"]));
+          return new HttpResponse(null, { status: 204 });
+        },
+      ),
     );
     const { api, history, Probe } = harness();
     render(<Probe />);
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'half an ans' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "half an ans" }),
+      );
       api.current?.stop();
     });
 
@@ -632,17 +800,25 @@ describe('stop (#328)', () => {
 
     const settled = history.current;
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: ' MORE' }));
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: " MORE" }),
+      );
     });
     expect(history.current).toBe(settled);
-    expect(history.current[0]?.content).toBe('half an ans');
+    expect(history.current[0]?.content).toBe("half an ans");
   });
 
-  it('does not reconnect after a stop', async () => {
+  it("does not reconnect after a stop", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       okStart();
-      server.use(http.delete(`${BASE}/elitea_core/task/prompt_lib/7/:id`, () => new HttpResponse(null, { status: 204 })));
+      server.use(
+        http.delete(
+          `${BASE}/elitea_core/task/prompt_lib/7/:id`,
+          () => new HttpResponse(null, { status: 204 }),
+        ),
+      );
       const { api, Probe } = harness();
       render(<Probe />);
       await started(api);
@@ -664,7 +840,7 @@ describe('stop (#328)', () => {
 /*  #329 — reconnect, resume, backoff                                    */
 /* ------------------------------------------------------------------ */
 
-describe('resume after a drop (#329)', () => {
+describe("resume after a drop (#329)", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
@@ -672,17 +848,25 @@ describe('resume after a drop (#329)', () => {
     vi.useRealTimers();
   });
 
-  it('reopens from the last cursor and finishes the answer without duplicating it', async () => {
+  it("reopens from the last cursor and finishes the answer without duplicating it", async () => {
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'MOCK: ' }), '11');
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'chat ' }), '12');
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "MOCK: " }),
+        "11",
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "chat " }),
+        "12",
+      );
     });
-    expect(history.current[0]?.content).toBe('MOCK: chat ');
+    expect(history.current[0]?.content).toBe("MOCK: chat ");
 
     act(() => {
       registry.fail();
@@ -696,25 +880,35 @@ describe('resume after a drop (#329)', () => {
     await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
     // The whole point: `cursor` is what `events.go`'s `requestedCursor` reads
     // as `Last-Event-ID`, so the server replays only frames after id 12.
-    expect(registry.getOpen()[0]?.url).toContain('/executions/7/exec-1/events?cursor=12');
+    expect(registry.getOpen()[0]?.url).toContain(
+      "/executions/7/exec-1/events?cursor=12",
+    );
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'smoke' }), '13');
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "smoke" }),
+        "13",
+      );
       // The tail `agent_response` carries the WHOLE answer, as the live stack
       // emits it. Nothing may be rendered twice.
       registry.emit(
-        'execution.node_event',
-        nodeEvent({ type: 'agent_response', content: 'MOCK: chat smoke', response_metadata: { finish_reason: 'stop' } }),
-        '14',
+        "execution.node_event",
+        nodeEvent({
+          type: "agent_response",
+          content: "MOCK: chat smoke",
+          response_metadata: { finish_reason: "stop" },
+        }),
+        "14",
       );
     });
 
-    expect(history.current[0]?.content).toBe('MOCK: chat smoke');
+    expect(history.current[0]?.content).toBe("MOCK: chat smoke");
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(errors).toEqual([]);
   });
 
-  it('still reports isStreaming across the gap, so Stop does not turn back into Send', async () => {
+  it("still reports isStreaming across the gap, so Stop does not turn back into Send", async () => {
     okStart();
     const { api, Probe } = harness();
     render(<Probe />);
@@ -731,7 +925,7 @@ describe('resume after a drop (#329)', () => {
     expect(api.current?.isStreaming).toBe(true);
   });
 
-  it('resumes from cursor 0 — i.e. no cursor at all — when the drop preceded every frame', async () => {
+  it("resumes from cursor 0 — i.e. no cursor at all — when the drop preceded every frame", async () => {
     okStart();
     const { api, Probe } = harness();
     render(<Probe />);
@@ -746,10 +940,10 @@ describe('resume after a drop (#329)', () => {
     // Asking for `?cursor=` or `?cursor=undefined` would be a 400 from
     // `strconv.ParseUint`; the whole run replays instead, and `agent_start`
     // resets the bubble so the replay cannot double anything.
-    expect(registry.getOpen()[0]?.url).not.toContain('cursor');
+    expect(registry.getOpen()[0]?.url).not.toContain("cursor");
   });
 
-  it('bounds the retries at four, then settles the message and says the connection was lost', async () => {
+  it("bounds the retries at four, then settles the message and says the connection was lost", async () => {
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
@@ -768,7 +962,9 @@ describe('resume after a drop (#329)', () => {
         vi.advanceTimersByTime(1);
       });
       // eslint-disable-next-line no-await-in-loop -- sequential by construction: each backoff step must be observed before the next drop.
-      await waitFor(() => expect(registry.getSources()).toHaveLength(opened + 1));
+      await waitFor(() =>
+        expect(registry.getSources()).toHaveLength(opened + 1),
+      );
     }
 
     // The fifth failure is where the budget runs out.
@@ -782,10 +978,10 @@ describe('resume after a drop (#329)', () => {
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(history.current[0]?.isLoading).toBe(false);
     expect(history.current[0]?.exception).toBeUndefined();
-    expect(errors).toEqual(['The connection to the agent run was lost.']);
+    expect(errors).toEqual(["The connection to the agent run was lost."]);
   });
 
-  it('spends a fresh budget after a delivered frame, not the one the last outage exhausted', async () => {
+  it("spends a fresh budget after a delivered frame, not the one the last outage exhausted", async () => {
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
@@ -801,7 +997,11 @@ describe('resume after a drop (#329)', () => {
     }
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'recovered' }), '7');
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "recovered" }),
+        "7",
+      );
     });
     act(() => {
       registry.fail();
@@ -809,12 +1009,12 @@ describe('resume after a drop (#329)', () => {
     });
 
     await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
-    expect(registry.getOpen()[0]?.url).toContain('cursor=7');
+    expect(registry.getOpen()[0]?.url).toContain("cursor=7");
     expect(history.current[0]?.isStreaming).toBe(true);
     expect(errors).toEqual([]);
   });
 
-  it('does not reconnect once the turn has finished', async () => {
+  it("does not reconnect once the turn has finished", async () => {
     // The server closes a finished stream, which reaches the client as an
     // `error` event exactly like a drop. Retrying it would reopen a stream
     // with nothing left to send, four times, per completed answer.
@@ -824,7 +1024,11 @@ describe('resume after a drop (#329)', () => {
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }), '9');
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "pipeline_finish" }),
+        "9",
+      );
       registry.fail();
       vi.advanceTimersByTime(600_000);
     });
@@ -833,14 +1037,18 @@ describe('resume after a drop (#329)', () => {
     expect(errors).toEqual([]);
   });
 
-  it('keeps streaming through a replay_reset instead of treating the pruned log as a failure', async () => {
+  it("keeps streaming through a replay_reset instead of treating the pruned log as a failure", async () => {
     okStart();
     const { api, history, errors, Probe } = harness();
     render(<Probe />);
     await started(api);
 
     act(() => {
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'before ' }), '3');
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "before " }),
+        "3",
+      );
       registry.fail();
       vi.advanceTimersByTime(1_000);
     });
@@ -849,22 +1057,34 @@ describe('resume after a drop (#329)', () => {
     act(() => {
       // The resume landed past the retention window: frames between cursor 3
       // and 40 are gone for good.
-      registry.emit('execution.replay_reset', JSON.stringify({ reason: 'progress_retention_window_elapsed' }), '40');
-      registry.emit('execution.node_event', nodeEvent({ type: 'agent_llm_chunk', content: 'after' }), '41');
-      registry.emit('execution.node_event', nodeEvent({ type: 'pipeline_finish' }), '42');
+      registry.emit(
+        "execution.replay_reset",
+        JSON.stringify({ reason: "progress_retention_window_elapsed" }),
+        "40",
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "agent_llm_chunk", content: "after" }),
+        "41",
+      );
+      registry.emit(
+        "execution.node_event",
+        nodeEvent({ type: "pipeline_finish" }),
+        "42",
+      );
     });
 
     // A hole in the middle, and a turn that still completes — not an error,
     // and not a reconnect loop back onto the pruned cursor.
-    expect(history.current[0]?.content).toBe('before after');
+    expect(history.current[0]?.content).toBe("before after");
     expect(history.current[0]?.isStreaming).toBe(false);
     expect(errors).toEqual([]);
     expect(registry.getSources()).toHaveLength(2);
   });
 });
 
-describe('the send path starts a run exactly once', () => {
-  it('never runs both transports for one question', async () => {
+describe("the send path starts a run exactly once", () => {
+  it("never runs both transports for one question", async () => {
     // The whole point of `start` returning a boolean: the execution exists
     // server-side the moment the POST succeeds, so an additional chat_predict
     // would run the agent — and bill it — a second time.
@@ -872,7 +1092,7 @@ describe('the send path starts a run exactly once', () => {
     server.use(
       http.post(`${BASE}/elitea_core/messages/prompt_lib/7/uuid-1`, () => {
         posts();
-        return HttpResponse.json({ task_id: 'exec-1', events_url: EVENTS_URL });
+        return HttpResponse.json({ task_id: "exec-1", events_url: EVENTS_URL });
       }),
     );
     const { api, Probe } = harness();
@@ -885,5 +1105,46 @@ describe('the send path starts a run exactly once', () => {
 
     expect(owned).toBe(true);
     expect(posts).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the regeneration path owns its replacement stream", () => {
+  it("uses the current contract and subscribes to the accepted execution", async () => {
+    let requestUrl = "";
+    let requestBody: unknown;
+    server.use(
+      http.post(
+        `${BASE}/elitea_core/regenerate/prompt_lib/7/${RESPONSE_MESSAGE_ID}`,
+        async ({ request }) => {
+          requestUrl = request.url;
+          requestBody = await request.json();
+          return HttpResponse.json({
+            task_id: "exec-1",
+            events_url: EVENTS_URL,
+            response_message_id: RESPONSE_MESSAGE_ID,
+          });
+        },
+      ),
+    );
+    const { api, Probe } = harness();
+    render(<Probe />);
+
+    await act(async () => {
+      await expect(
+        api.current?.regenerate({
+          projectId: 7,
+          conversationUuid: "uuid-1",
+          responseMessageId: RESPONSE_MESSAGE_ID,
+          body: { message_id: RESPONSE_MESSAGE_ID },
+        }),
+      ).resolves.toBe(true);
+    });
+
+    await waitFor(() => expect(registry.getOpen()).toHaveLength(1));
+    expect(new URL(requestUrl).searchParams.get("execution_contract")).toBe(
+      "agent.regenerate.v1",
+    );
+    expect(requestBody).toEqual({ message_id: RESPONSE_MESSAGE_ID });
+    expect(registry.getOpen()[0]?.url).toContain(EVENTS_URL);
   });
 });

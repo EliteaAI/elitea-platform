@@ -38,8 +38,8 @@ var _ vaultDecryptor = (*FernetVault)(nil)
 
 // vaultData is the JSON stored (after Fernet encryption) in centry.secrets_data.
 type vaultData struct {
-	Secrets       map[string]string `json:"secrets"`
-	HiddenSecrets map[string]string `json:"hidden_secrets"`
+	Secrets       map[string]json.RawMessage `json:"secrets"`
+	HiddenSecrets map[string]json.RawMessage `json:"hidden_secrets"`
 }
 
 // NewFernetVault constructs a FernetVault. The master key is read from
@@ -73,13 +73,26 @@ func (v *FernetVault) Resolve(ctx context.Context, projectID, secretRef string) 
 	if err != nil {
 		return "", err
 	}
-	if val, ok := vault.Secrets[name]; ok {
-		return val, nil
+	if value, ok := vault.Secrets[name]; ok {
+		return decodeVaultSecret(value, name)
 	}
-	if val, ok := vault.HiddenSecrets[name]; ok {
-		return val, nil
+	if value, ok := vault.HiddenSecrets[name]; ok {
+		return decodeVaultSecret(value, name)
 	}
 	return "", fmt.Errorf("secret %q not found in project %s vault", name, projectID)
+}
+
+// decodeVaultSecret requires the referenced value to be a string without
+// requiring every unrelated entry in a legacy Python-written vault to have
+// that type. The Python engine stores arbitrary JSON values in the same maps,
+// so decoding the whole map as map[string]string makes one numeric setting
+// prevent an otherwise valid API-key reference from resolving.
+func decodeVaultSecret(value json.RawMessage, name string) (string, error) {
+	var secret string
+	if err := json.Unmarshal(value, &secret); err != nil {
+		return "", fmt.Errorf("secret %q is not a string", name)
+	}
+	return secret, nil
 }
 
 // parseSecretRef reports whether ref is a {{secret.NAME}} reference and returns
@@ -124,10 +137,10 @@ func (v *FernetVault) readVault(ctx context.Context, projectID string) (vaultDat
 		return vaultData{}, fmt.Errorf("unmarshal vault data: %w", err)
 	}
 	if vd.Secrets == nil {
-		vd.Secrets = map[string]string{}
+		vd.Secrets = map[string]json.RawMessage{}
 	}
 	if vd.HiddenSecrets == nil {
-		vd.HiddenSecrets = map[string]string{}
+		vd.HiddenSecrets = map[string]json.RawMessage{}
 	}
 	return vd, nil
 }

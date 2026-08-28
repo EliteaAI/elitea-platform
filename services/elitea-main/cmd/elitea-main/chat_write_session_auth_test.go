@@ -48,6 +48,17 @@ func TestChatWriteRoutesAcceptABrowserSession(t *testing.T) {
 			"model picker cannot read its own catalogue in a browser (#292)")
 	}
 
+	// The project switcher is another browser-only caller. In the standalone
+	// composition both Form auth and OIDC are enabled, so the Form branch owns
+	// the route and must retain the OIDC browser-session credential. Without it
+	// GET /projects/project/default/{publicProjectId} answers 401 while the
+	// neighbouring /social/author and permission reads succeed.
+	projectList := authConfigForCall(t, file, "NewCurrentProjectListRoute")
+	if !authConfigHasField(projectList, "SessionSecret") {
+		t.Fatal("the project-list AuthConfig has no SessionSecret: the browser " +
+			"project switcher cannot list any project in the combined Form/OIDC stack")
+	}
+
 	// The runtime routes the web app calls directly (#93 Surface A): the index
 	// list, an index run and its cancel, and the chat stop button. Composed for
 	// forwarded identity alone they answered 401 to the product's own UI while
