@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/auth"
+	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenantschema"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/storage"
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/mcpregistry"
 )
@@ -3203,6 +3204,18 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 	if !schemaOK {
 		return
 	}
+	// entityID is a row id, and it leaves this handler again in the
+	// Content-Disposition filename of the `as_file` and markdown branches.
+	// Refuse anything that is not a plain decimal id HERE, so caller text
+	// never reaches a response header at all. The answer is the 404 this
+	// handler already gave such an id: the query binds entityID against an
+	// integer column, so a non-numeric one raised a driver error that the
+	// read below reported as "application not found". The status is
+	// unchanged; only the point of refusal moves.
+	if !tenantschema.Valid(entityID) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "application not found"})
+		return
+	}
 
 	var name, desc, appUUID string
 	var ownerID int
@@ -3303,7 +3316,15 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 
 	if strings.EqualFold(r.URL.Query().Get("as_file"), "true") {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="elitea_export_%s.json"`, entityID))
+		// entityID reaches this header from the URL, so it is caller text. Send
+		// it through the same helper the markdown export uses: it replaces the
+		// quote, the backslash and every control character, so the value cannot
+		// leave the quoted filename. `path.Base` drops a path the caller built
+		// out of separators. The markdown branch above did both and this one
+		// did neither (CodeQL go/reflected-xss, alerts 100 and 101, which name
+		// this parameter as the source).
+		w.Header().Set("Content-Disposition", contentDispositionAttachment(
+			fmt.Sprintf("elitea_export_%s.json", entityID)))
 		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		_ = json.NewEncoder(w).Encode(result) // response writer; connection already committed
 		return
