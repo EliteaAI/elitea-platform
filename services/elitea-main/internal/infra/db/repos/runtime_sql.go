@@ -10,6 +10,7 @@ import (
 	"github.com/EliteaAI/elitea-platform/services/elitea-main/internal/infra/db/tenant"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -164,6 +165,13 @@ func (e pgxExecutor) ResolveCurrentAdhocTurn(
 	arg sqlcgen.ResolveCurrentAdhocTurnParams,
 ) (sqlcgen.ResolveCurrentAdhocTurnRow, error) {
 	return sqlcgen.New(e.queryer).ResolveCurrentAdhocTurn(ctx, arg)
+}
+
+func (e pgxExecutor) CurrentConversationResponseSettling(
+	ctx context.Context,
+	conversationUUID pgtype.UUID,
+) (bool, error) {
+	return sqlcgen.New(e.queryer).CurrentConversationResponseSettling(ctx, conversationUUID)
 }
 
 func (e pgxExecutor) ResolveCurrentRegeneration(

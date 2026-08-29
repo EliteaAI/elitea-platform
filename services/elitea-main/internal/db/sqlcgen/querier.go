@@ -80,6 +80,33 @@ type Querier interface {
 	// a fact about a key, not a setting that changes under a running integration
 	// (spec-llm-project-scope §4).
 	CreateTokenProjectBinding(ctx context.Context, arg CreateTokenProjectBindingParams) error
+	//
+	// Is a response in this conversation still marked as being written?
+	//
+	// WHY THIS EXISTS, and why it is not the overlap gate itself. The overlap gate
+	// lives twice, in the WHERE of ResolveCurrentApplicationTurn /
+	// ResolveCurrentAdhocTurn and again in InsertCurrentApplicationTurn /
+	// InsertCurrentAdhocTurn, where it is race-free. Neither can say WHY it matched
+	// nothing: both simply return no rows, and the caller answers 422
+	// `unsupported_agent_execution` for all ~25 reasons at once.
+	//
+	// One of those reasons is not a refusal at all, it is a WINDOW. The browser
+	// ends a turn on the `pipeline_finish` node event (the client predicate is
+	// apps/elitea-web/src/features/chat-messages/lib/chatStreamTurnEnd.ts) and
+	// re-enables the composer there. `is_streaming` is only cleared later, by
+	// FinalizeCurrentAgentFullMessage, when the WORKER's separate terminal output
+	// frame is projected. Measured on the standalone stack: `pipeline_finish`
+	// durable at 21:53:47.319, composer released at ~.55, second send at .621,
+	// `is_streaming` cleared at .824 — the second turn was refused 422 inside a
+	// ~500ms window in which the product had already invited it.
+	//
+	// This probe answers only "is that window open", so the start path can WAIT for
+	// it to close rather than refusing a turn the user was invited to send. It is
+	// deliberately BROADER than the gate (no newest-response or retried-question
+	// narrowing): a superset only ever costs a bounded wait that then falls through
+	// to the same answer, whereas restating those sub-clauses would put a third
+	// copy of the gate in the tree for them to drift apart.
+	CurrentConversationResponseSettling(ctx context.Context, conversationUuid pgtype.UUID) (bool, error)
 	CurrentNotificationHighWater(ctx context.Context, userID int32) (int64, error)
 	DeleteArtifactObjectRows(ctx context.Context, ids []int64) (int64, error)
 	DeleteArtifactObjects(ctx context.Context, arg DeleteArtifactObjectsParams) (int64, error)

@@ -322,6 +322,14 @@ export interface StoredAssistantAnswerOptions {
  * later, so a single read failed against a backend that was merely still
  * writing.
  *
+ * And polled until the row is FINISHED, not merely non-empty. The same lag
+ * that makes a single read too early makes "some text is stored" too early in
+ * the other direction: the row grows for the whole run, so a poll that stops
+ * at the first byte returns while the turn is still being written and leaves
+ * it running behind the spec that started it. The `is_error` PRESENCE test
+ * inside the poll is what ends the turn here; its note carries the
+ * measurements.
+ *
  * The STORED reply, not the on-screen bubble, and that is the discriminating
  * part: a refused turn renders its failure AS an assistant card, so "some text
  * appeared" cannot tell an answer from a refusal — one of these specs' own
@@ -360,7 +368,39 @@ export async function expectStoredAssistantAnswer(
         };
         const assistant = body.items?.find((item) => item.role === 'assistant');
         if (assistant?.metadata?.is_error === true) return `IS_ERROR:${assistant.content ?? ''}`;
-        return assistant?.content ?? '';
+        // NOT YET FINISHED. `is_error` is written ONLY by a terminal
+        // projection — FinalizeCurrentAgentFullMessage and its HITL and
+        // authorization twins each set it explicitly
+        // (services/elitea-main/internal/db/queries/agent_chat.sql) — while a
+        // row that is still streaming carries only `execution_generation`. An
+        // ABSENT key therefore means "the run has not landed", and reading it
+        // as "not an error" is what let this helper return mid-turn.
+        //
+        // WHAT THAT COST, measured on the standalone stack rather than
+        // reasoned about. The stream runs ahead of the store, so content
+        // appears within a second or two and this poll settled there: in one
+        // run chat.agent-tools passed in 2.3s while ITS OWN turn kept writing
+        // for another 37s, and chat.nested-agent passed in 1.9s while its turn
+        // ran 12s more. Every spec then started its turn on top of the
+        // previous specs' unfinished ones, against a worker that admits TWO
+        // invocations at a time (`delivery_max_concurrency` in
+        // deploy/runtime/worker-runtime.json). Later turns queued: one
+        // chat.pipeline turn took 116s and its spec failed after 60s of
+        // polling for the graph's trace steps, on a run where four turns were
+        // in flight at once. Nothing about that failure is a statement about
+        // pipelines.
+        //
+        // Requiring the flag to be PRESENT is what makes this helper's own
+        // sentence above true — "only a turn the runtime actually completed
+        // finalizes a non-empty assistant row that is not flagged is_error".
+        // It is deliberately not "poll until the text stops growing": an agent
+        // that pauses between tool calls looks settled to that rule, and this
+        // one cannot be fooled by a gap in the tokens.
+        //
+        // `readStoredAssistantAnswer` keeps the old, weaker read on purpose —
+        // chat.stop MUST be able to sample a half-written row.
+        if (assistant?.metadata?.is_error !== false) return '';
+        return assistant.content ?? '';
       },
       { timeout, message },
     )
