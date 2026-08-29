@@ -24,16 +24,26 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * Where the per-persona signed-in states live. Overridable because cookies
+ * minted against one stack reach every stack: the cookie domain is bare
+ * `localhost`, which is PORT-AGNOSTIC, so two concurrent Playwright runs
+ * against two local stacks overwrite each other's sessions through this
+ * directory and fail each other's requests with 401 mid-run (measured).
+ * A run against its own stack sets E2E_STATE_DIR to keep its states private.
+ */
+const STATE_DIR = process.env['E2E_STATE_DIR'] ?? path.join(__dirname, '.playwright-state');
+
 export const STORAGE_STATE = {
-  member: path.join(__dirname, '.playwright-state', 'member.json'),
-  admin: path.join(__dirname, '.playwright-state', 'admin.json'),
+  member: path.join(STATE_DIR, 'member.json'),
+  admin: path.join(STATE_DIR, 'admin.json'),
   /**
    * The #284 chat driver. A persona of its own because it OWNS a personal
    * project, and the app selects the signed-in user's personal project over
    * the one `auth.setup.ts` writes to storage — handing member/admin one moves
    * every other journey off project 1 (measured, see the seeder's note).
    */
-  chat: path.join(__dirname, '.playwright-state', 'chat.json'),
+  chat: path.join(STATE_DIR, 'chat.json'),
 };
 
 /**
@@ -47,7 +57,7 @@ export const STORAGE_STATE = {
  * thing: per-run provisioning output, written by the seed, read by the tests,
  * gitignored, and inside the directory CI mounts into the Playwright container.
  */
-export const AUDIT_FIXTURE_ANCHOR = path.join(__dirname, '.playwright-state', 'audit-fixture.json');
+export const AUDIT_FIXTURE_ANCHOR = path.join(STATE_DIR, 'audit-fixture.json');
 
 // Default 8082 locally: centry legacy stack occupies 8080; CI sets E2E_PORT=8080.
 export const BASE_URL = process.env['PLAYWRIGHT_BASE_URL'] ?? 'http://localhost:8082';

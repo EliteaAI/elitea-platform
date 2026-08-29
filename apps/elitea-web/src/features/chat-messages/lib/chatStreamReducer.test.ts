@@ -622,6 +622,42 @@ describe('applyChatStreamFrame — interrupts', () => {
       });
     });
 
+    it('carries an ask_user pause’s questions off the nested interrupt', () => {
+      // The native runtime's clarification pause (`guardrail_type:
+      // clarifying_question`, `available_actions: ['answer']`) puts its
+      // questions ONLY on the nested interrupt. The single-pause assembly used
+      // to drop the field, so the card rendered the question text with no
+      // option buttons, no input and no submit — the run could not be resumed.
+      const questions = [
+        { id: 'environment', question: 'Which environment?', options: [{ label: 'Staging' }], multiSelect: false },
+      ];
+      const history = applyChatStreamFrame(
+        [pendingAssistant()],
+        frame(SocketMessageType.AgentHitlInterrupt, {
+          response_metadata: {
+            message: 'Which environment?',
+            available_actions: ['answer'],
+            hitl_interrupt: {
+              guardrail_type: 'clarifying_question',
+              tool_name: 'ask_user',
+              tool_call_id: 'call_mock_ask_user_1',
+              interrupt_id: 'int-ask-1',
+              questions,
+            },
+          },
+        }),
+        CONTEXT,
+      );
+
+      expect(history[0]?.hitlInterrupt).toMatchObject({
+        guardrail_type: 'clarifying_question',
+        available_actions: ['answer'],
+        tool_call_id: 'call_mock_ask_user_1',
+        interrupt_id: 'int-ask-1',
+        questions,
+      });
+    });
+
     it('KEEPS streaming for a fan-out child and accumulates its siblings', () => {
       // Siblings are still running. Flipping isStreaming off collapses the live
       // thinking view and hides every sub-agent that has not rendered a card of

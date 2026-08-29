@@ -21,6 +21,43 @@ function nonEmpty(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value : '';
 }
 
+/** One selectable answer of a clarifying question (`AskUserOption`, runtime-side). */
+type HitlQuestionOption = {
+  readonly label?: string;
+  readonly description?: string;
+};
+
+/**
+ * One clarifying question of an `ask_user` pause.
+ *
+ * The field set is the native runtime's `AskUserQuestion` as it SERIALISES it
+ * (`services/elitea-worker-rust/src/agents/internal_tools.rs`): `multiSelect`
+ * is renamed to camelCase by serde while `allow_other` is not, so both
+ * spellings of the multi-select flag are read — the tool ARGUMENTS the model
+ * emits are admitted under either name, and `tool_args` reaches the UI
+ * unchanged on some paths.
+ */
+export type HitlQuestion = {
+  readonly id?: string;
+  readonly question?: string;
+  readonly header?: string;
+  readonly options?: readonly HitlQuestionOption[];
+  readonly multiSelect?: boolean;
+  readonly multi_select?: boolean;
+  readonly allow_other?: boolean;
+};
+
+/**
+ * The `questions` array of an `ask_user` pause, or `[]`.
+ *
+ * Anything that is not an array is dropped rather than passed through: the
+ * card iterates this, and a non-iterable here would take the whole message
+ * down instead of the one card.
+ */
+function asHitlQuestions(value: unknown): readonly HitlQuestion[] {
+  return Array.isArray(value) ? (value as readonly HitlQuestion[]) : [];
+}
+
 /**
  * One paused approval, in the shape the UI and the resume path both read.
  *
@@ -36,6 +73,13 @@ export type NormalizedHitlInterrupt = {
   readonly message: string;
   readonly node_name: string;
   readonly available_actions: readonly string[];
+  /**
+   * The clarifying questions of an `ask_user` pause; `[]` for every other
+   * pause shape. Carried because the card that renders an `answer` pause has
+   * no other source for them — dropping the field here left the user a
+   * question with no controls under it.
+   */
+  readonly questions: readonly HitlQuestion[];
   readonly routes: Record<string, unknown>;
   readonly edit_state_key: string;
   readonly guardrail_type: string;
@@ -100,6 +144,7 @@ export function normalizeHitlInterrupt(raw: RawInterrupt = {}, overlay: RawInter
     message: pickString('message') || 'Please review and take action.',
     node_name: pickString('node_name'),
     available_actions: (pick('available_actions') as readonly string[] | undefined) ?? ['approve', 'reject'],
+    questions: asHitlQuestions(pick('questions')),
     routes: (pick('routes') as Record<string, unknown> | undefined) ?? {},
     edit_state_key: pickString('edit_state_key'),
     guardrail_type: pickString('guardrail_type'),

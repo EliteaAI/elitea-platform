@@ -437,6 +437,61 @@ describe("continueHitl — the REST continuation", () => {
     expect(call.body["hitl_decisions"]).toBeUndefined();
   });
 
+  it("sends a clarification answer as a STRUCTURED hitl_value, not as the encoded string", async () => {
+    // `currentHITLValue` (agentexecution/route.go) admits a JSON object or a
+    // JSON string for `answer` and canonicalises what it admitted; the worker
+    // parses that text back with `AskUserRequest::format_answer` and renders
+    // one line per answered question into the tool result the model reads.
+    // Passing the card's ENCODED string through unchanged would still be
+    // ADMITTED — as one JSON blob quoted at the model — so "the resume was
+    // accepted" cannot tell the two apart. The decoded shape is the assertion.
+    const history = makeHistory([pausedMessage]);
+    const emitSocket = vi.fn(() => true);
+    const seen = captureContinuations();
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [pausedMessage],
+        emitSocket,
+        continueStreamedExecution: seen.continueStreamedExecution,
+      }),
+    );
+
+    await handlers.continueHitl({
+      action: "answer",
+      value: JSON.stringify({ environment: "Staging", traits: ["Safe", "Fast"] }),
+      toolCallId: "call-1",
+    });
+
+    const call = seen.calls[0]!;
+    expect(call.contract).toBe("agent.continue.hitl.v1");
+    expect(call.body["hitl_action"]).toBe("answer");
+    expect(call.body["hitl_value"]).toEqual({ environment: "Staging", traits: ["Safe", "Fast"] });
+    // The root shape, not the decisions one: a single pause resumes with
+    // `hitl_action`, and the route REFUSES both in one body.
+    expect(call.body["hitl_decisions"]).toBeUndefined();
+    expect(emitSocket).not.toHaveBeenCalled();
+  });
+
+  it("sends a free-text answer as a JSON string the route also admits", async () => {
+    // The no-questions fallback. `currentHITLValue` refuses anything that is
+    // neither an object nor a string for `answer`, and a bare unquoted word is
+    // not valid JSON — so what travels is the string itself.
+    const history = makeHistory([pausedMessage]);
+    const seen = captureContinuations();
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        chatHistory: [pausedMessage],
+        continueStreamedExecution: seen.continueStreamedExecution,
+      }),
+    );
+
+    await handlers.continueHitl({ action: "answer", value: JSON.stringify("Staging"), toolCallId: "call-1" });
+
+    expect(seen.calls[0]!.body["hitl_value"]).toBe("Staging");
+  });
+
   it("falls back to the socket when the route refuses the resume", async () => {
     const history = makeHistory([pausedMessage]);
     const emitSocket = vi.fn(() => true);

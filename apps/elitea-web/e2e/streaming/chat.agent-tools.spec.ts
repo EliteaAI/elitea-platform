@@ -127,13 +127,16 @@ test('internal tools all on, agent-as-tool attached — and the agent still answ
   // the detach ALONE and require a 2xx; that passed against the handler that
   // answered 201 whatever it deleted, so it asserted nothing at all.
   //
-  // AND THE DETACH IS LOAD-BEARING FOR STEP 4. A version that still names a
-  // nested `application` tool is refused at admission — the send answers 422
-  // `unsupported_agent_execution`, because the freeze cannot build the stored
-  // reference's shape (`freezeCurrentStoredApplicationReference` in
-  // services/elitea-main/internal/application/agentexecution/tools.go). So the
-  // relation is exercised in both directions and removed before the turn; an
-  // agent-as-tool TURN is a separate journey this stack cannot run yet.
+  // AND THE DETACH IS LOAD-BEARING FOR STEP 4. This spec attaches the agent
+  // to ITSELF (one agent, exercised as both ends of the relation), and a
+  // SELF-referencing nested tool is refused at admission — the send answers
+  // 422 because the nesting walk repeats the agent's own key at hop two
+  // ("circular reference", `walkCurrentApplicationNesting` in
+  // services/elitea-main/internal/infra/db/repos/agent_nesting.go — NOT the
+  // freeze, which admits the row's shape fine). So the relation is exercised
+  // in both directions and removed before the turn. The agent-as-tool TURN
+  // with a DISTINCT child — which the runtime serves — is
+  // chat.nested-agent.spec.ts's job.
   const relation = await page.request.patch(
     `${BASE_URL}/api/v2/elitea_core/application_relation/prompt_lib/${projectId}/${agentId}/${versionId}`,
     { data: { application_id: Number(agentId), version_id: Number(versionId), has_relation: true } },

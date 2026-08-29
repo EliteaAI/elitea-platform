@@ -371,3 +371,195 @@ export async function expectStoredAssistantAnswer(
 function escapeForRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+export interface StoredTurnRefusalOptions {
+  /** How long the store is given to finalise the row. Default 60s. */
+  readonly timeout?: number;
+  /** The failure line — say what a miss MEANS for this journey. */
+  readonly message?: string;
+}
+
+/**
+ * The negative twin of `expectStoredAssistantAnswer`: require the STORED
+ * assistant row for this turn to be flagged `metadata.is_error === true`.
+ *
+ * For a turn the admission gates forward but the runtime cannot execute — a
+ * profile it does not support, not one it finds malformed — the START POST
+ * still answers 200 and a stream still opens; the refusal is decided later
+ * and lands as an assistant row carrying `metadata.is_error: true` rather
+ * than as any status code a Playwright `waitForResponse` could see. That is
+ * exactly the shape `chat.agent-tools.spec.ts`'s own header comment measured
+ * for an unsupported internal tool, and it is the shape
+ * `chat.variables.spec.ts` measures for a populated `meta.variables` — see
+ * that file's header for the runtime source this pins.
+ *
+ * Polled, not read once, for the same reason `expectStoredAssistantAnswer`
+ * is: the stream settles in the browser before the store finalises the row,
+ * so a single read can land between the row's creation and the write that
+ * flags it, and report "not an error" about a row that is still being
+ * written rather than about the turn's real outcome.
+ *
+ * A caller that wants the refused row's own text (usually empty — see the
+ * `chat.agent-tools.spec.ts` note above) should read it separately with
+ * `readStoredTranscript`; this helper only answers the yes/no question its
+ * name asks.
+ */
+export async function expectStoredTurnRefusal(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+  options: StoredTurnRefusalOptions = {},
+): Promise<void> {
+  const {
+    timeout = 60_000,
+    message = 'the turn was admitted but the runtime never stored a refusal for it',
+  } = options;
+
+  await expect
+    .poll(
+      async () => {
+        const stored = await page.request.get(
+          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${String(conversationId)}`,
+        );
+        if (!stored.ok()) return false;
+        const body = (await stored.json()) as {
+          items?: readonly { role?: string; metadata?: { is_error?: boolean } }[];
+        };
+        const assistant = body.items?.find((item) => item.role === 'assistant');
+        return assistant?.metadata?.is_error === true;
+      },
+      { timeout, message },
+    )
+    .toBe(true);
+}
+
+/** One persisted `chat_message_group`, as the transcript route serves it. */
+export interface StoredTranscriptRow {
+  /** `chat_message_group.id` — the numeric key. */
+  readonly id: string;
+  /** `chat_message_group.uuid` — the identity a regeneration REUSES (see `chat.regenerate.spec.ts`). */
+  readonly uid: string;
+  /** `user` for a question, `assistant` for every other author (the route maps `entity_name` this way). */
+  readonly role: string;
+  /** `string_agg` of the group's `text_message` items, in `order_index` order. */
+  readonly content: string;
+  /** `metadata.is_error` — a refused turn is STORED as an assistant row, so this is what tells an answer from a refusal. */
+  readonly isError: boolean;
+  /**
+   * `chat_message_group.meta`, verbatim.
+   *
+   * Carried because one of its keys is the only witness a regeneration leaves:
+   * `execution_generation` is rewritten to the run's own id by
+   * `ResetCurrentAgentResponse`, while the row keeps its `id`, `uid` and
+   * `created_at`. Row identity alone cannot tell "re-ran in place" from "left
+   * untouched"; this can.
+   */
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * The whole stored transcript of one conversation, oldest row first.
+ *
+ * `expectStoredAssistantAnswer` above answers "did the newest answer land";
+ * this answers "what is the conversation now", which is the only way to state
+ * that a second turn ACCUMULATED (`chat.multiturn.spec.ts`) or that a
+ * regeneration REPLACED rather than appended (`chat.regenerate.spec.ts`).
+ *
+ * `sort_order=asc` is not cosmetic. The route's documented default is
+ * `created_at DESC` (`parseMessagesQuery`, #603), so a caller that omits it
+ * gets the transcript BACKWARDS and an "in order" assertion written against it
+ * passes on a reversed conversation. `limit` is explicit for the same class of
+ * reason: the default window is 50 groups, which is silently a filter.
+ *
+ * A non-2xx THROWS, naming the status and body. Returning `[]` would make a
+ * broken route and an empty conversation indistinguishable — the exact shape
+ * defect #599 took inside this very endpoint, where a failing query answered a
+ * successful empty transcript and nobody saw a failure to investigate.
+ */
+export async function readStoredTranscript(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+): Promise<readonly StoredTranscriptRow[]> {
+  const url =
+    `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${String(conversationId)}` +
+    '?sort_order=asc&limit=100';
+  const response = await page.request.get(url);
+  if (!response.ok()) {
+    throw new Error(
+      `readStoredTranscript: GET ${url} -> ${response.status()} ${response.statusText()}\n` +
+      `${(await response.text()).slice(0, 300)}`,
+    );
+  }
+  const body = (await response.json()) as {
+    items?: readonly {
+      id?: string;
+      uid?: string;
+      role?: string;
+      content?: string;
+      metadata?: Record<string, unknown>;
+    }[];
+  };
+  return (body.items ?? []).map((item) => ({
+    id: String(item.id ?? ''),
+    uid: String(item.uid ?? ''),
+    role: item.role ?? '',
+    content: item.content ?? '',
+    isError: item.metadata?.['is_error'] === true,
+    metadata: item.metadata ?? {},
+  }));
+}
+
+/** The newest stored assistant row, as `chat.stop.spec.ts` measures it. */
+export interface StoredAssistantAnswer {
+  /** `true` when the conversation holds an assistant row at all. */
+  readonly found: boolean;
+  /** The row's concatenated text. Empty while the store is still filling. */
+  readonly content: string;
+  /** `metadata.is_error` — a refused turn is stored AS an assistant row. */
+  readonly isError: boolean;
+}
+
+/**
+ * READ the newest stored assistant row. Does not assert anything about it.
+ *
+ * `expectStoredAssistantAnswer` above answers a yes/no question and swallows
+ * the value inside its own poll, which is exactly what a growth measurement
+ * cannot use: proving a cancelled turn STOPPED writing needs the same field
+ * read twice, a gap apart, and the two lengths compared. A second
+ * `expect.poll` cannot express that — a poll that waits for two equal reads
+ * also passes on a stream that has merely paused between chunks, and one that
+ * waits for a stable value passes trivially the moment the turn finishes on
+ * its own.
+ *
+ * The newest row, not the first in document order: the route's documented
+ * default sort is `created_at DESC` (#603), so `items[0]` of role `assistant`
+ * is the reply to the most recent question. `expectStoredAssistantAnswer`
+ * reads the same route the same way, so the two cannot disagree about which
+ * row they are talking about.
+ *
+ * A non-2xx returns `found: false` rather than throwing: the caller polls this
+ * while a turn is still being admitted, and the transcript route can answer
+ * before the response row exists. The CALLER's poll message says what a
+ * permanent miss means for its own journey.
+ */
+export async function readStoredAssistantAnswer(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+): Promise<StoredAssistantAnswer> {
+  const response = await page.request.get(
+    `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${String(conversationId)}`,
+  );
+  if (!response.ok()) return { found: false, content: '', isError: false };
+  const body = (await response.json()) as {
+    items?: readonly { role?: string; content?: string; metadata?: { is_error?: boolean } }[];
+  };
+  const assistant = (body.items ?? []).find((item) => item.role === 'assistant');
+  if (assistant === undefined) return { found: false, content: '', isError: false };
+  return {
+    found: true,
+    content: assistant.content ?? '',
+    isError: assistant.metadata?.is_error === true,
+  };
+}

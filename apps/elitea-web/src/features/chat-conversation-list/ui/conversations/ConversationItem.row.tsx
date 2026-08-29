@@ -47,6 +47,13 @@ export function ConversationItemRow(props: ConversationItemRowProps): ReactNode 
 
   return (
     <Box
+      // Id-keyed, not name-keyed: the rail's rows are addressable from an E2E
+      // journey only by their title text today, and two conversations may
+      // legitimately share one (the name is derived from the question that
+      // opened them). `#conversation-menu-{id}-trigger` — the kebab's DOM id —
+      // already identifies the row by id, but only from the menu outwards, so
+      // "this row left the rail" could not be asserted on the row itself.
+      data-testid={`conversation-item-${conversationId}`}
       sx={styles.conversationContentWrapper}
       onClick={onClick}
       onMouseEnter={onMouseEnter}

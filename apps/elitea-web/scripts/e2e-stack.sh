@@ -907,6 +907,28 @@ CROSS JOIN (VALUES
     ('models.chat.messages.list'),
     ('models.chat.participant.delete'),
     ('models.chat.participants.create'),
+    -- STOP. `models.chat.task.delete` gates DELETE
+    -- /elitea_core/task/prompt_lib/{projectID}/{responseMessageID}
+    -- (`internal/api/v2/agentexecution/cancel.go:17`), which is the route the
+    -- composer's Stop button calls.
+    --
+    -- Hand-listed for the third time in this file and for the same mechanism as
+    -- `index_meta.details` and the notification string above: shared/0072
+    -- grants it CENTRALLY to default-mode admin/editor/viewer, this project
+    -- carries per-project rows, and per-project rows suppress the central
+    -- fallback wholesale. shared/0090's backfill does not reach it either --
+    -- 0090 runs at stack-up and this project's override rows are written by
+    -- THIS seeder afterwards, so there is nothing for the backfill to
+    -- reconcile when it runs.
+    --
+    -- Measured symptom when absent, and why nothing caught it: the cancel is
+    -- fired as `void stopChatTask(...).catch(() => undefined)`
+    -- (`features/chat-messages/model/useChatStreamTransport.ts`), so the 403 is
+    -- swallowed. The browser detaches its own stream and the spinner clears, so
+    -- Stop LOOKS like it worked while the execution keeps running server-side.
+    -- `e2e/streaming/chat.stop.spec.ts` requires the 204 for exactly that
+    -- reason.
+    ('models.chat.task.delete'),
     ('models.monitoring.tracing.view'),
     ('models.project_context.edit'),
     ('models.project_context.view'),

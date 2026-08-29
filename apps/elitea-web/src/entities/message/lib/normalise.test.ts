@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from './normalise';
-import type { MessageAuthorWire, MessageGroupWire, MessageParticipantWire } from './wire';
+import type { MessageAuthorWire, MessageGroupMetaWire, MessageGroupWire, MessageParticipantWire } from './wire';
 
 describe('convertTime', () => {
   it('converts a space-separated Postgres-style timestamp to ISO', () => {
@@ -338,6 +338,42 @@ describe('normaliseAssistantMessage', () => {
     const result = normaliseAssistantMessage(group, [], undefined);
     expect(result.hitlInterrupt).toMatchObject({ tool_call_id: 'tc1' });
     expect(result.hitlInterrupts).toHaveLength(2);
+  });
+
+  it('carries an ask_user pause’s questions and interrupt_id off the stored meta', () => {
+    // The stored half of the same defect the stream half had: a pause reloaded
+    // from the transcript rendered its question with no controls, because
+    // `buildHitlInterruptFromRaw` wrote a closed field set that did not include
+    // `questions`. `interrupt_id` travels with it — it is what
+    // `findHitlInterruptId` needs to address a fan-out resume at all.
+    const questions = [{ id: 'environment', question: 'Which environment?', options: [{ label: 'Staging' }] }];
+    const group: MessageGroupWire = {
+      ...baseGroup,
+      meta: {
+        hitl_interrupts: [
+          {
+            guardrail_type: 'clarifying_question',
+            available_actions: ['answer'],
+            tool_call_id: 'call_mock_ask_user_1',
+            interrupt_id: 'int-ask-1',
+            questions,
+          },
+        ],
+      } as unknown as MessageGroupMetaWire,
+    };
+    const result = normaliseAssistantMessage(group, [], undefined);
+    expect(result.hitlInterrupts?.[0]).toMatchObject({
+      guardrail_type: 'clarifying_question',
+      available_actions: ['answer'],
+      interrupt_id: 'int-ask-1',
+      questions,
+    });
+    // Anything that is not an array is dropped — the card maps over this.
+    const bad: MessageGroupWire = {
+      ...baseGroup,
+      meta: { hitl_interrupts: [{ questions: 'nope' }] } as unknown as MessageGroupMetaWire,
+    };
+    expect(normaliseAssistantMessage(bad, [], undefined).hitlInterrupts?.[0]).toMatchObject({ questions: [] });
   });
 
   it('omits hitl_interrupts entirely when the raw array is empty (not an empty array)', () => {

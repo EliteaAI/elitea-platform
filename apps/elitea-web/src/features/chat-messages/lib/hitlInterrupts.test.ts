@@ -46,6 +46,19 @@ describe('normalizeHitlInterrupt', () => {
     expect(normalizeHitlInterrupt({}).tool_args).toBeNull();
   });
 
+  it('carries an ask_user pause’s questions through, and defaults them to []', () => {
+    // The `answer` card has no other source for them: a normaliser that drops
+    // `questions` renders the pause's question text with no controls under it,
+    // and the run can never be resumed. Measured live before this line existed.
+    const questions = [{ id: 'environment', question: 'Which environment?', options: [{ label: 'Staging' }] }];
+    expect(normalizeHitlInterrupt({ guardrail_type: 'clarifying_question', questions }).questions).toEqual(questions);
+    // From the OVERLAY too — the same `pick` both halves of a pause are read with.
+    expect(normalizeHitlInterrupt({}, { questions }).questions).toEqual(questions);
+    // Never undefined, and never a non-array: the card maps over this.
+    expect(normalizeHitlInterrupt({}).questions).toEqual([]);
+    expect(normalizeHitlInterrupt({ questions: 'not-an-array' }).questions).toEqual([]);
+  });
+
   it('produces a value the approval card accepts', () => {
     // Compile-time pin: the reducer's output type and the renderer's prop type
     // are declared separately, and a drift between them would only surface at

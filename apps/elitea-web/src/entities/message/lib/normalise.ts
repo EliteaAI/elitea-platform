@@ -188,10 +188,29 @@ function hitlInterruptCoreFields(raw: HitlInterruptRawWire): Record<string, unkn
   };
 }
 
+/**
+ * The clarifying questions of a stored `ask_user` pause, or `[]`.
+ *
+ * Read through an assertion rather than off `HitlInterruptRawWire`: the field
+ * post-dates that wire type (it is the native runtime's `ask_user` payload,
+ * `services/elitea-worker-rust/src/agents/internal_tools.rs`), and the
+ * assertion is confined here so the rest of the reader keeps its declared
+ * shape. Anything that is not an array is dropped — the card iterates this.
+ */
+function hitlQuestionsField(raw: HitlInterruptRawWire): readonly unknown[] {
+  const questions = (raw as { readonly questions?: unknown }).questions;
+  return Array.isArray(questions) ? questions : [];
+}
+
 /** chat.helpers.js:88-105 `buildHitlInterruptFromRaw`, ported (remaining fields — split for complexity). */
 function buildHitlInterruptFromRaw(raw: HitlInterruptRawWire): Record<string, unknown> {
   return {
     ...hitlInterruptCoreFields(raw),
+    // A pause reloaded from the store must render the same controls the live
+    // stream rendered. Without this the answer card came back after a refetch
+    // with its question and no way to answer it.
+    questions: hitlQuestionsField(raw),
+    interrupt_id: (raw as { readonly interrupt_id?: string }).interrupt_id ?? '',
     toolkit_type: raw.toolkit_type || '',
     action_label: raw.action_label || '',
     tool_args: raw.tool_args ?? null,
