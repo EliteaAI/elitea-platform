@@ -216,17 +216,25 @@ REPEAT_ARGS=""
 # run goes through — both ci-web-e2e.yml jobs (`chat-stream` and
 # `chat-stream-rust`) invoke it with no Playwright flags of their own. So the
 # pin lives here, once.
+# E2E_WORKER tells the specs WHICH runtime answers the turns. The two legs
+# pin different contracts on purpose — the native runtime refuses populated
+# variables where the SDK worker serves them, and the pipeline/HITL journeys
+# author the native runtime's shapes — so a spec must know its leg, and this
+# script is the one place that knows it authoritatively.
+E2E_WORKER="${STANDALONE_WORKER:-python}"
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
     -v "$WEB_DIR":/work -w /work \
     -e CI="${CI:-}" \
     -e E2E_REUSE_STACK=1 \
+    -e E2E_WORKER="$E2E_WORKER" \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
     npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
+  E2E_WORKER="$E2E_WORKER" \
     npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 fi

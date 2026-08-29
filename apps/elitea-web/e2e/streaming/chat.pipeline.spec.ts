@@ -138,6 +138,17 @@ nodes:
 `;
 
 test('a pipeline authored on the pipelines create page runs its graph and answers in chat', async ({ page }) => {
+  // The YAML this spec authors is the NATIVE runtime's PipelineDefinition
+  // format, and the trace discriminator (the llm node's id as tool_name) is
+  // the native assembler's shape. The SDK worker runs pipelines from the
+  // flow-editor format instead — measured: this graph stores IS_ERROR there.
+  // A python-leg pipeline journey is its own authoring, not a flag on this
+  // one. E2E_WORKER comes from chat-stream-e2e.sh; local default = the
+  // long-lived native-runtime dev stack.
+  test.skip(
+    (process.env['E2E_WORKER'] ?? 'rust') !== 'rust',
+    'native-runtime pipeline format; the SDK worker uses the flow-editor format',
+  );
   // A whole pipeline turn — create, graph, admission, graph compile, a model
   // call and the stream back. Every wait below is bounded well under this, so
   // a real hang fails on its own step rather than on the clock.

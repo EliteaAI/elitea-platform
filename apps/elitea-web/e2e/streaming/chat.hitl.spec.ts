@@ -109,6 +109,16 @@ const MOCK_MODEL = process.env['E2E_MOCK_MODEL'] ?? 'vllm/E2E-MOCK-MODEL';
 const ASK_USER_TOOL = 'ask_user';
 
 test('an ask_user pause renders answerable controls, and the answer finishes the run', async ({ page }) => {
+  // The mock scripts the NATIVE runtime's ask_user tool-call shape and the
+  // resume rides agent.continue.hitl.v1 as that runtime consumes it —
+  // measured: the SDK worker does not pause on this script (no HITL card).
+  // A python-leg ask_user journey needs the SDK worker's own pause shape.
+  // E2E_WORKER comes from chat-stream-e2e.sh; local default = the native
+  // runtime dev stack.
+  test.skip(
+    (process.env['E2E_WORKER'] ?? 'rust') !== 'rust',
+    'native-runtime ask_user shape; the SDK worker pauses differently',
+  );
   // Two model round trips with a human decision between them: create, save,
   // chat, admission, the pause, the resume and a second dispatch. Every wait
   // below is bounded well under this, so a real hang fails on its own step

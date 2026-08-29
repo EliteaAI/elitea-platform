@@ -76,6 +76,7 @@ import { BASE_URL } from '../../playwright.config';
 import {
   AUTOTEST_PREFIX,
   createAgentThroughForm,
+  expectStoredAssistantAnswer,
   expectStoredTurnRefusal,
 } from '../fixtures/api';
 
@@ -151,13 +152,28 @@ test('an agent with a populated variable is admitted, then refused by the runtim
   // answer, `validate_application_meta_variables` no longer refuses a
   // populated `variables` array, and this spec — not just its assertion —
   // needs to be flipped to expect success.
-  await expectStoredTurnRefusal(page, projectId, conversationId, {
-    timeout: 90_000,
-    message:
-      'the runtime answered a variable it does not support — validate_application_meta_variables ' +
-      'no longer refuses a populated variables array, so this spec pins a refusal that is no ' +
-      'longer true and must be flipped to expect a real answer',
-  });
+  // The two workers pin OPPOSITE contracts here, both by design: the native
+  // runtime refuses a populated variables array
+  // (validate_application_meta_variables), while the SDK worker substitutes
+  // the variables and answers. E2E_WORKER comes from chat-stream-e2e.sh, the
+  // one place that knows which worker the stack runs; the local default is
+  // the native runtime, matching the long-lived dev stack.
+  if ((process.env['E2E_WORKER'] ?? 'rust') === 'rust') {
+    await expectStoredTurnRefusal(page, projectId, conversationId, {
+      timeout: 90_000,
+      message:
+        'the native runtime answered a variable it does not support — ' +
+        'validate_application_meta_variables no longer refuses a populated variables array, ' +
+        'so this spec pins a refusal that is no longer true and must be flipped',
+    });
+  } else {
+    await expectStoredAssistantAnswer(page, projectId, conversationId, {
+      timeout: 90_000,
+      message:
+        'the SDK worker serves populated variables — a refusal here means variable ' +
+        'substitution broke on the python leg',
+    });
+  }
 
   await page.request.delete(
     `${BASE_URL}/api/v2/elitea_core/application/prompt_lib/${projectId}/${agentId}`,
