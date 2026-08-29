@@ -31,7 +31,7 @@ package eliteacore
 //
 // ## What it deliberately does NOT carry, and why
 //
-// Three of the legacy frontmatter keys have no producer on this side, so they
+// Two of the legacy frontmatter keys have no producer on this side, so they
 // are OMITTED rather than emitted empty — a key whose value is a guess is
 // worse than an absent key, because the importer cannot tell them apart:
 //
@@ -39,11 +39,12 @@ package eliteacore
 //     resolves application-type tools against every OTHER application in the
 //     same export. This route exports ONE application (`WHERE id = $1`), so
 //     there is no set to resolve against.
-//   - `skills`. `_extract_skills_for_md` reads the export document's `skills`
-//     array; `ExportImportGet` builds no such array.
 //   - `pipeline_settings` (the visual graph). `exportedVersions` does not
 //     select it, so a pipeline's markdown carries its nodes but not their
 //     on-screen positions.
+//
+// `skills` was a third. It is now written: `exportedSkills` builds the array
+// `_extract_skills_for_md` reads, and `skillBlocks` below renders it (#611).
 //
 // Each is a gap in what this service EXPORTS, not in this file's rendering,
 // and each is listed on the route's own doc comment so it is visible from the
@@ -324,6 +325,77 @@ func toolkitBlocks(tools []any, toolkits []any, includeApplications bool) []any 
 	return blocks
 }
 
+/* ── skills ──────────────────────────────────────────────────────────────── */
+
+// skillBlocks is `_extract_skills_for_md` (:874).
+//
+// A markdown file has to stand on its own: the reader edits it and imports it
+// again, and the import has nothing else to read. So each block carries enough
+// to recreate the skill — its name, its description, the name of the attached
+// version and that version's instructions — and not the reference the JSON
+// document carries. The import wizard rebuilds both halves from these blocks
+// (apps/elitea-ui .../importWizardParser.helpers.js, buildSkillsFromFrontmatter).
+//
+// A reference that resolves to no skill, or to no version of that skill, is
+// SKIPPED and not written half-formed. The legacy makes the same choice and
+// calls it the no-fallback principle: a block that names a version the file
+// does not carry would import a skill with the wrong instructions, which is
+// worse than a skill the reader can see is missing.
+func skillBlocks(references []any, skills []any) []any {
+	byUUID := map[string]map[string]any{}
+	for _, entry := range skills {
+		skill, isMap := entry.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if uuid, ok := skill["import_uuid"].(string); ok && uuid != "" {
+			byUUID[uuid] = skill
+		}
+	}
+
+	blocks := make([]any, 0, len(references))
+	for _, entry := range references {
+		reference, isMap := entry.(map[string]any)
+		if !isMap {
+			continue
+		}
+		importUUID, _ := reference["import_uuid"].(string)
+		skill := byUUID[importUUID]
+		if skill == nil {
+			continue
+		}
+		versionName, _ := reference["version_name"].(string)
+		if versionName == "" {
+			versionName = "base"
+		}
+		version := skillVersionNamed(skill["versions"], versionName)
+		if version == nil {
+			continue
+		}
+		block := newOrderedMap()
+		block.setAlways("name", skill["name"])
+		block.setAlways("description", skill["description"])
+		block.setAlways("version", versionName)
+		block.setAlways("instructions", version["instructions"])
+		blocks = append(blocks, block)
+	}
+	return blocks
+}
+
+// skillVersionNamed finds one version of an exported skill by name.
+func skillVersionNamed(versions any, name string) map[string]any {
+	for _, entry := range toAnySlice(versions) {
+		version, isMap := entry.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if versionName, _ := version["name"].(string); versionName == name {
+			return version
+		}
+	}
+	return nil
+}
+
 /* ── one version → one markdown file ─────────────────────────────────────── */
 
 // exportedFile is one entry of `export_application_md`'s `files` list.
@@ -367,7 +439,7 @@ func markdownFilename(appName, versionName, rawAgentType string) string {
 }
 
 // applicationToMarkdown is `_application_to_md` (:932).
-func applicationToMarkdown(app map[string]any, toolkits []any, version map[string]any) (string, error) {
+func applicationToMarkdown(app map[string]any, toolkits, skills []any, version map[string]any) (string, error) {
 	versionName, _ := version["name"].(string)
 	rawAgentType, _ := version["agent_type"].(string)
 	agentType := markdownAgentType(rawAgentType)
@@ -428,6 +500,7 @@ func applicationToMarkdown(app map[string]any, toolkits []any, version map[strin
 	}
 
 	front.set("variables", version["variables"])
+	front.set("skills", skillBlocks(toAnySlice(version["skills"]), skills))
 
 	var buffer bytes.Buffer
 	encoder := yaml.NewEncoder(&buffer)
@@ -450,6 +523,7 @@ func applicationToMarkdown(app map[string]any, toolkits []any, version map[strin
 func markdownFilesFor(result map[string]any) ([]exportedFile, error) {
 	applications, _ := result["applications"].([]map[string]any)
 	toolkits := toAnySlice(result["toolkits"])
+	skills := toAnySlice(result["skills"])
 
 	files := make([]exportedFile, 0, len(applications))
 	for _, app := range applications {
@@ -460,7 +534,7 @@ func markdownFilesFor(result map[string]any) ([]exportedFile, error) {
 			if !isMap {
 				continue
 			}
-			content, err := applicationToMarkdown(app, toolkits, version)
+			content, err := applicationToMarkdown(app, toolkits, skills, version)
 			if err != nil {
 				return nil, err
 			}
