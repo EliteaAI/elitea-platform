@@ -2379,8 +2379,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 
 	if len(entities) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"result": map[string]any{"agents": []any{}},
-			"errors": map[string]any{"agents": []any{}},
+			"result": importChannels[any](nil, nil, nil),
+			"errors": importChannels[any](nil, nil, nil),
 		})
 		return
 	}
@@ -2905,8 +2905,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, importStatus, map[string]any{
-		"result": map[string]any{"agents": resultAgents, "toolkits": resultToolkits, "skills": resultSkills},
-		"errors": map[string]any{"agents": errorAgents, "toolkits": errorToolkits, "skills": errorSkills},
+		"result": importChannels(resultAgents, resultToolkits, resultSkills),
+		"errors": importChannels(errorAgents, errorToolkits, errorSkills),
 	})
 }
 
@@ -2974,8 +2974,8 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(apps) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"result": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
-			"errors": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
+			"result": importChannels[any](nil, nil, nil),
+			"errors": importChannels[any](nil, nil, nil),
 		})
 		return
 	}
@@ -3004,23 +3004,30 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	// legacy fork reads the same key and hands it to the same import
 	// (legacy/plugins/elitea_core/api/v2/fork.py).
 	//
-	// # Why every skill error here carries index 0
+	// # The index space of every error entry
 	//
-	// `getErrorImportUUID` reads `selectedData[item.index].import_uuid` on EVERY
-	// channel of the errors object, with no guard, and the fork button calls it
-	// with the APPLICATIONS it sent and not with the skills
-	// (apps/elitea-ui .../IWModalForkButton.jsx). An index into the `skills`
-	// array would therefore address no entry and throw inside the wizard, which
-	// is the fault the doc comment above records for the entries this function
-	// used to build. The fork always centres on the first entry — the button is
-	// disabled unless `selectedData[0]` is the item being forked — so index 0
-	// names the agent whose fork is incomplete.
+	// ONE space for both arrays: the applications, then the skills. That is the
+	// legacy's own numbering. `fork.py` concatenates
+	// `(applications or []) + (skills or [])` into one entities list and hands
+	// that list to `import_wizard`, which numbers every error and every result by
+	// the position in it (`_wrap_import_error`, `_wrap_import_result`).
 	//
-	// The index therefore cannot say WHICH skill failed, so every message below
-	// names the skill itself — by name where the entry has one, and by its
-	// position in the `skills` array where it does not. A guard in
-	// `getErrorImportUUID` would let this report the true index; until that
-	// lands, the message carries what the index cannot.
+	// Applications come first, so an agent-attributed error keeps the index it
+	// already had. A skill entity carries `len(apps)` plus its own position, so
+	// the entry names the skill that failed and not an unrelated agent.
+	//
+	// WHO READS THIS INDEX. `apps/elitea-web` is the UI, and it builds no import
+	// wizard and no fork flow: no `import-wizard` slice exists under `src/`,
+	// `AppShell.tsx` records the modal as "Not built", and the generated
+	// `forkAgent` and `importWizard` clients have no caller — the endpoint
+	// census carries `"usedBy": []` for both (shared/api/endpoints.manifest.json).
+	// Only the EXPORT half is built (shared/lib/download.ts), so no shipped
+	// screen reads this field and the index is free to say the true thing.
+	// The old wizard in the `apps/elitea-ui` SUBMODULE does read it, through
+	// `getErrorImportUUID`, which indexes the applications alone and dereferences
+	// the result with no guard, so an index above `len(apps)-1` throws there.
+	// That wizard is not the product and this repository does not change it. A
+	// port into `apps/elitea-web` must pass the whole concatenation.
 	//
 	// # A body that names no skills at all
 	//
@@ -3035,12 +3042,14 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	importedSkills := map[string]importedSkill{}
 	_, bodyNamesSkills := body["skills"]
 	skillOwnerID, skillOwnerErr := tenantOwnerID(projectID)
-	const forkedSkillErrorIndex = 0
 	for skillPosition, raw := range toAnySlice(body["skills"]) {
+		// The position in the concatenation the wizard resolves against: the
+		// applications it sent, followed by the skills it sent.
+		skillErrorIndex := len(apps) + skillPosition
 		skill, isMap := raw.(map[string]any)
 		if !isMap {
 			errorSkills = append(errorSkills, map[string]any{
-				"index": forkedSkillErrorIndex, "name": "",
+				"index": skillErrorIndex, "name": "",
 				"msg": fmt.Sprintf(
 					"Fork function has been failed: skills entry %d is not a JSON object", skillPosition),
 			})
@@ -3052,7 +3061,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 		}
 		if skillOwnerErr != nil {
 			errorSkills = append(errorSkills, map[string]any{
-				"index": forkedSkillErrorIndex, "name": skillName,
+				"index": skillErrorIndex, "name": skillName,
 				"msg": "Fork function has been failed: " + skillOwnerErr.Error(),
 			})
 			continue
@@ -3079,7 +3088,7 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 					created.id, err.Error())
 			}
 			errorSkills = append(errorSkills, map[string]any{
-				"index": forkedSkillErrorIndex, "name": skillName, "msg": message,
+				"index": skillErrorIndex, "name": skillName, "msg": message,
 			})
 		}
 	}
@@ -3392,8 +3401,10 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, forkStatus, map[string]any{
-		"result": map[string]any{"agents": resultAgents, "skills": resultSkills},
-		"errors": map[string]any{"agents": errorAgents, "skills": errorSkills},
+		// A fork writes no toolkit, so its toolkits channel is always empty.
+		// It is still carried: see importChannels.
+		"result": importChannels(resultAgents, nil, resultSkills),
+		"errors": importChannels(errorAgents, nil, errorSkills),
 	})
 }
 

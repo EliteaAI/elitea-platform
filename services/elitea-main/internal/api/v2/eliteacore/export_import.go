@@ -673,6 +673,55 @@ func (h *Handler) exportedSkillVersionTags(
 // they cannot reach a database at all.
 const importWriteFailed = "the import cannot run without a database connection"
 
+// importChannels builds one `result` or one `errors` envelope of an import or a
+// fork answer.
+//
+// # Every answer carries every channel
+//
+// The wizard reads `result[item.entity]` for EVERY row it sent, and it reads it
+// with no guard:
+//
+//	const foundInResult = result[item.entity].find(it => it.index === index);
+//
+// (apps/elitea-ui .../ImportWizardModal/IWModalForkButton.jsx). A channel the
+// answer leaves out is `undefined` there, `.find` on it raises a TypeError, and
+// the raise happens inside an async map callback. The `Promise.all` that awaits
+// the callbacks rejects, its `.then` never runs, and NEITHER the error toast
+// NOR the success branch fires: the user forks an agent that has toolkits and
+// the dialog stops with no message at all. The same line reads
+// `errors[item.entity]` through `getErrorImportUUID`, so both envelopes need
+// the same treatment.
+//
+// The set is the legacy set. `rpc/import_wizzard.py` seeds `result[key] = []`
+// and `errors[key] = []` for every key of ENTITY_IMPORT_MAPPER, which is
+// exactly agents, toolkits and skills
+// (legacy/plugins/elitea_core/utils/export_import_utils.py:21-25). The legacy
+// fork answers through that same wizard, so the fork and the import carry ONE
+// set, and a caller can read a channel of either answer with no guard.
+//
+// The fork answered with `datasources` and `prompts` instead of `toolkits` when
+// the request named no application. Those two keys are in no legacy mapper, no
+// path of this service can put an entry in them, and a read-only search of
+// EliteaUI, admin_ui, Maintenance-UI and elitea-web finds no reader. They are
+// removed, because a channel that only one of the two fork paths can carry is
+// the same defect in the other direction.
+//
+// An absent channel and a `null` channel break the wizard in the same way, so a
+// nil slice becomes an empty array here rather than at each call.
+func importChannels[T any](agents, toolkits, skills []T) map[string]any {
+	channel := func(entries []T) any {
+		if entries == nil {
+			return []T{}
+		}
+		return entries
+	}
+	return map[string]any{
+		"agents":   channel(agents),
+		"toolkits": channel(toolkits),
+		"skills":   channel(skills),
+	}
+}
+
 // importPrincipalUserID resolves the user that the import and the fork write
 // into applications.owner_id, application_versions.author_id and
 // elitea_tools.author_id.

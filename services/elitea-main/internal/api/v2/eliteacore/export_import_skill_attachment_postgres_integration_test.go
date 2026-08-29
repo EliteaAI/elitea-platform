@@ -31,6 +31,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -288,15 +289,15 @@ func TestForkReportsASkillItCannotFork(t *testing.T) {
 	if len(reported) != 2 {
 		t.Fatalf("errors.skills = %+v, want both refused entries", reported)
 	}
-	for _, entry := range reported {
-		// EVERY fork skill error carries index 0. `getErrorImportUUID` reads
-		// `selectedData[item.index].import_uuid` with no guard on every channel,
-		// and the fork button passes it the APPLICATIONS it sent — so an index
-		// into the skills array would address no entry and throw inside the
-		// wizard. This assertion is the only thing that holds that constant.
-		if entry.Index != 0 {
-			t.Errorf("fork skill error index = %d, want 0 — the wizard resolves it against the applications",
-				entry.Index)
+	// The index space is ONE list: the applications, then the skills — the
+	// legacy's own numbering (fork.py concatenates the two arrays and numbers
+	// every entry by its position in the result). This body sends one
+	// application, so the two skills are at 1 and 2. An entry that reported 0
+	// would name the AGENT, which forked correctly.
+	for position, entry := range reported {
+		if want := 1 + position; entry.Index != want {
+			t.Errorf("fork skill error %d has index = %d, want %d — the index names the skill in the "+
+				"concatenation of applications then skills", position, entry.Index, want)
 		}
 	}
 	// The message has to name the entry, because the index cannot.
@@ -308,6 +309,53 @@ func TestForkReportsASkillItCannotFork(t *testing.T) {
 	}
 	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 0 {
 		t.Errorf("skill rows = %d, want 0 — neither entry could be forked", count)
+	}
+}
+
+// TestForkAttributesTheFailureToTheSkillThatFailed is what the index is FOR.
+//
+// One application and TWO skills, of which only the second is unusable. A single
+// skill in the body cannot discriminate: index 0 and "the first skill" are the
+// same entry, so every wrong implementation passes. With two, an index that
+// names the agent, or the wrong skill, changes the assertion.
+func TestForkAttributesTheFailureToTheSkillThatFailed(t *testing.T) {
+	pool := newImportLinkPool(t)
+	handler := eliteacore.NewHandler(pool)
+
+	recorder := forkSkillDo(t, handler, map[string]any{
+		"applications": []any{map[string]any{
+			"id": "1", "name": "fixture agent", "owner_id": "9",
+			"versions": []any{map[string]any{"name": "latest", "agent_type": "openai"}},
+		}},
+		"skills": []any{
+			map[string]any{
+				"import_uuid": "sk-good", "name": "a skill that forks", "description": "seeded",
+				"versions": []any{map[string]any{"name": "base", "instructions": "read this"}},
+			},
+			// No version, so this one cannot be forked.
+			map[string]any{"import_uuid": "sk-bad", "name": "a skill that cannot", "versions": []any{}},
+		},
+	})
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("fork status = %d, want %d, body = %s", recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+	}
+
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 1 {
+		t.Fatalf("errors.skills = %+v, want exactly the skill that could not be forked", reported)
+	}
+	// One application, then two skills: the SECOND skill is at index 2.
+	if reported[0].Index != 2 {
+		t.Errorf("the failure is reported at index %d, want 2 — index 0 names the agent, 1 the skill that worked",
+			reported[0].Index)
+	}
+	if reported[0].Name != "a skill that cannot" {
+		t.Errorf("the failure names %q, want the skill that failed", reported[0].Name)
+	}
+	// The good skill still forked. A report that blamed the wrong entry would
+	// send the user to look at a skill that is in their project and correct.
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 1 {
+		t.Errorf("skill rows = %d, want the one that forked", count)
 	}
 }
 
@@ -1009,6 +1057,135 @@ func assertMarkdownSkillBlock(t *testing.T, content, versionName string, want, a
 		if strings.Contains(content, text) {
 			t.Errorf("the markdown of version %q carries %q, which belongs to another version; file was:\n%s",
 				versionName, text, content)
+		}
+	}
+}
+
+/* ── the channel set every answer carries ────────────────────────────────── */
+
+// answerChannels is the set of entity channels that every import and every fork
+// answer must carry, on `result` and on `errors` both.
+//
+// It is the legacy set. `rpc/import_wizzard.py` seeds `result[key] = []` and
+// `errors[key] = []` for every key of ENTITY_IMPORT_MAPPER, which is exactly
+// agents, toolkits and skills
+// (legacy/plugins/elitea_core/utils/export_import_utils.py:21-25).
+var answerChannels = []string{"agents", "toolkits", "skills"}
+
+// TestEveryImportAndForkAnswerCarriesEveryChannel states the key set of the two
+// envelopes on all FOUR answer paths: the fork with entities, the fork with an
+// empty request, the import with entities and the import with an empty request.
+//
+// The fork answer left the toolkits channel out, and the wizard reads
+// `result[item.entity]` for every row it sent with no guard
+// (apps/elitea-ui .../ImportWizardModal/IWModalForkButton.jsx). An agent fork
+// that carries toolkit rows therefore raised a TypeError inside an async map
+// callback, the `Promise.all` rejected, and neither the error toast nor the
+// success branch ran: the dialog stopped with no message. The empty fork answer
+// left out toolkits AND skills, and carried `datasources` and `prompts`, which
+// no path of this service can fill.
+//
+// Each path is asserted, because each path builds its own answer. A case that
+// covered only the main paths would have stayed green while the two empty ones
+// answered with a different set.
+func TestEveryImportAndForkAnswerCarriesEveryChannel(t *testing.T) {
+	pool := newImportLinkPool(t)
+	handler := eliteacore.NewHandler(pool)
+	router := importLinkRouter(handler)
+
+	seeded := seedSkillRoundTripAgent(t, pool)
+	document := exportRoundTrip(t, handler, seeded.applicationID, http.StatusOK)
+
+	// Every case answers 201, so the assertion below reads the envelopes of a
+	// SUCCESSFUL answer. That is the answer the defect came back with: the
+	// wizard breaks on the channel that has no entries, never on the one that
+	// carries the work, so a fork that did everything right still stopped.
+	for _, testCase := range []struct {
+		name   string
+		answer func(*testing.T) *httptest.ResponseRecorder
+	}{
+		{
+			name: "the fork of an agent and its skills",
+			answer: func(t *testing.T) *httptest.ResponseRecorder {
+				return forkSkillDo(t, handler, map[string]any{
+					"applications": document["applications"],
+					"skills":       document["skills"],
+				})
+			},
+		},
+		{
+			name: "the fork of an empty applications array",
+			answer: func(t *testing.T) *httptest.ResponseRecorder {
+				return forkSkillDo(t, handler, map[string]any{"applications": []any{}})
+			},
+		},
+		{
+			name: "the import of a skill and an agent",
+			answer: func(t *testing.T) *httptest.ResponseRecorder {
+				return importLinkDo(t, router, skillImportBody("sk-channel-set", "base"))
+			},
+		},
+		{
+			name: "the import of an empty entity array",
+			answer: func(t *testing.T) *httptest.ResponseRecorder {
+				return importLinkDo(t, router, []any{})
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := testCase.answer(t)
+			if recorder.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want %d, body = %s",
+					recorder.Code, http.StatusCreated, recorder.Body.String())
+			}
+			assertAnswerChannels(t, recorder)
+		})
+	}
+}
+
+// assertAnswerChannels reads `result` and `errors` as MAPS and states the key
+// set of each.
+//
+// A struct decode cannot see this defect. A missing key leaves the zero value
+// of its field, which reads back as an empty channel — exactly what a correct
+// answer gives — so the decode reports success on the answer that stops the
+// wizard. The keys must be read as data.
+//
+// A channel that is present but `null` breaks the wizard in the same way an
+// absent one does, because `.find` is not a method of `null` either. Each
+// channel is therefore also asserted to be a JSON array.
+func assertAnswerChannels(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	var answer map[string]json.RawMessage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+		t.Fatalf("decode the answer %q: %v", recorder.Body.String(), err)
+	}
+	for _, envelope := range []string{"result", "errors"} {
+		raw, present := answer[envelope]
+		if !present {
+			t.Errorf("the answer carries no %q envelope: %s", envelope, recorder.Body.String())
+			continue
+		}
+		var channels map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &channels); err != nil {
+			t.Errorf("the %q envelope is not an object: %s", envelope, raw)
+			continue
+		}
+		for _, name := range answerChannels {
+			if _, ok := channels[name]; !ok {
+				t.Errorf("the %q envelope carries no %q channel: %s", envelope, name, raw)
+			}
+		}
+		for name, value := range channels {
+			if !slices.Contains(answerChannels, name) {
+				t.Errorf("the %q envelope carries the channel %q, which is in no entity mapper: %s",
+					envelope, name, raw)
+				continue
+			}
+			var list []any
+			if err := json.Unmarshal(value, &list); err != nil || list == nil {
+				t.Errorf("%s.%s = %s, want a JSON array", envelope, name, value)
+			}
 		}
 	}
 }

@@ -2667,6 +2667,17 @@ export const getExportApplicationResponseMock = (
         ]),
         data: faker.helpers.arrayElement([{}, undefined]),
       })),
+      skills: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        import_uuid: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        entity_type: faker.helpers.arrayElement(["agent"] as const),
+        version_name: faker.helpers.arrayElement([
+          faker.string.alpha({ length: { min: 10, max: 20 } }),
+          undefined,
+        ]),
+      })),
       is_forked: faker.datatype.boolean(),
       import_version_uuid: faker.helpers.arrayElement([
         faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -2706,6 +2717,38 @@ export const getExportApplicationResponseMock = (
     import_uuid: faker.string.alpha({ length: { min: 10, max: 20 } }),
     settings: {},
   })),
+  skills: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      entity: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      import_uuid: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      description: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      owner_id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      meta: {},
+      versions: Array.from(
+        { length: faker.number.int({ min: 1, max: 10 }) },
+        (_, i) => i + 1,
+      ).map(() => ({
+        id: faker.number.int(),
+        name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        instructions: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        author_id: faker.number.int(),
+        meta: {},
+        tags: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          data: {},
+        })),
+      })),
+    })),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
@@ -2975,17 +3018,21 @@ export const getImportWizardResponseMock = (
             },
           },
         })),
-        toolkits: faker.helpers.arrayElement([
-          Array.from(
-            { length: faker.number.int({ min: 1, max: 10 }) },
-            (_, i) => i + 1,
-          ).map(() => ({
-            id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            type: faker.string.alpha({ length: { min: 10, max: 20 } }),
-          })),
-          undefined,
-        ]),
+        toolkits: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
+        skills: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
       },
       errors: {
         agents: Array.from(
@@ -2996,17 +3043,22 @@ export const getImportWizardResponseMock = (
           name: faker.string.alpha({ length: { min: 10, max: 20 } }),
           msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
         })),
-        toolkits: faker.helpers.arrayElement([
-          Array.from(
-            { length: faker.number.int({ min: 1, max: 10 }) },
-            (_, i) => i + 1,
-          ).map(() => ({
-            index: faker.number.int(),
-            name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
-          })),
-          undefined,
-        ]),
+        toolkits: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          index: faker.number.int(),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
+        skills: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          index: faker.number.int(),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
       },
       ...overrideResponse,
     },
@@ -3264,17 +3316,21 @@ export const getImportWizardResponseMock = (
             },
           },
         })),
-        toolkits: faker.helpers.arrayElement([
-          Array.from(
-            { length: faker.number.int({ min: 1, max: 10 }) },
-            (_, i) => i + 1,
-          ).map(() => ({
-            id: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            type: faker.string.alpha({ length: { min: 10, max: 20 } }),
-          })),
-          undefined,
-        ]),
+        toolkits: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
+        skills: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
       },
       errors: {
         agents: Array.from(
@@ -3285,17 +3341,22 @@ export const getImportWizardResponseMock = (
           name: faker.string.alpha({ length: { min: 10, max: 20 } }),
           msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
         })),
-        toolkits: faker.helpers.arrayElement([
-          Array.from(
-            { length: faker.number.int({ min: 1, max: 10 }) },
-            (_, i) => i + 1,
-          ).map(() => ({
-            index: faker.number.int(),
-            name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-            msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
-          })),
-          undefined,
-        ]),
+        toolkits: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          index: faker.number.int(),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
+        skills: Array.from(
+          { length: faker.number.int({ min: 1, max: 10 }) },
+          (_, i) => i + 1,
+        ).map(() => ({
+          index: faker.number.int(),
+          name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+          msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+        })),
       },
       ...overrideResponse,
     },
@@ -3702,43 +3763,47 @@ export const getForkAgentResponseMock = (
         undefined,
       ]),
     })),
-    datasources: faker.helpers.arrayElement([
-      Array.from(
-        { length: faker.number.int({ min: 1, max: 10 }) },
-        (_, i) => i + 1,
-      ).map(() => ({})),
-      undefined,
-    ]),
-    prompts: faker.helpers.arrayElement([
-      Array.from(
-        { length: faker.number.int({ min: 1, max: 10 }) },
-        (_, i) => i + 1,
-      ).map(() => ({})),
-      undefined,
-    ]),
+    toolkits: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      type: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
+    skills: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      id: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
   },
   errors: {
     agents: Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
       (_, i) => i + 1,
     ).map(() => ({
+      index: faker.number.int(),
       name: faker.string.alpha({ length: { min: 10, max: 20 } }),
-      error: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
     })),
-    datasources: faker.helpers.arrayElement([
-      Array.from(
-        { length: faker.number.int({ min: 1, max: 10 }) },
-        (_, i) => i + 1,
-      ).map(() => ({})),
-      undefined,
-    ]),
-    prompts: faker.helpers.arrayElement([
-      Array.from(
-        { length: faker.number.int({ min: 1, max: 10 }) },
-        (_, i) => i + 1,
-      ).map(() => ({})),
-      undefined,
-    ]),
+    toolkits: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      index: faker.number.int(),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
+    skills: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      index: faker.number.int(),
+      name: faker.string.alpha({ length: { min: 10, max: 20 } }),
+      msg: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    })),
   },
   ...overrideResponse,
 });
