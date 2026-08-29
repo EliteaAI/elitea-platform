@@ -158,7 +158,11 @@ const ParticipantTypeSection = memo((props: ParticipantTypeSectionProps) => {
         }}
         onClick={toggleExpand}
       >
-        <Typography variant="subtitle2" color="text.secondary">
+        {/* component="p", not the variant's default <h6>: this is a section
+            label inside the rail, and an h6 under the page's heading tree
+            skips levels — axe heading-order, which fired the moment a
+            journey first attached a participant. */}
+        <Typography variant="subtitle2" component="p" color="text.secondary">
           {title} ({participants.length})
         </Typography>
         <IconButton
