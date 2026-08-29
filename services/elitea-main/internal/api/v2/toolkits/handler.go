@@ -1408,7 +1408,12 @@ func (r *pgRepo) CreateToolkit(ctx context.Context, projectID string, body map[s
 		return nil, err
 	}
 
-	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, s)
+	// The probe compares information_schema.columns.table_schema, which holds
+	// the RAW schema name (p_1). `s` is the QUOTED identifier ("p_1") for SQL
+	// text, and feeding it here matches nothing, which silently locks the
+	// no-owner INSERT in — the exact #129 D1 shape, reintroduced by a merge.
+	// ownerID has already validated the project id as a positive integer.
+	includeOwnerID, err := r.toolkitOwnerIDExists(ctx, fmt.Sprintf("p_%d", ownerID))
 	if err != nil {
 		return nil, err
 	}

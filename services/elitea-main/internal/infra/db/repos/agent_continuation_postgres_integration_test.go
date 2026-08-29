@@ -276,8 +276,12 @@ WHERE id = 1`); err != nil {
 	}{
 		{
 			name: "application internal tools",
+			// The catalogue names (attachments, planner, ...) are ADMITTED
+			// since the gates widened to the authorable set; what the version
+			// gate still refuses is a name outside the catalogue. The same
+			// synthetic name is the Rust corpus's refusal fixture.
 			apply: `UPDATE application_versions
-SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+SET meta = jsonb_set(meta, '{internal_tools}', '["not_a_platform_tool"]'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
 		},
@@ -928,8 +932,10 @@ WHERE id = 30`,
 		},
 		{
 			name: "child internal tools",
+			// See the application gate above: catalogue names are admitted
+			// now, so the refusal fixture must sit outside the catalogue.
 			apply: `UPDATE application_versions
-SET meta = jsonb_set(meta, '{internal_tools}', '["attachments"]'::jsonb)
+SET meta = jsonb_set(meta, '{internal_tools}', '["not_a_platform_tool"]'::jsonb)
 WHERE id = 41`,
 			restore: `UPDATE application_versions SET meta = meta - 'internal_tools' WHERE id = 41`,
 		},

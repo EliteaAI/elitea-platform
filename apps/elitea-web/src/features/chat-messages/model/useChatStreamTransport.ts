@@ -71,17 +71,10 @@ import { useChatStreamConnection } from "./useChatStreamConnection";
 import {
   nonEmptyString,
   useChatStreamRunStarters,
-  type AgentStreamStartAttempt,
   type ChatStreamRunStarters,
 } from "./useChatStreamRunStarters";
 
 import type { ChatMessage } from "../lib/convertMessagesToChatHistory";
-
-/**
- * Re-exported from this path because it is this hook's answer type: callers
- * read `startDetailed`'s result, and the module they read it from is this one.
- */
-export type { AgentStreamStartAttempt };
 
 type SetChatHistory = (
   updater: (prev: readonly ChatMessage[]) => readonly ChatMessage[],

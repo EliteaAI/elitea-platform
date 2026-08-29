@@ -24,7 +24,7 @@
  */
 import { TOOL_ACTION_NAMES, TOOL_ACTION_TYPES, ToolActionStatus } from '@/shared/lib/chat';
 
-import type { ToolAction } from './chatStreamShared';
+import type { ToolAction } from './chatStreamToolAction';
 
 const OPEN_TAG = '<think>';
 const CLOSE_TAG = '</think>';

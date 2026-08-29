@@ -43,7 +43,7 @@ import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from '@/
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
 import { splitWholeResponse } from './chatStreamReasoning';
-import type { ToolAction } from './chatStreamShared';
+import type { ToolAction } from './chatStreamToolAction';
 
 // ---------------------------------------------------------------------------
 // ChatMessage union type
