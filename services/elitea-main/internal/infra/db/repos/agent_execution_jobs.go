@@ -443,11 +443,12 @@ func (r *AgentExecutionJobsRepository) AdmitAgentExecution(
 	} else if admission.CurrentContinueTurn != nil {
 		turn := *admission.CurrentContinueTurn
 		var resumeErr error
-		if turn.ContinuationKind == agentexecutionapp.CurrentContinuationOutputLimit {
+		switch turn.ContinuationKind {
+		case agentexecutionapp.CurrentContinuationOutputLimit:
 			resumeErr = resumeCurrentAgentOutputLimit(ctx, txQueries, admission.Record.Job.ID, turn)
-		} else if turn.ContinuationKind == agentexecutionapp.CurrentContinuationAuthorization {
+		case agentexecutionapp.CurrentContinuationAuthorization:
 			resumeErr = resumeCurrentAgentAuthorization(ctx, txQueries, admission.Record.Job.ID, turn)
-		} else {
+		default:
 			resumeErr = resumeCurrentAgentHITL(ctx, txQueries, admission.Record.Job.ID, turn)
 		}
 		if resumeErr != nil {

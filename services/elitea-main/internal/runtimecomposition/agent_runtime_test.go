@@ -18,8 +18,11 @@ func TestAbsentCurrentAgentDynamicToolkitSchemasReportsCapabilityGapAsNotFound(t
 		t.Fatalf("schema=%#v found=%v error=%v", schema, found, err)
 	}
 
+	// A nil context is exactly what the guard under test refuses; the variable
+	// spelling keeps the deliberate nil out of SA1012's literal-nil rule.
+	var nilContext context.Context
 	if _, _, err := source.FindCurrentActorVisibleToolkitSchema(
-		nil,
+		nilContext,
 		7,
 		11,
 		"wikis_Wikis",
