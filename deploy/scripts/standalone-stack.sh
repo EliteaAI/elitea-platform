@@ -1751,6 +1751,17 @@ except Exception as error:
     # completion line the python prints, and require the count in it. The
     # python refuses a partial run on its own; this catches a run that never
     # happened.
+    # The check runs the SDK inside the RUNNING worker's image. On the native
+    # Rust runtime that image is a Rust binary with no python and no SDK — the
+    # SDK is not part of that leg's execution path at all, so running it there
+    # can only measure the image's lack of python3 (measured: "exec: python3:
+    # executable file not found"). The gate is the running container's image,
+    # not $STANDALONE_WORKER, so a mislabelled invocation cannot dodge it.
+    # SDK conformance still rides every python-worker leg.
+    SDK_WORKER_IMAGE="$($ENGINE ps --filter "name=${PROJECT}" --format '{{.Names}} {{.Image}}' 2>/dev/null | sed -n 's/^[^ ]*elitea-worker[^ ]* //p' | head -1)"
+    if [ -n "$SDK_WORKER_IMAGE" ] && [[ "$SDK_WORKER_IMAGE" == *worker-rust* ]]; then
+      skip "the elitea-sdk client check does not apply: the worker is the native runtime (${SDK_WORKER_IMAGE}), which carries no SDK"
+    else
     sdk_check_log="$(mktemp)"
     if STANDALONE_PROJECT="$PROJECT" "${REPO_ROOT}/deploy/scripts/sdk-client-check.sh" 2>&1 | tee "$sdk_check_log"; then
       sdk_check_ran="$(sed -n 's/^→ elitea-sdk client: \([0-9][0-9]*\) assertion(s) ran.*/\1/p' "$sdk_check_log" | tail -1)"
@@ -1765,6 +1776,7 @@ except Exception as error:
       fail "the elitea-sdk client check failed — read its assertion lines above"
     fi
     rm -f "$sdk_check_log"
+    fi
 
     echo "→ chat critical path (#284 smoke):"
     # Precondition first, because the failure it produces is a bare HTTP 500
