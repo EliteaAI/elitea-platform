@@ -213,6 +213,20 @@ export default defineConfig({
       // holds two journeys with DIFFERENT seeding needs, and a broad match here
       // would hand the index journey to a runner that never ran `seed-index`.
       testMatch: /streaming\/chat\..+\.spec\.ts/,
+      /*
+       * Serial, overriding the top-level `fullyParallel`, for the same class of
+       * reason as `index-stream` below and one specific number: elitea-main
+       * admits FOUR concurrent replay streams per principal
+       * (`internal/api/v2/executions/events_admission.go`), and both journeys
+       * sign in as the same chat persona. Each one holds an execution stream
+       * for the length of a turn while the app also holds its notifications
+       * stream, so two of them in parallel sit on the edge of that budget.
+       * Measured: run together over three workers, the second journey's
+       * `/executions/{id}/events` answered 429 and the failure read as "the
+       * browser cannot read the stream" — a statement about the harness, not
+       * the feature. Serially, both pass.
+       */
+      fullyParallel: false,
     },
 
     /*
