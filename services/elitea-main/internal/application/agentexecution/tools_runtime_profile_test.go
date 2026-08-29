@@ -194,3 +194,71 @@ func TestFreezeLeavesAbsentAgentTypeAlone(t *testing.T) {
 		t.Fatalf("freeze invented an agent_type: %v", version["agent_type"])
 	}
 }
+
+// TestFreezeDropsInternalMCPFromVersionMeta covers the agents that already
+// exist. The create-agent form seeded `internal_mcp` into every new version
+// until it was changed, so a project can hold any number of saved agents
+// carrying it — and the runtime's internal-tool catalogue admits `ask_user`
+// alone, reading the version's list as well as the conversation's. Dropping the
+// name here is what lets those agents run without rewriting stored data.
+//
+// The admission gate is the other half: `agent_chat.sql` had to stop refusing
+// the version outright, or the turn never reached this freeze at all.
+func TestFreezeDropsInternalMCPFromVersionMeta(t *testing.T) {
+	tests := []struct {
+		name     string
+		authored string
+		want     []any
+	}{
+		{name: "the seeded default", authored: `["internal_mcp"]`, want: []any{}},
+		{name: "mixed with an admitted name", authored: `["internal_mcp","ask_user"]`, want: []any{"ask_user"}},
+		{name: "nothing to drop", authored: `["ask_user"]`, want: []any{"ask_user"}},
+		{name: "already empty", authored: `[]`, want: []any{}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			version := freezeVersionForRuntimeProfileTest(t, `{
+				"llm_settings":{"model_name":"model","model_project_id":7},
+				"meta":{"internal_tools":`+test.authored+`},
+				"tools":[]
+			}`)
+
+			meta, ok := version["meta"].(map[string]any)
+			if !ok {
+				t.Fatalf("meta is %T, want an object", version["meta"])
+			}
+			got, ok := meta["internal_tools"].([]any)
+			if !ok {
+				t.Fatalf("internal_tools is %T, want an array", meta["internal_tools"])
+			}
+			if len(got) != len(test.want) {
+				t.Fatalf("internal_tools=%v, want %v", got, test.want)
+			}
+			for index, value := range test.want {
+				if got[index] != value {
+					t.Fatalf("internal_tools=%v, want %v", got, test.want)
+				}
+			}
+		})
+	}
+}
+
+// TestFreezeLeavesAMalformedInternalToolListAlone is the boundary case: a list
+// that is not an array, or that holds something other than strings, is not this
+// function's to repair. The runtime's own catalogue refuses it with a reason,
+// and quietly reshaping it here would hide input the operator should see.
+func TestFreezeLeavesAMalformedInternalToolListAlone(t *testing.T) {
+	version := freezeVersionForRuntimeProfileTest(t, `{
+		"llm_settings":{"model_name":"model","model_project_id":7},
+		"meta":{"internal_tools":"internal_mcp"},
+		"tools":[]
+	}`)
+
+	meta, ok := version["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("meta is %T, want an object", version["meta"])
+	}
+	if meta["internal_tools"] != "internal_mcp" {
+		t.Fatalf("internal_tools=%v, want the authored value untouched", meta["internal_tools"])
+	}
+}

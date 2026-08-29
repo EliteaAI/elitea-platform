@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from 'react';
+import { useCallback, useMemo, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -7,10 +7,11 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
-import { CreateApplicationTabBar } from '@/entities/application-form';
 import { AgentVersionControls, CreateAgentForm } from '@/features/agents';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
+import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { applicationDetailDisplayName, toVersionSummaries } from './lib/editApplicationMappers';
@@ -24,8 +25,8 @@ import { useEditApplicationVersionFields } from './lib/useEditApplicationVersion
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
 import { EditApplicationActions } from './ui/EditApplicationActions';
+import { EditApplicationSaveBar } from './ui/EditApplicationSaveBar';
 import { EditApplicationToolsPanel } from './ui/EditApplicationToolsPanel';
-import { useDiscardApplicationChanges } from './useDiscardApplicationChanges';
 
 const pageSx: SxProps<Theme> = { height: '100%', display: 'flex', flexDirection: 'column' };
 const tabBarSx: SxProps<Theme> = {
@@ -53,36 +54,6 @@ interface EditApplicationSearch {
 function parseApplicationId(agentId: string | undefined): number | undefined {
   if (agentId === undefined || !/^\d+$/.test(agentId)) return undefined;
   return Number(agentId);
-}
-
-interface EditApplicationSaveBarProps {
-  readonly onSave: () => void;
-  readonly canSave: boolean;
-  readonly isSaving: boolean;
-}
-
-/**
- * Split out purely so `useDiscardApplicationChanges` (this unit's own
- * `useFormContext()`-based hook) is called from a genuine `<FormProvider>`
- * DESCENDANT, not from `EditApplication` itself — the component that
- * CREATES the `form` instance and renders `<FormProvider>` sits ABOVE that
- * provider in the tree, so calling a context-reading hook there directly
- * would throw ("useFormContext must be used within <FormProvider>"). This
- * is also the real, correct home for the hook per this file's own doc
- * comment (the baseline's actual caller, `ApplicationTabBar`, is a
- * sibling component for the exact same reason).
- */
-function EditApplicationSaveBar({ onSave, canSave, isSaving }: EditApplicationSaveBarProps) {
-  const { discardApplicationChanges } = useDiscardApplicationChanges();
-  return (
-    <CreateApplicationTabBar
-      onSave={onSave}
-      onCancel={discardApplicationChanges}
-      canSave={canSave}
-      isSaving={isSaving}
-      cancelDisabled={isSaving}
-    />
-  );
 }
 
 /**
@@ -286,6 +257,19 @@ export function EditApplication(): ReactNode {
    *    from the server but cannot be changed.
    */
   const editor = useEditApplicationEditorBridge(form, versionFields);
+  // One expression, read twice below — the picker is disabled on exactly the
+  // same terms as the rest of the form. Named rather than repeated because a
+  // second inline `||` puts this component over the §3.5 complexity gate (12).
+  const isEditorDisabled = isReadOnlyView || isFetching;
+
+  // Routed through the same `onFieldChange` every other version-level field
+  // uses, so the picked model lands in `useEditApplicationVersionFields` —
+  // which is both what the save body reads and what `isDirty` above compares,
+  // so picking a model and navigating away is prompted about (#133).
+  const handleModelSettingsChange = useCallback(
+    (next: AgentLlmSettings) => editor.onFieldChange('version_details.llm_settings', next),
+    [editor],
+  );
 
   if (isDetailNotFound) {
     return (
@@ -372,7 +356,15 @@ export function EditApplication(): ReactNode {
             <CreateAgentForm
               values={editor.values}
               onFieldChange={editor.onFieldChange}
-              disabled={isReadOnlyView || isFetching}
+              disabled={isEditorDisabled}
+              modelSettingsSlot={
+                <AgentModelSettings
+                  projectId={projectId}
+                  value={editor.values.version_details.llm_settings}
+                  onChange={handleModelSettingsChange}
+                  disabled={isEditorDisabled}
+                />
+              }
             />
             {/*
              * #307 — tool attach/detach, the last of the "correctly-wired

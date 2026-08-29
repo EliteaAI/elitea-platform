@@ -61,6 +61,60 @@ describe('toVersionWriteBody', () => {
     expect(body).not.toHaveProperty('tags');
     expect(body).not.toHaveProperty('agent_type');
   });
+
+  /*
+   * #307's argument, applied to the model: while the picker did not exist the
+   * edit could not diverge from the server's copy, so reading `llm_settings`
+   * off `version` was harmless. Now a Save-As-Version taken after picking a
+   * different model would clone the OLD model onto the new version and say
+   * nothing about it.
+   */
+  it('prefers the edited llm_settings over the stored one', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'gpt-4o', model_project_id: 3, max_tokens: 4096 },
+    } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: '',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1, temperature: 0.6 },
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+  });
+
+  /*
+   * Verbatim, NOT re-read through `toAgentLlmSettings`. A stored blob naming
+   * only a model is a working shape — elitea-main's freeze fills the project
+   * id in from the catalogue row it resolves — so a strict read would drop it
+   * and move the cloned version onto a different model.
+   */
+  it('forwards the stored llm_settings unchanged when there is no edit', () => {
+    const version = { name: 'base', llm_settings: { model_name: 'gpt' } } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: '',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: undefined,
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({ model_name: 'gpt' });
+  });
+
+  it('omits llm_settings entirely when neither the edit nor the version has one', () => {
+    const version = { name: 'base' } as ApplicationVersionDetail;
+    expect(Object.hasOwn(toVersionWriteBody(version, []), 'llm_settings')).toBe(false);
+  });
 });
 
 describe('toVersionSaveBody', () => {
@@ -85,6 +139,7 @@ describe('toVersionSaveBody', () => {
       variables: [],
       stepLimit: 12,
       internalTools: ['internal_mcp', 'internal_web'],
+      llmSettings: undefined,
     };
 
     const body = toVersionSaveBody(version, [], edits);
@@ -216,5 +271,27 @@ describe('toVersionDraft', () => {
   it('sets agentType to "pipeline" only when the version agent_type is exactly "pipeline"', () => {
     const version = { name: 'base', agent_type: 'pipeline' } as ApplicationVersionDetail;
     expect(toVersionDraft(version, []).agentType).toBe('pipeline');
+  });
+
+  it('reads the stored llm_settings back, with model_project_id as a number', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'qwen3.5', model_project_id: '17', max_tokens: -1, temperature: 0.6 },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionDraft(version, []).llmSettings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+  });
+
+  // `{}` is what every version written before the picker existed stores, and
+  // the omitted key is what keeps those agents on the catalogue-default
+  // fallback they answer turns with today.
+  it('leaves llmSettings undefined for a version that names no model', () => {
+    const version = { name: 'base', llm_settings: {} } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).llmSettings).toBeUndefined();
   });
 });

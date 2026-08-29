@@ -8,6 +8,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { EditApplication } from './EditApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
@@ -70,8 +71,41 @@ function detailWithTools() {
   };
 }
 
+/**
+ * The model catalogue the Advanced-settings picker reads. Served for every
+ * test here — the page mounts the picker unconditionally, and
+ * `src/test/setup.ts` runs msw with `onUnhandledRequest: 'error'`.
+ * `project_id` is spelled as a string because that is what `ConfigModel`
+ * declares, while the Go catalogue marshals an int32.
+ */
+const CATALOGUE = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o', project_id: '9', default: true },
+    { name: 'qwen3.5', display_name: 'Qwen 3.5', project_id: '9' },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+/** Answers both save calls `useSaveVersion` issues, capturing the version PUT's body. */
+function captureVersionSave(sink: Record<string, unknown>[]): void {
+  server.use(
+    http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+      sink.push((await request.json()) as Record<string, unknown>);
+      return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+    }),
+    http.put('*/elitea_core/application/prompt_lib/:projectId/:id', () => HttpResponse.json({ id: '42' }, { status: 201 })),
+  );
+}
+
+/** Opens the model menu and picks a row by its catalogue display name. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
+  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
 });
 
 afterEach(() => {
@@ -482,4 +516,87 @@ describe('EditApplication', () => {
     expect(screen.queryByTestId('agent-add-toolkit-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('agent-toolkit-delete-button')).toBeDisabled();
   }, 15_000);
+
+  /*
+   * The picker's own behaviour lives in `widgets/agent-model-settings`; what
+   * these pin is this page's wiring — the slot is mounted, a stored model
+   * comes back on load, a picked one reaches the version PUT, and the nav
+   * blocker can see the change. A slot prop that is declared and never
+   * rendered is this codebase's recurring defect (#126/#129/#134).
+   */
+  it('mounts the model picker, showing the project default for a version that pins none', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByText('GPT-4o', {}, { timeout: 5_000 })).toBeVisible();
+  }, 15_000);
+
+  it('reads a stored model back onto the picker instead of the project default', async () => {
+    const base = detail();
+    server.use(
+      getGetApplicationMockHandler({
+        ...base,
+        version_details: {
+          ...base.version_details,
+          llm_settings: { model_name: 'qwen3.5', model_project_id: 9, max_tokens: -1, temperature: 0.6 },
+        },
+      }),
+    );
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    expect(await screen.findByText('Qwen 3.5', {}, { timeout: 5_000 })).toBeVisible();
+  }, 15_000);
+
+  it('sends a newly picked model in the version PUT body, with a NUMERIC model_project_id', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    captureVersionSave(bodies);
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    // The whole form renders `disabled` until the detail fetch settles, so a
+    // click before then is dropped — wait for a field the response populates.
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await chooseModel(user, 'Qwen 3.5');
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const settings = bodies[0]?.['llm_settings'] as Record<string, unknown> | undefined;
+    expect(settings?.['model_name']).toBe('qwen3.5');
+    expect(settings?.['model_project_id']).toBe(9);
+    expect(typeof settings?.['model_project_id']).toBe('number');
+  }, 20_000);
+
+  it('leaves llm_settings off the PUT body for a version that names no model and was not re-pointed', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    captureVersionSave(bodies);
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    await user.click(await screen.findByTestId('agent-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    // Rendering the catalogue default must not author it: an empty
+    // `llm_settings` is what leaves the platform's own fallback in charge,
+    // and that fallback is why agent chat works today.
+    expect(bodies[0]).not.toHaveProperty('llm_settings');
+  }, 20_000);
+
+  it('arms the unsaved-changes guard when only the model is changed (#133)', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o', {}, { timeout: 5_000 });
+    await waitFor(() => expect(screen.getByTestId('agent-name-input')).toHaveValue('My Agent'));
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+
+    await chooseModel(user, 'Qwen 3.5');
+
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+  }, 20_000);
 });

@@ -40,6 +40,23 @@ describe('ApplicationAdvanceSettings', () => {
     expect(onStepLimitChange).toHaveBeenCalledWith(undefined);
   });
 
+  it('renders the model-settings slot above the step limit', () => {
+    renderWithProviders(
+      <ApplicationAdvanceSettings
+        stepLimit={10}
+        onStepLimitChange={vi.fn()}
+        modelSettingsSlot={<div>MODEL PICKER</div>}
+      />,
+    );
+    const slot = screen.getByText('MODEL PICKER');
+    expect(slot).toBeVisible();
+    // Ordering matters to the read: the picker names the model, the field
+    // under it caps that model's tool loop.
+    expect(slot.compareDocumentPosition(screen.getByLabelText(/Step limit/i))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
   it('does not render the ignore-project-context toggle unless showIgnoreProjectContext is set', () => {
     renderWithProviders(
       <ApplicationAdvanceSettings

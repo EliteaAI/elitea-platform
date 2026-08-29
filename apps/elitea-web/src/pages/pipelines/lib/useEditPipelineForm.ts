@@ -12,6 +12,7 @@ import { usePipelineGraphDraft } from '@/features/pipelines';
 import type { ApplicationDetail, ApplicationVersionDetail } from '@/shared/api/generated/model';
 
 import { EMPTY_FORM_VALUES, toFormValues, toVersionDraft } from './editPipelineMappers';
+import { useEditPipelineLlmSettings, type EditPipelineLlmSettingsState } from './useEditPipelineLlmSettings';
 
 export interface EditPipelineFormState {
   readonly form: ReturnType<typeof useForm<ApplicationCreationInput>>;
@@ -34,6 +35,15 @@ export interface EditPipelineFormState {
    * next save attempt (`useSaveApplicationVersion`'s own `setError(undefined)`).
    */
   readonly saveError: unknown;
+  /**
+   * The model this version runs on, as the page's picker edits it. Owned here
+   * rather than by the page because the save body reads it and because
+   * `isDirty` below has to include it — a picked model the nav blocker cannot
+   * see is a model the user loses by navigating away (#133).
+   */
+  readonly llmSettings: EditPipelineLlmSettingsState;
+  /** "Are there unsaved edits?" across both halves of this page's form state — RHF's `formState.isDirty` (name/description) or a changed model. The flow editor's own YAML dirtiness is the page's third half. */
+  readonly isDirty: boolean;
 }
 
 /**
@@ -69,6 +79,7 @@ export function useEditPipelineForm(
   // nothing else — no nodes, no edges, no `pipeline_settings` — so the PUT
   // answered 200 and every graph edit was gone on the next reload.
   const readGraphDraft = usePipelineGraphDraft();
+  const llmSettings = useEditPipelineLlmSettings(activeVersion);
 
   const handleSave = useCallback(() => {
     void form.handleSubmit(async (values) => {
@@ -76,7 +87,11 @@ export function useEditPipelineForm(
       const conversationStarters = (values.version_details?.conversation_starters ?? []).filter(
         (entry): entry is string => typeof entry === 'string',
       );
-      const saved = await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft()));
+      // The 4th argument is the live pick; `toVersionDraft` falls back to the
+      // stored blob when it is `undefined`, so a version nobody re-pointed
+      // keeps whatever model it already named — including none at all, which
+      // is what leaves the catalogue-default fallback in charge.
+      const saved = await save(toVersionDraft(activeVersion, conversationStarters, readGraphDraft(), llmSettings.value));
       /*
        * #133 — the page now arms the app-wide unsaved-changes guard off
        * `formState.isDirty`, so a successful save must clear that dirtiness
@@ -86,9 +101,21 @@ export function useEditPipelineForm(
        * never changes and RHF has no other reason to reset. Left dirty on
        * failure — those edits really are still unsaved.
        */
-      if (saved !== undefined) form.reset(form.getValues());
+      if (saved !== undefined) {
+        form.reset(form.getValues());
+        // The same clearing for the model, which lives outside the RHF form
+        // and so is invisible to `form.reset`.
+        llmSettings.markSaved();
+      }
     })();
-  }, [form, save, activeVersion, readGraphDraft]);
+  }, [form, save, activeVersion, readGraphDraft, llmSettings]);
 
-  return { form, handleSave, isSaving, saveError };
+  return {
+    form,
+    handleSave,
+    isSaving,
+    saveError,
+    llmSettings,
+    isDirty: form.formState.isDirty || llmSettings.isDirty,
+  };
 }

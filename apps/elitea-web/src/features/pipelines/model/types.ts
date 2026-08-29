@@ -16,6 +16,8 @@
  * `CreateAgentForm` never renders anything tools-related for either entity
  * type in create mode — tools are attached post-create).
  */
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+
 
 /** One `version_details.variables[]` entry — same shape as `apps/elitea-ui/src/components/VariableList.jsx:7-24` used for both agents and pipelines. */
 interface PipelineVariable {
@@ -37,6 +39,8 @@ interface PipelineVersionDetails {
   readonly tags?: readonly string[] | undefined;
   readonly variables?: readonly PipelineVariable[] | undefined;
   readonly meta?: PipelineVersionMeta | undefined;
+  /** The model this version runs on — same field, same shared type, as `AgentVersionDetails.llm_settings`. */
+  readonly llm_settings?: AgentLlmSettings | undefined;
 }
 
 /** The full `CreateAgentForm`-level draft for a pipeline — `formik.values` at the top level in the baseline. */

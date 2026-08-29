@@ -99,6 +99,81 @@ describe('useCreateApplicationDraft', () => {
     });
   });
 
+  // The three assertions that decide whether an author's model choice reaches
+  // the database at all. `model_project_id` is checked on the RAW body text
+  // because the worker's `positive_u32` hard-fails on a string and a
+  // pretty-printed object hides the difference.
+  it('sends llm_settings when the draft carries one, with model_project_id as a number', async () => {
+    let capturedText = '';
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedText = await info.request.text();
+        return {
+          id: '42',
+          name: 'Agent',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result: draftResult } = renderHook(() => useCreateApplicationInitialValues(false));
+    const { result } = renderHook(() => useCreateApplicationDraft('p1'), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.create({
+        name: 'Agent',
+        version: {
+          ...draftResult.current.versionDetails,
+          llmSettings: { model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1, temperature: 0.6 },
+        },
+      });
+    });
+
+    const body = JSON.parse(capturedText) as { versions: { llm_settings?: unknown }[] };
+    expect(body.versions[0]?.llm_settings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+    expect(capturedText).toContain('"model_project_id":17');
+    expect(capturedText).not.toContain('"model_project_id":"17"');
+  });
+
+  // Absent, not `undefined`. `UpdateVersion`'s repository only adds
+  // `llm_settings` to its SET list when the decoded value is non-nil
+  // (`internal/infra/db/repos/applications.go`), and on create the missing key
+  // is what leaves the platform's catalogue-default fallback in charge.
+  it('omits the llm_settings key entirely when the draft has none', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedBody = (await info.request.json()) as Record<string, unknown>;
+        return {
+          id: '42',
+          name: 'Agent',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result: draftResult } = renderHook(() => useCreateApplicationInitialValues(false));
+    const { result } = renderHook(() => useCreateApplicationDraft('p1'), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.create({ name: 'Agent', version: draftResult.current.versionDetails });
+    });
+
+    const version = (capturedBody['versions'] as Record<string, unknown>[])[0] ?? {};
+    expect(Object.hasOwn(version, 'llm_settings')).toBe(false);
+  });
+
   it('captures an error and clears isCreating on failure', async () => {
     server.use(
       http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>
@@ -130,6 +205,7 @@ describe('useSaveApplicationVersion', () => {
         conversationStarters: [],
         variables: [],
         meta: { step_limit: 25, internal_tools: [] },
+        llmSettings: undefined,
         tags: [],
         tools: [],
         pipelineSettings: undefined,
@@ -158,6 +234,7 @@ describe('useSaveApplicationVersion', () => {
         conversationStarters: [],
         variables: [],
         meta: { step_limit: 25, internal_tools: [] },
+        llmSettings: undefined,
         tags: [],
         tools: [],
         pipelineSettings: undefined,
@@ -189,6 +266,7 @@ describe('useSaveApplicationVersion', () => {
         conversationStarters: [],
         variables: [],
         meta: { step_limit: 25, internal_tools: [] },
+        llmSettings: undefined,
         tags: [],
         tools: [],
         pipelineSettings: {
@@ -227,6 +305,7 @@ describe('useSaveApplicationVersion', () => {
         conversationStarters: [],
         variables: [],
         meta: { step_limit: 25, internal_tools: [] },
+        llmSettings: undefined,
         tags: [],
         tools: [],
         pipelineSettings: undefined,

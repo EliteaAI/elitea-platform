@@ -136,7 +136,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		}
 		return nil, unsupportedStartBecause("model resolution", err)
 	}
-	normalizeCurrentAgentRuntimeProfile(version)
+	normalizeCurrentAgentRuntimeProfile(ctx, version, request.ProjectID)
 	tools, ok := version["tools"].([]any)
 	if !ok {
 		return nil, unsupportedStart("version tools is not an array")
@@ -605,8 +605,12 @@ const currentAgentStoredDirectAgentType = "openai"
 // `react` and `dial` are left alone too — the runtime genuinely does not
 // implement them, and renaming them would turn an honest refusal into an agent
 // that silently runs as something else.
-func normalizeCurrentAgentRuntimeProfile(version map[string]any) {
+//
+// It also removes `internal_mcp` from the version's internal-tool list — see
+// dropCurrentAgentInternalMCP.
+func normalizeCurrentAgentRuntimeProfile(ctx context.Context, version map[string]any, projectID int32) {
 	normalizeCurrentAgentTypeField(version)
+	dropCurrentAgentInternalMCP(ctx, version, projectID)
 	tools, ok := version["tools"].([]any)
 	if !ok {
 		return
@@ -617,6 +621,63 @@ func normalizeCurrentAgentRuntimeProfile(version map[string]any) {
 		}
 	}
 }
+
+// dropCurrentAgentInternalMCP removes `internal_mcp` from the version's
+// internal-tool list.
+//
+// Internal MCP is not an internal TOOL to this runtime: it reaches the worker
+// through the frozen tools projection, which is why currentRuntimeInternalTools
+// (start.go) already accepts the name on the conversation's list and drops it
+// rather than forwarding it. The runtime's own catalogue admits `ask_user` and
+// nothing else (services/elitea-worker-rust/src/agents/internal_tools.rs), and
+// it reads the VERSION's list as well as the conversation's, so a name left in
+// the snapshot refuses the whole profile.
+//
+// This matters for agents that already exist: the create-agent form seeded
+// `internal_mcp` into every new version until it was changed, so a project can
+// hold any number of saved agents carrying it. Dropping it here is what lets
+// those run without rewriting anyone's stored version. Nothing is lost — the
+// Python worker never reads this list at all (it takes its internal tools from
+// the execution input), and the Go layer was already discarding the name.
+//
+// A list that named nothing else becomes empty rather than absent: the two are
+// the same input to the runtime's catalogue, and rebuilding the key keeps the
+// snapshot's shape stable for anything that reads it.
+func dropCurrentAgentInternalMCP(ctx context.Context, version map[string]any, projectID int32) {
+	meta, ok := version["meta"].(map[string]any)
+	if !ok {
+		return
+	}
+	configured, ok := meta["internal_tools"].([]any)
+	if !ok {
+		return
+	}
+	retained := make([]any, 0, len(configured))
+	for _, value := range configured {
+		if name, ok := value.(string); ok && name == currentAgentInternalMCPTool {
+			continue
+		}
+		retained = append(retained, value)
+	}
+	if len(retained) == len(configured) {
+		return
+	}
+	// Logged, not silent. The agent is about to run WITHOUT a capability its
+	// author asked for, and this repository has been bitten more than once by a
+	// removal that read as "there was nothing to remove". The toolkit walk below
+	// states its own drops the same way (`agent_toolkit_skipped`).
+	slog.WarnContext(ctx, "agent internal tool is unavailable in this runtime and was omitted from the execution snapshot",
+		"event", "agent_internal_tool_skipped",
+		"reason_code", "internal_tool_unsupported",
+		"internal_tool", currentAgentInternalMCPTool,
+		"project_id", projectID,
+	)
+	meta["internal_tools"] = retained
+}
+
+// currentAgentInternalMCPTool is the name the previous create-agent form seeded
+// into every new version's meta.
+const currentAgentInternalMCPTool = "internal_mcp"
 
 func normalizeCurrentAgentTypeField(holder map[string]any) {
 	if agentType, ok := holder["agent_type"].(string); ok &&

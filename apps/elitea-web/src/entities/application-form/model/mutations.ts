@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useQueryClient } from '@tanstack/react-query';
 
+import { toLlmSettingsBody } from '@/shared/api/agentLlmSettings';
 import {
   getCreateApplicationQueryOptions,
   getUpdateApplicationVersionQueryOptions,
@@ -64,6 +65,15 @@ function toVersionWriteRequest(draft: ApplicationVersionDraft): VersionWriteRequ
     // `readonly string[]` and `VersionMeta` now models it as a mutable
     // `string[]` — same copy `conversation_starters` above already makes.
     meta: { ...draft.meta, internal_tools: [...draft.meta.internal_tools] },
+    // Omitted entirely — not sent as `undefined` — when the version names no
+    // model, for the same reason `pipeline_settings` is below and with more
+    // riding on it. `UpdateVersion`'s repository only adds `llm_settings` to
+    // its SET list when the decoded value is non-nil
+    // (`internal/infra/db/repos/applications.go`), so an absent key leaves the
+    // stored object alone, while an explicit empty one would overwrite a model
+    // the user had picked. On create, absence is what leaves the platform's
+    // catalogue-default fallback in charge.
+    ...(draft.llmSettings !== undefined ? { llm_settings: toLlmSettingsBody(draft.llmSettings) } : {}),
     // #135: omitted entirely when the draft has none, so a non-pipeline save
     // never sends the key and the server leaves the stored column alone.
     ...(draft.pipelineSettings !== undefined ? { pipeline_settings: { ...draft.pipelineSettings } } : {}),

@@ -32,6 +32,15 @@ export interface ApplicationAdvanceSettingsProps {
   readonly ignoreProjectContext?: boolean | undefined;
   readonly onIgnoreProjectContextChange?: ((checked: boolean) => void) | undefined;
   readonly disabled?: boolean | undefined;
+  /**
+   * The model picker, injected by the page (`widgets/agent-model-settings`)
+   * — `.dependency-cruiser.cjs` forbids `features/` importing `widgets/`.
+   * Rendered above the step limit because the two belong to the same panel
+   * in the baseline, and because the picker's own settings dialog
+   * deliberately withholds a second step-limit input: that field is the one
+   * below, and it is this component's.
+   */
+  readonly modelSettingsSlot?: ReactNode | undefined;
   readonly sx?: SxProps<Theme> | undefined;
 }
 
@@ -75,6 +84,7 @@ export function ApplicationAdvanceSettings({
   ignoreProjectContext = false,
   onIgnoreProjectContextChange,
   disabled,
+  modelSettingsSlot,
   sx,
 }: ApplicationAdvanceSettingsProps): ReactNode {
   const handleChange = useCallback(
@@ -104,6 +114,7 @@ export function ApplicationAdvanceSettings({
         title: t('features.agents.applicationAdvanceSettings.title', 'Advanced'),
         content: (
           <Box sx={fieldContainerSx}>
+            {modelSettingsSlot}
             <StyledInputEnhancer
               value={stepLimit ?? ''}
               onChange={handleChange}
@@ -146,7 +157,7 @@ export function ApplicationAdvanceSettings({
         ),
       },
     ],
-    [stepLimit, handleChange, handleKeyDown, showIgnoreProjectContext, ignoreProjectContext, handleIgnoreToggle, disabled],
+    [stepLimit, handleChange, handleKeyDown, showIgnoreProjectContext, ignoreProjectContext, handleIgnoreToggle, disabled, modelSettingsSlot],
   );
 
   return (

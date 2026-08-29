@@ -1,6 +1,7 @@
 import type { ApplicationCreationInput, ApplicationVersionDraft } from '@/entities/application-form';
 import type { VersionSummary } from '@/entities/version';
 import type { ConfigurationTabProps, PipelineGraphDraft } from '@/features/pipelines';
+import { toAgentLlmSettings, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import type {
   ApplicationDetail,
   ApplicationVersionDetail,
@@ -82,6 +83,7 @@ export function toVersionDraft(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
   graph?: PipelineGraphDraft,
+  llmSettings?: AgentLlmSettings,
 ): ApplicationVersionDraft {
   const metaRecord: Record<string, unknown> = version.meta ?? {};
   const stepLimit = typeof metaRecord['step_limit'] === 'number' ? metaRecord['step_limit'] : 25;
@@ -102,6 +104,13 @@ export function toVersionDraft(
       value: variable.value ?? '',
     })),
     meta: { step_limit: stepLimit, internal_tools: internalTools },
+    // Same edit-wins-over-stored rule the agents twin applies in
+    // `toVersionWriteBody`: this page's model picker holds the live choice, and
+    // a save that re-read the stored blob would drop it. Falls back to the
+    // stored settings, and to `undefined` when the version names no model at
+    // all — `toVersionWriteRequest` then omits the key, so a pipeline that
+    // runs on the project's catalogue default keeps running on it.
+    llmSettings: llmSettings ?? toAgentLlmSettings(version.llm_settings),
     tags: (version.tags ?? [])
       .map((tag) => tag.name)
       .filter((name): name is string => typeof name === 'string'),

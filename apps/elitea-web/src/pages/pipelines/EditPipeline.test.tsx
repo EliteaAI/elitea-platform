@@ -8,6 +8,7 @@ import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/gen
 import { resetConfigForTests } from '@/shared/config/get-config';
 import { installCodeMirrorTestPolyfills } from '@/shared/ui/lib/field/codeMirrorTestPolyfills';
 import { server } from '@/test/setup';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 // Deep import into the slice's own store: test files are excluded from
 // dependency-cruiser's `no-deep-slice-import` fence, and the store is the
@@ -65,8 +66,30 @@ function detail(
   };
 }
 
+/**
+ * The model catalogue the configuration panel's picker reads. Served for
+ * every test here — the panel mounts it unconditionally, and
+ * `src/test/setup.ts` runs msw with `onUnhandledRequest: 'error'`.
+ * `project_id` is spelled as a string because that is what `ConfigModel`
+ * declares, while the Go catalogue marshals an int32.
+ */
+const CATALOGUE = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o', project_id: '9', default: true },
+    { name: 'qwen3.5', display_name: 'Qwen 3.5', project_id: '9' },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+/** Opens the model menu and picks a row by its catalogue display name. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
+  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
+}
+
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
 });
 
 afterEach(() => {
@@ -230,4 +253,93 @@ describe('EditPipeline', () => {
 
     expect(await screen.findByText('Failed to save your changes.')).toBeInTheDocument();
   });
+
+  /*
+   * The picker rides in `ConfigurationTab`'s configuration-form slot — the
+   * left panel, where the baseline puts model settings — so these also pin
+   * that it survives alongside the rest of that panel's still-disclosed gap.
+   */
+  it('mounts the model picker inside the configuration panel, showing the project default', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    const picker = await screen.findByText('GPT-4o');
+    expect(picker).toBeVisible();
+    // Inside the configuration-form slot, not floating somewhere above the
+    // editor — the gap notice for the panels that are still missing stays.
+    expect(screen.getByTestId('edit-pipeline-configuration-form-gap')).toContainElement(picker);
+  });
+
+  it('reads a stored model back onto the picker instead of the project default', async () => {
+    const base = detail();
+    server.use(
+      getGetApplicationMockHandler({
+        ...base,
+        version_details: {
+          ...base.version_details,
+          llm_settings: { model_name: 'qwen3.5', model_project_id: 9, max_tokens: -1, temperature: 0.6 },
+        },
+      }),
+    );
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    expect(await screen.findByText('Qwen 3.5')).toBeVisible();
+  });
+
+  it('sends a newly picked model in the version PUT body, with a NUMERIC model_project_id', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o');
+    await chooseModel(user, 'Qwen 3.5');
+    await user.click(await screen.findByTestId('pipeline-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const settings = bodies[0]?.['llm_settings'] as Record<string, unknown> | undefined;
+    expect(settings?.['model_name']).toBe('qwen3.5');
+    expect(settings?.['model_project_id']).toBe(9);
+    expect(typeof settings?.['model_project_id']).toBe('number');
+  }, 20_000);
+
+  it('leaves llm_settings off the PUT body for a version that names no model and was not re-pointed', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.put('*/elitea_core/version/prompt_lib/:projectId/:applicationId/:versionId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '1', application_id: '42', name: 'base', status: 'draft' }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o');
+    await user.click(await screen.findByTestId('pipeline-save-button'));
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    // Rendering the catalogue default must not author it — the omitted key
+    // is what leaves the platform's own fallback in charge.
+    expect(bodies[0]).not.toHaveProperty('llm_settings');
+  }, 20_000);
+
+  it('arms the unsaved-changes guard when only the model is changed (#133)', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+    const user = userEvent.setup();
+
+    await screen.findByText('GPT-4o');
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+
+    await chooseModel(user, 'Qwen 3.5');
+
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
+  }, 20_000);
 });

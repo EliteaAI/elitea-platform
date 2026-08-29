@@ -191,6 +191,22 @@ describe('CreateAgentForm', () => {
     expect(screen.queryByText('Generate')).not.toBeInTheDocument();
   });
 
+  // A declared-but-never-rendered slot prop is this codebase's recurring
+  // failure (#126/#129/#134): the type-checks pass, the unit suite is green,
+  // and the control simply is not on the page. Asserted through the whole
+  // chain, since the slot travels a second hop into
+  // `ApplicationAdvanceSettings`.
+  it('renders the modelSettingsSlot inside the advanced-settings panel', () => {
+    renderWithProviders(
+      <CreateAgentForm
+        values={baseValues}
+        onFieldChange={vi.fn()}
+        modelSettingsSlot={<div>MODEL PICKER</div>}
+      />,
+    );
+    expect(screen.getByText('MODEL PICKER')).toBeVisible();
+  });
+
   it('renders the iconSlot/tagsSlot content where supplied', () => {
     renderWithProviders(
       <CreateAgentForm

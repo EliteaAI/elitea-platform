@@ -6,10 +6,7 @@
 import { useCallback, useMemo } from 'react';
 
 import { useListModelsQuery } from '@/shared/api/configurationsApi';
-
-import { toLlmModel } from '../ChatBox.helpers';
-
-type LLMModel = ReturnType<typeof toLlmModel>;
+import { toLlmModel, type LLMModel } from '@/widgets/llm-model-selector';
 
 export interface UseChatBoxModelSelectionParams {
   readonly projectId: string | number | undefined;

@@ -83,14 +83,18 @@ import { useApplicationsStore } from './applicationsStore';
  * - The baseline also fetches `useListModelsQuery` and runs
  *   `cleanLLMSettings(llmSettings, model)` to strip fields (e.g.
  *   `reasoning_effort`) the selected model doesn't support, before sending
- *   `llm_settings`. Dropped, not silently reproduced: there is no
- *   `ListModels`-shaped endpoint anywhere under `shared/api/generated/`
- *   (same gap `entities/application-form/model/initialValues.ts` already
- *   discloses for `useCreateApplicationInitialValues`'s own `llm_settings`
- *   default), and `cleanLLMSettings` itself has no port anywhere in this
- *   tree. `input.version.llm_settings` is sent through to
- *   `updateApplicationVersion` verbatim; a caller that has resolved model
- *   capabilities by some other means must clean it before calling this hook.
+ *   `llm_settings`. That cleaning now happens where the model is chosen
+ *   rather than here: `shared/api/agentLlmSettings.ts` models the closed set
+ *   of keys the worker accepts, and the picker writes at most one of
+ *   `temperature`/`reasoning_effort` because the worker refuses both
+ *   together. `input.version.llm_settings` is still sent to
+ *   `updateApplicationVersion` verbatim, so a caller that builds the object
+ *   by hand rather than through that module owns its own validity.
+ *   (An earlier revision of this note said no `ListModels`-shaped endpoint
+ *   existed. It does — `useListModelsQuery` in
+ *   `shared/api/configurationsApi.ts`, hand-written rather than generated,
+ *   which is why a grep confined to `shared/api/generated/` came back
+ *   empty.)
  *
  * **No Formik, no Redux `state.user`/`eliteaApi.util.updateQueryData` cache
  * patch, no nav-blocker/toast/navigation** — same "plain typed input,

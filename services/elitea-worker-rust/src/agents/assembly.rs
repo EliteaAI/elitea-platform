@@ -666,13 +666,35 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
         Some(Value::Bool(true)) => return Err(unsupported_profile()),
         Some(_) => return Err(invalid_profile()),
     }
-    match meta.get("variables") {
-        None => {}
-        Some(Value::Object(variables)) if variables.is_empty() => {}
-        Some(Value::Object(_)) => return Err(unsupported_profile()),
-        Some(_) => return Err(invalid_profile()),
+    validate_application_meta_variables(meta.get("variables"))
+}
+
+/// Admit an empty variable list in the shape the platform actually stores.
+///
+/// Main folds a version's variables into `meta.variables` as an ARRAY — the
+/// create path writes one only when it is non-empty, but the UPDATE path writes
+/// it on presence, deliberately, so that deleting the last variable is
+/// distinguishable from never having had one
+/// (`internal/api/v2/applications/handler.go`). The result is that EVERY agent
+/// re-saved through the edit page carries `"variables": []`, and this match used
+/// to admit an empty OBJECT alone — so the array fell to the catch-all and the
+/// turn was refused as malformed input. Measured in a browser: an agent created,
+/// then saved once more, stopped answering with "The execution input is
+/// invalid.", which names neither the field nor the shape.
+///
+/// A NON-empty list of either shape is still refused, and still as an
+/// unsupported capability rather than bad input: variable substitution is not
+/// implemented here, and saying so is the honest answer.
+fn validate_application_meta_variables(
+    value: Option<&Value>,
+) -> Result<(), NativeAgentAssemblyError> {
+    match value {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::Object(variables)) if variables.is_empty() => Ok(()),
+        Some(Value::Array(variables)) if variables.is_empty() => Ok(()),
+        Some(Value::Object(_) | Value::Array(_)) => Err(unsupported_profile()),
+        Some(_) => Err(invalid_profile()),
     }
-    Ok(())
 }
 
 /// Admit the authored step limit where the control plane keeps it, without

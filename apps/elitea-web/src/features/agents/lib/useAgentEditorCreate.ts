@@ -5,6 +5,8 @@ import { LATEST_VERSION_NAME } from '@/entities/version';
 import type { ApplicationCreatedResponse } from '@/shared/api/generated/model';
 
 import { setFieldValueAtPath } from './agentFieldChange';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+
 import type { AgentDraftValues, AgentFieldChange } from '../model/types';
 
 /**
@@ -72,6 +74,18 @@ function resolveInternalTools(meta: NonNullable<AgentDraftValues['version_detail
   return DEFAULT_INTERNAL_TOOLS;
 }
 
+/**
+ * The model the form's picker wrote, if any. A function for the same reason
+ * `resolveInternalTools` above is one: it keeps the optional-chain branch off
+ * `buildCreateDraft`'s own cyclomatic complexity, which is at this codebase's
+ * oxlint budget (12).
+ */
+function resolveLlmSettings(
+  versionDetails: AgentDraftValues['version_details'],
+): AgentLlmSettings | undefined {
+  return versionDetails?.llm_settings;
+}
+
 export function useAgentEditorCreate(projectId: string | undefined) {
   const [values, setValues] = useState<AgentDraftValues>(EMPTY_CREATE_VALUES);
   const [isDirty, setIsDirty] = useState(false);
@@ -132,6 +146,10 @@ function buildCreateDraft(values: AgentDraftValues): ApplicationDraftInput {
       conversationStarters: [],
       variables: (versionDetails?.variables ?? []).map((variable) => ({ name: variable.name, value: variable.value })),
       meta: { step_limit: meta?.step_limit ?? 25, internal_tools: resolveInternalTools(meta) },
+      // Whatever the model picker wrote into the form, or `undefined` when
+      // the user left it alone — `toVersionWriteRequest` then omits the key
+      // and the new agent runs on the project's catalogue default.
+      llmSettings: resolveLlmSettings(versionDetails),
       tags: [...(versionDetails?.tags ?? [])],
       tools: [],
       pipelineSettings: undefined,

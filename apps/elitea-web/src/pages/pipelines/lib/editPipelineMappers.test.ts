@@ -163,4 +163,43 @@ describe('toVersionDraft', () => {
     const version = { name: 'base' } as ApplicationVersionDetail;
     expect(toVersionDraft(version, []).pipelineSettings).toBeUndefined();
   });
+
+  it('reads the stored llm_settings back, with model_project_id as a number', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'qwen3.5', model_project_id: '17', max_tokens: -1, temperature: 0.6 },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionDraft(version, []).llmSettings).toEqual({
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+      temperature: 0.6,
+    });
+  });
+
+  // Same edit-wins-over-stored rule the agents twin applies in
+  // `toVersionWriteBody`: the page's model picker holds the live choice and a
+  // save that re-read the stored blob would drop it.
+  it('prefers the picked llm_settings over the stored one', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'gpt-4o', model_project_id: 3, max_tokens: 4096 },
+    } as unknown as ApplicationVersionDetail;
+
+    const draft = toVersionDraft(version, [], undefined, {
+      model_name: 'qwen3.5',
+      model_project_id: 17,
+      max_tokens: -1,
+    });
+    expect(draft.llmSettings).toEqual({ model_name: 'qwen3.5', model_project_id: 17, max_tokens: -1 });
+  });
+
+  // `{}` is what every version written before the picker existed stores;
+  // `toVersionWriteRequest` then omits the key and the pipeline keeps running
+  // on the project's catalogue default.
+  it('leaves llmSettings undefined for a version that names no model', () => {
+    const version = { name: 'base', llm_settings: {} } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).llmSettings).toBeUndefined();
+  });
 });

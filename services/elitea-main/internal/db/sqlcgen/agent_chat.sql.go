@@ -251,9 +251,14 @@ WITH resolved AS MATERIALIZED (
                     IS DISTINCT FROM ($4::integer)::text
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
-                OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
-                    '[]'::jsonb,
-                    '["ask_user"]'::jsonb
+                OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+                OR EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(
+                        COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                    ) AS invalid_admitted_internal_tool(value)
+                    WHERE jsonb_typeof(invalid_admitted_internal_tool.value) <> 'string'
+                       OR invalid_admitted_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
                 )
             )
       )
@@ -540,9 +545,23 @@ WITH resolved AS MATERIALIZED (
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
              OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
-      AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
-          '[]'::jsonb,
-          '["ask_user"]'::jsonb
+      -- Admitted by the same rule as the conversation's own list: ` + "`" + `internal_mcp` + "`" + `
+      -- is dropped from the snapshot by the freeze
+      -- (normalizeCurrentAgentRuntimeProfile), not refused here, or every agent the
+      -- previous create form seeded it into stops answering. See the fuller note on
+      -- ResolveCurrentApplicationTurn's copy of this clause.
+      AND jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+      AND NOT EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(
+              CASE
+                  WHEN jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+                  THEN COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)
+                  ELSE '[]'::jsonb
+              END
+          ) AS admitted_internal_tool(value)
+          WHERE jsonb_typeof(admitted_internal_tool.value) <> 'string'
+             OR admitted_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -974,9 +993,23 @@ LEFT JOIN LATERAL (
           AND application_participant.entity_meta ->> 'project_id'
               = ($3::integer)::text
           AND COALESCE(application_participant.meta ->> 'name', '') <> ''
-          AND COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb) IN (
-              '[]'::jsonb,
-              '["ask_user"]'::jsonb
+          -- Admitted by the same rule as the conversation's own list: ` + "`" + `internal_mcp` + "`" + `
+          -- is dropped from the snapshot by the freeze
+          -- (normalizeCurrentAgentRuntimeProfile), not refused here, or every agent the
+          -- previous create form seeded it into stops answering. See the fuller note on
+          -- ResolveCurrentApplicationTurn's copy of this clause.
+          AND jsonb_typeof(COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(
+                  CASE
+                      WHEN jsonb_typeof(COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                      THEN COALESCE(application_version.meta -> 'internal_tools', '[]'::jsonb)
+                      ELSE '[]'::jsonb
+                  END
+              ) AS nested_internal_tool(value)
+              WHERE jsonb_typeof(nested_internal_tool.value) <> 'string'
+                 OR nested_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
           )
     ) AS current_tool
 ) AS current_tools ON TRUE
@@ -1191,9 +1224,14 @@ WHERE conversation.uuid = $5::uuid
                 IS DISTINCT FROM ($3::integer)::text
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
-            OR COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb) NOT IN (
-                '[]'::jsonb,
-                '["ask_user"]'::jsonb
+            OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+            OR EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements(
+                    COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                ) AS invalid_internal_tool(value)
+                WHERE jsonb_typeof(invalid_internal_tool.value) <> 'string'
+                   OR invalid_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
             )
         )
   )
@@ -1747,9 +1785,34 @@ WHERE conversation.uuid = $4::uuid
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
          OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
-  AND COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb) IN (
-      '[]'::jsonb,
-      '["ask_user"]'::jsonb
+  -- The version's own internal-tool list, admitted by the SAME rule as the
+  -- conversation's list above rather than by a literal-array match.
+  --
+  -- The old rule was ` + "`" + `IN ('[]', '["ask_user"]')` + "`" + `, and it refused two things it
+  -- did not mean to. ` + "`" + `internal_mcp` + "`" + ` is one: the previous create-agent form
+  -- seeded it into every new version, so every agent authored through the
+  -- product's own UI resolved zero rows here and answered 422 on every send —
+  -- while the conversation clause four lines up admits that exact name, and
+  -- ` + "`" + `currentRuntimeInternalTools` + "`" + ` (internal/application/agentexecution/start.go)
+  -- accepts it and drops it, because internal MCP reaches the worker through
+  -- the frozen tools projection instead. A whole-array match also refused a
+  -- list that merely repeated or reordered admitted names.
+  --
+  -- The freeze removes ` + "`" + `internal_mcp` + "`" + ` from the snapshot before the runtime sees
+  -- it (normalizeCurrentAgentRuntimeProfile), so admitting it here does not
+  -- claim a capability the runtime lacks: it lets an already-saved agent run.
+  AND jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM jsonb_array_elements(
+          CASE
+              WHEN jsonb_typeof(COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)) = 'array'
+              THEN COALESCE(application_version.meta::jsonb -> 'internal_tools', '[]'::jsonb)
+              ELSE '[]'::jsonb
+          END
+      ) AS version_internal_tool(value)
+      WHERE jsonb_typeof(version_internal_tool.value) <> 'string'
+         OR version_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',

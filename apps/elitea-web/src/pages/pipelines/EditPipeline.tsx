@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -9,15 +9,17 @@ import { FormProvider } from 'react-hook-form';
 
 import { CreateApplicationTabBar } from '@/entities/application-form';
 import { ConfigurationTab, usePipelineVersionSync } from '@/features/pipelines';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
+import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { pipelineDetailDisplayName, toVersionSummaries } from './lib/editPipelineMappers';
 import { isPublicPipelinesProject } from './lib/isPublicPipelinesProject';
 import {
+  buildPipelineConfigurationTabSlots,
   DISCLOSED_PIPELINE_CHAT_ADAPTER,
-  PIPELINE_CONFIGURATION_TAB_GAP_SLOTS,
   PipelineConfigurationTabBoundary,
 } from './lib/pipelineConfigurationTabGaps';
 import { useCorrectUserNameInUrl } from './lib/useCorrectUserNameInUrl';
@@ -34,6 +36,8 @@ import { useDiscardPipelineChanges } from './useDiscardPipelineChanges';
  * the same reason `./lib/useEditPipelineData.ts` splits half its body into
  * one-line helpers. Behaviour is exactly `useUnsavedChangesNavBlocker(
  * isFormDirty || isYamlDirty)`; see the call site for what each half means.
+ * `isFormDirty` is `useEditPipelineForm`'s combined flag — the RHF fields AND
+ * the model picker, which lives outside the form.
  */
 function useEditPipelineNavBlocker(isFormDirty: boolean, isYamlDirty: boolean): void {
   useUnsavedChangesNavBlocker(isFormDirty || isYamlDirty);
@@ -77,8 +81,8 @@ interface EditPipelineSaveBarProps {
  * Split out purely so `useDiscardPipelineChanges` (this unit's own
  * `useFormContext()`-based hook) is called from a genuine `<FormProvider>`
  * DESCENDANT, not from `EditPipeline` itself — same reasoning
- * `pages/agents/EditApplication.tsx`'s own `EditApplicationSaveBar` doc
- * comment gives in full: the component that CREATES the `form` instance and
+ * `pages/agents/ui/EditApplicationSaveBar.tsx`'s own doc comment gives in
+ * full: the component that CREATES the `form` instance and
  * renders `<FormProvider>` sits ABOVE that provider in the tree.
  */
 function EditPipelineSaveBar({ onSave, canSave, isSaving }: EditPipelineSaveBarProps) {
@@ -200,7 +204,12 @@ export function EditPipeline(): ReactNode {
   // so a save could only ever have written an empty graph back.
   usePipelineVersionSync({ isCreateMode: false, versionDetails: activeVersion, versionId: activeVersion?.id });
 
-  const { form, handleSave, isSaving, saveError } = useEditPipelineForm(detail, activeVersion, projectId, applicationId);
+  const { form, handleSave, isSaving, saveError, llmSettings, isDirty } = useEditPipelineForm(
+    detail,
+    activeVersion,
+    projectId,
+    applicationId,
+  );
   const { setFieldValue, versionDetails } = useEditPipelineConfigurationTabBridge(activeVersion, form.setValue);
   /*
    * #133 — this used to be a write-only `const [, setIsYamlDirty]`: the
@@ -234,7 +243,7 @@ export function EditPipeline(): ReactNode {
    * stores from the save's response; that needs a `features/pipelines`
    * export this page does not have.
    */
-  useEditPipelineNavBlocker(form.formState.isDirty, isYamlDirty);
+  useEditPipelineNavBlocker(isDirty, isYamlDirty);
 
   // Old app: `useViewMode.js` — `viewMode` defaults to `ViewMode.Public`
   // whenever the currently selected project equals `PUBLIC_PROJECT_ID`.
@@ -245,6 +254,28 @@ export function EditPipeline(): ReactNode {
   // which pass a `viewMode` override on navigation) is a read-only viewer
   // of someone else's public pipeline, not its owner.
   const isReadOnlyView = isPublicPipelinesProject(projectId);
+
+  const setLlmSettings = llmSettings.setValue;
+  const handleModelSettingsChange = useCallback((next: AgentLlmSettings) => setLlmSettings(next), [setLlmSettings]);
+  /*
+   * The model picker rides in `ConfigurationTab`'s configuration-form slot —
+   * the left panel, where the baseline puts model settings — rather than
+   * above the editor, because that slot IS the configuration form and the
+   * rest of it is still a disclosed gap (`./lib/pipelineConfigurationTabGaps
+   * .tsx`). It is the only version-level field this page can edit today.
+   */
+  const configurationTabSlots = useMemo(
+    () =>
+      buildPipelineConfigurationTabSlots(
+        <AgentModelSettings
+          projectId={projectId}
+          value={llmSettings.value}
+          onChange={handleModelSettingsChange}
+          disabled={isReadOnlyView || isFetching}
+        />,
+      ),
+    [projectId, llmSettings.value, handleModelSettingsChange, isReadOnlyView, isFetching],
+  );
 
   if (isDetailNotFound) {
     return (
@@ -314,7 +345,7 @@ export function EditPipeline(): ReactNode {
               setFieldValue={setFieldValue}
               setYamlDirty={setIsYamlDirty}
               adapter={DISCLOSED_PIPELINE_CHAT_ADAPTER}
-              slots={PIPELINE_CONFIGURATION_TAB_GAP_SLOTS}
+              slots={configurationTabSlots}
             />
           </PipelineConfigurationTabBoundary>
         </Box>

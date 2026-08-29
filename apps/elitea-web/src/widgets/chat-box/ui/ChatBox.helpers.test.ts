@@ -13,7 +13,6 @@ import {
   optField,
   pickIdAndUuid,
   resolveConversationStarters,
-  toLlmModel,
   toParticipant,
   toParticipants,
 } from './ChatBox.helpers';
@@ -194,23 +193,6 @@ describe('buildTtsProps', () => {
       onAutoSpeak: () => {}, speakingMessageId: 42, speakingSegments: [], spokenRange: { start: 0, end: 5 },
     });
     expect(result.speakingMessageId).toBe('42');
-  });
-});
-
-describe('toLlmModel', () => {
-  it('uses name as id when id is undefined', () => {
-    expect(toLlmModel({ name: 'claude' } as never).id).toBe('claude');
-  });
-
-  it('stringifies numeric id', () => {
-    expect(toLlmModel({ id: 7, name: 'gpt' } as never).id).toBe('7');
-  });
-
-  it('includes optional boolean/number fields when present', () => {
-    const result = toLlmModel({ id: 1, name: 'x', shared: true, supports_vision: false, max_output_tokens: 4096 } as never);
-    expect(result.shared).toBe(true);
-    expect(result.supports_vision).toBe(false);
-    expect(result.max_output_tokens).toBe(4096);
   });
 });
 

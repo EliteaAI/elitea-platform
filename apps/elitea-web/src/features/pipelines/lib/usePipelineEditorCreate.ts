@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 
 import { useCreateApplicationDraft, type ApplicationDraftInput } from '@/entities/application-form';
 import { LATEST_VERSION_NAME } from '@/entities/version';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import type { ApplicationCreatedResponse } from '@/shared/api/generated/model';
 
 import { setFieldValueAtPath } from './pipelineFieldChange';
@@ -66,6 +67,13 @@ const DEFAULT_INTERNAL_TOOLS: readonly string[] = [];
  * `submit`. See this module's own doc comment for why the default is empty
  * and why an explicit value still wins over it.
  */
+/** The model the form's picker wrote, if any — split out for the same complexity reason as `resolveInternalTools` below. */
+function resolveLlmSettings(
+  versionDetails: PipelineDraftValues['version_details'],
+): AgentLlmSettings | undefined {
+  return versionDetails?.llm_settings;
+}
+
 function resolveInternalTools(meta: NonNullable<PipelineDraftValues['version_details']>['meta']): readonly string[] {
   const raw = meta?.['internal_tools'];
   if (Array.isArray(raw) && raw.every((entry): entry is string => typeof entry === 'string')) {
@@ -100,6 +108,9 @@ export function usePipelineEditorCreate(projectId: string | undefined) {
         conversationStarters: [],
         variables: (versionDetails?.variables ?? []).map((variable) => ({ name: variable.name, value: variable.value })),
         meta: { step_limit: meta?.step_limit ?? 25, internal_tools: resolveInternalTools(meta) },
+        // Same read-through as the agents twin in `useAgentEditorCreate`:
+        // absent unless the form's model picker put something there.
+        llmSettings: resolveLlmSettings(versionDetails),
         tags: [...(versionDetails?.tags ?? [])],
         tools: [],
         pipelineSettings: { nodes: [], edges: [] },

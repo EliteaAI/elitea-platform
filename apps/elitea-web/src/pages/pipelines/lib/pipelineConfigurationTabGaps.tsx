@@ -16,8 +16,11 @@ import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
  *
  * **Why these can't be the real thing, mechanically, not just "not yet
  * built":**
- *  - `renderConfigurationForm` needs the six `features/agents`-owned
- *    configuration panels (`ApplicationTools`/`WelcomeMessageInput`/etc.) —
+ *  - `renderConfigurationForm` is no longer a pure stand-in: it now carries
+ *    the model picker the page supplies (`buildPipelineConfigurationTabSlots`
+ *    below), which is the one panel of that form this app can build. The
+ *    REST of it still needs the six `features/agents`-owned configuration
+ *    panels (`ApplicationTools`/`WelcomeMessageInput`/etc.) —
  *    NOT exported from `features/agents/index.ts` (verified: `grep -n
  *    "^export" src/features/agents/index.ts`, no such names), and
  *    `no-deep-slice-import` (`.dependency-cruiser.cjs`) mechanically forbids
@@ -47,13 +50,24 @@ import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 
 const gapContainerSx: SxProps<Theme> = { padding: '1.5rem', height: '100%', boxSizing: 'border-box' };
 
-/** `ConfigurationTab`'s required `slots.renderConfigurationForm` — see this module's own doc comment for why the real agent-domain panels can't be reached from here. */
-function renderPipelineConfigurationFormGap(): ReactNode {
+/**
+ * `ConfigurationTab`'s required `slots.renderConfigurationForm`.
+ *
+ * `modelSettings` is the one panel of that form this app can actually build —
+ * `widgets/agent-model-settings`, which the page supplies — and it is
+ * rendered ABOVE the gap notice rather than instead of it: the other panels
+ * (tools, welcome message, editor notes, information) really are still
+ * missing, and hiding that once one of them exists would be the "disclosed
+ * gap that quietly goes stale" this codebase has been bitten by before.
+ * See this module's own doc comment for why the rest can't be reached here.
+ */
+function renderPipelineConfigurationFormGap(modelSettings: ReactNode): ReactNode {
   return (
     <Box
       data-testid="edit-pipeline-configuration-form-gap"
       sx={gapContainerSx}
     >
+      {modelSettings}
       <NoResultsMessage
         title={t('pages.pipelines.editPipeline.configurationFormGap.title', 'Configuration form is not available yet.')}
         description={t(
@@ -102,11 +116,23 @@ export const DISCLOSED_PIPELINE_CHAT_ADAPTER: ConfigurationTabProps['adapter'] =
   stopChatTask: () => Promise.resolve(),
 };
 
-/** `ConfigurationTab`'s required `slots` prop, built once — both render functions are stable module-scope references, so this whole object is too (no reason to rebuild it every `EditPipeline` render). */
-export const PIPELINE_CONFIGURATION_TAB_GAP_SLOTS: ConfigurationTabProps['slots'] = {
-  renderConfigurationForm: renderPipelineConfigurationFormGap,
-  renderChat: renderPipelineChatGap,
-};
+/**
+ * `ConfigurationTab`'s required `slots` prop.
+ *
+ * A factory rather than the module-scope constant it used to be, because one
+ * of the two slots now carries page-owned content (the model picker, whose
+ * value and `onChange` belong to `EditPipeline`'s own state). The caller
+ * memoises the result on that node — `GeneralFormPanel` calls
+ * `renderConfigurationForm` straight through in render and holds it in no
+ * dependency array, so a fresh object costs nothing but is still worth not
+ * rebuilding every keystroke.
+ */
+export function buildPipelineConfigurationTabSlots(modelSettings: ReactNode): ConfigurationTabProps['slots'] {
+  return {
+    renderConfigurationForm: () => renderPipelineConfigurationFormGap(modelSettings),
+    renderChat: renderPipelineChatGap,
+  };
+}
 
 interface PipelineConfigurationTabBoundaryProps {
   readonly children: ReactNode;

@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+
 /**
  * `'base'` — the well-known "latest/default version" name. Duplicated from
  * `entities/version`'s own `LATEST_VERSION_NAME`
@@ -47,6 +49,19 @@ export interface ApplicationVersionDraft {
    */
   readonly meta: { readonly step_limit: number; readonly internal_tools: readonly string[] };
   /**
+   * The model this version runs on — see `shared/api/agentLlmSettings.ts`
+   * for the closed key list and why two plausible-looking keys are missing.
+   *
+   * `undefined` is a meaningful value, not a placeholder: it means "this
+   * version names no model", and `toVersionWriteRequest` then omits the
+   * `llm_settings` key from the request entirely. That omission is what
+   * leaves the platform's fallback to the project catalogue default in
+   * charge (`services/elitea-main/internal/application/agentexecution/
+   * tools.go`, `resolveCurrentAgentModel`), which is how every version
+   * written before this field existed still answers turns.
+   */
+  readonly llmSettings: AgentLlmSettings | undefined;
+  /**
    * **Backend-contract gap, not a porting shortcut.** The baseline's
    * `useApplicationInitialValues.jsx` (`useCreateApplicationInitialValues`)
    * seeds `tags: []`, `tools: []` and (for pipelines)
@@ -93,18 +108,20 @@ export interface ApplicationDraft {
  * `Components/Applications/`, where the promotion brief's pointer put it;
  * confirmed by reading the file, not by the pointer).
  *
- * **What did NOT come across, and why:** the baseline hook also resolves a
- * default `llm_settings` value via `useListModelsQuery` +
- * `generateLLMSettings(defaultModel, {}, {...})`. Neither has an
- * equivalent in this app: there is no `ListModels`-shaped endpoint anywhere
- * under `shared/api/generated/` (grepped for `ListModels`/`listModels` —
- * zero hits), and `generateLLMSettings` itself has no port anywhere in the
- * tree. Rather than inventing either, `llmSettings` is left OUT of
- * `ApplicationVersionDraft` entirely — a caller that has resolved a default
- * model by some other means can merge its own `llm_settings` in before
- * sending the draft to `useCreateApplicationDraft`. This is a real,
- * unclosed backend/porting gap, not a simplification of behaviour that
- * still fully worked.
+ * **Why `llmSettings` seeds `undefined` here rather than resolving the
+ * project's default model:** the baseline hook resolves one via
+ * `useListModelsQuery` + `generateLLMSettings(defaultModel, {}, {...})`.
+ * This hook cannot: it takes no `projectId`, is synchronous, and returns a
+ * `useMemo`d constant, while the catalogue arrives over the network. The
+ * model is picked one layer up instead, by the page's model-settings slot,
+ * and reaches the draft before Save.
+ *
+ * (An earlier revision of this comment claimed no `ListModels`-shaped
+ * endpoint existed anywhere. It does — `useListModelsQuery` in
+ * `shared/api/configurationsApi.ts`, `GET /configurations/models/
+ * {projectId}?include_shared=true`. It is hand-written rather than
+ * generated, which is why a grep confined to `shared/api/generated/` came
+ * back empty and the absence read as proof.)
  *
  * The default export's OTHER half — fetching an EXISTING application's
  * version, reconciling it against `pipeline_settings`/flow-editor node
@@ -129,6 +146,7 @@ export function useCreateApplicationInitialValues(forPipeline: boolean): Applica
         conversationStarters: [],
         variables: [],
         meta: { step_limit: 25, internal_tools: [] },
+        llmSettings: undefined,
         tags: [],
         tools: [],
         pipelineSettings: forPipeline ? { nodes: [], edges: [] } : undefined,

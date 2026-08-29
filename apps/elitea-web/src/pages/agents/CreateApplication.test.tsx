@@ -6,9 +6,38 @@ import { http, HttpResponse } from 'msw';
 import { getCreateApplicationMockHandler } from '@/shared/api/generated/applications/applications.msw';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
+import { useNavBlockerStore } from '@/widgets/app-shell';
 
 import { CreateApplication } from './CreateApplication';
 import { renderAgentsRoute } from './__tests__/testRouter';
+
+/**
+ * The model catalogue the Advanced-settings picker reads. Served for every
+ * test in this file, not just the model ones: the page mounts the picker
+ * unconditionally now, and `src/test/setup.ts` runs msw with
+ * `onUnhandledRequest: 'error'`.
+ *
+ * `project_id` is spelled as a string here on purpose — that is what
+ * `ConfigModel` declares, while the Go catalogue marshals an int32, and the
+ * save body has to carry a JSON number either way.
+ */
+const CATALOGUE = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o', project_id: '1', default: true },
+    { name: 'qwen3.5', display_name: 'Qwen 3.5', project_id: '1' },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+function serveCatalogue(): void {
+  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
+}
+
+/** Opens the model menu and picks a row by its catalogue display name. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName: string): Promise<void> {
+  await user.click(await screen.findByTestId('model-selector-name'));
+  await user.click(await screen.findByRole('menuitem', { name: new RegExp(displayName) }));
+}
 
 /** Fills the required Name/Description fields so Save becomes enabled, then clicks it. */
 async function fillAndSave(user: ReturnType<typeof userEvent.setup>): Promise<void> {
@@ -24,6 +53,7 @@ async function fillAndSave(user: ReturnType<typeof userEvent.setup>): Promise<vo
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
+  serveCatalogue();
 });
 
 afterEach(() => {
@@ -178,5 +208,77 @@ describe('CreateApplication', () => {
     await waitFor(() => expect(bodies).toHaveLength(1));
     const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
     expect(versions?.[0]?.['conversation_starters']).toEqual(['Ask']);
+  });
+
+  /*
+   * The picker's own behaviour is covered in
+   * `widgets/agent-model-settings`; what these three pin is the wiring this
+   * page owns — that the slot is mounted at all, that the chosen model
+   * reaches the create body, and that the nav blocker can see it. A declared
+   * slot prop nobody renders is this codebase's recurring defect.
+   */
+  it('mounts the model picker in the advanced-settings panel, showing the project default', async () => {
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    expect(await screen.findByText('GPT-4o')).toBeVisible();
+  });
+
+  it('sends the picked model as llm_settings, with a NUMERIC model_project_id', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const raw: string[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        raw.push(await request.text());
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    await chooseModel(user, 'Qwen 3.5');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(raw).toHaveLength(1));
+    const body = JSON.parse(raw[0] ?? '{}') as { versions?: Record<string, unknown>[] };
+    expect(body.versions?.[0]?.['llm_settings']).toMatchObject({ model_name: 'qwen3.5', model_project_id: 1 });
+    // Asserted on the raw text, not the parsed object: `JSON.parse` turns
+    // `"1"` and `1` into values that both `toMatchObject` loosely, and the
+    // Rust worker parses this field with `positive_u32`, which hard-fails on
+    // a string.
+    expect(raw[0]).toContain('"model_project_id":1');
+  });
+
+  it('omits llm_settings entirely when the author never touches the picker', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    // Merely rendering the catalogue default must not author it — the
+    // server-side fallback to that default is what makes an agent with an
+    // empty `llm_settings` run at all.
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]).not.toHaveProperty('llm_settings');
+  });
+
+  it('arms the unsaved-changes guard when a model is picked and nothing else is touched (#133)', async () => {
+    const user = userEvent.setup({ delay: null });
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await screen.findByText('GPT-4o');
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+
+    await chooseModel(user, 'Qwen 3.5');
+
+    await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
   });
 });

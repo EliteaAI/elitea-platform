@@ -314,15 +314,30 @@ async fn configured_materializer_merges_openapi_authorization_and_honors_tool_po
     assert_eq!(tools[0].name(), "get_users_by_id");
 }
 
+/// `aha`, not `github`, and the swap is the point rather than a detail.
+///
+/// This case asserts that ONE unsupported family does not take a runnable
+/// toolkit down with it, so it needs a type the materializer genuinely does not
+/// implement. `github` was that type until it was implemented
+/// (`materialize.rs` now dispatches it), at which point the fixture's bare
+/// `{"selected_tools":[...]}` stopped being "a family we skip" and became "a
+/// supported family configured wrongly" — an `InvalidConfiguration` that fails
+/// the whole materialization, which is correct behaviour and the opposite of
+/// what this test is here to check. `aha` is the family `materialize_p_to_z`
+/// still names in its own trailing comment as waiting on a sealed artifact
+/// resolver, so it falls through to `unsupported_toolkit()`.
+///
+/// If `aha` is ever implemented, move this fixture again — do not weaken the
+/// assertion.
 #[tokio::test]
 async fn unsupported_configured_family_does_not_hide_runnable_openapi_toolkit() {
     let version = json!({
         "tools":[
             {
                 "id":1,
-                "type":"github",
-                "toolkit_name":"source",
-                "settings":{"selected_tools":["read_file"]}
+                "type":"aha",
+                "toolkit_name":"roadmap",
+                "settings":{"selected_tools":["get_ideas"]}
             },
             {
                 "id":72,

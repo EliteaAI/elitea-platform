@@ -815,3 +815,53 @@ fn set_application_instructions(request: &mut AgentExecutionRequest, instruction
 fn set_application_agent_type(request: &mut AgentExecutionRequest, agent_type: &str) {
     application_version_mut(request).insert("agent_type".to_owned(), json!(agent_type));
 }
+
+/// `meta.variables` arrives as an ARRAY, because that is what Main stores.
+///
+/// The create path folds variables into meta only when there are some, but the
+/// update path writes the key on presence so that deleting the last variable is
+/// distinguishable from never having had one. Every agent saved a second time
+/// therefore carries `"variables": []` — measured on a live stack, where such an
+/// agent answered "The execution input is invalid." on every turn.
+#[test]
+fn an_empty_variable_list_is_admitted_in_either_shape() {
+    for empty in [json!([]), json!({}), Value::Null] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        insert_application_meta(&mut request, "variables", empty.clone());
+        AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy())
+        .unwrap_or_else(|error| {
+            panic!("an empty variable list must be admitted: {empty} ({error:?})")
+        });
+    }
+}
+
+/// A list that actually names variables is still refused — and as an
+/// unsupported CAPABILITY, not as malformed input, because substitution is
+/// genuinely not implemented here.
+#[test]
+fn a_populated_variable_list_is_still_an_unsupported_capability() {
+    for populated in [
+        json!([{"name": "audience", "value": "ops"}]),
+        json!({"audience": "ops"}),
+    ] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        insert_application_meta(&mut request, "variables", populated.clone());
+        let Err(error) = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy()) else {
+            panic!("variable substitution is not implemented: {populated}");
+        };
+        assert_eq!(
+            error.code(),
+            NativeAgentAssemblyErrorCode::UnsupportedCapability
+        );
+    }
+}

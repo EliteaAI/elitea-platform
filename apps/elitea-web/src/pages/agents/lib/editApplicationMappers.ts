@@ -1,5 +1,6 @@
 import type { ApplicationCreationInput, ApplicationVersionDraft } from '@/entities/application-form';
 import type { VersionSummary } from '@/entities/version';
+import { toAgentLlmSettings, toLlmSettingsBody, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import type {
   ApplicationDetail,
   ApplicationVersionDetail,
@@ -107,6 +108,31 @@ export function toVersionOptions(
  * trace, including why `meta`/`tags`/`tools` are deliberately omitted
  * (the handler discards them).
  */
+/**
+ * The `llm_settings` key of the write body, or nothing at all — a separate
+ * function both to keep `toVersionWriteBody`'s own cyclomatic complexity
+ * under this codebase's oxlint gate and because the choice needs explaining.
+ *
+ * The live edit wins over the stored copy, exactly as `instructions` does and
+ * for the same #307 reason: a Save-As-Version taken after picking a different
+ * model used to clone the OLD model onto the new version and say nothing.
+ *
+ * With NO edit the stored blob is forwarded VERBATIM rather than re-read
+ * through `toAgentLlmSettings`. A stored `{model_name}` with no
+ * `model_project_id` is a real, working shape — elitea-main's freeze fills
+ * the project id in from the catalogue row it resolves
+ * (`internal/application/agentexecution/tools.go`,
+ * `resolveCurrentAgentModel`) — and the strict read would reject it and
+ * silently move the cloned version onto a different model.
+ */
+function selectLlmSettings(
+  version: ApplicationVersionDetail,
+  edited: AgentLlmSettings | undefined,
+): Pick<VersionWriteRequest, 'llm_settings'> {
+  if (edited !== undefined) return { llm_settings: toLlmSettingsBody(edited) };
+  return version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings };
+}
+
 export function toVersionWriteBody(
   version: ApplicationVersionDetail,
   conversationStarters: readonly string[],
@@ -116,7 +142,7 @@ export function toVersionWriteBody(
     ...(version.agent_type === undefined ? {} : { agent_type: version.agent_type }),
     instructions: edits?.instructions ?? version.instructions ?? '',
     welcome_message: edits?.welcomeMessage ?? version.welcome_message ?? '',
-    ...(version.llm_settings === undefined ? {} : { llm_settings: version.llm_settings }),
+    ...selectLlmSettings(version, edits?.llmSettings),
     conversation_starters: [...conversationStarters],
     variables: (edits?.variables ?? version.variables ?? []).map((variable) => ({
       name: variable.name ?? '',
@@ -247,6 +273,12 @@ export function toVersionDraft(
       value: variable.value ?? '',
     })),
     meta: { step_limit: stepLimit, internal_tools: internalTools },
+    // Read back so a save round-trips the model the version already names.
+    // `undefined` when the stored blob is `{}` — every version written before
+    // the model picker existed — and `toVersionWriteRequest` then omits the
+    // key, leaving that version on the catalogue-default fallback it works on
+    // today rather than pinning it to a model this mapper guessed.
+    llmSettings: toAgentLlmSettings(version.llm_settings),
     tags: (version.tags ?? [])
       .map((tag) => tag.name)
       .filter((name): name is string => typeof name === 'string'),

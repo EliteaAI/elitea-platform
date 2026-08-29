@@ -2544,6 +2544,8 @@
   "userPublic.tabsAriaLabel": "User public content",
   "userPublic.toolkitsUnavailable": "The generated API's toolkit-listing endpoint returns toolkit TYPE schemas, not this author's configured toolkit instances, so this tab has no data source yet.",
   "userPublic.unavailableTitle": "This list is not available yet.",
+  "widgets.agentModelSettings.label": "Model",
+  "widgets.agentModelSettings.tooltip": "The model this version runs on. Leave it untouched to follow the project default.",
   "widgets.appShell.banner.dismiss": "Dismiss",
   "widgets.appShell.confirmRedirect.cancel": "Cancel",
   "widgets.appShell.confirmRedirect.open": "Open in New Tab",

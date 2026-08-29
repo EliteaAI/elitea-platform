@@ -36,6 +36,17 @@ describe('useCreateApplicationInitialValues', () => {
     expect(pipeline.result.current.versionDetails.meta.internal_tools).toEqual([]);
   });
 
+  // Undefined, not a fabricated default: this hook takes no projectId and is
+  // synchronous, so it cannot know the project's catalogue. Leaving the field
+  // absent is also what keeps the platform's own catalogue-default fallback in
+  // charge for an agent whose author never opened the model picker.
+  it('seeds llmSettings as undefined so the model picker owns the choice', () => {
+    const agent = renderHook(() => useCreateApplicationInitialValues(false));
+    const pipeline = renderHook(() => useCreateApplicationInitialValues(true));
+    expect(agent.result.current.versionDetails.llmSettings).toBeUndefined();
+    expect(pipeline.result.current.versionDetails.llmSettings).toBeUndefined();
+  });
+
   it('returns a referentially stable object across re-renders with the same forPipeline', () => {
     const { result, rerender } = renderHook(({ forPipeline }) => useCreateApplicationInitialValues(forPipeline), {
       initialProps: { forPipeline: false },

@@ -1,5 +1,10 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
+import {
+  areAgentLlmSettingsEqual,
+  toAgentLlmSettings,
+  type AgentLlmSettings,
+} from '@/shared/api/agentLlmSettings';
 import type { ApplicationVersionDetail } from '@/shared/api/generated/model';
 
 /**
@@ -31,6 +36,18 @@ export interface EditApplicationVersionFields {
    * these switches are ordinary unsaved form state until Save.
    */
   readonly internalTools: readonly string[];
+  /**
+   * `version_details.llm_settings` — the model this version runs on. Held
+   * here with the other version-level fields because the model picker is not
+   * an `applicationCreationSchema` field either, and because `areEqual`
+   * below has to see it: a picked model that the nav blocker cannot observe
+   * is a model the user loses by navigating away (#133).
+   *
+   * `undefined` means the version names no model. It is preserved rather
+   * than defaulted so a save omits the key and leaves the platform's
+   * catalogue-default fallback in charge.
+   */
+  readonly llmSettings: AgentLlmSettings | undefined;
 }
 
 export interface EditApplicationVersionFieldsState {
@@ -64,6 +81,7 @@ function fromVersion(version: ApplicationVersionDetail | undefined): EditApplica
     })),
     stepLimit: typeof metaRecord['step_limit'] === 'number' ? metaRecord['step_limit'] : undefined,
     internalTools: toStringArray(metaRecord['internal_tools']),
+    llmSettings: toAgentLlmSettings(version?.llm_settings),
   };
 }
 
@@ -71,6 +89,9 @@ function areEqual(a: EditApplicationVersionFields, b: EditApplicationVersionFiel
   if (a.instructions !== b.instructions) return false;
   if (a.welcomeMessage !== b.welcomeMessage) return false;
   if (a.stepLimit !== b.stepLimit) return false;
+  // Key by key, never by identity: the settings dialog hands back a fresh
+  // object each time, so identity would report "dirty" from the first render.
+  if (!areAgentLlmSettingsEqual(a.llmSettings, b.llmSettings)) return false;
   if (a.internalTools.length !== b.internalTools.length) return false;
   if (a.internalTools.some((name, index) => b.internalTools[index] !== name)) return false;
   if (a.variables.length !== b.variables.length) return false;
@@ -78,6 +99,30 @@ function areEqual(a: EditApplicationVersionFields, b: EditApplicationVersionFiel
     const other = b.variables[index];
     return other !== undefined && variable.name === other.name && variable.value === other.value;
   });
+}
+
+/**
+ * The chat panel writes the settings one key at a time rather than as a whole
+ * object — `features/agents/lib/hooks/useApplicationChat.hooks.ts`'s
+ * `onSetLLMSettings` fans a settings object out over `setFieldValue(
+ * 'version_details.llm_settings.<key>', value)`. Same pattern, same regex, as
+ * `pages/pipelines/lib/useEditPipelineConfigurationTabBridge.ts`.
+ */
+const LLM_SETTINGS_KEY_PATTERN = /^version_details\.llm_settings\.(.+)$/;
+
+/**
+ * Merges one fanned-out key back onto the held settings, then re-reads the
+ * result through `toAgentLlmSettings` so a partial write can never leave a
+ * half-built profile behind: an update that has not yet supplied a model name
+ * or project id yields `undefined` (the version still names no model) rather
+ * than an object the worker would refuse.
+ */
+function mergeLlmSettingsKey(
+  previous: AgentLlmSettings | undefined,
+  key: string,
+  value: unknown,
+): AgentLlmSettings | undefined {
+  return toAgentLlmSettings({ ...previous, [key]: value });
 }
 
 function toVariables(value: unknown, previous: EditApplicationVersionFields['variables']) {
@@ -132,8 +177,22 @@ export function useEditApplicationVersionFields(
       case 'version_details.meta.step_limit':
         setFields((previous) => ({ ...previous, stepLimit: typeof value === 'number' ? value : undefined }));
         return true;
-      default:
-        return false;
+      // A whole-object replace, which is what the settings dialog's Apply
+      // emits — the picker owns every key at once, so a per-key merge would
+      // let a stale `temperature` survive a switch to a reasoning model,
+      // which the worker refuses as an `invalid_profile`.
+      case 'version_details.llm_settings':
+        setFields((previous) => ({ ...previous, llmSettings: toAgentLlmSettings(value) }));
+        return true;
+      default: {
+        const key = LLM_SETTINGS_KEY_PATTERN.exec(path)?.[1];
+        if (key === undefined) return false;
+        setFields((previous) => ({
+          ...previous,
+          llmSettings: mergeLlmSettingsKey(previous.llmSettings, key, value),
+        }));
+        return true;
+      }
     }
   }, []);
 

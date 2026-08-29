@@ -3,6 +3,7 @@ import { useCallback, useMemo } from 'react';
 import { useWatch, type UseFormReturn } from 'react-hook-form';
 
 import type { ApplicationCreationInput } from '@/entities/application-form';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 
 import type { EditApplicationVersionFieldsState } from './useEditApplicationVersionFields';
 
@@ -31,6 +32,12 @@ export interface EditApplicationEditorBridge {
       readonly welcome_message: string;
       readonly variables: readonly { readonly name: string; readonly value: string }[];
       readonly meta: { readonly step_limit: number | undefined };
+      /**
+       * The model picker reads its current value from here. `undefined` for a
+       * version that names no model, which the picker renders as the
+       * project's catalogue default — the model that version actually runs on.
+       */
+      readonly llm_settings: AgentLlmSettings | undefined;
     };
   };
   readonly onFieldChange: (path: string, value: unknown) => void;
@@ -69,6 +76,7 @@ export function useEditApplicationEditorBridge(
         welcome_message: fields.welcomeMessage,
         variables: fields.variables,
         meta: { step_limit: fields.stepLimit },
+        llm_settings: fields.llmSettings,
       },
     }),
     [name, description, starters, fields],
