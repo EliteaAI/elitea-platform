@@ -41,16 +41,20 @@
  */
 import { z as zod } from "zod";
 
-export const ExportConverterResponse = zod
+export const ImportedSkill = zod
   .object({
-    ok: zod.boolean(),
-    converted: zod.unknown().nullable(),
+    id: zod
+      .string()
+      .describe("The id of the skill row the import or the fork wrote."),
+    name: zod
+      .string()
+      .describe(
+        'The name of the skill. The import carries the entry\'s own `name`, which is never empty because an entry with no name is refused (internal\/api\/v2\/eliteacore\/handler.go:2487-2489). The fork carries the same name, and falls back to \"skills entry <n>\" when the entry has none (:3058-3060).\n',
+      ),
   })
   .describe(
-    'NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:3575-3579 — the \"converter\" is currently an echo stub.\n',
+    "NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:2483-2489 (import) and :3073-3079 (fork). Two keys only — the skill import returns no version list.\n",
   );
 
-export type ExportConverterResponse = zod.input<typeof ExportConverterResponse>;
-export type ExportConverterResponseOutput = zod.output<
-  typeof ExportConverterResponse
->;
+export type ImportedSkill = zod.input<typeof ImportedSkill>;
+export type ImportedSkillOutput = zod.output<typeof ImportedSkill>;

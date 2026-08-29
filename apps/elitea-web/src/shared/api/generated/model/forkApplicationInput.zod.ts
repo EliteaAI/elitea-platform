@@ -43,8 +43,18 @@ import { z as zod } from "zod";
 import { ForkVersionInput } from "./forkVersionInput.zod";
 
 export const ForkApplicationInput = zod.object({
-  id: zod.string().optional(),
-  owner_id: zod.string().optional(),
+  id: zod
+    .string()
+    .optional()
+    .describe(
+      "The SOURCE application id. The fork writes it into the new version's `meta.parent_entity_id`, which is what makes the read path report the copy as forked (internal\/api\/v2\/eliteacore\/handler.go:3194-3196).\n",
+    ),
+  owner_id: zod
+    .string()
+    .optional()
+    .describe(
+      "The SOURCE project id, and not a user id. It is written into `meta.parent_project_id` (internal\/api\/v2\/eliteacore\/handler.go:3195-3197).\n",
+    ),
   name: zod.string().optional(),
   description: zod.string().optional(),
   versions: zod.array(ForkVersionInput).optional(),

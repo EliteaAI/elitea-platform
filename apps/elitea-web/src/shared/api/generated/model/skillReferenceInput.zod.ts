@@ -41,16 +41,29 @@
  */
 import { z as zod } from "zod";
 
-export const ExportConverterResponse = zod
+export const SkillReferenceInput = zod
   .object({
-    ok: zod.boolean(),
-    converted: zod.unknown().nullable(),
+    import_uuid: zod
+      .string()
+      .describe(
+        "Names one entry of the request's top-level `skills` array. A reference that names an entry the request did not carry, or one whose own import failed, is reported on `errors.skills` (internal\/api\/v2\/eliteacore\/import_skills.go:403-411).\n",
+      ),
+    entity_type: zod
+      .enum(["agent"])
+      .optional()
+      .describe(
+        "OPTIONAL here, which is the one difference from the export direction: an absent or empty value becomes `agent` (internal\/api\/v2\/eliteacore\/import_skills.go:429-432). Every other value is refused and reported (:433-437).\n",
+      ),
+    version_name: zod
+      .string()
+      .optional()
+      .describe(
+        "The skill version to pin. An absent key attaches the skill's `base` version, and then the skill's first version (internal\/api\/v2\/eliteacore\/import_skills.go:115-127).\n",
+      ),
   })
   .describe(
-    'NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:3575-3579 — the \"converter\" is currently an echo stub.\n',
+    "NOTE(W2): one skill attachment that a fork or an import request asks for, read at internal\/api\/v2\/eliteacore\/import_skills.go:397-437. It is the REQUEST twin of ExportedSkillReference. The two are separate schemas because `entity_type` is written on every exported reference and is optional on every requested one. One schema that required the key would make the generated client refuse a body this service accepts.\n",
   );
 
-export type ExportConverterResponse = zod.input<typeof ExportConverterResponse>;
-export type ExportConverterResponseOutput = zod.output<
-  typeof ExportConverterResponse
->;
+export type SkillReferenceInput = zod.input<typeof SkillReferenceInput>;
+export type SkillReferenceInputOutput = zod.output<typeof SkillReferenceInput>;

@@ -41,16 +41,35 @@
  */
 import { z as zod } from "zod";
 
-export const ExportConverterResponse = zod
+export const SkillVersionExport = zod
   .object({
-    ok: zod.boolean(),
-    converted: zod.unknown().nullable(),
+    id: zod
+      .int()
+      .describe(
+        "The source `skill_versions.id`. It is a NUMBER and not a string: the export writes the raw column value (internal\/api\/v2\/eliteacore\/export_import.go:580-583). The import ignores it and uses the id of the row it writes.\n",
+      ),
+    name: zod
+      .string()
+      .describe(
+        'The version name a reference pins with `version_name`. An empty name is written as \"base\" on import (internal\/api\/v2\/eliteacore\/import_skills.go:229-232).\n',
+      ),
+    instructions: zod.string(),
+    author_id: zod
+      .int()
+      .describe(
+        "The source `skill_versions.author_id`. It is a NUMBER and not a string. The import ignores it and writes the caller (internal\/api\/v2\/eliteacore\/import_skills.go:251-257).\n",
+      ),
+    meta: zod.record(zod.string(), zod.unknown()),
+    tags: zod.array(
+      zod.object({
+        name: zod.string(),
+        data: zod.unknown(),
+      }),
+    ),
   })
   .describe(
-    'NOTE(W2): internal\/api\/v2\/eliteacore\/handler.go:3575-3579 — the \"converter\" is currently an echo stub.\n',
+    "NOTE(W2): one version of an exported skill, internal\/api\/v2\/eliteacore\/export_import.go:580-583, with `tags` added at :481-490. `status` is absent on purpose. It records whether the SOURCE project holds a twin of the version in the public project, which can never hold for the project the file is imported into (:552-557). Only the versions the attachments name are exported. A selection that matches nothing keeps the whole history, because a skill with no version cannot be imported (:601-616).\n",
   );
 
-export type ExportConverterResponse = zod.input<typeof ExportConverterResponse>;
-export type ExportConverterResponseOutput = zod.output<
-  typeof ExportConverterResponse
->;
+export type SkillVersionExport = zod.input<typeof SkillVersionExport>;
+export type SkillVersionExportOutput = zod.output<typeof SkillVersionExport>;

@@ -5327,11 +5327,13 @@ export const getExportApplicationUrl = (
 };
 
 /**
- * NOTE(W2): internal/api/v2/eliteacore/handler.go:2480-2727. The
- * handler reads only ?fork= (keep last version + provenance keys) and
- * ?as_file= (attachment Content-Disposition). follow_version_ids and
- * format are accepted for old-SPA parity but not read — markdown export
- * is NOT implemented on the Go router.
+ * NOTE(W2): internal/api/v2/eliteacore/handler.go:3411-3573. The handler
+ * reads ?fork= (keep the last version and add the provenance keys,
+ * :3490-3492), ?format=md (render the same document as markdown,
+ * :3552-3555) and ?as_file= (attachment Content-Disposition,
+ * :3557-3570). follow_version_ids is accepted for old-SPA parity and is
+ * not read. The document carries a top-level `skills` array when a
+ * version of the application is attached to a skill (:3535-3541).
  * @summary Export an application (with toolkits) as JSON
  */
 export const exportApplication = async (
@@ -5565,7 +5567,7 @@ export const getConvertLegacyApplicationUrl = () => {
 
 /**
  * NOTE(W2): echo stub — {"ok": true, "converted": <request body>}
- * (internal/api/v2/eliteacore/handler.go:2726-2730).
+ * (internal/api/v2/eliteacore/handler.go:3575-3579).
  * @summary Convert a legacy-format application payload into the current schema
  */
 export const convertLegacyApplication = async (
@@ -5788,10 +5790,13 @@ export const getImportWizardUrl = (projectId: string) => {
 };
 
 /**
- * NOTE(W2): internal/api/v2/eliteacore/handler.go:1883-2246 — 201 when
- * every entity imported, 207 on partial failure, 400 when all failed;
- * the body is always the {result, errors} envelope.
- * @summary Guided multi-step import flow for applications and toolkits
+ * NOTE(W2): internal/api/v2/eliteacore/handler.go:2315-2911 — 201 when
+ * every entity imported, 207 on partial failure, 400 when all failed
+ * (:2895-2905); the body is always the {result, errors} envelope, and
+ * each envelope always carries all three entity channels (:2907-2910).
+ * An entity with entity "skills" routes to the skill import, which had
+ * no branch of its own until issue #611 (:2444-2446).
+ * @summary Guided multi-step import flow for applications, toolkits and skills
  */
 export const importWizard = async (
   projectId: string,
@@ -5924,7 +5929,7 @@ export function useImportWizard<
   queryKey: DataTag<QueryKey, TData, TError>;
 };
 /**
- * @summary Guided multi-step import flow for applications and toolkits
+ * @summary Guided multi-step import flow for applications, toolkits and skills
  */
 
 export function useImportWizard<
@@ -8559,8 +8564,14 @@ export const getForkAgentUrl = (projectId: string) => {
 };
 
 /**
- * NOTE(W2): internal/api/v2/eliteacore/handler.go:2244-2478 — responds
- * 201 with the {result, errors} envelope.
+ * NOTE(W2): internal/api/v2/eliteacore/handler.go:2942-3409 — responds
+ * 201 when everything was forked, 207 when part of it was, and 400 when
+ * nothing was (:3390-3401). All three bodies are the same
+ * {result, errors} envelope, and each envelope always carries all three
+ * entity channels (:3403-3408); only the 201 is modelled below. The
+ * request carries the content of every skill the forked versions are
+ * attached to, because a skill id belongs to the project the file came
+ * from (:3042-3045).
  * @summary Copy a published application into the caller's project
  */
 export const forkAgent = async (

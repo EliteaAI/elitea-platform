@@ -2379,8 +2379,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 
 	if len(entities) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"result": map[string]any{"agents": []any{}},
-			"errors": map[string]any{"agents": []any{}},
+			"result": importChannels[any](nil, nil, nil),
+			"errors": importChannels[any](nil, nil, nil),
 		})
 		return
 	}
@@ -2395,6 +2395,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	errorAgents := make([]any, 0)
 	resultToolkits := make([]map[string]any, 0)
 	errorToolkits := make([]any, 0)
+	resultSkills := make([]map[string]any, 0)
+	errorSkills := make([]any, 0)
 
 	// Separate entities by type, preserving original indices for error reporting
 	type toolkitEntry struct {
@@ -2406,8 +2408,18 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		entityIdx int
 		raw       map[string]any
 	}
+	// A skill is an entity of its own, beside an agent and a toolkit. It had no
+	// branch here, so every `entity: "skills"` entry the wizard sent fell to the
+	// agent branch below and imported a phantom AGENT named after the skill
+	// (#611). See import_skills.go.
+	type skillEntry struct {
+		entityIdx  int
+		importUUID string
+		raw        map[string]any
+	}
 	var agentEntries []agentEntry
 	var toolkitEntries []toolkitEntry
+	var skillEntries []skillEntry
 
 	// An entry that is not a JSON object was dropped by a bare `continue`, so
 	// the wizard showed it neither in the result nor in the errors and the
@@ -2425,15 +2437,71 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		entity, _ := ent["entity"].(string)
-		if entity == "toolkits" {
+		switch entity {
+		case "toolkits":
 			iuuid, _ := ent["import_uuid"].(string)
 			toolkitEntries = append(toolkitEntries, toolkitEntry{entityIdx: i, importUUID: iuuid, raw: ent})
-		} else {
+		case "skills":
+			iuuid, _ := ent["import_uuid"].(string)
+			skillEntries = append(skillEntries, skillEntry{entityIdx: i, importUUID: iuuid, raw: ent})
+		default:
 			agentEntries = append(agentEntries, agentEntry{entityIdx: i, raw: ent})
 		}
 	}
 
 	validAgentTypes := map[string]bool{"openai": true, "react": true, "dial": true, "pipeline": true, "": true}
+
+	// Phase 0: Import the skills, so the per-version references the agents carry
+	// have something to resolve against. `owner_id` on this table is the
+	// DESTINATION PROJECT (#533), which is the same value the toolkit import
+	// below reads through `tenantOwnerID`.
+	// The destination project, resolved ONCE for both entity types. `owner_id`
+	// on `skills` and on `elitea_tools` is the OWNING PROJECT and not a user
+	// (#533), and both come from the same immutable path segment, so a second
+	// resolution could only ever agree with the first — or drift away from it
+	// after a later edit.
+	destinationOwnerID, destinationOwnerErr := tenantOwnerID(projectID)
+
+	importedSkills := map[string]importedSkill{}
+	for _, se := range skillEntries {
+		skillName, _ := se.raw["name"].(string)
+		if destinationOwnerErr != nil {
+			errorSkills = append(errorSkills, map[string]any{
+				"index": se.entityIdx, "name": skillName,
+				"msg": "Import function has been failed: " + destinationOwnerErr.Error(),
+			})
+			continue
+		}
+		created, err := h.importSkill(ctx, s, destinationOwnerID, userID, se.raw)
+		// A skill can be written and still fail, because the row is inserted
+		// before its versions are. The row then exists, so it is REPORTED and
+		// REGISTERED rather than dropped: a caller that sees only
+		// "it is not among the imported skills" cannot find the row it now owns,
+		// and a reference to it can still resolve to the versions that landed.
+		// The error is kept beside the result, which is the shape a failed
+		// toolkit link already answers with (#420).
+		if created.id != 0 {
+			if se.importUUID != "" {
+				importedSkills[se.importUUID] = created
+			}
+			resultSkills = append(resultSkills, map[string]any{
+				"id": strconv.Itoa(created.id), "name": skillName,
+			})
+		}
+		if err != nil {
+			slog.ErrorContext(ctx, "import: skill import failed",
+				"schema", s, "name", skillName, "skill_id", created.id, "error", err)
+			message := "Import function has been failed: " + err.Error()
+			if created.id != 0 {
+				message = fmt.Sprintf(
+					"Import function has been failed: skill %d was written and is incomplete: %s",
+					created.id, err.Error())
+			}
+			errorSkills = append(errorSkills, map[string]any{
+				"index": se.entityIdx, "name": skillName, "msg": message,
+			})
+		}
+	}
 
 	// Phase 1: Import agents and build import_uuid -> appID maps
 	agentImportUUIDToAppID := map[string]int{}
@@ -2442,6 +2510,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	type importedAgentInfo struct {
 		appID    int
 		versions [][]map[string]any // per-version tool refs to resolve later
+		skills   [][]any            // per-version skill refs, in the same order
 	}
 	importedAgents := make([]importedAgentInfo, 0)
 
@@ -2485,6 +2554,7 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		createdVersions := make([]map[string]any, 0)
 		var versionDetails map[string]any
 		var versionToolRefs [][]map[string]any
+		var versionSkillRefs [][]any
 
 		for _, vRaw := range versions {
 			v, ok := vRaw.(map[string]any)
@@ -2560,6 +2630,9 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			versionToolRefs = append(versionToolRefs, toolRefs)
+			// Appended beside the tool refs and after the same successful
+			// insert, so phase 3 can index all three against `createdVersions`.
+			versionSkillRefs = append(versionSkillRefs, versionSkillReferences(v))
 
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
@@ -2596,7 +2669,9 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 			"version_details": versionDetails,
 		}
 		resultAgents = append(resultAgents, agentResult)
-		importedAgents = append(importedAgents, importedAgentInfo{appID: appID, versions: versionToolRefs})
+		importedAgents = append(importedAgents, importedAgentInfo{
+			appID: appID, versions: versionToolRefs, skills: versionSkillRefs,
+		})
 	}
 
 	// Phase 2: Import toolkits, resolving settings.import_uuid for type=application
@@ -2606,7 +2681,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	// elitea_tools.owner_id is the DESTINATION PROJECT and is NOT NULL on a
 	// schema this repository's migration corpus made — see
 	// importToolkitInsertSQL for the column's meaning and the evidence for it.
-	toolkitOwnerID, toolkitOwnerErr := tenantOwnerID(projectID)
+	// It is the value phase 0 already resolved.
+	toolkitOwnerID, toolkitOwnerErr := destinationOwnerID, destinationOwnerErr
 
 	for _, tk := range toolkitEntries {
 		tkName, _ := tk.raw["name"].(string)
@@ -2704,6 +2780,10 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 		// imported, and the row that joins it to the agent is missing. Each lost
 		// link therefore gets its own message.
 		var linkInsertFailures []string
+		// The skill attachments are reported on their own channel, with the
+		// AGENT's index, because that is the entity the wizard marks and the
+		// channel the legacy uses (rpc/import_wizzard.py, errors['skills']).
+		var skillLinkFailures []string
 		var vTools []any
 
 		// Get version IDs from the created versions
@@ -2767,6 +2847,11 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 					hasLinkError = true
 				}
 			}
+
+			if vIdx < len(info.skills) {
+				skillLinkFailures = append(skillLinkFailures,
+					h.attachImportedSkills(ctx, s, vID, info.skills[vIdx], importedSkills)...)
+			}
 		}
 
 		// Update version_details.tools with resolved tools.
@@ -2798,11 +2883,18 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 				"msg":   message,
 			})
 		}
+		for _, message := range skillLinkFailures {
+			errorSkills = append(errorSkills, map[string]any{
+				"index": ae.entityIdx,
+				"name":  name,
+				"msg":   "Import function has been failed: " + message,
+			})
+		}
 	}
 
 	// Determine status code: 400 if all failed, 207 if mixed, 201 if all succeeded
-	totalErrors := len(errorAgents) + len(errorToolkits)
-	totalSuccess := len(resultAgents) + len(resultToolkits)
+	totalErrors := len(errorAgents) + len(errorToolkits) + len(errorSkills)
+	totalSuccess := len(resultAgents) + len(resultToolkits) + len(resultSkills)
 	importStatus := http.StatusCreated
 	if totalErrors > 0 {
 		if totalSuccess == 0 {
@@ -2813,8 +2905,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, importStatus, map[string]any{
-		"result": map[string]any{"agents": resultAgents, "toolkits": resultToolkits},
-		"errors": map[string]any{"agents": errorAgents, "toolkits": errorToolkits},
+		"result": importChannels(resultAgents, resultToolkits, resultSkills),
+		"errors": importChannels(errorAgents, errorToolkits, errorSkills),
 	})
 }
 
@@ -2882,8 +2974,8 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(apps) == 0 {
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"result": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
-			"errors": map[string]any{"agents": []any{}, "datasources": []any{}, "prompts": []any{}},
+			"result": importChannels[any](nil, nil, nil),
+			"errors": importChannels[any](nil, nil, nil),
 		})
 		return
 	}
@@ -2896,6 +2988,110 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 
 	resultAgents := make([]map[string]any, 0)
 	errorAgents := make([]any, 0)
+	resultSkills := make([]map[string]any, 0)
+	errorSkills := make([]any, 0)
+
+	// The skills the forked versions are attached to, copied into the caller's
+	// project before the agents are written. The fork used to copy
+	// `applications`, `application_versions`, `application_variables` and the
+	// tags, and no row of `entity_skill_mapping`, so a forked agent came back
+	// with every skill gone (#611).
+	//
+	// A `skills` array in the body, and not a copy out of the source schema: the
+	// skill ids in an export belong to the project it came from, and
+	// `p_<id>.entity_skill_mapping.skill_id` has a foreign key into
+	// `p_<id>.skills`, so no cross-schema copy of those rows can hold. The
+	// legacy fork reads the same key and hands it to the same import
+	// (legacy/plugins/elitea_core/api/v2/fork.py).
+	//
+	// # The index space of every error entry
+	//
+	// ONE space for both arrays: the applications, then the skills. That is the
+	// legacy's own numbering. `fork.py` concatenates
+	// `(applications or []) + (skills or [])` into one entities list and hands
+	// that list to `import_wizard`, which numbers every error and every result by
+	// the position in it (`_wrap_import_error`, `_wrap_import_result`).
+	//
+	// Applications come first, so an agent-attributed error keeps the index it
+	// already had. A skill entity carries `len(apps)` plus its own position, so
+	// the entry names the skill that failed and not an unrelated agent.
+	//
+	// WHO READS THIS INDEX. `apps/elitea-web` is the UI, and it builds no import
+	// wizard and no fork flow: no `import-wizard` slice exists under `src/`,
+	// `AppShell.tsx` records the modal as "Not built", and the generated
+	// `forkAgent` and `importWizard` clients have no caller — the endpoint
+	// census carries `"usedBy": []` for both (shared/api/endpoints.manifest.json).
+	// Only the EXPORT half is built (shared/lib/download.ts), so no shipped
+	// screen reads this field and the index is free to say the true thing.
+	// The old wizard in the `apps/elitea-ui` SUBMODULE does read it, through
+	// `getErrorImportUUID`, which indexes the applications alone and dereferences
+	// the result with no guard, so an index above `len(apps)-1` throws there.
+	// That wizard is not the product and this repository does not change it. A
+	// port into `apps/elitea-web` must pass the whole concatenation.
+	//
+	// # A body that names no skills at all
+	//
+	// The route used to answer 201 for `{applications: [...]}` alone, and a
+	// current export's version entries now carry skill references. A client that
+	// forwards the applications and drops the document's top-level `skills`
+	// array therefore asks for skills it did not send. That fork IS incomplete,
+	// so it still answers 207 and still reports — the whole point of #611 is that
+	// a lost attachment is never silent. What it must not do is describe the
+	// cause as though the file were broken, so `bodyNamesSkills` below separates
+	// "you sent no skills" from "the skill you sent could not be linked".
+	importedSkills := map[string]importedSkill{}
+	_, bodyNamesSkills := body["skills"]
+	skillOwnerID, skillOwnerErr := tenantOwnerID(projectID)
+	for skillPosition, raw := range toAnySlice(body["skills"]) {
+		// The position in the concatenation the wizard resolves against: the
+		// applications it sent, followed by the skills it sent.
+		skillErrorIndex := len(apps) + skillPosition
+		skill, isMap := raw.(map[string]any)
+		if !isMap {
+			errorSkills = append(errorSkills, map[string]any{
+				"index": skillErrorIndex, "name": "",
+				"msg": fmt.Sprintf(
+					"Fork function has been failed: skills entry %d is not a JSON object", skillPosition),
+			})
+			continue
+		}
+		skillName, _ := skill["name"].(string)
+		if skillName == "" {
+			skillName = fmt.Sprintf("skills entry %d", skillPosition)
+		}
+		if skillOwnerErr != nil {
+			errorSkills = append(errorSkills, map[string]any{
+				"index": skillErrorIndex, "name": skillName,
+				"msg": "Fork function has been failed: " + skillOwnerErr.Error(),
+			})
+			continue
+		}
+		created, err := h.importSkill(ctx, s, skillOwnerID, userID, skill)
+		// A skill can be written and still fail, because the row is inserted
+		// before its versions are. It is then reported and registered rather
+		// than dropped, for the reason the import states at phase 0.
+		if created.id != 0 {
+			if importUUID, _ := skill["import_uuid"].(string); importUUID != "" {
+				importedSkills[importUUID] = created
+			}
+			resultSkills = append(resultSkills, map[string]any{
+				"id": strconv.Itoa(created.id), "name": skillName,
+			})
+		}
+		if err != nil {
+			slog.ErrorContext(ctx, "fork: skill import failed",
+				"schema", s, "name", skillName, "skill_id", created.id, "error", err)
+			message := "Fork function has been failed: unable to fork skill " + skillName + ": " + err.Error()
+			if created.id != 0 {
+				message = fmt.Sprintf(
+					"Fork function has been failed: skill %d was written and is incomplete: %s",
+					created.id, err.Error())
+			}
+			errorSkills = append(errorSkills, map[string]any{
+				"index": skillErrorIndex, "name": skillName, "msg": message,
+			})
+		}
+	}
 
 	for entityIdx, appRaw := range apps {
 		app, ok := appRaw.(map[string]any)
@@ -3103,6 +3299,29 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// Attach the skills this version references. Every reference that
+			// cannot be attached is reported, on the agent's own index, so a
+			// fork that came back with fewer skills than the file says so.
+			skillReferences := versionSkillReferences(v)
+			switch {
+			case len(skillReferences) > 0 && !bodyNamesSkills:
+				// One message for the version, naming the cause, rather than one
+				// per reference saying each skill "is not among the imported
+				// skills" — which reads as a broken file and is not.
+				errorSkills = append(errorSkills, map[string]any{
+					"index": entityIdx, "name": name,
+					"msg": fmt.Sprintf("Fork function has been failed: the request carries no skills array, "+
+						"so the %d skills of version %s were not forked", len(skillReferences), vName),
+				})
+			default:
+				for _, message := range h.attachImportedSkills(ctx, s, vID, skillReferences, importedSkills) {
+					errorSkills = append(errorSkills, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: " + message,
+					})
+				}
+			}
+
 			createdVersions = append(createdVersions, map[string]any{
 				"id":             fmt.Sprintf("%d", vID),
 				"application_id": fmt.Sprintf("%d", appID),
@@ -3173,8 +3392,8 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	// when all of it was. The wizard reads a 2xx body and a 400 body through
 	// the same branch, so an error entry reaches the user either way.
 	forkStatus := http.StatusCreated
-	if len(errorAgents) > 0 {
-		if len(resultAgents) == 0 {
+	if len(errorAgents)+len(errorSkills) > 0 {
+		if len(resultAgents)+len(resultSkills) == 0 {
 			forkStatus = http.StatusBadRequest
 		} else {
 			forkStatus = http.StatusMultiStatus
@@ -3182,8 +3401,10 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, forkStatus, map[string]any{
-		"result": map[string]any{"agents": resultAgents},
-		"errors": map[string]any{"agents": errorAgents},
+		// A fork writes no toolkit, so its toolkits channel is always empty.
+		// It is still carried: see importChannels.
+		"result": importChannels(resultAgents, nil, resultSkills),
+		"errors": importChannels(errorAgents, nil, errorSkills),
 	})
 }
 
@@ -3271,6 +3492,18 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		versions = versions[len(versions)-1:]
 	}
 
+	// AFTER the fork branch, so the skills the document carries are the skills
+	// the versions the document carries are attached to. It also rewrites each
+	// version reference to name its skill by `import_uuid` — see the skill
+	// section of export_import.go.
+	skills, err := h.exportedSkills(ctx, s, versions)
+	if err != nil {
+		slog.ErrorContext(ctx, "export: "+exportReadFailed,
+			"schema", s, "application_id", entityID, "read", "skills", "error", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": exportReadFailed})
+		return
+	}
+
 	appExport := map[string]any{
 		"id":          entityID,
 		"name":        name,
@@ -3299,11 +3532,18 @@ func (h *Handler) ExportImportGet(w http.ResponseWriter, r *http.Request) {
 		"applications": []map[string]any{appExport},
 		"toolkits":     toolkits,
 	}
+	// Omitted when the agent has no skills, the way the legacy omits it
+	// (export_import.py:210-211). The import wizard turns EVERY top-level array
+	// into a row the user selects, so an empty one would show a "skills" group
+	// with nothing in it.
+	if len(skills) > 0 {
+		result["skills"] = skills
+	}
 
 	// `format=md` renders the SAME document as markdown — one file per version,
 	// zipped when there is more than one. See export_markdown.go, including the
-	// three frontmatter keys this service has no producer for
-	// (nested_agents/nested_pipelines, skills, pipeline_settings).
+	// two frontmatter keys this service has no producer for
+	// (nested_agents/nested_pipelines, pipeline_settings).
 	//
 	// Checked before `as_file`, which the markdown branch does not honour: it
 	// always sends a Content-Disposition, because a markdown export is a FILE

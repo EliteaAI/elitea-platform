@@ -42,6 +42,7 @@
 import { z as zod } from "zod";
 import { ConversationStarters } from "./conversationStarters.zod";
 import { LlmSettings } from "./llmSettings.zod";
+import { SkillReferenceInput } from "./skillReferenceInput.zod";
 import { VersionMeta } from "./versionMeta.zod";
 import { VersionTag } from "./versionTag.zod";
 import { VersionVariable } from "./versionVariable.zod";
@@ -56,6 +57,12 @@ export const ForkVersionInput = zod.object({
   meta: VersionMeta.optional(),
   variables: zod.array(VersionVariable).optional(),
   tags: zod.array(VersionTag).optional(),
+  skills: zod
+    .array(SkillReferenceInput)
+    .optional()
+    .describe(
+      "The skill attachments to give the forked version. Each entry names an entry of the request's own top-level `skills` array by `import_uuid` (internal\/api\/v2\/eliteacore\/import_skills.go:470-473). An absent key, and an empty array, both leave the forked version with no attachment. The fork copied no attachment at all before issue #611, so a forked agent lost every skill it had.\n",
+    ),
 });
 
 export type ForkVersionInput = zod.input<typeof ForkVersionInput>;

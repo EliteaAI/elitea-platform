@@ -40,53 +40,46 @@
  * OpenAPI spec version: 2.0.0
  */
 import { z as zod } from "zod";
-import { ConversationStarters } from "./conversationStarters.zod";
-import { ExportedSkillReference } from "./exportedSkillReference.zod";
-import { LlmSettings } from "./llmSettings.zod";
-import { SelectedTools } from "./selectedTools.zod";
-import { VersionMeta } from "./versionMeta.zod";
-import { VersionTag } from "./versionTag.zod";
-import { VersionVariable } from "./versionVariable.zod";
+import { SkillVersionExport } from "./skillVersionExport.zod";
 
-export const ApplicationVersionExport = zod
+export const SkillExport = zod
   .object({
-    id: zod.string(),
-    name: zod.string(),
-    status: zod.string(),
-    application_id: zod.string(),
-    author_id: zod.string(),
-    agent_type: zod.string(),
-    instructions: zod.string(),
-    welcome_message: zod.string(),
-    llm_settings: LlmSettings,
-    conversation_starters: ConversationStarters,
-    meta: VersionMeta,
-    tools: zod.array(
-      zod.object({
-        import_uuid: zod.string(),
-        selected_tools: SelectedTools,
-      }),
-    ),
-    variables: zod.array(VersionVariable),
-    tags: zod.array(VersionTag),
-    skills: zod
-      .array(ExportedSkillReference)
-      .describe(
-        "The skill attachments of this version. The key is ALWAYS present, and the array is empty when the version carries no attachment (internal\/api\/v2\/eliteacore\/export_import.go:364-382, written into the version entry at :169-185). Each entry names a skill in the document's top-level `skills` array. The import and the fork read this array to write the `entity_skill_mapping` rows of the version they create (internal\/api\/v2\/eliteacore\/import_skills.go:397-461).\n",
-      ),
-    is_forked: zod.boolean(),
-    import_version_uuid: zod
+    entity: zod
       .string()
-      .optional()
-      .describe("Present only when the version row has a uuid."),
+      .describe(
+        'Always the literal \"skills\". The export stamps the key so that a document sent to the import route unchanged names its own entities (internal\/api\/v2\/eliteacore\/export_import.go:526-531).\n',
+      ),
+    id: zod
+      .string()
+      .describe(
+        "The source `skills.id`. The import ignores it, because that id belongs to the project the file came from.\n",
+      ),
+    import_uuid: zod
+      .string()
+      .describe(
+        "The key every version reference uses. It is `skills.uuid`, or `skill-<id>` when the row holds no uuid (internal\/api\/v2\/eliteacore\/export_import.go:516-523).\n",
+      ),
+    name: zod.string(),
+    description: zod
+      .string()
+      .describe(
+        "The import writes the name into the column when this value is empty, because `skills.description` is NOT NULL (internal\/api\/v2\/eliteacore\/import_skills.go:143-148).\n",
+      ),
+    owner_id: zod
+      .string()
+      .describe(
+        "The SOURCE project id, and not a user id. The import ignores it and writes the destination project (internal\/api\/v2\/eliteacore\/import_skills.go:213-217).\n",
+      ),
+    meta: zod.record(zod.string(), zod.unknown()),
+    versions: zod
+      .array(SkillVersionExport)
+      .describe(
+        "ALWAYS an array, and never null. A skill needs no version row, and an agent can be attached to a skill that has none, so this value was the nil version list of such a skill; the export now writes `[]` there, which is the shape every sibling array of the document already has (internal\/api\/v2\/eliteacore\/export_import.go:617-619).\nThe import adds a `base` clone of the first entry when the array names no version called `base`, because every skills read of this service joins on that name (internal\/api\/v2\/eliteacore\/import_skills.go:304-326). The clone is additive, so a reference that pins another version still finds it. Every imported version is written with status `draft` (:251-257). An entry whose array is empty is refused and reported on errors.skills (:164-167).\n",
+      ),
   })
   .describe(
-    "NOTE(W2): ExportImportGet version entry, internal\/api\/v2\/eliteacore\/export_import.go:176-188.\n",
+    'NOTE(W2): one entry of the export document\'s top-level `skills` array, internal\/api\/v2\/eliteacore\/export_import.go:525-539. The same object is what the import route accepts as an entity with entity \"skills\", and what the fork request carries in its own `skills` array.\n',
   );
 
-export type ApplicationVersionExport = zod.input<
-  typeof ApplicationVersionExport
->;
-export type ApplicationVersionExportOutput = zod.output<
-  typeof ApplicationVersionExport
->;
+export type SkillExport = zod.input<typeof SkillExport>;
+export type SkillExportOutput = zod.output<typeof SkillExport>;
