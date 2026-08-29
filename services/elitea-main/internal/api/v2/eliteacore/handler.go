@@ -2455,33 +2455,52 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	// have something to resolve against. `owner_id` on this table is the
 	// DESTINATION PROJECT (#533), which is the same value the toolkit import
 	// below reads through `tenantOwnerID`.
+	// The destination project, resolved ONCE for both entity types. `owner_id`
+	// on `skills` and on `elitea_tools` is the OWNING PROJECT and not a user
+	// (#533), and both come from the same immutable path segment, so a second
+	// resolution could only ever agree with the first — or drift away from it
+	// after a later edit.
+	destinationOwnerID, destinationOwnerErr := tenantOwnerID(projectID)
+
 	importedSkills := map[string]importedSkill{}
-	skillOwnerID, skillOwnerErr := tenantOwnerID(projectID)
 	for _, se := range skillEntries {
 		skillName, _ := se.raw["name"].(string)
-		if skillOwnerErr != nil {
+		if destinationOwnerErr != nil {
 			errorSkills = append(errorSkills, map[string]any{
 				"index": se.entityIdx, "name": skillName,
-				"msg": "Import function has been failed: " + skillOwnerErr.Error(),
+				"msg": "Import function has been failed: " + destinationOwnerErr.Error(),
 			})
 			continue
 		}
-		created, err := h.importSkill(ctx, s, skillOwnerID, userID, se.raw)
+		created, err := h.importSkill(ctx, s, destinationOwnerID, userID, se.raw)
+		// A skill can be written and still fail, because the row is inserted
+		// before its versions are. The row then exists, so it is REPORTED and
+		// REGISTERED rather than dropped: a caller that sees only
+		// "it is not among the imported skills" cannot find the row it now owns,
+		// and a reference to it can still resolve to the versions that landed.
+		// The error is kept beside the result, which is the shape a failed
+		// toolkit link already answers with (#420).
+		if created.id != 0 {
+			if se.importUUID != "" {
+				importedSkills[se.importUUID] = created
+			}
+			resultSkills = append(resultSkills, map[string]any{
+				"id": strconv.Itoa(created.id), "name": skillName,
+			})
+		}
 		if err != nil {
 			slog.ErrorContext(ctx, "import: skill import failed",
-				"schema", s, "name", skillName, "error", err)
+				"schema", s, "name", skillName, "skill_id", created.id, "error", err)
+			message := "Import function has been failed: " + err.Error()
+			if created.id != 0 {
+				message = fmt.Sprintf(
+					"Import function has been failed: skill %d was written and is incomplete: %s",
+					created.id, err.Error())
+			}
 			errorSkills = append(errorSkills, map[string]any{
-				"index": se.entityIdx, "name": skillName,
-				"msg": "Import function has been failed: " + err.Error(),
+				"index": se.entityIdx, "name": skillName, "msg": message,
 			})
-			continue
 		}
-		if se.importUUID != "" {
-			importedSkills[se.importUUID] = created
-		}
-		resultSkills = append(resultSkills, map[string]any{
-			"id": strconv.Itoa(created.id), "name": skillName,
-		})
 	}
 
 	// Phase 1: Import agents and build import_uuid -> appID maps
@@ -2662,7 +2681,8 @@ func (h *Handler) ExportImportPost(w http.ResponseWriter, r *http.Request) {
 	// elitea_tools.owner_id is the DESTINATION PROJECT and is NOT NULL on a
 	// schema this repository's migration corpus made — see
 	// importToolkitInsertSQL for the column's meaning and the evidence for it.
-	toolkitOwnerID, toolkitOwnerErr := tenantOwnerID(projectID)
+	// It is the value phase 0 already resolved.
+	toolkitOwnerID, toolkitOwnerErr := destinationOwnerID, destinationOwnerErr
 
 	for _, tk := range toolkitEntries {
 		tkName, _ := tk.raw["name"].(string)
@@ -2995,19 +3015,41 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 	// used to build. The fork always centres on the first entry — the button is
 	// disabled unless `selectedData[0]` is the item being forked — so index 0
 	// names the agent whose fork is incomplete.
+	//
+	// The index therefore cannot say WHICH skill failed, so every message below
+	// names the skill itself — by name where the entry has one, and by its
+	// position in the `skills` array where it does not. A guard in
+	// `getErrorImportUUID` would let this report the true index; until that
+	// lands, the message carries what the index cannot.
+	//
+	// # A body that names no skills at all
+	//
+	// The route used to answer 201 for `{applications: [...]}` alone, and a
+	// current export's version entries now carry skill references. A client that
+	// forwards the applications and drops the document's top-level `skills`
+	// array therefore asks for skills it did not send. That fork IS incomplete,
+	// so it still answers 207 and still reports — the whole point of #611 is that
+	// a lost attachment is never silent. What it must not do is describe the
+	// cause as though the file were broken, so `bodyNamesSkills` below separates
+	// "you sent no skills" from "the skill you sent could not be linked".
 	importedSkills := map[string]importedSkill{}
+	_, bodyNamesSkills := body["skills"]
 	skillOwnerID, skillOwnerErr := tenantOwnerID(projectID)
 	const forkedSkillErrorIndex = 0
-	for _, raw := range toAnySlice(body["skills"]) {
+	for skillPosition, raw := range toAnySlice(body["skills"]) {
 		skill, isMap := raw.(map[string]any)
 		if !isMap {
 			errorSkills = append(errorSkills, map[string]any{
 				"index": forkedSkillErrorIndex, "name": "",
-				"msg": "Fork function has been failed: a skill entry is not a JSON object",
+				"msg": fmt.Sprintf(
+					"Fork function has been failed: skills entry %d is not a JSON object", skillPosition),
 			})
 			continue
 		}
 		skillName, _ := skill["name"].(string)
+		if skillName == "" {
+			skillName = fmt.Sprintf("skills entry %d", skillPosition)
+		}
 		if skillOwnerErr != nil {
 			errorSkills = append(errorSkills, map[string]any{
 				"index": forkedSkillErrorIndex, "name": skillName,
@@ -3016,20 +3058,30 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		created, err := h.importSkill(ctx, s, skillOwnerID, userID, skill)
-		if err != nil {
-			slog.ErrorContext(ctx, "fork: skill import failed", "schema", s, "name", skillName, "error", err)
-			errorSkills = append(errorSkills, map[string]any{
-				"index": forkedSkillErrorIndex, "name": skillName,
-				"msg": "Fork function has been failed: unable to fork skill " + skillName + ": " + err.Error(),
+		// A skill can be written and still fail, because the row is inserted
+		// before its versions are. It is then reported and registered rather
+		// than dropped, for the reason the import states at phase 0.
+		if created.id != 0 {
+			if importUUID, _ := skill["import_uuid"].(string); importUUID != "" {
+				importedSkills[importUUID] = created
+			}
+			resultSkills = append(resultSkills, map[string]any{
+				"id": strconv.Itoa(created.id), "name": skillName,
 			})
-			continue
 		}
-		if importUUID, _ := skill["import_uuid"].(string); importUUID != "" {
-			importedSkills[importUUID] = created
+		if err != nil {
+			slog.ErrorContext(ctx, "fork: skill import failed",
+				"schema", s, "name", skillName, "skill_id", created.id, "error", err)
+			message := "Fork function has been failed: unable to fork skill " + skillName + ": " + err.Error()
+			if created.id != 0 {
+				message = fmt.Sprintf(
+					"Fork function has been failed: skill %d was written and is incomplete: %s",
+					created.id, err.Error())
+			}
+			errorSkills = append(errorSkills, map[string]any{
+				"index": forkedSkillErrorIndex, "name": skillName, "msg": message,
+			})
 		}
-		resultSkills = append(resultSkills, map[string]any{
-			"id": strconv.Itoa(created.id), "name": skillName,
-		})
 	}
 
 	for entityIdx, appRaw := range apps {
@@ -3241,11 +3293,24 @@ func (h *Handler) Fork(w http.ResponseWriter, r *http.Request) {
 			// Attach the skills this version references. Every reference that
 			// cannot be attached is reported, on the agent's own index, so a
 			// fork that came back with fewer skills than the file says so.
-			for _, message := range h.attachImportedSkills(ctx, s, vID, versionSkillReferences(v), importedSkills) {
+			skillReferences := versionSkillReferences(v)
+			switch {
+			case len(skillReferences) > 0 && !bodyNamesSkills:
+				// One message for the version, naming the cause, rather than one
+				// per reference saying each skill "is not among the imported
+				// skills" — which reads as a broken file and is not.
 				errorSkills = append(errorSkills, map[string]any{
 					"index": entityIdx, "name": name,
-					"msg": "Fork function has been failed: " + message,
+					"msg": fmt.Sprintf("Fork function has been failed: the request carries no skills array, "+
+						"so the %d skills of version %s were not forked", len(skillReferences), vName),
 				})
+			default:
+				for _, message := range h.attachImportedSkills(ctx, s, vID, skillReferences, importedSkills) {
+					errorSkills = append(errorSkills, map[string]any{
+						"index": entityIdx, "name": name,
+						"msg": "Fork function has been failed: " + message,
+					})
+				}
 			}
 
 			createdVersions = append(createdVersions, map[string]any{

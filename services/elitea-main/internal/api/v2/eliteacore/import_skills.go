@@ -78,9 +78,11 @@ package eliteacore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
+
+	"github.com/jackc/pgx/v5"
 
 	v2skills "github.com/EliteaAI/elitea-platform/services/elitea-main/internal/api/v2/skills"
 )
@@ -145,7 +147,15 @@ func (h *Handler) importSkill(
 		// skill list a row with no text at all.
 		description = name
 	}
-	metaJSON, err := importedJSONObject(entry, "meta")
+	importUUID, _ := entry["import_uuid"].(string)
+	if importUUID == "" {
+		// The key that makes this import repeatable, and the key every version
+		// reference names. Without it the caller cannot link the skill to any
+		// agent, so the entity is refused rather than written and then reported
+		// as a success that nothing can use.
+		return importedSkill{}, fmt.Errorf("skill %q needs an import_uuid", name)
+	}
+	meta, err := importedSkillMeta(entry, importUUID)
 	if err != nil {
 		return importedSkill{}, err
 	}
@@ -158,11 +168,55 @@ func (h *Handler) importSkill(
 	}
 	versions = ensureBaseSkillVersion(versions)
 
+	// THE IMPORT IS REPEATABLE.
+	//
+	// A plain INSERT here made every run write a new skill. That is wrong for the
+	// action this wizard invites most: a partly failed import answers 207, the
+	// wizard paints the failed entity red, and the user sends the SAME file
+	// again. The skills that succeeded the first time were written again, so the
+	// project collected one copy of every skill per attempt, each orphaned from
+	// the agent whose import had failed.
+	//
+	// The source identity is the document's `import_uuid`, recorded in
+	// `meta.import_uuid` on the row this writes. A second run of the same
+	// document finds that row and reuses it, and the version INSERT below
+	// upserts on `_skill_version_name_uc`, so a retry converges on the state the
+	// first run was trying to reach rather than duplicating it.
+	//
+	// `owner_id` is in the predicate because it is the OWNING PROJECT (#533):
+	// two projects that import one file each get their own skill, and neither
+	// can reach the other's.
+	//
+	// This is not pylon's `_find_forked_skill`, which matches the lineage a FORK
+	// writes into the version meta and so cannot see a plain import at all. It is
+	// the same idea, keyed on the one identifier every import document carries.
 	var skillID int
-	if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		INSERT INTO %s.skills (name, description, owner_id, author_id, meta)
-		VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id`, schema),
-		name, description, ownerID, authorID, metaJSON).Scan(&skillID); err != nil {
+	err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+		SELECT id FROM %s.skills
+		WHERE owner_id = $1 AND meta ->> 'import_uuid' = $2
+		ORDER BY id LIMIT 1`, schema), ownerID, importUUID).Scan(&skillID)
+	switch {
+	case err == nil:
+		// Reused. The name and the description are refreshed, because the file
+		// is the authority on what the skill is called and a retry can follow an
+		// edit to it.
+		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
+			UPDATE %s.skills SET name = $2, description = $3 WHERE id = $1`, schema),
+			skillID, name, description); err != nil {
+			return importedSkill{}, err
+		}
+	case errors.Is(err, pgx.ErrNoRows):
+		metaJSON, encodeErr := importedJSONEncode("meta", meta)
+		if encodeErr != nil {
+			return importedSkill{}, encodeErr
+		}
+		if err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %s.skills (name, description, owner_id, author_id, meta)
+			VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING id`, schema),
+			name, description, ownerID, authorID, metaJSON).Scan(&skillID); err != nil {
+			return importedSkill{}, err
+		}
+	default:
 		return importedSkill{}, err
 	}
 
@@ -213,6 +267,29 @@ func (h *Handler) importSkill(
 		}
 	}
 	return imported, nil
+}
+
+// importedSkillMeta reads the document's `meta` and records the source identity
+// in it, so a second run of one document finds the row the first run wrote.
+//
+// The key goes in the skill's own meta rather than in a column of its own,
+// because a jsonb key needs no migration. It is the value `importSkill` reads
+// back with `meta ->> 'import_uuid'`.
+func importedSkillMeta(entry map[string]any, importUUID string) (map[string]any, error) {
+	raw, present := entry["meta"]
+	if !present || raw == nil {
+		return map[string]any{"import_uuid": importUUID}, nil
+	}
+	stored, isMap := raw.(map[string]any)
+	if !isMap {
+		return nil, fmt.Errorf("meta must be a JSON object")
+	}
+	meta := make(map[string]any, len(stored)+1)
+	for key, value := range stored {
+		meta[key] = value
+	}
+	meta["import_uuid"] = importUUID
+	return meta, nil
 }
 
 // ensureBaseSkillVersion prepends a `base` clone when the imported versions
@@ -302,13 +379,20 @@ func (h *Handler) attachImportedSkills(
 		return messages
 	}
 
-	attached, err := h.attachedSkillCount(ctx, schema, entityVersionID)
-	if err != nil {
-		slog.ErrorContext(ctx, "import: attached skill count failed",
-			"schema", schema, "entity_version_id", entityVersionID, "error", err)
-		return []string{"unable to read the skills already attached to version " +
-			strconv.Itoa(entityVersionID) + ": " + err.Error()}
-	}
+	// THE PRECONDITION THIS COUNTER DEPENDS ON: `entityVersionID` names a version
+	// this same request has just created, so it carries no attachment yet. Both
+	// call sites hold it — the import attaches in phase 3 to a version phase 1
+	// inserted, and the fork attaches to the version it inserted a few lines
+	// above. A caller that attaches to an EXISTING version must read the current
+	// count out of `entity_skill_mapping` first, or the cap below counts only
+	// what this request added.
+	//
+	// The cap is measured over (entity_version_id, entity_type), which is the set
+	// the attach route (internal/infra/db/repos/skills.go:239-241) and pylon's
+	// `validate_agent_skill_limit` both measure. Every row this function writes
+	// carries `entity_type = agent`, because the refusal below admits no other
+	// value, so one counter measures that set exactly.
+	attached := 0
 
 	for _, raw := range references {
 		reference, isMap := raw.(map[string]any)
@@ -333,9 +417,24 @@ func (h *Handler) attachImportedSkills(
 				"unable to link skill %q: it carries no version to attach", importUUID))
 			continue
 		}
+		// `agent` is the whole set. Pylon closes the enum to that one member and
+		// types the request field as it, so any other value is a 400 there and on
+		// the sibling write route here (internal/api/v2/skills/handler.go,
+		// relationEntityType). Both READS filter on the literal — the chat read
+		// (internal/db/queries/agent_chat.sql:132) and the attached-skill
+		// registry (internal/api/v2/applications/handler.go) — so a row written
+		// with any other value is a row nothing reads. The import used to write
+		// whatever the file said, which made it the one path that could create
+		// such a row, answer 201, and report it as attached.
 		entityType, _ := reference["entity_type"].(string)
 		if entityType == "" {
 			entityType = v2skills.SkillEntityTypeAgent
+		}
+		if entityType != v2skills.SkillEntityTypeAgent {
+			messages = append(messages, fmt.Sprintf(
+				"unable to link skill %q: entity_type must be %q",
+				importUUID, v2skills.SkillEntityTypeAgent))
+			continue
 		}
 		// The cap the attach route enforces (v2skills.MaxSkillsPerEntityVersion,
 		// pylon's MAX_SKILLS_PER_AGENT). The read side renders it as "n/5 skills
@@ -361,15 +460,6 @@ func (h *Handler) attachImportedSkills(
 		attached++
 	}
 	return messages
-}
-
-// attachedSkillCount reads how many skills one entity version already carries.
-func (h *Handler) attachedSkillCount(ctx context.Context, schema string, entityVersionID int) (int, error) {
-	var count int
-	err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-		SELECT count(*) FROM %s.entity_skill_mapping WHERE entity_version_id = $1`, schema),
-		entityVersionID).Scan(&count)
-	return count, err
 }
 
 // versionSkillReferences reads the `skills` array off one version entry.

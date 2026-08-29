@@ -255,6 +255,101 @@ func TestForkKeepsTheSkillAttachments(t *testing.T) {
 		})
 }
 
+// TestForkReportsASkillItCannotFork covers the fork's own error channel, which
+// nothing exercised. The import path has three cases for its channel and the
+// fork had none, so a regression that dropped the `errorSkills` append, or that
+// stopped counting it in the status rule, would leave the suite green.
+//
+// Three branches in one case, because they share a fixture: an entry that is not
+// an object, an entry that cannot be imported, and the index every fork skill
+// error carries.
+func TestForkReportsASkillItCannotFork(t *testing.T) {
+	pool := newImportLinkPool(t)
+	handler := eliteacore.NewHandler(pool)
+
+	recorder := forkSkillDo(t, handler, map[string]any{
+		"applications": []any{map[string]any{
+			"id": "1", "name": "fixture agent", "owner_id": "9",
+			"versions": []any{map[string]any{"name": "latest", "agent_type": "openai"}},
+		}},
+		"skills": []any{
+			"not an object",
+			// An entry with no version cannot be imported, and the fork must say
+			// so rather than write a skill with no instructions.
+			map[string]any{"import_uuid": "sk-1", "name": "empty skill", "versions": []any{}},
+		},
+	})
+	// 207 and not 400: the agent itself forked. Only the skills failed.
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("fork status = %d, want %d, body = %s", recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+	}
+
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 2 {
+		t.Fatalf("errors.skills = %+v, want both refused entries", reported)
+	}
+	for _, entry := range reported {
+		// EVERY fork skill error carries index 0. `getErrorImportUUID` reads
+		// `selectedData[item.index].import_uuid` with no guard on every channel,
+		// and the fork button passes it the APPLICATIONS it sent — so an index
+		// into the skills array would address no entry and throw inside the
+		// wizard. This assertion is the only thing that holds that constant.
+		if entry.Index != 0 {
+			t.Errorf("fork skill error index = %d, want 0 — the wizard resolves it against the applications",
+				entry.Index)
+		}
+	}
+	// The message has to name the entry, because the index cannot.
+	if !bytes.Contains([]byte(reported[0].Msg), []byte("skills entry 0")) {
+		t.Errorf("the first message %q names no position, so the user cannot tell which entry failed", reported[0].Msg)
+	}
+	if !bytes.Contains([]byte(reported[1].Msg), []byte("empty skill")) {
+		t.Errorf("the second message %q does not name the skill", reported[1].Msg)
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 0 {
+		t.Errorf("skill rows = %d, want 0 — neither entry could be forked", count)
+	}
+}
+
+// TestForkSaysWhenTheRequestCarriesNoSkills separates "you sent no skills" from
+// "the skill you sent could not be linked".
+//
+// The route used to answer 201 for an applications-only body, and a current
+// export's version entries now carry skill references. A client that forwards
+// the applications and drops the document's top-level `skills` array asks for
+// skills it did not send. That fork IS incomplete, so it still answers 207 —
+// but the response must not describe the file as broken.
+func TestForkSaysWhenTheRequestCarriesNoSkills(t *testing.T) {
+	pool := newImportLinkPool(t)
+	handler := eliteacore.NewHandler(pool)
+	seeded := seedSkillRoundTripAgent(t, pool)
+	document := exportRoundTrip(t, handler, seeded.applicationID, http.StatusOK)
+
+	// The applications alone, exactly as a non-wizard client would send them.
+	recorder := forkSkillDo(t, handler, map[string]any{"applications": document["applications"]})
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("fork status = %d, want %d, body = %s", recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+	}
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 2 {
+		t.Fatalf("errors.skills = %+v, want one message for each version that references a skill", reported)
+	}
+	for _, entry := range reported {
+		if !bytes.Contains([]byte(entry.Msg), []byte("carries no skills array")) {
+			t.Errorf("reported msg = %q, want it to name the missing array rather than blame the file", entry.Msg)
+		}
+	}
+	// The agent forked. Only its skills did not.
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.applications`); count != 2 {
+		t.Errorf("applications rows = %d, want the seeded agent and its fork", count)
+	}
+	if count := importLinkCount(t, pool, fmt.Sprintf(
+		`SELECT count(*) FROM p_1.entity_skill_mapping WHERE entity_version_id NOT IN (%d, %d)`,
+		seeded.earlierVersionID, seeded.latestVersionID)); count != 0 {
+		t.Errorf("the fork wrote %d skill attachments from a body that named no skills", count)
+	}
+}
+
 /* ── the report the issue asks for ───────────────────────────────────────── */
 
 // TestImportReportsASkillItCannotLink is task 4 of the issue. A version names a
@@ -553,6 +648,199 @@ WHERE skill.name = 'pinned skill'`)
 		skillName: "pinned skill", versionName: versionName,
 		instructions: instructions, entityType: "agent",
 	}})
+}
+
+// TestImportOfTheSameDocumentIsRepeatable is the case the wizard invites most.
+//
+// A partly failed import answers 207 and the wizard paints the failed entity red
+// and invites a retry. The skills that succeeded were written by a plain INSERT,
+// so the retry wrote them AGAIN: the project collected one copy of every skill
+// per attempt, each orphaned from the agent whose import kept failing.
+func TestImportOfTheSameDocumentIsRepeatable(t *testing.T) {
+	pool := newImportLinkPool(t)
+	router := importLinkRouter(eliteacore.NewHandler(pool))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Make the AGENT fail and leave the skill import untouched, which is the
+	// shape that produces the retry.
+	if _, err := pool.Exec(ctx, `
+ALTER TABLE p_1.application_versions ADD CONSTRAINT version_must_fail CHECK (name <> 'latest')`); err != nil {
+		t.Fatalf("install failing constraint: %v", err)
+	}
+
+	body := skillImportBody("sk-1", "base")
+	for attempt := 1; attempt <= 3; attempt++ {
+		recorder := importLinkDo(t, router, body)
+		if recorder.Code != http.StatusMultiStatus {
+			t.Fatalf("attempt %d: import status = %d, want %d, body = %s",
+				attempt, recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+		}
+		if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 1 {
+			t.Fatalf("after attempt %d the project holds %d skills, want the one the file names", attempt, count)
+		}
+		if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skill_versions`); count != 1 {
+			t.Errorf("after attempt %d the skill holds %d versions, want 1", attempt, count)
+		}
+	}
+
+	// The retry converges: with the agent repaired, the same document attaches
+	// to the one skill it has been writing all along.
+	if _, err := pool.Exec(ctx, `ALTER TABLE p_1.application_versions DROP CONSTRAINT version_must_fail`); err != nil {
+		t.Fatalf("drop the failing constraint: %v", err)
+	}
+	recorder := importLinkDo(t, router, body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("the repaired import status = %d, want %d, body = %s",
+			recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 1 {
+		t.Errorf("the project holds %d skills after four runs of one document, want 1", count)
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.entity_skill_mapping`); count != 1 {
+		t.Errorf("skill attachment rows = %d, want the one the repaired run wrote", count)
+	}
+}
+
+// TestImportRefusesASkillWithNoImportUUID states what an entity nothing can
+// reference does. It used to be written and reported in `result.skills` as a
+// success, while every reference to it answered "it is not among the imported
+// skills" — the response claiming both at once, over a row the caller could not
+// find.
+func TestImportRefusesASkillWithNoImportUUID(t *testing.T) {
+	pool := newImportLinkPool(t)
+	router := importLinkRouter(eliteacore.NewHandler(pool))
+
+	recorder := importLinkDo(t, router, []any{map[string]any{
+		"entity": "skills", "name": "anonymous skill", "description": "seeded",
+		"versions": []any{map[string]any{"name": "base", "instructions": "read this"}},
+	}})
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("import status = %d, want %d, body = %s", recorder.Code, http.StatusBadRequest, recorder.Body.String())
+	}
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 1 || !bytes.Contains([]byte(reported[0].Msg), []byte("import_uuid")) {
+		t.Fatalf("errors.skills = %+v, want it to name the missing import_uuid", reported)
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 0 {
+		t.Errorf("skill rows = %d, want 0 — a refused entity must write nothing", count)
+	}
+}
+
+// TestImportRefusesAnEntityTypeNothingReads closes the one path that could write
+// a row no reader ever matches. Both skills reads filter on the literal `agent`
+// (internal/db/queries/agent_chat.sql:132 and the attached-skill registry), and
+// the sibling write route answers 400 for any other value, so the import must
+// not accept one from a file.
+func TestImportRefusesAnEntityTypeNothingReads(t *testing.T) {
+	pool := newImportLinkPool(t)
+	router := importLinkRouter(eliteacore.NewHandler(pool))
+
+	entities := skillImportBody("sk-1", "base")
+	agent, _ := entities[1].(map[string]any)
+	versions, _ := agent["versions"].([]any)
+	version, _ := versions[0].(map[string]any)
+	references, _ := version["skills"].([]any)
+	reference, _ := references[0].(map[string]any)
+	reference["entity_type"] = "pipeline"
+
+	recorder := importLinkDo(t, router, entities)
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("import status = %d, want %d, body = %s", recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+	}
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 1 || !bytes.Contains([]byte(reported[0].Msg), []byte("entity_type must be")) {
+		t.Fatalf("errors.skills = %+v, want it to refuse the entity_type", reported)
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.entity_skill_mapping`); count != 0 {
+		t.Errorf("skill attachment rows = %d, want 0 — the row would be one nothing reads", count)
+	}
+}
+
+// TestImportReportsASkillItWroteAndCouldNotFinish covers the half-written skill.
+// The `skills` row is inserted before its versions, so a version that cannot be
+// written leaves a row behind. It used to appear in neither `result.skills` nor
+// the errors' account of what exists, so the caller owned a row it could not
+// find and every reference to it said the skill was never imported.
+func TestImportReportsASkillItWroteAndCouldNotFinish(t *testing.T) {
+	pool := newImportLinkPool(t)
+	router := importLinkRouter(eliteacore.NewHandler(pool))
+
+	recorder := importLinkDo(t, router, []any{map[string]any{
+		"entity": "skills", "import_uuid": "sk-1", "name": "half a skill",
+		"description": "seeded",
+		"versions": []any{
+			map[string]any{"name": "base", "instructions": "read this"},
+			// Not an object, so importSkill stops after the row and the first
+			// version are already written.
+			"not a version",
+		},
+	}})
+	if recorder.Code != http.StatusMultiStatus {
+		t.Fatalf("import status = %d, want %d, body = %s", recorder.Code, http.StatusMultiStatus, recorder.Body.String())
+	}
+	// The row exists, so the response must name it on BOTH channels: the result
+	// so the caller can find it, the errors so the caller knows it is partial.
+	answer := decodeImportLink(t, recorder)
+	if len(answer.Result.Agents) != 0 {
+		t.Errorf("result.agents = %+v, want none — the document carries only a skill", answer.Result.Agents)
+	}
+	reported := decodeSkillErrors(t, recorder)
+	if len(reported) != 1 || !bytes.Contains([]byte(reported[0].Msg), []byte("was written and is incomplete")) {
+		t.Fatalf("errors.skills = %+v, want it to say the row exists and is partial", reported)
+	}
+	if count := importLinkCount(t, pool, `SELECT count(*) FROM p_1.skills`); count != 1 {
+		t.Fatalf("skill rows = %d, want the row the import wrote", count)
+	}
+	var reportedID int
+	if err := pool.QueryRow(context.Background(), `SELECT id FROM p_1.skills`).Scan(&reportedID); err != nil {
+		t.Fatalf("read the half-written skill: %v", err)
+	}
+	if !bytes.Contains([]byte(reported[0].Msg), []byte(strconv.Itoa(reportedID))) {
+		t.Errorf("reported msg = %q, want it to name skill %d so the caller can find it", reported[0].Msg, reportedID)
+	}
+}
+
+// TestExportGivesAVersionlessSkillAnEmptyArray states the document's one shape.
+// `skills` needs no `skill_versions` row and `skill_version_id` is nullable, so
+// an agent can be attached to a skill that has no version. The export used to
+// emit `"versions": null` for it, the only null array in a document whose every
+// other array is `[]`.
+func TestExportGivesAVersionlessSkillAnEmptyArray(t *testing.T) {
+	pool := newImportLinkPool(t)
+	handler := eliteacore.NewHandler(pool)
+	seeded := seedRoundTripAgent(t, pool)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var skillID int
+	if err := pool.QueryRow(ctx, `
+INSERT INTO p_1.skills (name, description, owner_id, author_id)
+VALUES ('a skill with no version', 'seeded', 1, $1) RETURNING id`, importLinkPrincipal).Scan(&skillID); err != nil {
+		t.Fatalf("seed the version-less skill: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO p_1.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
+VALUES ($1, 'agent', $2, NULL)`, seeded.versionID, skillID); err != nil {
+		t.Fatalf("attach the version-less skill: %v", err)
+	}
+
+	document := exportRoundTrip(t, handler, seeded.applicationID, http.StatusOK)
+	exported, _ := document["skills"].([]any)
+	if len(exported) != 1 {
+		t.Fatalf("the export carries %v as its skills array, want the attached skill", document["skills"])
+	}
+	skill, _ := exported[0].(map[string]any)
+	versions, present := skill["versions"]
+	if !present {
+		t.Fatalf("the exported skill carries no versions key: %v", skill)
+	}
+	if versions == nil {
+		t.Fatalf("the exported skill carries versions: null, and every other array in the document is []")
+	}
+	if list, ok := versions.([]any); !ok || len(list) != 0 {
+		t.Errorf("the exported skill carries versions %v, want an empty array", versions)
+	}
 }
 
 /* ── the export refuses a lost read ──────────────────────────────────────── */
@@ -974,12 +1262,19 @@ func assertAttachedSkillsOfImportedVersion(
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	var versionID int
+	// ORDER BY, and a count beside it: exactly one imported version carries this
+	// name today, and a QueryRow with neither would silently take whichever row
+	// the planner returned first the moment a case imports the document twice.
+	var versionID, matches int
 	if err := pool.QueryRow(ctx, `
-SELECT id FROM p_1.application_versions
-WHERE name = $1 AND id <> ALL($2)`,
-		versionName, []int{seeded.earlierVersionID, seeded.latestVersionID}).Scan(&versionID); err != nil {
+SELECT id, count(*) OVER () FROM p_1.application_versions
+WHERE name = $1 AND id <> ALL($2)
+ORDER BY id`,
+		versionName, []int{seeded.earlierVersionID, seeded.latestVersionID}).Scan(&versionID, &matches); err != nil {
 		t.Fatalf("the import wrote no version named %q: %v", versionName, err)
+	}
+	if matches != 1 {
+		t.Fatalf("%d imported versions are named %q, so this assertion reads an arbitrary one", matches, versionName)
 	}
 	got := readAttachedSkills(t, pool, versionID)
 	if len(got) != len(want) {

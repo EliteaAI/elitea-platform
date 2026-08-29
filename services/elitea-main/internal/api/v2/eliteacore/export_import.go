@@ -599,11 +599,23 @@ func (h *Handler) exportedSkillVersions(
 			}
 		}
 		// A selection that matches nothing keeps the whole history rather than
-		// exporting a skill with no version at all: a skill with no version
-		// cannot be imported, and the reference would then fail for a reason
-		// that is the export's fault (export_import.py:293-302).
+		// exporting a skill with fewer versions than it has: the reference would
+		// then fail on import for a reason that is the export's fault
+		// (export_import.py:293-302).
+		//
+		// It does NOT rescue a skill that holds no version at all. Nothing
+		// requires `skills` to have a `skill_versions` row, and
+		// `entity_skill_mapping.skill_version_id` is nullable, so an agent can be
+		// attached to such a skill. `entries` is then nil, and assigning it
+		// straight through put a JSON `null` in the document where every sibling
+		// array — tools, variables, tags — writes `[]`. The empty slice keeps the
+		// document's one shape. The import still refuses the entry, and says so:
+		// a skill with no instructions is a skill nothing attached to it can run.
 		if len(chosen) == 0 {
 			chosen = entries
+		}
+		if chosen == nil {
+			chosen = make([]map[string]any, 0)
 		}
 		kept[skillID] = chosen
 		for _, entry := range chosen {
