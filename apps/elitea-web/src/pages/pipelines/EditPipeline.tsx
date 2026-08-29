@@ -4,16 +4,15 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useParams, useSearch } from '@tanstack/react-router';
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
-import { CreateApplicationTabBar } from '@/entities/application-form';
-import { ConfigurationTab, usePipelineVersionSync } from '@/features/pipelines';
+import { ConfigurationTab, resetPipelineDraft, usePipelineVersionSync } from '@/features/pipelines';
 import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { AgentModelSettings } from '@/widgets/agent-model-settings';
-import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
+import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { pipelineDetailDisplayName, toVersionSummaries } from './lib/editPipelineMappers';
 import { isPublicPipelinesProject } from './lib/isPublicPipelinesProject';
@@ -28,7 +27,8 @@ import { useEditPipelineData } from './lib/useEditPipelineData';
 import { useEditPipelineForm } from './lib/useEditPipelineForm';
 import { useIsVersionNotFound } from './lib/useIsVersionNotFound';
 import { useSelectedProjectId } from './lib/useSelectedProjectId';
-import { useDiscardPipelineChanges } from './useDiscardPipelineChanges';
+import { EditPipelineActions } from './ui/EditPipelineActions';
+import { EditPipelineSaveBar } from './ui/EditPipelineSaveBar';
 
 /**
  * The `||` lives here rather than inline in `EditPipeline` purely to keep
@@ -69,34 +69,6 @@ interface EditPipelineSearch {
 function parseApplicationId(agentId: string | undefined): number | undefined {
   if (agentId === undefined || !/^\d+$/.test(agentId)) return undefined;
   return Number(agentId);
-}
-
-interface EditPipelineSaveBarProps {
-  readonly onSave: () => void;
-  readonly canSave: boolean;
-  readonly isSaving: boolean;
-}
-
-/**
- * Split out purely so `useDiscardPipelineChanges` (this unit's own
- * `useFormContext()`-based hook) is called from a genuine `<FormProvider>`
- * DESCENDANT, not from `EditPipeline` itself — same reasoning
- * `pages/agents/ui/EditApplicationSaveBar.tsx`'s own doc comment gives in
- * full: the component that CREATES the `form` instance and
- * renders `<FormProvider>` sits ABOVE that provider in the tree.
- */
-function EditPipelineSaveBar({ onSave, canSave, isSaving }: EditPipelineSaveBarProps) {
-  const { discardPipelineChanges } = useDiscardPipelineChanges();
-  return (
-    <CreateApplicationTabBar
-      onSave={onSave}
-      onCancel={discardPipelineChanges}
-      canSave={canSave}
-      isSaving={isSaving}
-      cancelDisabled={isSaving}
-      saveTestId="pipeline-save-button"
-    />
-  );
 }
 
 /**
@@ -255,6 +227,27 @@ export function EditPipeline(): ReactNode {
   // of someone else's public pipeline, not its owner.
   const isReadOnlyView = isPublicPipelinesProject(projectId);
 
+  /*
+   * Confirming the discard dialog now actually DROPS the draft and LEAVES
+   * editing, mirroring `pages/agents/EditApplication.tsx`'s `handleDiscarded`.
+   * Measured defect (the blocker in this page's twin, plus one worse half
+   * here): Discard was `form.reset()` alone — but the save path reads the
+   * LIVE graph (`usePipelineGraphDraft`) and the un-reset `llmSettings`, so
+   * a later Save silently PERSISTED the discarded canvas/model edits, and
+   * the user stayed on the edit page with no way out. The store resets run
+   * BEFORE the navigation so the in-memory draft is gone even while this
+   * page is still mounted; the disarm must precede the navigation or the
+   * just-reset form's blocker prompts a second time.
+   */
+  const llmSettingsReset = llmSettings.reset;
+  const navigate = useNavigate();
+  const handleDiscarded = useCallback(() => {
+    resetPipelineDraft();
+    llmSettingsReset();
+    disarmUnsavedChangesNavBlocker();
+    void navigate({ to: '/pipelines/$tab', params: { tab: params.tab ?? 'latest' } });
+  }, [llmSettingsReset, navigate, params.tab]);
+
   const setLlmSettings = llmSettings.setValue;
   const handleModelSettingsChange = useCallback((next: AgentLlmSettings) => setLlmSettings(next), [setLlmSettings]);
   /*
@@ -310,11 +303,23 @@ export function EditPipeline(): ReactNode {
             {detail ? pipelineDetailDisplayName(detail) : t('pages.pipelines.editPipeline.title', 'Pipeline')}
           </Typography>
           {!isFetching && !isReadOnlyView && (
-            <EditPipelineSaveBar
-              onSave={handleSave}
-              canSave={form.formState.isValid && !isSaving}
-              isSaving={isSaving}
-            />
+            <>
+              {/* The Chat action — the only way to actually TALK to this
+                  pipeline; see `./ui/ChatWithPipelineButton.tsx` for the
+                  participant mapping and why it is writer-only. */}
+              <EditPipelineActions
+                applicationId={params.agentId}
+                detail={detail}
+                activeVersion={activeVersion}
+                projectId={projectId}
+              />
+              <EditPipelineSaveBar
+                onSave={handleSave}
+                canSave={form.formState.isValid && !isSaving}
+                isSaving={isSaving}
+                onDiscarded={handleDiscarded}
+              />
+            </>
           )}
         </Box>
         <Box sx={contentSx}>

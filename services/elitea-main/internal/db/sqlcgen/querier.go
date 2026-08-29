@@ -452,6 +452,29 @@ type Querier interface {
 	// contract, and silently reshaping stored content here would make the
 	// projection disagree with what the transcript renders.
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
+	// The projection above is ResolveCurrentApplicationTurn's
+	// `application_version_details_json` block, copied verbatim (agent_chat.sql:11-137)
+	// rather than shared. Both documents are read by the SAME decoder in the native
+	// runtime (`OrdinaryNoToolProfile::from_nested_version` and
+	// `FrozenToolSnapshot::from_version_details`,
+	// services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
+	// freeze (`FreezeCurrentApplicationVersion`,
+	// internal/application/agentexecution/tools.go), so a parent's definition and a
+	// nested child's must have one shape. What is deliberately absent is everything
+	// the turn projection derives from a conversation — chat history, participants,
+	// the conversation's own internal-tool list — because a nested child has no
+	// conversation: it is invoked as a tool inside the parent's turn.
+	//
+	// BOTH identity arguments are filters, and that is load-bearing rather than
+	// defensive. The worker names the pair in its request path
+	// (`/runtime-context/applications/{application_id}/versions/{version_id}`,
+	// services/elitea-worker-rust/src/transport/runtime_context.rs:448-469) and
+	// validates the pair it gets back (:554-564). Keying on the version alone would
+	// let a stored reference whose `application_id` disagrees with its
+	// `application_version_id` still resolve a definition — the exact mismatch
+	// `materializeCurrentApplicationToolNestedSkills` refuses on the start path
+	// (internal/infra/db/repos/agent_nesting.go).
+	ResolveCurrentApplicationVersionDetails(ctx context.Context, arg ResolveCurrentApplicationVersionDetailsParams) (ResolveCurrentApplicationVersionDetailsRow, error)
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	ResolveCurrentOutputLimitContinuation(ctx context.Context, arg ResolveCurrentOutputLimitContinuationParams) (ResolveCurrentOutputLimitContinuationRow, error)

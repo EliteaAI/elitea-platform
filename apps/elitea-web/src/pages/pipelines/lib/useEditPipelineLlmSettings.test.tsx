@@ -45,6 +45,20 @@ describe('useEditPipelineLlmSettings', () => {
     expect(result.current.value).toEqual(PICKED);
   });
 
+  it('reset reverts a pick to the stored baseline — the discard direction, opposite of markSaved', () => {
+    const stored = { model_name: 'gpt-4o', model_project_id: 9, max_tokens: 100 };
+    const { result } = renderHook(() => useEditPipelineLlmSettings(version('1', stored)));
+
+    act(() => result.current.setValue(PICKED));
+    expect(result.current.isDirty).toBe(true);
+
+    act(() => result.current.reset());
+    // Back to the loaded model, not the "discarded" pick — without this the
+    // page's Discard left the pick live for the next save body to carry.
+    expect(result.current.value).toEqual(stored);
+    expect(result.current.isDirty).toBe(false);
+  });
+
   it('re-seeds on a version SWITCH', () => {
     const { result, rerender } = renderHook(({ v }: { v: ApplicationVersionDetail }) => useEditPipelineLlmSettings(v), {
       initialProps: { v: version('1') },

@@ -54,7 +54,9 @@ func runtimeContextUnavailableStage(err error) string {
 		runtimeContextStageActorPATIssuance,
 		runtimeContextStageSystemPATIssuance,
 		runtimeContextStagePATValidation,
-		runtimeContextStagePrincipalBinding:
+		runtimeContextStagePrincipalBinding,
+		runtimeContextStageNestedVersionRead,
+		runtimeContextStageNestedVersionFreeze:
 		return unavailable.stage
 	default:
 		return "unknown"

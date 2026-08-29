@@ -121,7 +121,13 @@ async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
-  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
+  server.use(
+    http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)),
+    // The Chat button resolves the signed-in user to add the USER participant
+    // (the resolver's author join needs it), so every render of this page now
+    // issues the author read.
+    http.get('*/social/author*', () => HttpResponse.json({ id: '6', name: 'E2E Chat Driver', avatar: '' })),
+  );
 });
 
 afterEach(() => {
@@ -684,4 +690,116 @@ describe('EditApplication', () => {
 
     await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
   }, 20_000);
+});
+
+describe('leaving the editor', () => {
+  /**
+   * Measured defect: Cancel opened the "discard changes?" dialog, Discard
+   * reverted the fields, and the user was STILL on the edit page — the modal
+   * closed editing in neither of its two buttons. Confirming the discard now
+   * leaves for the list, matching the create page's Cancel.
+   */
+  it('confirming the discard dialog navigates back to the agents list', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    const description = await screen.findByTestId('agent-description-input', {}, { timeout: 5_000 });
+    await user.type(description, ' edited');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    // The dialog's confirm is 'Discard'; the tab bar's own trigger is
+    // 'Cancel', so the confirm name is what disambiguates the two.
+    await user.click(await screen.findByRole('button', { name: 'Discard' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/agents/all');
+    });
+    // #133 — the discard itself must not be prompted about: the navigation
+    // happened, so the app-wide blocker was disarmed first.
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+  }, 15_000);
+
+  it('dismissing the discard dialog stays on the edit page', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    // The form's inputs render before the detail fetch settles, but the
+    // toolbar (and its Cancel) waits for `!isFetching` — await the BUTTON,
+    // not a form field, or this races the fetch.
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }, { timeout: 5_000 }));
+    await screen.findByText('Are you sure you want to discard changes?');
+    // Two 'Cancel' buttons exist now — the tab bar's own trigger and the
+    // dialog's dismiss. The dialog renders in a portal at the END of the
+    // body, so the last match is its button.
+    const cancels = screen.getAllByRole('button', { name: 'Cancel' });
+    await user.click(cancels[cancels.length - 1] as HTMLElement);
+
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+  }, 15_000);
+});
+
+describe('talking to the agent', () => {
+  /**
+   * "How to talk to agent?" — the page used to offer no way at all. The Chat
+   * button creates a conversation, attaches THIS agent as a participant, and
+   * lands in the chat surface. The participant body is the assertion that
+   * matters: `entity_settings.version_id` is what the agent resolver joins
+   * the version through (`agent_chat.sql`), and a participant without it
+   * answers 422 on every turn.
+   */
+  it('the Chat button creates a conversation with the agent attached and navigates to it', async () => {
+    const participantBodies: unknown[] = [];
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      // RAW bodies, no `{data:…}` envelope: `eliteaFetch` wraps the parsed
+      // body itself (`mutator.ts` returns `{data: result.data, …}`), so a
+      // mock that pre-wraps lands DOUBLE-wrapped and the client reads
+      // `conversation.id === undefined` — the #132 shape, from the other side.
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Agent' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', async ({ request, params }) => {
+        participantBodies.push({ conversationId: String(params['conversationId']), body: await request.json() });
+        return HttpResponse.json([], { status: 200 });
+      }),
+    );
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    await waitFor(() => {
+      expect(participantBodies).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/chat/7');
+    });
+    const captured = participantBodies[0] as { conversationId: string; body: readonly Record<string, unknown>[] };
+    expect(captured.conversationId).toBe('7');
+    // TWO entries, user first: nothing server-side creates the user mapping
+    // on the REST path, and the resolver's author join refuses a
+    // conversation without it — the same pair the adhoc send posts.
+    expect(captured.body).toHaveLength(2);
+    expect(captured.body[0]).toMatchObject({ entity_name: 'user', entity_meta: { id: 6 } });
+    expect(captured.body[1]).toMatchObject({
+      entity_name: 'application',
+      entity_meta: { id: '42', project_id: '9' },
+      entity_settings: { version_id: '1' },
+    });
+  }, 15_000);
+
+  it('a failed conversation create surfaces an error and stays on the page', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () => HttpResponse.json({}, { status: 500 })),
+    );
+    const user = userEvent.setup();
+    const { router } = renderAgentsRoute(<EditApplication />, '/agents/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-agent-button', {}, { timeout: 5_000 }));
+
+    expect(await screen.findByText('Failed to open a chat with this agent.')).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/agents/all/42');
+  }, 15_000);
 });

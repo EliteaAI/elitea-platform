@@ -125,6 +125,13 @@ export function buildChatBoxInputSlots({ attachments, internalTools, model, refs
   const onToolChange = internalTools.onToolChange;
   const plusButtonProps = {
     ...attachmentButtonProps,
+    // The drop/paste bridge (`useNewChatInputAttachmentBridge`) delivers files
+    // through `refs.attachmentButtonRef.current.onDrop(...)` and silently
+    // no-ops while `current` is null — so on the chat surface the ref must
+    // reach `PlusChatButton`'s hidden always-mounted `AttachmentButton`
+    // (baseline `NewChatInput.jsx:240-241`), exactly as the agents-page branch
+    // below attaches it to the bare paperclip.
+    attachmentButtonRef: refs.attachmentButtonRef,
     ...optField(
       'onInternalToolsConfigChange',
       onToolChange ? ({ key, value }: { key: string; value: boolean }) => { onToolChange(key, value); } : undefined,

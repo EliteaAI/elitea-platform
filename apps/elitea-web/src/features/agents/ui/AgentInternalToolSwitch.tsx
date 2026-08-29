@@ -61,7 +61,15 @@ export function AgentInternalToolSwitch({
   const ToolIcon = INTERNAL_TOOL_ICONS[icon];
 
   return (
-    <Box sx={containerSx}>
+    // The testid is keyed by the DISPLAY title because that is the only
+    // identity this component receives — the canonical tool name stays with
+    // the caller. Journeys address one switch among eight with it; the rows
+    // are otherwise unnamed in the accessibility tree (the FormControlLabel's
+    // label is empty).
+    <Box
+      sx={containerSx}
+      data-testid={`internal-tool-${title.toLowerCase().replace(/\s+/g, '-')}`}
+    >
       <Box sx={contentContainerSx}>
         {ToolIcon && (
           <Box sx={entityIconSx}>

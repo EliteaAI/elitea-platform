@@ -102,6 +102,13 @@ export interface ChatMessageListProps {
   readonly isStreaming?: boolean;
   /** The user ID for identifying the current user. */
   readonly userId?: string;
+  /**
+   * The project the conversation lives in — threaded to each `UserMessage`'s
+   * attachment cards, whose artifact-storage download path refuses without it
+   * (`NormalAttachment`'s own doc: "Required to download an
+   * artifact-storage-backed attachment").
+   */
+  readonly projectId?: string | undefined;
   readonly messageActions?: ChatMessageListActions;
   readonly tts?: ChatMessageListTts;
   readonly continuation?: ChatMessageListContinuation;
@@ -133,6 +140,7 @@ export function ChatMessageList({
   chatHistory,
   isStreaming = false,
   userId,
+  projectId,
   messageActions: { onCopyToClipboard, onDeleteAnswer, onRegenerateAnswer, onSubmitEditedMessage } = {},
   tts: { onAutoSpeak, speakingMessageId, speakingSegments, spokenRange } = {},
   continuation: {
@@ -258,6 +266,7 @@ export function ChatMessageList({
                 <UserMessage
                   message={message}
                   messageId={messageId}
+                  projectId={projectId}
                   onCopy={handleCopy}
                   onDelete={handleDelete}
                   onSubmit={isEligibleForEdit ? onSubmitEditedMessage : undefined}

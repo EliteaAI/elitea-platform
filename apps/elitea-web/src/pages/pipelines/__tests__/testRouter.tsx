@@ -94,7 +94,17 @@ function buildTestRouter(
     component: () => content,
   });
 
-  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_]);
+  // Where `ChatWithPipelineButton` lands — the destination itself is outside
+  // this unit (the real page is `processes/chat`'s), so the fixture renders
+  // nothing there: a test asserts on `router.state.location.pathname` alone.
+  // Same shape `pages/agents/__tests__/testRouter.tsx` gained for its twin.
+  const chatRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/chat/$conversationId',
+    component: () => null,
+  });
+
+  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_, chatRoute]);
 
   return createRouter({
     routeTree,

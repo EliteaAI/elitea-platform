@@ -72,6 +72,30 @@ describe("buildChatBoxInputSlots — the composer's left-hand control", () => {
   });
 });
 
+describe('buildChatBoxInputSlots — drop/paste attachment handle', () => {
+  it('hands the "+" menu the attachment ref the drop/paste bridge dispatches through', () => {
+    // `useNewChatInputAttachmentBridge` (features/chat-input) delivers dropped
+    // and pasted files via `refs.attachmentButtonRef.current.onDrop(...)` and
+    // silently no-ops while `current` is null. On the chat surface the "+"
+    // menu is the left-hand control, so the builder must hand it this exact
+    // ref (it mounts a hidden `AttachmentButton` with it) — omitting it left
+    // every drop/paste on /chat discarded with no error.
+    const attachmentButtonRef = { current: null };
+    const slots = buildChatBoxInputSlots({
+      attachments: { attachments: [], onAttachFiles: vi.fn() },
+      internalTools: { disabled: false, tools: [], onToolChange: vi.fn() },
+      model: { llmSettings: undefined, onSetLLMSettings: undefined, selectedModel: undefined, onSelectModel: undefined, models: [] },
+      refs: { attachmentButtonRef, voiceButtonRef: { current: null }, voiceInputRef: { current: null } },
+      isAgentsPage: false,
+      entitySubmenus: undefined,
+      participants: undefined,
+    });
+
+    const props = (slots.attachmentButton as ReactElement).props as { attachmentButtonRef?: unknown };
+    expect(props.attachmentButtonRef).toBe(attachmentButtonRef);
+  });
+});
+
 describe('buildChatBoxInputSlots — internal-tools shape translation', () => {
   it('hands the "+" menu the ENABLED tool keys, and routes its callback back', () => {
     // `ChatInternalToolsConfigButton` takes `{key,label,enabled}` rows plus a

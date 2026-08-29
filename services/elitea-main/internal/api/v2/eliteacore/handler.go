@@ -1841,10 +1841,21 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// UpdateApplicationRelation attaches (or detaches) the CHILD agent named by
+// the URL as a tool of the PARENT version named by the body.
+//
+// The old body of this handler wrote to `application_tools` — a table that
+// exists in NO tenant schema (the real pair is `elitea_tools` +
+// `entity_tool_mapping`, the two every reader joins: the agents resolver
+// projection in internal/db/queries/agent_chat.sql and the tools panel's own
+// reads) — with `_, _ =` best-effort execs, so it answered 201 while
+// inserting nothing. It was also unreachable: the router bound PATCH to the
+// READ handler above. Both halves are fixed together, because each one alone
+// leaves the same silent no-op the browser measured.
 func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
-	appID := chi.URLParam(r, "appID")
-	versionID := chi.URLParam(r, "versionID")
+	childAppID := chi.URLParam(r, "appID")
+	childVersionID := chi.URLParam(r, "versionID")
 	s, schemaOK := tenantSchema(w, projectID)
 	if !schemaOK {
 		return
@@ -1876,48 +1887,127 @@ func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Reque
 	}
 
 	if hasRelation && parentAppID != nil && parentVerID != nil {
-		// Check for duplicate relation
+		// One relation per (parent version, child version): the duplicate is
+		// detected on the SAME pair of tables the insert writes.
 		var exists bool
-		_ = h.pool.QueryRow(ctx, fmt.Sprintf(`
-			SELECT EXISTS(SELECT 1 FROM %s.application_tools
-			WHERE application_version_id = $1 AND type = 'application'
-			AND settings->>'application_id' = $2
-			AND settings->>'version_id' = $3)`, s),
-			parentVerID, appID, versionID).Scan(&exists) // failure leaves exists=false, safe
+		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
+			SELECT EXISTS(
+				SELECT 1
+				FROM %s.entity_tool_mapping AS mapping
+				JOIN %s.elitea_tools AS tool ON tool.id = mapping.tool_id
+				WHERE mapping.entity_version_id = $1
+				  AND mapping.entity_type = 'agent'
+				  AND tool.type = 'application'
+				  AND tool.settings->>'application_id' = $2
+				  AND tool.settings->>'application_version_id' = $3)`, s, s),
+			fmt.Sprintf("%v", parentVerID), childAppID, childVersionID).Scan(&exists)
+		if err != nil {
+			slog.ErrorContext(ctx, "application relation: duplicate check failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation lookup failed"})
+			return
+		}
 		if exists {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "relation already exists",
-			})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "relation already exists"})
 			return
 		}
 
-		// Add this version as a tool on the parent version
-		toolName := fmt.Sprintf("agent_%s_%s", appID, versionID)
-		toolSettings := map[string]any{
-			"application_id": appID,
-			"version_id":     versionID,
+		// The child's name and author, read rather than synthesised: the
+		// resolver projection serves `name`/`toolkit_name` straight from this
+		// row, and the freeze refuses a reference whose two names disagree.
+		var childName string
+		var childAuthorID int
+		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
+			SELECT app.name, version.author_id
+			FROM %s.applications AS app
+			JOIN %s.application_versions AS version ON version.application_id = app.id
+			WHERE app.id = $1 AND version.id = $2`, s, s),
+			childAppID, childVersionID).Scan(&childName, &childAuthorID)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the selected agent version does not exist"})
+			return
 		}
-		settingsJSON, _ := json.Marshal(toolSettings)
 
-		q := fmt.Sprintf(`
-			INSERT INTO %s.application_tools (application_version_id, name, type, settings)
-			VALUES ($1, $2, 'application', $3)`, s)
-		_, _ = h.pool.Exec(ctx, q, parentVerID, toolName, settingsJSON) // best-effort insert
+		// The settings shape is the freeze's contract
+		// (freezeCurrentStoredApplicationReference admits exactly
+		// {application_id, application_version_id}); `owner_id` carries the
+		// OWNING PROJECT per tenant/0128's column-meaning note.
+		settingsJSON, err := json.Marshal(map[string]any{
+			"application_id":         jsonNumberFromPath(childAppID),
+			"application_version_id": jsonNumberFromPath(childVersionID),
+		})
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation encode failed"})
+			return
+		}
+
+		transaction, err := h.pool.Begin(ctx)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
+			return
+		}
+		defer func() { _ = transaction.Rollback(ctx) }()
+
+		var toolID int
+		err = transaction.QueryRow(ctx, fmt.Sprintf(`
+			INSERT INTO %s.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
+			VALUES ($1, 'application', '', $2, '{}'::jsonb, $3, $4)
+			RETURNING id`, s),
+			childName, settingsJSON, projectID, childAuthorID).Scan(&toolID)
+		if err != nil {
+			slog.ErrorContext(ctx, "application relation: tool insert failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
+			return
+		}
+		_, err = transaction.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_type, tool_id, entity_id)
+			SELECT version.id, 'agent', $2, version.application_id
+			FROM %s.application_versions AS version
+			WHERE version.id = $1`, s, s),
+			fmt.Sprintf("%v", parentVerID), toolID)
+		if err != nil {
+			slog.ErrorContext(ctx, "application relation: mapping insert failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
+			return
+		}
+		if err := transaction.Commit(ctx); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
+			return
+		}
 	} else {
-		// Remove relation
-		q := fmt.Sprintf(`
-			DELETE FROM %s.application_tools
-			WHERE application_version_id = $1
-			AND settings->>'application_id' = $2
-			AND settings->>'version_id' = $3`, s)
-		_, _ = h.pool.Exec(ctx, q, body["version_id"], appID, versionID) // best-effort delete
+		// Detach: drop the mapping and the tool row it pointed at, in one
+		// statement so a mapping can never be left dangling.
+		_, err := h.pool.Exec(ctx, fmt.Sprintf(`
+			DELETE FROM %s.elitea_tools AS tool
+			USING %s.entity_tool_mapping AS mapping
+			WHERE mapping.tool_id = tool.id
+			  AND mapping.entity_version_id = $1
+			  AND mapping.entity_type = 'agent'
+			  AND tool.type = 'application'
+			  AND tool.settings->>'application_id' = $2
+			  AND tool.settings->>'application_version_id' = $3`, s, s),
+			fmt.Sprintf("%v", parentVerID), childAppID, childVersionID)
+		if err != nil {
+			slog.ErrorContext(ctx, "application relation: detach failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation delete failed"})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
-		"application_id": appID,
-		"version_id":     versionID,
+		"application_id": childAppID,
+		"version_id":     childVersionID,
 		"has_relation":   hasRelation,
 	})
+}
+
+// jsonNumberFromPath turns a URL path id into the NUMBER the freeze's settings
+// contract expects (positiveCurrentAgentJSONInteger refuses strings). The path
+// param is always digits by the time the queries above have matched a row.
+func jsonNumberFromPath(value string) any {
+	if number, err := strconv.Atoi(value); err == nil {
+		return number
+	}
+	return value
 }
 
 func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {

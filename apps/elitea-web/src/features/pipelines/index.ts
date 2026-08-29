@@ -101,3 +101,11 @@ export type { ConfigurationTabProps } from './ui/ConfigurationTab';
 export { usePipelineVersionSync } from './ui/usePipelineEditorLifecycle';
 export { usePipelineGraphDraft } from './model/usePipelineGraphDraft';
 export type { PipelineGraphDraft } from './model/usePipelineGraphDraft';
+
+/**
+ * The DISCARD side of the same #135 persistence pair: without it,
+ * `EditPipeline`'s Cancel→Discard reverted only the RHF fields while
+ * `usePipelineGraphDraft` kept reading the edited stores, so a later Save
+ * persisted the "discarded" canvas edits. See its own doc comment.
+ */
+export { resetPipelineDraft } from './model/resetPipelineDraft';

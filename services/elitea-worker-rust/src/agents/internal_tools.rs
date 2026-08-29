@@ -15,6 +15,33 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 pub(crate) const ASK_USER_TOOL_NAME: &str = "ask_user";
+
+/// The platform's authorable internal-tool names this runtime does NOT
+/// implement yet — the create-agent form's own catalogue
+/// (`apps/elitea-web/src/features/agents/lib/internalTools.ts`), which the
+/// Python worker serves in full.
+///
+/// A name on this list is SKIPPED with a warning rather than refused, for the
+/// same reason `materialize_configured_toolsets` skips an unimplemented
+/// toolkit family: these are honest capabilities of the product that a user
+/// can toggle on from the agent form, and refusing the whole profile turned
+/// every such toggle into an agent that stops answering with a message naming
+/// neither the toggle nor the runtime. Measured in a live browser — the
+/// previous UI seeded `internal_mcp` into every version and every one of
+/// those agents was dead on this runtime.
+///
+/// A string OUTSIDE this list is still an unsupported capability: it names
+/// nothing the platform can do, so the honest answer stays a refusal.
+const PLATFORM_INTERNAL_TOOLS: &[&str] = &[
+    "attachments",
+    "data_analysis",
+    "image_generation",
+    "internal_mcp",
+    "lazy_tools_mode",
+    "planner",
+    "pyodide",
+    "swarm",
+];
 pub(crate) const ASK_USER_TOOLSET_NAME: &str = "ask_user";
 pub(crate) const ASK_USER_GUARDRAIL_TYPE: &str = "clarifying_question";
 pub(crate) const ASK_USER_ANSWER_ACTION: &str = "answer";
@@ -52,7 +79,19 @@ impl InternalToolCatalog {
         let mut catalog = Self::default();
         for value in values {
             match value.as_str() {
-                Some(ASK_USER_TOOL_NAME) if !catalog.ask_user => catalog.ask_user = true,
+                Some(ASK_USER_TOOL_NAME) => catalog.ask_user = true,
+                Some(name) if PLATFORM_INTERNAL_TOOLS.contains(&name) => {
+                    // Same contract as the toolkit-family skip
+                    // (`agent_toolkit_skipped` in materialize.rs): the agent
+                    // runs WITHOUT a capability its author asked for, and a
+                    // silent drop is how that reads as "the toggle works".
+                    tracing::warn!(
+                        event = "agent_internal_tool_skipped",
+                        reason_code = "internal_tool_unsupported",
+                        internal_tool = name,
+                        "internal tool is unavailable in this runtime and was omitted from the agent"
+                    );
+                }
                 Some(_) => return Err(InternalToolError::UnsupportedCapability),
                 None => return Err(InternalToolError::InvalidInput),
             }
@@ -475,15 +514,35 @@ mod tests {
     }
 
     #[test]
-    fn only_ask_user_is_admitted_as_an_internal_tool() {
-        assert!(
-            InternalToolCatalog::from_names(&[ASK_USER_TOOL_NAME.to_owned()])
-                .expect("catalog")
-                .ask_user_enabled()
+    fn platform_internal_tools_are_skipped_and_only_ask_user_is_served() {
+        // Every name the agent form can author, at once — the catalogue must
+        // come back with ask_user alone and no refusal, because a toggle a
+        // user can reach must not stop the agent answering.
+        let all_platform = [
+            "ask_user",
+            "attachments",
+            "data_analysis",
+            "image_generation",
+            "internal_mcp",
+            "lazy_tools_mode",
+            "planner",
+            "pyodide",
+            "swarm",
+        ]
+        .map(ToOwned::to_owned);
+        let catalog = InternalToolCatalog::from_names(&all_platform).expect("catalog");
+        assert!(catalog.ask_user_enabled());
+        assert_eq!(catalog.toolsets().len(), 1);
+
+        // Outside the platform catalogue is still a refusal: it names nothing
+        // the product can do, so skipping it would hide malformed config.
+        assert_eq!(
+            InternalToolCatalog::from_names(&["not_a_platform_tool".to_owned()]),
+            Err(InternalToolError::UnsupportedCapability)
         );
         assert_eq!(
-            InternalToolCatalog::from_names(&["data_analysis".to_owned()]),
-            Err(InternalToolError::UnsupportedCapability)
+            InternalToolCatalog::from_values(Some(&json!([42]))),
+            Err(InternalToolError::InvalidInput)
         );
     }
 }

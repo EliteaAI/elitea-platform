@@ -343,3 +343,135 @@ describe('EditPipeline', () => {
     await waitFor(() => expect(useNavBlockerStore.getState().isBlockNav).toBe(true));
   }, 20_000);
 });
+
+describe('leaving the editor', () => {
+  /**
+   * Measured defect (worse than the agents twin's): Discard was
+   * `form.reset()` alone, while Save reads the LIVE graph through
+   * `usePipelineGraphDraft()` — so a user who edited the canvas, clicked
+   * Cancel→Discard, and later clicked Save had the "discarded" edits
+   * silently PERSISTED, and stayed on the edit page with no way out.
+   * Confirming the discard now reverts the flow-editor stores to their
+   * last-loaded snapshot AND leaves for the list, mirroring
+   * `pages/agents/EditApplication.tsx`'s `handleDiscarded`.
+   */
+  it('confirming the discard dialog drops the in-memory draft and navigates back to the pipelines list', async () => {
+    const graphYaml = 'entry_point: Agent 1\nnodes:\n  - id: Agent 1\n    type: llm\n';
+    const base = detail();
+    server.use(
+      getGetApplicationMockHandler({
+        ...base,
+        version_details: { ...base.version_details, instructions: graphYaml },
+      }),
+    );
+    const user = userEvent.setup();
+    const { router } = renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    // Wait for the version seed, then simulate a canvas/YAML edit the way the
+    // editor writes one — straight into the store the save path reads.
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toBe(graphYaml));
+    // Both halves of the round-trip state, coherently — `EditorPanel`'s own
+    // sync effects regenerate `yamlCode` from `yamlJsonObject` when the two
+    // disagree, so editing only one would be silently un-edited by the
+    // mounted editor rather than by the discard under test.
+    usePipelineYamlStore.getState().setYamlJsonObject({ entry_point: 'Edited' });
+    usePipelineYamlStore.getState().setYamlCode('entry_point: Edited\n');
+
+    await user.click(await screen.findByText('Cancel'));
+    // The dialog's confirm is 'Discard'; the tab bar's own trigger is
+    // 'Cancel', so the confirm name is what disambiguates the two.
+    await user.click(await screen.findByRole('button', { name: 'Discard' }));
+
+    // The in-memory draft is DROPPED, not just hidden: the store the save
+    // path reads is back at the loaded snapshot. This is the assertion that
+    // fails without the fix — the old discard left 'entry_point: Edited'
+    // live for the next Save.
+    await waitFor(() => expect(usePipelineYamlStore.getState().yamlCode).toBe(graphYaml));
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/pipelines/all');
+    });
+    // #133 — the discard itself must not be prompted about: the navigation
+    // happened, so the app-wide blocker was disarmed first.
+    expect(useNavBlockerStore.getState().isBlockNav).toBe(false);
+  }, 15_000);
+
+  it('dismissing the discard dialog stays on the edit page', async () => {
+    server.use(getGetApplicationMockHandler(detail()));
+    const user = userEvent.setup();
+    const { router } = renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByText('Cancel'));
+    await screen.findByText('Are you sure you want to discard changes?');
+    // Two 'Cancel' buttons exist now — the tab bar's own trigger and the
+    // dialog's dismiss. The dialog renders in a portal at the END of the
+    // body, so the last match is its button.
+    const cancels = screen.getAllByRole('button', { name: 'Cancel' });
+    await user.click(cancels[cancels.length - 1] as HTMLElement);
+
+    expect(router.state.location.pathname).toBe('/pipelines/all/42');
+  }, 15_000);
+});
+
+describe('talking to the pipeline', () => {
+  /**
+   * The page used to offer no way to speak to the pipeline at all (the chat
+   * pane is a disclosed gap). The Chat button creates a conversation,
+   * attaches THIS pipeline as a participant, and lands in the chat surface.
+   * The participant body is the assertion that matters: a pipeline rides as
+   * `entity_name: 'application'` behind the `agent_type: 'pipeline'`
+   * discriminator (`features/chat-participants/lib/helpers.ts`'s
+   * `buildNonModelParticipant`), and `entity_settings.version_id` is what
+   * the resolver joins the version through — a participant without it
+   * answers 422 on every turn.
+   */
+  it('the Chat button creates a conversation with the pipeline attached and navigates to it', async () => {
+    const participantBodies: unknown[] = [];
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      // RAW bodies, no `{data:…}` envelope: `eliteaFetch` wraps the parsed
+      // body itself (`mutator.ts` returns `{data: result.data, …}`), so a
+      // mock that pre-wraps lands DOUBLE-wrapped and the client reads
+      // `conversation.id === undefined` — the #132 shape, from the other side.
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () =>
+        HttpResponse.json({ id: '7', name: 'My Pipeline' }, { status: 201 }),
+      ),
+      http.post('*/elitea_core/participants/prompt_lib/:projectId/:conversationId', async ({ request, params }) => {
+        participantBodies.push({ conversationId: String(params['conversationId']), body: await request.json() });
+        return HttpResponse.json([], { status: 200 });
+      }),
+    );
+    const user = userEvent.setup();
+    const { router } = renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-pipeline-button', {}, { timeout: 5_000 }));
+
+    await waitFor(() => {
+      expect(participantBodies).toHaveLength(1);
+    });
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/chat/7');
+    });
+    const captured = participantBodies[0] as { conversationId: string; body: readonly Record<string, unknown>[] };
+    expect(captured.conversationId).toBe('7');
+    const [participant] = captured.body;
+    expect(participant).toMatchObject({
+      entity_name: 'application',
+      entity_meta: { id: '42', project_id: '9' },
+      entity_settings: { version_id: '1', agent_type: 'pipeline' },
+    });
+  }, 15_000);
+
+  it('a failed conversation create surfaces an error and stays on the page', async () => {
+    server.use(
+      getGetApplicationMockHandler(detail()),
+      http.post('*/elitea_core/conversations/prompt_lib/:projectId', () => HttpResponse.json({}, { status: 500 })),
+    );
+    const user = userEvent.setup();
+    const { router } = renderPipelinesRoute(<EditPipeline />, '/pipelines/all/42', { projectId: '9' });
+
+    await user.click(await screen.findByTestId('chat-with-pipeline-button', {}, { timeout: 5_000 }));
+
+    expect(await screen.findByText('Failed to open a chat with this pipeline.')).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/pipelines/all/42');
+  }, 15_000);
+});

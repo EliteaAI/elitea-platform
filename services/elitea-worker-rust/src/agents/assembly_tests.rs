@@ -325,20 +325,30 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
                     .expect("application version")
                     .insert("instructions".to_owned(), json!("review {{ audience }}"));
             }
+            // 17-19, 21-22: names OUTSIDE the platform catalogue, in every
+            // slot that used to pin a platform NAME. Every name the agent form
+            // can author is now SKIPPED rather than refused (a form toggle
+            // must not stop the agent answering — internal_tools.rs
+            // PLATFORM_INTERNAL_TOOLS; lazy_tools_mode=true likewise degrades
+            // with a log), so the refusal left to pin is a string naming
+            // nothing the product can do — at the meta, payload and version
+            // levels, in two spellings so one constant folded into several
+            // slots cannot mask a regression.
             17 => {
-                // `internal_mcp` rather than the step limit that used to sit
-                // here: the step limit is now ADMITTED on the version, because
-                // Main writes it into every saved version and the Python worker
-                // reads it from there. `internal_mcp` is still genuinely
-                // unimplemented, and it is what the previous UI default wrote, so it
-                // is the mutation worth keeping in this corpus.
-                insert_application_meta(&mut request, "internal_tools", json!(["internal_mcp"]));
+                insert_application_meta(
+                    &mut request,
+                    "internal_tools",
+                    json!(["not_a_platform_tool"]),
+                );
             }
             18 => {
-                insert_application_meta(&mut request, "internal_tools", json!(["planner"]));
+                request
+                    .payload
+                    .internal_tools
+                    .push("not_a_platform_tool".to_owned());
             }
             19 => {
-                insert_application_meta(&mut request, "lazy_tools_mode", json!(true));
+                insert_version_internal_tools(&mut request, "not_a_platform_tool");
             }
             20 => {
                 insert_application_meta(
@@ -348,15 +358,12 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
                 );
             }
             21 => {
-                request
-                    .payload
-                    .application
-                    .get_mut("version_details")
-                    .and_then(Value::as_object_mut)
-                    .expect("application version")
-                    .insert("internal_tools".to_owned(), json!(["planner"]));
+                insert_version_internal_tools(&mut request, "definitely_unknown");
             }
-            22 => request.payload.internal_tools.push("planner".to_owned()),
+            22 => request
+                .payload
+                .internal_tools
+                .push("definitely_unknown".to_owned()),
             23 => request.payload.chat_history.push(json!({
                 "role": "user",
                 "content": [{"type": "image_url", "image_url": "https://invalid.example"}],
@@ -438,6 +445,16 @@ fn current_main_text_history_is_normalized_before_credential_redemption() {
             .code(),
         NativeAgentAssemblyErrorCode::ResourceExhausted
     );
+}
+
+fn insert_version_internal_tools(request: &mut AgentExecutionRequest, name: &str) {
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version")
+        .insert("internal_tools".to_owned(), json!([name]));
 }
 
 fn insert_application_meta(request: &mut AgentExecutionRequest, key: &str, value: Value) {

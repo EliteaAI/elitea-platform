@@ -663,7 +663,20 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
         .map_err(internal_tool_profile_error)?;
     match meta.get("lazy_tools_mode") {
         None | Some(Value::Bool(false)) => {}
-        Some(Value::Bool(true)) => return Err(unsupported_profile()),
+        Some(Value::Bool(true)) => {
+            // Smart Tools Selection — a form toggle, not a protocol field. The
+            // runtime exposes every tool unconditionally, which is the mode's
+            // SAFE side (lazy mode narrows exposure; ignoring it widens
+            // nothing the author did not already attach), so this degrades
+            // with a log instead of refusing the turn — the same contract as
+            // `InternalToolCatalog`'s platform-name skip.
+            tracing::warn!(
+                event = "agent_internal_tool_skipped",
+                reason_code = "internal_tool_unsupported",
+                internal_tool = "lazy_tools_mode",
+                "smart tools selection is unavailable in this runtime; every attached tool stays exposed"
+            );
+        }
         Some(_) => return Err(invalid_profile()),
     }
     validate_application_meta_variables(meta.get("variables"))

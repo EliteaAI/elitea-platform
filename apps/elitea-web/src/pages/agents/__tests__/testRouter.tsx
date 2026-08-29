@@ -82,7 +82,16 @@ function buildTestRouter(initialPath: string, content: ReactElement, projectId: 
     component: () => content,
   });
 
-  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_]);
+  // Where `ChatWithAgentButton` lands — the destination itself is outside
+  // this unit (the real page is `processes/chat`'s), so the fixture renders
+  // nothing there: a test asserts on `router.state.location.pathname` alone.
+  const chatRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/chat/$conversationId',
+    component: () => null,
+  });
+
+  const routeTree = rootRoute.addChildren([tabRoute, detailRoute.addChildren([versionRoute]), createRoute_, chatRoute]);
 
   return createRouter({
     routeTree,

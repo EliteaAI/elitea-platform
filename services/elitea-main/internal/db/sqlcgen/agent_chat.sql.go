@@ -197,7 +197,16 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+             OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -258,7 +267,16 @@ WITH resolved AS MATERIALIZED (
                         COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
                     ) AS invalid_admitted_internal_tool(value)
                     WHERE jsonb_typeof(invalid_admitted_internal_tool.value) <> 'string'
-                       OR invalid_admitted_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+                       OR invalid_admitted_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
                 )
             )
       )
@@ -543,7 +561,16 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS internal_tool(value)
           WHERE jsonb_typeof(internal_tool.value) <> 'string'
-             OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+             OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
       -- Admitted by the same rule as the conversation's own list: ` + "`" + `internal_mcp` + "`" + `
       -- is dropped from the snapshot by the freeze
@@ -561,7 +588,16 @@ WITH resolved AS MATERIALIZED (
               END
           ) AS admitted_internal_tool(value)
           WHERE jsonb_typeof(admitted_internal_tool.value) <> 'string'
-             OR admitted_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+             OR admitted_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
       )
       AND COALESCE(
           conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1009,7 +1045,16 @@ LEFT JOIN LATERAL (
                   END
               ) AS nested_internal_tool(value)
               WHERE jsonb_typeof(nested_internal_tool.value) <> 'string'
-                 OR nested_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+                 OR nested_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
           )
     ) AS current_tool
 ) AS current_tools ON TRUE
@@ -1170,7 +1215,16 @@ WHERE conversation.uuid = $5::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+         OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1231,7 +1285,16 @@ WHERE conversation.uuid = $5::uuid
                     COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
                 ) AS invalid_internal_tool(value)
                 WHERE jsonb_typeof(invalid_internal_tool.value) <> 'string'
-                   OR invalid_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+                   OR invalid_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
             )
         )
   )
@@ -1783,7 +1846,16 @@ WHERE conversation.uuid = $4::uuid
           END
       ) AS internal_tool(value)
       WHERE jsonb_typeof(internal_tool.value) <> 'string'
-         OR internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+         OR internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
   -- The version's own internal-tool list, admitted by the SAME rule as the
   -- conversation's list above rather than by a literal-array match.
@@ -1812,7 +1884,16 @@ WHERE conversation.uuid = $4::uuid
           END
       ) AS version_internal_tool(value)
       WHERE jsonb_typeof(version_internal_tool.value) <> 'string'
-         OR version_internal_tool.value #>> '{}' NOT IN ('internal_mcp', 'ask_user')
+         OR version_internal_tool.value #>> '{}' NOT IN (
+                 -- The platform's authorable internal-tool catalogue (the agent
+                 -- form's own list plus ask_user). Admission means "the product
+                 -- can do this": the Python worker serves the whole set and the
+                 -- native runtime skips what it lacks with a logged
+                 -- agent_internal_tool_skipped — so a form toggle can no longer
+                 -- make the resolver return zero rows and every send answer 422.
+                 'ask_user', 'attachments', 'data_analysis', 'image_generation',
+                 'internal_mcp', 'lazy_tools_mode', 'planner', 'pyodide', 'swarm'
+             )
   )
   AND COALESCE(
       conversation.meta #>> '{context_analytics,last_summarization,summary_content}',
@@ -1985,6 +2066,181 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 		&i.InternalToolsJson,
 		&i.ApplicationVersionDetailsJson,
 	)
+	return i, err
+}
+
+const resolveCurrentApplicationVersionDetails = `-- name: ResolveCurrentApplicationVersionDetails :one
+SELECT application_version.id AS application_version_id,
+       application_version.application_id,
+       jsonb_build_object(
+           'id', application_version.id,
+           'application_id', application_version.application_id,
+           'name', application_version.name,
+           'status', application_version.status,
+           'created_at', application_version.created_at,
+           'agent_type', application_version.agent_type,
+           'instructions', COALESCE(application_version.instructions, ''),
+           'welcome_message', COALESCE(application_version.welcome_message, ''),
+           'llm_settings', COALESCE(NULLIF(application_version.llm_settings::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'meta', COALESCE(NULLIF(application_version.meta::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'conversation_starters', COALESCE(NULLIF(application_version.conversation_starters::jsonb, 'null'::jsonb), '[]'::jsonb),
+           'pipeline_settings', COALESCE(NULLIF(application_version.pipeline_settings::jsonb, 'null'::jsonb), '{}'::jsonb),
+           'author_id', application_version.author_id,
+           'tools', COALESCE((
+               SELECT jsonb_agg(
+                   jsonb_build_object(
+                       'id', tool.id,
+                       'type', tool.type,
+                       'name', tool.name,
+                       'description', tool.description,
+                       'author_id', tool.author_id,
+                       'settings', CASE
+                           WHEN jsonb_typeof(tool.settings -> 'selected_tools') = 'array'
+                            AND jsonb_array_length(tool.settings -> 'selected_tools') > 0
+                           THEN tool.settings
+                                || jsonb_build_object(
+                                       'available_tools', tool.settings -> 'selected_tools'
+                                   )
+                                || CASE
+                                       WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                                        AND jsonb_array_length(application_tool_mapping.selected_tools) > 0
+                                       THEN jsonb_build_object(
+                                           'selected_tools', CASE
+                                               WHEN jsonb_array_length(selected_tools_intersection.value) > 0
+                                               THEN selected_tools_intersection.value
+                                               ELSE application_tool_mapping.selected_tools
+                                           END
+                                       )
+                                       ELSE '{}'::jsonb
+                                   END
+                           WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                            AND jsonb_array_length(application_tool_mapping.selected_tools) > 0
+                           THEN tool.settings || jsonb_build_object(
+                               'selected_tools', application_tool_mapping.selected_tools
+                           )
+                           ELSE tool.settings
+                       END,
+                       'meta', tool.meta,
+                       'created_at', tool.created_at,
+                       'toolkit_name', tool.name,
+                       'author', NULL,
+                       'agent_type', CASE
+                           WHEN tool.type = 'application'
+                           THEN (
+                               SELECT child_application_version.agent_type
+                               FROM application_versions AS child_application_version
+                               WHERE child_application_version.id = CASE
+                                   WHEN tool.settings ->> 'application_version_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_version_id')::integer
+                                   ELSE NULL
+                               END
+                                 AND child_application_version.application_id = CASE
+                                   WHEN tool.settings ->> 'application_id' ~ '^[1-9][0-9]*$'
+                                   THEN (tool.settings ->> 'application_id')::integer
+                                   ELSE NULL
+                               END
+                           )
+                           ELSE NULL
+                       END,
+                       'online', NULL,
+                       'icon_meta', NULL,
+                       'variables', '[]'::jsonb,
+                       'is_pinned', FALSE,
+                       'indexes_count', NULL
+                   )
+                   ORDER BY application_tool_mapping.id
+               )
+               FROM entity_tool_mapping AS application_tool_mapping
+               JOIN elitea_tools AS tool
+                 ON tool.id = application_tool_mapping.tool_id
+               LEFT JOIN LATERAL (
+                   SELECT COALESCE(
+                       jsonb_agg(selected.value ORDER BY selected.ordinality),
+                       '[]'::jsonb
+                   ) AS value
+                   FROM jsonb_array_elements_text(
+                       CASE
+                           WHEN jsonb_typeof(application_tool_mapping.selected_tools) = 'array'
+                           THEN application_tool_mapping.selected_tools
+                           ELSE '[]'::jsonb
+                       END
+                   ) WITH ORDINALITY AS selected(value, ordinality)
+                   WHERE jsonb_typeof(tool.settings -> 'selected_tools') = 'array'
+                     AND tool.settings -> 'selected_tools' ? selected.value
+               ) AS selected_tools_intersection ON TRUE
+               WHERE application_tool_mapping.entity_version_id = application_version.id
+                 AND application_tool_mapping.entity_id = application_version.application_id
+                 AND application_tool_mapping.entity_type = 'agent'
+           ), '[]'::jsonb),
+           'skills', COALESCE((
+               SELECT jsonb_agg(
+                   jsonb_build_object(
+                       'skill_id', skill_mapping.skill_id,
+                       'skill_version_id', skill_mapping.skill_version_id,
+                       'name', skill.name,
+                       'description', skill.description,
+                       'version_name', COALESCE(skill_version.name, 'unknown'),
+                       'icon_meta', CASE
+                           WHEN skill_version.id IS NULL THEN 'null'::jsonb
+                           ELSE COALESCE(skill_version.meta -> 'icon_meta', 'null'::jsonb)
+                       END,
+                       'instructions', COALESCE(skill_version.instructions, '')
+                   )
+                   ORDER BY skill_mapping.id
+               )
+               FROM entity_skill_mapping AS skill_mapping
+               JOIN skills AS skill
+                 ON skill.id = skill_mapping.skill_id
+               LEFT JOIN skill_versions AS skill_version
+                 ON skill_version.id = skill_mapping.skill_version_id
+               WHERE skill_mapping.entity_version_id = application_version.id
+                 AND skill_mapping.entity_type = 'agent'
+           ), '[]'::jsonb),
+           'tags', '[]'::jsonb,
+           'variables', '[]'::jsonb
+       )::text AS application_version_details_json
+FROM application_versions AS application_version
+WHERE application_version.id = $1::integer
+  AND application_version.application_id = $2::integer
+`
+
+type ResolveCurrentApplicationVersionDetailsParams struct {
+	ApplicationVersionID int32 `db:"application_version_id" json:"application_version_id"`
+	ApplicationID        int32 `db:"application_id" json:"application_id"`
+}
+
+type ResolveCurrentApplicationVersionDetailsRow struct {
+	ApplicationVersionID          int32  `db:"application_version_id" json:"application_version_id"`
+	ApplicationID                 int32  `db:"application_id" json:"application_id"`
+	ApplicationVersionDetailsJson string `db:"application_version_details_json" json:"application_version_details_json"`
+}
+
+// The projection above is ResolveCurrentApplicationTurn's
+// `application_version_details_json` block, copied verbatim (agent_chat.sql:11-137)
+// rather than shared. Both documents are read by the SAME decoder in the native
+// runtime (`OrdinaryNoToolProfile::from_nested_version` and
+// `FrozenToolSnapshot::from_version_details`,
+// services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
+// freeze (`FreezeCurrentApplicationVersion`,
+// internal/application/agentexecution/tools.go), so a parent's definition and a
+// nested child's must have one shape. What is deliberately absent is everything
+// the turn projection derives from a conversation — chat history, participants,
+// the conversation's own internal-tool list — because a nested child has no
+// conversation: it is invoked as a tool inside the parent's turn.
+//
+// BOTH identity arguments are filters, and that is load-bearing rather than
+// defensive. The worker names the pair in its request path
+// (`/runtime-context/applications/{application_id}/versions/{version_id}`,
+// services/elitea-worker-rust/src/transport/runtime_context.rs:448-469) and
+// validates the pair it gets back (:554-564). Keying on the version alone would
+// let a stored reference whose `application_id` disagrees with its
+// `application_version_id` still resolve a definition — the exact mismatch
+// `materializeCurrentApplicationToolNestedSkills` refuses on the start path
+// (internal/infra/db/repos/agent_nesting.go).
+func (q *Queries) ResolveCurrentApplicationVersionDetails(ctx context.Context, arg ResolveCurrentApplicationVersionDetailsParams) (ResolveCurrentApplicationVersionDetailsRow, error) {
+	row := q.db.QueryRow(ctx, resolveCurrentApplicationVersionDetails, arg.ApplicationVersionID, arg.ApplicationID)
+	var i ResolveCurrentApplicationVersionDetailsRow
+	err := row.Scan(&i.ApplicationVersionID, &i.ApplicationID, &i.ApplicationVersionDetailsJson)
 	return i, err
 }
 

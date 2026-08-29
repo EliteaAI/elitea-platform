@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { configureGeneratedClient, resetGeneratedClient } from '@/shared/api/generated/mutator';
 import { server } from '@/test/setup';
 
-import { CreateToolkit } from './CreateToolkit';
+import { CreateToolkit, createdEntityKind } from './CreateToolkit';
 import { renderToolkitsRoute } from './__tests__/testRouter';
 
 /**
@@ -95,5 +95,62 @@ describe('CreateToolkit', () => {
 
     await waitFor(() => expect(createToolkit).toHaveBeenCalledTimes(1));
     expect(createToolkit.mock.calls[0]?.[0]).toMatchObject({ projectId: 'proj-1', type: 'github' });
+  });
+
+  // Regression: a successful create used to be silently discarded — no
+  // navigation, form still dirty, a second Save duplicated the toolkit.
+  it('a successful Save REPLACES the create route with the created toolkit detail route', async () => {
+    server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })));
+    const user = userEvent.setup();
+    const createToolkit = vi.fn().mockResolvedValue({ id: 'tk-new', type: 'github', name: 'GitHub' });
+
+    const { router } = renderToolkitsRoute(<CreateToolkit deps={{ createToolkit }} />, '/toolkits/create', { projectId: 'proj-1' });
+    const replaceSpy = vi.spyOn(router.history, 'replace');
+
+    await user.click(await screen.findByText('GitHub'));
+    const saveButton = await screen.findByRole('button', { name: /save/i });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    await user.click(saveButton);
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/toolkits/all/tk-new'));
+    // History REPLACE, not push — Back must not reopen the stale create form.
+    expect(replaceSpy).toHaveBeenCalled();
+  });
+
+  it('a failed Save stays on the create route and shows the error', async () => {
+    server.use(http.get('/api/v2/elitea_core/toolkits/prompt_lib/:projectId', () => HttpResponse.json({ github: { metadata: { label: 'GitHub' } } })));
+    const user = userEvent.setup();
+    const createToolkit = vi.fn().mockRejectedValue(new Error('boom'));
+
+    const { router } = renderToolkitsRoute(<CreateToolkit deps={{ createToolkit }} />, '/toolkits/create', { projectId: 'proj-1' });
+
+    await user.click(await screen.findByText('GitHub'));
+    const saveButton = await screen.findByRole('button', { name: /save/i });
+    await waitFor(() => expect(saveButton).not.toBeDisabled());
+    await user.click(saveButton);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/failed to create/i);
+    expect(router.state.location.pathname).toBe('/toolkits/create');
+  });
+});
+
+/**
+ * The destination branch of the baseline's
+ * `CreateToolkitToolTabBar.jsx:148-156`: pre-built `mcp_*` types land on the
+ * MCP detail route even when created from `/toolkits/create`.
+ */
+describe('createdEntityKind', () => {
+  it('routes MCP creates (and pre-built mcp_* types from the toolkit route) to the MCP page', () => {
+    expect(createdEntityKind(true, false, 'mcp')).toBe('mcp');
+    expect(createdEntityKind(false, false, 'mcp_github')).toBe('mcp');
+  });
+
+  it('the bare "mcp" type means remote MCP, not pre-built — a plain toolkit create keeps its own route', () => {
+    expect(createdEntityKind(false, false, 'mcp')).toBe('toolkit');
+    expect(createdEntityKind(false, false, 'github')).toBe('toolkit');
+  });
+
+  it('application creates land on the apps page', () => {
+    expect(createdEntityKind(false, true, 'github')).toBe('app');
   });
 });

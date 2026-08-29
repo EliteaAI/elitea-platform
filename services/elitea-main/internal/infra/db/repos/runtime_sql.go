@@ -145,6 +145,13 @@ func (e pgxExecutor) ResolveCurrentApplicationTurn(
 	return sqlcgen.New(e.queryer).ResolveCurrentApplicationTurn(ctx, arg)
 }
 
+func (e pgxExecutor) ResolveCurrentApplicationVersionDetails(
+	ctx context.Context,
+	arg sqlcgen.ResolveCurrentApplicationVersionDetailsParams,
+) (sqlcgen.ResolveCurrentApplicationVersionDetailsRow, error) {
+	return sqlcgen.New(e.queryer).ResolveCurrentApplicationVersionDetails(ctx, arg)
+}
+
 func (e pgxExecutor) ResolveCurrentApplicationNestingNode(
 	ctx context.Context,
 	applicationVersionID int32,

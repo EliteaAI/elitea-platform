@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { ApplicationCreatedResponse } from '@/shared/api/generated/model';
 
-import { rejectToolkitWrite, toCreatedResult } from './ChatWithEditors.helpers';
+import { toCreatedResult } from './ChatWithEditors.helpers';
 
 const BASE_RESPONSE: ApplicationCreatedResponse = {
   id: '1',
@@ -13,12 +13,6 @@ const BASE_RESPONSE: ApplicationCreatedResponse = {
   owner_id: 'u1',
   created_at: '2024-01-01T00:00:00Z',
 };
-
-describe('rejectToolkitWrite', () => {
-  it('rejects with a clear, catchable error (no generated toolkit write endpoint exists yet)', async () => {
-    await expect(rejectToolkitWrite()).rejects.toThrow(/no backend endpoint/i);
-  });
-});
 
 describe('toCreatedResult', () => {
   it('carries id/name straight through, omitting version_details entirely when absent', () => {

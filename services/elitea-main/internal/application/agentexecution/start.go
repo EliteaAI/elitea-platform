@@ -369,6 +369,25 @@ func currentApplicationStepsLimit(versionDetails json.RawMessage) (*int32, error
 // reason.
 const maxCurrentAgentStepLimit = 1024
 
+// currentPlatformInternalTools is the agent form's own authorable catalogue
+// (apps/elitea-web/src/features/agents/lib/internalTools.ts) plus `ask_user`.
+// Membership here means "the product can do this", not "every worker can":
+// the Python worker serves the whole set, and the native runtime skips what
+// it does not implement with a logged `agent_internal_tool_skipped`
+// (services/elitea-worker-rust/src/agents/internal_tools.rs). This layer
+// FORWARDS rather than judges, because refusing here turned every form
+// toggle into an agent that stopped answering on both workers at once.
+var currentPlatformInternalTools = map[string]bool{
+	"ask_user":         true,
+	"attachments":      true,
+	"data_analysis":    true,
+	"image_generation": true,
+	"lazy_tools_mode":  true,
+	"planner":          true,
+	"pyodide":          true,
+	"swarm":            true,
+}
+
 func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
 	if len(raw) == 0 {
 		return []byte(`[]`), nil
@@ -377,16 +396,21 @@ func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
 	if !validJSONArray(raw) || json.Unmarshal(raw, &configured) != nil {
 		return nil, ErrUnsupportedCurrentAgentStart
 	}
-	selected := make([]string, 0, 1)
+	selected := make([]string, 0, len(configured))
+	seen := make(map[string]bool, len(configured))
 	for _, name := range configured {
-		switch name {
-		case "internal_mcp":
+		switch {
+		case name == "internal_mcp":
 			// Internal MCP is materialized through the frozen tools projection.
-		case "ask_user":
-			if len(selected) == 0 {
+		case currentPlatformInternalTools[name]:
+			if !seen[name] {
+				seen[name] = true
 				selected = append(selected, name)
 			}
 		default:
+			// Off the platform catalogue entirely: this names nothing the
+			// product can do, so forwarding it would launder malformed
+			// configuration into a per-worker decision.
 			return nil, ErrUnsupportedCurrentAgentStart
 		}
 	}

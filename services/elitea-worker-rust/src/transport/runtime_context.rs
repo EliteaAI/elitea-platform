@@ -327,10 +327,14 @@ impl RuntimeContextClient {
 
     /// Load one exact child definition through the same live claim and fence.
     ///
-    /// Main does not expose this route yet. Keeping the client contract here
-    /// makes that missing server boundary explicit and prevents Rust from
-    /// falling back to the mutable public version endpoint or the legacy
-    /// `X-SECRET` expansion path.
+    /// Main serves this route from the private content listener
+    /// (`ContentServer.PostApplicationVersion` in
+    /// `services/elitea-main/internal/infra/storage/content_server.go`), returning
+    /// a definition already frozen by the same freeze the parent's own start
+    /// applies. There is deliberately no fallback: the mutable public version
+    /// endpoint and the legacy `X-SECRET` expansion path would both hand back an
+    /// unfrozen document, so a missing route has to fail the turn rather than
+    /// quietly resolve a different one.
     pub(crate) async fn load_application_version(
         &self,
         authority: &ClaimBoundRuntimeContextAuthority,

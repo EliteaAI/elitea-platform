@@ -225,6 +225,12 @@ export default defineConfig({
        * `/executions/{id}/events` answered 429 and the failure read as "the
        * browser cannot read the stream" — a statement about the harness, not
        * the feature. Serially, both pass.
+       *
+       * KNOWN LIMIT of this override: `fullyParallel: false` orders tests
+       * WITHIN a file; separate spec files still spread across workers. The
+       * budget holds because each journey's execution stream is short-lived,
+       * but if this project ever answers 429 again the next lever is
+       * `--workers=1` on the chat-stream invocation, not a broader rewrite.
        */
       fullyParallel: false,
     },

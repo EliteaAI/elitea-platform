@@ -15,6 +15,8 @@ export interface EditPipelineLlmSettingsState {
   readonly isDirty: boolean;
   /** Called after a successful save so the model just persisted stops counting as unsaved. */
   readonly markSaved: () => void;
+  /** The discard direction — reverts the picked model back to the last-saved/loaded one. `markSaved` moves the baseline TO the current value; a discard must do the opposite, or `useEditPipelineForm`'s save body would still carry the "discarded" pick. */
+  readonly reset: () => void;
 }
 
 /**
@@ -57,6 +59,7 @@ export function useEditPipelineLlmSettings(
   }
 
   const markSaved = useCallback(() => setBaseline(value), [value]);
+  const reset = useCallback(() => setValue(baseline), [baseline]);
 
-  return { value, setValue, isDirty: !areAgentLlmSettingsEqual(value, baseline), markSaved };
+  return { value, setValue, isDirty: !areAgentLlmSettingsEqual(value, baseline), markSaved, reset };
 }

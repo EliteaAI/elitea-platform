@@ -21,6 +21,9 @@ const PUBLIC_SURFACE = [
   // #135 — the read/write halves of pipeline-graph persistence.
   'usePipelineVersionSync',
   'usePipelineGraphDraft',
+  // The discard half of the same pair — `EditPipeline`'s Cancel→Discard must
+  // drop the in-memory stores or a later Save persists the discarded edits.
+  'resetPipelineDraft',
 ] as const;
 
 describe('features/pipelines public surface', () => {

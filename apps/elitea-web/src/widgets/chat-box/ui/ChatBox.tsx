@@ -327,7 +327,7 @@ const ChatBoxInner = memo(function ChatBox({
       <Box sx={chatColumnSx(isEmptyConversation)}>
         <ChatMessageList
           emptyState={<ChatEmptyGreeting userName={userName} />}
-          chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''}
+          chatHistory={messages} isStreaming={isStreaming} userId={userId ?? ''} projectId={projectIdString}
           messageActions={{
             onCopyToClipboard: handleCopy,
             onDeleteAnswer: handleDeleteAnswer,

@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import type { SxProps, Theme } from '@mui/material/styles';
 
-import { useParams, useSearch } from '@tanstack/react-router';
+import { useNavigate, useParams, useSearch } from '@tanstack/react-router';
 import { FormProvider } from 'react-hook-form';
 
 import { AgentTagEditor, AgentVersionControls, CreateAgentForm } from '@/features/agents';
@@ -12,7 +12,7 @@ import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { NoResultsMessage } from '@/shared/ui/NoResultsMessage';
 import { AgentModelSettings } from '@/widgets/agent-model-settings';
-import { useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
+import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
 
 import { applicationDetailDisplayName, toVersionSummaries } from './lib/editApplicationMappers';
 import { isPublicAgentsProject } from './lib/isPublicAgentsProject';
@@ -254,6 +254,16 @@ export function EditApplication(): ReactNode {
     [editor],
   );
 
+  // Confirming the discard dialog now LEAVES editing, matching the create
+  // page's Cancel — measured defect: Discard reverted the fields and left the
+  // user on the edit page with no way out. The disarm must precede the
+  // navigation or the just-reset form's blocker prompts a second time.
+  const navigate = useNavigate();
+  const handleDiscarded = useCallback(() => {
+    disarmUnsavedChangesNavBlocker();
+    void navigate({ to: '/agents/$tab', params: { tab: params.tab ?? 'latest' } });
+  }, [navigate, params.tab]);
+
   if (isDetailNotFound) {
     return (
       <Box sx={pageSx}>
@@ -309,11 +319,13 @@ export function EditApplication(): ReactNode {
                 detail={detail}
                 activeVersion={activeVersion}
                 tab={params.tab}
+                projectId={projectId}
               />
               <EditApplicationSaveBar
                 onSave={handleSave}
                 canSave={form.formState.isValid && !isSaving}
                 isSaving={isSaving}
+                onDiscarded={handleDiscarded}
               />
             </>
           )}

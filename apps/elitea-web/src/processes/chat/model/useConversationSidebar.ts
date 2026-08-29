@@ -220,18 +220,50 @@ export function useConversationSidebar(): UseConversationSidebarResult {
 
   const onCollapsed = useCallback(() => setCollapsed((prev) => !prev), []);
 
+  /**
+   * Applies one conversation's updated fields to EVERY container a row can
+   * render from. The visible rows come from `dateGroups` and `folders`
+   * (`Conversations.body.tsx`), not from `conversations` (count-only) — a
+   * patch that touched only the latter two was exactly the silent-no-op
+   * defect this fixes. Baseline: `useEditConversation.hooks.js` patches
+   * `folders` OR `conversations` by `folder_id`; here every container is
+   * mapped unconditionally since a non-matching id is a no-op anyway.
+   */
+  const patchConversationEverywhere = useCallback((updated: Conversation) => {
+    const patchItem = (item: Conversation): Conversation => (item.id === updated.id ? { ...item, ...updated } : item);
+    setConversations((prev) => prev.map(patchItem));
+    setPinnedConversations((prev) => prev.map(patchItem));
+    setDateGroups((prev) => prev.map((group) => ({ ...group, conversations: group.conversations.map(patchItem) })));
+    setFolders((prev) => prev.map((folder) => ({ ...folder, conversations: folder.conversations.map(patchItem) })));
+    setActiveConversation((prev) => (prev !== undefined && prev.id === updated.id ? { ...prev, ...updated } : prev));
+  }, []);
+
   const deleteConversation = useCallback(
     (conversation: Conversation) => {
       if (projectId === undefined) return;
       void conversationApi
         .remove({ projectId, id: conversation.id })
         .then(() => {
-          setConversations((prev) => prev.filter((item) => item.id !== conversation.id));
-          setPinnedConversations((prev) => prev.filter((item) => item.id !== conversation.id));
+          // The row being deleted renders out of `dateGroups`/`folders`
+          // (`Conversations.body.tsx`) — filtering only `conversations` and
+          // `pinnedConversations`, as this used to, left the row on screen.
+          const drop = (items: readonly Conversation[]): readonly Conversation[] => items.filter((item) => item.id !== conversation.id);
+          setConversations(drop);
+          setPinnedConversations(drop);
+          setDateGroups((prev) => prev.map((group) => ({ ...group, conversations: drop(group.conversations) })));
+          setFolders((prev) => prev.map((folder) => ({ ...folder, conversations: drop(folder.conversations) })));
+          if (activeConversation?.id === conversation.id) {
+            // The route still points at the deleted transcript. The baseline
+            // selects the next conversation (`NewChat.jsx:1141-1157`); this
+            // navigates to the blank `/chat` instead — simpler, and `/chat`
+            // is this app's own "start a new chat" surface.
+            setActiveConversation(undefined);
+            void navigate({ to: '/chat' });
+          }
         })
         .catch(() => toastError('Failed to delete the conversation'));
     },
-    [projectId, toastError],
+    [projectId, activeConversation?.id, navigate, toastError],
   );
 
   const renameConversation = useCallback(
@@ -261,16 +293,40 @@ export function useConversationSidebar(): UseConversationSidebarResult {
   );
 
   /*
-   * DISCLOSED GAPS — wired to real state, not to a feature that does not
-   * exist here:
-   *  - `onEditConversation` only marks which conversation the rename applies
-   *    to; the inline editor itself lives in `ConversationItem`.
-   *  - `onPlaybackConversation` has no route in this app yet (the baseline's
-   *    playback surface, `features/chat-messages`' `PlaybackChatBox`, is not
-   *    mounted by any route either), so it selects the conversation and
-   *    stops there rather than pretending to start a playback.
+   * DISCLOSED GAP — `onPlaybackConversation` has no route in this app yet
+   * (the baseline's playback surface, `features/chat-messages`'
+   * `PlaybackChatBox`, is not mounted by any route either), so it selects
+   * the conversation and stops there rather than pretending to start a
+   * playback.
    */
-  const onEditConversation = useCallback((conversation: Conversation) => setActiveConversation(conversation), []);
+
+  /**
+   * `ConversationItem` calls `onEdit` with the ALREADY-updated conversation
+   * for both the rename editor's save (`ConversationItem.tsx`'s `onSave`)
+   * and the menu's "Make public" (`handleMakePublic`) — so this must
+   * persist, not merely select. It used to be
+   * `setActiveConversation(conversation)` only, which made both gestures
+   * silent no-ops. Baseline: `useEditConversation.hooks.js`'s
+   * `onEditConversation` — same PUT (name + is_private), same skip for a
+   * playback conversation, same patch-visible-state-on-success ordering
+   * (no optimistic write, so a failed PUT leaves the list truthful).
+   */
+  const onEditConversation = useCallback(
+    (conversation: Conversation) => {
+      if (conversation.isPlayback === true) {
+        // Baseline skips the network call for a playback conversation but
+        // still applies the local patch (`useEditConversation.hooks.js:23`).
+        patchConversationEverywhere(conversation);
+        return;
+      }
+      if (projectId === undefined) return;
+      void conversationApi
+        .edit({ projectId, id: conversation.id, name: conversation.name, is_private: conversation.isPrivate })
+        .then(() => patchConversationEverywhere(conversation))
+        .catch(() => toastError('Failed to edit the conversation'));
+    },
+    [projectId, patchConversationEverywhere, toastError],
+  );
   const onCancelCreateConversation = useCallback(() => setActiveConversation(undefined), []);
 
   /*

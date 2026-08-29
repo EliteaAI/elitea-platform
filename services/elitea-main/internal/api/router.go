@@ -2222,8 +2222,13 @@ func newProductionRouter(cfg RouterConfig) chi.Router {
 				// module's read string.
 				r.With(projectPermission("models.applications.version.details")).
 					Get("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+				// PATCH used to be bound to ApplicationRelation — the READ
+				// handler — so UpdateApplicationRelation was unreachable and
+				// every agent-as-tool attach answered 200 while writing
+				// nothing. Found in a live browser: the + Agent picker's PATCH
+				// returned the relation LIST and no row appeared anywhere.
 				r.With(projectPermission("models.applications.application_relation.patch")).
-					Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.ApplicationRelation)
+					Patch("/application_relation/prompt_lib/{projectID}/{appID}/{versionID}", coreHandler.UpdateApplicationRelation)
 
 				// Recommendations — recommendations.py declares the agent LIST
 				// permission, since that is what it returns a slice of.

@@ -262,3 +262,48 @@ func TestFreezeLeavesAMalformedInternalToolListAlone(t *testing.T) {
 		t.Fatalf("internal_tools=%v, want the authored value untouched", meta["internal_tools"])
 	}
 }
+
+// TestCurrentRuntimeInternalToolsForwardsThePlatformCatalogue pins the layer's
+// job as FORWARDING, not judging: every name the agent form can author reaches
+// the execution input (deduplicated, internal_mcp excepted — it is materialized
+// through the frozen tools projection), and each WORKER then decides what it
+// serves. The Python worker runs the whole set; the native runtime skips what
+// it lacks with a logged agent_internal_tool_skipped. Refusing here — the old
+// behaviour for everything but ask_user — turned every form toggle into an
+// agent that stopped answering on both workers at once.
+func TestCurrentRuntimeInternalToolsForwardsThePlatformCatalogue(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{
+			name: "the whole authorable catalogue",
+			raw:  `["ask_user","attachments","data_analysis","image_generation","internal_mcp","lazy_tools_mode","planner","pyodide","swarm"]`,
+			want: `["ask_user","attachments","data_analysis","image_generation","lazy_tools_mode","planner","pyodide","swarm"]`,
+		},
+		{name: "internal_mcp alone forwards nothing", raw: `["internal_mcp"]`, want: `[]`},
+		{name: "duplicates collapse", raw: `["pyodide","pyodide","ask_user"]`, want: `["pyodide","ask_user"]`},
+		{name: "empty stays empty", raw: `[]`, want: `[]`},
+		{name: "off the catalogue is refused", raw: `["not_a_platform_tool"]`, wantErr: true},
+		{name: "a non-string entry is refused", raw: `[42]`, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := currentRuntimeInternalTools(json.RawMessage(test.raw))
+			if test.wantErr {
+				if !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
+					t.Fatalf("err=%v, want ErrUnsupportedCurrentAgentStart", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(encoded) != test.want {
+				t.Fatalf("forwarded %s, want %s", encoded, test.want)
+			}
+		})
+	}
+}
