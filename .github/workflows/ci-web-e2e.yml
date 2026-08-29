@@ -388,6 +388,13 @@ jobs:
         # when it asserts every container tag matches the pinned
         # @playwright/test, so this reference is gated automatically and one
         # inside the script would not be.
+        #
+        # No Playwright flags are passed from here, and the `--workers=1` that
+        # keeps this project's specs off each other's execution-stream budget
+        # is NOT one of them: it lives on the script's own `playwright test`
+        # line, which is the single entry point this job and `chat-stream-rust`
+        # both go through. See the script's note — the project's
+        # `fullyParallel: false` does not serialise separate spec files.
         working-directory: ${{ github.workspace }}
         env:
           COMPOSE_BIN: docker compose
@@ -454,13 +461,20 @@ jobs:
         #
         # The compose project and port differ from `chat-stream`'s so the two
         # can never collide, even though they run on separate runners today.
+        #
+        # Same script, so the same `--workers=1` pin applies here — see the
+        # `chat-stream` job's copy of this note.
         working-directory: ${{ github.workspace }}
         env:
           COMPOSE_BIN: docker compose
           CI: "true"
           STANDALONE_WORKER: rust
           CHAT_STREAM_PROJECT: elitea-chatstream-rust-ci
-          CHAT_STREAM_PORT: "8085"
+          # NOT 8085: that is the stack's own gateway debug port
+          # (STANDALONE_GATEWAY_PORT defaults to 8085 in
+          # deploy/docker-compose.standalone-full.yml), so traefik's bind on
+          # the same host port raced the gateway's and lost.
+          CHAT_STREAM_PORT: "8086"
           MOCK_LLM_CHUNK_DELAY_MS: "120"
           PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
         run: bash apps/elitea-web/scripts/chat-stream-e2e.sh

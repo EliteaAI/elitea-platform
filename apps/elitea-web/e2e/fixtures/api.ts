@@ -11,6 +11,8 @@
 import type { APIRequestContext, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
+import { BASE_URL } from '../../playwright.config';
+
 export const AUTOTEST_PREFIX = 'autotest_';
 
 /**
@@ -183,4 +185,189 @@ export async function sweepAutotestEntities(
   } catch {
     // Best effort.
   }
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * The streaming journeys' shared steps
+ *
+ * `e2e/streaming/chat.*.spec.ts` each drive a full agent turn against the full
+ * standalone stack, and each used to hand-roll the same two blocks. They are
+ * here, once, because both are load-bearing in ways their call sites cannot
+ * see: the form flow encodes what the FORM seeds (the whole reason those
+ * journeys exist), and the stored-answer poll encodes the one observation that
+ * can tell an answer from a refusal. A copy that drifts out of one spec is a
+ * spec that quietly stops discriminating.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/** Matched WITHOUT a project id: the chat persona works inside its own personal project (#290). */
+const APPLICATIONS_RE = /\/elitea_core\/applications\/prompt_lib\/(\d+)$/;
+
+/**
+ * The longest agent name that survives the create form.
+ *
+ * `CreateAgentForm` caps the name input at 32 characters
+ * (`features/agents/lib/helpers/agentDraftValidation.helpers.ts`), and
+ * `fill()` respects `maxLength` — so a longer name is silently truncated and
+ * every later lookup by that name finds nothing, with a failure that reads
+ * like the agent was never created. `createAgentThroughForm` asserts it rather
+ * than assuming it, because the failure mode is invisible at the call site.
+ */
+const MAX_AGENT_NAME = 32;
+
+/** What the create-agent FORM actually produced, read back off its own response. */
+export interface AgentCreatedThroughForm {
+  /** The project the form wrote into — read from the request, never assumed to be 1. */
+  readonly projectId: string;
+  /** `applications.id` — the key every later route addresses the agent by. */
+  readonly agentId: string;
+  /** `application_versions.id` — what the agent resolver joins the participant on. */
+  readonly versionId: string;
+  /** `version_details.meta.internal_tools` exactly as the SERVER stored it. */
+  readonly internalTools: readonly string[];
+}
+
+/**
+ * Author an agent by filling in the create form, and hand back what the server
+ * stored.
+ *
+ * Through the FORM, not through `createAgent()` above, because the defects
+ * these journeys exist for were in what the form SEEDS — an
+ * `internal_tools: ['internal_mcp']` the agent resolver refuses, so the join
+ * produced no row and every send answered 422 about an "execution path". A
+ * version created by the API fixture carries whatever that fixture types; only
+ * the form carries what a user actually gets.
+ *
+ * Saved with NO instructions, deliberately. The form does not require the
+ * field, so this is the agent a user gets by filling in only what is marked
+ * required — and it is the shape the native runtime used to refuse, answering
+ * "The execution input is invalid."
+ * (`services/elitea-worker-rust/src/agents/assembly.rs::bounded_instruction`).
+ * Typing into the instructions editor would also couple these journeys to
+ * which code editor the form embeds, which is not what they assert.
+ *
+ * Leaves the browser on the agent's edit page, which is where the save lands
+ * and where the Tools panel and the Chat button live.
+ */
+export async function createAgentThroughForm(
+  page: Page,
+  name: string,
+): Promise<AgentCreatedThroughForm> {
+  expect(name.length, 'the agent name must survive the form’s 32-char cap').toBeLessThanOrEqual(
+    MAX_AGENT_NAME,
+  );
+
+  // Armed BEFORE the navigation: the response is what carries the project id
+  // and the stored version, so the assertions below read what the server
+  // actually wrote rather than what the test constructed.
+  const created = page.waitForResponse(
+    (r) => APPLICATIONS_RE.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
+    { timeout: 30_000 },
+  );
+
+  await page.goto(`${BASE_URL}/app/agents/create`);
+  await expect(page.getByTestId('agent-name-input')).toBeVisible({ timeout: 30_000 });
+  await page.getByTestId('agent-name-input').fill(name);
+  await page.getByTestId('agent-description-input').fill(`${name} description`);
+  await expect(page.getByTestId('agent-save-button')).toBeEnabled({ timeout: 10_000 });
+  await page.getByTestId('agent-save-button').click();
+
+  const response = await created;
+  expect(
+    response.status(),
+    `the agent must be created: ${(await response.text()).slice(0, 300)}`,
+  ).toBe(201);
+
+  const projectId = APPLICATIONS_RE.exec(new URL(response.url()).pathname)?.[1] ?? '';
+  expect(projectId, 'the agent must belong to a project').not.toBe('');
+
+  const body = (await response.json()) as {
+    id?: string;
+    version_details?: { id?: string; meta?: { internal_tools?: readonly string[] } };
+  };
+  const agentId = body.id ?? '';
+  expect(agentId, 'the created agent must carry an id').toMatch(/^\d+$/);
+  const versionId = String(body.version_details?.id ?? '');
+  expect(versionId, 'the created agent must carry a version, or the resolver joins nothing').not.toBe('');
+
+  return {
+    projectId,
+    agentId,
+    versionId,
+    internalTools: body.version_details?.meta?.internal_tools ?? [],
+  };
+}
+
+export interface StoredAssistantAnswerOptions {
+  /** How long the store is given to finalise the row. Default 60s. */
+  readonly timeout?: number;
+  /** The failure line — say what a miss MEANS for this journey. */
+  readonly message?: string;
+  /**
+   * Text the stored answer must contain, checked INSIDE the poll.
+   *
+   * The offline mock echoes the prompt, which is what proves the answer
+   * belongs to this run rather than to a cached or misrouted one. A real model
+   * echoes nothing, so a journey driven against one leaves this unset and
+   * settles for "the turn produced text".
+   */
+  readonly contains?: string;
+}
+
+/**
+ * Require a real assistant answer in the STORE for this conversation.
+ *
+ * Polled, not read once: the stream runs ahead of the store. Measured — a read
+ * issued the moment the UI settled returned the assistant row with
+ * `content: ""`, and the same conversation carried the full text moments
+ * later, so a single read failed against a backend that was merely still
+ * writing.
+ *
+ * The STORED reply, not the on-screen bubble, and that is the discriminating
+ * part: a refused turn renders its failure AS an assistant card, so "some text
+ * appeared" cannot tell an answer from a refusal — one of these specs' own
+ * first drafts went green against exactly that card. Only a turn the runtime
+ * actually completed finalizes a non-empty assistant row that is not flagged
+ * `metadata.is_error`. The `IS_ERROR:` prefix below carries that flag through
+ * the poll's string value so the failure names the refusal instead of
+ * reporting an empty answer.
+ */
+export async function expectStoredAssistantAnswer(
+  page: Page,
+  projectId: string,
+  conversationId: string | number,
+  options: StoredAssistantAnswerOptions = {},
+): Promise<void> {
+  const {
+    timeout = 60_000,
+    message = 'the assistant reply was streamed but never stored',
+    contains,
+  } = options;
+
+  const pattern =
+    contains === undefined
+      ? /^(?!IS_ERROR:)[\s\S]+$/
+      : new RegExp(`^(?!IS_ERROR:)[\\s\\S]*${escapeForRegExp(contains)}[\\s\\S]*$`);
+
+  await expect
+    .poll(
+      async () => {
+        const stored = await page.request.get(
+          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${String(conversationId)}`,
+        );
+        if (!stored.ok()) return '';
+        const body = (await stored.json()) as {
+          items?: readonly { role?: string; content?: string; metadata?: { is_error?: boolean } }[];
+        };
+        const assistant = body.items?.find((item) => item.role === 'assistant');
+        if (assistant?.metadata?.is_error === true) return `IS_ERROR:${assistant.content ?? ''}`;
+        return assistant?.content ?? '';
+      },
+      { timeout, message },
+    )
+    .toMatch(pattern);
+}
+
+/** Escape a literal so `contains` above can be embedded in a RegExp unchanged. */
+function escapeForRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -59,6 +59,13 @@ function toVersionWriteRequest(draft: ApplicationVersionDraft): VersionWriteRequ
     name: draft.name,
     ...(draft.agentType !== undefined ? { agent_type: draft.agentType } : {}),
     instructions: draft.instructions,
+    // Omitted when the draft names none, for the reason `llm_settings` below
+    // gives; sent whenever it does, because until this key existed the create
+    // pages' typed welcome message reached the form and stopped there — see
+    // `ApplicationVersionDraft.welcomeMessage`. `versionFromBody` reads it on
+    // BOTH write paths (`internal/api/v2/applications/handler.go:500`), so the
+    // create POST stores it exactly as the edit PUT does.
+    ...(draft.welcomeMessage !== undefined ? { welcome_message: draft.welcomeMessage } : {}),
     conversation_starters: [...draft.conversationStarters],
     variables: draft.variables.map((variable) => ({ name: variable.name, value: variable.value })),
     // `internal_tools` is copied, not spread through: the draft holds it as a

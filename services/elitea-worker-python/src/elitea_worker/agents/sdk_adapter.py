@@ -37,6 +37,10 @@ from elitea_worker.agents.configuration_registry import (
     ConfigurationRegistryShadow,
     RegistryLoader,
 )
+from elitea_worker.agents.internal_tools import (
+    ensure_sdk_state_directory,
+    serve_internal_tools,
+)
 from elitea_worker.constants import (
     CONFIGURATION_CATALOG_REVISION,
     CONFIGURATION_CATALOG_SHA256,
@@ -393,9 +397,11 @@ class EliteaSdkAgentAdapter:
     def execute_application(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
         _apply_toolkit_guardrails(payload)
+        ensure_sdk_state_directory()
         with self._execution_memory() as memory, _sdk_budget_boundary():
             application = payload.application
             version_details = deepcopy(application.get("version_details") or {})
+            _serve_version_internal_tools(version_details)
             llm_kwargs = _llm_kwargs(payload.llm)
             executor = self._client.application(
                 application_id=application.get("id"),
@@ -425,6 +431,8 @@ class EliteaSdkAgentAdapter:
     def execute_adhoc(self, payload: AgentExecutionPayload) -> dict[str, Any]:
         _require_initial_agent_kernel(payload)
         _apply_toolkit_guardrails(payload)
+        ensure_sdk_state_directory()
+        internal_tools = serve_internal_tools(payload.internal_tools)
         with self._execution_memory() as memory, _sdk_budget_boundary():
             llm_kwargs = _llm_kwargs(payload.llm)
             llm = self._client.get_llm(
@@ -451,8 +459,11 @@ class EliteaSdkAgentAdapter:
                 conversation_id=payload.conversation_id,
                 ignored_mcp_servers=list(payload.ignored_mcp_servers),
                 persona=payload.persona,
+                # `lazy_tools_mode` is read from the ORIGINAL list on purpose: it
+                # is a mode flag rather than a tool, nothing materialises it, and
+                # it is never one of the names `serve_internal_tools` can drop.
                 lazy_tools_mode="lazy_tools_mode" in payload.internal_tools,
-                internal_tools=list(payload.internal_tools),
+                internal_tools=internal_tools,
                 exception_handling_enabled=bool(payload.exception_handling_enabled),
                 context_settings=deepcopy(payload.context_settings),
                 step_limit=payload.steps_limit,
@@ -634,6 +645,34 @@ class EliteaSdkAgentAdapter:
             project_id=self._project_id,
         ) as memory:
             yield memory
+
+
+def _serve_version_internal_tools(version_details: dict[str, Any]) -> None:
+    """Drop the internal tools this image cannot build, in place.
+
+    The stored-agent path never hands ``payload.internal_tools`` to the SDK: the
+    SDK reads the authored set out of ``version_details['meta']`` instead, and
+    reads it TWICE — once in ``EliteAClient.application`` to decide which
+    middleware to construct, and once in ``LangChainAssistant`` to decide which
+    tools to build. Pruning the meta covers both, which pruning the payload
+    would not.
+
+    ``version_details`` is the adapter's own deep copy, so this mutates nothing
+    the platform sent. A meta that is not an object, or an ``internal_tools``
+    that is not a list, is left exactly as it is: this function exists to remove
+    names, not to repair a shape, and the SDK's own handling of a malformed
+    value is the current behavior.
+    """
+
+    meta = version_details.get("meta")
+    if not isinstance(meta, dict):
+        return
+    configured = meta.get("internal_tools")
+    if not isinstance(configured, list):
+        return
+    if not all(isinstance(name, str) for name in configured):
+        return
+    meta["internal_tools"] = serve_internal_tools(configured)
 
 
 def _apply_toolkit_guardrails(payload: AgentExecutionPayload) -> None:

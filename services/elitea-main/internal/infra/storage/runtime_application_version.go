@@ -68,6 +68,21 @@ type RuntimeApplicationVersionContext struct {
 	VersionDetails json.RawMessage `json:"version_details"`
 }
 
+// AgentRuntimeContextAuthorizer applies every check RuntimeContextAuthorizer
+// does — workload certificate, session, claim, generation, desired state,
+// fence — and additionally requires the claimed execution to be an AGENT
+// execution.
+//
+// It is a separate interface rather than a flag because the difference is not
+// cosmetic. RuntimeContextAuthorizer admits any live claim, index ingest
+// included, which is right for the client-token route both capabilities reach
+// and wrong for a route that hands back agent definitions. Taking the narrow
+// interface makes the wrong dependency a compile error instead of a comment
+// somebody has to remember to believe.
+type AgentRuntimeContextAuthorizer interface {
+	AuthorizeAgentRuntimeContext(context.Context, ContentClaim) (RuntimeContextAuthorization, error)
+}
+
 // RuntimeApplicationVersionService serves one nested (agent-as-tool) child
 // definition to the native runtime, under the same durable claim that already
 // authorized the parent turn.
@@ -79,13 +94,13 @@ type RuntimeApplicationVersionContext struct {
 // resolved, blocked toolkits dropped, credentials still sealed) and it must be
 // selected by the claim's project, never by anything the request carries.
 type RuntimeApplicationVersionService struct {
-	authorizer RuntimeContextAuthorizer
+	authorizer AgentRuntimeContextAuthorizer
 	versions   CurrentApplicationVersionSource
 	freezer    agentexecutionapp.CurrentApplicationVersionFreezer
 }
 
 func NewRuntimeApplicationVersionService(
-	authorizer RuntimeContextAuthorizer,
+	authorizer AgentRuntimeContextAuthorizer,
 	versions CurrentApplicationVersionSource,
 	freezer agentexecutionapp.CurrentApplicationVersionFreezer,
 ) (*RuntimeApplicationVersionService, error) {
@@ -105,6 +120,15 @@ func NewRuntimeApplicationVersionService(
 // actor ONLY from what the claim resolved. The applicationID/versionID pair is
 // the sole thing the request selects, and it selects within that project's
 // tenant schema, so a claim cannot reach an agent in a project it does not own.
+//
+// WHICH claim is the other half of that boundary, and it is why the authorizer
+// here is the agent-scoped one. The project bound above is only as narrow as
+// the execution that produced it, while the application and version are named
+// by the URL — so a live index.ingest.v1 claim, authorized for the same
+// project, would otherwise be able to freeze and read any agent version in it.
+// A refused capability comes back from the authorizer as ErrContentUnauthorized
+// and leaves this route with the same 403 a stale or foreign claim gets; the
+// 404 below still means only "the claim was good and the pair was not".
 func (service *RuntimeApplicationVersionService) Resolve(
 	ctx context.Context,
 	claim ContentClaim,
@@ -124,7 +148,7 @@ func (service *RuntimeApplicationVersionService) Resolve(
 		versionID == 0 || versionID > math.MaxInt32 {
 		return RuntimeApplicationVersionContext{}, ErrContentNotFound
 	}
-	authorization, err := service.authorizer.AuthorizeRuntimeContext(ctx, claim)
+	authorization, err := service.authorizer.AuthorizeAgentRuntimeContext(ctx, claim)
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return RuntimeApplicationVersionContext{}, contextErr

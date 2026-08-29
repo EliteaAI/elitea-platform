@@ -22,6 +22,26 @@ export interface ApplicationVersionDraft {
   readonly name: string;
   readonly agentType: 'pipeline' | undefined;
   readonly instructions: string;
+  /**
+   * The greeting the chat surface shows before the first turn — the
+   * `WelcomeMessageInput` accordion on both create pages writes it.
+   *
+   * **This key did not exist until a create-path defect was found**: the
+   * create pages held the typed welcome message in their `extraFields` slice
+   * and echoed it back into the form, so it looked saved, but neither this
+   * draft nor `toVersionWriteRequest` had anywhere to put it and the POST body
+   * never carried it. The wire contract always did
+   * (`shared/api/generated/model/versionWriteRequest.zod.ts`) and the EDIT
+   * path always sent it (`pages/agents/lib/editApplicationMappers.ts`'s
+   * `toVersionWriteBody`), which is exactly why nothing reported it: the text
+   * survived every save AFTER the first one.
+   *
+   * OPTIONAL, unlike its siblings: an absent key leaves the stored column
+   * alone, the same rule `llmSettings`/`pipelineSettings` follow (see
+   * `toVersionWriteRequest`), and the mappers that build a draft from a
+   * fetched version legitimately do not carry one.
+   */
+  readonly welcomeMessage?: string;
   readonly conversationStarters: readonly string[];
   readonly variables: readonly { readonly name: string; readonly value: string }[];
   /**

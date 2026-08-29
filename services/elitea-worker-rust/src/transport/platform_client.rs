@@ -5,8 +5,6 @@
 //! claim; future artifact read/write grants belong here as additional typed
 //! capabilities rather than being hidden inside toolkits or model clients.
 
-#![allow(dead_code)] // Production composition remains capability-gated.
-
 use std::sync::Arc;
 
 use crate::protocol::control::ClaimBoundRuntimeContextAuthority;
@@ -37,9 +35,14 @@ impl PlatformClient {
 
     /// Resolve one exact child application/version using the live claim.
     ///
-    /// Main must return a frozen, claim-materialized definition. Until that
-    /// private route is implemented, nested applications remain an explicit
-    /// activation gap rather than falling back to mutable public reads.
+    /// Main serves the frozen, claim-materialized definition on the private
+    /// mTLS content route (`PostApplicationVersion`,
+    /// `internal/infra/storage/content_server.go`), and this is the only way
+    /// the runtime reads a nested application: there is deliberately no
+    /// fallback to a mutable public read, so a child either resolves under the
+    /// live claim or the turn fails with a stated reason. A claim that was
+    /// accepted for a version main no longer has comes back as a TERMINAL
+    /// `RuntimeContextError::NotFound`, not a retryable dependency failure.
     pub(crate) async fn resolve_application_version(
         &self,
         authority: &ClaimBoundRuntimeContextAuthority,

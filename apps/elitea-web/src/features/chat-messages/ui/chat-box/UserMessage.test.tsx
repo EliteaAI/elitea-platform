@@ -1,20 +1,34 @@
 /**
  * Who a reloaded question is attributed to.
  *
- * `GET /elitea_core/messages/prompt_lib/{project}/{conversation}` answers rows
- * with no author field, so `entities/message`'s normaliser leaves `name` empty
- * (see its own tests) and this component is what decides the caption. Without
- * these cases the substitution would be unobservable wiring: the normaliser
- * change alone turns the wrong caption into NO caption, which reads as fixed
- * on a screenshot and is not.
+ * `GET /elitea_core/messages/prompt_lib/{project}/{conversation}` — what a
+ * conversation reload and a shared-link open both read — answers rows carrying
+ * no author identity of ANY kind (measured: `{id, uid, conversation_id, role,
+ * content, content_type, metadata, created_at}`). `entities/message`'s
+ * normaliser therefore yields `name: ''` and omits `userId` for every one of
+ * them, and this component is what decides the caption.
  *
- * `useGetCurrentAuthor` is substituted at the network boundary (MSW) per R-M1
- * — no `vi.mock` — with the same `QueryClientProvider` + generated-client
- * wiring `ExpandedParticipants/ParticipantItemRow.test.tsx` established.
+ * These cases exist because the previous answer — substitute the SIGNED-IN
+ * user's name whenever the row names nobody — stamped the reader's name on
+ * every user bubble of a shared transcript, other people's included. The
+ * `userId === undefined` guard could not stop it: the endpoint omits `userId`
+ * too, so the guard only ever fired on the live paths (which already carry a
+ * name of their own), and the old test for it used a `userId`-without-`name`
+ * state this endpoint cannot produce.
+ *
+ * The trap that keeps the substitution from coming back is deliberately two
+ * halves, because a bare "the reader's name is not on screen" assertion would
+ * also pass against a re-added query that simply had not resolved yet:
+ *  - `GET /social/author` IS stubbed (MSW, per R-M1 — no `vi.mock`), so a
+ *    reintroduced fallback would have a real name to render rather than
+ *    failing its request and rendering nothing by accident; and
+ *  - the row's `QueryClient` cache must stay EMPTY, which React Query settles
+ *    synchronously during render — a reintroduced `useGetCurrentAuthor`
+ *    registers its observer before `render()` returns, resolved or not.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@mui/material/styles';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -27,78 +41,115 @@ import type { ChatMessage } from '../../lib/convertMessagesToChatHistory';
 import { UserMessage } from './UserMessage';
 
 const BASE = '/api/v2';
+/** The person doing the reading — the name that must never be borrowed. */
+const READER = 'E2E Chat Driver';
 const theme = buildEliteaTheme(DEFAULT_BRAND_PACK);
 
 afterEach(() => {
   resetGeneratedClient();
 });
 
-/** Answers the one query this row makes (`useGetCurrentAuthor`). */
-function stubCurrentAuthor(profile: Record<string, unknown>): void {
+/**
+ * Makes the signed-in identity available to answer `GET /social/author`. No
+ * assertion here expects it to be requested — it is the payload half of the
+ * trap described in the file header.
+ */
+function stubCurrentAuthor(): void {
   configureGeneratedClient({ baseUrl: BASE });
-  server.use(http.get(`${BASE}/social/author`, () => HttpResponse.json(profile)));
-}
-
-function renderMessage(message: Partial<ChatMessage>): void {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
-        <UserMessage
-          message={{ id: 'q1', role: 'user', name: '', content: 'hello', createdAt: '2026-08-29T10:00:00Z', ...message }}
-          messageId="q1"
-        />
-      </ThemeProvider>
-    </QueryClientProvider>,
+  server.use(
+    http.get(`${BASE}/social/author`, () =>
+      HttpResponse.json({ id: 'me', name: READER, email: 'driver@example.com' }),
+    ),
   );
 }
 
+function buildMessage(index: number, overrides: Partial<ChatMessage>): ChatMessage {
+  return {
+    id: `q${String(index)}`,
+    role: 'user',
+    name: '',
+    content: 'hello',
+    createdAt: '2026-08-29T10:00:00Z',
+    ...overrides,
+  };
+}
+
+/** Renders one row per `overrides` entry into a single tree, and hands back its `QueryClient`. */
+function renderMessages(...overrides: readonly Partial<ChatMessage>[]): QueryClient {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const messages = overrides.map((override, index) => buildMessage(index, override));
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ThemeProvider theme={theme} defaultMode={DEFAULT_COLOR_SCHEME}>
+        {messages.map((message) => (
+          <UserMessage key={message.id} message={message} messageId={message.id} />
+        ))}
+      </ThemeProvider>
+    </QueryClientProvider>,
+  );
+  return queryClient;
+}
+
+const renderMessage = (override: Partial<ChatMessage>): QueryClient => renderMessages(override);
+
 describe('UserMessage author caption', () => {
-  it('attributes an author-less persisted question to the signed-in user', async () => {
-    stubCurrentAuthor({ id: 'me', name: 'E2E Chat Driver', email: 'driver@example.com' });
-    renderMessage({ name: '' });
+  it('renders no caption at all for the author-less row the persisted endpoint returns', () => {
+    stubCurrentAuthor();
+    // Exactly what `normaliseUserMessage` produces for a reloaded row: an
+    // empty name and NO `userId`.
+    const queryClient = renderMessage({ name: '' });
 
-    await waitFor(() => {
-      expect(screen.getByText('E2E Chat Driver')).toBeTruthy();
-    });
+    // The bubble is all there is — no caption line above it, and in
+    // particular not the reader's name.
+    expect(screen.getByTestId('user-message').textContent).toBe('hello');
+    expect(screen.queryByText(READER)).toBeNull();
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('falls back to the signed-in email when the profile carries a blank name', async () => {
-    stubCurrentAuthor({ id: 'me', name: '   ', email: 'driver@example.com' });
-    renderMessage({ name: '' });
+  it('does not caption other people\'s messages with the reader\'s name on a shared-conversation reload', () => {
+    stubCurrentAuthor();
+    // A shared conversation, reloaded: the reader wrote one of these and a
+    // colleague wrote the other, and the endpoint says which for neither.
+    const queryClient = renderMessages(
+      { content: 'a question the reader asked' },
+      { content: 'a question a colleague asked' },
+    );
 
-    await waitFor(() => {
-      expect(screen.getByText('driver@example.com')).toBeTruthy();
-    });
+    expect(screen.getByText('a question the reader asked')).toBeTruthy();
+    expect(screen.getByText('a question a colleague asked')).toBeTruthy();
+    for (const row of screen.getAllByTestId('user-message')) {
+      expect(row.textContent).not.toContain(READER);
+    }
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
-  it('keeps a genuinely departed author as such, rather than re-attributing it to the reader', async () => {
-    stubCurrentAuthor({ id: 'me', name: 'E2E Chat Driver', email: 'driver@example.com' });
+  it('keeps a genuinely departed author as such, rather than blanking or re-attributing it', () => {
+    stubCurrentAuthor();
+    // A row that DID state an author which resolves to nobody — a real fact
+    // about the message, and a different case from stating none at all.
     renderMessage({ name: 'User No Longer Available' });
 
-    await waitFor(() => {
-      expect(screen.getByText('User No Longer Available')).toBeTruthy();
-    });
-    expect(screen.queryByText('E2E Chat Driver')).toBeNull();
+    expect(screen.getByText('User No Longer Available')).toBeTruthy();
+    expect(screen.queryByText(READER)).toBeNull();
   });
 
-  it('never re-attributes a message that names an author the reader is not', async () => {
-    stubCurrentAuthor({ id: 'me', name: 'E2E Chat Driver', email: 'driver@example.com' });
-    renderMessage({ name: '', userId: 'someone-else' });
+  it('captions a question that names another user with that user\'s name', () => {
+    stubCurrentAuthor();
+    renderMessage({ name: 'Bob Reviewer', userId: 'user-7' });
 
-    await waitFor(() => {
-      expect(screen.getByText('hello')).toBeTruthy();
-    });
-    expect(screen.queryByText('E2E Chat Driver')).toBeNull();
+    expect(screen.getByText('Bob Reviewer')).toBeTruthy();
+    expect(screen.queryByText(READER)).toBeNull();
   });
 
-  it('renders no caption at all while the profile has not landed', () => {
-    stubCurrentAuthor({ id: 'me', name: 'E2E Chat Driver', email: 'driver@example.com' });
-    renderMessage({ name: '' });
+  it('still captions the message the reader just sent, which carries its own name', () => {
+    stubCurrentAuthor();
+    // The shape `buildOptimisticUserMessage` builds on send
+    // (`widgets/chat-box/ui/hooks/useChatBoxHandlers.helpers.ts`): the sender
+    // is known at that moment, so the row states it and needs no fallback.
+    const queryClient = renderMessage({ name: READER, userId: 'me' });
 
-    // Synchronous first paint, before the query resolves: an empty caption is
-    // the correct intermediate state, not the string "undefined".
-    expect(screen.queryByText('E2E Chat Driver')).toBeNull();
-    expect(screen.queryByText('undefined')).toBeNull();
+    expect(screen.getByText(READER)).toBeTruthy();
+    // ...and it came off the message, not off a re-read of the signed-in user.
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 });

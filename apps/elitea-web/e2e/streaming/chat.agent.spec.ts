@@ -21,10 +21,11 @@
  *     request, no chip, no error, no console line.
  *
  * All three are UI defects and all three are invisible to the unit suite, which
- * is why this journey authors the agent through the FORM and attaches it
- * through the MENU rather than through `fixtures/api.ts`. A version created by
- * the API fixture carries whatever that fixture types; only the form carries
- * what a user actually gets.
+ * is why this journey authors the agent through the FORM
+ * (`createAgentThroughForm`) and attaches it through the MENU, rather than
+ * through the API fixture `createAgent()`. A version created over the API
+ * carries whatever that fixture types; only the form carries what a user
+ * actually gets.
  *
  * WHY IT LIVES HERE: `journeys/**` runs against `docker-compose.e2e-standalone.yml`,
  * which has no runtime plane, no worker and no model — an agent turn cannot
@@ -38,33 +39,16 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import { BASE_URL } from '../../playwright.config';
-import { AUTOTEST_PREFIX } from '../fixtures/api';
+import {
+  AUTOTEST_PREFIX,
+  createAgentThroughForm,
+  expectStoredAssistantAnswer,
+} from '../fixtures/api';
 
 /** Matched WITHOUT a project id: the chat persona works inside its own personal project (#290). */
 const START_RE = /\/elitea_core\/messages\/prompt_lib\/(\d+)\/[0-9a-f-]+/;
 const EVENTS_RE = /\/executions\/(\d+)\/[^/]+\/events/;
 const PARTICIPANTS_RE = /\/elitea_core\/participants\/prompt_lib\/(\d+)\/([^/?]+)/;
-const APPLICATIONS_RE = /\/elitea_core\/applications\/prompt_lib\/(\d+)$/;
-
-/**
- * A name that survives the form.
- *
- * `CreateAgentForm` caps the name input at 32 characters
- * (`features/agents/lib/helpers/agentDraftValidation.helpers.ts`), and
- * `fill()` respects `maxLength` — so a longer name is silently truncated and
- * every later lookup by that name finds nothing, with a failure that reads
- * like the agent was never created. The length is asserted rather than
- * assumed, because the failure mode is invisible at the call site.
- */
-const MAX_AGENT_NAME = 32;
-
-function agentName(): string {
-  const name = `${AUTOTEST_PREFIX}agent-${Date.now() % 1_000_000}`;
-  expect(name.length, 'the agent name must survive the form’s 32-char cap').toBeLessThanOrEqual(
-    MAX_AGENT_NAME,
-  );
-  return name;
-}
 
 /** Open the "+" menu, walk into one entity submenu, and pick a row by name. */
 async function attachParticipant(page: Page, submenu: string, name: string): Promise<void> {
@@ -84,49 +68,23 @@ test('an agent authored in the UI answers in chat, and the participant carries i
   // hang fails on its own step rather than on the clock.
   test.setTimeout(240_000);
 
-  const name = agentName();
+  const name = `${AUTOTEST_PREFIX}agent-${Date.now() % 1_000_000}`;
   const prompt = `autotest agent ${Date.now()}`;
 
   // ── 1. Author the agent through the form ────────────────────────────────
-  // Through the FORM, because the defect was in what the form seeds. The
-  // response is captured so the assertion below reads the version the server
-  // actually stored rather than one this test constructed.
-  const created = page.waitForResponse(
-    (r) => APPLICATIONS_RE.test(new URL(r.url()).pathname) && r.request().method() === 'POST',
-    { timeout: 30_000 },
-  );
-
-  await page.goto(`${BASE_URL}/app/agents/create`);
-  await expect(page.getByTestId('agent-name-input')).toBeVisible({ timeout: 30_000 });
-  await page.getByTestId('agent-name-input').fill(name);
-  await page.getByTestId('agent-description-input').fill(`${name} description`);
-  // Saved with NO instructions, deliberately. The form does not require the
-  // field, so this is the agent a user gets by filling in only what the form
-  // marks required — and it is the shape the runtime used to refuse, answering
-  // "The execution input is invalid." on every turn
-  // (services/elitea-worker-rust/src/agents/assembly.rs::bounded_instruction).
-  // Typing into the instructions editor would also couple this journey to which
-  // code editor the form embeds, which is not what it is here to assert.
-  await expect(page.getByTestId('agent-save-button')).toBeEnabled({ timeout: 10_000 });
-  await page.getByTestId('agent-save-button').click();
-
-  const createdResponse = await created;
-  expect(createdResponse.status(), 'the agent must be created').toBe(201);
-  const projectId = APPLICATIONS_RE.exec(new URL(createdResponse.url()).pathname)?.[1] ?? '';
-  expect(projectId, 'the agent must belong to a project').not.toBe('');
-  const agent = (await createdResponse.json()) as {
-    id?: string;
-    version_details?: { id?: string; meta?: { internal_tools?: readonly string[] } };
-  };
-  const agentId = agent.id ?? '';
-  expect(agentId, 'the created agent must carry an id').toMatch(/^\d+$/);
+  // Through the FORM, because the defect was in what the form seeds — see
+  // `createAgentThroughForm`, which also states why the agent is saved with no
+  // instructions. What it returns is read off the server's own response, so
+  // the assertions below are about what was STORED, not about what this test
+  // constructed.
+  const { projectId, agentId, versionId, internalTools } = await createAgentThroughForm(page, name);
 
   // The refusal this journey exists for, asserted at the point it is decided.
   // `internal_mcp` here is not a preference: it makes the resolver's version
   // join return nothing, and every send answers 422 with a message about an
   // "execution path" that says nothing about internal tools.
   expect(
-    agent.version_details?.meta?.internal_tools ?? [],
+    internalTools,
     'a new agent must not name an internal tool the platform refuses',
   ).not.toContain('internal_mcp');
 
@@ -160,21 +118,49 @@ test('an agent authored in the UI answers in chat, and the participant carries i
   // write-only route and answers 405 to a GET; the participant list is a member
   // of the conversation's own detail response. That route resolves either
   // identifier form, so the uuid the attach used is enough.
-  const conversation = await page.request.get(
-    `${BASE_URL}/api/v2/elitea_core/conversation/prompt_lib/${projectId}/${conversationUuid}`,
-  );
-  expect(conversation.ok(), 'the conversation must expose its participants').toBe(true);
-  const conversationBody = (await conversation.json()) as {
-    participants?: readonly { entity_name?: string; entity_settings?: { version_id?: string | number } }[];
-  };
-  const agentParticipant = (conversationBody.participants ?? []).find(
-    (item) => item.entity_name === 'application' || item.entity_name === 'pipeline',
-  );
+  //
+  // POLLED, not read once, and that is not defensive padding. The pick issues
+  // MORE THAN ONE participants POST for this conversation, and
+  // `waitForResponse` above resolves on the FIRST of them — which is not
+  // necessarily the agent's. Reading immediately after it therefore races the
+  // agent row. Measured: on a warm app the whole test ran in under a second
+  // and the read landed between the two writes, so `agentParticipant` was
+  // undefined while the row existed in the store moments later; the same test
+  // passed whenever the app was cold enough to be slower. That reads as "the
+  // pick did not create the participant" — a statement about the feature —
+  // when it is a statement about the harness. The poll's failure line still
+  // says the participant never appeared, which is the real defect it guards.
+  let agentParticipant:
+    | { entity_name?: string; entity_settings?: { version_id?: string | number } }
+    | undefined;
+  await expect
+    .poll(
+      async () => {
+        const conversation = await page.request.get(
+          `${BASE_URL}/api/v2/elitea_core/conversation/prompt_lib/${projectId}/${conversationUuid}`,
+        );
+        if (!conversation.ok()) return '';
+        const conversationBody = (await conversation.json()) as {
+          participants?: readonly {
+            entity_name?: string;
+            entity_settings?: { version_id?: string | number };
+          }[];
+        };
+        agentParticipant = (conversationBody.participants ?? []).find(
+          (item) => item.entity_name === 'application' || item.entity_name === 'pipeline',
+        );
+        return String(agentParticipant?.entity_settings?.version_id ?? '');
+      },
+      {
+        timeout: 30_000,
+        message:
+          'the agent never became a participant of the conversation the pick created — ' +
+          'the participant must name the agent version, or the resolver joins nothing ' +
+          'and every turn is refused',
+      },
+    )
+    .toBe(versionId);
   expect(agentParticipant, 'the agent must be one of the conversation participants').toBeDefined();
-  expect(
-    String(agentParticipant?.entity_settings?.version_id ?? ''),
-    'the participant must name the agent version, or the resolver joins nothing and every turn is refused',
-  ).toBe(String(agent.version_details?.id ?? ''));
 
   // ── 3. Send, and require the turn to be ADMITTED ───────────────────────
   const started = page.waitForResponse(
@@ -224,23 +210,12 @@ test('an agent authored in the UI answers in chat, and the participant carries i
   ).toBeEditable({ timeout: 90_000 });
 
   // ── 5. Persistence ─────────────────────────────────────────────────────
-  // The stream runs ahead of the store, so this is polled rather than read once
-  // — the same ordering `chat.streaming.spec.ts` documents.
-  await expect
-    .poll(
-      async () => {
-        const stored = await page.request.get(
-          `${BASE_URL}/api/v2/elitea_core/messages/prompt_lib/${projectId}/${conversationUuid}`,
-        );
-        if (!stored.ok()) return '';
-        const body = (await stored.json()) as {
-          items?: readonly { role?: string; content?: string }[];
-        };
-        return body.items?.find((item) => item.role === 'assistant')?.content ?? '';
-      },
-      { timeout: 60_000, message: 'the agent reply was streamed but never stored' },
-    )
-    .not.toBe('');
+  // The stream runs ahead of the store, and a refused turn renders its failure
+  // as an assistant card — both handled once in `expectStoredAssistantAnswer`.
+  await expectStoredAssistantAnswer(page, projectId, conversationUuid, {
+    timeout: 60_000,
+    message: 'the agent reply was streamed but never stored',
+  });
 
   // Cleanup is best-effort and deliberately last: a failure above should leave
   // the agent in place for inspection.

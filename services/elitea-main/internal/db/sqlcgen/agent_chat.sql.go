@@ -261,10 +261,24 @@ WITH resolved AS MATERIALIZED (
                 OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
                 OR invalid_application_version.id IS NULL
                 OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+                -- The CASE repeats the type test the disjunct above already made, and
+                -- it is not redundant: PostgreSQL does not promise the terms of an OR
+                -- are evaluated in written order, so a ` + "`" + `meta.internal_tools` + "`" + ` that is
+                -- JSON null, a string, a number or an object can reach
+                -- ` + "`" + `jsonb_array_elements` + "`" + ` and raise 22023 "cannot extract elements from
+                -- a scalar" — turning this deliberate participant REFUSAL (a 422
+                -- classification) into a 500. The ELSE arm cannot change the answer:
+                -- whenever it is taken the preceding disjunct is already true, so the
+                -- participant stays invalid. Same guard shape as the positive clauses
+                -- in ResolveCurrentApplicationTurn / ResolveCurrentAdhocTurn.
                 OR EXISTS (
                     SELECT 1
                     FROM jsonb_array_elements(
-                        COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                        CASE
+                            WHEN jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                            THEN COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                            ELSE '[]'::jsonb
+                        END
                     ) AS invalid_admitted_internal_tool(value)
                     WHERE jsonb_typeof(invalid_admitted_internal_tool.value) <> 'string'
                        OR invalid_admitted_internal_tool.value #>> '{}' NOT IN (
@@ -1279,10 +1293,24 @@ WHERE conversation.uuid = $5::uuid
             OR COALESCE(invalid_application_participant.meta ->> 'name', '') = ''
             OR invalid_application_version.id IS NULL
             OR jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) <> 'array'
+            -- The CASE repeats the type test the disjunct above already made, and
+            -- it is not redundant: PostgreSQL does not promise the terms of an OR
+            -- are evaluated in written order, so a ` + "`" + `meta.internal_tools` + "`" + ` that is
+            -- JSON null, a string, a number or an object can reach
+            -- ` + "`" + `jsonb_array_elements` + "`" + ` and raise 22023 "cannot extract elements from
+            -- a scalar" — turning this deliberate participant REFUSAL (a 422
+            -- classification) into a 500. The ELSE arm cannot change the answer:
+            -- whenever it is taken the preceding disjunct is already true, so the
+            -- participant stays invalid. Same guard shape as the positive clauses
+            -- in ResolveCurrentApplicationTurn / ResolveCurrentAdhocTurn.
             OR EXISTS (
                 SELECT 1
                 FROM jsonb_array_elements(
-                    COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                    CASE
+                        WHEN jsonb_typeof(COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)) = 'array'
+                        THEN COALESCE(invalid_application_version.meta -> 'internal_tools', '[]'::jsonb)
+                        ELSE '[]'::jsonb
+                    END
                 ) AS invalid_internal_tool(value)
                 WHERE jsonb_typeof(invalid_internal_tool.value) <> 'string'
                    OR invalid_internal_tool.value #>> '{}' NOT IN (
@@ -1541,6 +1569,7 @@ SELECT conversation.id AS conversation_id,
        COALESCE(target_mapping.entity_settings -> 'variables', '[]'::jsonb)::text AS application_variables_json,
        COALESCE(current_history.chat_history, '[]'::jsonb)::text AS chat_history_json,
        COALESCE(conversation.meta -> 'internal_tools', '[]'::jsonb)::text AS internal_tools_json,
+       -- BEGIN shared application_version_details_json projection
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -1668,6 +1697,7 @@ SELECT conversation.id AS conversation_id,
            'tags', '[]'::jsonb,
            'variables', '[]'::jsonb
        )::text AS application_version_details_json
+       -- END shared application_version_details_json projection
 FROM chat_conversations AS conversation
 JOIN chat_participant_mapping AS author_mapping
   ON author_mapping.conversation_id = conversation.id
@@ -2072,6 +2102,7 @@ func (q *Queries) ResolveCurrentApplicationTurn(ctx context.Context, arg Resolve
 const resolveCurrentApplicationVersionDetails = `-- name: ResolveCurrentApplicationVersionDetails :one
 SELECT application_version.id AS application_version_id,
        application_version.application_id,
+       -- BEGIN shared application_version_details_json projection
        jsonb_build_object(
            'id', application_version.id,
            'application_id', application_version.application_id,
@@ -2199,6 +2230,7 @@ SELECT application_version.id AS application_version_id,
            'tags', '[]'::jsonb,
            'variables', '[]'::jsonb
        )::text AS application_version_details_json
+       -- END shared application_version_details_json projection
 FROM application_versions AS application_version
 WHERE application_version.id = $1::integer
   AND application_version.application_id = $2::integer
@@ -2216,8 +2248,14 @@ type ResolveCurrentApplicationVersionDetailsRow struct {
 }
 
 // The projection above is ResolveCurrentApplicationTurn's
-// `application_version_details_json` block, copied verbatim (agent_chat.sql:11-137)
-// rather than shared. Both documents are read by the SAME decoder in the native
+// `application_version_details_json` block, copied verbatim rather than shared.
+// Both copies sit between the `-- BEGIN/END shared
+// application_version_details_json projection` markers, and
+// TestSharedApplicationVersionDetailsProjectionsAreIdentical
+// (internal/db/sqlcgen/agent_chat_shared_projection_test.go) extracts both and
+// fails the build if a single byte between the markers diverges. Keep the
+// markers on their own lines and edit the two blocks together.
+// Both documents are read by the SAME decoder in the native
 // runtime (`OrdinaryNoToolProfile::from_nested_version` and
 // `FrozenToolSnapshot::from_version_details`,
 // services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
@@ -2283,6 +2321,13 @@ JOIN LATERAL (
     ORDER BY item.order_index DESC, item.id DESC
     LIMIT 1
 ) AS question_text ON TRUE
+CROSS JOIN LATERAL (
+    SELECT CASE
+        WHEN jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+            THEN response.meta -> 'authorization_requests'
+        ELSE '[]'::jsonb
+    END AS value
+) AS pending_authorization
 WHERE conversation.uuid = $2::uuid
   AND response.uuid = $3::uuid
   AND NOT response.is_streaming
@@ -2298,14 +2343,14 @@ WHERE conversation.uuid = $2::uuid
       )
   )
   AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-  AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
+  AND jsonb_array_length(pending_authorization.value) BETWEEN 1 AND 16
   AND (
       $5::text = ''
       OR (
-          jsonb_array_length(response.meta -> 'authorization_requests') = 1
+          jsonb_array_length(pending_authorization.value) = 1
           AND EXISTS (
               SELECT 1
-              FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+              FROM jsonb_array_elements(pending_authorization.value) AS request(value)
               WHERE COALESCE(
                   NULLIF(request.value ->> 'interrupt_id', ''),
                   NULLIF(request.value ->> 'tool_run_id', ''),
@@ -2337,6 +2382,17 @@ type ResolveCurrentAuthorizationContinuationRow struct {
 	AuthorizationRequestsJson string      `db:"authorization_requests_json" json:"authorization_requests_json"`
 }
 
+// The pending set is materialized through a CASE, exactly as
+// ResolveCurrentContinuation / ResumeCurrentAgentHITL do for `pending_hitl`,
+// and for a reason those queries only imply. A sibling
+// `AND jsonb_typeof(...) = 'array'` is NOT a guard: PostgreSQL costs and
+// reorders the quals of an AND (order_qual_clauses), and on PostgreSQL 16 it
+// already evaluates the length test first — so a `meta.authorization_requests`
+// holding JSON null, a scalar or an object raises 22023 ("cannot get array
+// length of a scalar" / "of a non-array") and turns this deliberate REFUSAL,
+// which the caller answers 422, into a 500. The CASE cannot change any
+// admitted row: whenever the ELSE arm is taken the typeof qual beside it is
+// already false, and an empty array fails `BETWEEN 1 AND 16` anyway.
 func (q *Queries) ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error) {
 	row := q.db.QueryRow(ctx, resolveCurrentAuthorizationContinuation,
 		arg.ActorUserID,
@@ -2720,6 +2776,19 @@ WITH resolved AS MATERIALIZED (
      AND application_version.id = (application_mapping.entity_settings ->> 'version_id')::integer
      AND application_version.application_id = $3::integer
      AND application_version.application_id = (response_author.entity_meta ->> 'id')::integer
+    -- Same CASE, same reason as ResolveCurrentAuthorizationContinuation above,
+    -- and the same shape ` + "`" + `pending` + "`" + ` already has in ResumeCurrentAgentHITL: the
+    -- ` + "`" + `jsonb_typeof` + "`" + ` qual below is a rule, not a guard, and every array
+    -- function here must read the materialized value instead of the raw key or
+    -- a non-array ` + "`" + `meta.authorization_requests` + "`" + ` answers 500 where it must
+    -- answer 422.
+    CROSS JOIN LATERAL (
+        SELECT CASE
+            WHEN jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
+                THEN response.meta -> 'authorization_requests'
+            ELSE '[]'::jsonb
+        END AS value
+    ) AS pending
     CROSS JOIN LATERAL (
         SELECT CASE
             WHEN jsonb_typeof($4::jsonb) = 'array'
@@ -2734,16 +2803,16 @@ WITH resolved AS MATERIALIZED (
       AND response.meta ->> 'execution_generation' = $8::text
       AND response.meta ->> 'thread_id' = $9::text
       AND jsonb_typeof(response.meta -> 'authorization_requests') = 'array'
-      AND jsonb_array_length(response.meta -> 'authorization_requests') BETWEEN 1 AND 16
-      AND jsonb_array_length(submitted.value) = jsonb_array_length(response.meta -> 'authorization_requests')
+      AND jsonb_array_length(pending.value) BETWEEN 1 AND 16
+      AND jsonb_array_length(submitted.value) = jsonb_array_length(pending.value)
       AND (
           SELECT count(DISTINCT COALESCE(
               NULLIF(request.value ->> 'interrupt_id', ''),
               NULLIF(request.value ->> 'tool_run_id', ''),
               request.value ->> 'tool_call_id'
           ))
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
-      ) = jsonb_array_length(response.meta -> 'authorization_requests')
+          FROM jsonb_array_elements(pending.value) AS request(value)
+      ) = jsonb_array_length(pending.value)
       AND (
           SELECT count(DISTINCT decision.value ->> 'interrupt_id')
           FROM jsonb_array_elements(submitted.value) AS decision(value)
@@ -2759,7 +2828,7 @@ WITH resolved AS MATERIALIZED (
       )
       AND NOT EXISTS (
           SELECT 1
-          FROM jsonb_array_elements(response.meta -> 'authorization_requests') AS request(value)
+          FROM jsonb_array_elements(pending.value) AS request(value)
           WHERE jsonb_typeof(request.value) <> 'object'
              OR COALESCE(
                  NULLIF(request.value ->> 'interrupt_id', ''),

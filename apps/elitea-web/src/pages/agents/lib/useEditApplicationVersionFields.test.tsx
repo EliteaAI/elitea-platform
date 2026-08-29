@@ -105,6 +105,30 @@ describe('useEditApplicationVersionFields — llmSettings', () => {
     expect(result.current.isDirty).toBe(true);
   });
 
+  // temperature and reasoning_effort are mutually exclusive on the wire, so
+  // a per-key write of one must REPLACE the other — the XOR inside
+  // toAgentLlmSettings keeps the effort on a collision, which used to eat a
+  // temperature write on a version that stored an effort.
+  it('a fanned-out temperature write replaces a stored reasoning_effort, and the reverse', () => {
+    const { result } = renderHook(() =>
+      useEditApplicationVersionFields(
+        version({ llm_settings: { model_name: 'qwen3.5', model_project_id: 17, reasoning_effort: 'high' } }),
+      ),
+    );
+
+    act(() => {
+      result.current.applyFieldChange('version_details.llm_settings.temperature', 0.4);
+    });
+    expect(result.current.fields.llmSettings).toMatchObject({ temperature: 0.4 });
+    expect(result.current.fields.llmSettings).not.toHaveProperty('reasoning_effort');
+
+    act(() => {
+      result.current.applyFieldChange('version_details.llm_settings.reasoning_effort', 'low');
+    });
+    expect(result.current.fields.llmSettings).toMatchObject({ reasoning_effort: 'low' });
+    expect(result.current.fields.llmSettings).not.toHaveProperty('temperature');
+  });
+
   // A partial fan-out that has not yet supplied a model must not leave a
   // half-built profile behind — the worker refuses one without a project id.
   it('keeps llmSettings undefined when a fanned-out key cannot complete a profile', () => {

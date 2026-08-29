@@ -129,6 +129,24 @@ describe('reasoning in the chat stream', () => {
     expect(reasoningOf(history)?.['content']).toBe('secret more');
   });
 
+  it('reassembles a bare closing tag split at seven characters', () => {
+    // The provider's template eats the OPENING tag, so `</think>` is the only
+    // marker this shape ever carries — and an 8-character tag straddles a chunk
+    // boundary at 7 just as readily as at 4. The cross-chunk carry was one
+    // character short of the closing tag (`<think>`'s length), so this split
+    // was never reassembled: the monologue AND a raw `</think>` rendered in the
+    // answer bubble, which is the exact defect the module exists to prevent.
+    const history = replay([
+      frame(SocketMessageType.AgentLlmChunk, { content: 'Thinking Process: 1. Analyze the Request. </think' }),
+      frame(SocketMessageType.AgentLlmChunk, { content: `> ${ANSWER}` }),
+      frame(SocketMessageType.AgentLlmEnd),
+    ]);
+
+    expect(history[0]?.content).toBe(ANSWER);
+    expect(reasoningOf(history)?.['content']).toBe('Thinking Process: 1. Analyze the Request. ');
+    expect(reasoningOf(history)?.status).toBe('complete');
+  });
+
   it('hands an unclosed block back to the bubble rather than swallowing the answer', () => {
     const history = replay([
       frame(SocketMessageType.AgentLlmChunk, { content: '<think>the model never closed this' }),

@@ -52,8 +52,15 @@ export function convertTime(time: string): string {
  *
  * An author the endpoint never states is unknown, not absent, and '' says so
  * — the same value the LIVE path already produces for an unresolved author
- * (features/chat-messages/lib/chatStreamMessageSyncFrames.ts:51), leaving the
- * renderer to attribute it.
+ * (features/chat-messages/lib/chatStreamMessageSyncFrames.ts:51).
+ *
+ * '' is where the attribution STOPS: the renderer must not substitute one.
+ * These rows carry no author identity of any kind (`userId` is omitted too,
+ * below), so nothing downstream can tell the reader's own question apart from
+ * anyone else's, and the reader's name on every bubble of a reloaded SHARED
+ * conversation is a worse answer than no caption — see
+ * `resolveAuthorCaption` in
+ * `features/chat-messages/ui/chat-box/UserMessage.tsx`.
  */
 function getMessageAuthorName(user: MessageAuthorWire | undefined, statesAnAuthor: boolean): string {
   if (!user) return statesAnAuthor ? 'User No Longer Available' : '';
@@ -93,8 +100,8 @@ function userOptionalFields(
 ): UserOptionalFields {
   return {
     ...(messageGroup.message_items !== undefined ? { messageItems: messageGroup.message_items } : {}),
-    ...(foundUser?.entity_meta?.id !== undefined ? { userId: foundUser.entity_meta.id } : {}),
-    ...(messageGroup.sent_to_id !== undefined ? { participantId: messageGroup.sent_to_id } : {}),
+    ...(foundUser?.entity_meta?.id !== undefined ? { userId: String(foundUser.entity_meta.id) } : {}),
+    ...(messageGroup.sent_to_id !== undefined ? { participantId: String(messageGroup.sent_to_id) } : {}),
     ...(sentTo !== undefined ? { sentTo } : {}),
     ...(messageGroup.likes !== undefined ? { likes: messageGroup.likes } : {}),
     ...(messageGroup.meta?.interaction_uuid !== undefined
@@ -109,7 +116,11 @@ export function normaliseUserMessage(
   participants: readonly MessageParticipantWire[],
 ): UserMessage {
   const statesAnAuthor = messageGroup.author_participant_id !== undefined && messageGroup.author_participant_id !== '';
-  const foundUser = users.find((user) => user.id === messageGroup.author_participant_id);
+  // String-normalised: the Go transcript endpoint states the id as a number
+  // and the Go participants payload does too, but socket-era payloads carried
+  // strings — a strict === across the two spellings silently resolves no
+  // author, which reads as "User No Longer Available".
+  const foundUser = users.find((user) => String(user.id) === String(messageGroup.author_participant_id));
   const foundParticipant = participants.find((participant) => participant.id === messageGroup.sent_to_id);
   const sentTo = resolveSentTo(messageGroup, foundParticipant);
 

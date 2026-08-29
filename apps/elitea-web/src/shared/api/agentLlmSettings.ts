@@ -33,10 +33,20 @@ import type { LlmSettings } from '@/shared/api/generated/model';
  *   and then fails at the worker on the first message. Do not surface a
  *   control for either.
  *
- * `reasoning_effort` is a real worker key but is not modelled here: the
- * generated `LlmSettings` object is a closed `zod.object` with no such field
- * and no `.passthrough()`, so writing it needs a `v2.yaml` edit first (its
- * own PR — a spec edit trips six separate CI gates).
+ * `reasoning_effort` IS modelled, because dropping it corrupts versions this
+ * app did not author. The worker's `APPLICATION` allow-list carries it
+ * (`assembly.rs`, `ModelFieldNames::APPLICATION`) and honours it, so a
+ * version can legitimately hold one; before it was modelled here, seeding an
+ * edit through `toAgentLlmSettings` stripped it and EVERY subsequent save
+ * wrote the version back without it, silently moving a reasoning agent onto
+ * the model's default effort. It is deliberately NOT in the generated
+ * `LlmSettings` zod object — that is a closed `zod.object` with no such
+ * field, and adding it needs a `v2.yaml` edit (its own PR — a spec edit trips
+ * six separate CI gates). Nothing parses a write body through that schema at
+ * runtime (`shared/api/generated/mutator.ts` hands the already-stringified
+ * body straight to `eliteaFetch`), so the key reaches the wire today; until
+ * the spec edit lands, {@link LlmSettingsBody} is the widened body type that
+ * says so out loud rather than a cast at each call site.
  */
 export interface AgentLlmSettings {
   /**
@@ -57,16 +67,62 @@ export interface AgentLlmSettings {
   /** `-1` means "let the model decide"; otherwise a positive cap. */
   readonly max_tokens: number;
   /**
-   * Mutually exclusive with `reasoning_effort` at the worker, which returns
-   * `invalid_profile` when both are present. Omitted (not `undefined`) for a
-   * reasoning model, which is why this is an optional key rather than a
-   * nullable one.
+   * Mutually exclusive with {@link AgentLlmSettings.reasoning_effort} at the
+   * worker, which returns `invalid_profile` when both are present. Omitted
+   * (not `undefined`) for a reasoning model, which is why this is an optional
+   * key rather than a nullable one.
    */
   readonly temperature?: number | undefined;
+  /**
+   * The reasoning budget, for a model that reasons. Only the four strings
+   * `assembly.rs`'s `parse_reasoning_effort` accepts are modelled — anything
+   * else is `invalid_profile` at the worker, so an unrecognised stored value
+   * is dropped on read rather than carried into the next save.
+   *
+   * `'none'` is the one value that may coexist with `temperature`: the
+   * worker refuses the pair only when the effort is a real one
+   * (`temperature.is_some() && reasoning_effort.is_some_and(|e| e != None)`).
+   */
+  readonly reasoning_effort?: AgentReasoningEffort | undefined;
+}
+
+/** Exactly the strings `parse_reasoning_effort` accepts (`assembly.rs`); anything else is `invalid_profile`. */
+const AGENT_REASONING_EFFORTS = ['none', 'low', 'medium', 'high'] as const;
+
+export type AgentReasoningEffort = (typeof AGENT_REASONING_EFFORTS)[number];
+
+/** `undefined` for a value the worker would refuse — including `null`, which a stored blob uses to mean "unset". */
+export function toAgentReasoningEffort(value: unknown): AgentReasoningEffort | undefined {
+  return AGENT_REASONING_EFFORTS.find((effort) => effort === value);
+}
+
+/**
+ * The `temperature`/`reasoning_effort` pair, with the worker's exclusion rule
+ * already applied — the single place that rule is encoded, so no assembled
+ * settings object and no request body can carry both.
+ *
+ * A real effort wins over a temperature, because that is the direction the
+ * worker's own check runs: `validate_model` refuses the pair outright, and of
+ * the two it is the effort that a reasoning model cannot run without. The
+ * dialog never offers both at once — `LLMSettings.tsx` renders the reasoning
+ * slider OR the creativity slider on `supports_reasoning` — so the only way
+ * to reach this with both is a stored blob that was already refused, or a
+ * model switch, and `writeAgentLlmSettings` resolves the switch by the newly
+ * chosen model's own capability before this is ever reached.
+ */
+export function selectEffortAndTemperature(
+  temperature: number | undefined,
+  effort: AgentReasoningEffort | undefined,
+): { temperature?: number; reasoning_effort?: AgentReasoningEffort } {
+  if (effort !== undefined && effort !== 'none') return { reasoning_effort: effort };
+  return {
+    ...(effort === undefined ? {} : { reasoning_effort: effort }),
+    ...(temperature === undefined ? {} : { temperature }),
+  };
 }
 
 /** Every key `AgentLlmSettings` models, in the order the wire body writes them. */
-const ALLOWED_KEYS = ['model_name', 'model_project_id', 'max_tokens', 'temperature'] as const;
+const ALLOWED_KEYS = ['model_name', 'model_project_id', 'max_tokens', 'temperature', 'reasoning_effort'] as const;
 
 function readNumber(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
@@ -94,7 +150,9 @@ function readNumber(value: unknown): number | undefined {
  *
  * Keys outside `ALLOWED_KEYS` are dropped, not carried: a version imported
  * from elsewhere can hold `top_p` or `openai_compatible`, and re-sending
- * either is what turns a green save into a refused turn.
+ * either is what turns a green save into a refused turn. `reasoning_effort`
+ * is IN that set — it used to be dropped here, which meant every save of a
+ * version authored with one wrote it back without one.
  */
 export function toAgentLlmSettings(raw: unknown): AgentLlmSettings | undefined {
   if (raw === null || typeof raw !== 'object') return undefined;
@@ -103,14 +161,21 @@ export function toAgentLlmSettings(raw: unknown): AgentLlmSettings | undefined {
   const projectId = readNumber(record['model_project_id']);
   if (typeof modelName !== 'string' || modelName === '' || projectId === undefined) return undefined;
   const maxTokens = readNumber(record['max_tokens']);
-  const temperature = readNumber(record['temperature']);
   return {
     model_name: modelName,
     model_project_id: projectId,
     max_tokens: maxTokens ?? -1,
-    ...(temperature === undefined ? {} : { temperature }),
+    ...selectEffortAndTemperature(readNumber(record['temperature']), toAgentReasoningEffort(record['reasoning_effort'])),
   };
 }
+
+/**
+ * The generated body type, widened by the one worker key `v2.yaml` does not
+ * model yet. See {@link AgentLlmSettings}' own note: nothing zod-parses a
+ * write body at runtime, so the key reaches the wire; this alias is what
+ * keeps that a typed, greppable decision instead of a cast.
+ */
+export type LlmSettingsBody = LlmSettings & { readonly reasoning_effort?: AgentReasoningEffort };
 
 /**
  * The typed settings -> the generated request body's `llm_settings` value.
@@ -121,12 +186,14 @@ export function toAgentLlmSettings(raw: unknown): AgentLlmSettings | undefined {
  * (TS2375), the same reason `pages/pipelines/lib/editPipelineMappers.ts`'s
  * `buildChatLlmSettings` exists.
  */
-export function toLlmSettingsBody(settings: AgentLlmSettings): LlmSettings {
+export function toLlmSettingsBody(settings: AgentLlmSettings): LlmSettingsBody {
   return {
     model_name: settings.model_name,
     model_project_id: settings.model_project_id,
     max_tokens: settings.max_tokens,
-    ...(settings.temperature === undefined ? {} : { temperature: settings.temperature }),
+    // Re-resolved rather than copied, so the exclusion rule holds even for a
+    // settings object assembled somewhere that did not apply it.
+    ...selectEffortAndTemperature(settings.temperature, settings.reasoning_effort),
   };
 }
 

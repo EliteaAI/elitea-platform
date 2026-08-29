@@ -88,10 +88,18 @@ export function useAddEntityParticipant(params: {
 
     pendingRef.current.add(key);
     setPendingKeys(new Set(pendingRef.current));
-    void applyParticipantSelection(selection, existing, runtime).catch((error: unknown) => {
-      clearPending(key);
-      console.error('[ChatBox] could not update the selected participant:', error);
-    });
+    // Cleared on EVERY settlement, not just a rejection: `applyParticipantSelection`
+    // resolves without adding anything on several paths (the selection carried no
+    // participant input, no conversation could be created), and the only other
+    // release is the `participants` effect above — which cannot fire when nothing
+    // was attached. A resolved no-op therefore used to leave the row disabled for
+    // the whole session. The key is still held for the entire flight, which is
+    // what the double-click guard needs.
+    void applyParticipantSelection(selection, existing, runtime)
+      .catch((error: unknown) => {
+        console.error('[ChatBox] could not update the selected participant:', error);
+      })
+      .finally(() => { clearPending(key); });
   }, [clearPending, runtimeRef]);
 
   const getParticipantMenuState = useCallback((selection: unknown): ParticipantMenuState => {

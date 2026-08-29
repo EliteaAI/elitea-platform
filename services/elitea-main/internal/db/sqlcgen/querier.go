@@ -453,8 +453,14 @@ type Querier interface {
 	// projection disagree with what the transcript renders.
 	ResolveCurrentApplicationTurn(ctx context.Context, arg ResolveCurrentApplicationTurnParams) (ResolveCurrentApplicationTurnRow, error)
 	// The projection above is ResolveCurrentApplicationTurn's
-	// `application_version_details_json` block, copied verbatim (agent_chat.sql:11-137)
-	// rather than shared. Both documents are read by the SAME decoder in the native
+	// `application_version_details_json` block, copied verbatim rather than shared.
+	// Both copies sit between the `-- BEGIN/END shared
+	// application_version_details_json projection` markers, and
+	// TestSharedApplicationVersionDetailsProjectionsAreIdentical
+	// (internal/db/sqlcgen/agent_chat_shared_projection_test.go) extracts both and
+	// fails the build if a single byte between the markers diverges. Keep the
+	// markers on their own lines and edit the two blocks together.
+	// Both documents are read by the SAME decoder in the native
 	// runtime (`OrdinaryNoToolProfile::from_nested_version` and
 	// `FrozenToolSnapshot::from_version_details`,
 	// services/elitea-worker-rust/src/agents/assembly.rs) and frozen by the SAME
@@ -475,6 +481,17 @@ type Querier interface {
 	// `materializeCurrentApplicationToolNestedSkills` refuses on the start path
 	// (internal/infra/db/repos/agent_nesting.go).
 	ResolveCurrentApplicationVersionDetails(ctx context.Context, arg ResolveCurrentApplicationVersionDetailsParams) (ResolveCurrentApplicationVersionDetailsRow, error)
+	// The pending set is materialized through a CASE, exactly as
+	// ResolveCurrentContinuation / ResumeCurrentAgentHITL do for `pending_hitl`,
+	// and for a reason those queries only imply. A sibling
+	// `AND jsonb_typeof(...) = 'array'` is NOT a guard: PostgreSQL costs and
+	// reorders the quals of an AND (order_qual_clauses), and on PostgreSQL 16 it
+	// already evaluates the length test first — so a `meta.authorization_requests`
+	// holding JSON null, a scalar or an object raises 22023 ("cannot get array
+	// length of a scalar" / "of a non-array") and turns this deliberate REFUSAL,
+	// which the caller answers 422, into a 500. The CASE cannot change any
+	// admitted row: whenever the ELSE arm is taken the typeof qual beside it is
+	// already false, and an empty array fails `BETWEEN 1 AND 16` anyway.
 	ResolveCurrentAuthorizationContinuation(ctx context.Context, arg ResolveCurrentAuthorizationContinuationParams) (ResolveCurrentAuthorizationContinuationRow, error)
 	ResolveCurrentContinuation(ctx context.Context, arg ResolveCurrentContinuationParams) (ResolveCurrentContinuationRow, error)
 	ResolveCurrentOutputLimitContinuation(ctx context.Context, arg ResolveCurrentOutputLimitContinuationParams) (ResolveCurrentOutputLimitContinuationRow, error)

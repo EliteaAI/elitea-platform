@@ -38,14 +38,25 @@ type Conversation struct {
 }
 
 type Message struct {
-	ID             string         `json:"id"`
-	UUID           string         `json:"uid"`
-	ConversationID string         `json:"conversation_id"`
-	Role           string         `json:"role"`
-	Content        string         `json:"content"`
-	ContentType    string         `json:"content_type,omitempty"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID             string `json:"id"`
+	UUID           string `json:"uid"`
+	ConversationID string `json:"conversation_id"`
+	Role           string `json:"role"`
+	Content        string `json:"content"`
+	// The author's chat_participants row id, so a reloaded transcript can
+	// attribute each question through the conversation's own participants
+	// payload (the lookup `normaliseUserMessage` already performs on the
+	// message-groups shape). Without it every reloaded user bubble was
+	// anonymous — and, before the web dropped its reader-name fallback,
+	// captioned with whoever happened to be LOOKING at the conversation.
+	// Pointers with omitempty: a NULL column must read as "states no
+	// author", never as an author the participants list cannot resolve.
+	AuthorParticipantID *int           `json:"author_participant_id,omitempty"`
+	SentToID            *int           `json:"sent_to_id,omitempty"`
+	ReplyToID           *int           `json:"reply_to_id,omitempty"`
+	ContentType         string         `json:"content_type,omitempty"`
+	Metadata            map[string]any `json:"metadata,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
 }
 
 type ListResponse struct {

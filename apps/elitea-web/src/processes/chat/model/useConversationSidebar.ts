@@ -229,14 +229,33 @@ export function useConversationSidebar(): UseConversationSidebarResult {
    * `folders` OR `conversations` by `folder_id`; here every container is
    * mapped unconditionally since a non-matching id is a no-op anyway.
    */
-  const patchConversationEverywhere = useCallback((updated: Conversation) => {
-    const patchItem = (item: Conversation): Conversation => (item.id === updated.id ? { ...item, ...updated } : item);
-    setConversations((prev) => prev.map(patchItem));
-    setPinnedConversations((prev) => prev.map(patchItem));
-    setDateGroups((prev) => prev.map((group) => ({ ...group, conversations: group.conversations.map(patchItem) })));
-    setFolders((prev) => prev.map((folder) => ({ ...folder, conversations: folder.conversations.map(patchItem) })));
-    setActiveConversation((prev) => (prev !== undefined && prev.id === updated.id ? { ...prev, ...updated } : prev));
-  }, []);
+  /**
+   * Applies one list transform to EVERY container that holds conversation
+   * rows. There is exactly one such traversal on purpose: the bug class this
+   * module fixes was a mutation applied to SOME of the containers (the rows
+   * render from `dateGroups`/`folders`, not from `conversations`), and two
+   * hand-written walks re-open that door — a fifth container added to one
+   * and not the other is the same silent no-op again.
+   */
+  const transformEveryConversationList = useCallback(
+    (transform: (items: readonly Conversation[]) => readonly Conversation[]) => {
+      setConversations((prev) => [...transform(prev)]);
+      setPinnedConversations((prev) => [...transform(prev)]);
+      setDateGroups((prev) => prev.map((group) => ({ ...group, conversations: [...transform(group.conversations)] })));
+      setFolders((prev) => prev.map((folder) => ({ ...folder, conversations: [...transform(folder.conversations)] })));
+    },
+    [],
+  );
+
+  const patchConversationEverywhere = useCallback(
+    (updated: Conversation) => {
+      transformEveryConversationList((items) =>
+        items.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)),
+      );
+      setActiveConversation((prev) => (prev !== undefined && prev.id === updated.id ? { ...prev, ...updated } : prev));
+    },
+    [transformEveryConversationList],
+  );
 
   const deleteConversation = useCallback(
     (conversation: Conversation) => {
@@ -247,11 +266,7 @@ export function useConversationSidebar(): UseConversationSidebarResult {
           // The row being deleted renders out of `dateGroups`/`folders`
           // (`Conversations.body.tsx`) — filtering only `conversations` and
           // `pinnedConversations`, as this used to, left the row on screen.
-          const drop = (items: readonly Conversation[]): readonly Conversation[] => items.filter((item) => item.id !== conversation.id);
-          setConversations(drop);
-          setPinnedConversations(drop);
-          setDateGroups((prev) => prev.map((group) => ({ ...group, conversations: drop(group.conversations) })));
-          setFolders((prev) => prev.map((folder) => ({ ...folder, conversations: drop(folder.conversations) })));
+          transformEveryConversationList((items) => items.filter((item) => item.id !== conversation.id));
           if (activeConversation?.id === conversation.id) {
             // The route still points at the deleted transcript. The baseline
             // selects the next conversation (`NewChat.jsx:1141-1157`); this
@@ -263,7 +278,7 @@ export function useConversationSidebar(): UseConversationSidebarResult {
         })
         .catch(() => toastError('Failed to delete the conversation'));
     },
-    [projectId, activeConversation?.id, navigate, toastError],
+    [projectId, activeConversation?.id, navigate, toastError, transformEveryConversationList],
   );
 
   const renameConversation = useCallback(

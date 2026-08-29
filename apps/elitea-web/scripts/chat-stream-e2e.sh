@@ -196,6 +196,26 @@ REPEAT_ARGS=""
 # tag hardcoded in this script would escape that gate. Locally the variable is
 # normally unset and the host npx path runs; set CONTAINER_BIN=podman alongside
 # the image to use the container path off-runner.
+#
+# ── `--workers=1` is the thing that makes this project serial ────────────────
+#
+# elitea-main admits FOUR concurrent replay streams per principal
+# (services/elitea-main/internal/api/v2/executions/events_admission.go), and
+# every chat-stream spec signs in as the same chat persona. Each holds an
+# execution stream for the length of a turn while the app also holds its
+# notifications stream, so running the specs against each other sits on that
+# budget and answers 429 — a failure that reads as "the browser cannot read the
+# stream", i.e. as a statement about the feature rather than about the harness.
+#
+# `fullyParallel: false` on the project in playwright.config.ts does NOT
+# achieve this and must not be mistaken for it: it orders tests WITHIN a file,
+# and each chat-stream spec holds exactly one test in a file of its own, so the
+# config's `workers: 4` under CI still started all three files at once. The
+# worker count is the only lever that crosses files, it cannot be set
+# per-project in the config, and this script is the single entry point every
+# run goes through — both ci-web-e2e.yml jobs (`chat-stream` and
+# `chat-stream-rust`) invoke it with no Playwright flags of their own. So the
+# pin lives here, once.
 # shellcheck disable=SC2086 -- REPEAT_ARGS is deliberately word-split
 if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
   "${CONTAINER_BIN:-docker}" run --rm --network host \
@@ -204,9 +224,9 @@ if [ -n "${PLAYWRIGHT_CONTAINER_IMAGE:-}" ]; then
     -e E2E_REUSE_STACK=1 \
     -e PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
     "$PLAYWRIGHT_CONTAINER_IMAGE" \
-    npx playwright test --project=chat-stream $REPEAT_ARGS
+    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 else
   PLAYWRIGHT_BASE_URL="http://localhost:${PORT}" \
   E2E_REUSE_STACK=1 \
-    npx playwright test --project=chat-stream $REPEAT_ARGS
+    npx playwright test --project=chat-stream --workers=1 $REPEAT_ARGS
 fi

@@ -28,7 +28,10 @@ import { AgentModelSettings } from './AgentModelSettings';
 const BASE = '/api/v2';
 const PROJECT_ID = '17';
 
-const CATALOGUE = {
+/** The wire shape `serveCatalogue` answers with — `ConfigModel`'s untyped tail is what varies between fixtures. */
+type CatalogueFixture = { items: Record<string, unknown>[]; default_model_name: string };
+
+const CATALOGUE: CatalogueFixture = {
   items: [
     // `project_id` as a string here and a number below on purpose — the
     // catalogue answers with an int32 while `ConfigModel` declares a string.
@@ -38,8 +41,23 @@ const CATALOGUE = {
   default_model_name: 'gpt-4o',
 };
 
-function serveCatalogue(): void {
-  server.use(http.get(`${BASE}/configurations/models/${PROJECT_ID}`, () => HttpResponse.json(CATALOGUE)));
+/**
+ * With `include_shared=true` the Go catalogue dedupes on `(project_id, name)`
+ * — NOT on name — and sorts shared rows ahead of project rows
+ * (`internal/application/configurations/models.go`). So one project can be
+ * offered two DIFFERENT models with the same name, and the shared one is the
+ * one a name-only lookup finds first.
+ */
+const DUPLICATE_NAME_CATALOGUE: CatalogueFixture = {
+  items: [
+    { name: 'gpt-4o', display_name: 'GPT-4o public', project_id: 1, shared: true, default: true },
+    { name: 'gpt-4o', display_name: 'GPT-4o local', project_id: 17 },
+  ],
+  default_model_name: 'gpt-4o',
+};
+
+function serveCatalogue(body: CatalogueFixture = CATALOGUE): void {
+  server.use(http.get(`${BASE}/configurations/models/${PROJECT_ID}`, () => HttpResponse.json(body)));
 }
 
 function renderPicker(props: Partial<Parameters<typeof AgentModelSettings>[0]> = {}): { onChange: ReturnType<typeof vi.fn> } {
@@ -133,6 +151,52 @@ describe('AgentModelSettings', () => {
     const emitted = onChange.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(emitted['temperature']).toBe(0.6);
     expect(emitted).not.toHaveProperty('reasoning_effort');
+  });
+
+  /*
+   * #611-review-1. Both rows are named `gpt-4o`; only `model_project_id`
+   * tells them apart. The lookup used to match on the name alone, so it
+   * resolved to whichever row the catalogue sorted first — the SHARED one —
+   * and put a model on screen that the version does not run on.
+   */
+  it('resolves a pinned model by project as well as by name when two rows share a name', async () => {
+    serveCatalogue(DUPLICATE_NAME_CATALOGUE);
+    renderPicker({ value: { model_name: 'gpt-4o', model_project_id: 17, max_tokens: -1 } });
+
+    expect(await screen.findByText('GPT-4o local')).toBeInTheDocument();
+    expect(screen.queryByText('GPT-4o public')).not.toBeInTheDocument();
+  });
+
+  /*
+   * The same defect's write half, and the damaging one: the row was recovered
+   * by name before the profile was built, so choosing the LOCAL model wrote
+   * the SHARED row's project id onto the version. elitea-main's
+   * `selectCurrentAgentModel` matches name AND project, so the turn is then
+   * run against a model the author never picked — or refused outright.
+   */
+  it('writes the clicked row’s own project id, not the first same-named row’s', async () => {
+    serveCatalogue(DUPLICATE_NAME_CATALOGUE);
+    const { onChange } = renderPicker();
+    await screen.findByText('GPT-4o public');
+
+    await chooseModel('GPT-4o local');
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    const emitted = onChange.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(emitted['model_name']).toBe('gpt-4o');
+    expect(emitted['model_project_id']).toBe(17);
+  });
+
+  /* The reverse direction, so the test above cannot pass by always picking the last row. */
+  it('writes the shared row’s project id when the shared row is the one clicked', async () => {
+    serveCatalogue(DUPLICATE_NAME_CATALOGUE);
+    const { onChange } = renderPicker({ value: { model_name: 'gpt-4o', model_project_id: 17, max_tokens: -1 } });
+    await screen.findByText('GPT-4o local');
+
+    await chooseModel('GPT-4o public');
+
+    const emitted = onChange.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(emitted['model_project_id']).toBe(1);
   });
 
   it('disables both controls when there is no project to read a catalogue from', () => {

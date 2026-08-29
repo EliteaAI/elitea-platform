@@ -1111,15 +1111,24 @@ components:
         temperature: { type: number }
         max_tokens: { type: integer }
         top_p: { type: number }
+        reasoning_effort:
+          type: string
+          description: >
+            One of none, low, medium or high. Mutually exclusive with
+            temperature on the runtime profile: the native worker refuses a
+            profile carrying both (services/elitea-worker-rust/src/agents/
+            assembly.rs, parse_reasoning_effort), and the web write path
+            encodes the same rule (apps/elitea-web/src/shared/api/
+            agentLlmSettings.ts, selectEffortAndTemperature).
       additionalProperties: true
       x-elitea-passthrough: >-
         NOTE(W2): DB jsonb column `application_versions.llm_settings` is
         decoded and re-emitted verbatim
         (internal/api/v2/applications/handler.go:215-220, 851-855, 906-917);
-        the platform only ever inspects model_name/model_project_id/
-        temperature/max_tokens/top_p
-        (internal/api/v2/conversations/handler.go:653-660,
-        internal/api/v2/eliteacore/handler.go:544-551). Remaining keys are
+        the platform inspects model_name/model_project_id/temperature/
+        max_tokens/top_p (internal/api/v2/conversations/handler.go:653-660,
+        internal/api/v2/eliteacore/handler.go:544-551) and the runtime
+        additionally honours reasoning_effort. Remaining keys are
         client-owned. Channel-B fixture recommended (M1).
 
     VersionMeta:

@@ -13,9 +13,52 @@ import (
 // and actor are selected exclusively by the claimed execution. Agent chat
 // execution is interactive in the current contract; scheduled index execution
 // retains its existing project-system identity selection.
+//
+// It admits EVERY dispatchable capability on purpose: the client-token route it
+// backs is reached by index ingest and agent execution alike. A route that is
+// only meaningful to one of them must not use this method — see
+// AuthorizeAgentRuntimeContext below.
 func (r *PostgresContentRepository) AuthorizeRuntimeContext(
 	ctx context.Context,
 	claim ContentClaim,
+) (RuntimeContextAuthorization, error) {
+	return r.authorizeRuntimeContext(ctx, claim, "")
+}
+
+// AuthorizeAgentRuntimeContext is AuthorizeRuntimeContext narrowed to the two
+// agent-execution capabilities, for routes that only an agent turn has any
+// business reaching.
+//
+// The narrowing is the authorization, not a tidier error: the project and actor
+// come from the claimed execution row, but the nested-version route lets the
+// REQUEST name the application and version inside that project. An
+// index.ingest.v1 claim carries a real resource_project_id, so without this
+// filter an index workload could freeze and read any agent version in the
+// project it was admitted for. Initiator cannot stand in for the capability
+// either — index_ingest_jobs.initiator is CHECK-constrained to
+// ('user', 'llm', 'schedule') (migrations/shared/0036_index_ingest_admission.sql),
+// so an index job reports the same 'user' an interactive agent turn does.
+func (r *PostgresContentRepository) AuthorizeAgentRuntimeContext(
+	ctx context.Context,
+	claim ContentClaim,
+) (RuntimeContextAuthorization, error) {
+	return r.authorizeRuntimeContext(ctx, claim, agentRuntimeContextCapabilityFilter)
+}
+
+// agentRuntimeContextCapabilityFilter is appended to the shared authorization
+// query's WHERE clause. It carries no bind parameter deliberately: the allowed
+// set is a compile-time property of the route, never anything a request or a
+// caller can widen.
+const agentRuntimeContextCapabilityFilter = `
+  AND j.capability_id IN (
+      'agent.execute.application.v1',
+      'agent.execute.adhoc.v1'
+  )`
+
+func (r *PostgresContentRepository) authorizeRuntimeContext(
+	ctx context.Context,
+	claim ContentClaim,
+	capabilityFilter string,
 ) (RuntimeContextAuthorization, error) {
 	workloadID, err := workloadIdentity(claim.PeerCertificate)
 	if err != nil {
@@ -69,7 +112,7 @@ WHERE c.claim_id = $1
           )
           AND a.execution_id IS NOT NULL
       )
-  )`,
+  )`+capabilityFilter,
 		claim.ClaimID,
 		claim.ExecutionID,
 		claim.Generation,
@@ -95,4 +138,7 @@ WHERE c.claim_id = $1
 	return authorization, nil
 }
 
-var _ RuntimeContextAuthorizer = (*PostgresContentRepository)(nil)
+var (
+	_ RuntimeContextAuthorizer      = (*PostgresContentRepository)(nil)
+	_ AgentRuntimeContextAuthorizer = (*PostgresContentRepository)(nil)
+)

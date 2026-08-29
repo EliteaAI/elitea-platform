@@ -9,6 +9,7 @@ import { conversationApi } from '@/entities/conversation';
 import { useAddParticipantMutation } from '@/entities/participant';
 import type { ApplicationVersionDetail, SocialAuthorProfile } from '@/shared/api/generated/model';
 import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
+import { unwrapBody } from '@/shared/api/unwrap';
 import { t } from '@/shared/i18n';
 
 /** `ChatBox` truncates a conversation name to 50 characters; match it so the sidebar entry reads the same everywhere. */
@@ -62,9 +63,16 @@ interface StartChatInput {
   readonly userId: string;
 }
 
-/** The same `.data` unwrap `pages/chat/useChatPageData.ts` documents for this exact query (the 401 variant is unreachable — eliteaFetch throws on non-2xx). */
+/**
+ * `shared/api/unwrap.ts` is the ONE place envelope knowledge lives (R-A6,
+ * `elitea/no-adhoc-envelope-unwrap`), so the transport peel comes from
+ * `unwrapBody` rather than from a local `.data` read of this query's own
+ * shape. `unwrapBody` makes no claim about the body — the cast below is the
+ * caller's own, and the 401 variant it ignores is unreachable anyway
+ * (`eliteaFetch` throws on non-2xx).
+ */
 function currentAuthorOf(data: unknown): SocialAuthorProfile | undefined {
-  return (data as { readonly data?: SocialAuthorProfile } | undefined)?.data;
+  return unwrapBody(data) as SocialAuthorProfile | undefined;
 }
 
 export function ChatWithAgentButton({ projectId, applicationId, name, activeVersion, onError }: ChatWithAgentButtonProps): ReactNode {

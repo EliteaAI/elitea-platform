@@ -93,6 +93,34 @@ describe('toVersionWriteBody', () => {
   });
 
   /*
+   * #611-review-3, the write half. The seeded draft round-trips: an edit that
+   * never touched the model must put the version's own `reasoning_effort`
+   * back on the wire, not a profile without one.
+   */
+  it('round-trips a reasoning_effort through an edit that never touched the model', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'o3-mini', model_project_id: 17, max_tokens: -1, reasoning_effort: 'high' },
+    } as unknown as ApplicationVersionDetail;
+    const edits = {
+      instructions: 'Edited somewhere else entirely.',
+      welcomeMessage: '',
+      variables: [],
+      stepLimit: undefined,
+      internalTools: [],
+      llmSettings: toVersionDraft(version, []).llmSettings,
+      tags: [],
+    };
+
+    expect(toVersionWriteBody(version, [], edits).llm_settings).toEqual({
+      model_name: 'o3-mini',
+      model_project_id: 17,
+      max_tokens: -1,
+      reasoning_effort: 'high',
+    });
+  });
+
+  /*
    * Verbatim, NOT re-read through `toAgentLlmSettings`. A stored blob naming
    * only a model is a working shape — elitea-main's freeze fills the project
    * id in from the catalogue row it resolves — so a strict read would drop it
@@ -321,6 +349,26 @@ describe('toVersionDraft', () => {
       model_project_id: 17,
       max_tokens: -1,
       temperature: 0.6,
+    });
+  });
+
+  /*
+   * #611-review-3, the seed half. An edit page starts from this draft, so a
+   * key dropped here is dropped from the version on the NEXT save of any
+   * field — the author edits the instructions, saves, and the reasoning
+   * budget they picked is gone with no error anywhere.
+   */
+  it('reads a stored reasoning_effort back into the draft', () => {
+    const version = {
+      name: 'base',
+      llm_settings: { model_name: 'o3-mini', model_project_id: 17, max_tokens: -1, reasoning_effort: 'high' },
+    } as unknown as ApplicationVersionDetail;
+
+    expect(toVersionDraft(version, []).llmSettings).toEqual({
+      model_name: 'o3-mini',
+      model_project_id: 17,
+      max_tokens: -1,
+      reasoning_effort: 'high',
     });
   });
 

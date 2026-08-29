@@ -962,9 +962,13 @@ func New(ctx context.Context, config Config, dependencies Dependencies) (*Runtim
 		}
 		// One listener serves both capabilities, so when agent execution is
 		// dispatched alongside index ingest the nested route belongs here too.
-		// Registering it is not a widening: the claim authorizer selects the
-		// project and actor from the execution row, and an index claim reaches
-		// this route with no application it is allowed to name.
+		// Registering it is not a widening, but only because the service asks
+		// for AgentRuntimeContextAuthorizer: the claim authorizer selects the
+		// project and actor from the execution row, while the REQUEST names
+		// the application and version inside that project — so an index claim
+		// on this shared listener could otherwise read any agent version in
+		// the project it was admitted for. The capability filter in
+		// AuthorizeAgentRuntimeContext is what makes that false.
 		if nestedApplicationVersions != nil {
 			contentServer, err = storage.NewNestedAgentRuntimeContentServerWithLimits(
 				contentRepository,

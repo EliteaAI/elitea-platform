@@ -16,7 +16,7 @@ import {
   type ApplicationCreationInput,
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
-import { toAgentLlmSettings, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
+import type { AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
@@ -231,13 +231,13 @@ export function CreateApplication(): ReactNode {
             stepLimit: typeof value === 'number' ? value : undefined,
           }));
           return;
-        // Read back through `toAgentLlmSettings` rather than trusted: this
-        // path is also what the chat editors emit, and a blob that cannot
-        // produce a complete profile has to land as `undefined` so the save
-        // omits the key rather than sending one the worker refuses.
-        case 'version_details.llm_settings':
-          setExtraFields((previous) => ({ ...previous, llmSettings: toAgentLlmSettings(value) }));
-          return;
+        // No `version_details.llm_settings` case, deliberately: model settings
+        // reach `extraFields.llmSettings` through `handleModelSettingsChange`
+        // below, straight off the `AgentModelSettings` slot. The create form's
+        // dispatcher (`features/agents/model/useCreateAgentFormState.ts`)
+        // emits only the six paths above, so a branch here would be dead — the
+        // EDIT page's identical-looking branch IS live, which is what made
+        // this one read as reachable. Do not re-add it.
         default:
           return;
       }
@@ -254,6 +254,12 @@ export function CreateApplication(): ReactNode {
         version: {
           ...draftDefaults.versionDetails,
           instructions: extraFields.instructions,
+          // Held here since the page was written and echoed back into the
+          // form, but absent from this body until now — so the welcome message
+          // an author typed on CREATE was dropped silently, with a 201 back,
+          // and only reappeared if they saved a second time from the edit
+          // page. See `ApplicationVersionDraft.welcomeMessage`.
+          welcomeMessage: extraFields.welcomeMessage,
           conversationStarters: (values.version_details?.conversation_starters ?? []).filter(
             (entry): entry is string => typeof entry === 'string',
           ),

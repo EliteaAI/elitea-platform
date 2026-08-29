@@ -370,6 +370,10 @@ fn map_runtime_context_error(error: &RuntimeContextError) -> ProductionBootstrap
         RuntimeContextError::AuthorizationFailed(_) => {
             ProductionBootstrapError::AuthenticationFailed
         }
+        // A resource the claim was allowed to read but that no longer exists
+        // is a stale reference, not a transient dependency failure: it must
+        // not re-enter the retrying bucket.
+        RuntimeContextError::NotFound(_) => ProductionBootstrapError::InvalidConfiguration,
         RuntimeContextError::DependencyUnavailable(_)
         | RuntimeContextError::Transport(_)
         | RuntimeContextError::Timeout(_) => ProductionBootstrapError::DependencyUnavailable,

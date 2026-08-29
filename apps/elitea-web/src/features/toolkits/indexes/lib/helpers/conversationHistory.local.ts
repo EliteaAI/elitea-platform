@@ -71,8 +71,8 @@ type MessageGroupWithSwarmMeta = Omit<MessageGroupWire, 'message_items'> & {
 };
 
 function isUserMessage(
-  authorParticipantId: string | undefined,
-  sentToId: string | undefined,
+  authorParticipantId: string | number | undefined,
+  sentToId: string | number | undefined,
   userIds: readonly (string | number | undefined)[],
   replyToId: string | number | undefined,
   sentTo: unknown,

@@ -889,26 +889,16 @@ func (h *Handler) Publish(w http.ResponseWriter, r *http.Request) {
 
 // deleteEmbeddedSubAgents removes embedded sub-agent applications referenced by application_tools on versionID.
 func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, versionID string) {
-	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT settings::text FROM %s.application_tools
-		WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+	refs, err := listApplicationToolReferences(ctx, h.pool, schema, versionID)
 	if err != nil {
 		return
 	}
-	defer rows.Close()
 	var embeddedAppIDs []string
-	for rows.Next() {
-		var settingsStr string
-		if rows.Scan(&settingsStr) != nil {
-			continue
-		}
-		var settings map[string]any
-		_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
-		if aid, ok := settings["application_id"]; ok {
-			embeddedAppIDs = append(embeddedAppIDs, fmt.Sprintf("%v", aid))
+	for _, ref := range refs {
+		if ref.ApplicationID != "" {
+			embeddedAppIDs = append(embeddedAppIDs, ref.ApplicationID)
 		}
 	}
-	rows.Close()
 
 	for _, eAppID := range embeddedAppIDs {
 		// Recursively delete sub-agents of this embedded agent
@@ -918,13 +908,29 @@ func (h *Handler) deleteEmbeddedSubAgents(ctx context.Context, schema string, ve
 		if eVerID != "" {
 			h.deleteEmbeddedSubAgents(ctx, schema, eVerID)
 		}
-		// Delete in FK-safe order: tools → versions → application
-		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_tools WHERE application_version_id IN (SELECT id FROM %s.application_versions WHERE application_id = $1)`, schema, schema), eAppID)
+		// Delete in FK-safe order: tool references → versions → application.
+		// The reference cleanup walks the embedded app's versions so each
+		// mapping is removed before its tool row is considered orphaned.
+		versionRows, versionErr := h.pool.Query(ctx, fmt.Sprintf(
+			`SELECT id FROM %s.application_versions WHERE application_id = $1`, schema), eAppID)
+		if versionErr == nil {
+			var embeddedVersionIDs []string
+			for versionRows.Next() {
+				var id string
+				if versionRows.Scan(&id) == nil {
+					embeddedVersionIDs = append(embeddedVersionIDs, id)
+				}
+			}
+			versionRows.Close()
+			for _, embeddedVersionID := range embeddedVersionIDs {
+				_, _ = deleteApplicationToolReferences(ctx, h.pool, schema, embeddedVersionID, "", "")
+			}
+		}
 		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_versions WHERE application_id = $1`, schema), eAppID)
 		_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.applications WHERE id = $1`, schema), eAppID)
 	}
-	// Clean up application_tools entries on this version
-	_, _ = h.pool.Exec(ctx, fmt.Sprintf(`DELETE FROM %s.application_tools WHERE application_version_id = $1 AND type = 'application'`, schema), versionID)
+	// Clean up the sub-agent references on this version itself
+	_, _ = deleteApplicationToolReferences(ctx, h.pool, schema, versionID, "", "")
 }
 
 // embedSubAgents clones application-type tools from sourceVersionID onto targetVersionID.
@@ -944,39 +950,18 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID
 	_ = h.pool.QueryRow(ctx, fmt.Sprintf(
 		`SELECT application_id FROM %s.application_versions WHERE id = $1`, schema), targetVersionID).Scan(&parentAppID) // failure leaves parentAppID=0
 
-	rows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT name, type, settings::text
-		FROM %s.application_tools
-		WHERE application_version_id = $1 AND type = 'application'`, schema), sourceVersionID)
+	refs, err := listApplicationToolReferences(ctx, h.pool, schema, sourceVersionID)
 	if err != nil {
+		slog.ErrorContext(ctx, "embed_sub_agents: sub-agent reference read failed",
+			"schema", schema, "source_version_id", sourceVersionID, "err", err)
 		return
 	}
-	defer rows.Close()
-
-	type subAgentRef struct {
-		name      string
-		appID     string
-		versionID string
-	}
-	var refs []subAgentRef
-	for rows.Next() {
-		var name, toolType, settingsStr string
-		if rows.Scan(&name, &toolType, &settingsStr) != nil {
-			continue
-		}
-		var settings map[string]any
-		_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
-		refAppID := fmt.Sprintf("%v", settings["application_id"])
-		refVerID := fmt.Sprintf("%v", settings["version_id"])
-		refs = append(refs, subAgentRef{name: name, appID: refAppID, versionID: refVerID})
-	}
-	rows.Close()
 
 	for _, ref := range refs {
 		// Skip pipeline sub-agents — they cannot be published/embedded
 		var subAgentType string
 		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT COALESCE(agent_type, '') FROM %s.application_versions WHERE id = $1`, schema), ref.versionID).Scan(&subAgentType) // failure leaves subAgentType empty
+			`SELECT COALESCE(agent_type, '') FROM %s.application_versions WHERE id = $1`, schema), ref.VersionID).Scan(&subAgentType) // failure leaves subAgentType empty
 		if subAgentType == "pipeline" {
 			continue
 		}
@@ -987,10 +972,10 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID
 			INSERT INTO %s.applications (name, description, owner_id)
 			SELECT name, description, owner_id
 			FROM %s.applications WHERE id = $1
-			RETURNING id`, schema, schema), ref.appID).Scan(&embeddedAppID)
+			RETURNING id`, schema, schema), ref.ApplicationID).Scan(&embeddedAppID)
 		if err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent application clone failed",
-				"schema", schema, "source_application_id", ref.appID,
+				"schema", schema, "source_application_id", ref.ApplicationID,
 				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
@@ -1016,11 +1001,11 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID
 				   pipeline_settings
 			FROM %s.application_versions WHERE id = $2
 			RETURNING id`, schema, schema),
-			embeddedAppID, ref.versionID, ref.versionID, ref.appID, projectID,
+			embeddedAppID, ref.VersionID, ref.VersionID, ref.ApplicationID, projectID,
 			strconv.Itoa(parentAppID), strconv.Itoa(targetVersionID)).Scan(&embeddedVerID)
 		if err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent version clone failed",
-				"schema", schema, "source_version_id", ref.versionID,
+				"schema", schema, "source_version_id", ref.VersionID,
 				"parent_version_id", targetVersionID, "err", err)
 			continue
 		}
@@ -1036,9 +1021,9 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID
 			INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_id, entity_type, tool_id, selected_tools)
 			SELECT $2, $3, entity_type, tool_id, selected_tools
 			FROM %s.entity_tool_mapping WHERE entity_version_id = $1`, schema, schema),
-			ref.versionID, embeddedVerID, embeddedAppID); err != nil {
+			ref.VersionID, embeddedVerID, embeddedAppID); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: tool attachment copy failed",
-				"schema", schema, "source_version_id", ref.versionID,
+				"schema", schema, "source_version_id", ref.VersionID,
 				"embedded_version_id", embeddedVerID, "err", err)
 		}
 
@@ -1059,29 +1044,38 @@ func (h *Handler) embedSubAgentsRecursive(ctx context.Context, schema, projectID
 			INSERT INTO %s.entity_skill_mapping (entity_version_id, entity_type, skill_id, skill_version_id)
 			SELECT $2, entity_type, skill_id, skill_version_id
 			FROM %s.entity_skill_mapping WHERE entity_version_id = $1`, schema, schema),
-			ref.versionID, embeddedVerID); err != nil {
+			ref.VersionID, embeddedVerID); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: skill attachment copy failed",
-				"schema", schema, "source_version_id", ref.versionID,
+				"schema", schema, "source_version_id", ref.VersionID,
 				"embedded_version_id", embeddedVerID, "err", err)
 		}
 
-		// Create application_tools entry on the published version pointing to embedded copy
-		embeddedSettings := map[string]any{
-			"application_id":         strconv.Itoa(embeddedAppID),
-			"application_version_id": strconv.Itoa(embeddedVerID),
+		// Link the embedded copy onto the published version through the real
+		// pair of tables. The author is the embedded version's own author and
+		// the owner is the project, mirroring the attach path.
+		var embeddedAuthorID int
+		_ = h.pool.QueryRow(ctx, fmt.Sprintf(
+			`SELECT COALESCE(author_id, 0) FROM %s.application_versions WHERE id = $1`, schema),
+			embeddedVerID).Scan(&embeddedAuthorID) // failure leaves 0; the link is still written
+		ownerProjectID, ownerErr := strconv.Atoi(projectID)
+		includeOwnerID := false
+		if ownerErr == nil {
+			if hasOwner, probeErr := eliteaToolsHasOwnerID(ctx, h.pool, ownerProjectID); probeErr == nil {
+				includeOwnerID = hasOwner
+			}
 		}
-		settingsJSON, _ := json.Marshal(embeddedSettings)
-		if _, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %s.application_tools (application_version_id, name, type, settings)
-			VALUES ($1, $2, 'application', $3)`, schema),
-			targetVersionID, ref.name, settingsJSON); err != nil {
+		if err := insertApplicationToolReference(
+			ctx, h.pool, schema, int64(targetVersionID), ref.Name,
+			int64(embeddedAppID), int64(embeddedVerID),
+			ownerProjectID, includeOwnerID, embeddedAuthorID,
+		); err != nil {
 			slog.ErrorContext(ctx, "embed_sub_agents: sub-agent link failed",
 				"schema", schema, "parent_version_id", targetVersionID,
 				"embedded_version_id", embeddedVerID, "err", err)
 		}
 
 		// Recursively embed sub-agents of this sub-agent
-		h.embedSubAgentsRecursive(ctx, schema, projectID, ref.versionID, embeddedVerID, depth+1)
+		h.embedSubAgentsRecursive(ctx, schema, projectID, ref.VersionID, embeddedVerID, depth+1)
 	}
 }
 
@@ -1198,27 +1192,15 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 		verName   string
 		agentType string
 	}
-	subAgentRows, saErr := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT at.name, at.settings::text
-		FROM %s.application_tools at
-		WHERE at.application_version_id = $1 AND at.type = 'application'`, s), versionID)
+	toolRefs, saErr := listApplicationToolReferences(ctx, h.pool, s, versionID)
 	var subAgents []subAgentInfo
 	if saErr == nil {
-		for subAgentRows.Next() {
-			var name, settingsStr string
-			if subAgentRows.Scan(&name, &settingsStr) != nil {
-				continue
-			}
-			var settings map[string]any
-			_ = json.Unmarshal([]byte(settingsStr), &settings) // DB column; malformed means empty settings
-			saAppID := fmt.Sprintf("%v", settings["application_id"])
-			saVerID := fmt.Sprintf("%v", settings["version_id"])
+		for _, ref := range toolRefs {
 			var saAppName, saVerName, saAgentType string
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %s.applications WHERE id = $1`, s), saAppID).Scan(&saAppName)
-			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %s.application_versions WHERE id = $1`, s), saVerID).Scan(&saVerName, &saAgentType)
-			subAgents = append(subAgents, subAgentInfo{name: name, appID: saAppID, versionID: saVerID, appName: saAppName, verName: saVerName, agentType: saAgentType})
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,'') FROM %s.applications WHERE id = $1`, s), ref.ApplicationID).Scan(&saAppName)
+			_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,'') FROM %s.application_versions WHERE id = $1`, s), ref.VersionID).Scan(&saVerName, &saAgentType)
+			subAgents = append(subAgents, subAgentInfo{name: ref.Name, appID: ref.ApplicationID, versionID: ref.VersionID, appName: saAppName, verName: saVerName, agentType: saAgentType})
 		}
-		subAgentRows.Close()
 	}
 
 	// Cycle and depth detection — if either found, short-circuit
@@ -1236,27 +1218,17 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 				depthExceeded = true
 				return
 			}
-			rows2, err2 := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT settings::text FROM %s.application_tools
-				WHERE application_version_id = $1 AND type = 'application'`, s), verID)
+			childRefs, err2 := listApplicationToolReferences(ctx, h.pool, s, verID)
 			if err2 != nil {
 				return
 			}
-			defer rows2.Close()
-			for rows2.Next() {
-				var ss string
-				if rows2.Scan(&ss) != nil {
-					continue
-				}
-				var sett map[string]any
-				_ = json.Unmarshal([]byte(ss), &sett) // DB column; malformed means empty sett
-				childVerID := fmt.Sprintf("%v", sett["version_id"])
-				if visited[childVerID] {
+			for _, childRef := range childRefs {
+				if visited[childRef.VersionID] {
 					hasCycle = true
 					return
 				}
-				visited[childVerID] = true
-				checkGraph(childVerID, depth+1)
+				visited[childRef.VersionID] = true
+				checkGraph(childRef.VersionID, depth+1)
 				if hasCycle || depthExceeded {
 					return
 				}
@@ -1369,34 +1341,14 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 			if depth > 5 {
 				return
 			}
-			saRows, saErr2 := h.pool.Query(ctx, fmt.Sprintf(`
-				SELECT at.settings::text FROM %s.application_tools at
-				WHERE at.application_version_id = $1 AND at.type = 'application'`, s), verID)
+			saRefs, saErr2 := listApplicationToolReferences(ctx, h.pool, s, verID)
 			if saErr2 != nil {
 				return
 			}
-			defer saRows.Close()
-			type saRef struct {
-				appID, versionID string
-			}
-			var saRefs []saRef
-			for saRows.Next() {
-				var ss string
-				if saRows.Scan(&ss) != nil {
-					continue
-				}
-				var sett map[string]any
-				_ = json.Unmarshal([]byte(ss), &sett) // DB column; malformed means empty sett
-				saRefs = append(saRefs, saRef{
-					appID:     fmt.Sprintf("%v", sett["application_id"]),
-					versionID: fmt.Sprintf("%v", sett["version_id"]),
-				})
-			}
-			saRows.Close()
 			for _, ref := range saRefs {
 				var saAppName, saVerName, saAgentType, saInstr, saDesc string
-				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %s.applications WHERE id = $1`, s), ref.appID).Scan(&saAppName, &saDesc)
-				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %s.application_versions WHERE id = $1`, s), ref.versionID).Scan(&saVerName, &saAgentType, &saInstr)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(description,'') FROM %s.applications WHERE id = $1`, s), ref.ApplicationID).Scan(&saAppName, &saDesc)
+				_ = h.pool.QueryRow(ctx, fmt.Sprintf(`SELECT COALESCE(name,''), COALESCE(agent_type,''), COALESCE(instructions,'') FROM %s.application_versions WHERE id = $1`, s), ref.VersionID).Scan(&saVerName, &saAgentType, &saInstr)
 				if saAgentType == "pipeline" {
 					continue
 				}
@@ -1417,7 +1369,7 @@ func (h *Handler) runPublishValidation(ctx context.Context, s, versionID, versio
 						"context": saContext,
 					})
 				}
-				validateSubAgents(ref.versionID, depth+1)
+				validateSubAgents(ref.VersionID, depth+1)
 			}
 		}
 		validateSubAgents(versionID, 0)
@@ -1689,7 +1641,8 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 			t.name, t.type, t.settings
 		FROM %s.entity_tool_mapping etm
 		LEFT JOIN %s.elitea_tools t ON t.id = etm.tool_id
-		WHERE etm.entity_version_id = $1`, schema, schema), vID)
+		WHERE etm.entity_version_id = $1
+		  AND COALESCE(t.type, '') <> 'application'`, schema, schema), vID)
 	if err == nil {
 		defer toolRows.Close()
 		for toolRows.Next() {
@@ -1725,26 +1678,20 @@ func (h *Handler) publicApplicationDetail(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Fetch application_tools (sub-agent references)
-	appToolRows, err := h.pool.Query(ctx, fmt.Sprintf(`
-		SELECT id, name, type, settings::text
-		FROM %s.application_tools
-		WHERE application_version_id = $1`, schema), vID)
-	if err == nil {
-		defer appToolRows.Close()
-		for appToolRows.Next() {
-			var atID int
-			var atName, atType, settingsStr string
-			if appToolRows.Scan(&atID, &atName, &atType, &settingsStr) != nil {
-				continue
-			}
-			var settings any
-			_ = json.Unmarshal([]byte(settingsStr), &settings) // DB jsonb column
+	// Fetch the sub-agent references. They live in the same two tables the
+	// generic tool read above walks, but the baseline serialises them as their
+	// own entries with the settings pair surfaced, so the expanded view keeps
+	// that shape.
+	if subAgentRefs, refErr := listApplicationToolReferences(ctx, h.pool, schema, strconv.Itoa(vID)); refErr == nil {
+		for _, ref := range subAgentRefs {
 			tools = append(tools, map[string]any{
-				"id":         atID,
-				"name":       atName,
-				"type":       atType,
-				"settings":   settings,
+				"id":   ref.ToolID,
+				"name": ref.Name,
+				"type": "application",
+				"settings": map[string]any{
+					"application_id":         jsonNumberIfNumeric(ref.ApplicationID),
+					"application_version_id": jsonNumberIfNumeric(ref.VersionID),
+				},
 				"project_id": projIDInt,
 			})
 		}
@@ -1839,175 +1786,6 @@ func (h *Handler) ApplicationRelation(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-// UpdateApplicationRelation attaches (or detaches) the CHILD agent named by
-// the URL as a tool of the PARENT version named by the body.
-//
-// The old body of this handler wrote to `application_tools` — a table that
-// exists in NO tenant schema (the real pair is `elitea_tools` +
-// `entity_tool_mapping`, the two every reader joins: the agents resolver
-// projection in internal/db/queries/agent_chat.sql and the tools panel's own
-// reads) — with `_, _ =` best-effort execs, so it answered 201 while
-// inserting nothing. It was also unreachable: the router bound PATCH to the
-// READ handler above. Both halves are fixed together, because each one alone
-// leaves the same silent no-op the browser measured.
-func (h *Handler) UpdateApplicationRelation(w http.ResponseWriter, r *http.Request) {
-	projectID := chi.URLParam(r, "projectID")
-	childAppID := chi.URLParam(r, "appID")
-	childVersionID := chi.URLParam(r, "versionID")
-	s, schemaOK := tenantSchema(w, projectID)
-	if !schemaOK {
-		return
-	}
-	ctx := r.Context()
-
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid request body"})
-		return
-	}
-
-	parentAppID := body["application_id"]
-	parentVerID := body["version_id"]
-	hasRelation, _ := body["has_relation"].(bool)
-
-	// Guard: block changes to published/embedded parent versions
-	if parentVerID != nil {
-		pVerStr := fmt.Sprintf("%v", parentVerID)
-		var verStatus string
-		err := h.pool.QueryRow(ctx, fmt.Sprintf(
-			`SELECT status FROM %s.application_versions WHERE id = $1`, s), pVerStr).Scan(&verStatus)
-		if err == nil && (verStatus == "published" || verStatus == "embedded") {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "Cannot change relation on a published version. Unpublish first.",
-			})
-			return
-		}
-	}
-
-	if hasRelation && parentAppID != nil && parentVerID != nil {
-		// One relation per (parent version, child version): the duplicate is
-		// detected on the SAME pair of tables the insert writes.
-		var exists bool
-		err := h.pool.QueryRow(ctx, fmt.Sprintf(`
-			SELECT EXISTS(
-				SELECT 1
-				FROM %s.entity_tool_mapping AS mapping
-				JOIN %s.elitea_tools AS tool ON tool.id = mapping.tool_id
-				WHERE mapping.entity_version_id = $1
-				  AND mapping.entity_type = 'agent'
-				  AND tool.type = 'application'
-				  AND tool.settings->>'application_id' = $2
-				  AND tool.settings->>'application_version_id' = $3)`, s, s),
-			fmt.Sprintf("%v", parentVerID), childAppID, childVersionID).Scan(&exists)
-		if err != nil {
-			slog.ErrorContext(ctx, "application relation: duplicate check failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation lookup failed"})
-			return
-		}
-		if exists {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "relation already exists"})
-			return
-		}
-
-		// The child's name and author, read rather than synthesised: the
-		// resolver projection serves `name`/`toolkit_name` straight from this
-		// row, and the freeze refuses a reference whose two names disagree.
-		var childName string
-		var childAuthorID int
-		err = h.pool.QueryRow(ctx, fmt.Sprintf(`
-			SELECT app.name, version.author_id
-			FROM %s.applications AS app
-			JOIN %s.application_versions AS version ON version.application_id = app.id
-			WHERE app.id = $1 AND version.id = $2`, s, s),
-			childAppID, childVersionID).Scan(&childName, &childAuthorID)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "the selected agent version does not exist"})
-			return
-		}
-
-		// The settings shape is the freeze's contract
-		// (freezeCurrentStoredApplicationReference admits exactly
-		// {application_id, application_version_id}); `owner_id` carries the
-		// OWNING PROJECT per tenant/0128's column-meaning note.
-		settingsJSON, err := json.Marshal(map[string]any{
-			"application_id":         jsonNumberFromPath(childAppID),
-			"application_version_id": jsonNumberFromPath(childVersionID),
-		})
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation encode failed"})
-			return
-		}
-
-		transaction, err := h.pool.Begin(ctx)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
-			return
-		}
-		defer func() { _ = transaction.Rollback(ctx) }()
-
-		var toolID int
-		err = transaction.QueryRow(ctx, fmt.Sprintf(`
-			INSERT INTO %s.elitea_tools (name, type, description, settings, meta, owner_id, author_id)
-			VALUES ($1, 'application', '', $2, '{}'::jsonb, $3, $4)
-			RETURNING id`, s),
-			childName, settingsJSON, projectID, childAuthorID).Scan(&toolID)
-		if err != nil {
-			slog.ErrorContext(ctx, "application relation: tool insert failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
-			return
-		}
-		_, err = transaction.Exec(ctx, fmt.Sprintf(`
-			INSERT INTO %s.entity_tool_mapping (entity_version_id, entity_type, tool_id, entity_id)
-			SELECT version.id, 'agent', $2, version.application_id
-			FROM %s.application_versions AS version
-			WHERE version.id = $1`, s, s),
-			fmt.Sprintf("%v", parentVerID), toolID)
-		if err != nil {
-			slog.ErrorContext(ctx, "application relation: mapping insert failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
-			return
-		}
-		if err := transaction.Commit(ctx); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation write failed"})
-			return
-		}
-	} else {
-		// Detach: drop the mapping and the tool row it pointed at, in one
-		// statement so a mapping can never be left dangling.
-		_, err := h.pool.Exec(ctx, fmt.Sprintf(`
-			DELETE FROM %s.elitea_tools AS tool
-			USING %s.entity_tool_mapping AS mapping
-			WHERE mapping.tool_id = tool.id
-			  AND mapping.entity_version_id = $1
-			  AND mapping.entity_type = 'agent'
-			  AND tool.type = 'application'
-			  AND tool.settings->>'application_id' = $2
-			  AND tool.settings->>'application_version_id' = $3`, s, s),
-			fmt.Sprintf("%v", parentVerID), childAppID, childVersionID)
-		if err != nil {
-			slog.ErrorContext(ctx, "application relation: detach failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "relation delete failed"})
-			return
-		}
-	}
-
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"application_id": childAppID,
-		"version_id":     childVersionID,
-		"has_relation":   hasRelation,
-	})
-}
-
-// jsonNumberFromPath turns a URL path id into the NUMBER the freeze's settings
-// contract expects (positiveCurrentAgentJSONInteger refuses strings). The path
-// param is always digits by the time the queries above have matched a row.
-func jsonNumberFromPath(value string) any {
-	if number, err := strconv.Atoi(value); err == nil {
-		return number
-	}
-	return value
 }
 
 func (h *Handler) Recommendations(w http.ResponseWriter, r *http.Request) {

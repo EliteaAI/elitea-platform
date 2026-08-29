@@ -286,7 +286,14 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, ErrInvalidCurrentAgentStart
 	}
-	llm, err := currentApplicationRuntimeLLM(skills.versionDetails)
+	// One decode serves both readers below. The projection already decoded
+	// this document once to build it; decoding it again per reader put three
+	// full UseNumber passes over the same bytes on every turn start.
+	version, err := decodeCurrentApplicationVersion(skills.versionDetails)
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	llm, err := currentApplicationRuntimeLLM(version)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +301,7 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, err
 	}
-	stepsLimit, err := currentApplicationStepsLimit(skills.versionDetails)
+	stepsLimit, err := currentApplicationStepsLimit(version)
 	if err != nil {
 		return nil, err
 	}
@@ -341,11 +348,7 @@ func currentApplicationInput(
 // An unusable value is refused rather than dropped: a step limit that silently
 // became the default is how an agent that was deliberately given room to work
 // stops halfway through with no explanation.
-func currentApplicationStepsLimit(versionDetails json.RawMessage) (*int32, error) {
-	version, err := decodeCurrentApplicationVersion(versionDetails)
-	if err != nil {
-		return nil, ErrUnsupportedCurrentAgentStart
-	}
+func currentApplicationStepsLimit(version map[string]any) (*int32, error) {
 	meta, ok := version["meta"].(map[string]any)
 	if !ok {
 		return nil, nil
@@ -372,11 +375,19 @@ const maxCurrentAgentStepLimit = 1024
 // currentPlatformInternalTools is the agent form's own authorable catalogue
 // (apps/elitea-web/src/features/agents/lib/internalTools.ts) plus `ask_user`.
 // Membership here means "the product can do this", not "every worker can":
-// the Python worker serves the whole set, and the native runtime skips what
-// it does not implement with a logged `agent_internal_tool_skipped`
-// (services/elitea-worker-rust/src/agents/internal_tools.rs). This layer
-// FORWARDS rather than judges, because refusing here turned every form
-// toggle into an agent that stopped answering on both workers at once.
+// BOTH runtimes skip what they cannot serve, with a logged
+// `agent_internal_tool_skipped` — the native one for what it has not
+// implemented (services/elitea-worker-rust/src/agents/internal_tools.rs), and
+// the Python one for what its image cannot build, which today is `pyodide`,
+// whose sandbox needs a Deno runtime that image does not ship
+// (services/elitea-worker-python/src/elitea_worker/agents/internal_tools.py).
+// This layer FORWARDS rather than judges, because refusing here turned every
+// form toggle into an agent that stopped answering on both workers at once.
+//
+// Do not read the skip as "either worker serves everything". It was written
+// down here, and in two other files, that the Python worker served the whole
+// set; it did not, and the turn died in the SDK with an assistant row flagged
+// `is_error` and EMPTY content.
 var currentPlatformInternalTools = map[string]bool{
 	"ask_user":         true,
 	"attachments":      true,
@@ -470,11 +481,7 @@ func (service *CurrentApplicationStartService) resolveNextInputSuggestionPolicy(
 	return bytes.Clone(policy)
 }
 
-func currentApplicationRuntimeLLM(versionDetails json.RawMessage) ([]byte, error) {
-	version, err := decodeCurrentApplicationVersion(versionDetails)
-	if err != nil {
-		return nil, ErrUnsupportedCurrentAgentStart
-	}
+func currentApplicationRuntimeLLM(version map[string]any) ([]byte, error) {
 	settings, ok := version["llm_settings"].(map[string]any)
 	if !ok || settings == nil {
 		return nil, ErrUnsupportedCurrentAgentStart

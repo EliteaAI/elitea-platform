@@ -182,7 +182,7 @@ export function convertToPlayerQuestion(
     content,
     messageItems: sortedItems,
     createdAt: convertTime(created_at),
-    participantId: sent_to_id,
+    participantId: sent_to_id === undefined ? undefined : String(sent_to_id),
     sentTo: sentToParticipant,
     likes,
   };

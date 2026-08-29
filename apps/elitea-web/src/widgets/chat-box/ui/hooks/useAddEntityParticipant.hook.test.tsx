@@ -100,6 +100,30 @@ describe('useAddEntityParticipant on a chat with no conversation', () => {
     expect(onChangeParticipant.mock.calls[0]?.[0]).toMatchObject({ id: '101', entityName: 'application' });
   });
 
+  it('lets the row be picked again after a selection that settled without adding anything', async () => {
+    // `applyParticipantSelection` RESOLVES — it does not reject — on several
+    // no-op paths; this one is `conversationForSelection` returning undefined
+    // because the create call produced no id. Pending was cleared only by
+    // `.catch` or by the `participants` prop changing, and neither happens
+    // here, so the "+"-menu row stayed disabled for the rest of the session
+    // and the user could never retry.
+    const createConversation = vi.fn(() => Promise.resolve(undefined));
+    const { result } = renderHook(() => useAddEntityParticipant({
+      projectId: 2,
+      conversationId: undefined,
+      participants: NO_PARTICIPANTS,
+      createConversation,
+    }), { wrapper: createWrapper() });
+
+    act(() => { result.current.onSelectParticipant(AGENT_LIST_ROW); });
+    // In flight the key IS held — that is the double-click guard, and it stays.
+    expect(result.current.getParticipantMenuState(AGENT_LIST_ROW).pending).toBe(true);
+
+    await waitFor(() => { expect(createConversation).toHaveBeenCalledTimes(1); });
+    await waitFor(() => { expect(result.current.getParticipantMenuState(AGENT_LIST_ROW).pending).toBeUndefined(); });
+    expect(addedBodies).toHaveLength(0);
+  });
+
   it('still refuses without a project, which is the other half of the route', async () => {
     const createConversation = vi.fn(() => Promise.resolve({ id: 77 }));
     const { result } = renderHook(() => useAddEntityParticipant({

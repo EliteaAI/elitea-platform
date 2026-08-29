@@ -49,6 +49,25 @@ describe('normaliseUserMessage', () => {
     });
   });
 
+  it('resolves the author across the two id spellings on the wire', () => {
+    // The Go transcript endpoint states author_participant_id as a NUMBER
+    // and the Go participants payload serialises participant ids as numbers
+    // too; socket-era payloads carried strings. A reloaded shared
+    // conversation attributes each question through exactly this lookup, so
+    // every combination must resolve — a strict === across the spellings is
+    // how "User No Longer Available" appeared over a user who was right
+    // there in the participants array.
+    const alice: MessageAuthorWire = { id: 7, meta: { user_name: 'Alice' } };
+    const bob: MessageAuthorWire = { id: '8', meta: { user_name: 'Bob' } };
+    const users: readonly MessageAuthorWire[] = [alice, bob];
+    const numberToNumber: MessageGroupWire = { ...baseGroup, author_participant_id: 7 };
+    const stringToNumber: MessageGroupWire = { ...baseGroup, author_participant_id: '7' };
+    const numberToString: MessageGroupWire = { ...baseGroup, author_participant_id: 8 };
+    expect(normaliseUserMessage(numberToNumber, users, []).name).toBe('Alice');
+    expect(normaliseUserMessage(stringToNumber, users, []).name).toBe('Alice');
+    expect(normaliseUserMessage(numberToString, users, []).name).toBe('Bob');
+  });
+
   it.each([
     { desc: 'user_name present', user: { id: 'u1', meta: { user_name: 'Alice' } }, expected: 'Alice' },
     { desc: 'no user_name, falls back to entity_meta.email', user: { id: 'u1', entity_meta: { email: 'a@x.com' } }, expected: 'a@x.com' },
@@ -83,9 +102,19 @@ describe('normaliseUserMessage', () => {
     expect(normaliseUserMessage({ ...baseGroup, author_participant_id: '' }, [], []).name).toBe('');
   });
 
-  it('omits userId when the row states no author, so the renderer may attribute it to the reader', () => {
+  /*
+   * Both halves of the anonymous row's identity are absent, which is the
+   * whole point: an author-less row states NOTHING the renderer could
+   * attribute, so `UserMessage`'s caption stays empty rather than borrowing
+   * the reader's name. A `userId`-without-`name` row (which the caption used
+   * to treat as "someone else, do not substitute") is a state this endpoint
+   * cannot produce.
+   */
+  it('omits userId as well as name when the row states no author, leaving nothing to attribute', () => {
     const group: MessageGroupWire = { id: 3, uuid: 'uid-3', content: 'hello', created_at: '2026-01-01 12:00:00' };
-    expect('userId' in normaliseUserMessage(group, [], [])).toBe(false);
+    const result = normaliseUserMessage(group, [], []);
+    expect('userId' in result).toBe(false);
+    expect(result.name).toBe('');
   });
 
   it('omits messageItems entirely when the wire does not send message_items (not defaulted to [])', () => {

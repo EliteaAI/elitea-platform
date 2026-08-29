@@ -173,12 +173,40 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	if err != nil {
 		return nil, err
 	}
+	// The auth_core__user join resolves a DISPLAY NAME for user participants.
+	// The REST attach path stores only `entity_meta.id` (the numeric user id
+	// the resolver's author join needs), and the participant writer records
+	// its own disclosed gap: "Legacy also resolves a user name ... this
+	// repository does not perform that lookup" (participantDisplayMeta). The
+	// transcript's author captions read `meta.user_name` off THIS payload, so
+	// without the lookup every author renders as "User <n>".
+	//
+	// Probe-guarded, not assumed: auth_core__user is BOOTSTRAP-owned
+	// (001_initial.sql), not part of the shared migration corpus this
+	// repository's RunMigrations applies — a corpus-only database (the
+	// integration suite is one) has chat_participants and no auth table, and
+	// an unguarded join would turn every participants read into 42P01 there.
+	// Same arrangement as the application_tools probe in applications.go: a
+	// display name is an enrichment, and its absence must never take the
+	// payload down with it.
+	authorIdentityJoin := ""
+	authorIdentityColumns := "'', ''"
+	var authTable *string
+	if err := r.pool.QueryRow(ctx, `SELECT to_regclass('auth_core__user')::text`).Scan(&authTable); err == nil && authTable != nil {
+		authorIdentityColumns = "COALESCE(au.name, ''), COALESCE(au.email, '')"
+		authorIdentityJoin = `
+		LEFT JOIN auth_core__user au
+			ON p.entity_name = 'user'
+			AND p.entity_meta->>'id' ~ '^[0-9]+$'
+			AND au.id = (p.entity_meta->>'id')::integer`
+	}
 	q := fmt.Sprintf(`
-		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings
+		SELECT p.id, p.entity_name, p.entity_meta, p.meta, pm.entity_settings,
+			%s
 		FROM %s.chat_participant_mapping pm
-		JOIN %s.chat_participants p ON p.id = pm.participant_id
+		JOIN %s.chat_participants p ON p.id = pm.participant_id%s
 		WHERE pm.conversation_id = $1
-		ORDER BY pm.id`, s, s)
+		ORDER BY pm.id`, authorIdentityColumns, s, s, authorIdentityJoin)
 
 	rows, err := r.pool.Query(ctx, q, id)
 	if err != nil {
@@ -190,7 +218,8 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 	for rows.Next() {
 		var p conversations.Participant
 		var entityMeta, meta, entitySettings []byte
-		if err := rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings); err != nil {
+		var authorName, authorEmail string
+		if err := rows.Scan(&p.ID, &p.EntityName, &entityMeta, &meta, &entitySettings, &authorName, &authorEmail); err != nil {
 			continue
 		}
 		if entityMeta != nil {
@@ -204,6 +233,19 @@ func (r *ConversationsRepo) ListParticipants(ctx context.Context, projectID, con
 		}
 		if p.Meta == nil {
 			p.Meta = map[string]any{}
+		}
+		// Overlay, never overwrite: a participant that already carries a
+		// user_name (the socket-era writer resolved one) keeps it, and a user
+		// the auth table no longer holds stays as stored — the reader then
+		// renders its own "no longer available" state.
+		if p.EntityName == "user" {
+			if existing, _ := p.Meta["user_name"].(string); existing == "" {
+				if authorName != "" {
+					p.Meta["user_name"] = authorName
+				} else if authorEmail != "" {
+					p.Meta["user_name"] = authorEmail
+				}
+			}
 		}
 		if entitySettings != nil {
 			_ = json.Unmarshal(entitySettings, &p.EntitySettings) // best-effort: DB column is trusted JSON
@@ -1353,6 +1395,7 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 	q := fmt.Sprintf(`
 		SELECT mg.id, mg.conversation_id, COALESCE(mg.uuid::text, ''),
 			p.entity_name, mg.meta, mg.created_at,
+			mg.author_participant_id, mg.sent_to_id, mg.reply_to_id,
 			COALESCE((
 				SELECT string_agg(mt.content, E'\n' ORDER BY mi.order_index)
 				FROM %s.chat_message_items mi
@@ -1378,7 +1421,8 @@ func (r *ConversationsRepo) ListMessages(ctx context.Context, projectID, convers
 		var entityName string
 		// A scan failure used to `continue`, so an unreadable row silently
 		// dropped a message out of the transcript.
-		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt, &m.Content); err != nil {
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.UUID, &entityName, &meta, &m.CreatedAt,
+			&m.AuthorParticipantID, &m.SentToID, &m.ReplyToID, &m.Content); err != nil {
 			return conversations.MessagesListResponse{}, fmt.Errorf("conversations: scan message: %w", err)
 		}
 		if meta != nil {

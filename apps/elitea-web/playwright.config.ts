@@ -214,23 +214,31 @@ export default defineConfig({
       // would hand the index journey to a runner that never ran `seed-index`.
       testMatch: /streaming\/chat\..+\.spec\.ts/,
       /*
-       * Serial, overriding the top-level `fullyParallel`, for the same class of
-       * reason as `index-stream` below and one specific number: elitea-main
-       * admits FOUR concurrent replay streams per principal
-       * (`internal/api/v2/executions/events_admission.go`), and both journeys
-       * sign in as the same chat persona. Each one holds an execution stream
-       * for the length of a turn while the app also holds its notifications
-       * stream, so two of them in parallel sit on the edge of that budget.
-       * Measured: run together over three workers, the second journey's
-       * `/executions/{id}/events` answered 429 and the failure read as "the
-       * browser cannot read the stream" — a statement about the harness, not
-       * the feature. Serially, both pass.
+       * Serial, for the same class of reason as `index-stream` below and one
+       * specific number: elitea-main admits FOUR concurrent replay streams per
+       * principal (`internal/api/v2/executions/events_admission.go`), and every
+       * journey in this project signs in as the same chat persona. Each one
+       * holds an execution stream for the length of a turn while the app also
+       * holds its notifications stream, so two of them in parallel sit on the
+       * edge of that budget. Measured: run together over three workers, the
+       * second journey's `/executions/{id}/events` answered 429 and the failure
+       * read as "the browser cannot read the stream" — a statement about the
+       * harness, not the feature. Serially, they pass.
        *
-       * KNOWN LIMIT of this override: `fullyParallel: false` orders tests
-       * WITHIN a file; separate spec files still spread across workers. The
-       * budget holds because each journey's execution stream is short-lived,
-       * but if this project ever answers 429 again the next lever is
-       * `--workers=1` on the chat-stream invocation, not a broader rewrite.
+       * WHERE THE SERIALISATION ACTUALLY COMES FROM: `--workers=1`, passed on
+       * the `chat-stream` invocation in `scripts/chat-stream-e2e.sh`. That
+       * script is the ONLY entry point — both continuous-integration jobs
+       * (`chat-stream` and `chat-stream-rust` in .github/workflows/ci-web-e2e.yml)
+       * run it, and so does every local run — so the pin lives there once and
+       * covers all of them.
+       *
+       * `fullyParallel: false` does NOT do it, and it is important not to read
+       * this line as if it did. It orders tests WITHIN a file. Every spec this
+       * project matches holds exactly ONE test in a file of its own, so there
+       * has never been anything for it to order, and `workers: 4` above still
+       * started all three files at once — against the very budget this note is
+       * about. It is kept because it costs nothing and becomes correct the
+       * moment one of those files grows a second test.
        */
       fullyParallel: false,
     },

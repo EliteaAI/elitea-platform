@@ -211,6 +211,34 @@ describe('CreateApplication', () => {
   });
 
   /*
+   * The welcome message a user types on CREATE used to be held in
+   * `extraFields`, echoed straight back into the form — and dropped from the
+   * POST body, which carried no `welcome_message` key at all. The 201 came
+   * back, the page navigated to the new agent, and the greeting was gone.
+   * Asserted off the body, not off the screen: the page echoing its own
+   * state proves nothing about what reached the server, which is precisely
+   * how this survived.
+   */
+  it('sends the welcome message typed on the create form in the create POST body', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderAgentsRoute(<CreateApplication />, '/agents/create', { projectId: '1' });
+
+    await user.type(await screen.findByTestId('agent-welcome-message-input'), 'Hi there');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]?.['welcome_message']).toBe('Hi there');
+  });
+
+  /*
    * The picker's own behaviour is covered in
    * `widgets/agent-model-settings`; what these three pin is the wiring this
    * page owns — that the slot is mounted at all, that the chosen model

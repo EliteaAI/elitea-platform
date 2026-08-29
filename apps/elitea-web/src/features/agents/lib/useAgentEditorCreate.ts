@@ -44,25 +44,19 @@ import type { AgentDraftValues, AgentFieldChange } from '../model/types';
  * as the baseline's own `createInitialValues`), so "discard" and "start a
  * fresh create form" are the identical operation.
  *
- * **`meta.internal_tools` default -- empty, so the created agent can
- * actually take a turn.** An earlier adversarial review read the baseline's
- * `['internal_mcp']` seed as the intended default and made this path match
- * it. That default refuses every turn: the chat query admits a version only
- * when its `meta.internal_tools` is `[]` or `["ask_user"]`
- * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`), so a
- * version carrying `internal_mcp` resolves zero rows and the browser gets a
- * 422 on send, and the native runtime rejects any other name outright
- * (`services/elitea-worker-rust/src/agents/internal_tools.rs:47-61`).
- * `DEFAULT_INTERNAL_TOOLS` is therefore empty, agreeing with
- * `entities/application-form/model/initialValues.ts` (which carries the full
- * evidence trail). `resolveInternalTools` still respects an explicit
- * override, so this file's own `onFieldChange(
- * 'version_details.meta.internal_tools', ...)` escape hatch keeps working if
- * a future caller wires up the Elitea-MCP-Tools toggle deliberately
- * (`AgentVersionMeta`'s `[metaKey: string]: unknown` index signature already
- * allows it). The pipelines side has the same seed in
- * `features/pipelines/lib/usePipelineEditorCreate.ts:70-73` and still
- * defaults to `['internal_mcp']` -- reported, not owned by this unit.
+ * **`meta.internal_tools` default -- empty, matching a fresh form.** The
+ * admission gates now admit the platform's whole authorable catalogue (the
+ * `NOT IN` lists in `services/elitea-main/internal/db/queries/agent_chat.sql`
+ * — nine sites, pinned against the other catalogue copies by
+ * `internal_tools_catalogue_drift_test.go`), and the native runtime SKIPS
+ * catalogue names it does not implement with a logged
+ * `agent_internal_tool_skipped` (`services/elitea-worker-rust/src/agents/
+ * internal_tools.rs`), so a toggled tool no longer refuses the turn. The
+ * default stays empty because a fresh agent has no tools toggled — the
+ * Tools panel writes the real values. `resolveInternalTools` still respects
+ * an explicit override. The pipelines side
+ * (`features/pipelines/lib/usePipelineEditorCreate.ts`) seeds `[]` the same
+ * way.
  */
 const DEFAULT_INTERNAL_TOOLS: readonly string[] = [];
 
@@ -123,6 +117,19 @@ const EMPTY_CREATE_VALUES: AgentDraftValues = {
   },
 };
 
+/**
+ * The optional keys of the version body, split from `buildCreateDraft` to
+ * keep each function under the oxlint complexity budget (12) — the welcome
+ * message spread pushed the single function to 14.
+ */
+function optionalCreateVersionFields(versionDetails: AgentDraftValues['version_details']) {
+  // The draft carries `welcomeMessage` now (it used to have no key for it,
+  // and this path silently dropped what the form collected). Spread, not
+  // assigned: the key is optional-without-undefined
+  // (exactOptionalPropertyTypes).
+  return versionDetails?.welcome_message !== undefined ? { welcomeMessage: versionDetails.welcome_message } : {};
+}
+
 /** `submit`'s request-body construction, extracted purely to keep `useAgentEditorCreate` under the oxlint complexity budget. */
 function buildCreateDraft(values: AgentDraftValues): ApplicationDraftInput {
   const versionDetails = values.version_details;
@@ -139,10 +146,7 @@ function buildCreateDraft(values: AgentDraftValues): ApplicationDraftInput {
       name: LATEST_VERSION_NAME,
       agentType: undefined,
       instructions: versionDetails?.instructions ?? '',
-      // `welcome_message` is deliberately NOT sent: `ApplicationVersionDraft`
-      // (entities/application-form/model/initialValues.ts) has no field for
-      // it — see `useAgentDraftApproval.ts`'s doc comment for the identical,
-      // already-disclosed gap on the generate-with-AI create path.
+      ...optionalCreateVersionFields(versionDetails),
       conversationStarters: [],
       variables: (versionDetails?.variables ?? []).map((variable) => ({ name: variable.name, value: variable.value })),
       meta: { step_limit: meta?.step_limit ?? 25, internal_tools: resolveInternalTools(meta) },

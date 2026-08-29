@@ -149,7 +149,9 @@ async function withResolvedVersion(
   if (entityId === '') return selection;
   const projectId = idText(candidate['project_id']) || idText(fallbackProjectId);
   const details = await fetchDetails(type, entityId, projectId);
-  if (!details || Object.keys(details).length === 0) return selection;
+  // Only emptiness is checked: every branch of `fetchOriginalDetails` returns an
+  // object (`result?.data || {}`, or the toolkit scan's `{}`), so `!details` was dead.
+  if (Object.keys(details).length === 0) return selection;
   return { ...candidate, ...details };
 }
 

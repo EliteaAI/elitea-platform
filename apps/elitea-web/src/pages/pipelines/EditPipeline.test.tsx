@@ -89,7 +89,14 @@ async function chooseModel(user: ReturnType<typeof userEvent.setup>, displayName
 
 beforeEach(() => {
   configureGeneratedClient({ baseUrl: '/api/v2' });
-  server.use(http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)));
+  server.use(
+    http.get('*/configurations/models/:projectId', () => HttpResponse.json(CATALOGUE)),
+    // The Chat button resolves the signed-in user to add the USER participant
+    // (the resolver's author join needs it), so every render of this page now
+    // issues the author read. RAW body, no `{data:…}` envelope — `eliteaFetch`
+    // wraps the parsed body itself.
+    http.get('*/social/author*', () => HttpResponse.json({ id: '6', name: 'E2E Chat Driver', avatar: '' })),
+  );
 });
 
 afterEach(() => {
@@ -422,7 +429,9 @@ describe('talking to the pipeline', () => {
    * discriminator (`features/chat-participants/lib/helpers.ts`'s
    * `buildNonModelParticipant`), and `entity_settings.version_id` is what
    * the resolver joins the version through — a participant without it
-   * answers 422 on every turn.
+   * answers 422 on every turn. The USER entry is load-bearing for the same
+   * reason: pipelines resolve through the same `agent_chat.sql` whose author
+   * join is an INNER JOIN on it.
    */
   it('the Chat button creates a conversation with the pipeline attached and navigates to it', async () => {
     const participantBodies: unknown[] = [];
@@ -453,8 +462,13 @@ describe('talking to the pipeline', () => {
     });
     const captured = participantBodies[0] as { conversationId: string; body: readonly Record<string, unknown>[] };
     expect(captured.conversationId).toBe('7');
-    const [participant] = captured.body;
-    expect(participant).toMatchObject({
+    // TWO entries, user first: nothing server-side creates the user mapping
+    // on the REST path, and the resolver's author join refuses a conversation
+    // without it — the same pair the adhoc send posts. The id rides as a
+    // NUMBER, which is what the join's `entity_meta->>'id'` comparison needs.
+    expect(captured.body).toHaveLength(2);
+    expect(captured.body[0]).toMatchObject({ entity_name: 'user', entity_meta: { id: 6 } });
+    expect(captured.body[1]).toMatchObject({
       entity_name: 'application',
       entity_meta: { id: '42', project_id: '9' },
       entity_settings: { version_id: '1', agent_type: 'pipeline' },

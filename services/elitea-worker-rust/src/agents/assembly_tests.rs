@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value, json};
+use tracing_subscriber::fmt::MakeWriter;
 
 use super::assembly::{
     DEFAULT_AGENT_STEP_LIMIT, OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort,
@@ -880,5 +883,131 @@ fn a_populated_variable_list_is_still_an_unsupported_capability() {
             error.code(),
             NativeAgentAssemblyErrorCode::UnsupportedCapability
         );
+    }
+}
+
+/// Smart Tools Selection is a form toggle, and a toggle must not end the turn.
+///
+/// `meta.lazy_tools_mode = true` used to refuse the whole profile. It now
+/// degrades: this runtime exposes every attached tool, which is the mode's SAFE
+/// side (lazy mode narrows exposure), and it says so once in the log. The old
+/// refusal test was repointed to a name outside the platform catalogue, so
+/// nothing asserted the degrade — a return to refusing would have been silent
+/// here and visible only as an agent that stops answering.
+#[test]
+fn smart_tools_selection_degrades_with_one_warning_instead_of_refusing() {
+    let capture = CapturedOutput::default();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(capture.clone())
+        .finish();
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    insert_application_meta(&mut request, "lazy_tools_mode", json!(true));
+
+    tracing::subscriber::with_default(subscriber, || {
+        AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy())
+        .expect("smart tools selection must not stop the agent answering");
+    });
+
+    let logged = capture.text();
+    assert!(logged.contains("WARN"), "degrade must be logged: {logged}");
+    assert!(logged.contains("agent_internal_tool_skipped"));
+    assert!(logged.contains("lazy_tools_mode"));
+    assert!(!logged.contains("ERROR"));
+}
+
+/// The off and absent forms stay silent, and a non-boolean is still malformed.
+///
+/// Without this, "degrades with a warning" could be satisfied by warning on
+/// every agent, and the catch-all that still refuses a non-boolean would be
+/// unpinned.
+#[test]
+fn only_the_enabled_smart_tools_toggle_is_reported_and_non_booleans_are_refused() {
+    for quiet in [Some(json!(false)), None] {
+        let capture = CapturedOutput::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_target(false)
+            .with_writer(capture.clone())
+            .finish();
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        if let Some(value) = quiet.clone() {
+            insert_application_meta(&mut request, "lazy_tools_mode", value);
+        }
+        tracing::subscriber::with_default(subscriber, || {
+            AuthorizedNativeAssembly::new(
+                &request,
+                test_runtime_context_authority(),
+                AuthorizedNativeCommandBinding::fixture(),
+            )
+            .admit_llm_agent(&empty_tool_policy())
+            .expect("an unset toggle is an ordinary profile");
+        });
+        assert!(
+            !capture.text().contains("lazy_tools_mode"),
+            "an unset toggle must not report a skipped capability: {quiet:?}"
+        );
+    }
+
+    for malformed in [json!("true"), json!(1), json!({})] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        insert_application_meta(&mut request, "lazy_tools_mode", malformed.clone());
+        let Err(error) = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy()) else {
+            panic!("a non-boolean toggle is malformed input: {malformed}")
+        };
+        assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturedOutput {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl CapturedOutput {
+    fn text(&self) -> String {
+        String::from_utf8(self.bytes.lock().expect("captured tracing lock").clone())
+            .expect("captured tracing UTF-8")
+    }
+}
+
+struct CapturedWriter {
+    bytes: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Write for CapturedWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes
+            .lock()
+            .map_err(|_| io::Error::other("captured tracing lock failed"))?
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for CapturedOutput {
+    type Writer = CapturedWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        CapturedWriter {
+            bytes: Arc::clone(&self.bytes),
+        }
     }
 }

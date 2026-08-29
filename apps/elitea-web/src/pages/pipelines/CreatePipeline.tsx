@@ -16,11 +16,7 @@ import {
   type ApplicationCreationInput,
 } from '@/entities/application-form';
 import { CreateAgentForm } from '@/features/agents';
-import {
-  areAgentLlmSettingsEqual,
-  toAgentLlmSettings,
-  type AgentLlmSettings,
-} from '@/shared/api/agentLlmSettings';
+import { areAgentLlmSettingsEqual, type AgentLlmSettings } from '@/shared/api/agentLlmSettings';
 import { t } from '@/shared/i18n';
 import { AgentModelSettings } from '@/widgets/agent-model-settings';
 import { disarmUnsavedChangesNavBlocker, useUnsavedChangesNavBlocker } from '@/widgets/app-shell';
@@ -229,13 +225,13 @@ export function CreatePipeline(): ReactNode {
             stepLimit: typeof value === 'number' ? value : undefined,
           }));
           return;
-        // Read back through `toAgentLlmSettings` rather than trusted, for the
-        // reason `pages/agents/CreateApplication.tsx` gives on its own copy of
-        // this case: a blob that cannot make a complete profile has to land as
-        // `undefined` so the save omits the key.
-        case 'version_details.llm_settings':
-          setExtraFields((previous) => ({ ...previous, llmSettings: toAgentLlmSettings(value) }));
-          return;
+        // No `version_details.llm_settings` case, deliberately: model settings
+        // reach `extraFields.llmSettings` through `handleModelSettingsChange`
+        // below, straight off the `AgentModelSettings` slot. The create form's
+        // dispatcher (`features/agents/model/useCreateAgentFormState.ts`)
+        // emits only the paths above, so a branch here would be dead — the
+        // EDIT page's identical-looking branch IS live, which is what made
+        // this one read as reachable. Do not re-add it.
         default:
           return;
       }
@@ -263,6 +259,10 @@ export function CreatePipeline(): ReactNode {
         version: {
           ...draftDefaults.versionDetails,
           instructions: extraFields.instructions,
+          // The same key the agents twin was missing: held in `extraFields`,
+          // echoed back into the form, and absent from this body — so a
+          // pipeline's welcome message was dropped on create with a 201 back.
+          welcomeMessage: extraFields.welcomeMessage,
           conversationStarters: (values.version_details?.conversation_starters ?? []).filter(
             (entry): entry is string => typeof entry === 'string',
           ),

@@ -107,6 +107,15 @@ pub(crate) enum RuntimeContextError {
     InvalidResponse(&'static str),
     ResourceExhausted(&'static str),
     AuthorizationFailed(&'static str),
+    /// The claim was accepted and the referenced resource does not exist.
+    ///
+    /// Main answers 404 rather than 403 for a stale nested application/version
+    /// precisely so a deleted reference stays distinguishable from a rejected
+    /// claim (`internal/infra/storage/content_server.go`). It is TERMINAL on
+    /// this side for the same reason: a version that is gone does not come
+    /// back, so a retry only spends the turn's budget on a failure whose
+    /// reason is already known.
+    NotFound(&'static str),
     DependencyUnavailable(&'static str),
     Transport(RuntimeContextTransportError),
     Timeout(&'static str),
@@ -120,6 +129,7 @@ impl RuntimeContextError {
             Self::InvalidResponse(_) => "runtime_context.invalid_response",
             Self::ResourceExhausted(_) => "runtime_context.resource_exhausted",
             Self::AuthorizationFailed(_) => "runtime_context.authorization_failed",
+            Self::NotFound(_) => "runtime_context.not_found",
             Self::DependencyUnavailable(_) | Self::Transport(_) => {
                 "runtime_context.dependency_unavailable"
             }
@@ -152,6 +162,7 @@ impl fmt::Display for RuntimeContextError {
             | Self::InvalidResponse(message)
             | Self::ResourceExhausted(message)
             | Self::AuthorizationFailed(message)
+            | Self::NotFound(message)
             | Self::DependencyUnavailable(message)
             | Self::Timeout(message) => formatter.write_str(message),
             Self::Transport(error) => error.fmt(formatter),
@@ -593,6 +604,11 @@ fn validate_response_head_with_limit(
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
             return Err(RuntimeContextError::AuthorizationFailed(
                 "the claim-bound runtime context was rejected",
+            ));
+        }
+        StatusCode::NOT_FOUND => {
+            return Err(RuntimeContextError::NotFound(
+                "the claim-bound runtime context reference no longer exists",
             ));
         }
         status if status.is_redirection() => {

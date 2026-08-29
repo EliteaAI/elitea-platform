@@ -100,7 +100,7 @@ func TestCurrentApplicationStepsLimitReadsTheAuthoredValue(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			limit, err := currentApplicationStepsLimit(json.RawMessage(test.version))
+			limit, err := currentApplicationStepsLimit(decodedCurrentApplicationVersionForTest(t, test.version))
 			if test.wantErr {
 				if !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
 					t.Fatalf("err=%v, want ErrUnsupportedCurrentAgentStart", err)

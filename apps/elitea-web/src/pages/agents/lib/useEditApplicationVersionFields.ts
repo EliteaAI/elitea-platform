@@ -156,7 +156,15 @@ function mergeLlmSettingsKey(
   key: string,
   value: unknown,
 ): AgentLlmSettings | undefined {
-  return toAgentLlmSettings({ ...previous, [key]: value });
+  // temperature and reasoning_effort are mutually exclusive on the wire (the
+  // worker refuses a profile carrying both, and `toAgentLlmSettings` keeps
+  // the effort when they collide). A per-key write of one must therefore
+  // CLEAR the other, or setting a temperature on a version that stored an
+  // effort silently loses the write to the XOR instead of replacing it.
+  const merged: Record<string, unknown> = { ...previous, [key]: value };
+  if (key === 'temperature') delete merged['reasoning_effort'];
+  if (key === 'reasoning_effort') delete merged['temperature'];
+  return toAgentLlmSettings(merged);
 }
 
 function toVariables(value: unknown, previous: EditApplicationVersionFields['variables']) {

@@ -295,8 +295,20 @@ func TestCurrentApplicationStartPreservesPipelineYAMLInTheExistingApplicationCon
 	}
 }
 
+// decodedCurrentApplicationVersionForTest mirrors the production entry point:
+// currentApplicationInput decodes the frozen document ONCE and hands the map
+// to each reader, so the readers' unit tests feed them the same shape.
+func decodedCurrentApplicationVersionForTest(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	version, err := decodeCurrentApplicationVersion(json.RawMessage(raw))
+	if err != nil {
+		t.Fatalf("decode fixture %s: %v", raw, err)
+	}
+	return version
+}
+
 func TestCurrentApplicationRuntimeLLMBindsDerivedCompatibilityOnly(t *testing.T) {
-	result, err := currentApplicationRuntimeLLM(json.RawMessage(`{
+	result, err := currentApplicationRuntimeLLM(decodedCurrentApplicationVersionForTest(t, `{
   "llm_settings":{"model_name":"model","model_project_id":7,"openai_compatible":true,"temperature":0.6}
 }`))
 	if err != nil {
@@ -305,7 +317,7 @@ func TestCurrentApplicationRuntimeLLMBindsDerivedCompatibilityOnly(t *testing.T)
 	if !bytes.Equal(result, []byte(`{"kwargs":{"openai_compatible":true}}`)) {
 		t.Fatalf("runtime llm=%s", result)
 	}
-	if _, err := currentApplicationRuntimeLLM(json.RawMessage(`{"llm_settings":{"model_name":"model"}}`)); !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
+	if _, err := currentApplicationRuntimeLLM(decodedCurrentApplicationVersionForTest(t, `{"llm_settings":{"model_name":"model"}}`)); !errors.Is(err, ErrUnsupportedCurrentAgentStart) {
 		t.Fatalf("missing derived compatibility error=%v", err)
 	}
 }

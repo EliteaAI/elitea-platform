@@ -88,9 +88,42 @@ describe("sendQuestion — a turn no transport accepted", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]?.role).toBe(ROLES.Assistant);
     expect(String(errors[0]?.exception)).toContain("was not sent");
-    expect(history.read().some((message) => message.role === ROLES.User)).toBe(
-      false,
+    // The question the person typed SURVIVES the refusal. The composer has
+    // already been cleared, so this bubble is the only copy of it, and the
+    // error message is anchored to it by `questionId`. Journeys 8, 9 and 12
+    // read exactly this out of `chat-message-list`.
+    const questions = history
+      .read()
+      .filter((message) => message.role === ROLES.User);
+    expect(questions).toHaveLength(1);
+    expect(questions[0]?.content).toBe("hi");
+    expect(errors[0]?.questionId).toBe(questions[0]?.id);
+  });
+
+  it("keeps every failed turn's question, so a second refusal does not erase the first", async () => {
+    const history = makeHistory([]);
+    const handlers = useChatBoxHandlers(
+      makeDeps({
+        setChatHistory: history.setChatHistory,
+        emitSocket: deadSocket(),
+        startStreamedExecution: () => Promise.resolve(noTransport),
+      }),
     );
+
+    await handlers.sendQuestion({ question: "hi" });
+    const [firstQuestion] = history
+      .read()
+      .filter((message) => message.role === ROLES.User);
+    await handlers.sendQuestion({ question: "hi again" });
+
+    const errors = history
+      .read()
+      .filter((message) => message.exception !== undefined);
+    expect(errors).toHaveLength(2);
+    expect(new Set(errors.map((message) => message.questionId)).size).toBe(2);
+    expect(
+      history.read().some((message) => message.id === firstQuestion?.id),
+    ).toBe(true);
   });
 
   it("keeps the turn silent-free but successful when the socket really delivers", async () => {
@@ -159,9 +192,11 @@ describe("sendQuestion — a turn no transport accepted", () => {
     expect(history.read().map((message) => message.exception)).toContain(
       "No model is configured.",
     );
-    expect(history.read().some((message) => message.role === ROLES.User)).toBe(
-      false,
-    );
+    // A refusal the route explained still keeps the question on screen: it is
+    // the only copy of the text, and the reason means nothing without it.
+    expect(
+      history.read().filter((message) => message.role === ROLES.User),
+    ).toHaveLength(1);
   });
 
   it("does not duplicate a persisted question when a retry is rejected", async () => {

@@ -30,6 +30,33 @@ function authorHandler(personalProjectId = '99') {
   });
 }
 
+/** One `ProjectWithGroups` row: the eight keys `internal/api/v2/projects/handler.go` marshals. */
+function projectRow(id: number, name: string) {
+  return {
+    id,
+    name,
+    owner_id: 1,
+    plugins: [],
+    keycloak_groups: {},
+    create_success: true,
+    suspended: false,
+    groups: [],
+  };
+}
+
+/**
+ * The project list with project 2 under pylon's reserved personal-project
+ * storage name (`project_user_<uid>`).
+ *
+ * `orderedProjectOptions` substitutes the user-facing "Private" only for a row
+ * that still carries that reserved name — an ordinary project name is never
+ * overwritten, however `personal_project_id` came to address it — so a test
+ * about the substitution has to serve the name the substitution exists for.
+ */
+function reservedNamePersonalProjectHandler() {
+  return getListProjectsMockHandler([projectRow(11, 'Public'), projectRow(2, 'project_user_3')]);
+}
+
 beforeEach(() => {
   resetConfigForTests();
   vi.stubEnv('VITE_SERVER_URL', 'https://elitea.example');
@@ -167,7 +194,7 @@ describe('AppShell', () => {
   });
 
   it("renders the caller's personal project under the user-facing Private name", async () => {
-    server.use(authorHandler('2'));
+    server.use(reservedNamePersonalProjectHandler(), authorHandler('2'));
     await renderWithNavigation(
       <AppShell>
         <div>page content</div>
@@ -181,7 +208,7 @@ describe('AppShell', () => {
   });
 
   it('replaces a persisted internal project name with the user-facing name', async () => {
-    server.use(authorHandler('2'));
+    server.use(reservedNamePersonalProjectHandler(), authorHandler('2'));
     window.localStorage.setItem('el.project.id', '2');
     window.localStorage.setItem('el.project.name', 'project_user_3');
     await renderWithNavigation(
@@ -193,6 +220,28 @@ describe('AppShell', () => {
       expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Private' });
     });
     expect(window.localStorage.getItem('el.project.name')).toBe('Private');
+  });
+
+  /*
+   * `resolvePersonalProjectID` (elitea-main's social handler) answers the
+   * lowest-id project the caller holds a role in when they have no
+   * `project_user_<uid>` project yet, so `personal_project_id` routinely
+   * addresses an ORDINARY TEAM PROJECT. Overwriting that project's name with
+   * "Private" is what made the switcher, the analytics header and the
+   * share-link reload all report the wrong project (journeys 2, 6, 7, 24).
+   */
+  it("keeps an ordinary project's own name when personal_project_id addresses it", async () => {
+    server.use(authorHandler('2'));
+    await renderWithNavigation(
+      <AppShell>
+        <div>page content</div>
+      </AppShell>,
+    );
+    await waitFor(() => {
+      expect(useSelectedProjectStore.getState().project).toEqual({ id: '2', name: 'Acme' });
+    });
+    expect(window.localStorage.getItem('el.project.name')).toBe('Acme');
+    expect(await screen.findByRole('button', { name: /Project:\s*Acme/ })).toBeInTheDocument();
   });
 
   it('does not auto-select any project until the personal-project signal (GET /social/author) resolves', async () => {

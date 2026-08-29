@@ -174,6 +174,72 @@ describe('useCreateApplicationDraft', () => {
     expect(Object.hasOwn(version, 'llm_settings')).toBe(false);
   });
 
+  /*
+   * The create half of the welcome-message defect: `toVersionWriteRequest`
+   * had no `welcome_message` branch at all, so the key never reached the
+   * POST body no matter what the page held. Proven red before the fix —
+   * this assertion read `expected undefined to be 'Hi there'`.
+   */
+  it('sends welcome_message when the draft carries one', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedBody = (await info.request.json()) as Record<string, unknown>;
+        return {
+          id: '42',
+          name: 'Agent',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result: draftResult } = renderHook(() => useCreateApplicationInitialValues(false));
+    const { result } = renderHook(() => useCreateApplicationDraft('p1'), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.create({
+        name: 'Agent',
+        version: { ...draftResult.current.versionDetails, welcomeMessage: 'Hi there' },
+      });
+    });
+
+    const version = (capturedBody['versions'] as Record<string, unknown>[])[0] ?? {};
+    expect(version['welcome_message']).toBe('Hi there');
+  });
+
+  // Absent, not `undefined` — the same omit-don't-blank rule `llm_settings`
+  // and `pipeline_settings` follow, so a caller that carries no welcome
+  // message cannot clear a stored one.
+  it('omits the welcome_message key entirely when the draft names none', async () => {
+    let capturedBody: Record<string, unknown> = {};
+    server.use(
+      getCreateApplicationMockHandler(async (info) => {
+        capturedBody = (await info.request.json()) as Record<string, unknown>;
+        return {
+          id: '42',
+          name: 'Agent',
+          description: '',
+          type: 'interface',
+          icon: '',
+          owner_id: 'u1',
+          created_at: '2026-01-01T00:00:00Z',
+        };
+      }),
+    );
+    const { result: draftResult } = renderHook(() => useCreateApplicationInitialValues(false));
+    const { result } = renderHook(() => useCreateApplicationDraft('p1'), { wrapper: createWrapper() });
+
+    await act(async () => {
+      await result.current.create({ name: 'Agent', version: draftResult.current.versionDetails });
+    });
+
+    const version = (capturedBody['versions'] as Record<string, unknown>[])[0] ?? {};
+    expect(Object.hasOwn(version, 'welcome_message')).toBe(false);
+  });
+
   it('captures an error and clears isCreating on failure', async () => {
     server.use(
       http.post('*/elitea_core/applications/prompt_lib/:projectId', () =>

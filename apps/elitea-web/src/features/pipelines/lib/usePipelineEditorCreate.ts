@@ -37,24 +37,17 @@ import type { PipelineDraftValues, PipelineFieldChange } from '../model/types';
  * Both are always sent empty/unset via this path — a real, disclosed gap,
  * not a silently dropped field.
  *
- * **`meta.internal_tools` default — empty, so the created pipeline can
- * actually take a turn.** An earlier adversarial review read the baseline's
- * `['internal_mcp']` seed as the intended default and made this path match
- * it. That default refuses every turn: the chat query admits a version only
- * when its `meta.internal_tools` is `[]` or `["ask_user"]`
- * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`), so a
- * version carrying `internal_mcp` resolves zero rows and the browser gets a
- * 422 on send, and the native runtime rejects any other name outright
- * (`services/elitea-worker-rust/src/agents/internal_tools.rs:47-61`).
- * `DEFAULT_INTERNAL_TOOLS` is therefore empty, agreeing with
- * `entities/application-form/model/initialValues.ts` (which carries the full
- * evidence trail) and with `features/agents/lib/useAgentEditorCreate.ts`, the
- * agent-side mirror of this hook. `resolveInternalTools` still respects an
- * explicit override, so this file's own `onFieldChange(
- * 'version_details.meta.internal_tools', …)` escape hatch keeps working if a
- * future caller wires up the Elitea-MCP-Tools toggle deliberately
- * (`PipelineVersionMeta`'s `[metaKey: string]: unknown` index signature
- * already allows it).
+ * **`meta.internal_tools` default — empty, matching a fresh form.** The
+ * admission gates admit the platform's whole authorable catalogue now (the
+ * nine `NOT IN` sites in `services/elitea-main/internal/db/queries/
+ * agent_chat.sql`, pinned against the other catalogue copies by
+ * `internal_tools_catalogue_drift_test.go`), and the native runtime skips
+ * catalogue names it does not implement with a logged
+ * `agent_internal_tool_skipped` — a toggled tool no longer refuses the turn.
+ * The default stays empty because a fresh pipeline has no tools toggled;
+ * the Tools panel writes the real values. `resolveInternalTools` still
+ * respects an explicit override. `features/agents/lib/useAgentEditorCreate.ts`
+ * is the agent-side mirror of this hook, with the same seed.
  */
 const DEFAULT_INTERNAL_TOOLS: readonly string[] = [];
 

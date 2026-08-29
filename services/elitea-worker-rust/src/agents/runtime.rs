@@ -111,24 +111,40 @@ impl std::error::Error for NativeAgentAssemblyError {}
 
 impl From<RuntimeContextError> for NativeAgentAssemblyError {
     fn from(error: RuntimeContextError) -> Self {
-        let code = match error {
-            RuntimeContextError::InvalidConfiguration(_) => {
-                NativeAgentAssemblyErrorCode::InvalidConfiguration
+        const ASSEMBLY_FAILED: &str = "native agent runtime-context assembly failed";
+        let (code, message) = match error {
+            RuntimeContextError::InvalidConfiguration(_) => (
+                NativeAgentAssemblyErrorCode::InvalidConfiguration,
+                ASSEMBLY_FAILED,
+            ),
+            RuntimeContextError::InvalidResponse(_) => {
+                (NativeAgentAssemblyErrorCode::InvalidInput, ASSEMBLY_FAILED)
             }
-            RuntimeContextError::InvalidResponse(_) => NativeAgentAssemblyErrorCode::InvalidInput,
-            RuntimeContextError::ResourceExhausted(_) => {
-                NativeAgentAssemblyErrorCode::ResourceExhausted
-            }
-            RuntimeContextError::AuthorizationFailed(_) => {
-                NativeAgentAssemblyErrorCode::AuthorizationFailed
-            }
+            RuntimeContextError::ResourceExhausted(_) => (
+                NativeAgentAssemblyErrorCode::ResourceExhausted,
+                ASSEMBLY_FAILED,
+            ),
+            RuntimeContextError::AuthorizationFailed(_) => (
+                NativeAgentAssemblyErrorCode::AuthorizationFailed,
+                ASSEMBLY_FAILED,
+            ),
+            // Same terminal bucket as a malformed nested reference
+            // (`application_tools::snapshot_error`): the parent's stored tool
+            // list names a version main no longer has, and no retry can
+            // recreate it — so it also carries its own stated reason instead
+            // of the generic assembly message.
+            RuntimeContextError::NotFound(_) => (
+                NativeAgentAssemblyErrorCode::InvalidInput,
+                "the referenced application version no longer exists",
+            ),
             RuntimeContextError::DependencyUnavailable(_)
             | RuntimeContextError::Transport(_)
-            | RuntimeContextError::Timeout(_) => {
-                NativeAgentAssemblyErrorCode::DependencyUnavailable
-            }
+            | RuntimeContextError::Timeout(_) => (
+                NativeAgentAssemblyErrorCode::DependencyUnavailable,
+                ASSEMBLY_FAILED,
+            ),
         };
-        Self::new(code, "native agent runtime-context assembly failed")
+        Self::new(code, message)
     }
 }
 

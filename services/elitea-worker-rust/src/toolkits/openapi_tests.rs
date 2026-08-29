@@ -314,28 +314,35 @@ async fn configured_materializer_merges_openapi_authorization_and_honors_tool_po
     assert_eq!(tools[0].name(), "get_users_by_id");
 }
 
-/// `aha`, not `github`, and the swap is the point rather than a detail.
+/// A family name that names nothing, and the synthetic name is the point.
 ///
 /// This case asserts that ONE unsupported family does not take a runnable
-/// toolkit down with it, so it needs a type the materializer genuinely does not
-/// implement. `github` was that type until it was implemented
-/// (`materialize.rs` now dispatches it), at which point the fixture's bare
-/// `{"selected_tools":[...]}` stopped being "a family we skip" and became "a
-/// supported family configured wrongly" — an `InvalidConfiguration` that fails
-/// the whole materialization, which is correct behaviour and the opposite of
-/// what this test is here to check. `aha` is the family `materialize_p_to_z`
-/// still names in its own trailing comment as waiting on a sealed artifact
-/// resolver, so it falls through to `unsupported_toolkit()`.
+/// toolkit down with it, so it needs a type the dispatcher genuinely does not
+/// handle. Every REAL name held that role only until someone implemented it:
+/// `github` was first, and the day `materialize.rs` began dispatching it the
+/// fixture's bare `{"selected_tools":[...]}` stopped meaning "a family we skip"
+/// and started meaning "a supported family configured wrongly" — an
+/// `InvalidConfiguration` that fails the whole materialization, which is
+/// correct behaviour and the exact opposite of what this test checks. `aha`
+/// inherited the role and is one dispatch arm from the same silent inversion:
+/// `families/aha/` is implemented in-tree and only its artifact resolver and
+/// the `materialize_p_to_z` arm are missing.
 ///
-/// If `aha` is ever implemented, move this fixture again — do not weaken the
-/// assertion.
+/// A name no family module claims takes the IDENTICAL path: `materialize`
+/// routes everything outside its `a_to_k` list, `openapi` and `sharepoint` into
+/// `materialize_p_to_z`, whose `_` arm is the same `unsupported_toolkit()` that
+/// a real-but-unimplemented family reaches, and nothing screens the name first
+/// — `FrozenToolSnapshot` checks identifier shape only, and
+/// `ToolAdmissionPolicy` allows any type it does not recognise. So this fixture
+/// keeps the discrimination it was written for and cannot be implemented out
+/// from under the assertion. Do not repoint it back to a real family.
 #[tokio::test]
 async fn unsupported_configured_family_does_not_hide_runnable_openapi_toolkit() {
     let version = json!({
         "tools":[
             {
                 "id":1,
-                "type":"aha",
+                "type":"not_a_toolkit_family",
                 "toolkit_name":"roadmap",
                 "settings":{"selected_tools":["get_ideas"]}
             },

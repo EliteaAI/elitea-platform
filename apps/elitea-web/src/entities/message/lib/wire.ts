@@ -21,11 +21,16 @@ export interface MessageItemWire {
   readonly item_details?: { readonly content?: string };
 }
 
-/** A `users` array entry (lines 47, 53-62, 67-68, 72). */
+/**
+ * A `users` array entry (lines 47, 53-62, 67-68, 72). `id` is the
+ * chat_participants row id; the Go participants payload serialises it as a
+ * NUMBER while socket-era payloads carried strings, so both spellings are
+ * wire truth and every lookup against it compares through `String(...)`.
+ */
 export interface MessageAuthorWire {
-  readonly id: string;
+  readonly id: string | number;
   readonly meta?: { readonly user_name?: string; readonly user_avatar?: string };
-  readonly entity_meta?: { readonly email?: string; readonly id?: string };
+  readonly entity_meta?: { readonly email?: string; readonly id?: string | number };
 }
 
 /** A `participants` array entry (lines 48, 74-78, 128-129, 205). */
@@ -137,7 +142,12 @@ export interface MessageGroupMetaWire {
 export interface MessageGroupWire {
   readonly id: string | number;
   readonly uuid: string;
-  readonly author_participant_id?: string;
+  /**
+   * The author's chat_participants row id. The Go transcript endpoint
+   * (`GET /elitea_core/messages/...`) serialises it as a NUMBER; the
+   * message-groups shape carried strings. Absent = the row states no author.
+   */
+  readonly author_participant_id?: string | number;
   readonly content: string;
   readonly message_items?: readonly MessageItemWire[];
   readonly created_at: string;
@@ -146,7 +156,7 @@ export interface MessageGroupWire {
   readonly question_id?: string | number;
   readonly task_id?: string;
   readonly is_streaming?: boolean;
-  readonly sent_to_id?: string;
+  readonly sent_to_id?: string | number;
   readonly sent_to?: { readonly entity_name?: string };
   readonly likes?: number;
   readonly meta?: MessageGroupMetaWire;

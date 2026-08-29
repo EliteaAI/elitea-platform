@@ -151,6 +151,31 @@ describe('CreatePipeline', () => {
     expect((versions?.[0]?.['meta'] as Record<string, unknown> | undefined)?.['step_limit']).toBe(7);
   });
 
+  /*
+   * The pipelines twin of the agents-page defect: the typed welcome message
+   * lived in `extraFields`, was echoed back into the form, and never reached
+   * the POST body. Asserted off the body — the page echoing its own state is
+   * exactly what made this look saved.
+   */
+  it('sends the welcome message typed on the create form in the create POST body', { timeout: 20_000 }, async () => {
+    const user = userEvent.setup({ delay: null });
+    const bodies: Record<string, unknown>[] = [];
+    server.use(
+      http.post('*/elitea_core/applications/prompt_lib/:projectId', async ({ request }) => {
+        bodies.push((await request.json()) as Record<string, unknown>);
+        return HttpResponse.json({ id: '7', version_details: { id: '1' } }, { status: 201 });
+      }),
+    );
+    renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
+
+    await user.type(await screen.findByTestId('agent-welcome-message-input'), 'Hi there');
+    await fillAndSave(user);
+
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    const versions = bodies[0]?.['versions'] as Record<string, unknown>[] | undefined;
+    expect(versions?.[0]?.['welcome_message']).toBe('Hi there');
+  });
+
   it('mounts the model picker in the advanced-settings panel, showing the project default', async () => {
     renderPipelinesRoute(<CreatePipeline />, '/pipelines/create', { projectId: '1' });
 

@@ -153,6 +153,20 @@ describe('applyParticipantSelection', () => {
     expect(added[0]?.participants[0]?.entity_settings['version_id']).toBe('34');
   });
 
+  it('attaches the row as it stands when the detail response is empty', async () => {
+    // `fetchOriginalDetails` answers `{}` rather than null on every miss
+    // (`result?.data || {}`, and the toolkit scan's own `{}`), so the empty
+    // OBJECT is the only shape the merge has to defend against — an agent with
+    // no version still gets attached, just without a `version_id`.
+    const { runtime, added } = selectionRuntime({ fetchDetails: () => Promise.resolve({}) });
+
+    await applyParticipantSelection(AGENT_LIST_ROW, undefined, runtime);
+
+    expect(added).toHaveLength(1);
+    expect(added[0]?.participants[0]?.entity_meta['id']).toBe('12');
+    expect(added[0]?.participants[0]?.entity_settings['version_id']).toBeUndefined();
+  });
+
   it('does not look up a version for a toolkit, which has none', async () => {
     const { runtime, added, order } = selectionRuntime();
 

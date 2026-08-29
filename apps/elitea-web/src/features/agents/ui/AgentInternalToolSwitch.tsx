@@ -35,6 +35,14 @@ import { INTERNAL_TOOL_ICONS } from '../lib/internalTools';
  * non-editable call site.
  */
 export interface AgentInternalToolSwitchProps {
+  /**
+   * The CANONICAL tool name (`INTERNAL_TOOLS_LIST[].name` — `attachments`,
+   * `internal_mcp`, `pyodide`, …), i.e. the string this switch writes into
+   * `version_details.meta.internal_tools`. It is what `data-testid` is built
+   * from, so the handle a journey addresses a row by is the same identifier
+   * the server stores; see the render below.
+   */
+  readonly name: string;
   readonly title: string;
   readonly icon: string;
   readonly checked: boolean;
@@ -44,6 +52,7 @@ export interface AgentInternalToolSwitchProps {
 }
 
 export function AgentInternalToolSwitch({
+  name,
   title,
   icon,
   checked,
@@ -61,14 +70,19 @@ export function AgentInternalToolSwitch({
   const ToolIcon = INTERNAL_TOOL_ICONS[icon];
 
   return (
-    // The testid is keyed by the DISPLAY title because that is the only
-    // identity this component receives — the canonical tool name stays with
-    // the caller. Journeys address one switch among eight with it; the rows
-    // are otherwise unnamed in the accessibility tree (the FormControlLabel's
-    // label is empty).
+    // The testid is keyed by the CANONICAL tool `name`, not by the display
+    // title. A row needs a handle at all because it is otherwise unnamed in
+    // the accessibility tree (the FormControlLabel's label is empty) and a
+    // journey has to pick one switch out of eight. Keying it off the title
+    // made that handle a function of display COPY: renaming "Swarm Mode" or
+    // translating the panel would silently move `internal-tool-swarm-mode`,
+    // and the journey that toggles every tool would fail as "the switch does
+    // not exist" — about a word, not about the feature. The name is the same
+    // string the switch writes into `meta.internal_tools`, so the testid and
+    // the stored value cannot drift apart.
     <Box
       sx={containerSx}
-      data-testid={`internal-tool-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      data-testid={`internal-tool-${name}`}
     >
       <Box sx={contentContainerSx}>
         {ToolIcon && (

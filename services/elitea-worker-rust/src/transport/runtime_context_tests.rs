@@ -246,6 +246,37 @@ async fn child_identity_and_materialized_response_are_exact_and_bounded() {
     }
 }
 
+/// A deleted child version must fail the turn once, not look transient.
+///
+/// Main answers 404 for an agent/version pair the claim was allowed to read
+/// but that no longer exists, and keeps it distinct from the 403 it uses for a
+/// rejected claim (`internal/infra/storage/content_server.go`). Collapsing 404
+/// into `dependency_unavailable` made a DELETED reference retryable, so a
+/// parent whose child version was removed spent its whole retry budget on a
+/// failure whose reason was already known.
+#[tokio::test(flavor = "current_thread")]
+async fn a_deleted_nested_application_version_is_terminal_and_not_retryable() {
+    let raw = application_body(17, 31, 41);
+    let (client, _) = fake_client(
+        Ok(response(&raw, StatusCode::NOT_FOUND, Version::HTTP_2)),
+        Duration::from_secs(1),
+        32 * 1_024,
+    );
+
+    let Err(error) = client
+        .load_application_version(&test_runtime_context_authority(), 31, 41)
+        .await
+    else {
+        panic!("a nested application version main no longer has must fail")
+    };
+
+    assert_eq!(error.code(), "runtime_context.not_found");
+    assert!(!error.retryable());
+    let mapped = NativeAgentAssemblyError::from(error);
+    assert_eq!(mapped.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    assert!(!mapped.retryable());
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn status_protocol_cache_and_length_fail_closed() {
     let raw = body(17, TOKEN);
@@ -263,6 +294,11 @@ async fn status_protocol_cache_and_length_fail_closed() {
         (
             response(&raw, StatusCode::UNAUTHORIZED, Version::HTTP_2),
             "runtime_context.authorization_failed",
+            false,
+        ),
+        (
+            response(&raw, StatusCode::NOT_FOUND, Version::HTTP_2),
+            "runtime_context.not_found",
             false,
         ),
         (
@@ -434,6 +470,10 @@ fn runtime_context_failures_preserve_terminal_taxonomy() {
         (
             RuntimeContextError::AuthorizationFailed("fixture"),
             NativeAgentAssemblyErrorCode::AuthorizationFailed,
+        ),
+        (
+            RuntimeContextError::NotFound("fixture"),
+            NativeAgentAssemblyErrorCode::InvalidInput,
         ),
         (
             RuntimeContextError::Timeout("fixture"),

@@ -60,7 +60,36 @@ fn open(
     binding: &ExecutionSpoolBinding,
     limits: SpoolLimits,
 ) -> EncryptedOutputSpool {
-    EncryptedOutputSpool::open(root, key, binding, limits).expect("open encrypted spool")
+    open_outliving_forked_helpers(root, key, binding, limits).expect("open encrypted spool")
+}
+
+/// `EncryptedOutputSpool::open`, retrying ONLY a transient ownership refusal.
+///
+/// The spool's exclusive `flock` lives on the open file description, and a
+/// CONCURRENT test in this binary that forks a helper process (`mkfifo`,
+/// `python3`) can have that child inherit this test's spool directory
+/// descriptor for the fork-to-exec window — every spool descriptor is CLOEXEC,
+/// but CLOEXEC only closes at exec. A reopen inside that window then sees
+/// "another live owner" although this test dropped its spool, and the
+/// assertion under test (corruption, capacity, safety) never runs. Retrying
+/// that one error keeps every other outcome exactly as production sees it;
+/// `private_paths_and_single_live_owner_are_enforced` asserts the ownership
+/// refusal itself and therefore calls `EncryptedOutputSpool::open` directly.
+fn open_outliving_forked_helpers(
+    root: &Path,
+    key: &SpoolMasterKey,
+    binding: &ExecutionSpoolBinding,
+    limits: SpoolLimits,
+) -> Result<EncryptedOutputSpool, SpoolError> {
+    for _ in 0..200 {
+        match EncryptedOutputSpool::open(root, key, binding, limits) {
+            Err(SpoolError::OwnershipUnavailable(_)) => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            outcome => return outcome,
+        }
+    }
+    EncryptedOutputSpool::open(root, key, binding, limits)
 }
 
 fn child(root: &Path, binding: &ExecutionSpoolBinding) -> PathBuf {
@@ -220,7 +249,7 @@ fn reopen_enforces_lower_frame_byte_and_temp_residue_limits() {
         spool.put(sequence(2), b"67890").unwrap();
     }
     assert!(matches!(
-        EncryptedOutputSpool::open(
+        open_outliving_forked_helpers(
             &root,
             &key,
             &spool_binding("execution-lower-frames"),
@@ -233,7 +262,7 @@ fn reopen_enforces_lower_frame_byte_and_temp_residue_limits() {
         Err(SpoolError::ResourceExhausted(message)) if message.contains("full")
     ));
     assert!(matches!(
-        EncryptedOutputSpool::open(
+        open_outliving_forked_helpers(
             &root,
             &key,
             &spool_binding("execution-lower-bytes"),
@@ -256,7 +285,7 @@ fn reopen_enforces_lower_frame_byte_and_temp_residue_limits() {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     }
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &key, &temp_binding, limits()),
+        open_outliving_forked_helpers(&root, &key, &temp_binding, limits()),
         Err(SpoolError::ResourceExhausted(message)) if message.contains("temporary residue")
     ));
 }
@@ -286,7 +315,7 @@ fn unsafe_or_unexpected_entries_fail_closed() {
     )
     .unwrap();
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &key, &symlink_binding, limits()),
+        open_outliving_forked_helpers(&root, &key, &symlink_binding, limits()),
         Err(SpoolError::InvalidInput(message)) if message.contains("unsafe temporary")
     ));
     assert!(target.exists());
@@ -334,7 +363,7 @@ fn truncated_oversized_and_accessible_frames_fail_before_replay() {
     )
     .unwrap();
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &key, &truncated_binding, limits())
+        open_outliving_forked_helpers(&root, &key, &truncated_binding, limits())
             .and_then(|mut spool| spool.pending()),
         Err(SpoolError::InvalidInput(message)) if message.contains("corrupt")
     ));
@@ -358,7 +387,7 @@ fn truncated_oversized_and_accessible_frames_fail_before_replay() {
     )
     .unwrap();
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &key, &oversized_binding, small_limits)
+        open_outliving_forked_helpers(&root, &key, &oversized_binding, small_limits)
             .and_then(|mut spool| spool.pending()),
         Err(SpoolError::ResourceExhausted(message)) if message.contains("exceeds")
     ));
@@ -387,7 +416,7 @@ fn ciphertext_tampering_wrong_key_and_wrong_binding_fail_closed() {
     drop(spool);
 
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &master(b'x'), &binding, limits())
+        open_outliving_forked_helpers(&root, &master(b'x'), &binding, limits())
             .and_then(|mut spool| spool.pending()),
         Err(SpoolError::InvalidInput(message)) if message.contains("corrupt")
     ));
@@ -407,7 +436,7 @@ fn ciphertext_tampering_wrong_key_and_wrong_binding_fail_closed() {
     .unwrap();
     drop(other_spool);
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &other_key, &other_binding, limits())
+        open_outliving_forked_helpers(&root, &other_key, &other_binding, limits())
             .and_then(|mut spool| spool.pending()),
         Err(SpoolError::InvalidInput(message)) if message.contains("corrupt")
     ));
@@ -419,7 +448,7 @@ fn ciphertext_tampering_wrong_key_and_wrong_binding_fail_closed() {
     fs::write(&path, body).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(matches!(
-        EncryptedOutputSpool::open(&root, &key, &binding, limits())
+        open_outliving_forked_helpers(&root, &key, &binding, limits())
             .and_then(|mut spool| spool.pending()),
         Err(SpoolError::InvalidInput(message)) if message.contains("corrupt")
     ));
@@ -544,7 +573,7 @@ fn binding_and_limit_validation_reject_ambiguous_inputs() {
 
     let (_temporary, root) = root();
     assert!(matches!(
-        EncryptedOutputSpool::open(
+        open_outliving_forked_helpers(
             &root,
             &master(b'k'),
             &spool_binding("invalid-limits"),

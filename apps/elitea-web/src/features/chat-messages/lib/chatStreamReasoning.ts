@@ -28,6 +28,16 @@ import type { ToolAction } from './chatStreamToolAction';
 
 const OPEN_TAG = '<think>';
 const CLOSE_TAG = '</think>';
+/**
+ * How much of the last-written sink is re-scanned with the next delta.
+ *
+ * The LONGER tag sets it, not whichever one the current state is waiting for.
+ * A closed scanner looks for BOTH tags — a bare `</think>` is the whole point
+ * of this module — so carrying `<think>`.length - 1 (6) left a `</think>` split
+ * at 7 characters (`…</think` + `> answer`) permanently unrecognised, and the
+ * monologue plus a raw closing tag rendered in the answer bubble.
+ */
+const CARRY_LENGTH = Math.max(OPEN_TAG.length, CLOSE_TAG.length) - 1;
 const LEADING_WHITESPACE = /^\s+/;
 
 /**
@@ -186,9 +196,8 @@ export function applyReasoningDelta(input: ReasoningDeltaInput): ReasoningUpdate
   const open = existing?.['reasoningOpen'] === true;
   const reasoningSoFar = reasoningTextOf(existing);
 
-  const carryLength = (open ? CLOSE_TAG.length : OPEN_TAG.length) - 1;
   const sink = open ? reasoningSoFar : input.content;
-  const carry = sink.slice(Math.max(0, sink.length - carryLength));
+  const carry = sink.slice(Math.max(0, sink.length - CARRY_LENGTH));
   const base = sink.slice(0, sink.length - carry.length);
   const contentBase = open ? input.content : base;
   const reasoningBase = open ? base : reasoningSoFar;

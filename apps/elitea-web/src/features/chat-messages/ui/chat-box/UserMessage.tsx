@@ -17,8 +17,6 @@ import { MessageAttachmentList } from '../attachments/MessageAttachmentList';
 import { UserMessageActions } from './UserMessageActions';
 
 import type { Attachment } from '@/entities/attachment/model/types';
-import type { SocialAuthorProfile } from '@/shared/api/generated/model';
-import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 
 import type { ChatMessage } from '../../lib/convertMessagesToChatHistory';
 
@@ -110,42 +108,37 @@ function getItemTextContent(item: Record<string, unknown> | undefined): string |
 }
 
 /**
- * The signed-in user's display name, from the same `GET /social/author`
- * query every other current-user read in this app goes through
- * (`features/chat-conversation-list/ui/folders/FolderItem.tsx`'s
- * `useCurrentUserId`, `useConversationSidebar.ts:106`). React Query keys the
- * request, so one row per transcript issues it and the rest read the cache.
+ * Who to caption a question with: whoever the message NAMES, and nobody
+ * otherwise.
  *
- * The cast follows that established precedent: `getCurrentAuthor`'s declared
- * response is a `{data: SocialAuthorProfile} | {data: N401Response}` union
- * whose 401 branch is unreachable here, because `eliteaFetch` throws on a
- * non-2xx answer rather than resolving with it.
+ * `message.name` covers every author the transcript actually states —
+ * including the literal "User No Longer Available" that `entities/message`'s
+ * normaliser produces for an author id that resolves to nobody, which is a
+ * real fact about the message and must not be overwritten.
+ *
+ * It is empty only when the message names no author AT ALL, which is exactly
+ * what the persisted message-list endpoint returns for EVERY row: `GET
+ * /elitea_core/messages/prompt_lib/{project}/{conversation}` answers
+ * `{id, uid, conversation_id, role, content, ...}` with no author field
+ * (see `getMessageAuthorName` in `entities/message/lib/normalise.ts`).
+ *
+ * There is deliberately no signed-in-user fallback here. Nothing in such a
+ * row tells the reader's own question apart from anyone else's, so
+ * substituting the reader's name captioned EVERY user bubble of a reloaded
+ * SHARED conversation — other people's included — with whoever happened to
+ * open it. `userId` could not guard against that either: the endpoint omits
+ * that field too, so the guard only ever fired on the live paths, which
+ * already carry a name of their own — the send path stamps the signed-in
+ * user's name onto the optimistic row (`buildOptimisticUserMessage` reading
+ * `buildUserParticipant`, off the same `GET /social/author` this row used to
+ * re-read), and the socket echo resolves its author from the conversation's
+ * participants (`chatStreamMessageSyncFrames.ts`).
+ *
+ * An empty caption renders as NO caption line (the `Typography` below is
+ * gated on it), which is honest; an invented one is not.
  */
-function useSignedInUserName(): string {
-  const query = useGetCurrentAuthor();
-  const profile = query.data?.data as SocialAuthorProfile | undefined;
-  return profile?.name?.trim() || profile?.email?.trim() || '';
-}
-
-/**
- * Who to caption a question with.
- *
- * `message.name` wins whenever the transcript states one — including the
- * literal "User No Longer Available" that `entities/message`'s normaliser
- * produces for an author id that resolves to nobody, which is a real fact
- * about the message and must not be overwritten.
- *
- * It is empty only when the message names no author at all, which is exactly
- * what the persisted message-list endpoint returns (see `getMessageAuthorName`
- * in `entities/message/lib/normalise.ts`). The reader is then the only
- * knowable attribution, and it is the right one: before the reload the same
- * bubble was captioned with their name off the live socket frame. `userId`
- * guards the substitution — a message that DOES name an author is never
- * re-attributed to whoever happens to be reading it.
- */
-function resolveAuthorCaption(message: ChatMessage, signedInName: string): string {
-  if (message.name) return message.name;
-  return message.userId === undefined ? signedInName : '';
+function resolveAuthorCaption(message: ChatMessage): string {
+  return message.name || '';
 }
 
 /**
@@ -167,8 +160,7 @@ export function UserMessage({
   onRemoveAttachment,
   projectId,
 }: UserMessageProps): ReactNode {
-  const signedInName = useSignedInUserName();
-  const authorCaption = resolveAuthorCaption(message, signedInName);
+  const authorCaption = resolveAuthorCaption(message);
   const questionItem = useMemo(() => findQuestionItem(message.messageItems), [message.messageItems]);
   const attachmentItems = useMemo(() => findAttachmentItems(message.messageItems), [message.messageItems]);
   const resolvedContent = useMemo(

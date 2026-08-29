@@ -240,7 +240,7 @@ func TestNestedApplicationVersionRefusesAClaimItCannotAuthorize(t *testing.T) {
 		&EliteaClientTokenService{},
 		nestedApplicationVersionService(
 			t,
-			runtimeContextAuthorizerFunc(func(
+			agentRuntimeContextAuthorizerFunc(func(
 				context.Context, ContentClaim,
 			) (RuntimeContextAuthorization, error) {
 				t.Fatal("a request without a claim must not be authorized")
@@ -266,7 +266,7 @@ func TestNestedApplicationVersionRefusesAClaimItCannotAuthorize(t *testing.T) {
 	// which half was wrong.
 	rejected := newNestedApplicationVersionTestServerWithAuthorizer(
 		t,
-		runtimeContextAuthorizerFunc(func(
+		agentRuntimeContextAuthorizerFunc(func(
 			_ context.Context, claim ContentClaim,
 		) (RuntimeContextAuthorization, error) {
 			require.Equal(t, "execution-1", claim.ExecutionID)
@@ -287,7 +287,7 @@ func TestNestedApplicationVersionRefusesAClaimItCannotAuthorize(t *testing.T) {
 	// which the worker may retry — not a refusal, which it may not.
 	unavailable := newNestedApplicationVersionTestServerWithAuthorizer(
 		t,
-		runtimeContextAuthorizerFunc(func(
+		agentRuntimeContextAuthorizerFunc(func(
 			context.Context, ContentClaim,
 		) (RuntimeContextAuthorization, error) {
 			return RuntimeContextAuthorization{}, errNestedVersionTest
@@ -449,7 +449,7 @@ func TestNestedApplicationVersionRouteIsAbsentWithoutItsService(t *testing.T) {
 func TestNestedApplicationVersionCompositionRequiresEveryDependency(t *testing.T) {
 	t.Parallel()
 
-	authorizer := runtimeContextAuthorizerFunc(func(
+	authorizer := agentRuntimeContextAuthorizerFunc(func(
 		context.Context, ContentClaim,
 	) (RuntimeContextAuthorization, error) {
 		return RuntimeContextAuthorization{}, nil
@@ -540,7 +540,7 @@ func newNestedApplicationVersionTestServer(
 	t.Helper()
 	return newNestedApplicationVersionTestServerWithAuthorizer(
 		t,
-		runtimeContextAuthorizerFunc(func(
+		agentRuntimeContextAuthorizerFunc(func(
 			context.Context, ContentClaim,
 		) (RuntimeContextAuthorization, error) {
 			return RuntimeContextAuthorization{
@@ -556,7 +556,7 @@ func newNestedApplicationVersionTestServer(
 
 func newNestedApplicationVersionTestServerWithAuthorizer(
 	t *testing.T,
-	authorizer RuntimeContextAuthorizer,
+	authorizer AgentRuntimeContextAuthorizer,
 	source CurrentApplicationVersionSource,
 	freezer agentexecutionapp.CurrentApplicationVersionFreezer,
 ) *ContentServer {
@@ -587,7 +587,7 @@ func newNestedApplicationVersionTestServerWithAuthorizer(
 
 func nestedApplicationVersionService(
 	t *testing.T,
-	authorizer RuntimeContextAuthorizer,
+	authorizer AgentRuntimeContextAuthorizer,
 	source CurrentApplicationVersionSource,
 	freezer agentexecutionapp.CurrentApplicationVersionFreezer,
 ) *RuntimeApplicationVersionService {
