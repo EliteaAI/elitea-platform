@@ -60,6 +60,34 @@ describe('normaliseUserMessage', () => {
     expect(normaliseUserMessage(baseGroup, users, []).name).toBe(expected);
   });
 
+  /*
+   * The reload path. `GET /elitea_core/messages/prompt_lib/90106/2` answers
+   * flat rows with no `author_participant_id`, no `users` array and no
+   * `sent_to` (measured against a live stack — see the fixture in
+   * `features/chat-messages/lib/convertMessagesToChatHistory.test.ts`), and
+   * the caption above the reader's own bubble read "User No Longer Available"
+   * until the two cases below were told apart.
+   */
+  it('leaves the author name empty when the row states no author at all', () => {
+    const group: MessageGroupWire = { id: 3, uuid: 'uid-3', content: 'hello', created_at: '2026-01-01 12:00:00' };
+    expect(normaliseUserMessage(group, [], []).name).toBe('');
+  });
+
+  it('still reports a stated author that resolves to nobody as no longer available', () => {
+    expect(normaliseUserMessage({ ...baseGroup, author_participant_id: 'gone' }, [], []).name).toBe(
+      'User No Longer Available',
+    );
+  });
+
+  it('treats an empty-string author_participant_id as no author stated', () => {
+    expect(normaliseUserMessage({ ...baseGroup, author_participant_id: '' }, [], []).name).toBe('');
+  });
+
+  it('omits userId when the row states no author, so the renderer may attribute it to the reader', () => {
+    const group: MessageGroupWire = { id: 3, uuid: 'uid-3', content: 'hello', created_at: '2026-01-01 12:00:00' };
+    expect('userId' in normaliseUserMessage(group, [], [])).toBe(false);
+  });
+
   it('omits messageItems entirely when the wire does not send message_items (not defaulted to [])', () => {
     const result = normaliseUserMessage(baseGroup, [], []);
     expect('messageItems' in result).toBe(false);

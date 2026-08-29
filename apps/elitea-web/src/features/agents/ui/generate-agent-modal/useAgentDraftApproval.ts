@@ -152,6 +152,15 @@ export function useAgentDraftApproval({
             instructions: draft.instructions,
             conversationStarters: filterEmptyStrings(draft.conversation_starters),
             variables: contextResolver(draft.instructions).map((name) => ({ name, value: '' })),
+            // Empty `internal_tools` is load-bearing, not an unfilled slot:
+            // the chat query admits a version only when its
+            // `meta.internal_tools` is `[]` or `["ask_user"]`
+            // (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`),
+            // and the native runtime rejects any other name
+            // (`services/elitea-worker-rust/src/agents/internal_tools.rs:47-61`).
+            // Seeding `internal_mcp` here would 422 the AI-generated agent's
+            // very first message. See `entities/application-form/model/
+            // initialValues.ts` for the reproduction.
             meta: { step_limit: 25, internal_tools: [] },
             tags: [],
             tools: [],

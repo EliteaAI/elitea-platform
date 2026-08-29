@@ -37,7 +37,7 @@ import type { SxProps, Theme } from '@mui/material/styles';
 import { t } from '@/shared/i18n';
 import { BaseBtn } from '@/shared/ui/BaseBtn';
 
-import { CredentialsControls, CredentialsTabBar } from '@/features/credentials';
+import { CredentialsActions } from '@/features/credentials';
 
 import { CredentialSchemaField } from './CredentialFormFields';
 import {
@@ -150,7 +150,7 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
       )}
       {c.typeDescriptor?.has_test_connection && <TestConnectionBlock controller={c} />}
       <Box sx={actionsRowSx}>
-        <CredentialsTabBar
+        <CredentialsActions.TabBar
           isEditing={mode.kind === 'edit'}
           onSave={c.save}
           onDiscard={onDiscarded}
@@ -158,7 +158,7 @@ export function CredentialForm(props: CredentialFormProps): ReactNode {
           isSaving={c.isSaving}
         />
         {mode.kind === 'edit' && (
-          <CredentialsControls
+          <CredentialsActions.Controls
             credentialName={c.name}
             canDelete={c.canDelete}
             isDeleting={c.isDeleting}

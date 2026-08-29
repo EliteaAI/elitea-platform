@@ -21,6 +21,8 @@ import Typography from '@mui/material/Typography';
 import { MessageAttachmentList } from '../attachments/MessageAttachmentList';
 
 import type { Attachment } from '@/entities/attachment/model/types';
+import type { SocialAuthorProfile } from '@/shared/api/generated/model';
+import { useGetCurrentAuthor } from '@/shared/api/generated/social/social';
 
 import type { ChatMessage } from '../../lib/convertMessagesToChatHistory';
 
@@ -104,6 +106,45 @@ function getItemTextContent(item: Record<string, unknown> | undefined): string |
   return details?.content;
 }
 
+/**
+ * The signed-in user's display name, from the same `GET /social/author`
+ * query every other current-user read in this app goes through
+ * (`features/chat-conversation-list/ui/folders/FolderItem.tsx`'s
+ * `useCurrentUserId`, `useConversationSidebar.ts:106`). React Query keys the
+ * request, so one row per transcript issues it and the rest read the cache.
+ *
+ * The cast follows that established precedent: `getCurrentAuthor`'s declared
+ * response is a `{data: SocialAuthorProfile} | {data: N401Response}` union
+ * whose 401 branch is unreachable here, because `eliteaFetch` throws on a
+ * non-2xx answer rather than resolving with it.
+ */
+function useSignedInUserName(): string {
+  const query = useGetCurrentAuthor();
+  const profile = query.data?.data as SocialAuthorProfile | undefined;
+  return profile?.name?.trim() || profile?.email?.trim() || '';
+}
+
+/**
+ * Who to caption a question with.
+ *
+ * `message.name` wins whenever the transcript states one — including the
+ * literal "User No Longer Available" that `entities/message`'s normaliser
+ * produces for an author id that resolves to nobody, which is a real fact
+ * about the message and must not be overwritten.
+ *
+ * It is empty only when the message names no author at all, which is exactly
+ * what the persisted message-list endpoint returns (see `getMessageAuthorName`
+ * in `entities/message/lib/normalise.ts`). The reader is then the only
+ * knowable attribution, and it is the right one: before the reload the same
+ * bubble was captioned with their name off the live socket frame. `userId`
+ * guards the substitution — a message that DOES name an author is never
+ * re-attributed to whoever happens to be reading it.
+ */
+function resolveAuthorCaption(message: ChatMessage, signedInName: string): string {
+  if (message.name) return message.name;
+  return message.userId === undefined ? signedInName : '';
+}
+
 /** The hover-revealed Copy/Edit/Delete action row — each button only renders when its handler is supplied. */
 function UserMessageActions({
   onCopy,
@@ -180,6 +221,8 @@ export function UserMessage({
   onSubmit,
   onRemoveAttachment,
 }: UserMessageProps): ReactNode {
+  const signedInName = useSignedInUserName();
+  const authorCaption = resolveAuthorCaption(message, signedInName);
   const questionItem = useMemo(() => findQuestionItem(message.messageItems), [message.messageItems]);
   const attachmentItems = useMemo(() => findAttachmentItems(message.messageItems), [message.messageItems]);
   const resolvedContent = useMemo(
@@ -233,12 +276,12 @@ export function UserMessage({
           width: isEditing ? '100%' : undefined,
         }}
       >
-        {message.name && (
+        {authorCaption && (
           <Typography
             variant="caption"
             sx={{ mb: 0.5, color: 'text.secondary' }}
           >
-            {message.name}
+            {authorCaption}
           </Typography>
         )}
         {isEditing ? (

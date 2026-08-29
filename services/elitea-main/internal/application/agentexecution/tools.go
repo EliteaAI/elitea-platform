@@ -136,6 +136,7 @@ func (service *CurrentApplicationToolSnapshotService) FreezeCurrentApplicationVe
 		}
 		return nil, unsupportedStartBecause("model resolution", err)
 	}
+	normalizeCurrentAgentRuntimeProfile(version)
 	tools, ok := version["tools"].([]any)
 	if !ok {
 		return nil, unsupportedStart("version tools is not an array")
@@ -568,6 +569,60 @@ func (service *CurrentApplicationToolSnapshotService) resolveCurrentAgentModel(
 	settings["openai_compatible"] = compatible
 	version["llm_settings"] = settings
 	return nil
+}
+
+// currentAgentRuntimeDirectAgentType is the agent_type the runtime's direct
+// (non-pipeline) agent profile is named by. The STORED name is different — see
+// normalizeCurrentAgentRuntimeProfile.
+const currentAgentRuntimeDirectAgentType = "agent"
+
+// currentAgentStoredDirectAgentType is what the platform actually stores for a
+// direct agent. `versionFromBody` defaults an empty agent_type to it
+// (internal/api/v2/applications/handler.go:2447) and the write validator admits
+// only openai/react/dial/pipeline (handler.go:2378), so a version authored
+// through the product's own API can never carry the runtime's spelling.
+//
+// The two names are the same thing: the old application named a direct agent
+// `agent` and renamed it to `openai`, which the previous UI still carries as an
+// import-time rewrite (apps/elitea-ui/src/[fsd]/entities/import-wizard/lib/
+// helpers/importWizardModels.helpers.js:31-32 — "Rename agent_type 'agent' to
+// 'openai' for backward compatibility").
+const currentAgentStoredDirectAgentType = "openai"
+
+// normalizeCurrentAgentRuntimeProfile conforms the immutable snapshot to the
+// contract the runtime validates, for the one field where what the product
+// STORES and what the runtime ACCEPTS were allowed to drift apart: `agent_type`
+// "openai" becomes "agent", at the top level and on every nested application
+// reference in `tools`. It runs on the frozen copy only — nothing here is
+// written back to the version row.
+//
+// Without it the runtime refuses every stored direct agent as an unsupported
+// profile (services/elitea-worker-rust/src/agents/assembly.rs:575-578, and
+// agents/application_tools.rs:1043 for the nested case). The browser sees that
+// refusal as a turn that is admitted, streams nothing, and stops.
+//
+// A `pipeline` agent_type is left alone: the runtime names that one identically.
+// `react` and `dial` are left alone too — the runtime genuinely does not
+// implement them, and renaming them would turn an honest refusal into an agent
+// that silently runs as something else.
+func normalizeCurrentAgentRuntimeProfile(version map[string]any) {
+	normalizeCurrentAgentTypeField(version)
+	tools, ok := version["tools"].([]any)
+	if !ok {
+		return
+	}
+	for _, value := range tools {
+		if tool, ok := value.(map[string]any); ok {
+			normalizeCurrentAgentTypeField(tool)
+		}
+	}
+}
+
+func normalizeCurrentAgentTypeField(holder map[string]any) {
+	if agentType, ok := holder["agent_type"].(string); ok &&
+		agentType == currentAgentStoredDirectAgentType {
+		holder["agent_type"] = currentAgentRuntimeDirectAgentType
+	}
 }
 
 func selectCurrentAgentModel(

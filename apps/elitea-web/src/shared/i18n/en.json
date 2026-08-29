@@ -478,6 +478,8 @@
   "chatInput.versionSelector.versions": "Versions",
   "chatMessages.deleteMessageAlert.allMessagesCopy": "The deleted messages can't be restored. Are you sure to delete all the messages?",
   "chatMessages.deleteMessageAlert.singleMessageCopy": "This also removes the question it answers, and neither can be restored. Are you sure you want to delete this message?",
+  "chatMessages.stream.connectionLost": "The connection to the agent run was lost.",
+  "chatMessages.stream.runFailed": "The agent run failed.",
   "chatMessages.toolModal.copyAriaLabel": "Copy {{pane}}",
   "chatMessages.toolModal.defaultTitle": "Tool Details",
   "chatMessages.toolModal.inputCaption": "INPUT",

@@ -69,6 +69,11 @@ on:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
       - "services/elitea-main/**"
+      # The `chat-stream-rust` job runs the journeys against the native Rust
+      # runtime, so a change to it can break a browser journey while touching
+      # nothing under apps/elitea-web. Without this path the job that exists to
+      # catch that drift would not start on the change that caused it.
+      - "services/elitea-worker-rust/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
@@ -79,6 +84,11 @@ on:
       - "apps/elitea-web/**"
       - "tools/uictl/**"
       - "services/elitea-main/**"
+      # The `chat-stream-rust` job runs the journeys against the native Rust
+      # runtime, so a change to it can break a browser journey while touching
+      # nothing under apps/elitea-web. Without this path the job that exists to
+      # catch that drift would not start on the change that caused it.
+      - "services/elitea-worker-rust/**"
       - "deploy/**"
       - "docker-bake.hcl"
       - ".github/workflows/ci-web-e2e.yml"
@@ -398,6 +408,70 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report-chat-stream
+          path: apps/elitea-web/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  chat-stream-rust:
+    name: Chat journey on the native Rust runtime
+    # The SAME journeys as `chat-stream`, against the OTHER worker.
+    #
+    # `STANDALONE_WORKER=rust` swaps `elitea-worker` for the native Rust agent
+    # runtime (deploy/docker-compose.standalone-rust-agent.yml). Nothing in the
+    # UI selects a worker, which is exactly why this job exists: the two
+    # runtimes validate a stored agent version differently, and a change that
+    # one admits and the other refuses is invisible to every unit suite and to
+    # the `chat-stream` job. Three such defects reached this branch — a version
+    # meta the runtime refused, a participant with no version id, and an
+    # `agent_type` the runtime did not recognise — and all three presented as a
+    # turn that was admitted and then produced nothing.
+    #
+    # A separate job rather than a matrix leg on `chat-stream`: the two stacks
+    # both publish the fixed oidc-mock port 9400 and cannot share a host, and a
+    # matrix would also hide which runtime failed behind one job name.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The web, main and worker images all build from repo-root context.
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/elitea-web/package-lock.json
+      - name: Install (locked)
+        run: npm ci
+      - name: Pre-pull the pinned Playwright container
+        # Bounded and NON-FATAL, for the reasons the `chat-stream` job's copy of
+        # this step spells out.
+        run: |
+          timeout 600 docker pull -q mcr.microsoft.com/playwright:v1.62.0-noble \
+            || echo "::warning::pull of the pinned Playwright image failed or timed out; the journey step will pull it inline"
+      - name: Run the journeys against a fresh Rust-runtime stack
+        # The Rust worker is compiled from source by the stack's own `build`
+        # step, which is why this job's budget is larger than `chat-stream`'s.
+        #
+        # The compose project and port differ from `chat-stream`'s so the two
+        # can never collide, even though they run on separate runners today.
+        working-directory: ${{ github.workspace }}
+        env:
+          COMPOSE_BIN: docker compose
+          CI: "true"
+          STANDALONE_WORKER: rust
+          CHAT_STREAM_PROJECT: elitea-chatstream-rust-ci
+          CHAT_STREAM_PORT: "8085"
+          MOCK_LLM_CHUNK_DELAY_MS: "120"
+          PLAYWRIGHT_CONTAINER_IMAGE: mcr.microsoft.com/playwright:v1.62.0-noble
+        run: bash apps/elitea-web/scripts/chat-stream-e2e.sh
+      - name: Give the report back to the runner user
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" playwright-results playwright-report 2>/dev/null || true
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-chat-stream-rust
           path: apps/elitea-web/playwright-report/
           if-no-files-found: ignore
           retention-days: 14

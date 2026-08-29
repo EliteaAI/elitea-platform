@@ -46,6 +46,30 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 PROJECT="${STANDALONE_PROJECT:-elitea-standalone}"
 COMPOSE_F="-p ${PROJECT} -f ${REPO_ROOT}/deploy/docker-compose.standalone-full.yml"
 
+# Overlay files, applied after the base in the order given. Every subcommand
+# has to see the same set: an overlay that replaces a service's image (the Rust
+# agent runtime does exactly that) would otherwise be present for `up` and
+# absent for `build`, so `build` would rebuild the service the overlay replaced
+# and `up` would run whatever stale tag the overlay names.
+#
+#   STANDALONE_WORKER=rust  deploy/scripts/standalone-stack.sh build
+#
+# is the supported way to select the native Rust worker; STANDALONE_OVERLAY
+# takes an explicit space-separated list of paths for anything else.
+OVERLAY="${STANDALONE_OVERLAY:-}"
+case "${STANDALONE_WORKER:-python}" in
+  python) ;;
+  rust) OVERLAY="${REPO_ROOT}/deploy/docker-compose.standalone-rust-agent.yml ${OVERLAY}" ;;
+  *) echo "ERROR: STANDALONE_WORKER must be python or rust (got '${STANDALONE_WORKER}')." >&2; exit 1 ;;
+esac
+for overlay_file in $OVERLAY; do
+  if [ ! -f "$overlay_file" ]; then
+    echo "ERROR: overlay '$overlay_file' does not exist." >&2
+    exit 1
+  fi
+  COMPOSE_F="${COMPOSE_F} -f ${overlay_file}"
+done
+
 # Shared with apps/elitea-web/scripts/e2e-stack.sh: CI has the docker compose
 # v2 plugin, this machine has podman.
 # shellcheck source=../../apps/elitea-web/scripts/lib/compose-detect.sh

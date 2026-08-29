@@ -311,9 +311,15 @@ func TestCurrentApplicationToolSnapshotPreservesSameProjectLeafApplicationRefere
 	toolProjectID, validProjectID := positiveCurrentAgentJSONInteger(tool["project_id"])
 	applicationID, validApplicationID := positiveCurrentAgentJSONInteger(toolSettings["application_id"])
 	versionID, validVersionID := positiveCurrentAgentJSONInteger(toolSettings["application_version_id"])
+	// `agent`, not the authored `openai`: normalizeCurrentAgentRuntimeProfile
+	// rewrites the stored direct-agent name to the one the runtime matches on,
+	// for nested references as well as the top level — the runtime applies the
+	// same rule to a nested agent
+	// (services/elitea-worker-rust/src/agents/application_tools.rs:1043), so
+	// leaving the child alone would refuse every agent that calls another agent.
 	if tool["type"] != "application" || tool["id"] != nil ||
 		tool["name"] != "release-notes" || tool["toolkit_name"] != "release-notes" ||
-		tool["agent_type"] != "openai" || !validProjectID || toolProjectID != 7 ||
+		tool["agent_type"] != "agent" || !validProjectID || toolProjectID != 7 ||
 		!validApplicationID || applicationID != 3 || !validVersionID || versionID != 4 ||
 		len(settings.requests) != 0 || len(names.requests) != 0 {
 		t.Fatalf("tool=%#v settings=%+v names=%+v", tool, settings.requests, names.requests)

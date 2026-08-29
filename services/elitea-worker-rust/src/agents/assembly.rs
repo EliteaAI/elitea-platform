@@ -18,7 +18,7 @@ use super::runtime::{NativeAgentAssemblyError, NativeAgentAssemblyErrorCode};
 const MAX_MODEL_NAME_BYTES: usize = 256;
 const MAX_USER_INPUT_BYTES: usize = 512 * 1_024;
 const MAX_CHAT_HISTORY_MESSAGES: usize = 999;
-const DEFAULT_AGENT_STEP_LIMIT: u32 = 25;
+pub(super) const DEFAULT_AGENT_STEP_LIMIT: u32 = 25;
 const MAX_AGENT_STEP_LIMIT: u32 = 1_024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,7 +234,7 @@ impl OrdinaryNoToolProfile {
         let instructions = version
             .get("instructions")
             .and_then(Value::as_str)
-            .filter(|value| bounded_instruction(value))
+            .filter(|value| bounded_instruction(value, expected_agent_type == "agent"))
             .ok_or_else(invalid_profile)?;
         if expected_agent_type == "agent"
             && ["{{", "{%", "{#"]
@@ -585,7 +585,7 @@ fn application_model_for_agent_type(
     let instructions = version
         .get("instructions")
         .and_then(Value::as_str)
-        .filter(|value| bounded_instruction(value))
+        .filter(|value| bounded_instruction(value, expected_agent_type == "agent"))
         .ok_or_else(invalid_profile)?;
     if expected_agent_type == "agent"
         && ["{{", "{%", "{#"]
@@ -658,9 +658,7 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
         return Ok(());
     };
     let meta = value.as_object().ok_or_else(invalid_profile)?;
-    if meta.contains_key("step_limit") {
-        return Err(unsupported_profile());
-    }
+    validate_application_meta_step_limit(meta.get("step_limit"))?;
     InternalToolCatalog::from_values(meta.get("internal_tools"))
         .map_err(internal_tool_profile_error)?;
     match meta.get("lazy_tools_mode") {
@@ -675,6 +673,33 @@ fn validate_application_meta(value: Option<&Value>) -> Result<(), NativeAgentAss
         Some(_) => return Err(invalid_profile()),
     }
     Ok(())
+}
+
+/// Admit the authored step limit where the control plane keeps it, without
+/// letting it select the effective one.
+///
+/// The effective limit is `payload.steps_limit` and nothing else; Main derives
+/// that field from this same key, so the two agree by construction. The key
+/// itself cannot be refused: `versionFromBody` writes it into every version on
+/// every save (`services/elitea-main/internal/api/v2/applications/handler.go`),
+/// so refusing it refused every stored agent — a turn that Main admitted and
+/// that then stopped here with nothing on screen. The Python worker reads the
+/// same key to set its `LangGraph` recursion limit, which is why it stays in the
+/// version rather than moving onto the input alone.
+///
+/// The bounds are `validate_step_limit`'s, deliberately: a value this profile
+/// would refuse on the input must not pass unexamined on the version.
+fn validate_application_meta_step_limit(
+    value: Option<&Value>,
+) -> Result<(), NativeAgentAssemblyError> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let limit = value
+        .as_u64()
+        .and_then(|limit| u32::try_from(limit).ok())
+        .ok_or_else(invalid_profile)?;
+    validate_step_limit(Some(limit)).map(|_| ())
 }
 
 fn adhoc_model(
@@ -874,8 +899,22 @@ fn bounded_runtime_identity(value: &str) -> bool {
     bounded_text(value, 256)
 }
 
-fn bounded_instruction(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64 * 1_024 && !value.contains('\0')
+/// Bound a stored version's `instructions`.
+///
+/// `allow_empty` is the direct-agent case. An agent with no system prompt is a
+/// real thing a user can save — the create form does not require the field, and
+/// nothing between the form and here fills it in — so refusing it made every
+/// such agent answer "The execution input is invalid." on every turn, a
+/// sentence that names neither the field nor the fix. The ad-hoc path in this
+/// same file has always accepted an empty instruction
+/// (`bounded_adhoc_instruction`), and an ad-hoc turn is exactly an agent
+/// without a stored prompt, so refusing it here was the odd one out.
+///
+/// A PIPELINE keeps the non-empty rule: its `instructions` field carries the
+/// graph YAML, and an empty graph is not an unconstrained agent — it is a
+/// pipeline with nothing to run.
+fn bounded_instruction(value: &str, allow_empty: bool) -> bool {
+    (allow_empty || !value.is_empty()) && value.len() <= 64 * 1_024 && !value.contains('\0')
 }
 
 fn bounded_adhoc_instruction(value: &str) -> bool {

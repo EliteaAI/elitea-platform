@@ -208,11 +208,24 @@ export function toFormValues(
  * shape `useSaveApplicationVersion` sends on write). `meta`'s
  * `step_limit`/`internal_tools` are read defensively from the opaque
  * passthrough blob with the SAME defaults `useCreateApplicationInitialValues`
- * seeds a brand-new draft with (`{ step_limit: 25, internal_tools:
- * ['internal_mcp'] }`) when the existing version's `meta` does not already
- * carry them in the expected shape — this page never invents a value the
- * existing version did not already have UNLESS the field is genuinely
- * absent.
+ * seeds a brand-new draft with (`{ step_limit: 25, internal_tools: [] }`,
+ * `entities/application-form/model/initialValues.ts:131`) when the existing
+ * version's `meta` does not already carry them in the expected shape.
+ *
+ * **`internal_tools` falls back to EMPTY, not `['internal_mcp']`.** The
+ * fallback here is more dangerous than a create-time default, because it
+ * rewrites an agent that already works: a stored version with no
+ * `internal_tools` key is admitted by the chat query's own COALESCE
+ * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362` reads
+ * `COALESCE(... -> 'internal_tools', '[]') IN ('[]', '["ask_user"]')`), so
+ * such an agent answers turns today — but the old `['internal_mcp']`
+ * fallback injected that name the first time a user saved ANY unrelated
+ * edit, after which every send came back 422 and the native runtime refused
+ * the name too (`services/elitea-worker-rust/src/agents/
+ * internal_tools.rs:47-61`). An explicitly stored array is still returned
+ * verbatim, `internal_mcp` included, so a deliberate opt-in round-trips
+ * through the editor unchanged — losing a setting on load would be a worse
+ * defect than the one this fixes.
  */
 export function toVersionDraft(
   version: ApplicationVersionDetail,
@@ -223,7 +236,7 @@ export function toVersionDraft(
   const internalToolsRaw = metaRecord['internal_tools'];
   const internalTools = Array.isArray(internalToolsRaw)
     ? internalToolsRaw.filter((entry): entry is string => typeof entry === 'string')
-    : ['internal_mcp'];
+    : [];
   return {
     name: version.name,
     agentType: version.agent_type === 'pipeline' ? 'pipeline' : undefined,

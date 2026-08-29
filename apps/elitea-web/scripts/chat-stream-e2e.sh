@@ -5,6 +5,16 @@
 #   apps/elitea-web/scripts/chat-stream-e2e.sh            # up + seed + run
 #   apps/elitea-web/scripts/chat-stream-e2e.sh --keep     # leave the stack up
 #   CHAT_STREAM_REPEAT=3 …/chat-stream-e2e.sh            # flake check
+#   STANDALONE_WORKER=rust …/chat-stream-e2e.sh          # native Rust runtime
+#
+# STANDALONE_WORKER is read by deploy/scripts/standalone-stack.sh, not by this
+# script, and reaches it through the environment every `run_stack` call
+# inherits. It is written down here because the journeys are the only thing
+# that can tell the two runtimes apart: the same UI drives both, and a change
+# that admits one and refuses the other passes every unit suite. Use a distinct
+# CHAT_STREAM_PROJECT and CHAT_STREAM_PORT when running both on one host — the
+# oidc-mock port is fixed at 9400 and cannot be shared, so they cannot be up at
+# the same time.
 #
 # Why not the E2E stack: `docker-compose.e2e-standalone.yml` has no runtime
 # plane, no worker and no model backend, so the journey would fail there for a
@@ -52,7 +62,7 @@ run_stack() {
 echo "→ Runtime PKI + secrets (idempotent)…"
 run_stack certs
 
-echo "→ Bringing up ${PROJECT} on :${PORT} (mock chunk delay ${DELAY_MS}ms)…"
+echo "→ Bringing up ${PROJECT} on :${PORT} (worker=${STANDALONE_WORKER:-python}, mock chunk delay ${DELAY_MS}ms)…"
 # `up` reuses an image that already exists, so a source change lands only if
 # the build is asked for explicitly. That is not a nicety here: the whole
 # incremental-render assertion depends on the mock's per-chunk delay actually

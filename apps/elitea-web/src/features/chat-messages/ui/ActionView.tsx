@@ -78,7 +78,16 @@ export function ActionView({ action, onClick, isSelected = false }: ActionViewPr
         <Typography
           variant="caption"
           sx={{
-            display: 'block',
+            // Clamped rather than free-flowing since a reasoning model's row
+            // holds its ENTIRE chain of thought (`lib/chatStreamReasoning.ts`),
+            // which is hundreds of lines and would bury the answer under its
+            // own preview. Clamping, not scrolling: a scroll region inside a
+            // click-to-open row swallows the page's own wheel events, and the
+            // full text is one click away in the `ToolModal` this row opens.
+            display: '-webkit-box',
+            WebkitBoxOrient: 'vertical',
+            WebkitLineClamp: 8,
+            overflow: 'hidden',
             color: 'text.secondary',
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',

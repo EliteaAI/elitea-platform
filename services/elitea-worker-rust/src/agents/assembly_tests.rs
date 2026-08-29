@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
-use super::assembly::{OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort};
+use super::assembly::{
+    DEFAULT_AGENT_STEP_LIMIT, OrdinaryModelProvider, OrdinaryNoToolProfile, ReasoningEffort,
+};
 use super::context_management::ContextManagementPlan;
 use super::request::{
     AgentExecutionKind, AgentExecutionPayload, AgentExecutionRequest, AgentInputBinding,
@@ -324,7 +326,13 @@ fn every_unimplemented_effect_surface_is_rejected_before_redemption() {
                     .insert("instructions".to_owned(), json!("review {{ audience }}"));
             }
             17 => {
-                insert_application_meta(&mut request, "step_limit", json!(17));
+                // `internal_mcp` rather than the step limit that used to sit
+                // here: the step limit is now ADMITTED on the version, because
+                // Main writes it into every saved version and the Python worker
+                // reads it from there. `internal_mcp` is still genuinely
+                // unimplemented, and it is what the previous UI default wrote, so it
+                // is the mutation worth keeping in this corpus.
+                insert_application_meta(&mut request, "internal_tools", json!(["internal_mcp"]));
             }
             18 => {
                 insert_application_meta(&mut request, "internal_tools", json!(["planner"]));
@@ -696,4 +704,114 @@ fn regeneration_is_admitted_as_a_durable_session_rebuild() {
         error.code(),
         NativeAgentAssemblyErrorCode::UnsupportedCapability
     );
+}
+
+/// The authored step limit lives on the version AND on the input, and this
+/// pins both halves of that arrangement.
+///
+/// Main writes `meta.step_limit` into every saved version
+/// (`services/elitea-main/internal/api/v2/applications/handler.go`) and derives
+/// `steps_limit` on the execution input from the same number
+/// (`internal/application/agentexecution/start.go::currentApplicationStepsLimit`).
+/// The Python worker still reads the version key for its `LangGraph` recursion
+/// limit, so neither side can drop it. Refusing the key here refused every
+/// stored agent — measured in a browser against a live stack, where the turn
+/// was admitted, streamed nothing, and stopped.
+///
+/// The effective limit is still `payload.steps_limit` alone: the version value
+/// is admitted, not consulted.
+#[test]
+fn an_authored_step_limit_is_admitted_and_does_not_select_the_effective_one() {
+    let mut request = ordinary_request(AgentExecutionKind::Application);
+    insert_application_meta(&mut request, "step_limit", json!(17));
+    request.payload.steps_limit = Some(64);
+
+    let admitted = AuthorizedNativeAssembly::new(
+        &request,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_llm_agent(&empty_tool_policy())
+    .expect("an authored step limit must not refuse the profile");
+    assert_eq!(admitted.profile().step_limit(), 64);
+
+    let mut without_input_limit = ordinary_request(AgentExecutionKind::Application);
+    insert_application_meta(&mut without_input_limit, "step_limit", json!(17));
+    let defaulted = AuthorizedNativeAssembly::new(
+        &without_input_limit,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_llm_agent(&empty_tool_policy())
+    .expect("an authored step limit must not refuse the profile");
+    assert_eq!(defaulted.profile().step_limit(), DEFAULT_AGENT_STEP_LIMIT);
+}
+
+/// A version step limit outside the bounds the input enforces is malformed
+/// input, not an unimplemented capability — the distinction matters because
+/// only the second is a "this runtime cannot do that yet" answer.
+#[test]
+fn a_malformed_version_step_limit_is_refused_as_invalid_input() {
+    for value in [json!(0), json!(1_025), json!(-1), json!("many"), json!(1.5)] {
+        let mut request = ordinary_request(AgentExecutionKind::Application);
+        insert_application_meta(&mut request, "step_limit", value.clone());
+        let Err(error) = AuthorizedNativeAssembly::new(
+            &request,
+            test_runtime_context_authority(),
+            AuthorizedNativeCommandBinding::fixture(),
+        )
+        .admit_llm_agent(&empty_tool_policy()) else {
+            panic!("an out-of-range step limit must not be admitted: {value}");
+        };
+        assert_eq!(error.code(), NativeAgentAssemblyErrorCode::InvalidInput);
+    }
+}
+
+/// An agent saved with no instructions must run.
+///
+/// The create form does not require the field and nothing fills it in, so this
+/// is an ordinary thing to have in a project. Refusing it produced "The
+/// execution input is invalid." on every turn — measured in a browser against a
+/// live stack, on an agent created through the product's own form.
+///
+/// A PIPELINE is the opposite case: its instructions carry the graph YAML, and
+/// an empty one has nothing to compile.
+#[test]
+fn a_direct_agent_may_have_no_instructions_but_a_pipeline_may_not() {
+    let mut agent = ordinary_request(AgentExecutionKind::Application);
+    set_application_instructions(&mut agent, "");
+    AuthorizedNativeAssembly::new(
+        &agent,
+        test_runtime_context_authority(),
+        AuthorizedNativeCommandBinding::fixture(),
+    )
+    .admit_llm_agent(&empty_tool_policy())
+    .expect("an agent with no system prompt is still an agent");
+
+    let mut pipeline = ordinary_request(AgentExecutionKind::Application);
+    set_application_agent_type(&mut pipeline, "pipeline");
+    set_application_instructions(&mut pipeline, "");
+    assert_eq!(
+        OrdinaryNoToolProfile::validate_pipeline_shell(&pipeline, false)
+            .expect_err("an empty pipeline graph has nothing to run")
+            .code(),
+        NativeAgentAssemblyErrorCode::InvalidInput
+    );
+}
+
+fn application_version_mut(request: &mut AgentExecutionRequest) -> &mut Map<String, Value> {
+    request
+        .payload
+        .application
+        .get_mut("version_details")
+        .and_then(Value::as_object_mut)
+        .expect("application version")
+}
+
+fn set_application_instructions(request: &mut AgentExecutionRequest, instructions: &str) {
+    application_version_mut(request).insert("instructions".to_owned(), json!(instructions));
+}
+
+fn set_application_agent_type(request: &mut AgentExecutionRequest, agent_type: &str) {
+    application_version_mut(request).insert("agent_type".to_owned(), json!(agent_type));
 }

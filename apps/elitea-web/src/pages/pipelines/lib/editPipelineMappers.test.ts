@@ -111,10 +111,38 @@ describe('toVersionDraft', () => {
     expect(draft.pipelineSettings).toBeUndefined();
   });
 
-  it('defaults meta.step_limit/internal_tools when the existing meta lacks them', () => {
+  /*
+   * The `internal_tools` fallback used to be `['internal_mcp']`, which the
+   * chat query refuses: it admits a version only when
+   * `COALESCE(meta -> 'internal_tools', '[]') IN ('[]', '["ask_user"]')`
+   * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`), so a
+   * stored version with NO `internal_tools` key — which answers turns fine
+   * today, thanks to that COALESCE — was quietly given one the first time a
+   * user saved any unrelated edit, and stopped answering with a 422.
+   */
+  it('falls back to an EMPTY meta.internal_tools (never internal_mcp) when the existing meta lacks the key', () => {
     const version = { name: 'base', meta: {} } as unknown as ApplicationVersionDetail;
     const draft = toVersionDraft(version, []);
-    expect(draft.meta).toEqual({ step_limit: 25, internal_tools: ['internal_mcp'] });
+    expect(draft.meta).toEqual({ step_limit: 25, internal_tools: [] });
+  });
+
+  it('falls back to an EMPTY meta.internal_tools when the stored value is not an array', () => {
+    const version = {
+      name: 'base',
+      meta: { internal_tools: 'internal_mcp' },
+    } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).meta.internal_tools).toEqual([]);
+  });
+
+  // The other direction, and the reason the fallback is the ONLY thing that
+  // changed: a user who deliberately turned Elitea MCP Tools on must still
+  // find it on when the editor reloads their version.
+  it('round-trips an explicitly stored internal_mcp unchanged', () => {
+    const version = {
+      name: 'base',
+      meta: { internal_tools: ['internal_mcp'] },
+    } as unknown as ApplicationVersionDetail;
+    expect(toVersionDraft(version, []).meta.internal_tools).toEqual(['internal_mcp']);
   });
 
   it('defaults instructions/variables/tags/tools to empty when absent', () => {

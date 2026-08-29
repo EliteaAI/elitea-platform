@@ -2,9 +2,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { Participant } from '@/entities/participant';
 import { useAddParticipantMutation, useDeleteParticipantMutation } from '@/entities/participant';
-import { ChatParticipantType, transformParticipant } from '@/features/chat-participants';
+import { useFetchParticipantDetails } from '@/features/chat-participants';
 
-type CatalogSelection = Readonly<Record<string, unknown>>;
+import type { CreatedConversation, ParticipantSelectionRuntime } from './useAddEntityParticipant.helpers';
+import {
+  applyParticipantSelection,
+  canBecomeActive,
+  findSelectedConversationParticipant,
+  isToolkitSelection,
+  selectedParticipantInput,
+  selectionKey,
+} from './useAddEntityParticipant.helpers';
+import { useStableRef } from './useStableRef';
+
+export { findSelectedConversationParticipant, selectedParticipantInput };
+
 const EMPTY_PARTICIPANTS: readonly Participant[] = [];
 
 interface ParticipantMenuState {
@@ -17,81 +29,34 @@ interface EntityParticipantActions {
   readonly getParticipantMenuState: (selection: unknown) => ParticipantMenuState;
 }
 
-export function selectedParticipantInput(selection: unknown) {
-  const candidate = selection as Record<string, unknown>;
-  const participantType = candidate['participantType'];
-  if (
-    participantType !== ChatParticipantType.Applications &&
-    participantType !== ChatParticipantType.Pipelines &&
-    participantType !== ChatParticipantType.Toolkits
-  ) return undefined;
-  const transformed = transformParticipant(participantType, candidate);
-  return {
-    entity_name: transformed.entity_name,
-    entity_meta: { ...transformed.entity_meta },
-    entity_settings: { ...transformed.entity_settings },
-  };
-}
-
-function selectionType(selection: CatalogSelection): unknown {
-  return selection['participantType'];
-}
-
-function participantTypeMatches(participant: Participant, selection: CatalogSelection): boolean {
-  const type = selectionType(selection);
-  if (type === ChatParticipantType.Pipelines) {
-    return participant.entityName === ChatParticipantType.Pipelines ||
-      (participant.entityName === ChatParticipantType.Applications && participant.entitySettings?.agentType === 'pipeline');
-  }
-  if (type === ChatParticipantType.Applications) {
-    return participant.entityName === ChatParticipantType.Applications && participant.entitySettings?.agentType !== 'pipeline';
-  }
-  return type === ChatParticipantType.Toolkits && participant.entityName === ChatParticipantType.Toolkits;
-}
-
-export function findSelectedConversationParticipant(
-  selection: unknown,
-  participants: readonly Participant[],
-): Participant | undefined {
-  const candidate = selection as CatalogSelection;
-  const transformed = selectedParticipantInput(candidate);
-  if (!transformed) return undefined;
-  const entityId = transformed.entity_meta['id'];
-  const projectId = transformed.entity_meta['project_id'];
-  return participants.find((participant) =>
-    participantTypeMatches(participant, candidate) &&
-    String(participant.entityMeta?.id ?? '') === String(entityId ?? '') &&
-    String(participant.entityMeta?.projectId ?? '') === String(projectId ?? ''),
-  );
-}
-
-function selectionKey(selection: unknown): string | undefined {
-  const candidate = selection as CatalogSelection;
-  const transformed = selectedParticipantInput(candidate);
-  if (!transformed) return undefined;
-  const entityId = transformed.entity_meta['id'];
-  const projectId = transformed.entity_meta['project_id'];
-  return `${String(selectionType(candidate))}:${String(entityId ?? '')}:${String(projectId ?? '')}`;
-}
-
-function canBecomeActive(participant: Participant): boolean {
-  return participant.entityName === ChatParticipantType.Applications ||
-    participant.entityName === ChatParticipantType.Pipelines;
-}
-
-/** Applies the current UI selection rules to one persisted conversation. */
+/** Applies the current UI selection rules to one conversation — creating it first when the chat is still new. */
 export function useAddEntityParticipant(params: {
   readonly projectId: string | number | undefined;
   readonly conversationId: string | number | undefined;
   readonly participants?: readonly Participant[] | undefined;
   readonly onChangeParticipant?: ((participant: unknown) => void) | undefined;
+  /** Persists the conversation a brand-new chat does not have yet — see the helpers module's `applyParticipantSelection`. */
+  readonly createConversation?: (() => Promise<CreatedConversation | undefined>) | undefined;
+  readonly onConversationCreated?: ((conversation: CreatedConversation) => void) | undefined;
 }): EntityParticipantActions {
-  const { projectId, conversationId, onChangeParticipant } = params;
   const participants = params.participants ?? EMPTY_PARTICIPANTS;
   const { mutateAsync: addParticipant } = useAddParticipantMutation();
   const { mutateAsync: deleteParticipant } = useDeleteParticipantMutation();
+  const { fetchOriginalDetails } = useFetchParticipantDetails();
   const pendingRef = useRef<Set<string>>(new Set());
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(new Set());
+
+  const runtimeRef = useStableRef<ParticipantSelectionRuntime & { readonly participants: readonly Participant[] }>({
+    projectId: params.projectId,
+    conversationId: params.conversationId,
+    participants,
+    onChangeParticipant: params.onChangeParticipant,
+    addParticipant,
+    deleteParticipant,
+    fetchDetails: fetchOriginalDetails,
+    createConversation: params.createConversation,
+    onConversationCreated: params.onConversationCreated,
+  });
 
   useEffect(() => {
     if (pendingRef.current.size === 0) return;
@@ -105,38 +70,34 @@ export function useAddEntityParticipant(params: {
   }, []);
 
   const onSelectParticipant = useCallback((selection: unknown) => {
-    if (projectId === undefined || conversationId === undefined) return;
-    const participantInput = selectedParticipantInput(selection);
+    const runtime = runtimeRef.current;
+    // A conversation is no longer required to start: `applyParticipantSelection`
+    // creates one. Only the project is, because it is half the route.
+    if (runtime.projectId === undefined) return;
     const key = selectionKey(selection);
-    if (!participantInput || !key || pendingRef.current.has(key)) return;
+    if (!selectedParticipantInput(selection) || !key || pendingRef.current.has(key)) return;
 
-    const existing = findSelectedConversationParticipant(selection, participants);
-    const toolkitSelection = (selection as CatalogSelection)['participantType'] === ChatParticipantType.Toolkits;
-    if (existing && !toolkitSelection) {
-      if (canBecomeActive(existing)) onChangeParticipant?.(existing);
+    const existing = findSelectedConversationParticipant(selection, runtime.participants);
+    // Re-picking an attached agent selects it; re-picking an attached toolkit
+    // detaches it. Neither reaches the network for the agent case, so pending
+    // is not entered — nothing would ever clear it.
+    if (existing && !isToolkitSelection(selection)) {
+      if (canBecomeActive(existing)) runtime.onChangeParticipant?.(existing);
       return;
     }
 
     pendingRef.current.add(key);
     setPendingKeys(new Set(pendingRef.current));
-    const mutation = existing
-      ? deleteParticipant({ projectId, conversationId: String(conversationId), id: existing.id })
-      : addParticipant({ projectId, conversationId: String(conversationId), participants: [participantInput] })
-        .then((updated) => {
-          const added = findSelectedConversationParticipant(selection, updated);
-          if (added && canBecomeActive(added)) onChangeParticipant?.(added);
-        });
-    void mutation.catch((error: unknown) => {
+    void applyParticipantSelection(selection, existing, runtime).catch((error: unknown) => {
       clearPending(key);
       console.error('[ChatBox] could not update the selected participant:', error);
     });
-  }, [addParticipant, clearPending, conversationId, deleteParticipant, onChangeParticipant, participants, projectId]);
+  }, [clearPending, runtimeRef]);
 
   const getParticipantMenuState = useCallback((selection: unknown): ParticipantMenuState => {
     const key = selectionKey(selection);
-    const toolkitSelection = (selection as CatalogSelection)['participantType'] === ChatParticipantType.Toolkits;
     return {
-      ...(toolkitSelection ? { checked: findSelectedConversationParticipant(selection, participants) !== undefined } : {}),
+      ...(isToolkitSelection(selection) ? { checked: findSelectedConversationParticipant(selection, participants) !== undefined } : {}),
       ...(key !== undefined && pendingKeys.has(key) ? { pending: true } : {}),
     };
   }, [participants, pendingKeys]);

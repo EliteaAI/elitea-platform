@@ -57,6 +57,7 @@ import { useChatBoxVersioning } from './hooks/useChatBoxVersioning';
 import { useChatBoxMentions } from './hooks/useChatBoxMentions';
 import { useChatBoxActions } from './hooks/useChatBoxActions';
 import { useAddEntityParticipant } from './hooks/useAddEntityParticipant';
+import { useActiveParticipantSelection } from './hooks/useActiveParticipantSelection';
 import { useSessionDeclinedMcpServersRef } from './hooks/useSessionDeclinedMcpServersRef';
 import { useChatBoxSend } from './hooks/useChatBoxSend';
 import { useStableRef } from './hooks/useStableRef';
@@ -118,12 +119,12 @@ const ChatBoxInner = memo(function ChatBox({
   extensions,
 }: ChatBoxProps) {
   const { editorCallbacks, entitySubmenus } = extensions ?? {};
-  const { active: activeParticipant, onChange: onChangeParticipant } = participant ?? {};
   const chatInputRef = useRef<NewChatInputHandle>(null);
   const attachmentButtonRef = useRef<AttachmentButtonHandle>(null); const voiceButtonRef = useRef<VoiceButtonHandle>(null);
   const { activeConversation, isLoadingConversation, onConversationCreated } = unwrapChatBoxConversation(conversation);
   const { userId, userName, userAvatar, llmSettings, onSetLLMSettings, onDeleteAnswer, onDeleteAllMessages } = flattenChatBoxProps({ user, llm, onDelete });
   const { conversationId, conversationParticipants, conversationUuid, conversationMeta, isConversationSending, projectIdString } = deriveChatBoxIds(activeConversation, projectId);
+  const { activeParticipant, onChangeParticipant } = useActiveParticipantSelection(participant, conversationParticipants);
 
   // Data layer
   const data = useChatBoxData(buildChatBoxDataParams({ activeConversation, activeParticipant, projectId, userId, userName, userAvatar, isAgentsPage }));
@@ -180,7 +181,6 @@ const ChatBoxInner = memo(function ChatBox({
   const { mutateAsync: deleteMessageMutateAsync } = conversationApi.useDeleteMessage();
   const { mutateAsync: deleteAllMessagesMutateAsync } = conversationApi.useDeleteAllMessages();
   const { mutateAsync: stopChatTaskMutateAsync } = conversationApi.useStopTask();
-  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant });
 
   // Everything one send needs: the SSE transport (issue #93) plus the
   // create-conversation-first and upload-attachments-first adapters.
@@ -192,6 +192,8 @@ const ChatBoxInner = memo(function ChatBox({
     activeParticipant, participants: conversationParticipants, userName, userAvatar,
     llmSettings, model: data.selectedModel, userId,
   });
+  // After `useChatBoxSend`: a "+" pick on a chat with no conversation has to create one first, and it reuses the adapter the first send would have used, so an eagerly created conversation is seeded exactly like a send-created one.
+  const entityParticipantActions = useAddEntityParticipant({ projectId, conversationId, participants: normalisedParticipants, onChangeParticipant, createConversation: () => createConversationForSend(''), ...(onConversationCreated ? { onConversationCreated } : {}) });
   // `isStreamingNow` is derived from the PERSISTED message groups, which carry
   // no in-flight flag while an SSE turn runs — without the transport's own flag
   // the composer never offers Stop for the very turn Stop exists to cancel (#328).

@@ -88,7 +88,7 @@ export function toVersionDraft(
   const internalToolsRaw = metaRecord['internal_tools'];
   const internalTools = Array.isArray(internalToolsRaw)
     ? internalToolsRaw.filter((entry): entry is string => typeof entry === 'string')
-    : ['internal_mcp'];
+    : [];
   return {
     name: version.name,
     agentType: 'pipeline',

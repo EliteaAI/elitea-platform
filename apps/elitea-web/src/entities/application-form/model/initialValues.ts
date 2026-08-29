@@ -22,6 +22,29 @@ export interface ApplicationVersionDraft {
   readonly instructions: string;
   readonly conversationStarters: readonly string[];
   readonly variables: readonly { readonly name: string; readonly value: string }[];
+  /**
+   * `internal_tools` seeds EMPTY because the platform refuses an agent turn
+   * whose version meta names anything other than `ask_user`. The gate is in
+   * SQL and no UI value can talk it round:
+   * `services/elitea-main/internal/db/queries/agent_chat.sql:359-362` admits
+   * the version only when `COALESCE(application_version.meta::jsonb ->
+   * 'internal_tools', '[]') IN ('[]', '["ask_user"]')`, so a version carrying
+   * `internal_mcp` resolves zero rows and every send comes back 422 "This
+   * agent turn requires the current execution path." The native Rust runtime
+   * agrees independently: `services/elitea-worker-rust/src/agents/
+   * internal_tools.rs:47-61` builds its catalogue by matching each entry
+   * against `ASK_USER_TOOL_NAME` and returns `UnsupportedCapability` for
+   * every other name. Reproduced in a browser against a live stack: an agent
+   * created here 422'd on its first message, and flipping this one field to
+   * `[]` in the database made the identical send succeed.
+   *
+   * `step_limit` stays because elitea-main injects it on every write anyway
+   * when the body omits it (`api/v2/applications/handler.go:501`) and the
+   * runtime-profile freeze now strips it before the worker reads the profile
+   * (`internal/application/agentexecution/tools.go`,
+   * `normalizeCurrentAgentRuntimeProfile`) — the value is inert on the wire,
+   * but the Advanced-settings control still reads and writes it.
+   */
   readonly meta: { readonly step_limit: number; readonly internal_tools: readonly string[] };
   /**
    * **Backend-contract gap, not a porting shortcut.** The baseline's
@@ -105,7 +128,7 @@ export function useCreateApplicationInitialValues(forPipeline: boolean): Applica
         instructions: '',
         conversationStarters: [],
         variables: [],
-        meta: { step_limit: 25, internal_tools: ['internal_mcp'] },
+        meta: { step_limit: 25, internal_tools: [] },
         tags: [],
         tools: [],
         pipelineSettings: forPipeline ? { nodes: [], edges: [] } : undefined,

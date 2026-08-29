@@ -42,26 +42,27 @@ import type { AgentDraftValues, AgentFieldChange } from '../model/types';
  * as the baseline's own `createInitialValues`), so "discard" and "start a
  * fresh create form" are the identical operation.
  *
- * **`meta.internal_tools` default -- adversarial-review fix.** This app's
- * own `entities/application-form/model/initialValues.ts`
- * (`useCreateApplicationInitialValues`) seeds a brand-new draft's
- * `meta.internal_tools` as `['internal_mcp']` (the "Elitea MCP Tools"
- * internal toggle, enabled by default) -- the SAME default the baseline's
- * `useApplicationInitialValues.jsx` seeds. `buildCreateDraft` previously
- * hardcoded `internal_tools: []` on submit regardless, silently disabling
- * that toggle for every agent created through the chat-embedded create form
- * (no live UI here can set it either way -- see the `conversation_starters`
- * gap above, same class of limitation -- so the hardcoded `[]` was not a
- * real default, just a bug). `resolveInternalTools` below restores that
- * default while still respecting an explicit override, matching this
- * file's own `onFieldChange('version_details.meta.internal_tools', ...)`
- * escape hatch if a future caller ever wires one up (`AgentVersionMeta`'s
- * `[metaKey: string]: unknown` index signature already allows it). Same
- * bug, same fix shape, independently found and fixed on the pipelines side
- * in `features/pipelines/lib/usePipelineEditorCreate.ts` (a different
- * Wave-2 unit, A2) -- see that file's doc comment.
+ * **`meta.internal_tools` default -- empty, so the created agent can
+ * actually take a turn.** An earlier adversarial review read the baseline's
+ * `['internal_mcp']` seed as the intended default and made this path match
+ * it. That default refuses every turn: the chat query admits a version only
+ * when its `meta.internal_tools` is `[]` or `["ask_user"]`
+ * (`services/elitea-main/internal/db/queries/agent_chat.sql:359-362`), so a
+ * version carrying `internal_mcp` resolves zero rows and the browser gets a
+ * 422 on send, and the native runtime rejects any other name outright
+ * (`services/elitea-worker-rust/src/agents/internal_tools.rs:47-61`).
+ * `DEFAULT_INTERNAL_TOOLS` is therefore empty, agreeing with
+ * `entities/application-form/model/initialValues.ts` (which carries the full
+ * evidence trail). `resolveInternalTools` still respects an explicit
+ * override, so this file's own `onFieldChange(
+ * 'version_details.meta.internal_tools', ...)` escape hatch keeps working if
+ * a future caller wires up the Elitea-MCP-Tools toggle deliberately
+ * (`AgentVersionMeta`'s `[metaKey: string]: unknown` index signature already
+ * allows it). The pipelines side has the same seed in
+ * `features/pipelines/lib/usePipelineEditorCreate.ts:70-73` and still
+ * defaults to `['internal_mcp']` -- reported, not owned by this unit.
  */
-const DEFAULT_INTERNAL_TOOLS: readonly string[] = ['internal_mcp'];
+const DEFAULT_INTERNAL_TOOLS: readonly string[] = [];
 
 function resolveInternalTools(meta: NonNullable<AgentDraftValues['version_details']>['meta']): readonly string[] {
   const raw = meta?.['internal_tools'];

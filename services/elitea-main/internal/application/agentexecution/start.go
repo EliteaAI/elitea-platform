@@ -294,10 +294,14 @@ func currentApplicationInput(
 	if err != nil {
 		return nil, err
 	}
+	stepsLimit, err := currentApplicationStepsLimit(skills.versionDetails)
+	if err != nil {
+		return nil, err
+	}
 	threadID := request.ConversationUUID
 	conversationID := request.ConversationUUID
 	executionGeneration := request.QuestionID
-	return &runtimev1.AgentExecutionInputV1{
+	input := &runtimev1.AgentExecutionInputV1{
 		SchemaRevision: "elitea.runtime.agent-execution-input.v1",
 		// Current chat history remains authoritative for ordinary turns. The
 		// shared LangGraph checkpoint stores resumable graph state for this stable
@@ -315,8 +319,55 @@ func currentApplicationInput(
 		ParallelReconcile: []byte(`null`), ParallelTerminalErrors: []byte(`[]`),
 		NextInputSuggestion: bytes.Clone(nextInputSuggestion),
 		ToolkitGuardrails:   bytes.Clone(toolkitGuardrails),
-	}, nil
+	}
+	if stepsLimit != nil {
+		input.StepsLimit = stepsLimit
+	}
+	return input, nil
 }
+
+// currentApplicationStepsLimit lifts the authored step limit out of the frozen
+// version's meta and onto the execution input, which is where the runtime reads
+// it (services/elitea-worker-rust/src/agents/assembly.rs:152 —
+// `request.payload.steps_limit`). The adhoc path has always done this from the
+// conversation meta (adhoc.go:308,335-337); the application path did not, so a
+// stored agent ran on the runtime's default no matter what its author set.
+//
+// The key stays in `meta` as well, because the Python worker reads it from
+// exactly there to set the LangGraph recursion limit
+// (services/elitea-worker-python/src/elitea_worker/agents/sdk_adapter.py:910-912)
+// and both workers must keep honouring the same authored number.
+//
+// An unusable value is refused rather than dropped: a step limit that silently
+// became the default is how an agent that was deliberately given room to work
+// stops halfway through with no explanation.
+func currentApplicationStepsLimit(versionDetails json.RawMessage) (*int32, error) {
+	version, err := decodeCurrentApplicationVersion(versionDetails)
+	if err != nil {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	meta, ok := version["meta"].(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+	value, exists := meta["step_limit"]
+	if !exists || value == nil {
+		return nil, nil
+	}
+	parsed, ok := positiveCurrentAgentJSONInteger(value)
+	if !ok || parsed > maxCurrentAgentStepLimit {
+		return nil, ErrUnsupportedCurrentAgentStart
+	}
+	bounded := int32(parsed)
+	return &bounded, nil
+}
+
+// maxCurrentAgentStepLimit mirrors MAX_AGENT_STEP_LIMIT
+// (services/elitea-worker-rust/src/agents/assembly.rs:22). Refusing here rather
+// than forwarding turns a runtime-side invalid_profile — which the browser sees
+// as a turn that starts and then stops — into a start that fails with a stated
+// reason.
+const maxCurrentAgentStepLimit = 1024
 
 func currentRuntimeInternalTools(raw json.RawMessage) ([]byte, error) {
 	if len(raw) == 0 {

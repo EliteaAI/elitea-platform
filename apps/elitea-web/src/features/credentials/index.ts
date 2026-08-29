@@ -66,8 +66,39 @@
  * site" status for the same `no-sideways-features` reason (A7-ui cluster) —
  * see that file's own doc comment for the full routing writeup; nothing
  * about its barrel export needed to change here.
+ *
+ * `CredentialsActions`: adding `CredentialWarning` above bought back two
+ * slots but spent three, so this barrel landed on 21/20 and
+ * `node scripts/check-budgets.mjs` had been failing on the
+ * `slice-public-api` row ever since — the gate is not part of the unit test
+ * suite, so nothing else reported it. The pair that gives a slot back
+ * without losing any reach is `CredentialsTabBar` + `CredentialsControls`,
+ * for the same three reasons the warning trio was grouped. They are ONE
+ * unit in the baseline: both port out of the single folder
+ * `apps/elitea-ui/src/[fsd]/features/credentials/ui/credentials-tab-bar/`
+ * (`CredentialsTabBar.jsx` and `CredentialsControls.jsx` — each file's own
+ * doc comment names that path, and `pages/credentials/
+ * useCredentialDeleteGuard.ts:21` names it again). They are always consumed
+ * together: `pages/credentials/CredentialForm.tsx:40` is the only external
+ * importer of either, takes both in one import statement, and renders them
+ * as adjacent siblings inside one `<Box sx={actionsRowSx}>`
+ * (`CredentialForm.tsx:152-168`) — the Save/Discard pair and the kebab menu
+ * that sits beside it are the same actions row, not two features. And their
+ * prop types stay unexported for the same reason the warning trio's do: JSX
+ * props on `CredentialsActions.TabBar`/`.Controls` are structurally checked
+ * against the real signatures without a caller ever naming
+ * `CredentialsTabBarProps`/`CredentialsControlsProps`.
+ *
+ * The alternative — dropping `CredentialWarning` again — was rejected: it
+ * is the export that makes a fully built and tested hook/modal/banner
+ * reachable at all, and un-exporting it would put the slice straight back
+ * into the dead-code state the paragraph at the top of this file was
+ * written to end. Every other symbol here has at least one live external
+ * importer, so grouping was the only move that did not cost reach.
  */
 import { useCredentialWarningModal } from './model/useCredentialWarningModal';
+import { CredentialsControls } from './ui/CredentialsControls';
+import { CredentialsTabBar } from './ui/CredentialsTabBar';
 import { CredentialWarningBanner } from './ui/CredentialWarningBanner';
 import { CredentialWarningModal } from './ui/CredentialWarningModal';
 
@@ -91,13 +122,17 @@ export { extractInformationFromCredentialError } from './lib/credentialError';
 export { generateCredentialTagList } from './lib/credentialTags';
 export { normalizeCredentialPage } from './lib/normalizeCredential';
 export { useCredentialValidation } from './model/useCredentialValidation';
-export { CredentialsControls } from './ui/CredentialsControls';
 export { CredentialsSelect } from './ui/CredentialsSelect';
-export { CredentialsTabBar } from './ui/CredentialsTabBar';
 
 /** See this file's own doc comment above for why these three are grouped into one export instead of three. */
 export const CredentialWarning = {
   useModal: useCredentialWarningModal,
   Modal: CredentialWarningModal,
   Banner: CredentialWarningBanner,
+} as const;
+
+/** See this file's own doc comment above for why these two are grouped into one export instead of two. */
+export const CredentialsActions = {
+  TabBar: CredentialsTabBar,
+  Controls: CredentialsControls,
 } as const;

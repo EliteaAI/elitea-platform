@@ -21,7 +21,19 @@ describe('useCreateApplicationInitialValues', () => {
 
   it('seeds the default meta step_limit and internal_tools', () => {
     const { result } = renderHook(() => useCreateApplicationInitialValues(false));
-    expect(result.current.versionDetails.meta).toEqual({ step_limit: 25, internal_tools: ['internal_mcp'] });
+    expect(result.current.versionDetails.meta).toEqual({ step_limit: 25, internal_tools: [] });
+  });
+
+  // The gate is `agent_chat.sql:359-362` (`meta.internal_tools IN ('[]',
+  // '["ask_user"]')`) plus `internal_tools.rs:47-61`, which accepts no other
+  // name: a draft seeded with `internal_mcp` 422s on its first message. This
+  // assertion is deliberately separate from the `toEqual` above so a future
+  // meta field cannot make it pass by accident.
+  it('defaults internal_tools to empty so the runtime admits the version', () => {
+    const agent = renderHook(() => useCreateApplicationInitialValues(false));
+    const pipeline = renderHook(() => useCreateApplicationInitialValues(true));
+    expect(agent.result.current.versionDetails.meta.internal_tools).toEqual([]);
+    expect(pipeline.result.current.versionDetails.meta.internal_tools).toEqual([]);
   });
 
   it('returns a referentially stable object across re-renders with the same forPipeline', () => {

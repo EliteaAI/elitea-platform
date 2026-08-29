@@ -36,9 +36,27 @@ export function convertTime(time: string): string {
 
 // ── convertToUserQuestion (lines 35-82) ────────────────────────────────────
 
-/** `getUserName` (lines 53-62), ported verbatim. */
-function getMessageAuthorName(user: MessageAuthorWire | undefined): string {
-  if (!user) return 'User No Longer Available';
+/**
+ * `getUserName` (lines 53-62), ported — with the source's single "no user"
+ * branch split in two, because the two things it conflated are not the same
+ * claim.
+ *
+ * The source only ever reached that branch from a `message_group` that NAMED
+ * an `author_participant_id` the `users` array could not resolve, which is
+ * what "no longer available" asserts: this message had an author, and that
+ * author is gone. `GET /elitea_core/messages/prompt_lib/{project}/{id}` —
+ * what a conversation reload reads — answers flat rows carrying no author
+ * field at all (measured: `{id, uid, conversation_id, role, content,
+ * content_type, metadata, created_at}`), so every reloaded transcript fell
+ * into it and captioned the reader's own question as a departed user.
+ *
+ * An author the endpoint never states is unknown, not absent, and '' says so
+ * — the same value the LIVE path already produces for an unresolved author
+ * (features/chat-messages/lib/chatStreamMessageSyncFrames.ts:51), leaving the
+ * renderer to attribute it.
+ */
+function getMessageAuthorName(user: MessageAuthorWire | undefined, statesAnAuthor: boolean): string {
+  if (!user) return statesAnAuthor ? 'User No Longer Available' : '';
   if (user.meta?.user_name) return user.meta.user_name;
   if (user.entity_meta?.email) return user.entity_meta.email;
   if (user.entity_meta?.id) return `User ${user.entity_meta.id}`;
@@ -90,6 +108,7 @@ export function normaliseUserMessage(
   users: readonly MessageAuthorWire[],
   participants: readonly MessageParticipantWire[],
 ): UserMessage {
+  const statesAnAuthor = messageGroup.author_participant_id !== undefined && messageGroup.author_participant_id !== '';
   const foundUser = users.find((user) => user.id === messageGroup.author_participant_id);
   const foundParticipant = participants.find((participant) => participant.id === messageGroup.sent_to_id);
   const sentTo = resolveSentTo(messageGroup, foundParticipant);
@@ -97,7 +116,7 @@ export function normaliseUserMessage(
   return {
     id: messageGroup.uuid,
     role: ROLES.User,
-    name: getMessageAuthorName(foundUser),
+    name: getMessageAuthorName(foundUser, statesAnAuthor),
     avatar: foundUser?.meta?.user_avatar || '',
     content: messageGroup.content,
     createdAt: convertTime(messageGroup.created_at),

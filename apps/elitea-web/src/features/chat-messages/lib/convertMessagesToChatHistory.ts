@@ -42,6 +42,9 @@ import type { MessageGroupWire, MessageItemWire, MessageParticipantWire } from '
 import { convertTime, normaliseAssistantMessage, normaliseUserMessage } from '@/entities/message/lib/normalise';
 import type { SubAgentGroupable } from '@/entities/message/lib/subAgentGrouping';
 
+import { splitWholeResponse } from './chatStreamReasoning';
+import type { ToolAction } from './chatStreamShared';
+
 // ---------------------------------------------------------------------------
 // ChatMessage union type
 // ---------------------------------------------------------------------------
@@ -236,6 +239,32 @@ function buildSwarmChildAction(child: MessageGroupWire): Record<string, unknown>
  * which takes `convertMessagesToChatHistory` as an injected parameter.
  */
 // eslint-disable-next-line eslint/complexity — full conversion pipeline with parent/child/swarm branching
+/**
+ * Do to a STORED answer what the reducer does to a streamed one.
+ *
+ * A reasoning model's monologue is part of the answer text the backend
+ * persists — measured: the stored content of a Qwen3.5 turn opens with
+ * "Thinking Process:" and carries a bare `</think>` between the monologue and
+ * the reply. `chatStreamReasoning` peels that off while the turn streams, so
+ * the bubble reads correctly right up until the page is reloaded, at which
+ * point the same answer comes back through THIS function and the whole
+ * monologue reappears. Two renderings of one message is a worse defect than
+ * either one alone, because only one of them is ever seen at a time.
+ *
+ * `splitWholeResponse` is the same call the reducer's whole-response frame
+ * makes, so the row a reload produces is the row the live turn produced.
+ */
+function splitPersistedReasoning(message: ChatMessage): ChatMessage {
+  const { answer, actions } = splitWholeResponse(
+    message.id,
+    message.content,
+    (message.toolActions ?? []) as readonly ToolAction[],
+    message.createdAt,
+  );
+  if (answer === message.content) return message;
+  return { ...message, content: answer, toolActions: actions as unknown as readonly SubAgentGroupable[] };
+}
+
 export function convertMessagesToChatHistory(
   messageGroups: readonly MessageGroupWire[] = [],
   participants: readonly MessageParticipantWire[] = [],
@@ -300,7 +329,9 @@ export function convertMessagesToChatHistory(
     }
 
     // Convert AI answer using entities-level normaliser.
-    const aiMessage = normaliseAssistantMessage(messageGroup, sortedMessages, participants) as unknown as ChatMessage;
+    const aiMessage = splitPersistedReasoning(
+      normaliseAssistantMessage(messageGroup, sortedMessages, participants) as unknown as ChatMessage,
+    );
 
     // Attach child messages as SwarmChild toolActions.
     const childMessages = childMessagesByParent[uuid] ?? [];

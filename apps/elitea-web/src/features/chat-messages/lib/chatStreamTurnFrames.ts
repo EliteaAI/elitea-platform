@@ -13,6 +13,7 @@ import { convertJsonToString } from '@/shared/lib/json';
 import { ToolActionStatus } from '@/shared/lib/chat';
 
 import { applyThinkingStep, isEmptyTransition } from './chatStreamThinkingFrames';
+import { applyReasoningDelta, settleReasoning, splitWholeResponse } from './chatStreamReasoning';
 import {
   createAssistantMessage,
   replaceAt,
@@ -83,15 +84,52 @@ export function reduceTurnFrame(
     case SocketMessageType.Chunk:
     case SocketMessageType.AIMessageChunk: {
       const delta = frameText(frame, false);
-      if (!delta) return history;
+      // A chunk can carry reasoning and NO content: the Rust worker builds
+      // `agent_llm_chunk` with `content` possibly null and the reasoning delta
+      // in the top-level `thinking` field
+      // (`services/elitea-worker-rust/src/agents/events.rs:1828-1850`), which
+      // is a declared member of the frame. Guarding on `delta` alone made such
+      // a chunk a complete no-op — the spinner span and nothing ever appeared.
+      const thinkingDelta = typeof frame.thinking === 'string' ? frame.thinking : '';
+      if (!delta && !thinkingDelta) return history;
       if (index === -1) {
         const created = createAssistantMessage(frame, context);
-        return [...history, { ...created, content: delta }];
+        const opened = applyReasoningDelta({
+          messageId: created.id,
+          content: '',
+          actions: [],
+          delta,
+          thinkingDelta,
+          createdAt: frame.created_at,
+        });
+        return [
+          ...history,
+          {
+            ...created,
+            content: opened.content,
+            ...(opened.actions.length > 0 ? { toolActions: opened.actions } : {}),
+          },
+        ];
       }
       const current = history[index];
       if (!current) return history;
+      // The delta is split before it reaches the bubble: a reasoning model
+      // streams its whole chain of thought inline, and the closing `</think>`
+      // survives into the persisted message (see `chatStreamReasoning.ts`).
+      // Only the answer half lands here; the monologue goes to the thinking
+      // row, which is where this surface already shows the model's work.
+      const chunkActions = (current.toolActions ?? []) as readonly ToolAction[];
+      const applied = applyReasoningDelta({
+        messageId: current.id,
+        content: current.content,
+        actions: chunkActions,
+        delta,
+        thinkingDelta,
+        createdAt: frame.created_at,
+      });
       return replaceAt(history, index, {
-        content: current.content + delta,
+        content: applied.content,
+        ...(applied.actions === chunkActions ? {} : { toolActions: applied.actions }),
         isStreaming: true,
         // FALSE once a token exists, and this is what makes streaming visible:
         // `ApplicationAnswer` gates the answer body on
@@ -161,8 +199,17 @@ export function reduceTurnFrame(
       }
 
       if (removed.size > 0) next = next.filter((action) => !removed.has(action.id));
-      const unchanged = next === actions;
-      return replaceAt(history, index, { isLoading: false, ...(unchanged ? {} : { toolActions: next }) });
+
+      // The token stream is over, so a reasoning block still open here is never
+      // going to close. `settleReasoning` hands its text back to an empty
+      // bubble rather than leaving the answer hidden in a collapsed row.
+      const settled = settleReasoning(current.id, current.content, next);
+      const unchanged = settled.actions === actions;
+      return replaceAt(history, index, {
+        isLoading: false,
+        ...(unchanged ? {} : { toolActions: settled.actions }),
+        ...(settled.content === current.content ? {} : { content: settled.content }),
+      });
     }
 
     // A whole response, fenced when it is not plain text. It carries the
@@ -176,15 +223,34 @@ export function reduceTurnFrame(
     // the pairing was inert in practice, but appending on a frame the baseline
     // ignores is a content duplication waiting for whoever revives the type.
     case SocketMessageType.AgentResponse: {
-      const text = frameText(frame, true);
+      const raw = frameText(frame, true);
       if (index === -1) {
-        if (!text) return history;
+        if (!raw) return history;
         const created = createAssistantMessage(frame, context);
-        return [...history, { ...created, content: text }];
+        const split = splitWholeResponse(created.id, raw, [], frame.created_at);
+        return [
+          ...history,
+          {
+            ...created,
+            content: split.answer,
+            ...(split.actions.length > 0 ? { toolActions: split.actions } : {}),
+          },
+        ];
       }
       const current = history[index];
       if (!current) return history;
       const finished = isFinalResponse(frame);
+      // The whole reply arrives here with the monologue still in it, so it is
+      // split the same way the chunks were — otherwise the `alreadyRendered`
+      // check below compares raw text against an answer the chunk arm has
+      // already cleaned, misses, and appends the monologue back onto the end.
+      const responseActions = (current.toolActions ?? []) as readonly ToolAction[];
+      const { answer: text, actions: responseNext } = splitWholeResponse(
+        current.id,
+        raw,
+        responseActions,
+        frame.created_at,
+      );
       const threadId = threadIdOf(frame);
       // `agent_response` carries the WHOLE reply, and on this backend it
       // arrives AFTER the `agent_llm_chunk` frames that already assembled the
@@ -204,6 +270,7 @@ export function reduceTurnFrame(
       const alreadyRendered = text !== '' && current.content.endsWith(text);
       return replaceAt(history, index, {
         content: alreadyRendered ? current.content : current.content + text,
+        ...(responseNext === responseActions ? {} : { toolActions: responseNext }),
         ...(finished ? { isStreaming: false, isLoading: false, hitlInterrupt: undefined, hitlInterrupts: undefined } : {}),
         ...(finished && threadId !== undefined ? { threadId } : {}),
       });
@@ -218,7 +285,19 @@ export function reduceTurnFrame(
     // not an agent_response.
     case SocketMessageType.PipelineFinish: {
       if (index === -1) return history;
-      return replaceAt(history, index, { isStreaming: false, isLoading: false });
+      const current = history[index];
+      if (!current) return history;
+      // Also a last chance to settle an unclosed reasoning block: a run that
+      // ends without `agent_llm_end` (a pipeline whose last node is not an LLM)
+      // would otherwise leave the row spinning with the answer inside it.
+      const finishActions = (current.toolActions ?? []) as readonly ToolAction[];
+      const settled = settleReasoning(current.id, current.content, finishActions);
+      return replaceAt(history, index, {
+        isStreaming: false,
+        isLoading: false,
+        ...(settled.actions === finishActions ? {} : { toolActions: settled.actions }),
+        ...(settled.content === current.content ? {} : { content: settled.content }),
+      });
     }
 
     // Failures stop the turn and surface on the message. `content` is left

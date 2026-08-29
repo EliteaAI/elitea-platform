@@ -187,6 +187,16 @@ function extractIconMeta(participant: Record<string, unknown>, participantType: 
 /**
  * Extracts version_id from a participant, checking multiple sources in
  * priority order.
+ *
+ * Pipelines read `version_details` too. They did not, and the omission was
+ * load-bearing: a participant with no `version_id` fails the resolver's join
+ * on `entity_settings ->> 'version_id'`
+ * (`services/elitea-main/internal/db/queries/agent_chat.sql:151-153`) and
+ * every turn addressed to it answers 422. Pipelines and agents are the same
+ * `application` entity behind one `agent_type` discriminator — old-app's own
+ * `convertParticipantAndAddIt` (`apps/elitea-ui/src/pages/NewChat/
+ * NewConversationView.jsx:441-446`) takes `details.version_details?.id` for
+ * every non-toolkit participant, not just the ones typed `application`.
  */
 function extractVersionId(
   participant: Record<string, unknown>,
@@ -196,7 +206,7 @@ function extractVersionId(
   if (esVersion) {
     return { version_id: esVersion };
   }
-  if (participantType === ChatParticipantType.Applications) {
+  if (participantType === ChatParticipantType.Applications || participantType === ChatParticipantType.Pipelines) {
     const vdId = (participant.version_details as Record<string, unknown>)?.id;
     if (vdId) {
       return { version_id: vdId as string };
