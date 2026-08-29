@@ -54,13 +54,11 @@
  * fails on its pause card. That is the correct outcome for a spec about a
  * runtime feature; the runtime it needs is stated here rather than guessed.
   *
- * KNOWN RARE RACE (measured, ~1 integrated-suite run in 5): the resume body
- * verifiably carries the answer (this spec asserts the exact wire value and
- * the 200 BEFORE the final check) and the worker still substitutes an EMPTY
- * answer into the tool result. Standalone the spec is consistently green.
- * CI's retries=2 absorb it while the worker-side investigation runs; do not
- * weaken the final assertion to hide it — an empty answer reaching the model
- * is exactly what this journey exists to catch.
+ * A RACE THIS SPEC USED TO LOSE: the stored assistant row is readable while
+ * the continuation is still streaming, and the first draft polled only for
+ * the resumed marker (first chunk) before reading the transcript once — so
+ * it sampled a half-written row and reported the answer missing, locally
+ * and in CI. The poll now uses the ANSWER text as its settle signal.
  */
 import { expect, test } from '@playwright/test';
 
@@ -90,7 +88,6 @@ const CONTINUE_RE = /\/elitea_core\/continue_predict\/prompt_lib\/(\d+)\/[0-9a-f
 const ASK_USER_MARKER = '[[mock:ask_user]]';
 const QUESTION_TEXT = 'Which environment should I target?';
 const OPTION_LABEL = 'Staging';
-const RESUMED_MARKER = 'resumed';
 
 /**
  * The model the pause depends on.
@@ -271,19 +268,27 @@ test('an ask_user pause renders answerable controls, and the answer finishes the
   // stored reply proves the answer reached the MODEL. `expectStoredAssistantAnswer`
   // reads the NEWEST assistant row and rules out the `is_error` card a refused
   // turn would leave in the same place.
+  // The poll's `contains` is the ANSWER, not just the resumed marker: the
+  // stored row is readable while the continuation is still streaming, and
+  // the marker arrives in the first chunk — polling for it and then reading
+  // the transcript once sampled a half-written row ("MOCK: resumed \"User ")
+  // and reported the answer missing (measured, both locally and in CI). The
+  // answer text lands in a later chunk of the same message, so it is the
+  // settle signal AND the assertion in one.
   await expectStoredAssistantAnswer(page, projectId, conversationId, {
     timeout: 150_000,
     message:
-      'the resume was accepted but no answered reply was ever stored — ' +
-      'the continuation reached the route and not the runtime',
-    contains: RESUMED_MARKER,
+      'the resume was accepted but no reply quoting the answer was ever ' +
+      'stored — the continuation reached the route and not the runtime, or ' +
+      'the answer never reached the model',
+    contains: OPTION_LABEL,
   });
 
   const transcript = await readStoredTranscript(page, projectId, conversationId);
   const finalAnswer = transcript.filter((row) => row.role === 'assistant').at(-1);
   expect(
     finalAnswer?.content ?? '',
-    'the final answer must quote the option that was answered — otherwise the answer never reached the model',
+    'the LAST assistant row must be the one quoting the answer — a second, unanswered row after it would mean the resume forked the turn',
   ).toContain(OPTION_LABEL);
   expect(
     transcript.filter((row) => row.isError).map((row) => row.content.slice(0, 200)),
